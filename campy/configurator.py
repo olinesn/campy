@@ -46,6 +46,7 @@ def DefaultParams():
 	params["codec"] = "h264"  
 	params["quality"] = 21
 	params["preset"] = "None"
+	params["keyframeInterval"] = "None" # seconds between keyframes; "None" = encoder default
 
 	# Display parameters
 	params["chunkLengthInSec"] = 5
@@ -367,6 +368,14 @@ def ParseClargs(parser):
 		type=ast.literal_eval,
 		help="Compression preset (e.g. 'slow', 'fast', 'veryfast'). \
 				Incorrect settings may break the pipe. Test with ffmpegLogLevel 'warning' or 'info'.",
+	)
+	parser.add_argument(
+		"--keyframeInterval",
+		dest="keyframeInterval",
+		type=float,
+		help="Seconds between keyframes (I-frames), e.g. 0.5. Shorter makes seeking and \
+			sparse frame sampling cheaper (LUCID's image ID-switch check needs 0.5) \
+			but files larger. Default: the encoder's own (NVENC: every 250 frames).",
 	)
 
 	# Display and CLI feedback arguments

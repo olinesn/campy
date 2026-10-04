@@ -103,6 +103,17 @@ def OpenWriter(cam_params, queue):
 				elif cam_params["codec"] == "h265":
 					codec = "hevc_qsv"
 
+		# Keyframe (I-frame) interval in seconds, for any encoder. "None" keeps the
+		# encoder's default (NVENC: a keyframe every 250 frames, ~4 s at 60 fps).
+		# Every decoded frame depends on the frames back to its keyframe, so shorter
+		# intervals make seeking and sparse frame sampling much cheaper (0.5 s: what
+		# LUCID's image ID-switch check needs to decode only keyframes) at the cost of
+		# larger files (~+50% for HEVC at a fixed QP).
+		keyframe_interval = str(cam_params.get("keyframeInterval", "None"))
+		if keyframe_interval != "None":
+			gop = max(1, int(round(float(cam_params["frameRate"]) * float(keyframe_interval))))
+			gpu_params.extend(["-g", str(gop)])
+
 	except Exception as e:
 		logging.error("Caught exception at writer.py OpenWriter: {}".format(e))
 		raise
