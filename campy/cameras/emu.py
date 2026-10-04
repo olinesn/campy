@@ -14,9 +14,11 @@ import imageio
 
 
 class EmulatedCamera:
-	# Video reader that serves frames at the configured frame rate
+	# Video reader that serves frames at the configured frame rate,
+	# looping back to the start when the video runs out
 	def __init__(self, reader, frameRate):
 		self.reader = reader
+		self.numFrames = reader.count_frames()
 		self.framePeriod = 1.0 / frameRate if frameRate > 0 else 0.0
 		self.startTime = None
 
@@ -27,7 +29,7 @@ class EmulatedCamera:
 		delay = self.startTime + frameNumber * self.framePeriod - time.perf_counter()
 		if delay > 0:
 			time.sleep(delay)
-		return self.reader.get_data(frameNumber)
+		return self.reader.get_data(frameNumber % self.numFrames)
 
 	def close(self):
 		self.reader.close()
