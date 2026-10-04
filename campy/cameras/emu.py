@@ -22,9 +22,9 @@ def GetDeviceList(system):
 	return system
 
 
-def LoadDevice(cam_params):
+def LoadDevice(systems, params, cam_params):
 
-	return cam_params["device"]
+	return cam_params
 
 
 def GetSerialNumber(device):
@@ -37,7 +37,7 @@ def GetModelName(camera):
 	return "Emulated_Camera"
 
 
-def OpenCamera(cam_params, device):
+def OpenCamera(cam_params):
 	# Open video reader for emulation
 	videoFileName = cam_params["videoFilename"][3:len(cam_params["videoFilename"])]
 	full_file_name = os.path.join(cam_params["videoFolder"], cam_params["cameraName"], videoFileName)
@@ -47,6 +47,7 @@ def OpenCamera(cam_params, device):
 	frame_size = camera.get_meta_data()['size']
 	cam_params['frameWidth'] = frame_size[0]
 	cam_params['frameHeight'] = frame_size[1]
+	cam_params['cameraModel'] = GetModelName(camera)
 
 	print("Opened {} emulation.".format(cam_params["cameraName"]))
 	return camera, cam_params
