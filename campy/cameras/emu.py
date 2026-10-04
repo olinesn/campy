@@ -12,6 +12,27 @@ from collections import deque
 import csv
 import imageio
 
+
+class EmulatedCamera:
+	# Video reader that serves frames at the configured frame rate
+	def __init__(self, reader, frameRate):
+		self.reader = reader
+		self.framePeriod = 1.0 / frameRate if frameRate > 0 else 0.0
+		self.startTime = None
+
+	def get_data(self, frameNumber):
+		if self.startTime is None:
+			self.startTime = time.perf_counter()
+		# Wait until this frame's scheduled time (relative to the first frame)
+		delay = self.startTime + frameNumber * self.framePeriod - time.perf_counter()
+		if delay > 0:
+			time.sleep(delay)
+		return self.reader.get_data(frameNumber)
+
+	def close(self):
+		self.reader.close()
+
+
 def LoadSystem(params):
 
 	return params["cameraMake"]
@@ -41,10 +62,11 @@ def OpenCamera(cam_params):
 	# Open video reader for emulation
 	videoFileName = cam_params["videoFilename"][3:len(cam_params["videoFilename"])]
 	full_file_name = os.path.join(cam_params["videoFolder"], cam_params["cameraName"], videoFileName)
-	camera = imageio.get_reader(full_file_name)
+	reader = imageio.get_reader(full_file_name)
+	camera = EmulatedCamera(reader, cam_params["frameRate"])
 
 	# Set features manually or automatically, depending on configuration
-	frame_size = camera.get_meta_data()['size']
+	frame_size = reader.get_meta_data()['size']
 	cam_params['frameWidth'] = frame_size[0]
 	cam_params['frameHeight'] = frame_size[1]
 	cam_params['cameraModel'] = GetModelName(camera)
@@ -94,6 +116,7 @@ def ReleaseFrame(grabResult):
 def CloseCamera(cam_params, camera):
 	print('Closing {}... Please wait.'.format(cam_params["cameraName"]))
 	# Close camera after acquisition stops
+	camera.close()
 	del camera
 
 
