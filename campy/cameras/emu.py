@@ -36,8 +36,14 @@ class EmulatedCamera:
 
 
 def LoadSystem(params):
-
-	return params["cameraMake"]
+	# One emulated device per camera, named emu0, emu1, ...: cameraSelection
+	# indexes into this list. (It was the string "emu", so cameras past the
+	# third indexed past its last character.)
+	selection = params.get("cameraSelection", [])
+	if not isinstance(selection, list):
+		selection = [selection]
+	count = max([params["numCams"]] + [s + 1 for s in selection if isinstance(s, int)])
+	return ["emu{}".format(n) for n in range(count)]
 
 
 def GetDeviceList(system):
