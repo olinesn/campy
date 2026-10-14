@@ -6,6 +6,7 @@ setup(
 	packages=find_packages(),
 	install_requires=[
 					'imageio',
+					'imageio-ffmpeg',
 					'matplotlib',
 					'numpy',
 					'pyserial',
@@ -15,7 +16,8 @@ setup(
 					],
 	entry_points={
 		"console_scripts": [
-			"campy-acquire = campy.campy:Main"
+			"campy-acquire = campy.campy:Main",
+			"campy-encode-sweep = campy.sweep:Main",
 		]
 	}
 )

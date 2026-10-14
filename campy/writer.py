@@ -1,8 +1,157 @@
 """
+Video writer: one ffmpeg process per camera, fed raw frames through a pipe.
+
+EncoderArgs() turns a camera's parameters into ffmpeg encoder settings, and
+OpenWriter() starts ffmpeg with them. campy-encode-sweep (campy/sweep.py)
+calls EncoderArgs() too, so the capacity it measures is for the same ffmpeg
+command a recording runs.
 """
 from imageio_ffmpeg import write_frames
 import os, sys, time, logging
 from campy.utils.utils import QueueKeyboardInterrupt
+
+
+def EncoderArgs(cam_params):
+	"""
+	ffmpeg encoder settings for one camera, as a dict:
+	  codec, pix_fmt_out, input_params, output_params, macro_block_size
+	  key: short name of the encoder configuration ("libx264/fast",
+	       "h264_vaapi", ...). The capacity table is indexed by it.
+	  device: "cpu" or "gpu"
+	"""
+	# Load encoding parameters from cam_params
+	pix_fmt_out = cam_params["pixelFormatOutput"]
+	codec = str(cam_params["codec"])
+	quality = str(cam_params["quality"])
+	preset = str(cam_params["preset"])
+	gpuID = str(cam_params["gpuID"])
+
+	# Load defaults
+	input_params = ["-an"] # "-an" no audio
+	macro_block_size = 16 # imageio-ffmpeg pads frames up to a multiple of this
+	gpu_params = []
+	key_preset = None
+
+	# CPU compression
+	if cam_params["gpuID"] == -1:
+		device = "cpu"
+		if preset == "None":
+			preset = "fast"
+		key_preset = preset
+		gpu_params = [
+			"-preset", preset,
+			"-tune", "fastdecode",
+			"-crf", quality,
+			"-bufsize", "20M",
+			"-maxrate", "10M",
+			"-bf:v", "4",
+			]
+		if pix_fmt_out == "rgb0" or pix_fmt_out == "bgr0":
+			pix_fmt_out = "yuv420p"
+		if cam_params["codec"] == "h264":
+			codec = "libx264"
+			gpu_params.append("-x264-params")
+			gpu_params.append("nal-hrd=cbr")
+		elif cam_params["codec"] == "h265":
+			codec = "libx265"
+
+	# GPU compression
+	else:
+		device = "gpu"
+		# Nvidia GPU (NVENC) encoder optimized parameters
+		if cam_params["gpuMake"] == "nvidia":
+			if preset == "None":
+				preset = "fast"
+			key_preset = preset
+			gpu_params = [
+				"-preset", preset, # set to "fast", "llhp", or "llhq" for h264 or hevc
+				"-qp", quality,
+				"-bf:v", "0",
+				"-gpu", gpuID,
+				]
+			if cam_params["codec"] == "h264":
+				codec = "h264_nvenc"
+			elif cam_params["codec"] == "h265":
+				codec = "hevc_nvenc"
+
+		# AMD GPU (AMF/VCE) encoder optimized parameters. On Linux, AMF needs
+		# AMD's proprietary runtime; "vaapi" below uses the open Mesa driver.
+		elif cam_params["gpuMake"] == "amd":
+			# Preset not supported by AMF
+			gpu_params = [
+				"-usage", "lowlatency",
+				"-rc", "cqp", # constant quantization parameter
+				"-qp_i", quality,
+				"-qp_p", quality,
+				"-qp_b", quality,
+				"-bf:v", "0",
+				"-hwaccel_device", gpuID,]
+			if pix_fmt_out == "rgb0" or pix_fmt_out == "bgr0":
+				pix_fmt_out = "yuv420p"
+			if cam_params["codec"] == "h264":
+				codec = "h264_amf"
+			elif cam_params["codec"] == "h265":
+				codec = "hevc_amf"
+
+		# Intel iGPU encoder (Quick Sync) optimized parameters
+		elif cam_params["gpuMake"] == "intel":
+			if preset == "None":
+				preset = "faster"
+			key_preset = preset
+			gpu_params = [
+					"-bf:v", "0",
+					"-preset", preset,
+					"-q", str(int(quality)+1),]
+			if pix_fmt_out == "rgb0" or pix_fmt_out == "bgr0":
+				pix_fmt_out = "nv12"
+			if cam_params["codec"] == "h264":
+				codec = "h264_qsv"
+			elif cam_params["codec"] == "h265":
+				codec = "hevc_qsv"
+
+		# Linux VA-API: AMD GPUs through Mesa, Intel through its media driver.
+		# The encoder takes NV12 surfaces, so ffmpeg converts each frame to NV12
+		# on the CPU and uploads it to vaapiDevice. Frames are not padded: the
+		# encoder handles sizes that are not a multiple of 16 itself.
+		elif cam_params["gpuMake"] == "vaapi":
+			input_params += [
+				"-init_hw_device", "vaapi=va:{}".format(cam_params["vaapiDevice"]),
+				"-filter_hw_device", "va",
+				]
+			gpu_params = [
+				"-vf", "format=nv12,hwupload",
+				"-rc_mode", "CQP", # constant quantization parameter
+				"-qp", quality,
+				"-bf", "0",
+				]
+			pix_fmt_out = "vaapi" # the encoder's input is the uploaded surface
+			macro_block_size = 1
+			if cam_params["codec"] == "h264":
+				codec = "h264_vaapi"
+			elif cam_params["codec"] == "h265":
+				codec = "hevc_vaapi"
+
+	# Keyframe (I-frame) interval in seconds, for any encoder. "None" keeps the
+	# encoder's default (NVENC: a keyframe every 250 frames, ~4 s at 60 fps).
+	# Every decoded frame depends on the frames back to its keyframe, so shorter
+	# intervals make seeking and sparse frame sampling much cheaper (0.5 s: what
+	# LUCID's image ID-switch check needs to decode only keyframes) at the cost of
+	# larger files (~+50% for HEVC at a fixed QP).
+	keyframe_interval = str(cam_params.get("keyframeInterval", "None"))
+	if keyframe_interval != "None":
+		gop = max(1, int(round(float(cam_params["frameRate"]) * float(keyframe_interval))))
+		gpu_params.extend(["-g", str(gop)])
+
+	return {
+		"codec": codec,
+		"pix_fmt_out": pix_fmt_out,
+		"input_params": input_params,
+		"output_params": gpu_params,
+		"macro_block_size": macro_block_size,
+		"key": codec if key_preset is None else "{}/{}".format(codec, key_preset),
+		"device": device,
+		}
+
 
 def OpenWriter(cam_params, queue):
 	try:
@@ -19,100 +168,11 @@ def OpenWriter(cam_params, queue):
 		if cam_params["pixelFormatInput"] == "bayer_bggr8" and cam_params["cameraMake"] == "flir":
 			cam_params["pixelFormatInput"] == "bayer_rggb8"
 
-		# Load encoding parameters from cam_params
-		pix_fmt_out = cam_params["pixelFormatOutput"]
-		codec = str(cam_params["codec"])
-		quality = str(cam_params["quality"])
-		preset = str(cam_params["preset"])
-		frameRate = str(cam_params["frameRate"])
-		gpuID = str(cam_params["gpuID"])
-
-		# Load defaults
-		gpu_params = []
-
-		# CPU compression
-		if cam_params["gpuID"] == -1:
+		enc = EncoderArgs(cam_params)
+		if enc["device"] == "cpu":
 			print("Opened: {} using CPU to compress the stream.".format(full_file_name))
-			if preset == "None":
-				preset = "fast"
-			gpu_params = [
-				"-preset", preset,
-				"-tune", "fastdecode",
-				"-crf", quality,
-				"-bufsize", "20M",
-				"-maxrate", "10M",
-				"-bf:v", "4",
-				]
-			if pix_fmt_out == "rgb0" or pix_fmt_out == "bgr0":
-				pix_fmt_out = "yuv420p"
-			if cam_params["codec"] == "h264":
-				codec = "libx264"
-				gpu_params.append("-x264-params")
-				gpu_params.append("nal-hrd=cbr")
-			elif cam_params["codec"] == "h265":
-				codec = "libx265"
-
-		# GPU compression
 		else:
-			# Nvidia GPU (NVENC) encoder optimized parameters
 			print("Opened: {} using GPU {} to compress the stream.".format(full_file_name, cam_params["gpuID"]))
-			if cam_params["gpuMake"] == "nvidia":
-				if preset == "None":
-					preset = "fast"
-				gpu_params = [
-					"-preset", preset, # set to "fast", "llhp", or "llhq" for h264 or hevc
-					"-qp", quality,
-					"-bf:v", "0",
-					"-gpu", gpuID,
-					]
-				if cam_params["codec"] == "h264":
-					codec = "h264_nvenc"
-				elif cam_params["codec"] == "h265":
-					codec = "hevc_nvenc"
-
-			# AMD GPU (AMF/VCE) encoder optimized parameters
-			elif cam_params["gpuMake"] == "amd":
-				# Preset not supported by AMF
-				gpu_params = [
-					"-usage", "lowlatency",
-					"-rc", "cqp", # constant quantization parameter
-					"-qp_i", quality,
-					"-qp_p", quality,
-					"-qp_b", quality,
-					"-bf:v", "0",
-					"-hwaccel_device", gpuID,]
-				if pix_fmt_out == "rgb0" or pix_fmt_out == "bgr0":
-					pix_fmt_out = "yuv420p"
-				if cam_params["codec"] == "h264":
-					codec = "h264_amf"
-				elif cam_params["codec"] == "h265":
-					codec = "hevc_amf"
-
-			# Intel iGPU encoder (Quick Sync) optimized parameters				
-			elif cam_params["gpuMake"] == "intel":
-				if preset == "None":
-					preset = "faster"
-				gpu_params = [
-						"-bf:v", "0",
-						"-preset", preset,
-						"-q", str(int(quality)+1),]
-				if pix_fmt_out == "rgb0" or pix_fmt_out == "bgr0":
-					pix_fmt_out = "nv12"
-				if cam_params["codec"] == "h264":
-					codec = "h264_qsv"
-				elif cam_params["codec"] == "h265":
-					codec = "hevc_qsv"
-
-		# Keyframe (I-frame) interval in seconds, for any encoder. "None" keeps the
-		# encoder's default (NVENC: a keyframe every 250 frames, ~4 s at 60 fps).
-		# Every decoded frame depends on the frames back to its keyframe, so shorter
-		# intervals make seeking and sparse frame sampling much cheaper (0.5 s: what
-		# LUCID's image ID-switch check needs to decode only keyframes) at the cost of
-		# larger files (~+50% for HEVC at a fixed QP).
-		keyframe_interval = str(cam_params.get("keyframeInterval", "None"))
-		if keyframe_interval != "None":
-			gop = max(1, int(round(float(cam_params["frameRate"]) * float(keyframe_interval))))
-			gpu_params.extend(["-g", str(gop)])
 
 	except Exception as e:
 		logging.error("Caught exception at writer.py OpenWriter: {}".format(e))
@@ -126,18 +186,19 @@ def OpenWriter(cam_params, queue):
 				[cam_params["frameWidth"], cam_params["frameHeight"]], # size [W,H]
 				fps=cam_params["frameRate"],
 				quality=None,
-				codec=codec,
+				codec=enc["codec"],
 				pix_fmt_in=cam_params["pixelFormatInput"], # "bayer_bggr8", "gray", "rgb24", "bgr0", "yuv420p"
-				pix_fmt_out=pix_fmt_out,
+				pix_fmt_out=enc["pix_fmt_out"],
 				bitrate=None,
 				ffmpeg_log_level=cam_params["ffmpegLogLevel"], # "warning", "quiet", "info"
-				input_params=["-an"], # "-an" no audio
-				output_params=gpu_params,
+				input_params=enc["input_params"],
+				output_params=enc["output_params"],
+				macro_block_size=enc["macro_block_size"],
 				)
 			writer.send(None) # Initialize the generator
 			writing = True
 			break
-			
+
 		except Exception as e:
 			logging.error("Caught exception at writer.py OpenWriter: {}".format(e))
 			raise
@@ -151,7 +212,7 @@ def OpenWriter(cam_params, queue):
 	return writer, writing, readQueue
 
 def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue):
-	# Start ffmpeg video writer 
+	# Start ffmpeg video writer
 	writer, writing, readQueue = OpenWriter(cam_params, stopReadQueue)
 
 	with QueueKeyboardInterrupt(readQueue):
@@ -170,5 +231,5 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue):
 	print("Closing video writer for {}. Please wait...".format(cam_params["cameraName"]))
 	time.sleep(1)
 	writer.close()
-    
+
 

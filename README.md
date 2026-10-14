@@ -106,6 +106,24 @@ recTimeInSeconds: 3600
 ```
 - To manually end, press Ctrl^C. Please wait until campy exits!
 - Three files, "frametimes.mat", "frametimes.npy", and "metadata.csv", will be saved along with the video file in each camera folder containing timestamps, frame numbers, and other recording metadata.
+- If a camera's encoder falls more than `writeQueueMaxSec` (default 5 s) behind, new frames are dropped instead of filling memory. "frametimes.npy" still has one row per video frame, so a gap in its frame numbers marks a drop, and "metadata.csv" records `totalFrames` (grabbed), `framesWritten` and `framesDropped`.
+
+### Scaling the number of cameras
+Change `numCams`; nothing else in a config has to depend on it. A setting can be one value for every camera, or a list with one value per camera. A list longer than `numCams` uses its first items, so a config written for 8 cameras also runs 4. `configs/campy_config_flir_usb3.yaml` is an example.
+
+Whether a computer keeps up with the cameras depends on its encoders and its USB buses. Measure the encoders once per computer:
+```
+campy-encode-sweep --config ./configs/campy_config_flir_usb3.yaml --encoder vaapi --encoder cpu:veryfast --streams 1,2,4,6,8
+```
+It runs 1, 2, 4... encoders at once, with campy's own ffmpeg settings, on synthetic frames, and saves how many each one keeps up with to `~/.campy/capacity.json`. The bitrates it reports come from those synthetic frames and are only a rough guide.
+
+Every `campy-acquire` then starts with a launch check, printed before recording:
+- **encoders**: ffmpeg has each camera's encoder, and the VA-API device can be opened.
+- **capacity**: the cameras on each encoder, against the measured table.
+- **usb** (Linux): each camera's USB bus and controller, read from sysfs, and the camera data on each bus against a budget (300 MB/s for a 5 Gb/s bus, 600 MB/s for 10 Gb/s; set `usbBudgetMBps` once you have measured your own). A camera running at USB 2 speed fails.
+- **disk**: free space for the recording.
+
+With `preflight: "error"` (the default), a failed check stops campy before recording; `"warn"` records anyway; `"off"` skips the check. `displayFrameRate: 0` runs without display windows, for example over SSH.
 
 ### Helpful tips
 - To debug broken ffmpeg pipe error, include this in config.yaml:
@@ -146,6 +164,13 @@ sudo cp -r ./ffmpeg /usr/bin
 ```
 ffmpegPath: "/usr/bin/ffmpeg"
 ```
+- VA-API on Linux (`gpuMake: "vaapi"`: AMD GPUs through Mesa, or Intel). Ubuntu's own ffmpeg has it, so no compiling is needed:
+```
+sudo apt install ffmpeg mesa-va-drivers vainfo
+sudo usermod -aG render $USER        # then log out and in
+vainfo --display drm --device /dev/dri/renderD128   # should list VAEntrypointEncSlice for H264
+```
+  Then set `ffmpegPath: "/usr/bin/ffmpeg"` and, if the GPU is not `renderD128`, `vaapiDevice`.
 
 ## Authors
 Written by Kyle Severson with contributions from Diego Aldarondo and Iris Odstrcil.

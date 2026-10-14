@@ -19,7 +19,7 @@ campy-acquire ./configs/campy_config.yaml
 import os, time, sys, logging, threading, queue
 from collections import deque
 import multiprocessing as mp
-from campy import writer, display, configurator
+from campy import writer, configurator, preflight
 from campy.trigger import trigger
 from campy.cameras import unicam
 from campy.utils.utils import HandleKeyboardInterrupt
@@ -31,6 +31,16 @@ def OpenSystems():
 	# Load Camera Systems and Devices
 	systems = unicam.LoadSystems(params)
 	systems = unicam.GetDeviceList(systems, params)
+
+	# Check that this configuration fits this computer, before anything starts.
+	# Every camera process re-imports this module, so only the parent checks.
+	if mp.current_process().name == "MainProcess":
+		try:
+			preflight.Run(systems, params)
+		except preflight.PreflightError as e:
+			print(e, flush=True)
+			unicam.CloseSystems(systems, params)
+			sys.exit(1)
 
 	# Start camera triggers if configured
 	systems = trigger.StartTriggers(systems, params)
@@ -53,12 +63,15 @@ def AcquireOneCamera(n_cam):
 	stopReadQueue = deque([],1)
 	stopWriteQueue = deque([],1)
 
-	# Start image window display thread
-	threading.Thread(
-		target = display.DisplayFrames,
-		daemon = True,
-		args = (cam_params, dispQueue,),
-		).start()
+	# Start image window display thread, unless running headless
+	# (displayFrameRate 0). Imported here so headless runs need no Qt.
+	if cam_params["displayFrameRate"] > 0:
+		from campy import display
+		threading.Thread(
+			target = display.DisplayFrames,
+			daemon = True,
+			args = (cam_params, dispQueue,),
+			).start()
 
 	# Start grabbing frames ("producer" thread)
 	threading.Thread(
