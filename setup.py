@@ -22,6 +22,7 @@ setup(
 		"console_scripts": [
 			"campy-acquire = campy.campy:Main",
 			"campy-encode-sweep = campy.sweep:Main",
+			"campy-align = campy.align:Main",
 		]
 	}
 )

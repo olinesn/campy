@@ -60,3 +60,11 @@ def test_unbounded_queue_keeps_every_frame(tmp_path, monkeypatch):
 	assert len(writeQueue) == 20
 	assert list(frametimes[0]) == list(range(1, 21))
 	assert meta["framesDropped"] == "0"
+
+
+def test_arrival_times_saved_for_written_frames(tmp_path, monkeypatch):
+	# campy-align compares cameras through these: one per frame in frametimes.npy
+	writeQueue, frametimes, meta = grab(tmp_path, monkeypatch, 0.05)
+	host = np.load(tmp_path / "Camera0" / "hosttimes.npy")
+	assert host.dtype == np.int64 and len(host) == frametimes.shape[1] == 5
+	assert np.all(np.diff(host) >= 0)

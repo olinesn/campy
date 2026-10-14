@@ -105,7 +105,7 @@ campy-acquire ./configs/campy_config.yaml
 recTimeInSeconds: 3600
 ```
 - To manually end, press Ctrl^C. Please wait until campy exits!
-- Three files, "frametimes.mat", "frametimes.npy", and "metadata.csv", will be saved along with the video file in each camera folder containing timestamps, frame numbers, and other recording metadata.
+- Three files, "frametimes.mat", "frametimes.npy", and "metadata.csv", will be saved along with the video file in each camera folder containing timestamps, frame numbers, and other recording metadata. "hosttimes.npy" holds when each of those frames reached the computer, on one clock for every camera (`time.monotonic_ns`); `campy-align` uses it.
 - If a camera's encoder falls more than `writeQueueMaxSec` (default 5 s) behind, new frames are dropped instead of filling memory. "frametimes.npy" still has one row per video frame, so a gap in its frame numbers marks a drop, and "metadata.csv" records `totalFrames` (grabbed), `framesWritten` and `framesDropped`.
 
 ### Scaling the number of cameras
@@ -144,7 +144,16 @@ campy-acquire ./configs/campy_config_ratcam_sim.yaml   # two simulated RatCams
   `metadata.csv` adds the frame rate and exposure reached, and the frames lost.
 - The launch check checks each RatCam's own USB link: the RP2040 build is USB full speed, about 1 MB/s of frames.
 
-**On the same timeline as triggered cameras:** wire the trigger line to each RatCam's SYNC input too (3.3 V: divide a 5 V trigger, e.g. 10 kΩ over 20 kΩ). Each trigger pulse, and so each triggered frame, then has a time on the RatCam's clock in `ratcam_sync.csv`, and RatCam frames fall between them. Pulse *k* is triggered frame *k* only if every RatCam is already listening at the first pulse. So start the trigger after campy reports every camera ready (`startArduino: False`; see Camera Triggering). campy does not yet line the two up for you.
+**On the same timeline as triggered cameras:** wire the trigger line to each RatCam's SYNC input too (3.3 V: divide a 5 V trigger, e.g. 10 kΩ over 20 kΩ). Each trigger pulse, and so each triggered frame, then has a time on the RatCam's clock in `ratcam_sync.csv`, and RatCam frames fall between them. `campy-align` (below) puts them together.
+
+### Aligning cameras after recording
+```
+campy-align ./test        # the recording's videoFolder
+```
+puts every camera on the trigger's timeline: trigger *k* is at `t_s` = (*k* − 1) × the trigger period. It writes `aligned.csv` in each camera folder (`frame`, `trigger`, `t_s`; a RatCam's `trigger` is fractional, between the pulses around the frame's start) and `alignment.json`, and prints a summary:
+- **The trigger behind each frame**, from the camera's own timestamps: a step of *n* periods means *n* − 1 triggers left no frame. Those campy dropped itself (gaps in `frametimes.npy`'s frame numbers) are counted apart from those the camera missed.
+- **Where each camera started.** With `startArduino: True` the trigger starts before the cameras do, so each camera's first frame can be a different trigger. The arrival times (`hosttimes.npy`, and `ratcam_sync.csv` for a RatCam's pulses) say by how many triggers, and the earliest camera's first trigger becomes trigger 1. A camera's frames reach the computer a few ms after its trigger; when that comes near a whole period the start could be off by one, and the summary says so. Recordings without `hosttimes.npy` (from before this version) assume every camera started on the same trigger.
+- A RatCam needs a periodic trigger on its SYNC input. A random sync train (`ratcamSyncOut`) cannot be lined up this way.
 
 ### Helpful tips
 - To debug broken ffmpeg pipe error, include this in config.yaml:
