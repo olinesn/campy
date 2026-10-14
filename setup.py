@@ -11,6 +11,7 @@ setup(
 					'numpy',
 					'pyserial',
 					'pyyaml',
+					'psutil',
 					'scikit-image',
 					'PyQt5',
 					],
@@ -22,6 +23,7 @@ setup(
 		"console_scripts": [
 			"campy-acquire = campy.campy:Main",
 			"campy-encode-sweep = campy.sweep:Main",
+			"campy-encode-quality = campy.quality:Main",
 			"campy-align = campy.align:Main",
 		]
 	}

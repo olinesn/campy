@@ -38,7 +38,8 @@ gpuID: [-1, 0, 0, 0, 0, 0, 0, 0, 0]   # the RatCam's small stream on the CPU
 gpuMake: "vaapi"
 vaapiDevice: "/dev/dri/renderD128"
 codec: "h264"
-quality: 21
+quality: 21                           # one value, or one per camera: a CRF for the RatCam's CPU
+                                      # encoder, a constant quantizer on VA-API (campy-encode-quality)
 pixelFormatOutput: "yuv420p"
 keyframeInterval: 0.5
 ffmpegPath: "/usr/bin/ffmpeg"

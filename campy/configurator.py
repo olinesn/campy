@@ -489,8 +489,10 @@ def ParseClargs(parser):
 		"--quality",
 		dest="quality",
 		type=int,
-		help="Compression quality. Lower number is less compression and larger files. \
-			'23' is visually lossless.",
+		help="Compression quality: lower is less compression and larger files. libx264/libx265 \
+			take it as a CRF, which adapts to the picture; NVENC, VA-API and AMF as a constant \
+			quantizer, which spends bits on sensor noise too, so the same number gives much larger \
+			files there. One value, or one per camera. campy-encode-quality measures each setting.",
 	)
 	parser.add_argument(
 		"--preset",
