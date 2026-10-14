@@ -1,0 +1,28 @@
+# Two simulated RatCams (nir-eye-cam's NIR eye cameras), for trying campy's
+# RatCam support without the hardware. Needs the nireyecam package:
+#   pip install -e '.[ratcam]'
+#   campy-acquire ./configs/campy_config_ratcam_sim.yaml
+#
+# Each camera gets the usual video and frametimes, plus ratcam_frames.csv and
+# ratcam_sync.csv. The simulated cameras run in separate processes, so the
+# first one's sync pulses do not reach the second; real cameras share a wire.
+
+videoFolder: "./test"
+videoFilename: "0.mp4"
+recTimeInSec: 5
+
+numCams: 2
+cameraNames: ["EyeL", "EyeR"]
+cameraMake: "ratcam"
+ratcamPorts: ["sim", "sim"]   # "None" (the default) finds real RatCams by USB
+frameRate: [20, 30]
+frameWidth: [160, 320]
+frameHeight: [120, 240]
+cameraExposureTimeInUs: 3000
+ratcamLed: 300                # IR LEDs, 0-1000; 0 = off
+ratcamSyncOut: [True, False]  # EyeL drives the random sync pulse train
+
+gpuID: -1                     # small streams: the CPU encodes them easily
+pixelFormatOutput: "yuv420p"
+displayFrameRate: 0           # no windows
+preflight: "warn"             # simulated cameras are not on the USB bus

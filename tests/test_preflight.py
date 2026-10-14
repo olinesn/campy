@@ -205,3 +205,37 @@ def test_run_modes(tmp_path, monkeypatch):
 	report = preflight.Run(systems, dict(p, preflight="warn"), root)
 	assert report.count(FAIL) == 1
 	assert preflight.Run(systems, dict(p, preflight="off"), root) is None
+
+
+def test_ratcam_usb_links(tmp_path):
+	# RatCams are USB 2 devices: the RP2040 build at full speed (about 1 MB/s),
+	# the ESP32-P4 build at high speed. Their frames are mono, whatever the config says.
+	RP2040, P4 = "2e8a", "303a"
+	root = make_sysfs(tmp_path, [
+		(CTRL_A, 3, 480, "3-1", RP2040, "E6614C311B000001", 12),
+		(CTRL_A, 3, 480, "3-2", RP2040, "E6614C311B000002", 12),
+		(CTRL_A, 3, 480, "3-3", P4, "60:55:F9:00:00:03", 480),
+		(CTRL_A, 4, 10000, "4-1", FLIR, "11", 5000),
+		])
+	p = configurator.DefaultParams()
+	p.update(numCams=4, cameraMake=["ratcam", "ratcam", "ratcam", "flir"], cameraSelection=[0, 1, 2, 0],
+		frameWidth=[160, 320, 320, 1280], frameHeight=[120, 320, 320, 1024], frameRate=[30, 30, 30, 60],
+		pixelFormatInput="rgb24")
+	p = configurator.FillCameraLists(p)
+	systems = {
+		"ratcam": {"serials": ["E6614C311B000001", "E6614C311B000002", "60:55:F9:00:00:03"]},
+		"flir": {"serials": ["11"]},
+		}
+	cams = preflight.CameraList(systems, p)
+	assert [cam["pixelFormatInput"] for cam in cams] == ["gray", "gray", "gray", "rgb24"]
+	report = preflight.Report()
+	preflight.CheckUsb(cams, p, report, root)
+	found = lines(report, "usb")
+	assert (OK, "Camera0 is connected at 12 Mb/s, which carries about 1 MB/s; it needs 0.58 MB/s (58%)") in found
+	assert any(s == FAIL and t.startswith("Camera1 is connected at 12 Mb/s") and "needs 3.07 MB/s" in t
+		and "ESP32-P4" in t for s, t in found)
+	assert any(s == OK and t.startswith("Camera2 is connected at 480 Mb/s") for s, t in found)
+	# Their USB 2 bus is checked too; the FLIR's USB 3 bus on its own
+	assert (OK, "bus 3 (0.48 Gb/s, controller {}): Camera0, Camera1, Camera2 send 6.7 of 35 MB/s (19%)"\
+		.format(CTRL_A)) in found
+	assert not any(s == FAIL for s, t in found if "Camera3" in t)

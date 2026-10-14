@@ -125,6 +125,27 @@ Every `campy-acquire` then starts with a launch check, printed before recording:
 
 With `preflight: "error"` (the default), a failed check stops campy before recording; `"warn"` records anyway; `"off"` skips the check. `displayFrameRate: 0` runs without display windows, for example over SSH.
 
+### RatCam (nir-eye-cam) cameras
+`cameraMake: "ratcam"` records the NIR eye cameras of [nir-eye-cam](https://github.com/olinesn/nir-eye-cam) (an HM01B0 on an RP2040, or a VD55G1 on an ESP32-P4) alongside the other cameras. Each is a USB serial device. Install its host package, `nireyecam` (Python 3.9 or newer), into campy's environment:
+```
+pip install -e '.[ratcam]'         # or: pip install -e <nir-eye-cam>/host
+campy-acquire ./configs/campy_config_ratcam_sim.yaml   # two simulated RatCams
+```
+`configs/campy_config_flir_ratcam.yaml` puts one next to FLIR cameras.
+
+- `cameraSelection` counts RatCams in the order of their USB serial numbers, so each keeps its index when the ports come up in another order. `ratcamPorts` lists serial ports to use instead; `"sim"` is a simulated RatCam.
+- A RatCam is not triggered: it runs at its `frameRate`, which campy reaches by setting the sensor's frame length. A rate the sensor cannot reach at that frame size stops the camera, with the highest rate it can. `cameraExposureTimeInUs` is converted to sensor lines.
+- `ratcamGain` is the firmware's analog gain code (RP2040 0-3 for 1x-8x, ESP32-P4 0-28). `ratcamLed` sets the IR LEDs (0-1000; the ESP32-P4's are on or off). They are off unless set, and campy turns them off when it closes the camera. `ratcamSyncOut: True` makes that camera drive the random sync pulse train on its SYNC_OUT.
+- Frames are 8-bit mono. They are encoded at their own size, never rescaled to a multiple of 16.
+- `frametimes.npy` holds the camera's own timestamps. Each RatCam folder also gets:
+  - `ratcam_frames.csv`: every frame grabbed, with campy's frame number, the camera's frame counter (a gap is a frame lost before campy saw it, e.g. over a slow USB link), and its timestamp in µs;
+  - `ratcam_sync.csv`: every pulse on the camera's SYNC input, timestamped on the same clock.
+
+  `metadata.csv` adds the frame rate and exposure reached, and the frames lost.
+- The launch check checks each RatCam's own USB link: the RP2040 build is USB full speed, about 1 MB/s of frames.
+
+**On the same timeline as triggered cameras:** wire the trigger line to each RatCam's SYNC input too (3.3 V: divide a 5 V trigger, e.g. 10 kΩ over 20 kΩ). Each trigger pulse, and so each triggered frame, then has a time on the RatCam's clock in `ratcam_sync.csv`, and RatCam frames fall between them. Pulse *k* is triggered frame *k* only if every RatCam is already listening at the first pulse. So start the trigger after campy reports every camera ready (`startArduino: False`; see Camera Triggering). campy does not yet line the two up for you.
+
 ### Helpful tips
 - To debug broken ffmpeg pipe error, include this in config.yaml:
 ```
