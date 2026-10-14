@@ -1,7 +1,7 @@
 """
 """
 
-import os, ast, yaml, time, logging
+import os, ast, copy, yaml, time, logging
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from campy.cameras import unicam
 
@@ -47,6 +47,13 @@ def DefaultParams():
 	params["quality"] = 21
 	params["preset"] = "None"
 	params["keyframeInterval"] = "None" # seconds between keyframes; "None" = encoder default
+	params["vaapiDevice"] = "/dev/dri/renderD128" # gpuMake "vaapi" only
+	params["writeQueueMaxSec"] = 5 # frames waiting for the encoder, in seconds; "None" = unbounded
+
+	# Launch check parameters (campy/preflight.py)
+	params["preflight"] = "error" # "error", "warn" or "off"
+	params["capacityFile"] = "None" # written by campy-encode-sweep; "None" = ~/.campy/capacity.json
+	params["usbBudgetMBps"] = "None" # per USB bus; "None" = by bus speed (see preflight.py)
 
 	# Display parameters
 	params["chunkLengthInSec"] = 5
@@ -82,20 +89,23 @@ def AutoParams(params, default_params):
 	for i in range(len(range_params)):
 		key = range_params[i]
 		default_value = default_params[key]
+		if key == "displayFrameRate" and params[key] == 0:
+			continue # 0 = no display window (headless)
 		if params[key] <= 0:
 			params[key] = default_value
 			print("{} set to invalid value in config. Setting to default ({})."\
 					.format(key, default_value))
 
-	# Handle missing config parameters
-	if "numCams" in params.keys():
-		if "cameraNames" not in params.keys():
-			params["cameraNames"] = ["Camera%s" % n for n in range(params["numCams"])]
-		if "cameraSelection" not in params.keys():
-			params["cameraSelection"] = [n for n in range(params["numCams"])]
-	else:
-		print("Please configure 'numCams' to the number of cameras you want to acquire.")
+	return params
 
+
+def FillCameraLists(params):
+	# Name and select cameras the config does not list. Runs after command-line
+	# overrides, so --numCams changes how many cameras get a name.
+	if "cameraNames" not in params.keys():
+		params["cameraNames"] = ["Camera%s" % n for n in range(params["numCams"])]
+	if "cameraSelection" not in params.keys():
+		params["cameraSelection"] = [n for n in range(params["numCams"])]
 	return params
 
 
@@ -104,9 +114,10 @@ def ConfigureParams():
 						formatter_class=ArgumentDefaultsHelpFormatter,)
 	clargs = ParseClargs(parser)
 	params = CombineConfigAndClargs(clargs)
+	ValidateCameraLists(params)
 
 	# Optionally, user can manually set path to find ffmpeg binary.
-	if params["ffmpegPath"] is not "None":
+	if params["ffmpegPath"] != "None":
 		os.environ["IMAGEIO_FFMPEG_EXE"] = params["ffmpegPath"]
 
 	return params
@@ -131,19 +142,51 @@ def ConfigureCamParams(systems, params, n_cam):
 	return cam_params
 
 
+# Lists that are not one value per camera
+NON_CAMERA_LISTS = ("digitalPins",)
+# Lists that need a value for every camera: one name or index cannot be shared
+EVERY_CAMERA_LISTS = ("cameraNames", "cameraSelection")
+
+
 def OptParams(cam_params):
-	# Optionally, user provides a single string or a list of strings, equal in size to numCams
-	# String is passed to all cameras. Else, each list item is passed to its respective camera
+	# A single value applies to every camera. A list holds one value per camera,
+	# in camera order; a one-item list applies to every camera, and a list longer
+	# than numCams uses its first numCams items, so a config written for more
+	# cameras also runs with fewer (ValidateCameraLists checks this at startup).
 	for key in cam_params:
-		if type(cam_params[key]) is list:
-			if len(cam_params[key]) == cam_params["numCams"]:
-				cam_params[key] = cam_params[key][cam_params["n_cam"]]
-			elif key == "digitalPins":
-				continue
+		if type(cam_params[key]) is list and key not in NON_CAMERA_LISTS:
+			values = cam_params[key]
+			if len(values) == 1 and key not in EVERY_CAMERA_LISTS:
+				cam_params[key] = values[0]
 			else:
-				logging.warning("{} size mismatch with numCams. Using list idx {}."\
-						.format(key,cam_params["n_cam"]))
-				cam_params[key] = cam_params[key][cam_params["n_cam"]]
+				cam_params[key] = values[cam_params["n_cam"]]
+	return cam_params
+
+
+def ValidateCameraLists(params):
+	# Per-camera lists must cover every camera, so changing numCams fails here
+	# with the key's name rather than in a camera process.
+	num_cams = params["numCams"]
+	for key, value in params.items():
+		if type(value) is not list or key in NON_CAMERA_LISTS:
+			continue
+		if key in EVERY_CAMERA_LISTS and len(value) < num_cams:
+			raise ValueError("{} has {} values for {} cameras. It needs one per camera."\
+				.format(key, len(value), num_cams))
+		if 1 < len(value) < num_cams:
+			raise ValueError("{} has {} values for {} cameras. Give one value per camera, "
+				"or a single value for all of them.".format(key, len(value), num_cams))
+		if len(value) > num_cams:
+			print("{} lists {} values; using the first {} (numCams).".format(key, len(value), num_cams))
+
+
+def CameraParams(params, n_cam):
+	# One camera's parameters, without opening its device: what OptParams gives
+	# the camera's process. For checks that run before any camera starts.
+	cam_params = copy.deepcopy(params)
+	cam_params["n_cam"] = n_cam
+	cam_params = OptParams(cam_params)
+	cam_params["cameraName"] = cam_params["cameraNames"]
 	return cam_params
 
 
@@ -186,6 +229,7 @@ def CombineConfigAndClargs(clargs):
 	for key, value in clargs.__dict__.items():
 		if value is not None:
 			params[key] = value
+	params = FillCameraLists(params)
 	return params
 
 
@@ -347,7 +391,38 @@ def ParseClargs(parser):
 		"--gpuMake",
 		dest="gpuMake",
 		type=ast.literal_eval,
-		help="Company that produced the GPU. Currently supported: 'nvidia', 'amd', 'intel' (QuickSync).",
+		help="Company that produced the GPU. Currently supported: 'nvidia', 'amd', 'intel' (QuickSync), \
+			'vaapi' (Linux VA-API: AMD through Mesa, or Intel).",
+	)
+	parser.add_argument(
+		"--vaapiDevice",
+		dest="vaapiDevice",
+		help="VA-API render device for gpuMake 'vaapi' (default: /dev/dri/renderD128).",
+	)
+	parser.add_argument(
+		"--writeQueueMaxSec",
+		dest="writeQueueMaxSec",
+		type=float,
+		help="Most frames held waiting for the encoder, in seconds of video. When the encoder \
+			falls this far behind, new frames are dropped and counted (frametimes.npy shows the \
+			gaps, metadata.csv the count) instead of filling memory. 'None' = unbounded.",
+	)
+	parser.add_argument(
+		"--preflight",
+		dest="preflight",
+		help="Launch check of USB bandwidth, encoder capacity and disk: 'error' (stop if the \
+			configuration does not fit), 'warn' (report only) or 'off'.",
+	)
+	parser.add_argument(
+		"--capacityFile",
+		dest="capacityFile",
+		help="Encoder capacity table written by campy-encode-sweep (default: ~/.campy/capacity.json).",
+	)
+	parser.add_argument(
+		"--usbBudgetMBps",
+		dest="usbBudgetMBps",
+		type=float,
+		help="Most camera data per USB bus, in MB/s, for the launch check. Default: by bus speed.",
 	)
 	parser.add_argument(
 		"--codec",
@@ -389,7 +464,7 @@ def ParseClargs(parser):
 		"--displayFrameRate",
 		dest="displayFrameRate",
 		type=float,
-		help="Display frame rate in Hz. Max ~30.",
+		help="Display frame rate in Hz. Max ~30. 0 = no display window (headless).",
 	)
 	parser.add_argument(
 		"--displayDownsample",

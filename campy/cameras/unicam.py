@@ -104,7 +104,31 @@ def GrabData(cam_params):
 	grabdata["numImagesToGrab"] = int(round(cam_params["recTimeInSec"]*cam_params["frameRate"]))
 	grabdata["chunkLengthInFrames"] = int(round(cam_params["chunkLengthInSec"]*cam_params["frameRate"]))
 
+	# Frames dropped because the encoder fell behind (see DropFrame)
+	grabdata["framesDropped"] = 0
+	grabdata["lastDropReport"] = float("-inf")
+
 	return grabdata
+
+
+def MaxQueueFrames(cam_params):
+	# writeQueueMaxSec as a number of frames; None = unbounded
+	max_sec = cam_params.get("writeQueueMaxSec", "None")
+	if max_sec is None or str(max_sec) == "None":
+		return None
+	return max(1, int(round(float(max_sec) * cam_params["frameRate"])))
+
+
+def DropFrame(grabdata, frameNumber, maxQueue):
+	# The writer is maxQueue frames behind, so this frame is counted instead of
+	# queued. Its frame number is left out of grabdata: frametimes.npy keeps one
+	# row per video frame, and the gap in frameNumber marks the drop.
+	grabdata["framesDropped"] += 1
+	now = time.perf_counter()
+	if now - grabdata["lastDropReport"] >= 5:
+		grabdata["lastDropReport"] = now
+		print("{}: the encoder is {} frames behind. Dropped {} frames so far (latest: frame {})."\
+			.format(grabdata["cameraName"], maxQueue, grabdata["framesDropped"], frameNumber), flush=True)
 
 
 def StartGrabbing(camera, cam_params, cam):
@@ -132,6 +156,7 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue)
 
 	# Create dictionary for appending frame number and timestamp information
 	grabdata = GrabData(cam_params)
+	maxQueue = MaxQueueFrames(cam_params)
 
 	# Start grabbing frames from the camera
 	grabbing = StartGrabbing(camera, cam_params, cam)
@@ -141,16 +166,18 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue)
 		try:
 			# Grab image from camera buffer if available
 			grabResult = cam.GrabFrame(camera, frameNumber)
-
-			# Append numpy array to writeQueue for writer to append to file
 			img = cam.GetImageArray(grabResult)
-			writeQueue.append(img)
-
-			# Append timeStamp and frameNumber to grabdata
-			frameNumber += 1
-			grabdata['frameNumber'].append(frameNumber) # first frame = 1
+			frameNumber += 1 # first frame = 1
 			timeStamp = cam.GetTimeStamp(grabResult)
-			grabdata['timeStamp'].append(timeStamp)
+
+			# Queue the frame for the writer, with its frameNumber and timeStamp,
+			# unless the writer is writeQueueMaxSec behind
+			if maxQueue is None or len(writeQueue) < maxQueue:
+				writeQueue.append(img)
+				grabdata['frameNumber'].append(frameNumber)
+				grabdata['timeStamp'].append(timeStamp)
+			else:
+				DropFrame(grabdata, frameNumber, maxQueue)
 
 			# Display converted, downsampled image in the Window
 			if frameNumber % grabdata["frameRatio"] == 0:
@@ -169,6 +196,7 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue)
 			time.sleep(0.001)
 
 	# Close the camaera, save metadata, and tell writer and display to close
+	grabdata["framesGrabbed"] = frameNumber
 	cam.CloseCamera(cam_params, camera)
 	SaveMetadata(cam_params, grabdata)
 	if not sys.platform=='win32' or not cam_params['cameraMake'] == 'basler':
@@ -185,10 +213,13 @@ def SaveMetadata(cam_params, grabdata):
 		grabdata["timeStamp"] = [i - timeFirstGrab for i in grabdata["timeStamp"]]
 
 		# Get the frame and time counts to save into metadata
-		frame_count = grabdata['frameNumber'][-1]
+		frame_count = grabdata.get('framesGrabbed', grabdata['frameNumber'][-1])
 		time_count = grabdata['timeStamp'][-1]
 		fps_count = int(round(frame_count/time_count))
 		print('{} saved {} frames at {} fps.'.format(cam_params["cameraName"], frame_count, fps_count))
+		if grabdata["framesDropped"]:
+			print('{} dropped {} of them: the encoder fell more than {} s behind (writeQueueMaxSec).'\
+				.format(cam_params["cameraName"], grabdata["framesDropped"], cam_params["writeQueueMaxSec"]))
 
 		meta = cam_params
 
@@ -206,8 +237,10 @@ def SaveMetadata(cam_params, grabdata):
 
 		# Save parameters and recording metadata to csv spreadsheet
 		csv_filename = os.path.join(full_folder_name, 'metadata.csv')
-		meta['totalFrames'] = grabdata['frameNumber'][-1]
+		meta['totalFrames'] = frame_count
 		meta['totalTime'] = grabdata['timeStamp'][-1]
+		meta['framesWritten'] = len(grabdata['frameNumber'])
+		meta['framesDropped'] = grabdata['framesDropped']
 		
 		with open(csv_filename, 'w', newline='') as f:
 			w = csv.writer(f, delimiter=',', quoting=csv.QUOTE_ALL)

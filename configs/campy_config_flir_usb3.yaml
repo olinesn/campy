@@ -1,0 +1,49 @@
+# FLIR Blackfly S USB3 cameras (e.g. BFS-U3-13Y3M: 1280x1024, mono) on Linux,
+# hardware-triggered at 60 fps and encoded on the GPU through VA-API (AMD
+# through Mesa, or Intel). Set numCams to the number of cameras: nothing else
+# here depends on it, so the same file runs a 4-camera and an 8-camera rig.
+#
+# Once per computer, measure how many cameras each encoder keeps up with:
+#   campy-encode-sweep --config configs/campy_config_flir_usb3.yaml \
+#       --encoder vaapi --encoder cpu:veryfast --streams 1,2,4,6,8
+# Every recording is then checked against that table, and against each USB
+# bus's load, before it starts. If the GPU keeps up with fewer cameras than you
+# have, give the rest the CPU, one value per camera:
+#   gpuID: [0, 0, 0, 0, -1, -1, -1, -1]
+
+# Recording parameters
+videoFolder: "./test"
+videoFilename: "0.mp4"
+frameRate: 60
+recTimeInSec: 600
+
+# Camera parameters
+numCams: 4
+cameraMake: "flir"
+frameWidth: 1280
+frameHeight: 1024
+pixelFormatInput: "gray"              # Mono8
+cameraTrigger: "Line0"                # trigger input line; "None" to free-run
+
+# Compression parameters
+gpuID: 0
+gpuMake: "vaapi"
+vaapiDevice: "/dev/dri/renderD128"    # ls /dev/dri lists the render nodes
+codec: "h264"
+quality: 21
+pixelFormatOutput: "yuv420p"          # 4:2:0: what every decoder supports
+keyframeInterval: 0.5                 # seconds; makes seeking cheap
+ffmpegPath: "/usr/bin/ffmpeg"         # Ubuntu's ffmpeg, built with VA-API
+ffmpegLogLevel: "warning"
+writeQueueMaxSec: 5                   # drop (and count) frames past this backlog
+
+# Launch check
+preflight: "error"                    # "warn" records even when a check fails
+
+# Display parameters
+displayFrameRate: 10                  # 0 = no display windows (headless)
+
+# Trigger parameters
+startArduino: True
+serialPort: "/dev/ttyACM0"
+digitalPins: [2,3,4,5,6,7,8,9]        # trigger pins; several cameras may share one

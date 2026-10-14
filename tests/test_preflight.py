@@ -1,0 +1,207 @@
+"""Launch check, against a fake sysfs USB tree and a hand-written capacity table."""
+
+import os
+import socket
+import types
+
+import pytest
+
+from campy import configurator, preflight
+from campy.preflight import OK, WARN, FAIL
+
+CTRL_A = "0000:c4:00.3"
+CTRL_B = "0000:c6:00.4"
+FLIR = "1e10"
+
+
+def make_sysfs(root, devices):
+	"""
+	devices: (controller, bus, bus_speed, name, vendor, serial, speed). Lays
+	them out as the kernel does: device directories under their root hub
+	under the PCI controller, and links to all of them in bus/usb/devices.
+	"""
+	links = root / "bus" / "usb" / "devices"
+	links.mkdir(parents=True)
+	hubs = {}
+	for controller, bus, bus_speed, name, vendor, serial, speed in devices:
+		hub = root / "devices" / "pci0000:00" / "0000:00:08.1" / controller / "usb{}".format(bus)
+		if hub not in hubs.values():
+			hub.mkdir(parents=True)
+			(hub / "speed").write_text("{}\n".format(bus_speed))
+			(hub / "idVendor").write_text("1d6b\n")
+			os.symlink(hub, links / "usb{}".format(bus))
+		hubs[bus] = hub
+		dev = hub / name
+		dev.mkdir()
+		for attr, value in (("idVendor", vendor), ("idProduct", "1234"), ("speed", speed),
+				("busnum", bus)):
+			(dev / attr).write_text("{}\n".format(value))
+		if serial is not None:
+			(dev / "serial").write_text("{}\n".format(serial))
+		(dev / (name + ":1.0")).mkdir() # an interface: not a device
+		os.symlink(dev, links / name)
+		os.symlink(dev / (name + ":1.0"), links / (name + ":1.0"))
+	return str(root)
+
+
+def cameras(serials, **values):
+	p = configurator.DefaultParams()
+	p.update(numCams=len(serials), cameraMake="flir", frameWidth=1280, frameHeight=1024,
+		frameRate=60, pixelFormatInput="gray", pixelFormatOutput="yuv420p", preset="veryfast")
+	p.update(values)
+	p = configurator.FillCameraLists(p)
+	systems = {"flir": {"serials": list(serials)}}
+	return p, preflight.CameraList(systems, p)
+
+
+def lines(report, check=None):
+	return [(s, t) for s, c, t in report.lines if check is None or c == check]
+
+
+def test_bytes_per_camera():
+	_, cams = cameras(["1"])
+	assert preflight.CameraBytesPerSec(cams[0]) == 1280 * 1024 * 60
+	assert preflight.BytesPerPixel("bayer_rggb8") == 1
+	assert preflight.BytesPerPixel("rgb24") == 3
+	assert preflight.BytesPerPixel("mystery") is None
+
+
+def test_serials_match():
+	assert preflight.SerialsMatch("21025699", "21025699")
+	assert preflight.SerialsMatch("21025699", "0140D3A3") # the same number in hex
+	assert preflight.SerialsMatch("0021025699", "21025699")
+	assert not preflight.SerialsMatch("21025699", "21025698")
+	assert not preflight.SerialsMatch(None, "21025699")
+
+
+def test_list_usb_devices(tmp_path):
+	root = make_sysfs(tmp_path, [
+		(CTRL_A, 4, 10000, "4-1", FLIR, "11", 5000),
+		(CTRL_B, 5, 5000, "5-2", "046d", None, 480),
+		])
+	devices = {d["name"]: d for d in preflight.ListUsbDevices(root)}
+	assert set(devices) == {"4-1", "5-2"} # no root hubs, no interfaces
+	assert devices["4-1"]["controller"] == CTRL_A
+	assert devices["4-1"]["bus"] == 4
+	assert devices["4-1"]["bus_speed"] == 10000
+	assert devices["4-1"]["speed"] == 5000
+	assert devices["5-2"]["serial"] is None
+
+
+def test_usb_loads_per_bus(tmp_path):
+	root = make_sysfs(tmp_path, [
+		(CTRL_A, 4, 10000, "4-1", FLIR, "11", 5000),
+		(CTRL_A, 4, 10000, "4-2", FLIR, "12", 5000),
+		(CTRL_B, 5, 5000, "5-1", FLIR, "0140D3A3", 5000), # serial 21025699 in hex
+		(CTRL_A, 3, 480, "3-1", FLIR, "14", 480), # a camera on a USB 2 link
+		])
+	p, cams = cameras(["11", "12", "21025699", "14", "99"])
+	report = preflight.Report()
+	preflight.CheckUsb(cams, p, report, root)
+	found = lines(report, "usb")
+	# 2 cameras on the 10 Gb/s bus: 157 of 600 MB/s
+	assert (OK, "bus 4 (10 Gb/s, controller {}): Camera0, Camera1 send 157 of 600 MB/s (26%)".format(CTRL_A)) in found
+	assert any(s == OK and "bus 5" in t and "Camera2" in t for s, t in found)
+	assert any(s == FAIL and "Camera3 is connected at 480 Mb/s" in t for s, t in found)
+	assert any(s == WARN and "Camera4 (serial 99) is not on the USB bus" in t for s, t in found)
+
+
+def test_usb_bus_over_budget(tmp_path):
+	# 5 cameras at 79 MB/s on one 5 Gb/s bus: 393 MB/s of a 300 MB/s budget
+	root = make_sysfs(tmp_path, [(CTRL_B, 5, 5000, "5-{}".format(i), FLIR, str(i), 5000) for i in range(1, 6)])
+	p, cams = cameras([str(i) for i in range(1, 6)])
+	report = preflight.Report()
+	preflight.CheckUsb(cams, p, report, root)
+	assert [s for s, _ in lines(report, "usb")] == [FAIL]
+	assert "393 of 300 MB/s" in lines(report, "usb")[0][1]
+
+	p["usbBudgetMBps"] = 500 # measured on this rig: the bus moves more
+	report = preflight.Report()
+	preflight.CheckUsb(cams, p, report, root)
+	assert [s for s, _ in lines(report, "usb")] == [OK]
+
+
+def test_usb_check_needs_sysfs(tmp_path):
+	p, cams = cameras(["1"])
+	report = preflight.Report()
+	preflight.CheckUsb(cams, p, report, str(tmp_path / "nothing"))
+	assert lines(report) == [(WARN, "USB bandwidth not checked: it is read from Linux's sysfs.")]
+
+
+TABLE = {
+	"host": {"hostname": socket.gethostname()},
+	"entries": [{
+		"key": "libx264/veryfast", "width": 1280, "height": 1024, "fps": 60.0,
+		"pix_fmt_in": "gray", "pix_fmt_out": "yuv420p", "headroom": 1.25,
+		"max_streams": 6, "max_tested": 8, "max_mpx_s": 471.9, "bitrate_mbps": 4.0,
+		}],
+	}
+
+
+def test_capacity_fits_and_fails():
+	report = preflight.Report()
+	preflight.CheckCapacity(cameras(list("1234"))[1], TABLE, report, "t.json")
+	assert lines(report) == [(OK, "libx264/veryfast: 4 cameras at 1280x1024 60 fps; measured to keep up with 6 (x1.25 headroom)")]
+
+	report = preflight.Report()
+	preflight.CheckCapacity(cameras(list("12345678"))[1], TABLE, report, "t.json")
+	assert lines(report)[0][0] == FAIL
+
+
+def test_capacity_estimated_for_other_rates():
+	report = preflight.Report()
+	preflight.CheckCapacity(cameras(list("1234"), frameRate=30)[1], TABLE, report, "t.json")
+	status, text = lines(report)[0]
+	assert status == OK and "need 157 Mpx/s" in text and "estimate" in text
+
+
+def test_capacity_unmeasured_and_mixed():
+	_, cams = cameras(list("1234"), gpuID=[-1, -1, 0, 0], gpuMake="vaapi")
+	report = preflight.Report()
+	preflight.CheckCapacity(cams, TABLE, report, "t.json")
+	found = lines(report)
+	assert any(s == WARN and t.startswith("h264_vaapi was not measured") for s, t in found)
+	assert any(s == WARN and "measured one at a time" in t for s, t in found)
+
+	report = preflight.Report()
+	preflight.CheckCapacity(cams, None, report, "t.json")
+	assert lines(report)[0][0] == WARN and "campy-encode-sweep" in lines(report)[0][1]
+
+
+def test_encoder_check():
+	_, cams = cameras(list("12"), gpuID=[-1, 0], gpuMake="vaapi", vaapiDevice="/nonexistent/renderD128")
+	report = preflight.Report()
+	preflight.CheckEncoders(cams, report, exe="ffmpeg", encoders={"libx264"})
+	found = lines(report)
+	assert (OK, "libx264 for Camera0") in found
+	assert any(s == FAIL and "has no h264_vaapi encoder" in t for s, t in found)
+	assert any(s == FAIL and "/nonexistent/renderD128 does not exist" in t for s, t in found)
+
+
+def test_disk_estimate(tmp_path, monkeypatch):
+	usage = types.SimpleNamespace(free=10e9)
+	monkeypatch.setattr(preflight.shutil, "disk_usage", lambda path: usage)
+	folder = str(tmp_path / "new" / "session") # does not exist yet
+	# 4 cameras x 4 Mbit/s: 1 h is 7.2 GB, 4500 s is 9 GB, 6000 s is 12 GB of 10 GB free
+	for seconds, status in ((3600, OK), (4500, WARN), (6000, FAIL)):
+		p, cams = cameras(list("1234"), videoFolder=folder, recTimeInSec=seconds)
+		report = preflight.Report()
+		preflight.CheckDisk(cams, p, TABLE, report)
+		assert lines(report)[0][0] == status, seconds
+
+	report = preflight.Report()
+	preflight.CheckDisk(cams, p, None, report)
+	assert lines(report)[0][0] == OK and "not estimated" in lines(report)[0][1]
+
+
+def test_run_modes(tmp_path, monkeypatch):
+	root = make_sysfs(tmp_path, [(CTRL_A, 3, 480, "3-1", FLIR, "1", 480)]) # a USB 2 link
+	monkeypatch.setattr(preflight, "CheckEncoders", lambda cams, report: None)
+	p, _ = cameras(["1"], capacityFile=str(tmp_path / "none.json"), videoFolder=str(tmp_path))
+	systems = {"flir": {"serials": ["1"]}}
+
+	with pytest.raises(preflight.PreflightError, match="1 check failed"):
+		preflight.Run(systems, dict(p, preflight="error"), root)
+	report = preflight.Run(systems, dict(p, preflight="warn"), root)
+	assert report.count(FAIL) == 1
+	assert preflight.Run(systems, dict(p, preflight="off"), root) is None
