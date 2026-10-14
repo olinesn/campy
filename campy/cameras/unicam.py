@@ -91,6 +91,7 @@ def GetMakeList(params):
 def GrabData(cam_params):
 	grabdata = {}
 	grabdata["timeStamp"] = []
+	grabdata["hostTime"] = [] # the computer's clock when each frame arrived (campy-align)
 	grabdata["frameNumber"] = []
 	grabdata["cameraName"] = cam_params["cameraName"]
 
@@ -168,6 +169,7 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue)
 		try:
 			# Grab image from camera buffer if available
 			grabResult = cam.GrabFrame(camera, frameNumber)
+			hostTime = time.monotonic_ns()
 			img = cam.GetImageArray(grabResult)
 			frameNumber += 1 # first frame = 1
 			timeStamp = cam.GetTimeStamp(grabResult)
@@ -178,6 +180,7 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue)
 				writeQueue.append(img)
 				grabdata['frameNumber'].append(frameNumber)
 				grabdata['timeStamp'].append(timeStamp)
+				grabdata['hostTime'].append(hostTime)
 			else:
 				DropFrame(grabdata, frameNumber, maxQueue)
 
@@ -229,6 +232,10 @@ def SaveMetadata(cam_params, grabdata):
 		npy_filename = os.path.join(full_folder_name, 'frametimes.npy')
 		x = np.array([grabdata['frameNumber'], grabdata['timeStamp']])
 		np.save(npy_filename,x)
+
+		# When each of those frames reached the computer (time.monotonic_ns, one
+		# clock for every camera process): campy-align compares cameras with it
+		np.save(os.path.join(full_folder_name, 'hosttimes.npy'), np.array(grabdata['hostTime'], dtype=np.int64))
 
 		# Also save frame data to MATLAB file
 		mat_filename = os.path.join(full_folder_name, 'frametimes.mat')

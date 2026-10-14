@@ -101,7 +101,8 @@ def test_ratcam_ports_are_not_per_camera():
 
 def test_flir_ratcam_example_config(monkeypatch, capsys):
 	# The example lists 9 cameras and runs 5: the RatCam and four FLIRs
-	monkeypatch.setattr(sys, "argv", ["campy-acquire", "configs/campy_config_flir_ratcam.yaml"])
+	config = os.path.join(os.path.dirname(__file__), "..", "configs", "campy_config_flir_ratcam.yaml")
+	monkeypatch.setattr(sys, "argv", ["campy-acquire", config]) # wherever pytest runs from
 	# The config's ffmpegPath sets IMAGEIO_FFMPEG_EXE: keep it out of the real environment
 	monkeypatch.setattr(os, "environ", dict(os.environ))
 	p = configurator.ConfigureParams()
