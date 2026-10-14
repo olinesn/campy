@@ -14,6 +14,10 @@ setup(
 					'scikit-image',
 					'PyQt5',
 					],
+	extras_require={
+		# RatCam (cameraMake "ratcam"): the host package of nir-eye-cam
+		"ratcam": ["nireyecam @ git+https://github.com/olinesn/nir-eye-cam.git#subdirectory=host"],
+	},
 	entry_points={
 		"console_scripts": [
 			"campy-acquire = campy.campy:Main",

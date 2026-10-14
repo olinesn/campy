@@ -137,6 +137,12 @@ def EncoderArgs(cam_params):
 	# intervals make seeking and sparse frame sampling much cheaper (0.5 s: what
 	# LUCID's image ID-switch check needs to decode only keyframes) at the cost of
 	# larger files (~+50% for HEVC at a fixed QP).
+	# imageio-ffmpeg rescales a frame whose sides are not multiples of
+	# macro_block_size, which would stretch a RatCam's 160x120 to 160x128.
+	# Even sides are all 4:2:0 needs, and every RatCam size is even.
+	if cam_params.get("cameraMake") == "ratcam" and macro_block_size > 1:
+		macro_block_size = 2
+
 	keyframe_interval = str(cam_params.get("keyframeInterval", "None"))
 	if keyframe_interval != "None":
 		gop = max(1, int(round(float(cam_params["frameRate"]) * float(keyframe_interval))))

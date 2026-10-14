@@ -36,6 +36,12 @@ def DefaultParams():
 	params["cameraGain"] = 1
 	params["disableGamma"] = True
 
+	# RatCam (nir-eye-cam) parameters: see campy/cameras/ratcam.py
+	params["ratcamPorts"] = "None" # "None" = find RatCams by USB; or a list of ports, "sim" = simulated
+	params["ratcamGain"] = 0 # analog gain code (AGAIN): RP2040 0-3, ESP32-P4 0-28
+	params["ratcamLed"] = 0 # IR LED level 0-1000 (ESP32-P4: on/off); 0 = off
+	params["ratcamSyncOut"] = False # drive the random sync pulse train on SYNC_OUT
+
 	# Compression default parameters
 	params["ffmpegLogLevel"] = "quiet"
 	params["ffmpegPath"] = "None" # "/home/usr/Documents/ffmpeg/ffmpeg"
@@ -86,15 +92,20 @@ def AutoParams(params, default_params):
 		"displayDownsample",
 		]
 
-	for i in range(len(range_params)):
-		key = range_params[i]
+	for key in range_params:
 		default_value = default_params[key]
-		if key == "displayFrameRate" and params[key] == 0:
-			continue # 0 = no display window (headless)
-		if params[key] <= 0:
-			params[key] = default_value
-			print("{} set to invalid value in config. Setting to default ({})."\
-					.format(key, default_value))
+		# One value, or one per camera: check each
+		values = params[key] if isinstance(params[key], list) else [params[key]]
+		fixed = []
+		for value in values:
+			if key == "displayFrameRate" and value == 0:
+				pass # 0 = no display window (headless)
+			elif value <= 0:
+				value = default_value
+				print("{} set to invalid value in config. Setting to default ({})."\
+						.format(key, default_value))
+			fixed.append(value)
+		params[key] = fixed if isinstance(params[key], list) else fixed[0]
 
 	return params
 
@@ -115,6 +126,8 @@ def ConfigureParams():
 	clargs = ParseClargs(parser)
 	params = CombineConfigAndClargs(clargs)
 	ValidateCameraLists(params)
+	if params["startArduino"]:
+		TriggerFrameRate(params) # fails here, with the reason, if the rates disagree
 
 	# Optionally, user can manually set path to find ffmpeg binary.
 	if params["ffmpegPath"] != "None":
@@ -143,7 +156,7 @@ def ConfigureCamParams(systems, params, n_cam):
 
 
 # Lists that are not one value per camera
-NON_CAMERA_LISTS = ("digitalPins",)
+NON_CAMERA_LISTS = ("digitalPins", "ratcamPorts")
 # Lists that need a value for every camera: one name or index cannot be shared
 EVERY_CAMERA_LISTS = ("cameraNames", "cameraSelection")
 
@@ -178,6 +191,20 @@ def ValidateCameraLists(params):
 				"or a single value for all of them.".format(key, len(value), num_cams))
 		if len(value) > num_cams:
 			print("{} lists {} values; using the first {} (numCams).".format(key, len(value), num_cams))
+
+
+def TriggerFrameRate(params):
+	# The rate the trigger controller pulses at: the frame rate of the cameras it
+	# triggers (cameraTrigger set), or of every camera if none is set. With one
+	# frame rate per camera (a RatCam free-runs at its own), those must agree.
+	cams = [CameraParams(params, n) for n in range(params["numCams"])]
+	triggered = [cam for cam in cams if str(cam["cameraTrigger"]) != "None"] or cams
+	rates = sorted(set(float(cam["frameRate"]) for cam in triggered))
+	if len(rates) > 1:
+		raise ValueError("The trigger controller pulses at one rate, but the triggered cameras have "
+			"frame rates {}. Give them one frameRate, or set cameraTrigger \"None\" on the cameras "
+			"it does not trigger.".format(", ".join("{:g}".format(r) for r in rates)))
+	return int(rates[0]) if rates[0].is_integer() else rates[0]
 
 
 def CameraParams(params, n_cam):
@@ -286,7 +313,8 @@ def ParseClargs(parser):
 		"--cameraMake", 
 		dest="cameraMake", 
 		type=ast.literal_eval,
-		help="Company that produced the camera. Currently supported: 'basler', 'flir'.",
+		help="Company that produced the camera. Currently supported: 'basler', 'flir', 'ratcam' \
+			(nir-eye-cam), 'emu' (plays a video file).",
 	)
 	parser.add_argument(
 		"--cameraSettings", 
@@ -353,6 +381,33 @@ def ParseClargs(parser):
 		dest="bufferSize",
 		type=int, 
 		help="Size of buffer to use in camera in frames (default: 100).",
+	)
+
+	# RatCam (nir-eye-cam) arguments
+	parser.add_argument(
+		"--ratcamPorts",
+		dest="ratcamPorts",
+		type=ast.literal_eval,
+		help="RatCam serial ports, e.g. ['/dev/ttyACM1']; 'sim' is a simulated camera. \
+			Default: every RatCam found by USB, in order of serial number.",
+	)
+	parser.add_argument(
+		"--ratcamGain",
+		dest="ratcamGain",
+		type=int,
+		help="RatCam analog gain code (the firmware's AGAIN): RP2040 0-3 (1x-8x), ESP32-P4 0-28.",
+	)
+	parser.add_argument(
+		"--ratcamLed",
+		dest="ratcamLed",
+		type=int,
+		help="RatCam IR LED level, 0-1000 (ESP32-P4: on or off). 0 (the default) = off.",
+	)
+	parser.add_argument(
+		"--ratcamSyncOut",
+		dest="ratcamSyncOut",
+		type=ast.literal_eval, # so that False is False, not the non-empty string "False"
+		help="Drive the random sync pulse train on this RatCam's SYNC_OUT (one camera per rig).",
 	)
 
 	# ffmpeg arguments

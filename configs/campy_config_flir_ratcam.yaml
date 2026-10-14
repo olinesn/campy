@@ -1,0 +1,57 @@
+# FLIR Blackfly S USB3 cameras plus a RatCam (nir-eye-cam's NIR eye camera),
+# on Linux. The RatCam comes first in every list, so a smaller numCams drops
+# FLIR cameras and keeps it: a list longer than numCams uses its first values.
+#
+# The FLIRs are triggered at 60 fps. The RatCam runs at its own frameRate,
+# reached through its sensor's frame length, and timestamps its frames and
+# every pulse on its SYNC input on its own clock. To put it on the FLIRs'
+# timeline, wire the trigger line to its SYNC input too (README: RatCam).
+#
+# A RatCam's USB link limits its frames (8-bit mono). The RP2040 build is USB
+# full speed, about 1 MB/s: 160x120 runs up to ~50 fps, 320x320 up to ~10.
+# The ESP32-P4 build is USB high speed. The launch check flags a rate that
+# does not fit.
+
+# Recording parameters
+videoFolder: "./test"
+videoFilename: "0.mp4"
+recTimeInSec: 600
+
+# Cameras: one value for all, or one per camera, the RatCam first
+numCams: 5
+cameraNames: ["Eye", "Cam0", "Cam1", "Cam2", "Cam3", "Cam4", "Cam5", "Cam6", "Cam7"]
+cameraMake: ["ratcam", "flir", "flir", "flir", "flir", "flir", "flir", "flir", "flir"]
+cameraSelection: [0, 0, 1, 2, 3, 4, 5, 6, 7]   # index among the cameras of the same make
+frameRate: [30, 60, 60, 60, 60, 60, 60, 60, 60]
+frameWidth: [160, 1280, 1280, 1280, 1280, 1280, 1280, 1280, 1280]
+frameHeight: [120, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024]
+pixelFormatInput: "gray"                         # Mono8; a RatCam is always mono
+cameraTrigger: ["None", "Line0", "Line0", "Line0", "Line0", "Line0", "Line0", "Line0", "Line0"]
+cameraExposureTimeInUs: [10000, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500]
+
+# RatCam parameters (other cameras ignore them)
+ratcamLed: 300                        # IR LED level 0-1000; 0 = off
+ratcamGain: 0                         # AGAIN code: RP2040 0-3, ESP32-P4 0-28
+
+# Compression parameters
+gpuID: [-1, 0, 0, 0, 0, 0, 0, 0, 0]   # the RatCam's small stream on the CPU
+gpuMake: "vaapi"
+vaapiDevice: "/dev/dri/renderD128"
+codec: "h264"
+quality: 21
+pixelFormatOutput: "yuv420p"
+keyframeInterval: 0.5
+ffmpegPath: "/usr/bin/ffmpeg"
+ffmpegLogLevel: "warning"
+writeQueueMaxSec: 5
+
+# Launch check
+preflight: "error"
+
+# Display parameters
+displayFrameRate: 10
+
+# Trigger parameters: the controller pulses at the triggered cameras' 60 fps
+startArduino: True
+serialPort: "/dev/ttyACM0"
+digitalPins: [2,3,4,5,6,7,8,9]

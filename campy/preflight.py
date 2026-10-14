@@ -25,6 +25,7 @@ import os, re, sys, json, shutil, socket, subprocess
 from collections import OrderedDict
 
 from campy import writer, configurator
+from campy.cameras import ratcam
 
 
 class PreflightError(Exception):
@@ -40,7 +41,12 @@ WARN_FRACTION = 0.8
 USB_VENDOR_IDS = {
 	"flir": ("1e10",), # FLIR / Point Grey
 	"basler": ("2676",),
+	"ratcam": ("2e8a", "303a"), # nir-eye-cam: RP2040 (Raspberry Pi's ID), ESP32-P4 (Espressif's)
 }
+
+# Makes that need a USB 3 link. A RatCam is a USB 2 device: the RP2040 build
+# runs at full speed (12 Mb/s), the ESP32-P4 build at high speed (480 Mb/s).
+USB3_MAKES = ("flir", "basler")
 
 # Camera data one USB bus may carry, in MB/s, by the bus speed in Mb/s: about
 # 75% of what a bus moves in practice, so a camera's bursts have room. VERIFY
@@ -117,6 +123,8 @@ def CameraList(systems, params):
 	cams = []
 	for n in range(params["numCams"]):
 		cam = configurator.CameraParams(params, n)
+		if cam["cameraMake"] == "ratcam":
+			cam = ratcam.FixedParams(cam)
 		serials = systems.get(cam["cameraMake"], {}).get("serials", [])
 		sel = cam["cameraSelection"]
 		ok = isinstance(sel, int) and 0 <= sel < len(serials)
@@ -375,28 +383,48 @@ def CheckUsb(cams, params, report, sysfs_root="/sys"):
 			report.add(WARN, "usb", "{}: unknown bytes per pixel for pixelFormatInput {}; left out "
 				"of its bus's total.".format(cam["cameraName"], cam["pixelFormatInput"]))
 			rate = 0
-		if device["speed"] < 5000:
+		if cam["cameraMake"] in USB3_MAKES and device["speed"] < 5000:
 			report.add(FAIL, "usb", "{} is connected at {:g} Mb/s, not USB 3, and needs {:.0f} MB/s. "
 				"Check its cable and port.".format(cam["cameraName"], device["speed"], rate / 1e6))
+		elif cam["cameraMake"] not in USB3_MAKES:
+			CheckUsbLink(cam, device, rate, params, report)
 		bus = buses.setdefault((device["controller"], device["bus"]),
 			{"speed": device["bus_speed"], "cams": [], "rate": 0.0})
 		bus["cams"].append(cam)
 		bus["rate"] += rate
 
 	for (controller, busnum), bus in buses.items():
-		if bus["speed"] < 5000:
+		if bus["speed"] < 5000 and all(cam["cameraMake"] in USB3_MAKES for cam in bus["cams"]):
 			continue # a USB 2 bus: each camera on it has already FAILed above
 		budget = UsbBudget(bus["speed"], params)
 		load = bus["rate"] / 1e6
 		share = load / budget if budget else float("inf")
-		text = "bus {} ({:g} Gb/s, controller {}): {} send {:.0f} of {:.0f} MB/s ({:.0%})".format(
-			busnum, bus["speed"] / 1000, controller, Names(bus["cams"]), load, budget, share)
+		text = "bus {} ({:g} Gb/s, controller {}): {} send {:.{p}f} of {:.0f} MB/s ({:.0%})".format(
+			busnum, bus["speed"] / 1000, controller, Names(bus["cams"]), load, budget, share,
+			p=0 if load >= 10 else 1)
 		if share > 1:
 			report.add(FAIL, "usb", text + ". Move cameras to another controller.")
 		elif share > WARN_FRACTION:
 			report.add(WARN, "usb", text)
 		else:
 			report.add(OK, "usb", text)
+
+
+def CheckUsbLink(cam, device, rate, params, report):
+	# A USB 2 camera's own link (a RatCam): full speed carries about 1 MB/s of
+	# frames, whatever bus it is on
+	budget = UsbBudget(device["speed"], params)
+	need = rate / 1e6
+	share = need / budget if budget else float("inf")
+	text = "{} is connected at {:g} Mb/s, which carries about {:g} MB/s; it needs {:.2f} MB/s ({:.0%})"\
+		.format(cam["cameraName"], device["speed"], budget, need, share)
+	if share > 1:
+		report.add(FAIL, "usb", text + ". Lower its frame rate or frame size" + (
+			", or use the ESP32-P4 build (USB high speed)." if device["speed"] <= 12 else "."))
+	elif share > WARN_FRACTION:
+		report.add(WARN, "usb", text)
+	else:
+		report.add(OK, "usb", text)
 
 
 # ------------------------------------------------------------------ disk
