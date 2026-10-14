@@ -22,6 +22,10 @@ def EncoderArgs(cam_params):
 	# Load encoding parameters from cam_params
 	pix_fmt_out = cam_params["pixelFormatOutput"]
 	codec = str(cam_params["codec"])
+	# quality is a CRF for libx264/libx265 (adapts to the picture), a constant
+	# quantizer for NVENC, VA-API and AMF (spends bits on sensor noise too) and
+	# -q for QSV, so one number gives very different files on different
+	# encoders. campy-encode-quality measures what each setting costs.
 	quality = str(cam_params["quality"])
 	preset = str(cam_params["preset"])
 	gpuID = str(cam_params["gpuID"])

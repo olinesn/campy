@@ -30,6 +30,10 @@ gpuID: 0
 gpuMake: "vaapi"
 vaapiDevice: "/dev/dri/renderD128"    # ls /dev/dri lists the render nodes
 codec: "h264"
+# On VA-API, quality is a constant quantizer. At 21, one 1280x1024 60 fps mono
+# camera wrote 36.7 Mbit/s (16.5 GB per hour) on a GMKtec EVO-X2, mostly
+# sensor noise. Measure what each setting costs on your own footage with
+# campy-encode-quality before recording.
 quality: 21
 pixelFormatOutput: "yuv420p"          # 4:2:0: what every decoder supports
 keyframeInterval: 0.5                 # seconds; makes seeking cheap

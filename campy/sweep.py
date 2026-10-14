@@ -11,6 +11,8 @@ campy-acquire's launch check reads (default ~/.campy/capacity.json).
 The frames are a lit background with moving bright blobs and sensor noise.
 Encoding speed depends on content (noise costs the most), so treat the
 bitrate as a rough guide and re-check the speed with a real recording.
+campy-encode-quality measures what each quality setting costs in file size
+and image quality.
 
 Examples:
   campy-encode-sweep --width 1280 --height 1024 --frameRate 60 --encoder cpu:veryfast --encoder vaapi
