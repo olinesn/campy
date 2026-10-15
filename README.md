@@ -85,10 +85,10 @@ serialPort: "<port>" # e.g., "COM3" or "/dev/ttyACM0"
 triggerController: "arduino"
 ```
 4. Open and upload the "trigger.ino" file (in campy/trigger folder) to your board. Make sure the baudrate is set to 115200, and the serial monitor is closed while using pyserial connection.
-5. Campy can now communicate with the microcontroller to synchronously trigger the cameras once acquisition has initialized.
+5. Campy can now communicate with the microcontroller to synchronously trigger the cameras once acquisition has initialized: it opens every camera first, and starts the trigger when all of them are grabbing (it prints "All N cameras are ready."), so every camera's first frame is the trigger's first pulse. A camera that is not grabbing within `readyTimeoutSec` (default 30 s) is named, and the trigger starts for the others.
 
 Alternatively, to configure campy for external triggering:
-Start campy before triggering. Campy will wait for external triggers to initialize. To stop the recording, either configure a set recording time in campy or stop triggers before manually exiting campy (see Stop Recording below). 
+Start campy before triggering. Campy will wait for external triggers to initialize; start them once it prints "All N cameras are ready.", and every camera's first frame is the first trigger. To stop the recording, either configure a set recording time in campy or stop triggers before manually exiting campy (see Stop Recording below). 
 ```
 startArduino: False
 cameraTrigger: "Line0" # or "Line3"
@@ -158,7 +158,7 @@ campy-align ./test        # the recording's videoFolder
 ```
 puts every camera on the trigger's timeline: trigger *k* is at `t_s` = (*k* − 1) × the trigger period. It writes `aligned.csv` in each camera folder (`frame`, `trigger`, `t_s`; a RatCam's `trigger` is fractional, between the pulses around the frame's start) and `alignment.json`, and prints a summary:
 - **The trigger behind each frame**, from the camera's own timestamps: a step of *n* periods means *n* − 1 triggers left no frame. Those campy dropped itself (gaps in `frametimes.npy`'s frame numbers) are counted apart from those the camera missed.
-- **Where each camera started.** With `startArduino: True` the trigger starts before the cameras do, so each camera's first frame can be a different trigger. The arrival times (`hosttimes.npy`, and `ratcam_sync.csv` for a RatCam's pulses) say by how many triggers, and the earliest camera's first trigger becomes trigger 1. A camera's frames reach the computer a few ms after its trigger; when that comes near a whole period the start could be off by one, and the summary says so. Recordings without `hosttimes.npy` (from before this version) assume every camera started on the same trigger.
+- **Where each camera started.** With `startArduino: True`, campy starts the trigger once every camera is grabbing, so each camera's first frame is trigger 1. Cameras can still start on different triggers: a camera named as not ready, an external trigger started too early, or a recording from a campy that started the trigger first. The arrival times (`hosttimes.npy`, and `ratcam_sync.csv` for a RatCam's pulses) say by how many triggers, and the earliest camera's first trigger becomes trigger 1. A camera's frames reach the computer a few ms after its trigger; when that comes near a whole period the start could be off by one, and the summary says so. Recordings without `hosttimes.npy` (from before this version) assume every camera started on the same trigger.
 - A RatCam needs a periodic trigger on its SYNC input. A random sync train (`ratcamSyncOut`) cannot be lined up this way.
 
 ### Helpful tips

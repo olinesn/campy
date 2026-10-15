@@ -14,16 +14,23 @@ def ImportTrigger(params):
 	return trigger
 
 
+def DrivesTrigger(params):
+	# campy runs the trigger itself, rather than the rig (startArduino False)
+	return bool(params["startArduino"]) and params["triggerController"] != "None"
+
+
+def OpenTriggers(systems, params):
+	if DrivesTrigger(params):
+		systems = ImportTrigger(params).OpenTriggers(systems, params)
+	return systems
+
+
 def StartTriggers(systems, params):
-	if params["startArduino"]:
-		if params["triggerController"] != "None":
-			trigger = ImportTrigger(params)
-			systems = trigger.StartTriggers(systems, params)
+	if DrivesTrigger(params):
+		systems = ImportTrigger(params).StartTriggers(systems, params)
 	return systems
 
 
 def StopTriggers(systems, params):
-	if params["startArduino"]:
-		if params["triggerController"] != "None":
-			trigger = ImportTrigger(params)
-			trigger.StopTriggers(systems)
+	if DrivesTrigger(params):
+		ImportTrigger(params).StopTriggers(systems)

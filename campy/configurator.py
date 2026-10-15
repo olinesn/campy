@@ -71,6 +71,7 @@ def DefaultParams():
 	params["startArduino"] = False
 	params["serialPort"] = "COM3"
 	params["digitalPins"] = [0,1,2,3,4,5,6]
+	params["readyTimeoutSec"] = 30 # wait this long for every camera before starting the trigger
 
 	return params
 
@@ -542,6 +543,13 @@ def ParseClargs(parser):
 		dest="startArduino",
 		type=bool,
 		help="If True, start Arduino after initializing cameras.",
+	)
+	parser.add_argument(
+		"--readyTimeoutSec",
+		dest="readyTimeoutSec",
+		type=float,
+		help="Longest wait for every camera to be grabbing before campy starts the trigger \
+			anyway (and says which cameras were not ready).",
 	)
 	parser.add_argument(
 		"--serialPort",

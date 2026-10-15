@@ -42,9 +42,9 @@ def OpenSystems():
 			unicam.CloseSystems(systems, params)
 			sys.exit(1)
 
-	# Start camera triggers if configured
-	systems = trigger.StartTriggers(systems, params)
-
+	# The trigger starts in Main, in this process only, once every camera is
+	# grabbing. (Each camera process re-imports this module, so anything here
+	# runs once per camera too.)
 	return systems, params
 
 
@@ -84,11 +84,28 @@ def AcquireOneCamera(n_cam):
 	writer.WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue)
 
 
+def InitCameraProcess(readyQueue):
+	# Each camera process reports here when its camera is grabbing
+	unicam.SetReadyQueue(readyQueue)
+
+
 def Main():
+	global systems
 	with HandleKeyboardInterrupt():
 		# Acquire cameras in parallel with Windows- and Linux-compatible pool
-		p = mp.get_context("spawn").Pool(params["numCams"])
-		p.map_async(AcquireOneCamera,range(params["numCams"])).get()
+		ctx = mp.get_context("spawn")
+		readyQueue = ctx.Queue()
+		p = ctx.Pool(params["numCams"], initializer=InitCameraProcess, initargs=(readyQueue,))
+		result = p.map_async(AcquireOneCamera, range(params["numCams"]))
+
+		# Start the trigger only once every camera is grabbing, so that every
+		# camera's first frame is the trigger's first pulse. The serial port
+		# opens meanwhile: the Arduino needs a few seconds after it opens.
+		systems = trigger.OpenTriggers(systems, params)
+		ready, missing = unicam.WaitForCameras(readyQueue, params, result)
+		if ready and not result.ready(): # not if the cameras already stopped (Ctrl-C)
+			systems = trigger.StartTriggers(systems, params)
+		result.get()
 
 	CloseSystems(systems, params)
 
