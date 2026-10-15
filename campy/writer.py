@@ -18,6 +18,7 @@ def EncoderArgs(cam_params):
 	  key: short name of the encoder configuration ("libx264/fast",
 	       "h264_vaapi", ...). The capacity table is indexed by it.
 	  device: "cpu" or "gpu"
+	  env: environment variables ffmpeg needs (OpenWriter sets them)
 	"""
 	# Load encoding parameters from cam_params
 	pix_fmt_out = cam_params["pixelFormatOutput"]
@@ -35,6 +36,7 @@ def EncoderArgs(cam_params):
 	macro_block_size = 16 # imageio-ffmpeg pads frames up to a multiple of this
 	gpu_params = []
 	key_preset = None
+	env = {}
 
 	# CPU compression
 	if cam_params["gpuID"] == -1:
@@ -130,6 +132,16 @@ def EncoderArgs(cam_params):
 				]
 			pix_fmt_out = "vaapi" # the encoder's input is the uploaded surface
 			macro_block_size = 1
+			# Mesa's AMD driver keeps video surfaces tiled, so every uploaded frame
+			# is copied into place by a shader on the GPU's compute engine. On a
+			# Ryzen AI Max (Strix Halo) that engine misses interrupts ("amdgpu:
+			# Fence fallback timer expired on ring comp_..." in the kernel log), and
+			# each miss stalls one camera's encoder for half a second: 20-70 times
+			# an hour with 8 cameras. Linear surfaces take the frame straight from
+			# the CPU, so the compute engine does nothing and the video is the same.
+			# Intel's driver ignores AMD_DEBUG.
+			if cam_params.get("vaapiLinearSurfaces", True):
+				env["AMD_DEBUG"] = "novideotiling"
 			if cam_params["codec"] == "h264":
 				codec = "h264_vaapi"
 			elif cam_params["codec"] == "h265":
@@ -160,7 +172,21 @@ def EncoderArgs(cam_params):
 		"macro_block_size": macro_block_size,
 		"key": codec if key_preset is None else "{}/{}".format(codec, key_preset),
 		"device": device,
+		"env": env,
 		}
+
+
+def SetEnvironment(env):
+	# imageio-ffmpeg starts ffmpeg with this process's environment and takes no
+	# env of its own. Each camera writes from its own process, so this reaches
+	# only that camera's ffmpeg. AMD_DEBUG is a comma-separated list of Mesa
+	# flags: add to it rather than replace what the user set.
+	for key, value in env.items():
+		if key == "AMD_DEBUG":
+			flags = [f for f in os.environ.get(key, "").split(",") if f]
+			value = ",".join(flags + [f for f in value.split(",") if f not in flags])
+		if os.environ.get(key) != value:
+			os.environ[key] = value
 
 
 def OpenWriter(cam_params, queue):
@@ -179,6 +205,7 @@ def OpenWriter(cam_params, queue):
 			cam_params["pixelFormatInput"] == "bayer_rggb8"
 
 		enc = EncoderArgs(cam_params)
+		SetEnvironment(enc["env"])
 		if enc["device"] == "cpu":
 			print("Opened: {} using CPU to compress the stream.".format(full_file_name))
 		else:

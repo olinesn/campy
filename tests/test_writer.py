@@ -1,5 +1,7 @@
 """Encoder settings (writer.EncoderArgs) and the ffmpeg command they make."""
 
+import os
+
 import numpy as np
 import pytest
 import imageio_ffmpeg
@@ -72,11 +74,13 @@ def test_vaapi_command_order(tmp_path, monkeypatch):
 	# filter must follow -pix_fmt vaapi, which imageio-ffmpeg always adds.
 	seen = {}
 	real_popen = imageio_ffmpeg._io.subprocess.Popen
+	monkeypatch.delenv("AMD_DEBUG", raising=False) # and restored after the test
 
 	def fake_popen(cmd, *args, **kwargs):
 		if "-vcodec" not in cmd: # imageio's own ffmpeg -version probe
 			return real_popen(cmd, *args, **kwargs)
 		seen["cmd"] = cmd
+		seen["AMD_DEBUG"] = os.environ.get("AMD_DEBUG")
 		raise Captured()
 
 	monkeypatch.setattr(imageio_ffmpeg._io.subprocess, "Popen", fake_popen)
@@ -89,6 +93,29 @@ def test_vaapi_command_order(tmp_path, monkeypatch):
 	assert cmd.index("-vf") > cmd.index("-i")
 	assert cmd.count("-vf") == 1
 	assert cmd[cmd.index("-vcodec", cmd.index("-i")) + 1] == "h264_vaapi"
+	# ffmpeg starts with linear video surfaces (see the next tests)
+	assert seen["AMD_DEBUG"] == "novideotiling"
+
+
+def test_vaapi_linear_surfaces():
+	# On by default: frames go straight into the surface, not through a GPU copy
+	assert writer.EncoderArgs(cam(gpuID=0, gpuMake="vaapi"))["env"] == {"AMD_DEBUG": "novideotiling"}
+	assert writer.EncoderArgs(cam(gpuID=0, gpuMake="vaapi", vaapiLinearSurfaces=False))["env"] == {}
+	# Nothing for the other encoders
+	assert writer.EncoderArgs(cam())["env"] == {}
+	assert writer.EncoderArgs(cam(gpuID=0, gpuMake="nvidia"))["env"] == {}
+
+
+def test_set_environment_adds_to_amd_debug(monkeypatch):
+	monkeypatch.delenv("AMD_DEBUG", raising=False)
+	writer.SetEnvironment({"AMD_DEBUG": "novideotiling"})
+	assert os.environ["AMD_DEBUG"] == "novideotiling"
+	# A user's own Mesa flags are kept, and a flag already there is not repeated
+	monkeypatch.setenv("AMD_DEBUG", "nodcc")
+	writer.SetEnvironment({"AMD_DEBUG": "novideotiling"})
+	assert os.environ["AMD_DEBUG"] == "nodcc,novideotiling"
+	writer.SetEnvironment({"AMD_DEBUG": "novideotiling"})
+	assert os.environ["AMD_DEBUG"] == "nodcc,novideotiling"
 
 
 def test_cpu_writer_encodes(tmp_path):

@@ -54,6 +54,7 @@ def DefaultParams():
 	params["preset"] = "None"
 	params["keyframeInterval"] = "None" # seconds between keyframes; "None" = encoder default
 	params["vaapiDevice"] = "/dev/dri/renderD128" # gpuMake "vaapi" only
+	params["vaapiLinearSurfaces"] = True # gpuMake "vaapi" on AMD GPUs: see writer.EncoderArgs
 	params["writeQueueMaxSec"] = 5 # frames waiting for the encoder, in seconds; "None" = unbounded
 
 	# Launch check parameters (campy/preflight.py)
@@ -465,6 +466,14 @@ def ParseClargs(parser):
 		"--vaapiDevice",
 		dest="vaapiDevice",
 		help="VA-API render device for gpuMake 'vaapi' (default: /dev/dri/renderD128).",
+	)
+	parser.add_argument(
+		"--vaapiLinearSurfaces",
+		dest="vaapiLinearSurfaces",
+		type=ast.literal_eval,
+		help="gpuMake 'vaapi' on AMD GPUs: keep video surfaces linear (Mesa's AMD_DEBUG=novideotiling), \
+			so each frame goes straight from the CPU into GPU memory instead of being copied there by \
+			the GPU's compute engine (default: True).",
 	)
 	parser.add_argument(
 		"--writeQueueMaxSec",
