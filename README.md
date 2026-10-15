@@ -12,9 +12,9 @@
 
 ## Installation
 1. Update graphics drivers
-2. Create and activate a new Python 3.10 Anaconda environment. campy needs Python 3.9 or newer, and 3.10 is the version every camera's software supports: FLIR's PySpin wheels for Linux are built for Python 3.10 (Windows and macOS also have 3.12).
+2. Create and activate a new Anaconda environment, with the Python your camera software is built for (campy itself needs Python 3.9 or newer). For FLIR cameras, Spinnaker's PySpin is built for Python 3.12 on Ubuntu 24.04 and Python 3.10 on Ubuntu 22.04, and Spinnaker 4.4 added Python 3.12 for Windows and macOS. E.g. on Ubuntu 24.04:
 ```
-conda create -n campy python=3.10 imageio-ffmpeg matplotlib ffmpeg==4.2.2 -c conda-forge
+conda create -n campy python=3.12 imageio-ffmpeg matplotlib ffmpeg==4.2.2 -c conda-forge
 conda activate campy
 pip install -U setuptools
 ```
@@ -37,7 +37,7 @@ pip install -U setuptools
   - Download and install Spinnaker SDK and SpinView software from FLIR's website: 
     https://www.flir.com/support-center/iis/machine-vision/downloads/spinnaker-sdk-and-firmware-download/
   - Manually install binary wheel for PySpin (included in the Spinnaker download)
-    E.g. for Python 3.10 on Linux x86_64, install "spinnaker_python-<version>-cp310-cp310-linux_x86_64.whl": the cpXY tag must match your Python. Then install the NumPy version the PySpin README in the download asks for (PySpin for Python 3.10 has needed NumPy 1.x).
+    E.g. for Python 3.12 on Ubuntu 24.04 (x86_64), install "spinnaker_python-<version>-cp312-cp312-linux_x86_64.whl": the cpXY tag must match your Python. Then install the NumPy version the PySpin README in the download asks for (PySpin for Python 3.10 needs NumPy 1.x).
   ```
   pip3 install <wheel>
   ```
