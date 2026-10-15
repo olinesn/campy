@@ -14,7 +14,7 @@
 1. Update graphics drivers
 2. Create and activate a new Python 3.10 Anaconda environment. campy needs Python 3.9 or newer, and 3.10 is the version every camera's software supports: FLIR's PySpin wheels for Linux are built for Python 3.10 (Windows and macOS also have 3.12).
 ```
-conda create -n campy python=3.10 imageio-ffmpeg matplotlib ffmpeg -c conda-forge
+conda create -n campy python=3.10 imageio-ffmpeg matplotlib ffmpeg=8.1 -c conda-forge
 conda activate campy
 pip install -U setuptools
 ```
@@ -67,7 +67,9 @@ pip install -e .
 - ffmpeg 4.3 and older ask the driver for NVENC presets with a call that NVIDIA drivers from 591.44 (December 2025) reject for H.264 and HEVC. Every camera's writer then stops with a broken pipe, and ffmpeg's error is `Cannot get the preset configuration: unsupported param (12)`. campy's install instructions used to pin `ffmpeg==4.2.2`, so environments made with them have this problem. A standalone ffmpeg set with `ffmpegPath` (below) fixes it and leaves the environment as it is.
 - An ffmpeg built for a newer NVENC version than the driver supports fails the other way, and says what it needs: `Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0`, then `The minimum required Nvidia driver for nvenc is 610.00 or newer`. Update the driver, or use an ffmpeg built for the NVENC version the driver has ("Found").
 
-conda-forge's ffmpeg comes in builds for several NVENC versions, and conda picks one the driver supports when it creates the environment. In October 2026 that was ffmpeg 9.0.2 built for NVENC 13.0, which needs driver 570 or newer.
+conda-forge's ffmpeg comes in builds for several NVENC versions, and conda picks one the driver supports when it creates the environment, by the CUDA version `nvidia-smi` shows: 12.8 or newer (driver 570 or newer) gets NVENC 13.0, and 12.2 to 12.7 an older NVENC version. A driver older than 535 (CUDA below 12.2) gets an ffmpeg without NVENC, and campy's launch check stops with "has no hevc_nvenc encoder": update the driver, or set `ffmpegPath` to an ffmpeg built for an older NVENC version.
+
+The command above pins ffmpeg 8.1. Against 4.2.2, campy's tests pass, and libx264 writes the same video from the same frames, except that a frame size padded to a multiple of 16 is rescaled slightly differently (by at most one gray level). On NVENC, `-preset fast` now means P1, NVENC's fastest preset, and video from RGB input is tagged with the conversion NVENC applies (BT.601, limited range), which 4.2.2 left untagged.
 
 To use another ffmpeg, put its path in the config; campy passes it to imageio-ffmpeg as `IMAGEIO_FFMPEG_EXE`:
 ```
