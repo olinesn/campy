@@ -182,6 +182,145 @@ def test_encoder_check():
 	assert any(s == FAIL and "/nonexistent/renderD128 does not exist" in t for s, t in found)
 
 
+def nvenc_cameras(n=2, **values):
+	settings = dict(gpuID=0, gpuMake="nvidia", codec="h265", quality=24, pixelFormatOutput="rgb0",
+		preset="None")
+	settings.update(values)
+	return cameras([str(i) for i in range(1, n + 1)], **settings)[1]
+
+
+def fake_ffmpeg(monkeypatch, returncode=0, stderr="", timeout=False):
+	"""Replaces subprocess.run in preflight: records each command, answers like ffmpeg."""
+	calls = []
+	def run(cmd, **kwargs):
+		calls.append((cmd, kwargs))
+		if timeout:
+			raise preflight.subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+		return types.SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)
+	monkeypatch.setattr(preflight.subprocess, "run", run)
+	return calls
+
+
+# ffmpeg 4.2.2's error for every camera on a Windows PC with NVIDIA driver 596.71
+FFMPEG_42_PRESET_ERROR = (
+	"[hevc_nvenc @ 000002b8e1f0c2c0] Cannot get the preset configuration: unsupported param (12)\n"
+	"Error initializing output stream 0:0 -- Error while opening encoder for output stream #0:0 - "
+	"maybe incorrect parameters such as bit_rate, rate, width or height\n")
+
+# An ffmpeg built with NVENC 13.1 headers there (wording from FFmpeg 9.0's nvenc.c)
+FFMPEG_TOO_NEW = (
+	"[hevc_nvenc @ 0000016f4c0d2a40] Driver does not support the required nvenc API version. "
+	"Required: 13.1 Found: 13.0\n"
+	"[hevc_nvenc @ 0000016f4c0d2a40] The minimum required Nvidia driver for nvenc is 610.00 or newer\n"
+	"[vost#0:0/hevc_nvenc @ 0000016f4c0d4380] Error while opening encoder - maybe incorrect "
+	"parameters such as bit_rate, rate, width or height.\n")
+
+
+def test_nvenc_probe_command():
+	# The writer's codec, pixel format and output options, at the size imageio-ffmpeg
+	# pads frames to (1000x750 -> 1008x752), into a file of the video's own type
+	cam = nvenc_cameras(1, frameWidth=1000, frameHeight=750, frameRate=60, videoFilename="0.mkv")[0]
+	assert preflight.NvencProbeCommand("ffmpeg", cam) == [
+		"ffmpeg", "-hide_banner", "-nostdin", "-v", "error", "-an",
+		"-f", "lavfi", "-i", "testsrc2=size=1008x752:rate=60.00", "-frames:v", "10",
+		"-vcodec", "hevc_nvenc", "-pix_fmt", "rgb0",
+		"-preset", "fast", "-qp", "24", "-bf:v", "0", "-gpu", "0",
+		"-y", "nvenc_test.mkv"]
+	cmd = preflight.NvencProbeCommand("ffmpeg", dict(cam, keyframeInterval=0.5, gpuID=1, codec="h264"))
+	assert cmd[cmd.index("-vcodec") + 1] == "h264_nvenc"
+	assert cmd[cmd.index("-gpu") + 1] == "1" and cmd[cmd.index("-g") + 1] == "30"
+
+
+def test_nvenc_probe_skipped_without_nvenc(monkeypatch):
+	# No ffmpeg runs at all unless a camera encodes with NVENC: not for the CPU,
+	# not for VA-API, and not for gpuMake "nvidia" with gpuID -1 (the CPU)
+	def no_ffmpeg(*args, **kwargs):
+		raise AssertionError("ran ffmpeg")
+	monkeypatch.setattr(preflight.subprocess, "run", no_ffmpeg)
+	monkeypatch.setattr(preflight, "FfmpegExe", no_ffmpeg)
+	for values in (dict(gpuID=-1), dict(gpuID=-1, gpuMake="nvidia"), dict(gpuID=0, gpuMake="vaapi")):
+		report = preflight.Report()
+		preflight.CheckNvenc(cameras(list("12"), **values)[1], report)
+		assert report.lines == [], values
+
+
+def test_nvenc_probe_ok(monkeypatch):
+	calls = fake_ffmpeg(monkeypatch)
+	report = preflight.Report()
+	preflight.CheckNvenc(nvenc_cameras(3, gpuID=[0, 0, 1]), report, exe="ffmpeg", encoders={"hevc_nvenc"})
+	# One probe per GPU: cameras with the same settings share one
+	assert [cmd[cmd.index("-gpu") + 1] for cmd, _ in calls] == ["0", "1"]
+	assert all(kwargs["timeout"] == preflight.NVENC_PROBE_TIMEOUT and kwargs["cwd"] for _, kwargs in calls)
+	assert lines(report) == [
+		(OK, "hevc_nvenc on GPU 0 (Camera0, Camera1) encoded 10 test frames with campy's settings"),
+		(OK, "hevc_nvenc on GPU 1 (Camera2) encoded 10 test frames with campy's settings"),
+		]
+
+
+def test_nvenc_probe_old_ffmpeg(monkeypatch):
+	fake_ffmpeg(monkeypatch, returncode=1, stderr=FFMPEG_42_PRESET_ERROR)
+	report = preflight.Report()
+	preflight.CheckNvenc(nvenc_cameras(2), report, exe="ffmpeg", encoders={"hevc_nvenc"})
+	[(status, text)] = lines(report, "encoders")
+	assert status == FAIL
+	first, *rest = text.splitlines()
+	assert first == "hevc_nvenc on GPU 0 (Camera0, Camera1) could not encode test frames with campy's settings. ffmpeg said:"
+	# ffmpeg's own words, then what they mean, then the command to try by hand
+	assert rest[0] == "  [hevc_nvenc @ 000002b8e1f0c2c0] Cannot get the preset configuration: unsupported param (12)"
+	assert rest[1].startswith("  Error initializing output stream 0:0")
+	assert "ffmpeg 4.4 or newer" in rest[2] and "ffmpegPath" in rest[2] and "591.44" in rest[2]
+	assert rest[3].startswith("To run it by hand: ffmpeg -hide_banner") and rest[3].endswith("-gpu 0 -y nvenc_test.mp4")
+	# In the printed check, ffmpeg's lines sit under the finding
+	printed = report.text("Launch check:").splitlines()
+	assert printed[1].startswith("  FAIL  encoders  hevc_nvenc on GPU 0")
+	assert printed[2] == " " * 18 + "  [hevc_nvenc @ 000002b8e1f0c2c0] Cannot get the preset configuration: unsupported param (12)"
+
+
+def test_nvenc_probe_driver_too_old(monkeypatch):
+	fake_ffmpeg(monkeypatch, returncode=1, stderr=FFMPEG_TOO_NEW)
+	report = preflight.Report()
+	preflight.CheckNvenc(nvenc_cameras(1), report, exe="ffmpeg", encoders={"hevc_nvenc"})
+	[(status, text)] = lines(report)
+	assert status == FAIL
+	assert "  [hevc_nvenc @ 0000016f4c0d2a40] The minimum required Nvidia driver for nvenc is 610.00 or newer" in text.splitlines()
+	assert "Update the NVIDIA driver" in text and "BtbN's 8.1 build" in text
+
+
+@pytest.mark.parametrize("stderr, expected", [
+	("[h264_nvenc @ 0x5581] Cannot load libnvidia-encode.so.1\n", "Is the NVIDIA driver installed?"),
+	("[h264_nvenc @ 0x5581] Requested GPU 1, but only 1 GPUs are available!\n", "No GPU has this gpuID"),
+	("[h264_nvenc @ 0x5581] No capable devices found\n", "support matrix"),
+	("[h264_nvenc @ 0x5581] InitializeEncoder failed: invalid param (8)\n", "-v info instead of -v error"),
+	("", "(nothing; exit code 1)"),
+	])
+def test_nvenc_probe_other_failures(monkeypatch, stderr, expected):
+	fake_ffmpeg(monkeypatch, returncode=1, stderr=stderr)
+	report = preflight.Report()
+	preflight.CheckNvenc(nvenc_cameras(1, codec="h264"), report, exe="ffmpeg", encoders={"h264_nvenc"})
+	[(status, text)] = lines(report)
+	assert status == FAIL and expected in text and "To run it by hand" in text
+
+
+def test_nvenc_probe_timeout(monkeypatch):
+	fake_ffmpeg(monkeypatch, timeout=True)
+	report = preflight.Report()
+	preflight.CheckNvenc(nvenc_cameras(1), report, exe="ffmpeg", encoders={"hevc_nvenc"})
+	[(status, text)] = lines(report)
+	assert status == FAIL and "(did not finish in 60 s)" in text
+
+
+def test_nvenc_probe_leaves_missing_encoders_to_encoder_check(monkeypatch):
+	# An ffmpeg without the encoder, or one that would not run, FAILs in
+	# CheckEncoders: the probe does not run it again or report it twice
+	calls = fake_ffmpeg(monkeypatch)
+	report = preflight.Report()
+	preflight.CheckNvenc(nvenc_cameras(2), report, exe="ffmpeg", encoders={"libx264", "h264_nvenc"})
+	assert calls == [] and report.lines == []
+	monkeypatch.setattr(preflight, "FfmpegEncoders", lambda exe: None)
+	preflight.CheckNvenc(nvenc_cameras(2), report, exe="ffmpeg")
+	assert calls == [] and report.lines == []
+
+
 def test_disk_estimate(tmp_path, monkeypatch):
 	usage = types.SimpleNamespace(free=10e9)
 	monkeypatch.setattr(preflight.shutil, "disk_usage", lambda path: usage)
@@ -209,6 +348,19 @@ def test_run_modes(tmp_path, monkeypatch):
 	report = preflight.Run(systems, dict(p, preflight="warn"), root)
 	assert report.count(FAIL) == 1
 	assert preflight.Run(systems, dict(p, preflight="off"), root) is None
+
+
+def test_run_stops_on_nvenc_failure(tmp_path, monkeypatch):
+	fake_ffmpeg(monkeypatch, returncode=1, stderr=FFMPEG_42_PRESET_ERROR)
+	monkeypatch.setattr(preflight, "FfmpegExe", lambda: "ffmpeg")
+	monkeypatch.setattr(preflight, "FfmpegEncoders", lambda exe: {"hevc_nvenc"})
+	p, _ = cameras(["1"], gpuID=0, gpuMake="nvidia", codec="h265",
+		capacityFile=str(tmp_path / "none.json"), videoFolder=str(tmp_path))
+	systems = {"flir": {"serials": ["1"]}}
+	with pytest.raises(preflight.PreflightError, match="1 check failed"):
+		preflight.Run(systems, dict(p, preflight="error"), str(tmp_path / "no-sysfs"))
+	report = preflight.Run(systems, dict(p, preflight="warn"), str(tmp_path / "no-sysfs"))
+	assert [s for s, _ in lines(report, "encoders")] == [OK, FAIL] # has hevc_nvenc; it fails
 
 
 def test_ratcam_usb_links(tmp_path):
