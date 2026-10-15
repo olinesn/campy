@@ -3,10 +3,69 @@ Unicam unifies camera APIs with common syntax to simplify multi-camera acquisiti
 reduce redundancy in campy code.
 """
 
-import os, sys, time, csv, logging
+import os, sys, time, csv, queue, logging
 import numpy as np
 from collections import deque
 from scipy import io as sio
+
+
+# Set in each camera process (campy.InitCameraProcess): where it reports that its
+# camera is ready for triggers, so campy starts the trigger only after all are.
+_readyQueue = None
+
+
+def SetReadyQueue(readyQueue):
+	global _readyQueue
+	_readyQueue = readyQueue
+
+
+def SignalReady(cam_params, ok=True, error=""):
+	# Tell campy's main process this camera is grabbing, or that it never will
+	if _readyQueue is not None:
+		_readyQueue.put((cam_params["n_cam"], cam_params["cameraName"], ok, error))
+
+
+def _Say(text):
+	print(text, flush=True)
+
+
+def WaitForCameras(readyQueue, params, result=None, log=_Say):
+	"""
+	Waits until every camera has reported ready for triggers, or failed, for at
+	most readyTimeoutSec, and stops early if the camera processes end (result
+	is the pool's AsyncResult). Returns the cameras that are ready, and a reason
+	for each that is not.
+	"""
+	names = params["cameraNames"]
+	pending = {n: names[n] for n in range(params["numCams"])}
+	ready, missing = [], {}
+	timeout = float(params["readyTimeoutSec"])
+	deadline = time.monotonic() + timeout
+	while pending:
+		try:
+			n_cam, name, ok, error = readyQueue.get(timeout=0.2)
+		except queue.Empty:
+			if result is not None and result.ready():
+				break
+			if time.monotonic() > deadline:
+				break
+			continue
+		pending.pop(n_cam, None)
+		if ok:
+			ready.append(name)
+		else:
+			missing[name] = error or "did not start grabbing"
+	stopped = result is not None and result.ready()
+	for name in pending.values():
+		missing[name] = "stopped before it was ready" if stopped else \
+			"not ready after {:g} s (readyTimeoutSec)".format(timeout)
+
+	if not missing:
+		log("{} ready.".format("The camera is" if len(ready) == 1 else "All {} cameras are".format(len(ready))))
+	else:
+		log("{} of {} cameras are ready. Not ready: {}.".format(len(ready), params["numCams"],
+			"; ".join("{} ({})".format(name, why) for name, why in missing.items())))
+	return ready, missing
 
 
 def ImportCam(make):
@@ -62,6 +121,7 @@ def OpenCamera(cam_params, stopWriteQueue):
 
 	except Exception as e:
 		logging.error("Caught error at cameras/unicam.py OpenCamera: {}".format(e))
+		SignalReady(cam_params, False, "failed to open: {}".format(e))
 		stopWriteQueue.append('STOP')
 
 	return cam, camera, cam_params
@@ -137,7 +197,8 @@ def DropFrame(grabdata, frameNumber, maxQueue):
 def StartGrabbing(camera, cam_params, cam):
 	grabbing = cam.StartGrabbing(camera)
 	if grabbing:
-		print(cam_params["cameraName"], "ready to trigger.")
+		print(cam_params["cameraName"], "ready to trigger.", flush=True)
+	SignalReady(cam_params, bool(grabbing))
 	return grabbing
 
 
