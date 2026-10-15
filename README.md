@@ -183,7 +183,7 @@ It reports each camera's exposure offset from the first camera's (or `--referenc
 pip install -e . pytest
 pytest tests
 ```
-GitHub Actions runs them on every push to master and every pull request, on Python 3.9, 3.10 and 3.12 (`.github/workflows/tests.yml`). The RatCam tests need nir-eye-cam's `nireyecam`, from a private repository, and are skipped without it. To run them in CI too, add a repository secret `NIREYECAM_TOKEN`: a fine-grained personal access token with read-only access to the contents of `olinesn/nir-eye-cam`.
+GitHub Actions runs them on every push to master and every pull request, on Python 3.9, 3.10 and 3.12 on Linux and Python 3.10 on Windows (`.github/workflows/tests.yml`). The RatCam tests need nir-eye-cam's `nireyecam`, from a private repository, and are skipped without it. To run them in CI too, add a repository secret `NIREYECAM_TOKEN`: a fine-grained personal access token with read-only access to the contents of `olinesn/nir-eye-cam`.
 
 The tests run `trigger.ino` as plain C++ against a simulated Arduino. A second workflow (`.github/workflows/sketch.yml`) compiles it for real boards (an Arduino Uno, a Teensy 4.0 and a Teensy 3.2) whenever the sketch changes.
 

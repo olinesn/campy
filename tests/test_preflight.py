@@ -2,6 +2,7 @@
 
 import os
 import socket
+import sys
 import types
 
 import pytest
@@ -20,6 +21,9 @@ def make_sysfs(root, devices):
 	them out as the kernel does: device directories under their root hub
 	under the PCI controller, and links to all of them in bus/usb/devices.
 	"""
+	if sys.platform == "win32":
+		# The USB check reads Linux's sysfs, which names things 0000:00:08.1
+		pytest.skip("sysfs names have colons, which Windows paths can't contain")
 	links = root / "bus" / "usb" / "devices"
 	links.mkdir(parents=True)
 	hubs = {}
