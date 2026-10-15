@@ -12,9 +12,9 @@
 
 ## Installation
 1. Update graphics drivers
-2. Create and activate a new Python 3.7+ Anaconda environment:
+2. Create and activate a new Python 3.10 Anaconda environment. campy needs Python 3.9 or newer, and 3.10 is the version every camera's software supports: FLIR's PySpin wheels for Linux are built for Python 3.10 (Windows and macOS also have 3.12).
 ```
-conda create -n campy python=3.7 imageio-ffmpeg matplotlib ffmpeg==4.2.2 -c conda-forge
+conda create -n campy python=3.10 imageio-ffmpeg matplotlib ffmpeg==4.2.2 -c conda-forge
 conda activate campy
 pip install -U setuptools
 ```
@@ -37,7 +37,7 @@ pip install -U setuptools
   - Download and install Spinnaker SDK and SpinView software from FLIR's website: 
     https://www.flir.com/support-center/iis/machine-vision/downloads/spinnaker-sdk-and-firmware-download/
   - Manually install binary wheel for PySpin (included in the Spinnaker download)
-    E.g. for Python 3.7 on Windows amd64 system, install "spinnaker_python-2.3.0.77-cp37-cp37m-win_amd64.whl"
+    E.g. for Python 3.10 on Linux x86_64, install "spinnaker_python-<version>-cp310-cp310-linux_x86_64.whl": the cpXY tag must match your Python. Then install the NumPy version the PySpin README in the download asks for (PySpin for Python 3.10 has needed NumPy 1.x).
   ```
   pip3 install <wheel>
   ```
@@ -183,7 +183,7 @@ It reports each camera's exposure offset from the first camera's (or `--referenc
 pip install -e . pytest
 pytest tests
 ```
-GitHub Actions runs them on every push to master and every pull request, on Python 3.9 and 3.12 (`.github/workflows/tests.yml`). The RatCam tests need nir-eye-cam's `nireyecam`, from a private repository, and are skipped without it. To run them in CI too, add a repository secret `NIREYECAM_TOKEN`: a fine-grained personal access token with read-only access to the contents of `olinesn/nir-eye-cam`.
+GitHub Actions runs them on every push to master and every pull request, on Python 3.9, 3.10 and 3.12 (`.github/workflows/tests.yml`). The RatCam tests need nir-eye-cam's `nireyecam`, from a private repository, and are skipped without it. To run them in CI too, add a repository secret `NIREYECAM_TOKEN`: a fine-grained personal access token with read-only access to the contents of `olinesn/nir-eye-cam`.
 
 The tests run `trigger.ino` as plain C++ against a simulated Arduino. A second workflow (`.github/workflows/sketch.yml`) compiles it for real boards (an Arduino Uno, a Teensy 4.0 and a Teensy 3.2) whenever the sketch changes.
 

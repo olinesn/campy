@@ -21,8 +21,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.9: the oldest nireyecam supports. 3.12: Ubuntu 24.04's, the acquisition PC's.
-        python: ["3.9", "3.12"]
+        # 3.9: the oldest nireyecam supports. 3.10: FLIR's PySpin on Linux, so the
+        # acquisition PC's. 3.12: PySpin on Windows and macOS, and the newest here.
+        python: ["3.9", "3.10", "3.12"]
     env:
       # Optional: a read-only token for the private nir-eye-cam repository, so the
       # RatCam tests (tests/test_ratcam.py) run too. Without it they are skipped.
