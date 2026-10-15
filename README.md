@@ -157,6 +157,7 @@ Every `campy-acquire` then starts with a launch check, printed before recording:
 - **encoders**: ffmpeg has each camera's encoder, the VA-API device can be opened, and NVENC encodes a few test frames with each NVENC camera's settings ([NVIDIA GPU encoding](#nvidia-gpu-encoding-nvenc)).
 - **capacity**: the cameras on each encoder, against the measured table.
 - **usb** (Linux): each camera's USB bus and controller, read from sysfs, and the camera data on each bus against a budget (300 MB/s for a 5 Gb/s bus, 600 MB/s for 10 Gb/s; set `usbBudgetMBps` once you have measured your own). A camera running at USB 2 speed fails.
+- **camera** (FLIR): each camera can run at `frameRate` with campy's settings. campy opens it, sets it up as a recording does (trigger, frame size, pixel format, exposure), reads the highest frame rate the camera says it can reach, and names what limits it when that is too low: the camera's USB throughput limit (`DeviceLinkThroughputLimit`), an exposure longer than a frame, or `AcquisitionFrameRate`. A camera that cannot keep up does not stop by itself: free-running, it records more slowly than its video says; triggered, it misses triggers.
 - **disk**: free space for the recording.
 
 With `preflight: "error"` (the default), a failed check stops campy before recording; `"warn"` records anyway; `"off"` skips the check. `displayFrameRate: 0` runs without display windows, for example over SSH.
