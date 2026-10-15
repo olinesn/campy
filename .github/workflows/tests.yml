@@ -1,0 +1,43 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9: the oldest nireyecam supports. 3.12: Ubuntu 24.04's, the acquisition PC's.
+        python: ["3.9", "3.12"]
+    env:
+      # Optional: a read-only token for the private nir-eye-cam repository, so the
+      # RatCam tests (tests/test_ratcam.py) run too. Without it they are skipped.
+      NIREYECAM_TOKEN: ${{ secrets.NIREYECAM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: setup.py
+      - name: Install campy
+        run: python -m pip install -e . pytest
+      - name: Install nireyecam (RatCam support)
+        if: env.NIREYECAM_TOKEN != ''
+        run: python -m pip install "nireyecam @ git+https://x-access-token:${NIREYECAM_TOKEN}@github.com/olinesn/nir-eye-cam.git#subdirectory=host"
+      - name: Test
+        run: python -m pytest -q -rs tests

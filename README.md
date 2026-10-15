@@ -162,6 +162,13 @@ puts every camera on the trigger's timeline: trigger *k* is at `t_s` = (*k* − 
 - **Where each camera started.** With `startArduino: True`, campy starts the trigger once every camera is grabbing and says which were in `trigger.json`; `campy-align` starts those cameras at trigger 1. It checks each against the other cameras of its kind, and a camera whose first frame came a whole period or more after theirs is reported as having missed its first triggers. Cameras can still start on different triggers: a camera named as not ready, an external trigger started too early, or a recording without `trigger.json` (from a campy that started the trigger first). For those, the arrival times (`hosttimes.npy`, and `ratcam_sync.csv` for a RatCam's pulses) say by how many triggers, and the earliest camera's first trigger becomes trigger 1. A camera's frames reach the computer a few ms after its trigger; when that comes near a whole period the start could be off by one, and the summary says so. Recordings without `hosttimes.npy` (from before this version) assume every camera started on the same trigger.
 - A RatCam needs a periodic trigger on its SYNC input. A random sync train (`ratcamSyncOut`) cannot be lined up this way.
 
+### Running the tests
+```
+pip install -e . pytest
+pytest tests
+```
+GitHub Actions runs them on every push to master and every pull request, on Python 3.9 and 3.12 (`.github/workflows/tests.yml`). The RatCam tests need nir-eye-cam's `nireyecam`, from a private repository, and are skipped without it. To run them in CI too, add a repository secret `NIREYECAM_TOKEN`: a fine-grained personal access token with read-only access to the contents of `olinesn/nir-eye-cam`.
+
 ### Helpful tips
 - To debug broken ffmpeg pipe error, include this in config.yaml:
 ```
