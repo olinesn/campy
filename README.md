@@ -105,7 +105,7 @@ campy-acquire ./configs/campy_config.yaml
 recTimeInSeconds: 3600
 ```
 - To manually end, press Ctrl^C. Please wait until campy exits!
-- When campy starts the trigger itself (`startArduino: True`), it writes "trigger.json" in the videoFolder: whether the trigger started, which cameras were already grabbing (and why any were not), and when the start command went out, on the clock of "hosttimes.npy". `campy-align` reads it.
+- When campy starts the trigger itself (`startArduino: True`), it writes "trigger.json" in the videoFolder: whether the trigger started, which cameras were already grabbing (and why any were not), when the start command went out, on the clock of "hosttimes.npy", and the test LED's pin and rate if one is set. `campy-align` and `campy-synctest` read it.
 - Three files, "frametimes.mat", "frametimes.npy", and "metadata.csv", will be saved along with the video file in each camera folder containing timestamps, frame numbers, and other recording metadata. "hosttimes.npy" holds when each of those frames reached the computer, on one clock for every camera (`time.monotonic_ns`); `campy-align` uses it.
 - If a camera's encoder falls more than `writeQueueMaxSec` (default 5 s) behind, new frames are dropped instead of filling memory. "frametimes.npy" still has one row per video frame, so a gap in its frame numbers marks a drop, and "metadata.csv" records `totalFrames` (grabbed), `framesWritten` and `framesDropped`.
 
@@ -161,6 +161,22 @@ puts every camera on the trigger's timeline: trigger *k* is at `t_s` = (*k* − 
 - **The trigger behind each frame**, from the camera's own timestamps: a step of *n* periods means *n* − 1 triggers left no frame. Those campy dropped itself (gaps in `frametimes.npy`'s frame numbers) are counted apart from those the camera missed.
 - **Where each camera started.** With `startArduino: True`, campy starts the trigger once every camera is grabbing and says which were in `trigger.json`; `campy-align` starts those cameras at trigger 1. It checks each against the other cameras of its kind, and a camera whose first frame came a whole period or more after theirs is reported as having missed its first triggers. Cameras can still start on different triggers: a camera named as not ready, an external trigger started too early, or a recording without `trigger.json` (from a campy that started the trigger first). For those, the arrival times (`hosttimes.npy`, and `ratcam_sync.csv` for a RatCam's pulses) say by how many triggers, and the earliest camera's first trigger becomes trigger 1. A camera's frames reach the computer a few ms after its trigger; when that comes near a whole period the start could be off by one, and the summary says so. Recordings without `hosttimes.npy` (from before this version) assume every camera started on the same trigger.
 - A RatCam needs a periodic trigger on its SYNC input. A random sync train (`ratcamSyncOut`) cannot be lined up this way.
+
+### Checking that cameras expose together
+`campy-synctest` checks from a recording that triggered cameras really expose at the same moment, and says how far apart they are, by filming one LED that the trigger controller blinks from the same clock as the trigger.
+1. Wire an LED and a 330 Ω resistor in series from a spare pin of the trigger controller to ground, where every camera can see it. A red LED suits visible-light cameras; behind an IR-pass filter, use an IR LED.
+2. Upload the current `trigger.ino`: it reads the test LED's pin and rate after the frame rate. (An older sketch ignores them and never blinks.)
+3. In the config, set the LED's pin and a blink rate that is not near a whole or half multiple of `frameRate` (43 Hz suits 25 and 60 fps), and keep the exposure under a quarter of the blink period (5.8 ms at 43 Hz; about 2 ms is good):
+```
+blinkPin: 13
+blinkHz: 43
+cameraExposureTimeInUs: 2000
+```
+4. Record about a minute, then:
+```
+campy-synctest ./test        # the recording's videoFolder
+```
+It reports each camera's exposure offset from the first camera's (or `--reference`), with its standard error: from frames in which both cameras caught an edge of the blink (a few µs), or from the blink's phase when they are more than one exposure apart (about 10 µs). It also counts the triggers on which the LED was clearly on in one camera and off in the other (0 when the cameras are locked). It passes when every 2-second stretch is within `--tolerance-us` (default 100), and writes `synctest.json`. It pairs frames by trigger with `campy-align`, so it writes that tool's files too. A better `quality` (a lower number) makes the edge measurement finer, since the LED's brightness goes through the video encoder.
 
 ### Running the tests
 ```

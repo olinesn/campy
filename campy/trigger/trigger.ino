@@ -2,6 +2,24 @@
 // Inter-frame interval precision: ~ +/- 0.35 us
 // Inter-frame interval accuracy: ~0.0035%
 // Synchronicity: ~ 30 ns
+//
+// Command (from campy/trigger/arduino.py, or the Serial Monitor), comma-separated:
+//   # dig pins, dig pin IDs, frame rate, test LED pin, test LED Hz
+// The test LED (for campy-synctest) is optional: -1 or nothing leaves it off.
+// It blinks from the same clock as the trigger, toggled while the loop waits
+// for the trigger's edges, so it can move an edge by a few microseconds.
+
+// Declared here so the sketch also compiles as plain C++ (campy's tests run it)
+int SetDigPins();
+unsigned long SetFrameRate();
+unsigned long SetFramePeriod(unsigned long fr);
+void SetBlink();
+void FlushSerialBuffer();
+void ResetTimer();
+void SetPinsHigh();
+void SetPinsLow();
+void Blink();
+unsigned long Timer();
 
 // User-set parameters
 uint32_t baudrate = 115200;
@@ -13,6 +31,10 @@ float frame_rate_in = 0;
 float frame_rate_out = 0;
 unsigned long frame_start, frame_period, time_zero;
 uint32_t frame_count = 0;
+int blink_pin = -1;               // test LED for campy-synctest; -1 = none
+unsigned long blink_half = 0;     // half its period, microseconds; 0 = off
+unsigned long blink_next = 0;
+bool blink_on = false;
 
 void setup( void ) {
 
@@ -22,7 +44,7 @@ void setup( void ) {
   Serial.print(baudrate);
 
   Serial.println("");
-  Serial.print("Enter comma-separated string in this order: # dig pins, dig pin IDs, frame rate:");
+  Serial.print("Enter comma-separated string in this order: # dig pins, dig pin IDs, frame rate, test LED pin, test LED Hz:");
 
   // Set DigPins using Python or Serial Monitor input
   n_sync = SetDigPins();
@@ -30,6 +52,7 @@ void setup( void ) {
   // Set Frame Rate using Python or Serial Monitor input
   frame_rate_out = SetFrameRate();
   frame_period = SetFramePeriod(frame_rate_out);
+  SetBlink();
 
   // Wait for streams and cams to initialize
   ResetTimer(); 
@@ -115,6 +138,47 @@ unsigned long SetFramePeriod( unsigned long fr ) {
 }
 
 
+void SetBlink() {
+  // Optional test LED: pin, then frequency. A sender that stops after the
+  // frame rate (campy before the test LED) times out here and leaves it off.
+  int pin = int(Serial.parseFloat());
+  float hz = Serial.parseFloat();
+
+  if (blink_pin >= 0) { digitalWrite(blink_pin, LOW); }
+  blink_pin = -1;
+  blink_half = 0;
+  if (pin >= 0 && hz > 0) {
+    blink_pin = pin;
+    blink_half = (unsigned long) (5e5 / hz + 0.5);
+    pinMode(blink_pin, OUTPUT);
+    digitalWrite(blink_pin, LOW);
+  }
+
+  Serial.println("");
+  if (blink_half > 0) {
+    Serial.print("Test LED on pin ");
+    Serial.print(blink_pin);
+    Serial.print(", half period ");
+    Serial.print(blink_half);
+    Serial.print(" microseconds.");
+  }
+  else {
+    Serial.print("Test LED off.");
+  }
+}
+
+
+void Blink() {
+  // Toggle the test LED when its half period is up (wrap-safe on micros())
+  if (blink_half == 0) { return; }
+  if ((long) (micros() - blink_next) >= 0) {
+    blink_on = !blink_on;
+    digitalWrite(blink_pin, blink_on ? HIGH : LOW);
+    blink_next += blink_half;
+  }
+}
+
+
 void FlushSerialBuffer() {
   
   while (Serial.available() != 0) {
@@ -131,6 +195,9 @@ void ResetTimer() {
   frame_count = 0;
   time_zero = frame_count * frame_period;
   frame_start = micros() + time_zero;
+  blink_on = false;
+  if (blink_pin >= 0) { digitalWrite(blink_pin, LOW); }
+  blink_next = micros();
   
 }
 
@@ -170,6 +237,7 @@ void loop( void ) {
     n_sync = SetDigPins();
     frame_rate_out = SetFrameRate();
     frame_period = SetFramePeriod(frame_rate_out);
+    SetBlink();
     ResetTimer();
   }
 
@@ -177,14 +245,17 @@ void loop( void ) {
     SetPinsLow();
 
     // Wait until end of this pulse period
-    while (Timer() < frame_period / 2) {}
+    while (Timer() < frame_period / 2) { Blink(); }
 
     SetPinsHigh();
 
     // Wait until end of this frame period
-    while (Timer() < frame_period) {}
+    while (Timer() < frame_period) { Blink(); }
 
     frame_start = frame_start + frame_period;
+  }
+  else {
+    Blink();
   }
   
 }

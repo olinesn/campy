@@ -122,7 +122,7 @@ def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path):
 		"frameRate: 20", "recTimeInSec: 6", "chunkLengthInSec: 1", "displayFrameRate: 0",
 		'pixelFormatInput: "rgb24"', 'pixelFormatOutput: "yuv420p"', "gpuID: -1", 'codec: "h264"',
 		'preflight: "off"', "startArduino: True", 'triggerController: "arduino"',
-		'serialPort: "{}"'.format(os.ttyname(slave)), "digitalPins: [2, 3]", ""]))
+		'serialPort: "{}"'.format(os.ttyname(slave)), "digitalPins: [2, 3]", "blinkPin: 13", "blinkHz: 43", ""]))
 
 	env = dict(os.environ, PYTHONPATH=REPO, PYTHONUNBUFFERED="1")
 	env.pop("IMAGEIO_FFMPEG_EXE", None)
@@ -139,15 +139,14 @@ def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path):
 		found = [i for i, line in enumerate(lines) if re.search(pattern, line)]
 		assert found, "no line matching {!r} in campy's output:\n{}".format(pattern, out)
 		return found[0]
-	triggering = first(r"Arduino on port .* is triggering pins \[2, 3\]")
+	triggering = first(r"Arduino on port .* is triggering pins \[2, 3\] at 20 fps, and blinking the test LED on pin 13 at 43 Hz")
 	assert first(r"All 2 cameras are ready\.") < triggering
 	assert first(r"Camera0 ready to trigger") < triggering and first(r"Camera1 ready to trigger") < triggering
 
 	# One start command, from the main process only (each camera process used to send its own),
 	# and the stop command at the end
-	sent = "".join(data for _, data in received) # writes run together: "2,2,3,202,2,3,-1"
-	commands = [c.replace("20.0", "20") for c in re.findall(r"2,2,3,(?:-1|20(?:\.0)?)", sent)]
-	assert commands == ["2,2,3,20", "2,2,3,-1"], sent
+	# (the two writes run together): start with the test LED, then stop with it off
+	assert "".join(data for _, data in received) == "2,2,3,20,13,43" + "2,2,3,-1,-1,0"
 	for name in ("Camera0", "Camera1"):
 		assert (tmp_path / name / "emuclip.mp4").stat().st_size > 0
 
@@ -156,6 +155,7 @@ def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path):
 	assert (record["triggerStarted"], record["startedBy"]) == (True, "campy")
 	assert record["readyBeforeTrigger"] == ["Camera0", "Camera1"] and record["notReady"] == {}
 	assert isinstance(record["startedHostNs"], int) and record["startedHostNs"] > 0
+	assert (record["blinkPin"], record["blinkHz"]) == (13, 43) # campy-synctest reads the rate
 
 
 def test_an_external_trigger_is_recorded_as_not_started_by_campy(tmp_path):

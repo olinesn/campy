@@ -3,6 +3,7 @@ Trigger nexus
 """
 
 import json, logging, os
+from campy import configurator
 
 def ImportTrigger(params):
 	if params["triggerController"] == "Arduino" or params["triggerController"] == "arduino":
@@ -47,6 +48,9 @@ def SaveStart(params, ready, missing, startedNs):
 		"notReady": dict(missing),
 		"startedHostNs": startedNs,
 		}
+	blinkPin, blinkHz = configurator.BlinkSettings(params)
+	if started and blinkPin >= 0:
+		record.update(blinkPin=blinkPin, blinkHz=blinkHz) # campy-synctest reads the rate
 	os.makedirs(params["videoFolder"], exist_ok=True)
 	path = os.path.join(params["videoFolder"], "trigger.json")
 	with open(path, "w") as f:
