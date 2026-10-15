@@ -114,10 +114,12 @@ def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path):
 	for name in ("Camera0", "Camera1"):
 		(tmp_path / name).mkdir()
 		write_clip(str(tmp_path / name / "clip.mp4")) # emu reads videoFilename minus its first 3 characters
+	# The emulated cameras free-run rather than wait for triggers, so they must still be
+	# recording after the Arduino's 3 s boot: campy starts no trigger for cameras that stopped.
 	config = tmp_path / "config.yaml"
 	config.write_text("\n".join([
 		"numCams: 2", 'cameraMake: "emu"', 'videoFolder: "{}"'.format(tmp_path), 'videoFilename: "emuclip.mp4"',
-		"frameRate: 20", "recTimeInSec: 1.5", "chunkLengthInSec: 1", "displayFrameRate: 0",
+		"frameRate: 20", "recTimeInSec: 6", "chunkLengthInSec: 1", "displayFrameRate: 0",
 		'pixelFormatInput: "rgb24"', 'pixelFormatOutput: "yuv420p"', "gpuID: -1", 'codec: "h264"',
 		'preflight: "off"', "startArduino: True", 'triggerController: "arduino"',
 		'serialPort: "{}"'.format(os.ttyname(slave)), "digitalPins: [2, 3]", "blinkPin: 13", "blinkHz: 43", ""]))
@@ -134,7 +136,9 @@ def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path):
 
 	lines = out.splitlines()
 	def first(pattern):
-		return next(i for i, line in enumerate(lines) if re.search(pattern, line))
+		found = [i for i, line in enumerate(lines) if re.search(pattern, line)]
+		assert found, "no line matching {!r} in campy's output:\n{}".format(pattern, out)
+		return found[0]
 	triggering = first(r"Arduino on port .* is triggering pins \[2, 3\] at 20 fps, and blinking the test LED on pin 13 at 43 Hz")
 	assert first(r"All 2 cameras are ready\.") < triggering
 	assert first(r"Camera0 ready to trigger") < triggering and first(r"Camera1 ready to trigger") < triggering

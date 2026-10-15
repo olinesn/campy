@@ -178,6 +178,13 @@ campy-synctest ./test        # the recording's videoFolder
 ```
 It reports each camera's exposure offset from the first camera's (or `--reference`), with its standard error: from frames in which both cameras caught an edge of the blink (a few µs), or from the blink's phase when they are more than one exposure apart (about 10 µs). It also counts the triggers on which the LED was clearly on in one camera and off in the other (0 when the cameras are locked). It passes when every 2-second stretch is within `--tolerance-us` (default 100), and writes `synctest.json`. It pairs frames by trigger with `campy-align`, so it writes that tool's files too. A better `quality` (a lower number) makes the edge measurement finer, since the LED's brightness goes through the video encoder.
 
+### Running the tests
+```
+pip install -e . pytest
+pytest tests
+```
+GitHub Actions runs them on every push to master and every pull request, on Python 3.9 and 3.12 (`.github/workflows/tests.yml`). The RatCam tests need nir-eye-cam's `nireyecam`, from a private repository, and are skipped without it. To run them in CI too, add a repository secret `NIREYECAM_TOKEN`: a fine-grained personal access token with read-only access to the contents of `olinesn/nir-eye-cam`.
+
 ### Helpful tips
 - To debug broken ffmpeg pipe error, include this in config.yaml:
 ```
