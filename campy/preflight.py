@@ -13,15 +13,15 @@ says so until the views are out of step. Each finding is one line:
 preflight "error" (the default) stops campy before recording when a check
 FAILs; "warn" reports and records anyway; "off" skips the check.
 
-  encoders  the ffmpeg binary has each camera's encoder, and a VA-API device
-            can be opened
+  encoders  the ffmpeg binary has each camera's encoder, a VA-API device can
+            be opened, and NVENC encodes a few test frames with campy's settings
   capacity  cameras per encoder, against the table campy-encode-sweep measured
             on this computer (capacityFile)
   usb       camera data per USB bus, against a budget (Linux: read from sysfs)
   disk      free space for the recording, when the sweep measured a bitrate
 """
 
-import os, re, sys, json, shutil, socket, subprocess
+import os, re, sys, json, shlex, shutil, socket, tempfile, subprocess
 from collections import OrderedDict
 
 from campy import writer, configurator
@@ -111,6 +111,8 @@ class Report:
 	def text(self, header):
 		out = [header]
 		for status, check, text in self.lines:
+			# A finding's further lines (ffmpeg's own output) under its text
+			text = text.replace("\n", "\n" + " " * 18)
 			out.append("  {:<4}  {:<8}  {}".format(status, check, text))
 		return "\n".join(out)
 
@@ -184,6 +186,131 @@ def CheckEncoders(cams, report, exe=None, encoders=None):
 		elif not os.access(device, os.R_OK | os.W_OK):
 			report.add(FAIL, "encoders", "cannot open VA-API device {} ({}): add this user to the "
 				"device's group (usually 'render') and log in again.".format(device, Names(group)))
+
+
+# ------------------------------------------------------------------ NVENC
+
+# Test frames per NVENC probe, and how long one may take
+NVENC_PROBE_FRAMES = 10
+NVENC_PROBE_TIMEOUT = 60
+# Lines of ffmpeg's error output a failed probe quotes (its last ones)
+NVENC_PROBE_LINES = 8
+
+# What a failed NVENC probe means, by a phrase in ffmpeg's error output
+NVENC_HINTS = [
+	("Cannot get the preset configuration",
+		"ffmpeg 4.3 and older ask the driver for NVENC presets with a call that NVIDIA drivers "
+		"from 591.44 (December 2025) reject. Set ffmpegPath to an ffmpeg 4.4 or newer that is "
+		"built for an NVENC version this driver supports (README: NVIDIA GPU encoding)."),
+	("Driver does not support the required nvenc API version",
+		"This ffmpeg is built for a newer NVENC version than the driver supports (Required, "
+		"Found). Update the NVIDIA driver to the version ffmpeg names, or set ffmpegPath to an "
+		"ffmpeg built for this driver's NVENC version, e.g. BtbN's 8.1 build (NVENC 13.0, driver "
+		"570 or newer)."),
+	("Cannot load",
+		"ffmpeg could not load the NVIDIA driver's libraries. Is the NVIDIA driver installed? "
+		"nvidia-smi lists the GPUs it drives."),
+	("Requested GPU",
+		"No GPU has this gpuID. nvidia-smi lists the GPUs, numbered from 0."),
+	("capable devices found",
+		"No NVIDIA GPU here encodes this codec at this frame size and pixel format. NVIDIA's "
+		"support matrix lists each GPU's encoders: "
+		"https://developer.nvidia.com/video-encode-decode-gpu-support-matrix"),
+	]
+
+
+def EncodedSize(cam, enc):
+	# imageio-ffmpeg scales a frame up to the next multiple of macro_block_size
+	width, height = cam["frameWidth"], cam["frameHeight"]
+	block = enc["macro_block_size"]
+	if block > 1:
+		width += -width % block
+		height += -height % block
+	return width, height
+
+
+def NvencProbeCommand(exe, cam):
+	"""
+	The ffmpeg command that encodes a few test frames (lavfi's testsrc2) as
+	campy's writer encodes this camera: the same codec, pixel format, input
+	and output options (preset, qp, -gpu, ...), at the size and rate the
+	encoder gets. It writes nvenc_test.<the video's extension> in the working
+	directory.
+	"""
+	enc = writer.EncoderArgs(cam)
+	width, height = EncodedSize(cam, enc)
+	source = "testsrc2=size={}x{}:rate={:.02f}".format(width, height, float(cam["frameRate"]))
+	extension = os.path.splitext(str(cam["videoFilename"]))[1] or ".mp4"
+	return ([exe, "-hide_banner", "-nostdin", "-v", "error"] + enc["input_params"]
+		+ ["-f", "lavfi", "-i", source, "-frames:v", str(NVENC_PROBE_FRAMES)]
+		+ ["-vcodec", enc["codec"], "-pix_fmt", enc["pix_fmt_out"]] + enc["output_params"]
+		+ ["-y", "nvenc_test" + extension])
+
+
+def CommandText(cmd):
+	return subprocess.list2cmdline(cmd) if os.name == "nt" else shlex.join(cmd)
+
+
+def RunProbe(cmd, folder):
+	# ffmpeg's exit code and error output. The code is None when ffmpeg would
+	# not start or did not finish.
+	try:
+		done = subprocess.run(cmd, cwd=folder, capture_output=True, encoding="utf-8",
+			errors="replace", timeout=NVENC_PROBE_TIMEOUT)
+	except subprocess.TimeoutExpired:
+		return None, "(did not finish in {} s)".format(NVENC_PROBE_TIMEOUT)
+	except OSError as e:
+		return None, str(e)
+	return done.returncode, done.stderr or ""
+
+
+def NvencHint(said):
+	for phrase, hint in NVENC_HINTS:
+		if phrase in said:
+			return hint
+	return "Run the command below with -v info instead of -v error for ffmpeg's whole output."
+
+
+def CheckNvenc(cams, report, exe=None, encoders=None):
+	"""
+	Encodes a few test frames with each NVENC camera's settings, before any
+	camera starts. Without it, an ffmpeg that cannot use NVENC on this driver
+	stops every camera's writer with a BrokenPipeError and nothing from ffmpeg
+	to say why (ffmpegLogLevel is "quiet" by default). Cameras with the same
+	settings share one probe.
+	"""
+	nvenc = [cam for cam in cams if cam["gpuID"] != -1 and cam["gpuMake"] == "nvidia"]
+	if not nvenc:
+		return
+	exe = exe or FfmpegExe()
+	if encoders is None:
+		encoders = FfmpegEncoders(exe)
+	if encoders is None:
+		return # ffmpeg would not run: CheckEncoders FAILs that
+
+	probes = OrderedDict()
+	for cam in nvenc:
+		if writer.EncoderArgs(cam)["codec"] in encoders: # else CheckEncoders FAILs it
+			probes.setdefault(tuple(NvencProbeCommand(exe, cam)), []).append(cam)
+	if not probes:
+		return
+
+	with tempfile.TemporaryDirectory(prefix="campy-nvenc-") as folder:
+		for cmd, group in probes.items():
+			code, said = RunProbe(list(cmd), folder)
+			where = "{} on GPU {} ({})".format(writer.EncoderArgs(group[0])["codec"],
+				group[0]["gpuID"], Names(group))
+			if code == 0:
+				report.add(OK, "encoders", "{} encoded {} test frames with campy's settings"\
+					.format(where, NVENC_PROBE_FRAMES))
+				continue
+			quoted = [line.strip() for line in said.splitlines() if line.strip()][-NVENC_PROBE_LINES:]
+			if not quoted:
+				quoted = ["(nothing; exit code {})".format(code)]
+			report.add(FAIL, "encoders", "\n".join(
+				["{} could not encode test frames with campy's settings. ffmpeg said:".format(where)]
+				+ ["  " + line for line in quoted]
+				+ [NvencHint(said), "To run it by hand: " + CommandText(list(cmd))]))
 
 
 # ------------------------------------------------------------------ capacity
@@ -466,6 +593,7 @@ def Run(systems, params, sysfs_root="/sys"):
 
 	report = Report()
 	CheckEncoders(cams, report)
+	CheckNvenc(cams, report)
 	CheckCapacity(cams, table, report, path)
 	CheckUsb(cams, params, report, sysfs_root)
 	CheckDisk(cams, params, table, report)
