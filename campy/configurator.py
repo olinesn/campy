@@ -72,6 +72,8 @@ def DefaultParams():
 	params["serialPort"] = "COM3"
 	params["digitalPins"] = [0,1,2,3,4,5,6]
 	params["readyTimeoutSec"] = 30 # wait this long for every camera before starting the trigger
+	params["blinkPin"] = "None" # Arduino pin with campy-synctest's test LED; "None" = no LED
+	params["blinkHz"] = "None" # its blink rate: not near a whole or half multiple of frameRate
 
 	return params
 
@@ -206,6 +208,15 @@ def TriggerFrameRate(params):
 			"frame rates {}. Give them one frameRate, or set cameraTrigger \"None\" on the cameras "
 			"it does not trigger.".format(", ".join("{:g}".format(r) for r in rates)))
 	return int(rates[0]) if rates[0].is_integer() else rates[0]
+
+
+def BlinkSettings(params):
+	# The test LED's (pin, Hz) for the trigger controller; (-1, 0) when there is none
+	pin, hz = params.get("blinkPin", "None"), params.get("blinkHz", "None")
+	if str(pin) == "None" or str(hz) == "None" or float(hz) <= 0:
+		return -1, 0
+	hz = float(hz)
+	return int(pin), (int(hz) if hz.is_integer() else hz)
 
 
 def CameraParams(params, n_cam):
@@ -543,6 +554,19 @@ def ParseClargs(parser):
 		dest="startArduino",
 		type=bool,
 		help="If True, start Arduino after initializing cameras.",
+	)
+	parser.add_argument(
+		"--blinkPin",
+		dest="blinkPin",
+		type=int,
+		help="Arduino pin driving a test LED that every camera can see, for campy-synctest.",
+	)
+	parser.add_argument(
+		"--blinkHz",
+		dest="blinkHz",
+		type=float,
+		help="Test LED blink rate. Pick one that is not near a whole or half multiple of the \
+			frame rate (e.g. 43 Hz at 25 or 60 fps).",
 	)
 	parser.add_argument(
 		"--readyTimeoutSec",

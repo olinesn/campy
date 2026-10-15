@@ -25,6 +25,7 @@ setup(
 			"campy-encode-sweep = campy.sweep:Main",
 			"campy-encode-quality = campy.quality:Main",
 			"campy-align = campy.align:Main",
+			"campy-synctest = campy.synctest:Main",
 		]
 	}
 )
