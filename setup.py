@@ -4,6 +4,7 @@ setup(
 	name='campy',
 	version='2.0.1',
 	packages=find_packages(),
+	python_requires='>=3.9',
 	install_requires=[
 					'imageio',
 					'imageio-ffmpeg',
