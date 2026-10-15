@@ -41,7 +41,8 @@ def StartTriggers(systems, params):
 		systems["serialCommand"] = serialList
 		serialString = ",".join(str(item) for item in serialList)
 
-		# Send command string
+		# Send command string, noting when, on hosttimes.npy's clock (trigger.json)
+		systems["triggerStartedNs"] = time.monotonic_ns()
 		systems["serial"].write(serialString.encode())
 
 		print("Arduino on port {} is triggering pins {} at {} fps."\
