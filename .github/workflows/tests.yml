@@ -22,11 +22,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        # 3.9: the oldest nireyecam supports. 3.10: FLIR's PySpin on Linux, so the
-        # acquisition PC's. 3.12: PySpin on Windows and macOS, and the newest here.
+        # 3.9: the oldest nireyecam supports. 3.10 and 3.12: the Pythons FLIR's PySpin
+        # is built for (3.12 on Ubuntu 24.04, 3.10 on Ubuntu 22.04, both on Windows and macOS).
         python: ["3.9", "3.10", "3.12"]
         include:
-          # Windows rigs, at the Python the README installs
+          # Windows rigs
           - os: windows-latest
             python: "3.10"
     defaults:
