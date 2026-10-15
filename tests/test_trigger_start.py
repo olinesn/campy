@@ -1,12 +1,12 @@
 """The trigger starts once every camera is grabbing, from campy's main process only."""
 
-import os, re, sys, queue, subprocess, threading, time
+import json, os, re, sys, queue, subprocess, threading, time
 
 import pytest
 
 from campy import configurator
 from campy.cameras import unicam
-from campy.trigger import arduino
+from campy.trigger import arduino, trigger
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -146,3 +146,17 @@ def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path):
 	assert commands == ["2,2,3,20", "2,2,3,-1"], sent
 	for name in ("Camera0", "Camera1"):
 		assert (tmp_path / name / "emuclip.mp4").stat().st_size > 0
+
+	# What campy-align reads: which cameras were grabbing when campy started the trigger
+	record = json.loads((tmp_path / "trigger.json").read_text())
+	assert (record["triggerStarted"], record["startedBy"]) == (True, "campy")
+	assert record["readyBeforeTrigger"] == ["Camera0", "Camera1"] and record["notReady"] == {}
+	assert isinstance(record["startedHostNs"], int) and record["startedHostNs"] > 0
+
+
+def test_an_external_trigger_is_recorded_as_not_started_by_campy(tmp_path):
+	p = params()
+	p.update(videoFolder=str(tmp_path / "rec"), startArduino=False)
+	path = trigger.SaveStart(p, ["Camera0", "Camera1"], {}, None)
+	record = json.loads(open(path).read())
+	assert (record["triggerStarted"], record["startedBy"], record["readyBeforeTrigger"]) == (False, "external", [])

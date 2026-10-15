@@ -105,6 +105,7 @@ def Main():
 		ready, missing = unicam.WaitForCameras(readyQueue, params, result)
 		if ready and not result.ready(): # not if the cameras already stopped (Ctrl-C)
 			systems = trigger.StartTriggers(systems, params)
+		trigger.SaveStart(params, ready, missing, systems.get("triggerStartedNs"))
 		result.get()
 
 	CloseSystems(systems, params)

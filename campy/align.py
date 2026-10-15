@@ -15,12 +15,15 @@ What it works out, for every camera:
   dropped some itself (a gap in frametimes.npy's frame numbers, when the
   encoder fell behind) and the camera missed the rest;
 - for a RatCam, each frame's fractional trigger, between the pulses around it;
-- where the camera started. If the trigger was already running when a camera
-  started (startArduino starts it before the cameras do), that camera's first
-  frame is not the first trigger. campy saves when each frame and each RatCam
-  pulse reached the computer, all on one clock (hosttimes.npy,
-  ratcam_sync.csv), and comparing those says how many triggers later each
-  camera began. The earliest camera's first trigger is trigger 1.
+- where the camera started. When campy starts the trigger itself
+  (startArduino), it waits until every camera is grabbing, and trigger.json
+  says which were: each of those starts at trigger 1. Otherwise (a camera that
+  was not ready, an external trigger, or a recording from a campy that started
+  the trigger first) a camera's first frame need not be the first trigger.
+  campy saves when each frame and each RatCam pulse reached the computer, all
+  on one clock (hosttimes.npy, ratcam_sync.csv), and comparing those says how
+  many triggers later each camera began. Without trigger.json, the earliest
+  camera's first trigger is trigger 1.
 
 Writes aligned.csv in each camera folder, alignment.json in the recording
 folder, and prints a summary.
@@ -94,6 +97,22 @@ def LoadCamera(folder):
 		cam["pulse_t"] = sync.get("t_us", np.zeros(0, np.int64)) / 1e6
 		cam["pulse_host_ns"] = sync.get("host_ns", np.zeros(0, np.int64))
 	return cam
+
+
+def ReadTriggerStart(folder):
+	"""
+	The cameras campy saw grabbing before it started the trigger, from
+	trigger.json; None if it did not start the trigger (or the recording
+	predates trigger.json).
+	"""
+	try:
+		with open(os.path.join(folder, "trigger.json")) as f:
+			record = json.load(f)
+	except (OSError, ValueError):
+		return None
+	if not record.get("triggerStarted"):
+		return None
+	return set(record.get("readyBeforeTrigger") or [])
 
 
 def LoadRecording(folder):
@@ -196,7 +215,7 @@ def ClockMap(dev_s, host_ns):
 	return lambda x: np.asarray(x, float) * (1e9 + slope) + offset
 
 
-def Starts(cams, period):
+def Starts(cams, period, ready=None):
 	"""
 	Each camera's first trigger, as an offset from the earliest camera's. From
 	when the camera's first frame (or a RatCam's first pulse) reached the
@@ -206,19 +225,51 @@ def Starts(cams, period):
 	frame arrives after its exposure, readout and transfer, a good part of a
 	period later. So against a RatCam, a camera's start is rounded down after
 	allowing FRAME_LAG periods early; between cameras of one kind, to nearest.
+
+	ready: the cameras that were grabbing before campy started the trigger
+	(trigger.json). Their first frame is the trigger's first pulse, so they
+	start at trigger 1, and the earliest of them is the reference that places
+	the others. A ready camera is checked only against the earliest ready camera
+	of its own kind: cameras of one kind take about as long from pulse to
+	arrival, so a whole period later there means pulses it missed. Across kinds
+	that delay is unknown (a frame can take most of a period, more than
+	FRAME_LAG allows), so arrival times there cannot overrule the record.
 	"""
+	ready = ready or set()
 	for c in cams:
 		c["start"], c["start_how"], c["unsure"] = 0, "assumed", False
+		c["ready"] = c["name"] in ready
 		if c["ratcam"] and "q" in c and len(c["pulse_host_ns"]) == len(c["pulse_t"]):
 			c["anchor_ns"] = float(ClockMap(c["pulse_t"], c["pulse_host_ns"])(c["pulse_t"][0]))
 		elif not c["ratcam"] and c.get("host_ns") is not None and len(c["t"]):
 			c["anchor_ns"] = float(ClockMap(c["t"], c["host_ns"])(c["t"][0]))
 
 	anchored = [c for c in cams if "anchor_ns" in c]
-	if not anchored:
-		return None
-	pulses = [c for c in anchored if c["ratcam"]]
-	ref = min(pulses or anchored, key=lambda c: c["anchor_ns"])
+	armed = [c for c in anchored if c["ready"]]
+	ref = ArrivalStarts(anchored, period, armed or anchored) if anchored else None
+
+	for c in cams:
+		if c["ready"]:
+			c["start"], c["start_how"], c["unsure"] = 0, "ready before the trigger", False
+	for ratcam in (True, False):
+		group = [c for c in armed if c["ratcam"] == ratcam]
+		if not group:
+			continue
+		base = min(group, key=lambda c: c["anchor_ns"])
+		for c in group:
+			delta = (c["anchor_ns"] - base["anchor_ns"]) / (period * 1e9)
+			missed = int(np.rint(delta))
+			if missed >= 1 and abs(delta - missed) <= UNSURE:
+				c["start"], c["start_how"] = missed, "arrival times"
+				c["warnings"].append("was grabbing before the trigger started, but its first frame came at "
+					"trigger {}: it missed its first {}".format(missed + 1, missed))
+	return ref
+
+
+def ArrivalStarts(anchored, period, candidates):
+	# Starts from arrival times, against the earliest of candidates (a RatCam if any)
+	pulses = [c for c in candidates if c["ratcam"]]
+	ref = min(pulses or candidates, key=lambda c: c["anchor_ns"])
 	for c in anchored:
 		delta = (c["anchor_ns"] - ref["anchor_ns"]) / (period * 1e9)
 		if ref["ratcam"] and not c["ratcam"]:
@@ -238,7 +289,7 @@ def Starts(cams, period):
 
 # ------------------------------------------------------------------ align
 
-def Align(cams):
+def Align(cams, ready=None):
 	nominal = NominalPeriod(cams)
 	for c in cams:
 		if c["ratcam"]:
@@ -250,7 +301,7 @@ def Align(cams):
 
 	periods = [c["period"] for c in cams if c["usable"] and "period" in c]
 	period = float(np.median(periods)) if periods else nominal
-	ref = Starts([c for c in cams if c["usable"]], period)
+	ref = Starts([c for c in cams if c["usable"]], period, ready)
 
 	for c in cams:
 		if not c["usable"]:
@@ -331,6 +382,8 @@ def Describe(c):
 				c["without_frame"], c["dropped"], c["missed"])
 	if c["start_how"] == "assumed":
 		text += "; started at trigger {} (assumed: no arrival times)".format(c["start"] + 1)
+	elif c["start_how"] == "ready before the trigger":
+		text += "; started at trigger 1 (grabbing before the trigger started)"
 	else:
 		text += "; started at trigger {}{}".format(c["start"] + 1, " (could be off by one)" if c["unsure"] else "")
 	return text
@@ -338,10 +391,12 @@ def Describe(c):
 
 def Run(folder, log=print):
 	cams = LoadRecording(folder)
-	period, ref = Align(cams)
+	ready = ReadTriggerStart(folder)
+	period, ref = Align(cams, ready)
 	summary = {
 		"trigger_period_s": period,
 		"trigger_rate_hz": 1.0 / period,
+		"ready_before_trigger": sorted(ready) if ready is not None else None,
 		"starts_from": ref["name"] if ref else None,
 		"cameras": {c["name"]: CameraSummary(c) for c in cams},
 		}
@@ -351,7 +406,10 @@ def Run(folder, log=print):
 	with open(os.path.join(folder, "alignment.json"), "w") as f:
 		json.dump(summary, f, indent=2)
 
-	if any(c["usable"] for c in cams):
+	if any(c["usable"] and c.get("ready") for c in cams):
+		log("Trigger period {:.4f} ms ({:.4f} Hz). Trigger 1 is the trigger's first pulse: campy started it "
+			"once the cameras were grabbing.".format(period * 1e3, 1.0 / period))
+	elif any(c["usable"] for c in cams):
 		log("Trigger period {:.4f} ms ({:.4f} Hz). Trigger 1 is the first trigger any camera recorded{}."\
 			.format(period * 1e3, 1.0 / period, ", by arrival times" if ref else " (assumed: no arrival times)"))
 	else:
