@@ -1,0 +1,55 @@
+name: Trigger sketch
+
+# Compiles campy/trigger/trigger.ino for real boards. The tests also run it, but
+# as plain C++ against a simulated Arduino (tests/arduino_sim), which cannot catch
+# what only a board's compiler and core would (an 8-bit int, a missing API).
+on:
+  push:
+    branches: [master]
+    paths:
+      - "campy/trigger/trigger.ino"
+      - ".github/workflows/sketch.yml"
+  pull_request:
+    paths:
+      - "campy/trigger/trigger.ino"
+      - ".github/workflows/sketch.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sketch-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    name: ${{ matrix.board.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        board:
+          - name: Arduino Uno
+            fqbn: arduino:avr:uno
+            platforms: |
+              - name: arduino:avr
+          - name: Teensy 4.0
+            fqbn: teensy:avr:teensy40
+            platforms: |
+              - name: teensy:avr
+                source-url: https://www.pjrc.com/teensy/package_teensy_index.json
+          - name: Teensy 3.2
+            fqbn: teensy:avr:teensy31
+            platforms: |
+              - name: teensy:avr
+                source-url: https://www.pjrc.com/teensy/package_teensy_index.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/compile-sketches@v1
+        with:
+          fqbn: ${{ matrix.board.fqbn }}
+          platforms: ${{ matrix.board.platforms }}
+          sketch-paths: |
+            - campy/trigger
