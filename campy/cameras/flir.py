@@ -117,8 +117,9 @@ def FrameRateLimits(device, cam_params):
 	  exposureUs, frameRateCap: the exposure, and AcquisitionFrameRate when
 	       AcquisitionFrameRateEnable caps the rate (else None)
 	A free-running camera is read without the cap campy gives it (frameRate,
-	ConfigureFrameRate), so fps is the most it can do, and it is closed with
-	the frame rate settings it had.
+	ConfigureFrameRate), so fps is the most it can do. It is read with the USB
+	limit campy gives it (ConfigureLinkLimit), and closed with the frame rate
+	settings and USB limit it had.
 	"""
 	camera = device
 	camera.Init()
@@ -142,6 +143,7 @@ def FrameRateLimits(device, cam_params):
 	finally:
 		if settings is not None:
 			RestoreFrameRate(camera, settings)
+			RestoreLinkLimit(camera, settings)
 		camera.DeInit()
 
 
@@ -829,8 +831,10 @@ def ConfigureLinkLimit(camera, cam_params):
 	plugged in through a computer's restart came up at 43 MB/s instead of its
 	saved 380, which holds 1280x1024 Mono8 to 32.8 fps. A lower limit can also
 	be on purpose, to share a USB bus, so "auto" keeps any limit that is
-	enough. The limit found is not put back at close: unlike a frame rate cap,
-	a higher limit holds no later recording back.
+	enough. The limit found is not put back when a recording closes the
+	camera: unlike a frame rate cap, a higher limit holds no later recording
+	back. The launch check does put it back (RestoreLinkLimit), so the camera's
+	own process makes the change and says so.
 	"""
 	setting = cam_params.get("cameraLinkLimitMBps", "auto")
 	if str(setting).lower() == "none":
@@ -854,11 +858,26 @@ def ConfigureLinkLimit(camera, cam_params):
 			want = min(max(int(float(setting) * 1e6), lowest), highest)
 			step = node.GetInc()
 			want = lowest + (want - lowest) // step * step
+			if want == found:
+				print("USB throughput limit {:.0f} MB/s...".format(found / 1e6))
+				return cam_params
 		node.SetValue(want)
+		cam_params["linkLimitFound"] = found # for RestoreLinkLimit
 		print("USB throughput limit set to {:.0f} MB/s (it was {:.0f})...".format(node.GetValue() / 1e6, found / 1e6))
 	except Exception as e:
 		logging.error("Caught error at cameras/flir.py ConfigureLinkLimit for {}: {}".format(name, e))
 	return cam_params
+
+
+def RestoreLinkLimit(camera, cam_params):
+	# Puts back the USB throughput limit ConfigureLinkLimit found (the launch check)
+	found = cam_params.get("linkLimitFound")
+	if found is None:
+		return
+	try:
+		GetNode(camera.GetNodeMap(), "DeviceLinkThroughputLimit", PySpin.CIntegerPtr).SetValue(found)
+	except Exception as e:
+		logging.error("Caught error at cameras/flir.py RestoreLinkLimit: {}".format(e))
 
 
 # The switch that lets AcquisitionFrameRate set a free-running camera's rate:

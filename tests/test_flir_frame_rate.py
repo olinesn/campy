@@ -399,3 +399,17 @@ def test_launch_check_passes_once_campy_raises_the_link(flir):
 	camera = FakeCamera(link=43000000)
 	assert preflight.FrameRateFinding(params(), flir.FrameRateLimits(camera, params())) == (preflight.OK,
 		"Camera0 (24243505): up to 170.2 fps with campy's settings; frameRate 80")
+	# and closes the camera with the limit it had, for the camera's own process to raise, and report
+	assert camera.link == 43000000
+
+
+def test_a_recording_leaves_the_raised_link(flir):
+	camera = FakeCamera(link=43000000)
+	flir.CloseCamera(flir.LoadSettings(camera, params()), camera)
+	assert camera.link == 500000000
+
+
+def test_a_number_already_set(flir, capsys):
+	camera = FakeCamera(link=100000000)
+	flir.ConfigureLinkLimit(camera, params(cameraLinkLimitMBps=100))
+	assert camera.writes == [] and "USB throughput limit 100 MB/s..." in capsys.readouterr().out
