@@ -26,7 +26,8 @@ def EncoderArgs(cam_params):
 	# quality is a CRF for libx264/libx265 (adapts to the picture), a constant
 	# quantizer for NVENC, VA-API and AMF (spends bits on sensor noise too) and
 	# -q for QSV, so one number gives very different files on different
-	# encoders. campy-encode-quality measures what each setting costs.
+	# encoders. For AV1 it is the quantizer index, 0-255, on every GPU path.
+	# campy-encode-quality measures what each setting costs.
 	quality = str(cam_params["quality"])
 	preset = str(cam_params["preset"])
 	gpuID = str(cam_params["gpuID"])
@@ -79,6 +80,8 @@ def EncoderArgs(cam_params):
 				codec = "h264_nvenc"
 			elif cam_params["codec"] == "h265":
 				codec = "hevc_nvenc"
+			elif cam_params["codec"] == "av1":
+				codec = "av1_nvenc" # Ada (RTX 40) and newer; -qp is then AV1's quantizer index
 
 		# AMD GPU (AMF/VCE) encoder optimized parameters. On Linux, AMF needs
 		# AMD's proprietary runtime; "vaapi" below uses the open Mesa driver.
@@ -104,16 +107,21 @@ def EncoderArgs(cam_params):
 			if preset == "None":
 				preset = "faster"
 			key_preset = preset
+			# QSV's constant quantizer: quality + 1 for H.264 and H.265, as campy
+			# always passed it; AV1's quantizer index (0-255) as it is, as on
+			# NVENC and VA-API.
 			gpu_params = [
 					"-bf:v", "0",
 					"-preset", preset,
-					"-q", str(int(quality)+1),]
+					"-q", quality if cam_params["codec"] == "av1" else str(int(quality)+1),]
 			if pix_fmt_out == "rgb0" or pix_fmt_out == "bgr0":
 				pix_fmt_out = "nv12"
 			if cam_params["codec"] == "h264":
 				codec = "h264_qsv"
 			elif cam_params["codec"] == "h265":
 				codec = "hevc_qsv"
+			elif cam_params["codec"] == "av1":
+				codec = "av1_qsv" # Arc GPUs and Core Ultra iGPUs
 
 		# Linux VA-API: AMD GPUs through Mesa, Intel through its media driver.
 		# The encoder takes NV12 surfaces, so ffmpeg converts each frame to NV12

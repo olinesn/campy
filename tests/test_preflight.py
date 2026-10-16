@@ -231,6 +231,14 @@ def test_nvenc_probe_command():
 	assert cmd[cmd.index("-gpu") + 1] == "1" and cmd[cmd.index("-g") + 1] == "30"
 
 
+def test_nvenc_probe_command_av1():
+	# codec "av1" probes av1_nvenc, with AV1's quantizer index as -qp
+	cam = nvenc_cameras(1, codec="av1", quality=88)[0]
+	cmd = preflight.NvencProbeCommand("ffmpeg", cam)
+	assert cmd[cmd.index("-vcodec") + 1] == "av1_nvenc"
+	assert cmd[cmd.index("-qp") + 1] == "88"
+
+
 def test_nvenc_probe_skipped_without_nvenc(monkeypatch):
 	# No ffmpeg runs at all unless a camera encodes with NVENC: not for the CPU,
 	# not for VA-API, and not for gpuMake "nvidia" with gpuID -1 (the CPU)
