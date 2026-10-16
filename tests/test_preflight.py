@@ -395,3 +395,99 @@ def test_ratcam_usb_links(tmp_path):
 	assert (OK, "bus 3 (0.48 Gb/s, controller {}): Camera0, Camera1, Camera2 send 6.7 of 35 MB/s (19%)"\
 		.format(CTRL_A)) in found
 	assert not any(s == FAIL for s, t in found if "Camera3" in t)
+
+
+# ------------------------------------------------------------------ frame rate
+
+# What the BFS-U3-13Y3M on the EVO-X2 reported with campy's settings
+# (1280x1024 Mono8, 1500 us exposure): at its saved 380 MB/s, and after it had
+# been left at 43 MB/s, when campy recorded it at 32.6 fps for a frameRate of 60
+FULL_LINK = {"fps": 170.2, "frameBytes": 1310720, "throughputLimit": 380000000, "exposureUs": 1500,
+	"frameRateCap": None}
+SLOW_LINK = dict(FULL_LINK, fps=32.6, throughputLimit=43000000)
+
+
+def frame_rate_report(limits, **values):
+	_, cams = cameras(["24243505"], **values)
+	report = preflight.Report()
+	preflight.CheckFrameRate(cams, report, lambda cam: limits)
+	return lines(report, "camera")
+
+
+def test_frame_rate_fits():
+	assert frame_rate_report(FULL_LINK) == [(OK, "Camera0 (24243505): up to 170.2 fps with campy's settings; frameRate 60")]
+	# Within 20% of the most it can do
+	[(status, text)] = frame_rate_report(dict(FULL_LINK, fps=70))
+	assert status == WARN and text.endswith("frameRate 60 is close to that")
+
+
+def test_frame_rate_names_the_usb_limit():
+	[(status, text)] = frame_rate_report(SLOW_LINK)
+	assert status == FAIL
+	assert text.startswith("Camera0 (24243505) can run at only 32.6 fps with campy's settings, below frameRate 60: "
+		"its USB link is limited to 43 MB/s (DeviceLinkThroughputLimit), and 1.3 MB frames at 60 fps need 79 MB/s.")
+
+
+def test_frame_rate_names_a_long_exposure():
+	[(status, text)] = frame_rate_report(dict(FULL_LINK, fps=49.75, exposureUs=19998))
+	assert status == FAIL
+	assert text.endswith("its exposure, 19998 us (cameraExposureTimeInUs), is longer than a frame at 60 fps (16667 us).")
+
+
+def test_frame_rate_names_a_frame_rate_cap():
+	[(_, text)] = frame_rate_report(dict(FULL_LINK, fps=30, frameRateCap=30))
+	assert text.endswith("AcquisitionFrameRate caps it at 30.0 fps (AcquisitionFrameRateEnable is on).")
+
+
+def test_frame_rate_names_the_tightest_limit():
+	# Both the link (32.8 fps) and the exposure (50 fps) are too slow: the link says why it is 32.6
+	[(_, text)] = frame_rate_report(dict(SLOW_LINK, exposureUs=19998))
+	assert "DeviceLinkThroughputLimit" in text and "cameraExposureTimeInUs" not in text
+
+
+def test_frame_rate_without_a_known_cause():
+	[(_, text)] = frame_rate_report(dict(FULL_LINK, fps=50))
+	assert text.endswith("its sensor reads out 1280x1024 frames no faster.")
+
+
+def test_frame_rate_unreadable():
+	assert frame_rate_report(None) == [] # a make that cannot say
+	[(status, text)] = frame_rate_report(dict(FULL_LINK, fps=None))
+	assert status == WARN and "could not read" in text
+	_, cams = cameras(["1"])
+	report = preflight.Report()
+
+	def broken(cam):
+		raise RuntimeError("Spinnaker: camera busy")
+
+	preflight.CheckFrameRate(cams, report, broken)
+	assert lines(report, "camera") == [(WARN, "Camera0: could not read its frame rate limits (Spinnaker: camera busy)")]
+
+
+def test_camera_limits_opens_the_selected_device(monkeypatch):
+	opened = []
+
+	class Make:
+		@staticmethod
+		def FrameRateLimits(device, cam):
+			opened.append((device, cam["cameraName"]))
+			return FULL_LINK
+
+	monkeypatch.setattr(preflight.unicam, "ImportCam", lambda make: Make)
+	_, cams = cameras(["a", "b"], cameraSelection=[1, 0])
+	systems = {"flir": {"serials": ["a", "b"], "deviceList": ["device a", "device b"]}}
+	assert [preflight.CameraLimits(systems, cam) for cam in cams] == [FULL_LINK, FULL_LINK]
+	assert opened == [("device b", "Camera0"), ("device a", "Camera1")]
+	# Nothing to open: no device list (as in the other tests here), or no such camera
+	assert preflight.CameraLimits({"flir": {"serials": ["a"]}}, cams[0]) is None
+	_, missing = cameras(["a"], cameraSelection=[3])
+	assert preflight.CameraLimits(systems, missing[0]) is None
+
+
+def test_run_stops_on_a_slow_camera(tmp_path, monkeypatch):
+	monkeypatch.setattr(preflight, "CheckEncoders", lambda cams, report: None)
+	monkeypatch.setattr(preflight, "CameraLimits", lambda systems, cam: SLOW_LINK)
+	p, _ = cameras(["24243505"], capacityFile=str(tmp_path / "none.json"), videoFolder=str(tmp_path))
+	systems = {"flir": {"serials": ["24243505"]}}
+	with pytest.raises(preflight.PreflightError, match="1 check failed"):
+		preflight.Run(systems, dict(p, preflight="error"), str(tmp_path / "no-sysfs"))

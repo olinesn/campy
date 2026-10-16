@@ -2,7 +2,7 @@
 """
 import PySpin
 from campy.cameras import unicam
-import os, sys, time, logging
+import os, io, sys, time, logging, contextlib
 import numpy as np
 
 
@@ -95,6 +95,42 @@ def LoadSettings(camera, cam_params):
 		logging.error("Caught error at cameras/flir.py LoadSettings: {}".format(e))
 
 	return cam_params
+
+
+def FrameRateLimits(device, cam_params):
+	"""
+	For the launch check (campy/preflight.py): opens the camera, applies
+	campy's settings to it as a recording does (trigger, frame size, pixel
+	format, exposure), reads what limits its frame rate, and closes it.
+	  fps: the highest frame rate it can run at with those settings
+	       (AcquisitionResultingFrameRate: the USB limit, the exposure and the
+	       sensor's readout all count)
+	  frameBytes, throughputLimit: bytes per frame, and the USB link's limit in
+	       bytes/s (DeviceLinkThroughputLimit; None where the camera has none)
+	  exposureUs, frameRateCap: the exposure, and AcquisitionFrameRate when
+	       AcquisitionFrameRateEnable caps the rate (else None)
+	"""
+	camera = device
+	camera.Init()
+	try:
+		with contextlib.redirect_stdout(io.StringIO()): # the Configure* progress lines
+			LoadSettings(camera, dict(cam_params))
+		nodemap = camera.GetNodeMap()
+
+		def read(name, kind):
+			node = kind(nodemap.GetNode(name))
+			return node.GetValue() if PySpin.IsAvailable(node) and PySpin.IsReadable(node) else None
+
+		enabled = read("AcquisitionFrameRateEnable", PySpin.CBooleanPtr)
+		return {
+			"fps": read("AcquisitionResultingFrameRate", PySpin.CFloatPtr),
+			"frameBytes": read("PayloadSize", PySpin.CIntegerPtr),
+			"throughputLimit": read("DeviceLinkThroughputLimit", PySpin.CIntegerPtr),
+			"exposureUs": read("ExposureTime", PySpin.CFloatPtr),
+			"frameRateCap": read("AcquisitionFrameRate", PySpin.CFloatPtr) if enabled else None,
+			}
+	finally:
+		camera.DeInit()
 
 
 def StartGrabbing(camera):

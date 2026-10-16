@@ -19,13 +19,15 @@ FAILs; "warn" reports and records anyway; "off" skips the check.
             on this computer (capacityFile)
   usb       camera data per USB bus, against a budget (Linux: read from sysfs)
   disk      free space for the recording, when the sweep measured a bitrate
+  camera    each camera can run at frameRate with campy's settings (FLIR:
+            each is opened, set up as a recording sets it up, and read)
 """
 
 import os, re, sys, json, shlex, shutil, socket, tempfile, subprocess
 from collections import OrderedDict
 
 from campy import writer, configurator
-from campy.cameras import ratcam
+from campy.cameras import ratcam, unicam
 
 
 class PreflightError(Exception):
@@ -582,6 +584,74 @@ def CheckDisk(cams, params, table, report):
 
 # ------------------------------------------------------------------ run
 
+# ------------------------------------------------------------------ frame rate
+
+def CameraLimits(systems, cam):
+	# What limits this camera's frame rate (flir.FrameRateLimits), or None for a
+	# make that cannot say. Opens the camera briefly, before its own process does.
+	make = cam["cameraMake"]
+	if "deviceList" not in systems.get(make, {}) or cam["cameraSerialNo"] is None:
+		return None
+	module = unicam.ImportCam(make)
+	if not hasattr(module, "FrameRateLimits"):
+		return None
+	return module.FrameRateLimits(systems[make]["deviceList"][cam["cameraSelection"]], cam)
+
+
+def FrameRateReason(cam, limits, rate):
+	# The tightest of the limits the camera reported, in words
+	frame, link = limits.get("frameBytes"), limits.get("throughputLimit")
+	exposure, cap = limits.get("exposureUs"), limits.get("frameRateCap")
+	causes = []
+	if frame and link and link / frame < rate:
+		causes.append((link / frame, "its USB link is limited to {:.0f} MB/s (DeviceLinkThroughputLimit), "
+			"and {:.1f} MB frames at {:g} fps need {:.0f} MB/s. Unplugging and replugging the camera "
+			"resets the limit to its saved settings, or raise it in SpinView".format(
+			link / 1e6, frame / 1e6, rate, frame * rate / 1e6)))
+	if exposure and 1e6 / exposure < rate:
+		causes.append((1e6 / exposure, "its exposure, {:.0f} us (cameraExposureTimeInUs), is longer "
+			"than a frame at {:g} fps ({:.0f} us)".format(exposure, rate, 1e6 / rate)))
+	if cap and cap < rate:
+		causes.append((cap, "AcquisitionFrameRate caps it at {:.1f} fps "
+			"(AcquisitionFrameRateEnable is on)".format(cap)))
+	if not causes:
+		return "its sensor reads out {}x{} frames no faster".format(cam["frameWidth"], cam["frameHeight"])
+	return min(causes)[1]
+
+
+def FrameRateFinding(cam, limits):
+	# (status, text) for one camera
+	rate = float(cam["frameRate"])
+	fps = limits.get("fps")
+	who = "{} ({})".format(cam["cameraName"], cam["cameraSerialNo"])
+	if not fps:
+		return WARN, "{}: could not read the highest frame rate it can run at".format(who)
+	if fps < rate:
+		return FAIL, "{} can run at only {:.1f} fps with campy's settings, below frameRate {:g}: {}.".format(
+			who, fps, rate, FrameRateReason(cam, limits, rate))
+	close = rate > WARN_FRACTION * fps
+	return (WARN if close else OK), "{}: up to {:.1f} fps with campy's settings; frameRate {:g}{}".format(
+		who, fps, rate, " is close to that" if close else "")
+
+
+def CheckFrameRate(cams, report, limits):
+	"""
+	Each camera can run at frameRate with campy's settings. One that cannot
+	does not stop: free-running, it records more slowly than its video says;
+	triggered, it misses triggers. limits(cam) returns what limits a camera
+	(CameraLimits), or None to skip it.
+	"""
+	for cam in cams:
+		try:
+			found = limits(cam)
+		except Exception as e:
+			report.add(WARN, "camera", "{}: could not read its frame rate limits ({})".format(cam["cameraName"], e))
+			continue
+		if found is not None:
+			status, text = FrameRateFinding(cam, found)
+			report.add(status, "camera", text)
+
+
 def Run(systems, params, sysfs_root="/sys"):
 	mode = str(params.get("preflight", "error")).lower()
 	if mode == "off":
@@ -596,6 +666,7 @@ def Run(systems, params, sysfs_root="/sys"):
 	CheckNvenc(cams, report)
 	CheckCapacity(cams, table, report, path)
 	CheckUsb(cams, params, report, sysfs_root)
+	CheckFrameRate(cams, report, lambda cam: CameraLimits(systems, cam))
 	CheckDisk(cams, params, table, report)
 
 	print(report.text("Launch check ({} cameras on {}):".format(len(cams), socket.gethostname())), flush=True)
