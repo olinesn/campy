@@ -255,6 +255,6 @@ def test_connected_flir_devices(flirreset, tmp_path):
 	for name, vendor in [("2-1", "1e10"), ("3-1", "1724"), ("3-4", "046d"), ("usb2", "1d6b")]:
 		(tmp_path / name).mkdir()
 		(tmp_path / name / "idVendor").write_text(vendor + "\n")
-	(tmp_path / "2-0:1.0").mkdir() # an interface: no idVendor
+	(tmp_path / "2-0.1.0").mkdir() # an interface (2-0:1.0 in sysfs, but Windows forbids ":"): no idVendor
 	assert flirreset.ConnectedFlirDevices(str(tmp_path)) == 2
 	assert flirreset.ConnectedFlirDevices(str(tmp_path / "nowhere")) == 0
