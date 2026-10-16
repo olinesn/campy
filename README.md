@@ -12,7 +12,7 @@
 
 ## Installation
 1. Update graphics drivers
-2. Create and activate a new Anaconda environment, with the Python your camera software is built for (campy itself needs Python 3.9 or newer). For FLIR cameras, Spinnaker 4.4's PySpin is built for Python 3.12 on Ubuntu 24.04, Python 3.10 on Ubuntu 22.04, and Python 3.10 or 3.12 on Windows and macOS. E.g. on Ubuntu 24.04:
+2. Create and activate a new Anaconda environment with Python 3.12. campy needs Python 3.9 or newer, and 3.12 is the version it is set up for: FLIR's PySpin (Spinnaker 4.4) is built for Python 3.12 on Windows, macOS and Ubuntu 24.04. On Ubuntu 22.04, PySpin is built for Python 3.10 only, so use `python=3.10` there.
 ```
 conda create -n campy python=3.12 imageio-ffmpeg matplotlib ffmpeg=8.1 -c conda-forge
 conda activate campy
@@ -38,11 +38,11 @@ To encode on an NVIDIA GPU, check this ffmpeg first: see [NVIDIA GPU encoding (N
 - If using FLIR cameras:
   - Download and install Spinnaker SDK and SpinView software from FLIR's website: 
     https://www.flir.com/support-center/iis/machine-vision/downloads/spinnaker-sdk-and-firmware-download/
-  - Manually install binary wheel for PySpin (included in the Spinnaker download)
-    E.g. for Python 3.12 on Ubuntu 24.04 (x86_64), install "spinnaker_python-<version>-cp312-cp312-linux_x86_64.whl": the cpXY tag must match your Python. Then install the NumPy PySpin needs, which depends on your Python: NumPy 1.x (`pip install "numpy<2"`) for Python 3.10, NumPy 2.x for Python 3.12 (see the README in the PySpin download).
+  - Manually install binary wheel for PySpin (included in the Spinnaker download). It must match your Python, by its cpXY tag (cp312 for Python 3.12), and the Spinnaker SDK you installed, by its version: a mismatch fails at `import PySpin`. E.g. for Spinnaker 4.4.0.246 and Python 3.12, install "spinnaker_python-4.4.0.246-cp312-cp312-win_amd64.whl" on Windows, or "spinnaker_python-4.4.0.246-cp312-cp312-linux_x86_64.whl" on Ubuntu 24.04 (x86_64). PySpin for Python 3.12 needs NumPy 2.x, and for Python 3.10 NumPy 1.x (`pip install "numpy<2"`); see the README in the PySpin download. On Windows and macOS, PySpin for Python 3.12 needs Spinnaker 4.4 or newer: 4.4.0.246 added it, so an older Spinnaker (e.g. 4.2) has to be replaced by 4.4, SpinView included.
   ```
   pip3 install <wheel>
   ```
+  - An environment with an older PySpin (e.g. Spinnaker 2.x's, for Python 3.7) works only with that older SDK, so upgrade a computer's Spinnaker and its campy environment together.
 4. Create a folder to clone campy:
 ```
 cd ~\Documents\
@@ -212,7 +212,7 @@ It reports each camera's exposure offset from the first camera's (or `--referenc
 pip install -e . pytest
 pytest tests
 ```
-GitHub Actions runs them on every push to master and every pull request, on Python 3.9, 3.10 and 3.12 on Linux and Python 3.10 on Windows (`.github/workflows/tests.yml`). The RatCam tests need nir-eye-cam's `nireyecam`, from a private repository, and are skipped without it. To run them in CI too, add a repository secret `NIREYECAM_TOKEN`: a fine-grained personal access token with read-only access to the contents of `olinesn/nir-eye-cam`.
+GitHub Actions runs them on every push to master and every pull request, on Python 3.9, 3.10 and 3.12 on Linux and Python 3.12 on Windows (`.github/workflows/tests.yml`). The RatCam tests need nir-eye-cam's `nireyecam`, from a private repository, and are skipped without it. To run them in CI too, add a repository secret `NIREYECAM_TOKEN`: a fine-grained personal access token with read-only access to the contents of `olinesn/nir-eye-cam`.
 
 The tests run `trigger.ino` as plain C++ against a simulated Arduino. A second workflow (`.github/workflows/sketch.yml`) compiles it for real boards (an Arduino Uno, a Teensy 4.0 and a Teensy 3.2) whenever the sketch changes.
 
