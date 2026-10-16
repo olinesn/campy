@@ -287,12 +287,7 @@ def ConfigureCustomImageSettings(camera, cam_params):
 
 		camera.AcquisitionMode.SetValue(PySpin.AcquisitionMode_Continuous)
 
-		# White Balance not supported for monochrome cameras
-		try:
-			camera.BalanceWhiteAuto.SetValue(PySpin.BalanceWhiteAuto_Off)
-		except:
-			print('Could not set white balance')
-
+		cam_params = ConfigureWhiteBalance(camera, cam_params)
 		cam_params = ConfigureFrameWidth(camera, cam_params)
 		cam_params = ConfigureFrameHeight(camera, cam_params)
 		cam_params = ConfigurePixelFormat(camera, cam_params)
@@ -308,6 +303,22 @@ def ConfigureCustomImageSettings(camera, cam_params):
 
 	cam_params["settingsConfig"] = settingsConfig
 
+	return cam_params
+
+
+def ConfigureWhiteBalance(camera, cam_params):
+	"""
+	Turns a colour camera's automatic white balance off. A mono camera has no
+	white balance: its BalanceWhiteAuto node is there but not available (a
+	Blackfly S BFS-U3-13Y3M on PySpin 4.4), so it is left alone, with nothing
+	printed.
+	"""
+	if GetNode(camera.GetNodeMap(), "BalanceWhiteAuto", PySpin.CEnumerationPtr) is None:
+		return cam_params
+	try:
+		camera.BalanceWhiteAuto.SetValue(PySpin.BalanceWhiteAuto_Off)
+	except Exception as e:
+		print("{}: could not turn off automatic white balance: {}".format(cam_params["cameraName"], e))
 	return cam_params
 
 
