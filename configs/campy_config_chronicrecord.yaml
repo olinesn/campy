@@ -1,0 +1,56 @@
+# The ChronicRecord PC (Windows 11, Core Ultra 9 285 + RTX 2000 Ada): FLIR
+# Blackfly S USB3 cameras (BFS-U3-13Y3M: 1280x1024, mono) free-running at
+# 80 fps, encoded with Intel Quick Sync (H.265) on the processor's GPU.
+#
+# Exposure and gain were chosen on a test scene, a spinning fan, on
+# 2026-10-16. At 200 us the fan's blades and the faces drawn on them were
+# sharp; at 1500 us they smeared. Gain 7 dB was the brightest that left the
+# white faces unclipped. Gain brightens the sensor's noise with the image, and
+# the encoder spends bits on that noise: at quality 24 one camera wrote
+# 1.0 Mbit/s at 1 dB, 1.9 at 7 dB and 9.7 at 18 dB (the camera's maximum).
+# Set the gain for your own light, so that the brightest parts of the animals
+# stay below white, without editing this file:
+#   campy-acquire configs/campy_config_chronicrecord.yaml --cameraGain 10
+# or one value per camera here:
+#   cameraGain: [7, 10]
+#
+# Then check what quality costs on your own scene (a lossless clip, see the
+# README's campy-encode-quality section). Quick Sync kept up with 16 or more
+# cameras on this PC; set numCams to the number of cameras.
+
+# Recording parameters
+videoFolder: "./test"
+videoFilename: "0.mp4"
+frameRate: 80
+recTimeInSec: 3600
+
+# Camera parameters
+numCams: 1
+cameraMake: "flir"
+frameWidth: 1280
+frameHeight: 1024
+pixelFormatInput: "gray"              # Mono8
+cameraTrigger: "None"                 # free-run: campy sets the camera's frame rate to frameRate
+cameraExposureTimeInUs: 200
+cameraGain: 7                         # dB (up to 18 on this camera)
+disableGamma: True
+
+# Compression parameters
+gpuID: 0
+gpuMake: "intel"                      # Quick Sync
+codec: "h265"                         # hevc_qsv
+# Quick Sync's constant quantizer (campy passes quality + 1). At 7 dB, 24 kept
+# the fan's detail at about 1.9 Mbit/s, 0.84 GB per camera-hour.
+quality: 24
+pixelFormatOutput: "yuv420p"          # 4:2:0: what every decoder supports
+keyframeInterval: 0.5                 # seconds; makes seeking cheap
+# conda-forge's ffmpeg for Windows has no Quick Sync: use BtbN's 8.1 build
+ffmpegPath: 'C:\ffmpeg-btbn-8.1\bin\ffmpeg.exe'
+ffmpegLogLevel: "warning"
+writeQueueMaxSec: 5                   # drop (and count) frames past this backlog
+
+# Launch check
+preflight: "error"                    # "warn" records even when a check fails
+
+# Display parameters
+displayFrameRate: 10                  # 0 = no display windows (headless)
