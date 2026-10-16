@@ -39,6 +39,9 @@ class Node:
 	def GetMax(self):
 		return self.limits()[1]
 
+	def GetInc(self):
+		return 1
+
 
 class Entry:
 	def __init__(self, symbolic, value):
@@ -102,7 +105,9 @@ class FakeCamera:
 				limits=lambda: (1.0, self.highest())),
 			"ExposureTime": Node(lambda: self.exposure),
 			"PayloadSize": Node(lambda: FRAME_BYTES),
-			"DeviceLinkThroughputLimit": Node(lambda: self.link),
+			# 0-500 MB/s in steps of 1 byte/s, as on the BFS-U3-13Y3M
+			"DeviceLinkThroughputLimit": Node(lambda: self.link, lambda v: self.write("link", v),
+				limits=lambda: (0, 500000000)),
 			}
 		if legacy:
 			self.nodes["AcquisitionFrameRateAuto"] = Enumeration(self, "auto", ["Off", "Continuous"])
@@ -319,9 +324,12 @@ def test_launch_check_names_what_holds_a_free_running_camera_back(flir):
 	camera = FakeCamera(exposure=19998.0)
 	status, text = preflight.FrameRateFinding(params(), flir.FrameRateLimits(camera, params()))
 	assert status == preflight.FAIL and "can run at only 49.8 fps" in text and "cameraExposureTimeInUs" in text
+	# A link campy is told to leave alone (by default it raises a limit that is too low)
 	camera = FakeCamera(link=43000000)
-	status, text = preflight.FrameRateFinding(params(), flir.FrameRateLimits(camera, params()))
+	slow = params(cameraLinkLimitMBps="None")
+	status, text = preflight.FrameRateFinding(slow, flir.FrameRateLimits(camera, slow))
 	assert status == preflight.FAIL and "DeviceLinkThroughputLimit" in text and "AcquisitionFrameRate caps" not in text
+	assert 'Set cameraLinkLimitMBps to "auto"' in text
 
 
 def test_launch_check_still_names_a_cap_on_a_triggered_camera(flir):
@@ -329,3 +337,65 @@ def test_launch_check_still_names_a_cap_on_a_triggered_camera(flir):
 	limits = flir.FrameRateLimits(camera, params(cameraTrigger="Line3"))
 	assert limits["frameRateCap"] == 30.0 and limits["fps"] == 30.0
 	assert camera.writes == [] and camera.enabled
+
+
+# ------------------------------------------------------------------ USB throughput limit
+
+def test_auto_raises_a_link_too_slow_for_frame_rate(flir, capsys):
+	# The BFS-U3-13Y3M left at 43 MB/s through a computer's restart (its saved limit is 380)
+	camera = FakeCamera(link=43000000)
+	flir.LoadSettings(camera, params())
+	assert camera.link == 500000000 and camera.rate == pytest.approx(80, abs=0.01)
+	out = capsys.readouterr().out
+	assert "USB throughput limit set to 500 MB/s (it was 43)" in out and "Frame rate set to 79.998 fps" in out
+
+
+@pytest.mark.parametrize("link", [380000000, 120000000])
+def test_auto_keeps_a_limit_that_is_enough(flir, link, capsys):
+	# A lower limit can be on purpose (cameras sharing a USB bus): 80 fps of 1.3 MB frames need 105 MB/s
+	camera = FakeCamera(link=link)
+	flir.LoadSettings(camera, params())
+	assert camera.link == link and "link" not in camera.writes
+	assert "USB throughput limit {} MB/s (frameRate needs 105)".format(link // 1000000) in capsys.readouterr().out
+
+
+def test_auto_raises_a_limit_just_short_of_enough(flir):
+	# 110 MB/s is above the 105 the frames need, but inside the 10% margin
+	camera = FakeCamera(link=110000000)
+	flir.LoadSettings(camera, params())
+	assert camera.link == 500000000
+
+
+@pytest.mark.parametrize("setting, expected", [(200, 200000000), ("150", 150000000), (2.5, 2500000),
+	(900, 500000000)])
+def test_a_number_sets_the_limit(flir, setting, expected):
+	# In MB/s, within the camera's range
+	camera = FakeCamera()
+	flir.LoadSettings(camera, params(cameraLinkLimitMBps=setting))
+	assert camera.link == expected
+
+
+@pytest.mark.parametrize("setting", ["None", "none", None])
+def test_none_leaves_the_limit(flir, setting):
+	camera = FakeCamera(link=43000000)
+	flir.ConfigureLinkLimit(camera, params(cameraLinkLimitMBps=setting))
+	assert camera.link == 43000000 and camera.writes == []
+
+
+def test_a_camera_without_a_link_limit(flir):
+	camera = FakeCamera()
+	del camera.nodes["DeviceLinkThroughputLimit"]
+	assert flir.ConfigureLinkLimit(camera, params())["cameraName"] == "Camera0"
+
+
+def test_triggered_camera_gets_the_link_it_needs(flir):
+	# The trigger sets the rate, but its frames still have to fit the link
+	camera = FakeCamera(link=43000000)
+	flir.LoadSettings(camera, params(cameraTrigger="Line3", frameRate=60))
+	assert camera.link == 500000000 and camera.writes == ["link"]
+
+
+def test_launch_check_passes_once_campy_raises_the_link(flir):
+	camera = FakeCamera(link=43000000)
+	assert preflight.FrameRateFinding(params(), flir.FrameRateLimits(camera, params())) == (preflight.OK,
+		"Camera0 (24243505): up to 170.2 fps with campy's settings; frameRate 80")
