@@ -44,6 +44,7 @@ To encode on an NVIDIA GPU, check this ffmpeg first: see [NVIDIA GPU encoding (N
   pip3 install <wheel>
   ```
   - An environment with an older PySpin (e.g. Spinnaker 2.x's, for Python 3.7) works only with that older SDK, so upgrade a computer's Spinnaker and its campy environment together.
+  - On Linux, have `campy-flir-reset` run at startup, so that a camera left plugged in through a restart does not stay at 43 MB/s: see [FLIR cameras at 43 MB/s after a restart](#flir-cameras-at-43-mbs-after-a-restart).
 4. Create a folder to clone campy:
 ```
 cd ~\Documents\
@@ -128,6 +129,42 @@ python -c "import PySpin; s = PySpin.System.GetInstance(); c = s.GetCameras(); p
 ```
 3. SpinView is then in the Start menu (`C:\Program Files\Spinnaker\bin64\vs2015\SpinView_WPF_v140.exe`). The half-installed "Teledyne Spinnaker SDK 4.4.0.246" may reopen its wizard at the next login: close it with Exit, since running it again fails the same way. Leave its Settings ▸ Apps entry alone too, as its uninstaller may remove the packages installed above.
 
+### FLIR cameras at 43 MB/s after a restart
+A Blackfly S sets its USB throughput limit (`DeviceLinkThroughputLimit`) to 43 MB/s whenever it connects at USB 2 speed (FLIR's release notes for firmware 1808, item F-300). A computer's restart leaves its USB ports powered, so a camera that stays plugged in keeps running through it, and the computer's startup connects it at USB 2 and then moves it to USB 3. The camera never restarts, so it keeps the USB 2 limit on its USB 3 link until it is reset or unplugged, although every one of its saved settings says 380 MB/s. A 1280x1024 Mono8 camera then runs at 32.8 fps instead of 170. campy raises such a limit itself (`cameraLinkLimitMBps`), but SpinView and other programs get 43 MB/s.
+
+Measured on a GMKtec EVO-X2 (Ubuntu 24.04, AMI BIOS 1.09) with a BFS-U3-13Y3M on firmware 1808.0.120.0, the newest FLIR lists for it, in October 2026. Whether the camera restarted comes from its `DeviceUptime`:
+
+| | Limit afterwards | Camera restarted |
+|---|---|---|
+| Restart (`sudo reboot`) | 43 MB/s, all 5 times | no: its uptime ran on through the restart, and it was connected twice before Linux started |
+| Its USB 3 port turned off (`usb2-port1/disable`), then on again | 43 MB/s | no: it moved to USB 2 and back |
+| Shut down, then switched on | 380 MB/s | yes, at power-on |
+| Shut down, power cord out for 10 s, switched on | 380 MB/s | yes, at power-on |
+| `DeviceReset`, or unplugging the camera | 380 MB/s | yes |
+
+So on this computer, shutting down and switching on clears it, and a restart does not. A computer that keeps its USB ports powered while shut down (a BIOS setting on some) would keep the camera running through that too.
+
+`campy-flir-reset` resets every FLIR camera that is on a USB 3 link with a limit no higher than USB 2's 480 Mbit/s (60 MB/s). A reset (`DeviceReset`) is the same as unplugging the camera: it restarts with its saved settings, and is back about 8 s later. Cameras on a USB 2 link, and cameras with a higher limit, are left alone. A camera that saved a limit that low is reset too, and comes back with it. On Linux, a systemd service can run it at every startup, before anything opens the cameras, so every program finds the saved limit. Put the campy environment's `bin` folder (`dirname $(which campy-flir-reset)` with the environment active) and your user name in it:
+```
+sudo tee /etc/systemd/system/campy-flir-reset.service <<'EOF'
+[Unit]
+Description=Reset FLIR USB3 cameras a restart left at their USB 2 throughput limit
+After=systemd-udev-trigger.service
+
+[Service]
+Type=oneshot
+User=<your user name>
+ExecStart=<campy environment>/bin/campy-flir-reset
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl enable --now campy-flir-reset.service
+journalctl -b -u campy-flir-reset.service    # what it found and did at this startup
+```
+The user needs the camera access that Spinnaker's installer sets up on Linux (group `flirimaging`); if a FLIR camera is plugged in but Spinnaker does not see it, the service says so. On the EVO-X2, after each of two restarts, it found the camera at 43 MB/s 7 s into startup and had it back at 380 MB/s by 14.4 s; after both shutdowns it found 380 MB/s and left the camera alone. The login screen came up no later than without it (22.5 s after the kernel started, against 23.3 s). `campy-flir-reset` also runs by hand, on Windows too, but the restart behaviour above was not measured on Windows.
+
 ## Usage
 
 ### Configuration
@@ -164,7 +201,7 @@ cameraTrigger: "Line0" # or "Line3"
 
 Without a trigger (`cameraTrigger: "None"`), a FLIR camera free-runs: it times its own frames, and campy sets its `AcquisitionFrameRate` to `frameRate`. Left alone, it would run at whatever rate its saved settings say (a Blackfly S at full frame: 170 fps), while campy still stops after `frameRate` × `recTimeInSec` frames and stamps the video at `frameRate`. campy turns on `AcquisitionFrameRateEnable` (on older Point Grey models such as the Grasshopper3 and Chameleon3, `AcquisitionFrameRateEnabled`, with `AcquisitionFrameRateAuto` Off), sets the rate, reads back the rate the camera will run at, and records it in "metadata.csv" as `resultingFrameRate`. `AcquisitionFrameRate` only caps the rate: an exposure longer than a frame, the camera's USB throughput limit, or its sensor's readout can hold it below `frameRate`, and campy then says which, and at what rate it will record (the launch check stops before that; see below). When it closes the camera, campy puts back the frame rate settings it found: a camera keeps them until it is unplugged, and with the cap on it drops triggers that come faster, so a triggered recording after a free-running one would be held to its `frameRate`. Triggered cameras are left as they are: the trigger sets their rate.
 
-Every FLIR camera's USB throughput limit (`DeviceLinkThroughputLimit`), triggered or not, is set by `cameraLinkLimitMBps`. A camera's live limit is not always the one it saved: a Blackfly S left plugged in through a computer's restart came up at 43 MB/s instead of its saved 380, which holds full-frame Mono8 to 32.8 fps. With `"auto"` (the default), campy raises a limit that is less than the camera's frames need at `frameRate` (frame size × frame rate, plus 10%) to the camera's maximum, and says so; a limit that is enough is kept, since a lower one can be on purpose, so that cameras can share a USB bus. A number sets the limit in MB/s, and `"None"` leaves the camera's own limit.
+Every FLIR camera's USB throughput limit (`DeviceLinkThroughputLimit`), triggered or not, is set by `cameraLinkLimitMBps`. A camera's live limit is not always the one it saved: a Blackfly S left plugged in through a computer's restart came up at 43 MB/s instead of its saved 380, which holds full-frame Mono8 to 32.8 fps (see [FLIR cameras at 43 MB/s after a restart](#flir-cameras-at-43-mbs-after-a-restart)). With `"auto"` (the default), campy raises a limit that is less than the camera's frames need at `frameRate` (frame size × frame rate, plus 10%) to the camera's maximum, and says so; a limit that is enough is kept, since a lower one can be on purpose, so that cameras can share a USB bus. A number sets the limit in MB/s, and `"None"` leaves the camera's own limit.
 
 ### Start Recording:
 ```
