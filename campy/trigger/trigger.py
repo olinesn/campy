@@ -4,6 +4,7 @@ Trigger nexus
 
 import json, logging, os
 from campy import configurator
+from campy.utils.utils import Say
 
 def ImportTrigger(params):
 	if params["triggerController"] == "Arduino" or params["triggerController"] == "arduino":
@@ -11,7 +12,7 @@ def ImportTrigger(params):
 	elif params["triggerController"] == "None" or params["triggerController"] == "none":
 		import campy.trigger.arduino as trigger
 	else:
-		print('The microcontroller you have selected is not supported.')
+		Say('The microcontroller you have selected is not supported.')
 	return trigger
 
 

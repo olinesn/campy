@@ -30,6 +30,7 @@ Besides campy's frametimes and metadata, each RatCam folder gets:
 """
 
 import csv, os, queue, time
+from campy.utils.utils import Say
 
 
 PIXEL_FORMAT = "gray" # every RatCam frame is 8-bit mono
@@ -193,8 +194,8 @@ def Configure(camera, cam_params):
 	want_exp = max(1, int(round(float(cam_params["cameraExposureTimeInUs"]) * 1000.0 / line_ns)))
 	exposure = Reply(cam, "EXP {}".format(want_exp))
 	if exposure < want_exp:
-		print("{}: exposure shortened to {:.0f} us, the longest a {:g} fps frame allows."\
-			.format(name, exposure * line_ns / 1000.0, rate), flush=True)
+		Say("{}: exposure shortened to {:.0f} us, the longest a {:g} fps frame allows."\
+			.format(name, exposure * line_ns / 1000.0, rate))
 
 	gain = Reply(cam, "AGAIN {}".format(int(cam_params.get("ratcamGain", 0))))
 	led = Reply(cam, "LED {}".format(int(cam_params.get("ratcamLed", 0))))
@@ -222,11 +223,11 @@ def OpenCamera(cam_params):
 	except Exception:
 		CloseQuietly(camera)
 		raise
-	print("{}: {}x{} at {:.2f} fps (frame length {}), exposure {:.0f} us, gain code {}, LED {}{}."\
+	Say("{}: {}x{} at {:.2f} fps (frame length {}), exposure {:.0f} us, gain code {}, LED {}{}."\
 		.format(cam_params["cameraName"], cam_params["frameWidth"], cam_params["frameHeight"],
 		cam_params["ratcamFrameRate"], cam_params["ratcamFrameLength"], cam_params["ratcamExposureUs"],
 		cam_params["ratcamGainApplied"], cam_params["ratcamLedApplied"],
-		", driving SYNC_OUT" if cam_params["ratcamSyncOutApplied"] else ""), flush=True)
+		", driving SYNC_OUT" if cam_params["ratcamSyncOutApplied"] else ""))
 	return camera, cam_params
 
 
@@ -236,7 +237,7 @@ def StartGrabbing(camera):
 		camera.cam.command("START")
 		return True
 	except Exception as e:
-		print("RatCam did not start: {}".format(e), flush=True)
+		Say("RatCam did not start: {}".format(e))
 		return False
 
 
@@ -248,7 +249,7 @@ def GrabFrame(camera, frameNumber):
 		if cam.error is not None:
 			if not camera.lost_link:
 				camera.lost_link = True
-				print("{}: lost the RatCam: {}".format(cam.name, cam.error), flush=True)
+				Say("{}: lost the RatCam: {}".format(cam.name, cam.error))
 			raise RatCamError("connection lost")
 		try:
 			packet, host_ns = cam.data.get(timeout=max(0.0, deadline - time.monotonic()))
@@ -292,7 +293,7 @@ def CloseQuietly(camera):
 
 
 def CloseCamera(cam_params, camera):
-	print("Closing {}... Please wait.".format(cam_params["cameraName"]))
+	Say("Closing {}... Please wait.".format(cam_params["cameraName"]))
 	try:
 		try:
 			camera.cam.command("STOP")
@@ -326,8 +327,8 @@ def SaveLogs(cam_params, camera):
 	cam_params["ratcamFramesLost"] = lost
 	cam_params["ratcamSyncPulses"] = len(camera.sync)
 	if lost:
-		print("{}: the camera's frame counter skipped {} frames: they were lost before reaching campy "
-			"(USB too slow for this frame size and rate?).".format(cam_params["cameraName"], lost), flush=True)
+		Say("{}: the camera's frame counter skipped {} frames: they were lost before reaching campy "
+			"(USB too slow for this frame size and rate?).".format(cam_params["cameraName"], lost))
 
 
 def CloseSystem(system, device_list):
