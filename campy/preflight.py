@@ -605,8 +605,8 @@ def FrameRateReason(cam, limits, rate):
 	causes = []
 	if frame and link and link / frame < rate:
 		causes.append((link / frame, "its USB link is limited to {:.0f} MB/s (DeviceLinkThroughputLimit), "
-			"and {:.1f} MB frames at {:g} fps need {:.0f} MB/s. Unplugging and replugging the camera "
-			"resets the limit to its saved settings, or raise it in SpinView".format(
+			"and {:.1f} MB frames at {:g} fps need {:.0f} MB/s. Set cameraLinkLimitMBps to \"auto\" (the default), "
+			"which raises a limit that is too low, or to a higher number".format(
 			link / 1e6, frame / 1e6, rate, frame * rate / 1e6)))
 	if exposure and 1e6 / exposure < rate:
 		causes.append((1e6 / exposure, "its exposure, {:.0f} us (cameraExposureTimeInUs), is longer "

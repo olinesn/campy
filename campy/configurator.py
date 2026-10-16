@@ -35,6 +35,7 @@ def DefaultParams():
 	params["cameraExposureTimeInUs"] = 1500
 	params["cameraGain"] = 1
 	params["disableGamma"] = True
+	params["cameraLinkLimitMBps"] = "auto" # USB throughput limit: "auto", MB/s, or "None" (flir.ConfigureLinkLimit)
 
 	# RatCam (nir-eye-cam) parameters: see campy/cameras/ratcam.py
 	params["ratcamPorts"] = "None" # "None" = find RatCams by USB; or a list of ports, "sim" = simulated
@@ -382,6 +383,13 @@ def ParseClargs(parser):
 		dest="disableGamma",
 		type=bool, 
 		help="Whether to disable gamma (default: True).",
+	)
+	parser.add_argument(
+		"--cameraLinkLimitMBps",
+		dest="cameraLinkLimitMBps",
+		help="FLIR USB3 cameras: the camera's USB throughput limit (DeviceLinkThroughputLimit). 'auto' \
+			(default) raises it to the camera's maximum when it is too low for frameRate; a number sets \
+			it in MB/s; 'None' leaves the camera's own limit.",
 	)
 	parser.add_argument(
 		"--bufferMode", 
