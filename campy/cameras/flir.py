@@ -91,6 +91,10 @@ def LoadSettings(camera, cam_params):
 		# pixel format, exposure, gain, gamma, buffer and chunkdata mode (e.g. timestamp/frame info))
 		cam_params = ConfigureCustomImageSettings(camera, cam_params)
 
+		# A free-running camera's frame rate, last: the most it can reach depends
+		# on the frame size, pixel format and exposure set above
+		cam_params = ConfigureFrameRate(camera, cam_params)
+
 	except Exception as e:
 		logging.error("Caught error at cameras/flir.py LoadSettings: {}".format(e))
 
@@ -109,27 +113,32 @@ def FrameRateLimits(device, cam_params):
 	       bytes/s (DeviceLinkThroughputLimit; None where the camera has none)
 	  exposureUs, frameRateCap: the exposure, and AcquisitionFrameRate when
 	       AcquisitionFrameRateEnable caps the rate (else None)
+	A free-running camera is read without the cap campy gives it (frameRate,
+	ConfigureFrameRate), so fps is the most it can do, and it is closed with
+	the frame rate settings it had.
 	"""
 	camera = device
 	camera.Init()
+	settings = None
 	try:
 		with contextlib.redirect_stdout(io.StringIO()): # the Configure* progress lines
-			LoadSettings(camera, dict(cam_params))
+			settings = LoadSettings(camera, dict(cam_params))
 		nodemap = camera.GetNodeMap()
+		switch = FrameRateSwitch(nodemap)
+		if FreeRuns(cam_params) and switch is not None and PySpin.IsWritable(switch):
+			switch.SetValue(False)
 
-		def read(name, kind):
-			node = kind(nodemap.GetNode(name))
-			return node.GetValue() if PySpin.IsAvailable(node) and PySpin.IsReadable(node) else None
-
-		enabled = read("AcquisitionFrameRateEnable", PySpin.CBooleanPtr)
+		enabled = switch is not None and switch.GetValue()
 		return {
-			"fps": read("AcquisitionResultingFrameRate", PySpin.CFloatPtr),
-			"frameBytes": read("PayloadSize", PySpin.CIntegerPtr),
-			"throughputLimit": read("DeviceLinkThroughputLimit", PySpin.CIntegerPtr),
-			"exposureUs": read("ExposureTime", PySpin.CFloatPtr),
-			"frameRateCap": read("AcquisitionFrameRate", PySpin.CFloatPtr) if enabled else None,
+			"fps": ReadNode(nodemap, "AcquisitionResultingFrameRate", PySpin.CFloatPtr),
+			"frameBytes": ReadNode(nodemap, "PayloadSize", PySpin.CIntegerPtr),
+			"throughputLimit": ReadNode(nodemap, "DeviceLinkThroughputLimit", PySpin.CIntegerPtr),
+			"exposureUs": ReadNode(nodemap, "ExposureTime", PySpin.CFloatPtr),
+			"frameRateCap": ReadNode(nodemap, "AcquisitionFrameRate", PySpin.CFloatPtr) if enabled else None,
 			}
 	finally:
+		if settings is not None:
+			RestoreFrameRate(camera, settings)
 		camera.DeInit()
 
 
@@ -223,6 +232,7 @@ def CloseCamera(cam_params, camera):
 			try:
 				# Close camera
 				camera.EndAcquisition()
+				RestoreFrameRate(camera, cam_params)
 				camera.DeInit()
 				del camera
 				break
@@ -797,6 +807,158 @@ def ConfigureTrigger(camera, cam_params):
 		logging.error("Caught error at cameras/flir.py ConfigureTrigger: {}".format(e))
 
 	return cam_params
+
+
+# The switch that lets AcquisitionFrameRate set a free-running camera's rate:
+# AcquisitionFrameRateEnable on a Blackfly S, an Oryx and other recent models;
+# AcquisitionFrameRateEnabled on older Point Grey models (Grasshopper3,
+# Chameleon3), which also pick the rate themselves until AcquisitionFrameRateAuto
+# is Off
+FRAME_RATE_SWITCHES = ("AcquisitionFrameRateEnable", "AcquisitionFrameRateEnabled")
+FRAME_RATE_AUTO = "AcquisitionFrameRateAuto"
+
+# AcquisitionFrameRate has its own step: a Blackfly S set to 80 fps reports
+# 79.998 (and its timestamps say 80.00)
+FRAME_RATE_TOLERANCE = 0.001
+
+
+def FreeRuns(cam_params):
+	# No trigger (cameraTrigger "None"): the camera times its own frames
+	return str(cam_params["cameraTrigger"]).lower() == "none"
+
+
+def GetNode(nodemap, name, kind):
+	# The named node as kind (PySpin.CFloatPtr, ...), or None where this camera
+	# has no such node or cannot read it now
+	node = nodemap.GetNode(name)
+	if node is None:
+		return None
+	node = kind(node)
+	return node if PySpin.IsAvailable(node) and PySpin.IsReadable(node) else None
+
+
+def ReadNode(nodemap, name, kind):
+	node = GetNode(nodemap, name, kind)
+	return node.GetValue() if node is not None else None
+
+
+def FrameRateSwitch(nodemap):
+	for name in FRAME_RATE_SWITCHES:
+		node = GetNode(nodemap, name, PySpin.CBooleanPtr)
+		if node is not None:
+			return node
+	return None
+
+
+def ConfigureFrameRate(camera, cam_params):
+	"""
+	A free-running camera (cameraTrigger "None") runs at frameRate. campy stops
+	after frameRate x recTimeInSec frames and the writer stamps the video at
+	frameRate, so a camera left at its own rate records too fast (a Blackfly S
+	runs at up to 170 fps) and its video plays slowed down.
+
+	AcquisitionFrameRate only caps the rate: an exposure longer than a frame,
+	the USB link's throughput limit or the sensor's readout can hold the camera
+	below it. So campy reads back the rate the camera will run at
+	(AcquisitionResultingFrameRate), keeps it as resultingFrameRate (in
+	metadata.csv), and says why when it is not frameRate. What the camera had
+	is put back when campy closes it (RestoreFrameRate).
+
+	A triggered camera is left as it is: the trigger sets its rate.
+	"""
+	if not FreeRuns(cam_params):
+		return cam_params
+
+	name, rate = cam_params["cameraName"], float(cam_params["frameRate"])
+	try:
+		nodemap = camera.GetNodeMap()
+		switch = FrameRateSwitch(nodemap)
+		node = GetNode(nodemap, "AcquisitionFrameRate", PySpin.CFloatPtr)
+		auto = GetNode(nodemap, FRAME_RATE_AUTO, PySpin.CEnumerationPtr)
+		if switch is None or node is None or not PySpin.IsWritable(switch):
+			print("{}: this camera's frame rate cannot be set (AcquisitionFrameRate), so it free-runs at its "
+				"own rate, not at frameRate {:g}.".format(name, rate), flush=True)
+			return cam_params
+
+		# What the camera had, for RestoreFrameRate
+		cam_params["frameRateFound"] = {
+			"enabled": switch.GetValue(),
+			"rate": node.GetValue(),
+			"auto": auto.GetCurrentEntry().GetSymbolic() if auto is not None else None,
+			}
+
+		if auto is not None and PySpin.IsWritable(auto):
+			off = auto.GetEntryByName("Off")
+			if off is not None and PySpin.IsAvailable(off):
+				auto.SetIntValue(off.GetValue())
+		switch.SetValue(True)
+		if not PySpin.IsWritable(node):
+			print("{}: AcquisitionFrameRate cannot be set, so it free-runs at its own rate, not at "
+				"frameRate {:g}.".format(name, rate), flush=True)
+			return cam_params
+
+		# The camera refuses a rate outside its range. Its maximum follows the
+		# frame size, pixel format and USB throughput limit, not the exposure.
+		lowest, highest = node.GetMin(), node.GetMax()
+		node.SetValue(min(max(rate, lowest), highest))
+
+		fps = ReadNode(nodemap, "AcquisitionResultingFrameRate", PySpin.CFloatPtr)
+		if fps is None:
+			fps = node.GetValue()
+		cam_params["resultingFrameRate"] = round(fps, 3)
+		if abs(fps - rate) <= FRAME_RATE_TOLERANCE * rate:
+			print("Frame rate set to {:.3f} fps (free-running)...".format(fps))
+		else:
+			print(FrameRateShortfall(cam_params, nodemap, fps, lowest), flush=True)
+
+	except Exception as e:
+		logging.error("Caught error at cameras/flir.py ConfigureFrameRate: {}".format(e))
+
+	return cam_params
+
+
+def FrameRateShortfall(cam_params, nodemap, fps, lowest):
+	# Why a free-running camera will not run at frameRate, in words
+	name, rate = cam_params["cameraName"], float(cam_params["frameRate"])
+	result = "It will record at {:.1f} fps, and its video will say {:g} fps.".format(fps, rate)
+	if fps > rate:
+		return "{}: frameRate {:g} is below the slowest this camera free-runs at, {:.1f} fps (AcquisitionFrameRate's "\
+			"minimum). {} Trigger it to record more slowly.".format(name, rate, lowest, result)
+
+	from campy import preflight # the launch check's words for what limits a camera
+	limits = {
+		"frameBytes": ReadNode(nodemap, "PayloadSize", PySpin.CIntegerPtr),
+		"throughputLimit": ReadNode(nodemap, "DeviceLinkThroughputLimit", PySpin.CIntegerPtr),
+		"exposureUs": ReadNode(nodemap, "ExposureTime", PySpin.CFloatPtr),
+		}
+	return "{} can run at only {:.1f} fps free-running with campy's settings, below frameRate {:g}: {}. {}".format(
+		name, fps, rate, preflight.FrameRateReason(cam_params, limits, rate), result)
+
+
+def RestoreFrameRate(camera, cam_params):
+	"""
+	Puts back the frame rate settings ConfigureFrameRate found on a
+	free-running camera. A camera keeps them until it is unplugged, and with
+	the cap on it drops triggers that come faster than AcquisitionFrameRate (a
+	Blackfly S capped at 10 fps kept 21 of 100 software triggers at 50 Hz), so
+	a triggered recording after this one would be held to this one's frameRate.
+	"""
+	found = cam_params.get("frameRateFound")
+	if not found:
+		return
+	try:
+		nodemap = camera.GetNodeMap()
+		# The switch first: the rate can be set only while it is on, and turning
+		# it off resets the rate (to the most the camera can do)
+		FrameRateSwitch(nodemap).SetValue(found["enabled"])
+		node = GetNode(nodemap, "AcquisitionFrameRate", PySpin.CFloatPtr)
+		if found["enabled"] and node is not None and PySpin.IsWritable(node):
+			node.SetValue(min(max(found["rate"], node.GetMin()), node.GetMax()))
+		auto = GetNode(nodemap, FRAME_RATE_AUTO, PySpin.CEnumerationPtr)
+		if found["auto"] is not None and auto is not None and PySpin.IsWritable(auto):
+			auto.SetIntValue(auto.GetEntryByName(found["auto"]).GetValue())
+	except Exception as e:
+		logging.error("Caught error at cameras/flir.py RestoreFrameRate: {}".format(e))
 
 
 def PrintDeviceInfo(nodemap, cam_params):

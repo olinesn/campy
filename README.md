@@ -123,6 +123,8 @@ startArduino: False
 cameraTrigger: "Line0" # or "Line3"
 ```
 
+Without a trigger (`cameraTrigger: "None"`), a FLIR camera free-runs: it times its own frames, and campy sets its `AcquisitionFrameRate` to `frameRate`. Left alone, it would run at whatever rate its saved settings say (a Blackfly S at full frame: 170 fps), while campy still stops after `frameRate` × `recTimeInSec` frames and stamps the video at `frameRate`. campy turns on `AcquisitionFrameRateEnable` (on older Point Grey models such as the Grasshopper3 and Chameleon3, `AcquisitionFrameRateEnabled`, with `AcquisitionFrameRateAuto` Off), sets the rate, reads back the rate the camera will run at, and records it in "metadata.csv" as `resultingFrameRate`. `AcquisitionFrameRate` only caps the rate: an exposure longer than a frame, the camera's USB throughput limit, or its sensor's readout can hold it below `frameRate`, and campy then says which, and at what rate it will record (the launch check stops before that; see below). When it closes the camera, campy puts back the frame rate settings it found: a camera keeps them until it is unplugged, and with the cap on it drops triggers that come faster, so a triggered recording after a free-running one would be held to its `frameRate`. Triggered cameras are left as they are: the trigger sets their rate.
+
 ### Start Recording:
 ```
 campy-acquire ./configs/campy_config.yaml
@@ -157,7 +159,7 @@ Every `campy-acquire` then starts with a launch check, printed before recording:
 - **encoders**: ffmpeg has each camera's encoder, the VA-API device can be opened, and NVENC encodes a few test frames with each NVENC camera's settings ([NVIDIA GPU encoding](#nvidia-gpu-encoding-nvenc)).
 - **capacity**: the cameras on each encoder, against the measured table.
 - **usb** (Linux): each camera's USB bus and controller, read from sysfs, and the camera data on each bus against a budget (300 MB/s for a 5 Gb/s bus, 600 MB/s for 10 Gb/s; set `usbBudgetMBps` once you have measured your own). A camera running at USB 2 speed fails.
-- **camera** (FLIR): each camera can run at `frameRate` with campy's settings. campy opens it, sets it up as a recording does (trigger, frame size, pixel format, exposure), reads the highest frame rate the camera says it can reach, and names what limits it when that is too low: the camera's USB throughput limit (`DeviceLinkThroughputLimit`), an exposure longer than a frame, or `AcquisitionFrameRate`. A camera that cannot keep up does not stop by itself: free-running, it records more slowly than its video says; triggered, it misses triggers.
+- **camera** (FLIR): each camera can run at `frameRate` with campy's settings. campy opens it, sets it up as a recording does (trigger, frame size, pixel format, exposure), reads the highest frame rate the camera says it can reach, and names what limits it when that is too low: the camera's USB throughput limit (`DeviceLinkThroughputLimit`), an exposure longer than a frame, or, on a triggered camera, `AcquisitionFrameRate` (a free-running camera is read without the `frameRate` cap campy gives it). A camera that cannot keep up does not stop by itself: free-running, it records more slowly than its video says; triggered, it misses triggers.
 - **disk**: free space for the recording.
 
 With `preflight: "error"` (the default), a failed check stops campy before recording; `"warn"` records anyway; `"off"` skips the check. `displayFrameRate: 0` runs without display windows, for example over SSH.
