@@ -47,6 +47,20 @@ def test_nvidia_amd_intel_args_unchanged():
 	assert qsv["output_params"] == ["-bf:v", "0", "-preset", "faster", "-q", "22"]
 
 
+@pytest.mark.parametrize("codec", ["h264", "h265", "av1"])
+def test_quick_sync_is_given_nv12_for_yuv420p(codec):
+	# Quick Sync takes 8-bit frames as NV12 only. Given -pix_fmt yuv420p,
+	# ffmpeg switched to NV12 itself and printed "Incompatible pixel format
+	# 'yuv420p' for codec 'hevc_qsv', auto-selecting format 'nv12'"
+	# (ChronicRecord PC, 2026-10-16)
+	qsv = writer.EncoderArgs(cam(gpuID=0, gpuMake="intel", codec=codec, pixelFormatOutput="yuv420p"))
+	assert qsv["pix_fmt_out"] == "nv12"
+	# Other encoders keep yuv420p
+	for make in ("nvidia", "amd"):
+		assert writer.EncoderArgs(cam(gpuID=0, gpuMake=make, pixelFormatOutput="yuv420p"))["pix_fmt_out"] == "yuv420p"
+	assert writer.EncoderArgs(cam(pixelFormatOutput="yuv420p"))["pix_fmt_out"] == "yuv420p"
+
+
 def test_vaapi_args():
 	enc = writer.EncoderArgs(cam(gpuID=0, gpuMake="vaapi", vaapiDevice="/dev/dri/renderD129"))
 	assert enc["codec"] == "h264_vaapi"
