@@ -12,6 +12,7 @@ E.g. Wait for 'Ready' message from Arduino to Python instead of "dumb" sleep
 import serial
 import time, logging
 from campy import configurator
+from campy.utils.utils import Say
 
 
 def OpenTriggers(systems, params):
@@ -27,7 +28,7 @@ def OpenTriggers(systems, params):
 		time.sleep(3)
 
 	except Exception as e:
-		print("Could not open the trigger's serial port {}: {}".format(params["serialPort"], e), flush=True)
+		Say("Could not open the trigger's serial port {}: {}".format(params["serialPort"], e))
 	return systems
 
 
@@ -47,20 +48,19 @@ def StartTriggers(systems, params):
 		systems["triggerStartedNs"] = time.monotonic_ns()
 		systems["serial"].write(serialString.encode())
 
-		print("Arduino on port {} is triggering pins {} at {} fps{}."\
+		Say("Arduino on port {} is triggering pins {} at {} fps{}."\
 			.format(params["serialPort"], params["digitalPins"], frameRate,
-				", and blinking the test LED on pin {} at {} Hz".format(blinkPin, blinkHz) if blinkPin >= 0 else ""),
-			flush=True)
+				", and blinking the test LED on pin {} at {} Hz".format(blinkPin, blinkHz) if blinkPin >= 0 else ""))
 
 	except Exception as e:
-		print("Could not start the trigger on {}: {}".format(params["serialPort"], e), flush=True)
+		Say("Could not start the trigger on {}: {}".format(params["serialPort"], e))
 	return systems
 
 
 def StopTriggers(systems):
 	if "serial" not in systems:
 		return
-	print("Closing serial connection...")
+	Say("Closing serial connection...")
 
 	# Repeat the same Pyserial command, except encode frame rate as "-1" and the test LED as off
 	if "serialCommand" in systems:

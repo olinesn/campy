@@ -7,6 +7,7 @@ import os, sys, time, csv, queue, logging
 import numpy as np
 from collections import deque
 from scipy import io as sio
+from campy.utils.utils import Say
 
 
 # Set in each camera process (campy.InitCameraProcess): where it reports that its
@@ -25,11 +26,7 @@ def SignalReady(cam_params, ok=True, error=""):
 		_readyQueue.put((cam_params["n_cam"], cam_params["cameraName"], ok, error))
 
 
-def _Say(text):
-	print(text, flush=True)
-
-
-def WaitForCameras(readyQueue, params, result=None, log=_Say):
+def WaitForCameras(readyQueue, params, result=None, log=Say):
 	"""
 	Waits until every camera has reported ready for triggers, or failed, for at
 	most readyTimeoutSec, and stops early if the camera processes end (result
@@ -78,7 +75,7 @@ def ImportCam(make):
 	elif make == "ratcam":
 		from campy.cameras import ratcam as cam
 	else:
-		print('Camera make is not supported by CamPy. Check config.', flush=True)
+		Say('Camera make is not supported by CamPy. Check config.')
 	return cam
 
 
@@ -113,7 +110,7 @@ def OpenCamera(cam_params, stopWriteQueue):
 	try:
 		camera, cam_params = cam.OpenCamera(cam_params)
 
-		print("Opened {}: {} {} serial# {}".format( \
+		Say("Opened {}: {} {} serial# {}".format( \
 			cam_params["cameraName"],
 			cam_params["cameraMake"], 
 			cam_params["cameraModel"],
@@ -190,14 +187,14 @@ def DropFrame(grabdata, frameNumber, maxQueue):
 	now = time.perf_counter()
 	if now - grabdata["lastDropReport"] >= 5:
 		grabdata["lastDropReport"] = now
-		print("{}: the encoder is {} frames behind. Dropped {} frames so far (latest: frame {})."\
-			.format(grabdata["cameraName"], maxQueue, grabdata["framesDropped"], frameNumber), flush=True)
+		Say("{}: the encoder is {} frames behind. Dropped {} frames so far (latest: frame {})."\
+			.format(grabdata["cameraName"], maxQueue, grabdata["framesDropped"], frameNumber))
 
 
 def StartGrabbing(camera, cam_params, cam):
 	grabbing = cam.StartGrabbing(camera)
 	if grabbing:
-		print(cam_params["cameraName"], "ready to trigger.", flush=True)
+		Say("{} ready to trigger.".format(cam_params["cameraName"]))
 	SignalReady(cam_params, bool(grabbing))
 	return grabbing
 
@@ -206,7 +203,7 @@ def CountFPS(grabdata, frameNumber, timeStamp):
 	if frameNumber % grabdata["chunkLengthInFrames"] == 0:
 		timeElapsed = timeStamp - grabdata["timeStamp"][0]
 		fpsCount = round((frameNumber - 1) / timeElapsed, 1)
-		print('{} collected {} frames at {} fps for {} sec.'\
+		Say('{} collected {} frames at {} fps for {} sec.'\
 			.format(grabdata["cameraName"], frameNumber, fpsCount, round(timeElapsed)))
 
 
@@ -282,9 +279,9 @@ def SaveMetadata(cam_params, grabdata):
 		frame_count = grabdata.get('framesGrabbed', grabdata['frameNumber'][-1])
 		time_count = grabdata['timeStamp'][-1]
 		fps_count = int(round(frame_count/time_count))
-		print('{} saved {} frames at {} fps.'.format(cam_params["cameraName"], frame_count, fps_count))
+		Say('{} saved {} frames at {} fps.'.format(cam_params["cameraName"], frame_count, fps_count))
 		if grabdata["framesDropped"]:
-			print('{} dropped {} of them: the encoder fell more than {} s behind (writeQueueMaxSec).'\
+			Say('{} dropped {} of them: the encoder fell more than {} s behind (writeQueueMaxSec).'\
 				.format(cam_params["cameraName"], grabdata["framesDropped"], cam_params["writeQueueMaxSec"]))
 
 		meta = cam_params
@@ -319,16 +316,16 @@ def SaveMetadata(cam_params, grabdata):
 				if isinstance(row[1],(list,str,int,float)):
 					w.writerow(row)
 
-		print('Saved metadata for {}.'.format(cam_params['cameraName']))
+		Say('Saved metadata for {}.'.format(cam_params['cameraName']))
 
 	except Exception as e:
 		logging.error('Caught exception: {}'.format(e))
 
 
 def CloseSystems(systems, params):
-	print('Closing systems...')
+	Say('Closing systems...')
 	makes = GetMakeList(params)
 	for m in range(len(makes)):
 		cam = ImportCam(makes[m])
 		cam.CloseSystem(systems[makes[m]]["system"], systems[makes[m]]["deviceList"])
-	print('Exiting campy...')
+	Say('Exiting campy...')

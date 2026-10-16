@@ -4,6 +4,7 @@
 import os, ast, copy, yaml, time, logging
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from campy.cameras import unicam
+from campy.utils.utils import Say
 
 
 def DefaultParams():
@@ -107,7 +108,7 @@ def AutoParams(params, default_params):
 				pass # 0 = no display window (headless)
 			elif value <= 0:
 				value = default_value
-				print("{} set to invalid value in config. Setting to default ({})."\
+				Say("{} set to invalid value in config. Setting to default ({})."\
 						.format(key, default_value))
 			fixed.append(value)
 		params[key] = fixed if isinstance(params[key], list) else fixed[0]
@@ -195,7 +196,7 @@ def ValidateCameraLists(params):
 			raise ValueError("{} has {} values for {} cameras. Give one value per camera, "
 				"or a single value for all of them.".format(key, len(value), num_cams))
 		if len(value) > num_cams:
-			print("{} lists {} values; using the first {} (numCams).".format(key, len(value), num_cams))
+			Say("{} lists {} values; using the first {} (numCams).".format(key, len(value), num_cams))
 
 
 def TriggerFrameRate(params):

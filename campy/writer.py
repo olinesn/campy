@@ -8,7 +8,7 @@ command a recording runs.
 """
 from imageio_ffmpeg import write_frames
 import os, sys, time, logging
-from campy.utils.utils import QueueKeyboardInterrupt
+from campy.utils.utils import QueueKeyboardInterrupt, Say
 
 
 def EncoderArgs(cam_params):
@@ -207,7 +207,7 @@ def OpenWriter(cam_params, queue):
 
 		if not os.path.isdir(folder_name):
 			os.makedirs(folder_name)
-			print("Made directory {}.".format(folder_name))
+			Say("Made directory {}.".format(folder_name))
 
 		# Flip blue and red for flir camera input
 		if cam_params["pixelFormatInput"] == "bayer_bggr8" and cam_params["cameraMake"] == "flir":
@@ -216,9 +216,9 @@ def OpenWriter(cam_params, queue):
 		enc = EncoderArgs(cam_params)
 		SetEnvironment(enc["env"])
 		if enc["device"] == "cpu":
-			print("Opened: {} using CPU to compress the stream.".format(full_file_name))
+			Say("Opened: {} using CPU to compress the stream.".format(full_file_name))
 		else:
-			print("Opened: {} using GPU {} to compress the stream.".format(full_file_name, cam_params["gpuID"]))
+			Say("Opened: {} using GPU {} to compress the stream.".format(full_file_name, cam_params["gpuID"]))
 
 	except Exception as e:
 		logging.error("Caught exception at writer.py OpenWriter: {}".format(e))
@@ -274,7 +274,7 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue):
 				time.sleep(0.01)
 
 	# Close up...
-	print("Closing video writer for {}. Please wait...".format(cam_params["cameraName"]))
+	Say("Closing video writer for {}. Please wait...".format(cam_params["cameraName"]))
 	time.sleep(1)
 	writer.close()
 

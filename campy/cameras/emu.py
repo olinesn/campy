@@ -3,6 +3,7 @@
 """
 
 from campy.cameras import unicam
+from campy.utils.utils import Say
 import os
 import time
 import logging
@@ -79,7 +80,7 @@ def OpenCamera(cam_params):
 	cam_params['frameHeight'] = frame_size[1]
 	cam_params['cameraModel'] = GetModelName(camera)
 
-	print("Opened {} emulation.".format(cam_params["cameraName"]))
+	Say("Opened {} emulation.".format(cam_params["cameraName"]))
 	return camera, cam_params
 
 
@@ -122,7 +123,7 @@ def ReleaseFrame(grabResult):
 
 
 def CloseCamera(cam_params, camera):
-	print('Closing {}... Please wait.'.format(cam_params["cameraName"]))
+	Say('Closing {}... Please wait.'.format(cam_params["cameraName"]))
 	# Close camera after acquisition stops
 	camera.close()
 	del camera
