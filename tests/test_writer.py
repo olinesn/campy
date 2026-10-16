@@ -1,5 +1,7 @@
 """Encoder settings (writer.EncoderArgs) and the ffmpeg command they make."""
 
+import os
+
 import numpy as np
 import pytest
 import imageio_ffmpeg
@@ -58,6 +60,17 @@ def test_vaapi_args():
 	assert writer.EncoderArgs(cam(gpuID=0, gpuMake="vaapi", codec="h265"))["codec"] == "hevc_vaapi"
 
 
+def test_vaapi_av1_quantizer():
+	# AV1's VA-API encoder ignores -qp: its quantizer index comes from -global_quality
+	enc = writer.EncoderArgs(cam(gpuID=0, gpuMake="vaapi", codec="av1", quality=120))
+	assert enc["codec"] == "av1_vaapi"
+	params = enc["output_params"]
+	assert params[params.index("-global_quality") + 1] == "120" and "-qp" not in params
+	# H.264 and H.265 keep -qp
+	h265 = writer.EncoderArgs(cam(gpuID=0, gpuMake="vaapi", codec="h265", quality=24))["output_params"]
+	assert h265[h265.index("-qp") + 1] == "24" and "-global_quality" not in h265
+
+
 def test_keyframe_interval_applies_to_vaapi():
 	enc = writer.EncoderArgs(cam(gpuID=0, gpuMake="vaapi", frameRate=60, keyframeInterval=0.5))
 	assert enc["output_params"][-2:] == ["-g", "30"]
@@ -72,11 +85,13 @@ def test_vaapi_command_order(tmp_path, monkeypatch):
 	# filter must follow -pix_fmt vaapi, which imageio-ffmpeg always adds.
 	seen = {}
 	real_popen = imageio_ffmpeg._io.subprocess.Popen
+	monkeypatch.delenv("AMD_DEBUG", raising=False) # and restored after the test
 
 	def fake_popen(cmd, *args, **kwargs):
 		if "-vcodec" not in cmd: # imageio's own ffmpeg -version probe
 			return real_popen(cmd, *args, **kwargs)
 		seen["cmd"] = cmd
+		seen["AMD_DEBUG"] = os.environ.get("AMD_DEBUG")
 		raise Captured()
 
 	monkeypatch.setattr(imageio_ffmpeg._io.subprocess, "Popen", fake_popen)
@@ -89,6 +104,29 @@ def test_vaapi_command_order(tmp_path, monkeypatch):
 	assert cmd.index("-vf") > cmd.index("-i")
 	assert cmd.count("-vf") == 1
 	assert cmd[cmd.index("-vcodec", cmd.index("-i")) + 1] == "h264_vaapi"
+	# ffmpeg starts with linear video surfaces (see the next tests)
+	assert seen["AMD_DEBUG"] == "novideotiling"
+
+
+def test_vaapi_linear_surfaces():
+	# On by default: frames go straight into the surface, not through a GPU copy
+	assert writer.EncoderArgs(cam(gpuID=0, gpuMake="vaapi"))["env"] == {"AMD_DEBUG": "novideotiling"}
+	assert writer.EncoderArgs(cam(gpuID=0, gpuMake="vaapi", vaapiLinearSurfaces=False))["env"] == {}
+	# Nothing for the other encoders
+	assert writer.EncoderArgs(cam())["env"] == {}
+	assert writer.EncoderArgs(cam(gpuID=0, gpuMake="nvidia"))["env"] == {}
+
+
+def test_set_environment_adds_to_amd_debug(monkeypatch):
+	monkeypatch.delenv("AMD_DEBUG", raising=False)
+	writer.SetEnvironment({"AMD_DEBUG": "novideotiling"})
+	assert os.environ["AMD_DEBUG"] == "novideotiling"
+	# A user's own Mesa flags are kept, and a flag already there is not repeated
+	monkeypatch.setenv("AMD_DEBUG", "nodcc")
+	writer.SetEnvironment({"AMD_DEBUG": "novideotiling"})
+	assert os.environ["AMD_DEBUG"] == "nodcc,novideotiling"
+	writer.SetEnvironment({"AMD_DEBUG": "novideotiling"})
+	assert os.environ["AMD_DEBUG"] == "nodcc,novideotiling"
 
 
 def test_cpu_writer_encodes(tmp_path):
