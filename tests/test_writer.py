@@ -71,6 +71,24 @@ def test_vaapi_av1_quantizer():
 	assert h265[h265.index("-qp") + 1] == "24" and "-global_quality" not in h265
 
 
+def test_av1_on_nvenc_and_quick_sync():
+	# As on VA-API, quality is AV1's quantizer index (0-255), passed as it is
+	nv = writer.EncoderArgs(cam(gpuID=0, gpuMake="nvidia", codec="av1", quality=88))
+	assert nv["codec"] == "av1_nvenc"
+	assert nv["output_params"] == ["-preset", "fast", "-qp", "88", "-bf:v", "0", "-gpu", "0"]
+	assert nv["key"] == "av1_nvenc/fast"
+
+	qsv = writer.EncoderArgs(cam(gpuID=0, gpuMake="intel", codec="av1", quality=88))
+	assert qsv["codec"] == "av1_qsv"
+	assert qsv["output_params"] == ["-bf:v", "0", "-preset", "faster", "-q", "88"]
+	assert qsv["key"] == "av1_qsv/faster"
+
+	# H.264 and H.265 on Quick Sync keep quality + 1
+	for codec, name in (("h264", "h264_qsv"), ("h265", "hevc_qsv")):
+		enc = writer.EncoderArgs(cam(gpuID=0, gpuMake="intel", codec=codec, quality=24))
+		assert enc["codec"] == name and enc["output_params"] == ["-bf:v", "0", "-preset", "faster", "-q", "25"]
+
+
 def test_keyframe_interval_applies_to_vaapi():
 	enc = writer.EncoderArgs(cam(gpuID=0, gpuMake="vaapi", frameRate=60, keyframeInterval=0.5))
 	assert enc["output_params"][-2:] == ["-g", "30"]
