@@ -504,7 +504,8 @@ def ParseClargs(parser):
 		"--codec",
 		dest="codec",
 		type=ast.literal_eval,
-		help="Video codec for compression Currently supported: 'h264', 'h265' (hevc).",
+		help="Video codec for compression. Currently supported: 'h264', 'h265' (hevc), and 'av1' \
+			with gpuMake 'vaapi' (quality is then AV1's quantizer index, 0-255).",
 	)
 	parser.add_argument(
 		"--quality",

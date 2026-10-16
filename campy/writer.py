@@ -124,12 +124,11 @@ def EncoderArgs(cam_params):
 				"-init_hw_device", "vaapi=va:{}".format(cam_params["vaapiDevice"]),
 				"-filter_hw_device", "va",
 				]
-			gpu_params = [
-				"-vf", "format=nv12,hwupload",
-				"-rc_mode", "CQP", # constant quantization parameter
-				"-qp", quality,
-				"-bf", "0",
-				]
+			# Constant quantization parameter. AV1 takes its quantizer index
+			# (0-255, against H.264's and H.265's QP of 0-51) from -global_quality:
+			# its VA-API encoder ignores -qp.
+			quantizer = ["-global_quality" if cam_params["codec"] == "av1" else "-qp", quality]
+			gpu_params = ["-vf", "format=nv12,hwupload", "-rc_mode", "CQP"] + quantizer + ["-bf", "0"]
 			pix_fmt_out = "vaapi" # the encoder's input is the uploaded surface
 			macro_block_size = 1
 			# Mesa's AMD driver keeps video surfaces tiled, so every uploaded frame
@@ -146,6 +145,8 @@ def EncoderArgs(cam_params):
 				codec = "h264_vaapi"
 			elif cam_params["codec"] == "h265":
 				codec = "hevc_vaapi"
+			elif cam_params["codec"] == "av1":
+				codec = "av1_vaapi"
 
 	# Keyframe (I-frame) interval in seconds, for any encoder. "None" keeps the
 	# encoder's default (NVENC: a keyframe every 250 frames, ~4 s at 60 fps).
