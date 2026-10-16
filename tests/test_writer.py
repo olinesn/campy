@@ -60,6 +60,17 @@ def test_vaapi_args():
 	assert writer.EncoderArgs(cam(gpuID=0, gpuMake="vaapi", codec="h265"))["codec"] == "hevc_vaapi"
 
 
+def test_vaapi_av1_quantizer():
+	# AV1's VA-API encoder ignores -qp: its quantizer index comes from -global_quality
+	enc = writer.EncoderArgs(cam(gpuID=0, gpuMake="vaapi", codec="av1", quality=120))
+	assert enc["codec"] == "av1_vaapi"
+	params = enc["output_params"]
+	assert params[params.index("-global_quality") + 1] == "120" and "-qp" not in params
+	# H.264 and H.265 keep -qp
+	h265 = writer.EncoderArgs(cam(gpuID=0, gpuMake="vaapi", codec="h265", quality=24))["output_params"]
+	assert h265[h265.index("-qp") + 1] == "24" and "-global_quality" not in h265
+
+
 def test_keyframe_interval_applies_to_vaapi():
 	enc = writer.EncoderArgs(cam(gpuID=0, gpuMake="vaapi", frameRate=60, keyframeInterval=0.5))
 	assert enc["output_params"][-2:] == ["-g", "30"]
