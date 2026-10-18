@@ -56,3 +56,42 @@ def test_save_merges_by_encoder_and_shape(tmp_path):
 	table = json.load(open(path))
 	assert [e["key"] for e in table["entries"]] == ["libx264/fast"]
 	assert table["host"]["hostname"] == "ms-s1"
+
+
+BROKEN_PIPE = "stream 0: OSError('[Errno 32] Broken pipe')"
+
+
+def fake_streams(monkeypatch, errors):
+	# RunStreams that keeps up at every count, except those in errors
+	def run(params, n, settings, out_dir):
+		if n in errors:
+			return [], [BROKEN_PIPE], None
+		return [{"index": i, "error": None, "fps": 100.0, "bitrate_mbps": 1.0} for i in range(n)], [], None
+	monkeypatch.setattr(sweep, "RunStreams", run)
+
+
+def test_sweep_saves_an_error_as_an_error(monkeypatch):
+	params = sweep.BaseParams(sweep.ParseArgs(["--width", "160", "--height", "128", "--frameRate", "30"]))
+	settings = {"seconds": 1, "warmup": 0, "headroom": 1.25, "frames": 2, "noise": 3.0}
+	# An encoder this computer does not have: nothing measured, not "keeps up with 0"
+	fake_streams(monkeypatch, errors={1, 2})
+	[e] = sweep.Sweep(params, ["vaapi"], [1, 2], settings, log=[].append)
+	assert e["error"] == BROKEN_PIPE and e["max_streams"] == 0
+	# An error at a larger count, after 1 kept up: a measurement
+	fake_streams(monkeypatch, errors={2})
+	[e] = sweep.Sweep(params, ["vaapi"], [1, 2], settings, log=[].append)
+	assert e["error"] is None and (e["max_streams"], e["max_tested"]) == (1, 2)
+
+
+def test_save_keeps_a_measurement_over_an_error(tmp_path):
+	path = str(tmp_path / "capacity.json")
+	host = {"hostname": "evo"}
+	errored = dict(entry("h264_vaapi", streams=0), error=BROKEN_PIPE)
+	sweep.SaveEntries(path, [dict(entry("h264_vaapi", streams=8), error=None)], host)
+	sweep.SaveEntries(path, [errored, dict(errored, fps=30.0)], host)
+	got = sorted((e["fps"], e["max_streams"], e["error"]) for e in json.load(open(path))["entries"])
+	assert got == [(30.0, 0, BROKEN_PIPE), (60.0, 8, None)] # an error where nothing was measured
+	# A measurement replaces an error
+	sweep.SaveEntries(path, [dict(entry("h264_vaapi", fps=30.0, streams=6), error=None)], host)
+	got = sorted((e["fps"], e["max_streams"], e["error"]) for e in json.load(open(path))["entries"])
+	assert got == [(30.0, 6, None), (60.0, 8, None)]

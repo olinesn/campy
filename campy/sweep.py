@@ -251,6 +251,10 @@ def Sweep(cam_params, encoders, counts, settings, keep_going=False, log=print):
 				if not keep_going:
 					break
 		passing = [r for r in rows if r.get("pass") and r["streams"] == max_streams]
+		# An encoder that stopped with an error before it measured any count (one
+		# this computer does not have, say) measured nothing: it is saved as an
+		# error, not as keeping up with 0 streams
+		error = rows[-1]["error"] if rows and all("error" in r for r in rows) else None
 		entries.append({
 			"key": enc["key"],
 			"codec": enc["codec"],
@@ -266,7 +270,8 @@ def Sweep(cam_params, encoders, counts, settings, keep_going=False, log=print):
 			"max_tested": max(r["streams"] for r in rows),
 			"max_mpx_s": round(max_streams * w * h * fps / 1e6, 1),
 			"bitrate_mbps": passing[0]["bitrate_mbps"] if passing else None,
-			"measured": datetime.datetime.now().isoformat(timespec="seconds"),
+			"error": error,
+			"measured":datetime.datetime.now().isoformat(timespec="seconds"),
 			"results": rows,
 			})
 	return entries
@@ -274,7 +279,10 @@ def Sweep(cam_params, encoders, counts, settings, keep_going=False, log=print):
 
 def SaveEntries(path, entries, host):
 	# Merge into the capacity table: a new measurement replaces the one for the
-	# same encoder and frame shape. A table from another computer is replaced.
+	# same encoder and frame shape. An encoder that stopped with an error
+	# replaces only an earlier error, never a measurement: an encoder that
+	# failed to start once still keeps up with what it was measured to. A
+	# table from another computer is replaced.
 	table = None
 	try:
 		with open(path) as f:
@@ -289,6 +297,8 @@ def SaveEntries(path, entries, host):
 		fields = ("key", "width", "height", "fps", "pix_fmt_in", "pix_fmt_out")
 		return all(a[f] == b[f] for f in fields)
 
+	measured = [e for e in table["entries"] if not e.get("error")]
+	entries = [n for n in entries if not (n.get("error") and any(same(e, n) for e in measured))]
 	kept = [e for e in table["entries"] if not any(same(e, n) for n in entries)]
 	table["entries"] = kept + entries
 	os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -371,13 +381,19 @@ def Main(argv=None):
 
 	print()
 	for e in entries:
+		if e["error"]:
+			print("{}: stopped with an error (above), so nothing was measured.".format(e["key"]))
+			continue
 		more = "+" if e["max_streams"] >= e["max_tested"] else ""
 		print("{}: keeps up with {}{} camera{} at {}x{} {:g} fps.".format(e["key"], e["max_streams"],
 			more, "" if e["max_streams"] == 1 else "s", e["width"], e["height"], e["fps"]))
 	if not args.no_save:
 		from campy import preflight
 		path = args.out or preflight.CapacityPath(params)
-		SaveEntries(path, entries, HostInfo(params))
+		table = SaveEntries(path, entries, HostInfo(params))
+		for e in entries:
+			if e not in table["entries"]:
+				print("{}: kept its earlier measurement.".format(e["key"]))
 		print("Saved to {}.".format(path))
 
 
