@@ -58,8 +58,6 @@ def EncoderArgs(cam_params):
 			pix_fmt_out = "yuv420p"
 		if cam_params["codec"] == "h264":
 			codec = "libx264"
-			gpu_params.append("-x264-params")
-			gpu_params.append("nal-hrd=cbr")
 		elif cam_params["codec"] == "h265":
 			codec = "libx265"
 
