@@ -6,6 +6,7 @@ ends, closes what it can, and says what happened.
 import csv
 import importlib
 import os
+import queue
 import re
 import signal
 import subprocess
@@ -358,7 +359,7 @@ def test_ffmpeg_failing_after_the_camera_has_stopped(tmp_path, monkeypatch, caps
 
 def test_ffmpeg_that_fails_as_it_finishes_the_video(tmp_path, monkeypatch, capsys):
 	monkeypatch.setattr(writer, "write_frames", fake_write_frames())
-	monkeypatch.setattr(writer, "FfmpegProcess", lambda w: types.SimpleNamespace(returncode=1))
+	monkeypatch.setattr(writer, "FfmpegProcess", lambda w: types.SimpleNamespace(returncode=1, pid=1234))
 	run = CameraProcess(monkeypatch, params(tmp_path), FakeCamera())
 	run.Run()
 	why = "ffmpeg ended with exit code 1 as it finished the video"
@@ -620,8 +621,25 @@ def camera_process(n_cam, readyQueue, done):
 			os.kill(os.getpid(), signal.SIGKILL)
 		os._exit(9)
 	time.sleep(1.5 if n_cam == 0 else 0.5)
-	done.send([] if n_cam == 0 else ["ffmpeg stopped after taking 30 frames, with exit code -9 (SIGKILL)"])
+	done.send(("done", [] if n_cam == 0 else ["ffmpeg stopped after taking 30 frames, with exit code -9 (SIGKILL)"]))
 	done.close()
+
+
+def hanging_camera_process(n_cam, readyQueue, done):
+	# Camera0 records and closes. Camera1 hangs as it closes, with its ffmpeg
+	# running, and ignores SIGTERM: as one stuck in a camera driver would.
+	name = "Camera{}".format(n_cam)
+	readyQueue.put((n_cam, name, True, ""))
+	if n_cam == 0:
+		time.sleep(0.3)
+		done.send(("ffmpeg", 1111))
+		done.send(("ffmpeg", None)) # it ended
+		done.send(("done", []))
+		return
+	done.send(("ffmpeg", 4242))
+	if hasattr(signal, "SIGTERM") and sys.platform != "win32":
+		signal.signal(signal.SIGTERM, signal.SIG_IGN)
+	time.sleep(600)
 
 
 def camera_params(n, timeout=30):
@@ -663,6 +681,67 @@ def test_a_camera_process_that_dies_before_it_is_ready_is_not_waited_for():
 	assert sorted(ready) == ["Camera0", "Camera1", "Camera2"]
 	failures = cameras.Wait()
 	assert failures["Camera3"] == ["its camera process stopped, with exit code 70: killed, or crashed"]
+
+
+def test_a_second_ctrl_c_stops_a_camera_process_that_hangs():
+	# Main ignores SIGINT, and waited for a camera process that hung as it
+	# closed for ever: Ctrl-C did nothing more
+	ctx = mp.get_context("spawn")
+	readyQueue = ctx.Queue()
+	said = []
+	cameras = unicam.CameraProcesses(ctx, hanging_camera_process, camera_params(2), readyQueue, log=said.append)
+	cameras.grace = 0.5
+	interrupts = types.SimpleNamespace(count=1) # the first Ctrl-C: Camera0 closes, Camera1 hangs
+	def again():
+		time.sleep(2.5)
+		interrupts.count = 2
+	threading.Thread(target=again, daemon=True).start()
+	t0 = time.monotonic()
+	failures = cameras.Wait(interrupts)
+	assert time.monotonic() - t0 < 15
+	why = "stopped at the second Ctrl-C, before it had closed"
+	assert failures == {"Camera1": [why]}
+	kill = "taskkill /F /PID 4242" if sys.platform == "win32" else "kill -9 4242"
+	assert said == ["Ctrl-C again: stopping Camera1 now, without closing it.",
+		"Camera1: {}. Its files end where it stopped. If its ffmpeg (pid 4242) is still running, it is finishing the "
+		"video, or hangs: {} ends it.".format(why, kill)]
+	assert not cameras.processes[1].is_alive()
+	if sys.platform != "win32":
+		assert cameras.processes[1].exitcode == -signal.SIGKILL # it ignored SIGTERM
+
+
+def test_after_ctrl_c_a_camera_process_that_dies_is_not_called_crashed():
+	# Ctrl-C as a camera process starts (before it handles SIGINT) ends it
+	ctx = mp.get_context("spawn")
+	said = []
+	p = camera_params(4)
+	cameras = unicam.CameraProcesses(ctx, camera_process, p, ctx.Queue(), log=said.append)
+	failures = cameras.Wait(types.SimpleNamespace(count=1))
+	assert failures["Camera3"] == ["its camera process stopped, with exit code 70, after Ctrl-C"]
+
+
+def test_ctrl_c_stops_the_wait_for_cameras():
+	q, said = queue.Queue(), []
+	q.put((0, "Camera0", True, ""))
+	t0 = time.monotonic()
+	ready, missing = unicam.WaitForCameras(q, camera_params(2, timeout=30), log=said.append, interrupted=lambda: True)
+	assert time.monotonic() - t0 < 2
+	assert ready == ["Camera0"] and missing == {"Camera1": "not ready when campy was stopped (Ctrl-C)"}
+
+
+def test_ctrl_c_presses_are_counted_once_each(monkeypatch, capsys):
+	now = [100.0]
+	monkeypatch.setattr(utils, "time", types.SimpleNamespace(monotonic=lambda: now[0]))
+	interrupts = utils.HandleKeyboardInterrupt()
+	interrupts.handler(signal.SIGINT, None)
+	now[0] += 0.3
+	interrupts.handler(signal.SIGINT, None) # a double press: the same one
+	assert interrupts.count == 1
+	now[0] += 2
+	interrupts.handler(signal.SIGINT, None)
+	assert interrupts.count == 2
+	assert capsys.readouterr().out == "SIGINT received. Each camera stops and closes its video: please wait. If one " \
+		"hangs as it closes, Ctrl-C again stops it at once, without closing it.\nSIGINT received again.\n"
 
 
 def test_exit_codes():
@@ -727,8 +806,10 @@ def test_campy_ends_and_says_which_camera_failed(tmp_path):
 				os.kill(pid, signal.SIGKILL)
 	assert campy.returncode == 1, out
 
+	# and its ffmpeg, which it had told campy about, is left to finish the video
 	assert "EyeA: its camera process stopped, with exit code -9 (SIGKILL): killed, or crashed. Its files end " \
-		"where it stopped.\n" in out
+		"where it stopped. If its ffmpeg (pid {0}) is still running, it is finishing the video, or hangs: kill -9 {0} " \
+		"ends it.\n".format(ffmpeg["EyeA"][0]) in out
 	said = re.search(r"EyeB: ffmpeg stopped after taking (\d+) frames, with exit code -9 \(SIGKILL\): \[Errno 32\] "
 		r"Broken pipe\. Stopping EyeB\.", out)
 	assert said, out
@@ -752,4 +833,91 @@ def test_campy_ends_and_says_which_camera_failed(tmp_path):
 	assert imageio_ffmpeg.count_frames_and_secs(str(tmp_path / "rec" / "EyeC" / "0.mp4"))[0] == 150
 	# EyeA: killed, so no totals; its ffmpeg finished the video with the frames it had
 	assert "totalFrames" not in metadata("EyeA")
+	assert imageio_ffmpeg.count_frames_and_secs(str(tmp_path / "rec" / "EyeA" / "0.mp4"))[0] > 0
+
+
+def running(pid):
+	try:
+		os.kill(pid, 0)
+	except ProcessLookupError:
+		return False
+	except PermissionError:
+		pass
+	return True
+
+
+# Imported by every Python process the test starts (PYTHONPATH): in each
+# camera process, the camera named by CAMPY_TEST_HANG_CLOSE hangs as it
+# closes, as one whose driver never returns would
+HANG_HOOK = """
+import os, time
+name = os.environ.get("CAMPY_TEST_HANG_CLOSE")
+if name:
+	from campy.cameras import ratcam
+	close = ratcam.CloseCamera
+	def CloseCamera(cam_params, camera):
+		if cam_params["cameraName"] == name:
+			time.sleep(600)
+		return close(cam_params, camera)
+	ratcam.CloseCamera = CloseCamera
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sends Ctrl-C to campy's process group, and finds ffmpeg with ps")
+def test_a_second_ctrl_c_ends_campy_when_a_camera_hangs_as_it_closes(tmp_path):
+	pytest.importorskip("nireyecam")
+	hook = tmp_path / "hook"
+	hook.mkdir()
+	(hook / "sitecustomize.py").write_text(HANG_HOOK)
+	config = tmp_path / "config.yaml"
+	config.write_text("\n".join([
+		'videoFolder: "{}"'.format(tmp_path / "rec"), 'videoFilename: "0.mp4"', "recTimeInSec: 60", "numCams: 2",
+		'cameraNames: ["EyeA", "EyeB"]', 'cameraMake: "ratcam"', 'ratcamPorts: ["sim", "sim"]',
+		"frameRate: 30", "frameWidth: 160", "frameHeight: 120", "cameraExposureTimeInUs: 3000", "gpuID: -1",
+		'pixelFormatOutput: "yuv420p"', "displayFrameRate: 0", 'preflight: "off"', 'ffmpegLogLevel: "warning"', ""]))
+	env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(hook), REPO]), PYTHONUNBUFFERED="1",
+		CAMPY_TEST_HANG_CLOSE="EyeA")
+	code = "import sys; sys.argv = ['campy-acquire', sys.argv[1]]; from campy.campy import Main; Main()"
+	t0 = time.monotonic()
+	# Its own process group, as campy is in a terminal: Ctrl-C reaches it and its camera processes
+	campy = subprocess.Popen([sys.executable, "-c", code, str(config)], cwd=str(tmp_path), env=env,
+		stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+	ffmpeg = {}
+	try:
+		while len(ffmpeg) < 2 and time.monotonic() - t0 < 60:
+			time.sleep(0.2)
+			ffmpeg = {name: pid for pid, ppid, command in tree(campy.pid) if "ffmpeg" in command
+				for name in ("EyeA", "EyeB") if "/{}/0.mp4".format(name) in command}
+		assert len(ffmpeg) == 2, "the cameras did not both start"
+		time.sleep(1)
+		os.killpg(campy.pid, signal.SIGINT) # Ctrl-C: EyeB closes, EyeA hangs as it closes
+		time.sleep(3)
+		assert campy.poll() is None, "campy should still be waiting for EyeA"
+		os.killpg(campy.pid, signal.SIGINT) # Ctrl-C again
+		out, _ = campy.communicate(timeout=30)
+	finally:
+		if campy.poll() is None:
+			for pid, ppid, command in tree(campy.pid):
+				os.kill(pid, signal.SIGKILL)
+			campy.kill()
+	assert campy.returncode == 1, out
+
+	assert "SIGINT received. Each camera stops and closes its video: please wait. If one hangs as it closes, " \
+		"Ctrl-C again stops it at once, without closing it.\n" in out
+	assert "Ctrl-C again: stopping EyeA now, without closing it.\n" in out
+	why = "stopped at the second Ctrl-C, before it had closed"
+	assert "EyeA: {0}. Its files end where it stopped. If its ffmpeg (pid {1}) is still running, it is finishing the " \
+		"video, or hangs: kill -9 {1} ends it.\n".format(why, ffmpeg["EyeA"]) in out
+	assert "Closing systems...\n" in out
+	assert "1 of 2 cameras did not record to the end:\n  EyeA: {}\n".format(why) in out
+
+	# EyeB closed as usual
+	with open(tmp_path / "rec" / "EyeB" / "metadata.csv") as f:
+		meta = dict(csv.reader(f))
+	assert int(meta["totalFrames"]) > 0 and meta["framesWritten"] == meta["totalFrames"]
+	# EyeA's ffmpeg was left running: it gets the end of its input, and finishes the video
+	deadline = time.monotonic() + 15
+	while time.monotonic() < deadline and running(ffmpeg["EyeA"]):
+		time.sleep(0.2)
+	assert not running(ffmpeg["EyeA"])
 	assert imageio_ffmpeg.count_frames_and_secs(str(tmp_path / "rec" / "EyeA" / "0.mp4"))[0] > 0

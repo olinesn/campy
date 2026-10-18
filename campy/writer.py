@@ -349,6 +349,7 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 	# done (recording.written).
 	if recording is None:
 		recording = unicam.Recording()
+	ffmpeg = None
 	try:
 		# Ctrl-C from here on stops the camera (stopReadQueue), which then stops
 		# the writer, instead of ending the camera process
@@ -371,6 +372,10 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 				VideoFailed(cam_params, recording, stopReadQueue, "ffmpeg did not start: {}".format(ErrorText(e)))
 				return
 			ffmpeg = FfmpegProcess(writer)
+			if ffmpeg is not None:
+				# campy's main process says it, if it has to stop this process at a
+				# second Ctrl-C while ffmpeg still runs
+				unicam.TellMain(("ffmpeg", ffmpeg.pid))
 
 			# Write until interrupted and/or stop message received
 			try:
@@ -404,4 +409,6 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 				"ffmpeg ended with {} as it finished the video".format(ExitCodeText(code)), stopping=False)
 
 	finally:
+		if ffmpeg is not None:
+			unicam.TellMain(("ffmpeg", None))
 		recording.written.set()

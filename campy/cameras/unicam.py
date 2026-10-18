@@ -22,19 +22,40 @@ def SetReadyQueue(readyQueue):
 	_readyQueue = readyQueue
 
 
+# Set in each camera process (campy.RunCamera): its end of the pipe to campy's
+# main process, which reads it as CameraProcesses
+_mainConnection = None
+
+
+def SetMainConnection(connection):
+	global _mainConnection
+	_mainConnection = connection
+
+
+def TellMain(message):
+	# A (kind, value) message for campy's main process: ("ffmpeg", pid or
+	# None), ("done", what went wrong). Nothing outside a camera process.
+	if _mainConnection is not None:
+		try:
+			_mainConnection.send(message)
+		except Exception as e:
+			logging.error("Caught exception at cameras/unicam.py TellMain: {}".format(e))
+
+
 def SignalReady(cam_params, ok=True, error=""):
 	# Tell campy's main process this camera is grabbing, or that it never will
 	if _readyQueue is not None:
 		_readyQueue.put((cam_params["n_cam"], cam_params["cameraName"], ok, error))
 
 
-def WaitForCameras(readyQueue, params, result=None, log=Say):
+def WaitForCameras(readyQueue, params, result=None, log=Say, interrupted=None):
 	"""
 	Waits until every camera has reported ready for triggers, or failed, for at
 	most readyTimeoutSec, and stops early if the camera processes end (result:
-	CameraProcesses, or anything with ready()). A camera whose process ends
-	before it is ready (killed, or crashed as it opened) is not waited for.
-	Returns the cameras that are ready, and a reason for each that is not.
+	CameraProcesses, or anything with ready()), or campy is stopped
+	(interrupted(): Ctrl-C). A camera whose process ends before it is ready
+	(killed, or crashed as it opened) is not waited for. Returns the cameras
+	that are ready, and a reason for each that is not.
 	"""
 	names = params["cameraNames"]
 	pending = {n: names[n] for n in range(params["numCams"])}
@@ -54,6 +75,8 @@ def WaitForCameras(readyQueue, params, result=None, log=Say):
 					missing[pending.pop(n)] = "stopped before it was ready"
 			if result is not None and result.ready():
 				break
+			if interrupted is not None and interrupted():
+				break
 			if time.monotonic() > deadline:
 				break
 			continue
@@ -64,8 +87,12 @@ def WaitForCameras(readyQueue, params, result=None, log=Say):
 			missing[name] = error or "did not start grabbing"
 	stopped = result is not None and result.ready()
 	for name in pending.values():
-		missing[name] = "stopped before it was ready" if stopped else \
-			"not ready after {:g} s (readyTimeoutSec)".format(timeout)
+		if interrupted is not None and interrupted():
+			missing[name] = "not ready when campy was stopped (Ctrl-C)"
+		elif stopped:
+			missing[name] = "stopped before it was ready"
+		else:
+			missing[name] = "not ready after {:g} s (readyTimeoutSec)".format(timeout)
 
 	if not missing:
 		log("{} ready.".format("The camera is" if len(ready) == 1 else "All {} cameras are".format(len(ready))))
@@ -78,13 +105,14 @@ def WaitForCameras(readyQueue, params, result=None, log=Say):
 class CameraProcesses:
 	"""
 	campy's camera processes, one per camera, as its main process watches
-	them. Each runs target(n_cam, readyQueue, connection) (campy.RunCamera)
-	and, as its recording ends, sends on connection what went wrong: a list
-	of reasons, empty when nothing did. A process that ends without sending
-	it died: killed, or crashed (a segfault in a camera driver, out of
-	memory). The multiprocessing Pool campy used before replaced a worker that
-	died and waited for its task forever; here it is reported as it happens,
-	by name and exit code, while the other cameras go on recording.
+	them. Each runs target(n_cam, readyQueue, connection) (campy.RunCamera),
+	and tells the main process on connection (TellMain) when its ffmpeg
+	starts and ends, and, as its recording ends, what went wrong: a list of
+	reasons, empty when nothing did. A process that ends without saying so
+	died: killed, or crashed (a segfault in a camera driver, out of memory).
+	The multiprocessing Pool campy used before replaced a worker that died
+	and waited for its task forever; here it is reported as it happens, by
+	name and exit code, while the other cameras go on recording.
 	"""
 
 	def __init__(self, ctx, target, params, readyQueue, log=Say):
@@ -94,6 +122,11 @@ class CameraProcesses:
 		self.processes, self.connections = [], []
 		self.failures = {} # camera name: what went wrong
 		self.ended = set() # the cameras whose process has ended, and been reported
+		self.done = {} # camera: what went wrong, as its process said when it ended
+		self.ffmpeg = {} # camera: the pid of its ffmpeg while it runs
+		self.stopped = set() # the cameras stopped at a second Ctrl-C (Stop)
+		self.interrupted = False # Ctrl-C was pressed
+		self.grace = 3.0 # how long a stopped process has to end before it is killed
 		for n in range(params["numCams"]):
 			receive, send = ctx.Pipe(duplex=False)
 			# Daemon, as the pool's workers were: if campy's main process stops
@@ -111,40 +144,90 @@ class CameraProcesses:
 	def Ended(self, n_cam):
 		return not self.processes[n_cam].is_alive()
 
+	def Read(self, n_cam):
+		# What the camera process has said so far. It sends before it ends, so
+		# once it has ended, everything it said is in the pipe.
+		connection = self.connections[n_cam]
+		try:
+			while connection.poll():
+				kind, value = connection.recv()
+				if kind == "ffmpeg":
+					self.ffmpeg[n_cam] = value
+				elif kind == "done":
+					self.done[n_cam] = list(value)
+		except (EOFError, OSError):
+			pass
+		except Exception as e:
+			logging.error("Caught exception at cameras/unicam.py CameraProcesses.Read: {}".format(e))
+
 	def Check(self):
-		# Reports each camera process that has ended since the last check
+		# Reports each camera process that has ended, or been stopped, since the last check
 		for n, process in enumerate(self.processes):
-			if n in self.ended or process.is_alive():
+			if n in self.ended or (process.is_alive() and n not in self.stopped):
 				continue
 			self.ended.add(n)
-			process.join()
-			reasons = self.Received(n)
+			if not process.is_alive():
+				process.join()
+			self.Read(n)
+			reasons = self.done.get(n)
 			if reasons is None:
-				why = "its camera process stopped, with {}: killed, or crashed".format(ExitCodeText(process.exitcode))
-				self.log("{}: {}. Its files end where it stopped.".format(self.names[n], why))
+				if n in self.stopped:
+					why = "stopped at the second Ctrl-C, before it had closed"
+				elif self.interrupted:
+					why = "its camera process stopped, with {}, after Ctrl-C".format(ExitCodeText(process.exitcode))
+				else:
+					why = "its camera process stopped, with {}: killed, or crashed".format(ExitCodeText(process.exitcode))
+				said = "{}: {}. Its files end where it stopped.".format(self.names[n], why)
+				if process.is_alive():
+					said += " Its process did not end even when killed (stuck in a camera driver?)."
+				if self.ffmpeg.get(n):
+					pid = self.ffmpeg[n]
+					said += " If its ffmpeg (pid {}) is still running, it is finishing the video, or hangs: {} " \
+						"ends it.".format(pid, "taskkill /F /PID {}".format(pid) if sys.platform == "win32" else
+							"kill -9 {}".format(pid))
+				self.log(said)
 				reasons = [why]
 			if reasons:
 				self.failures[self.names[n]] = reasons
 
-	def Received(self, n_cam):
-		# What the camera process sent as its recording ended; None if nothing.
-		# It sent before it ended, so it is in the pipe by now.
-		try:
-			if self.connections[n_cam].poll():
-				return list(self.connections[n_cam].recv())
-		except (EOFError, OSError):
-			pass
-		return None
+	def Stop(self):
+		"""
+		Ends the camera processes still running, at once: for a second Ctrl-C,
+		when one hangs as it closes (in a camera driver, or waiting for an
+		ffmpeg that does not exit). It does not close its camera or its video:
+		its ffmpeg is left to finish the video from the frames it has, and a
+		FLIR camera is put right at its next open (flir.RecoverAcquisition).
+		"""
+		alive = [n for n, p in enumerate(self.processes) if p.is_alive() and n not in self.stopped]
+		if not alive:
+			return
+		self.log("Ctrl-C again: stopping {} now, without closing {}.".format(
+			", ".join(self.names[n] for n in alive), "it" if len(alive) == 1 else "them"))
+		for n in alive:
+			self.stopped.add(n)
+			self.processes[n].terminate() # SIGTERM; on Windows, TerminateProcess
+		deadline = time.monotonic() + self.grace
+		for n in alive:
+			self.processes[n].join(max(0.0, deadline - time.monotonic()))
+		for n in alive:
+			if self.processes[n].is_alive():
+				self.processes[n].kill() # SIGKILL, for one that ignores SIGTERM
+				self.processes[n].join(self.grace)
 
-	def Wait(self, every=0.5):
+	def Wait(self, interrupts=None, every=0.5):
 		"""
 		Waits for every camera process to end, and says when one dies, as it
-		does. Returns {camera name: [what went wrong]} for each camera that
-		did not record to the end.
+		does. A second Ctrl-C (interrupts.count, utils.HandleKeyboardInterrupt)
+		stops the ones still running (Stop). Returns {camera name: [what went
+		wrong]} for each camera that did not record to the end.
 		"""
 		while True:
+			if interrupts is not None:
+				self.interrupted = interrupts.count >= 1
+				if interrupts.count >= 2:
+					self.Stop()
 			self.Check()
-			alive = [p.sentinel for p in self.processes if p.is_alive()]
+			alive = [p.sentinel for n, p in enumerate(self.processes) if p.is_alive() and n not in self.stopped]
 			if not alive:
 				return self.failures
 			multiprocessing.connection.wait(alive, timeout=every)

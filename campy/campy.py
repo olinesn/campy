@@ -117,13 +117,15 @@ def InitCameraProcess(readyQueue):
 
 
 def RunCamera(n_cam, readyQueue, done):
-	# One camera process: records its camera, then sends Main what went wrong,
-	# if anything (done). One that ends without sending it died, and Main says so.
+	# One camera process: records its camera, then tells Main what went wrong,
+	# if anything (done: unicam.TellMain). One that ends without saying died,
+	# and Main says so.
 	InitCameraProcess(readyQueue)
+	unicam.SetMainConnection(done)
 	recording = AcquireOneCamera(n_cam)
 	readyQueue.close()
 	readyQueue.join_thread()
-	done.send(recording.Failures())
+	unicam.TellMain(("done", recording.Failures()))
 	done.close()
 	# Then it ends at once, as campy's pool workers did (they were terminated):
 	# without running the camera drivers' own cleanup at exit, which campy has
@@ -133,7 +135,9 @@ def RunCamera(n_cam, readyQueue, done):
 
 def Main():
 	global systems
-	with HandleKeyboardInterrupt():
+	# Ctrl-C stops every camera, each closing its video, and Main waits for
+	# them; a second Ctrl-C stops the ones that hang as they close
+	with HandleKeyboardInterrupt() as interrupts:
 		# One process per camera, started the same way on Windows and Linux
 		# (spawn), and watched: one that dies is said at once, and the others
 		# go on recording
@@ -147,11 +151,12 @@ def Main():
 			# camera's first frame is the trigger's first pulse. The serial port
 			# opens meanwhile: the Arduino needs a few seconds after it opens.
 			systems = trigger.OpenTriggers(systems, params)
-			ready, missing = unicam.WaitForCameras(readyQueue, params, cameras)
-			if ready and not cameras.ready(): # not if the cameras already stopped (Ctrl-C)
+			ready, missing = unicam.WaitForCameras(readyQueue, params, cameras,
+				interrupted=lambda: interrupts.count > 0)
+			if ready and not cameras.ready() and not interrupts.count: # not if the cameras are stopping (Ctrl-C)
 				systems = trigger.StartTriggers(systems, params)
 			trigger.SaveStart(params, ready, missing, systems.get("triggerStartedNs"))
-			failures = cameras.Wait()
+			failures = cameras.Wait(interrupts)
 		finally:
 			CloseSystems(systems, params)
 
