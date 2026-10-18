@@ -315,7 +315,7 @@ Everything lands on `dev` first. `master` is the released campy, and changes onl
 
 - **Pull requests** go to `dev`, the repository's default branch.
 - **Trying `dev` on a rig:** in its clone, `git fetch`, `git checkout dev` and `git pull`; `git checkout master` goes back. `pip install -e .` follows whichever branch is checked out, so nothing needs reinstalling unless `setup.py`'s dependencies changed.
-- **A pre-release** marks a state of `dev` to test, for example on the rigs:
+- **A pre-release** marks a state of `dev` to test, for example on the rigs. Set `version` in `setup.py` to it (`2.1.0rc1`) in a pull request to `dev`, so a rig running it reports that version, then:
   ```
   gh release create v2.1.0rc1 --target dev --prerelease --generate-notes
   ```
