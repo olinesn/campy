@@ -31,7 +31,7 @@ to tie each frame to its trigger, and so writes that tool's files too.
 import argparse, json, os, sys
 import numpy as np
 
-from campy import align
+from campy import align, newfiles
 
 BLOCK_S = 2.0              # seconds per sine fit
 MIN_BLOCKS = 3
@@ -206,7 +206,11 @@ def Analyze(folder, blink_hz=None, reference=None, rois=None, tolerance_us=TOLER
 
 	results = {}
 	for c in triggered:
-		path = os.path.join(c["folder"], str(c["meta"].get("videoFilename", "")))
+		name = str(c["meta"].get("videoFilename", ""))
+		path = os.path.join(c["folder"], name)
+		calibration = os.path.join(c["folder"], newfiles.CALIBRATION_FOLDER, name) # a calibration session's
+		if not os.path.isfile(path) and os.path.isfile(calibration):
+			path = calibration
 		if not os.path.isfile(path):
 			raise SyncTestError("{}: no video at {}".format(c["name"], path))
 		t_all = (np.asarray(c["trigger"], float) - 1) * period

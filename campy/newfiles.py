@@ -7,6 +7,11 @@ named by the date and time it started: <videoFolder>/2026-10-18_17-30-05/
 run again and again with the same config. sessionFolder False records into
 videoFolder itself, as campy always did, under the checks below.
 
+A calibration session, one whose videoFolder's name has "calibration" in it
+(C:/campy_data/2026-10-18/calibration), puts each camera's video in
+<cameraName>/calibration_images/, where luc3d and sleap-anipose look for a
+camera's calibration video. Its other files stay in <cameraName>/.
+
 A recording writes, for each camera, into <videoFolder>/<cameraName>/: its
 video (videoFilename), frametimes.npy, hosttimes.npy, frametimes.mat and
 metadata.csv, and for a RatCam ratcam_frames.csv and ratcam_sync.csv; and
@@ -40,6 +45,11 @@ import os, time
 SESSION_ENV = "CAMPY_SESSION_FOLDER"
 SESSION_FORMAT = "%Y-%m-%d_%H-%M-%S" # no colons: Windows paths cannot hold them
 
+# A calibration session's videos go into this folder in each camera's: where
+# luc3d and sleap-anipose look for them (Calibration)
+CALIBRATION_WORD = "calibration"
+CALIBRATION_FOLDER = "calibration_images"
+
 TRIGGER_FILE = "trigger.json" # trigger.SaveStart
 RATCAM_FILES = ("ratcam_frames.csv", "ratcam_sync.csv") # ratcam.Logs
 
@@ -53,12 +63,30 @@ def CameraFolder(cam_params):
 	return os.path.join(cam_params["videoFolder"], cam_params["cameraName"])
 
 
+def Calibration(params):
+	# A calibration session: the configured videoFolder's own name has
+	# "calibration" in it, in any case. Not the session folder's, a date.
+	folder = params.get("videoFolderRoot", params["videoFolder"])
+	return CALIBRATION_WORD in os.path.basename(os.path.normpath(str(folder))).lower()
+
+
+def VideoFolder(cam_params):
+	# Where the camera's video goes: its folder, or in a calibration session
+	# the calibration_images folder in it
+	folder = CameraFolder(cam_params)
+	return os.path.join(folder, CALIBRATION_FOLDER) if Calibration(cam_params) else folder
+
+
+def VideoPath(cam_params):
+	return os.path.join(VideoFolder(cam_params), str(cam_params["videoFilename"]))
+
+
 def CameraFiles(cam_params):
 	# Every file one camera's recording writes
-	names = [str(cam_params["videoFilename"]), "frametimes.npy", "hosttimes.npy", "frametimes.mat", "metadata.csv"]
+	names = ["frametimes.npy", "hosttimes.npy", "frametimes.mat", "metadata.csv"]
 	if cam_params.get("cameraMake") == "ratcam":
 		names += list(RATCAM_FILES)
-	return [os.path.join(CameraFolder(cam_params), name) for name in names]
+	return [VideoPath(cam_params)] + [os.path.join(CameraFolder(cam_params), name) for name in names]
 
 
 def RecordingFiles(params):

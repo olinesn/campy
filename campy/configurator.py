@@ -365,7 +365,8 @@ def ParseClargs(parser, argv=None):
 		dest="videoFolder", 
 		type=TextValue,
 		help="Folder in which to save videos. Each run records into a new folder inside it, \
-			named by the date and time it started (sessionFolder).",
+			named by the date and time it started (sessionFolder). A name with \"calibration\" \
+			in it makes a calibration session: each video goes into <camera>/calibration_images/.",
 	)
 	parser.add_argument(
 		"--sessionFolder",

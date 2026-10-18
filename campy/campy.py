@@ -173,6 +173,9 @@ def Main():
 			newfiles.UseSession(params, folder)
 			os.environ[newfiles.SESSION_ENV] = folder
 			Say("Recording into {}".format(folder))
+		if newfiles.Calibration(params):
+			Say("A calibration session (\"{}\" in videoFolder's name): each camera's video goes into "
+				"<camera>{}{}{}.".format(newfiles.CALIBRATION_WORD, os.sep, newfiles.CALIBRATION_FOLDER, os.sep))
 
 		# Every file of the recording, made empty now, each only if it is not
 		# there: of two campys started into one folder, only one records

@@ -70,15 +70,17 @@ def snapshot(folder):
 	return found
 
 
-def recorded(folder, names=("EyeA", "EyeB")):
-	# A whole recording: every camera's files, none empty, and its video's frames
+def recorded(folder, names=("EyeA", "EyeB"), video=""):
+	# A whole recording: every camera's files, none empty, and its video's
+	# frames. video: the folder its video is in, in the camera's
 	for name in names:
 		for file in CAMERA_FILES:
-			assert os.path.getsize(os.path.join(folder, name, file)) > 0, (name, file)
+			path = os.path.join(folder, name, video if file == "0.mp4" else "", file)
+			assert os.path.getsize(path) > 0, (name, file)
 		with open(os.path.join(folder, name, "metadata.csv")) as f:
 			meta = dict(csv.reader(f))
 		assert int(meta["framesWritten"]) > 0
-		assert imageio_ffmpeg.count_frames_and_secs(os.path.join(folder, name, "0.mp4"))[0] == \
+		assert imageio_ffmpeg.count_frames_and_secs(os.path.join(folder, name, video, "0.mp4"))[0] == \
 			int(meta["framesWritten"]) == np.load(os.path.join(folder, name, "frametimes.npy")).shape[1]
 	assert os.path.getsize(os.path.join(folder, "trigger.json")) > 0
 
@@ -145,6 +147,55 @@ def test_a_session_run_still_stops_on_two_cameras_with_one_name(tmp_path):
 	assert code == 1, out
 	assert "Eye and Eye would both write" in out
 	assert not (tmp_path / "rec").exists()
+
+
+# ------------------------------------------------------------------ calibration sessions
+
+@pytest.mark.parametrize("folder, calibration", [
+	("calibration", True), ("2026-10-18_Calibration", True), ("rig2-calibration-board", True),
+	("test", False), ("calib", False), (os.path.join("calibration", "mouse1"), False)])
+def test_a_calibration_session_has_calibration_in_its_folders_name(folder, calibration):
+	assert newfiles.Calibration({"videoFolder": folder}) == calibration
+	assert newfiles.Calibration({"videoFolder": folder + os.sep}) == calibration
+	# The configured folder's name, not the session folder's (a date)
+	assert newfiles.Calibration(newfiles.UseSession({"videoFolder": folder},
+		os.path.join(folder, "2026-10-18_17-30-05"))) == calibration
+
+
+def test_a_calibration_sessions_video_goes_into_calibration_images():
+	p = dict(configurator.DefaultParams(), videoFolder=os.path.join("data", "calibration"), cameraName="Camera0")
+	assert newfiles.VideoPath(p) == os.path.join("data", "calibration", "Camera0", "calibration_images", "0.mp4")
+	assert newfiles.CameraFiles(p)[1:] == [os.path.join("data", "calibration", "Camera0", name)
+		for name in ("frametimes.npy", "hosttimes.npy", "frametimes.mat", "metadata.csv")]
+	p["videoFolder"] = os.path.join("data", "test")
+	assert newfiles.VideoPath(p) == os.path.join("data", "test", "Camera0", "0.mp4")
+
+
+@pytest.mark.parametrize("session", [True, False], ids=["session", "folder itself"])
+def test_a_calibration_session_records_its_videos_as_luc3d_and_sleap_anipose_expect(tmp_path, ratcams, session):
+	# <camera>/calibration_images/<video>, the camera's other files beside it
+	folder = tmp_path / "2026-10-18_calibration"
+	code, out = acquire(tmp_path, config(tmp_path, folder, session=session))
+	assert code == 0, out
+	assert "A calibration session (\"calibration\" in videoFolder's name): each camera's video goes into " \
+		"<camera>{0}calibration_images{0}.\n".format(os.sep) in out
+	run = folder / sessions(folder)[0] if session else folder
+	recorded(str(run), video="calibration_images")
+	for name in ("EyeA", "EyeB"):
+		assert os.listdir(run / name / "calibration_images") == ["0.mp4"]
+		assert not (run / name / "0.mp4").exists()
+
+
+def test_a_calibration_session_never_replaces_one(tmp_path):
+	folder = tmp_path / "calibration"
+	video = folder / "EyeA" / "calibration_images" / "0.mp4"
+	video.parent.mkdir(parents=True)
+	video.write_bytes(b"an earlier calibration")
+	code, out = acquire(tmp_path, config(tmp_path, folder))
+	assert code == 1, out
+	assert "These files are there:\n  {}\n".format(os.path.join("EyeA", "calibration_images", "0.mp4")) in out
+	assert snapshot(folder) == {os.path.join("EyeA", "calibration_images", "0.mp4"):
+		hashlib.sha256(b"an earlier calibration").hexdigest()}
 
 
 # ------------------------------------------------------------------ a new folder records as before

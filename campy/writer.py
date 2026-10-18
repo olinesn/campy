@@ -348,9 +348,9 @@ def OpenWriter(cam_params, queue, new=False):
 	# campy-encode-quality write into folders of their own.
 	try:
 		writing = False
-		folder_name = os.path.join(cam_params["videoFolder"], cam_params["cameraName"])
-		file_name = cam_params["videoFilename"]
-		full_file_name = os.path.join(folder_name, file_name)
+		# The camera's folder, or in a calibration session its calibration_images
+		folder_name = newfiles.VideoFolder(cam_params)
+		full_file_name = newfiles.VideoPath(cam_params)
 
 		if not os.path.isdir(folder_name):
 			os.makedirs(folder_name, exist_ok=True) # the grab thread may make it too (metadata.csv)
