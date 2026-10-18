@@ -30,14 +30,15 @@ CAMERA_FILES = ("0.mp4", "frametimes.npy", "hosttimes.npy", "frametimes.mat", "m
 
 def config(tmp_path, folder, preflight="off", recTimeInSec=1, name="config.yaml", session=False, video="0.mp4"):
 	# Two simulated RatCams: every file a recording writes, a RatCam's logs too.
-	# Into folder itself (sessionFolder False), unless session.
+	# Into folder itself (sessionFolder False), unless session. Paths in single
+	# quotes: YAML reads a Windows path's backslashes in double quotes as escapes.
 	path = tmp_path / name
 	path.write_text("\n".join([
-		'videoFolder: "{}"'.format(folder), 'videoFilename: "{}"'.format(video), "recTimeInSec: {}".format(recTimeInSec),
+		"videoFolder: '{}'".format(folder), 'videoFilename: "{}"'.format(video), "recTimeInSec: {}".format(recTimeInSec),
 		"numCams: 2", 'cameraNames: ["EyeA", "EyeB"]', 'cameraMake: "ratcam"', 'ratcamPorts: ["sim", "sim"]',
 		"frameRate: 30", "frameWidth: 160", "frameHeight: 120", "cameraExposureTimeInUs: 3000", "gpuID: -1",
 		'pixelFormatOutput: "yuv420p"', "displayFrameRate: 0", 'preflight: "{}"'.format(preflight),
-		'ffmpegLogLevel: "warning"', 'capacityFile: "{}"'.format(tmp_path / "none.json"),
+		'ffmpegLogLevel: "warning"', "capacityFile: '{}'".format(tmp_path / "none.json"),
 		"sessionFolder: {}".format(session), ""]))
 	return path
 
