@@ -11,6 +11,30 @@ def Say(text):
 	sys.stdout.flush()
 
 
+def ErrorText(error):
+	# An exception's message, or its kind when it has none
+	return str(error).strip() or type(error).__name__
+
+
+def ExitCodeText(code):
+	"""
+	A process's exit code, as said in campy's messages: with the signal that
+	ended it, where one did (Linux and macOS give it as a negative code), or
+	in hex when it is one of Windows' large codes (0xC0000005: an access
+	violation, a segfault).
+	"""
+	if code is None:
+		return "no exit code"
+	if code < 0:
+		try:
+			return "exit code {} ({})".format(code, signal.Signals(-code).name)
+		except ValueError:
+			return "exit code {}".format(code)
+	if code > 255:
+		return "exit code {} (0x{:08X})".format(code, code)
+	return "exit code {}".format(code)
+
+
 class QueueKeyboardInterrupt(object):
 	'''
 	Usage:

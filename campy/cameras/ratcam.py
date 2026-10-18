@@ -35,6 +35,7 @@ memory does not grow with the recording, and one that stops without closing
 """
 
 import csv, os, queue, time
+from campy.cameras import unicam
 from campy.utils.utils import Say
 
 
@@ -150,7 +151,6 @@ class RatCam:
 	def __init__(self, cam, folder):
 		self.cam = cam    # nireyecam.device.Camera
 		self.logs = Logs(folder)
-		self.lost_link = False
 
 
 def FixedParams(cam_params):
@@ -352,10 +352,9 @@ def GrabFrame(camera, frameNumber):
 	deadline = time.monotonic() + GRAB_TIMEOUT_S
 	while True:
 		if cam.error is not None:
-			if not camera.lost_link:
-				camera.lost_link = True
-				Say("{}: lost the RatCam: {}".format(cam.name, cam.error))
-			raise RatCamError("connection lost")
+			# Its reader thread has ended (the USB link failed): no frame will
+			# come again, so this camera's recording ends (unicam.GrabFrames)
+			raise unicam.CameraLost("lost the RatCam: {}".format(cam.error))
 		try:
 			packet, host_ns = cam.data.get(timeout=max(0.0, deadline - time.monotonic()))
 		except queue.Empty:
@@ -393,7 +392,10 @@ def CloseQuietly(camera):
 			camera.cam.command(command)
 		except Exception:
 			pass
-	camera.cam.close()
+	try:
+		camera.cam.close()
+	except Exception:
+		pass
 
 
 def CloseCamera(cam_params, camera):
@@ -407,7 +409,10 @@ def CloseCamera(cam_params, camera):
 		Drain(camera) # sync pulses that came after the last frame
 	finally:
 		CloseQuietly(camera) # the IR LEDs go off with it
-	SaveLogs(cam_params, camera)
+	try:
+		SaveLogs(cam_params, camera)
+	except Exception as e:
+		Say("{}: could not save ratcam_frames.csv and ratcam_sync.csv: {}".format(cam_params["cameraName"], e))
 
 
 def SaveLogs(cam_params, camera):

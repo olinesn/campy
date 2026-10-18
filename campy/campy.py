@@ -22,7 +22,7 @@ import multiprocessing as mp
 from campy import writer, configurator, preflight
 from campy.trigger import trigger
 from campy.cameras import unicam
-from campy.utils.utils import HandleKeyboardInterrupt
+from campy.utils.utils import HandleKeyboardInterrupt, Say, ErrorText
 
 def OpenSystems():
 	# Configure parameters
@@ -49,8 +49,16 @@ def OpenSystems():
 
 
 def CloseSystems(systems, params):
-	trigger.StopTriggers(systems, params)
-	unicam.CloseSystems(systems, params)
+	# Each step whatever the one before did: the trigger stops even when a
+	# camera system does not close, and the other way round
+	try:
+		trigger.StopTriggers(systems, params)
+	except Exception as e:
+		Say("Could not stop the trigger: {}".format(ErrorText(e)))
+	try:
+		unicam.CloseSystems(systems, params)
+	except Exception as e:
+		Say("Could not close the camera systems: {}".format(ErrorText(e)))
 
 
 def AcquireOneCamera(n_cam):
@@ -58,7 +66,9 @@ def AcquireOneCamera(n_cam):
 	cam_params = configurator.ConfigureCamParams(systems, params, n_cam)
 
 	# Initialize queues for display, video writer, and stop messages, and for
-	# whether the camera opened
+	# whether the camera opened; and what the camera thread and the writer tell
+	# each other, and what went wrong (unicam.Recording)
+	recording = unicam.Recording()
 	dispQueue = deque([], 2)
 	writeQueue = deque()
 	stopReadQueue = deque([],1)
@@ -75,15 +85,21 @@ def AcquireOneCamera(n_cam):
 			).start()
 
 	# Start grabbing frames ("producer" thread)
-	threading.Thread(
+	grab = threading.Thread(
 		target = unicam.GrabFrames,
 		daemon = True,
-		args = (cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue, openQueue,),
-		).start()
+		args = (cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue, openQueue, recording,),
+		)
+	grab.start()
 
 	# Start video file writer (main "consumer" process), once the camera is
 	# open: opening it can change the frame size
-	writer.WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue)
+	writer.WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue, recording=recording)
+
+	# The camera thread saves metadata once the writer is done, with the frames
+	# ffmpeg took: the process waits for it
+	grab.join()
+	return recording
 
 
 def ShowPreview(cam_params, dispQueue):
@@ -100,26 +116,51 @@ def InitCameraProcess(readyQueue):
 	unicam.SetReadyQueue(readyQueue)
 
 
+def RunCamera(n_cam, readyQueue, done):
+	# One camera process: records its camera, then sends Main what went wrong,
+	# if anything (done). One that ends without sending it died, and Main says so.
+	InitCameraProcess(readyQueue)
+	recording = AcquireOneCamera(n_cam)
+	readyQueue.close()
+	readyQueue.join_thread()
+	done.send(recording.Failures())
+	done.close()
+	# Then it ends at once, as campy's pool workers did (they were terminated):
+	# without running the camera drivers' own cleanup at exit, which campy has
+	# never run, and which could otherwise crash or hang after a good recording
+	os._exit(0)
+
+
 def Main():
 	global systems
 	with HandleKeyboardInterrupt():
-		# Acquire cameras in parallel with Windows- and Linux-compatible pool
+		# One process per camera, started the same way on Windows and Linux
+		# (spawn), and watched: one that dies is said at once, and the others
+		# go on recording
 		ctx = mp.get_context("spawn")
 		readyQueue = ctx.Queue()
-		p = ctx.Pool(params["numCams"], initializer=InitCameraProcess, initargs=(readyQueue,))
-		result = p.map_async(AcquireOneCamera, range(params["numCams"]))
+		cameras = unicam.CameraProcesses(ctx, RunCamera, params, readyQueue)
 
-		# Start the trigger only once every camera is grabbing, so that every
-		# camera's first frame is the trigger's first pulse. The serial port
-		# opens meanwhile: the Arduino needs a few seconds after it opens.
-		systems = trigger.OpenTriggers(systems, params)
-		ready, missing = unicam.WaitForCameras(readyQueue, params, result)
-		if ready and not result.ready(): # not if the cameras already stopped (Ctrl-C)
-			systems = trigger.StartTriggers(systems, params)
-		trigger.SaveStart(params, ready, missing, systems.get("triggerStartedNs"))
-		result.get()
+		# The trigger stops and the systems close whatever happens here
+		try:
+			# Start the trigger only once every camera is grabbing, so that every
+			# camera's first frame is the trigger's first pulse. The serial port
+			# opens meanwhile: the Arduino needs a few seconds after it opens.
+			systems = trigger.OpenTriggers(systems, params)
+			ready, missing = unicam.WaitForCameras(readyQueue, params, cameras)
+			if ready and not cameras.ready(): # not if the cameras already stopped (Ctrl-C)
+				systems = trigger.StartTriggers(systems, params)
+			trigger.SaveStart(params, ready, missing, systems.get("triggerStartedNs"))
+			failures = cameras.Wait()
+		finally:
+			CloseSystems(systems, params)
 
-	CloseSystems(systems, params)
+	# A camera that did not record to the end makes campy's exit code 1
+	if failures:
+		Say("{} of {} cameras did not record to the end:".format(len(failures), params["numCams"]))
+		for name, reasons in failures.items():
+			Say("  {}: {}".format(name, "; ".join(reasons)))
+		sys.exit(1)
 
 # Open systems, creates global 'systems' and 'params' variables
 systems, params = OpenSystems()

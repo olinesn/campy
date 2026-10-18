@@ -1,0 +1,755 @@
+"""
+A camera process, its ffmpeg, or its camera that fails mid-recording: campy
+ends, closes what it can, and says what happened.
+"""
+
+import csv
+import importlib
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+import types
+from collections import deque
+
+import numpy as np
+import pytest
+import imageio_ffmpeg
+import multiprocessing as mp
+
+from campy import configurator, frametimes, writer
+from campy.cameras import unicam
+from campy.utils import utils
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+class NoFrame(Exception):
+	pass
+
+
+class FakeCamera:
+	"""
+	A camera module for unicam.GrabFrames, sending 16x16 frames at frameRate,
+	with the failure to try:
+	  start: what StartGrabbing returns
+	  stall: (frame, seconds): after that many frames, none for that long
+	         (each call times out, as FLIR's GetNextImage does), then frames again
+	  lost_after: after that many frames, the camera is gone (unicam.CameraLost)
+	  close_error: what CloseCamera raises
+	  bad_frames: grabs whose image cannot be read, or shown (counted from 1)
+	  on_frame: called with each grab's number
+	"""
+
+	def __init__(self, frameRate=100, start=True, stall=None, lost_after=None, close_error=None, bad_frames=(),
+			on_frame=None):
+		self.period = 1.0 / frameRate
+		self.start, self.stall, self.lost_after = start, stall, lost_after
+		self.close_error, self.bad_frames, self.on_frame = close_error, set(bad_frames), on_frame
+		self.stalled = None # when the stall began
+		self.grabbed, self.released = [], []
+		self.closed = False
+
+	def OpenCamera(self, cam_params):
+		cam_params["cameraModel"] = "fake"
+		cam_params["cameraSerialNo"] = "0"
+		return object(), cam_params
+
+	def StartGrabbing(self, camera):
+		return self.start
+
+	def GrabFrame(self, camera, n):
+		if self.lost_after is not None and n >= self.lost_after:
+			raise unicam.CameraLost("device removed")
+		if self.stall is not None and n == self.stall[0]:
+			if self.stalled is None:
+				self.stalled = time.monotonic()
+			if time.monotonic() - self.stalled < self.stall[1]:
+				time.sleep(0.02)
+				raise NoFrame("no frame within 20 ms")
+		time.sleep(self.period)
+		grab = len(self.grabbed) + 1 # each grab its own number, whatever campy made of the one before
+		self.grabbed.append(grab)
+		if self.on_frame is not None:
+			self.on_frame(grab)
+		return grab
+
+	def GetImageArray(self, grab):
+		if grab in self.bad_frames:
+			raise ValueError("frame {} cannot be read".format(grab))
+		return np.full((16, 16), grab % 256, dtype=np.uint8)
+
+	def GetTimeStamp(self, grab):
+		return grab * self.period
+
+	def DisplayImage(self, cam_params, dispQueue, grab):
+		if grab in self.bad_frames:
+			raise ValueError("frame {} cannot be shown".format(grab))
+
+	def ReleaseFrame(self, grab):
+		self.released.append(grab)
+
+	def CloseCamera(self, cam_params, camera):
+		self.closed = True
+		if self.close_error is not None:
+			raise self.close_error
+
+
+def params(tmp_path, **values):
+	p = configurator.DefaultParams()
+	p.update(cameraMake="fake", cameraName="Camera0", n_cam=0, videoFolder=str(tmp_path), videoFilename="0.mp4",
+		frameRate=100, recTimeInSec=0.5, chunkLengthInSec=10, displayFrameRate=10, frameWidth=16, frameHeight=16,
+		pixelFormatInput="gray", pixelFormatOutput="yuv420p", gpuID=-1, ffmpegLogLevel="quiet")
+	p.update(values)
+	return p
+
+
+class NoSignal:
+	# Stands in for QueueKeyboardInterrupt: it sets a SIGINT handler, which
+	# only the main thread may, and here the writer runs in a thread of its own
+	def __init__(self, queue):
+		pass
+
+	def __enter__(self):
+		pass
+
+	def __exit__(self, *exc):
+		pass
+
+
+class CameraProcess:
+	"""
+	One camera process's two threads, as campy.AcquireOneCamera runs them:
+	the camera thread (GrabFrames) and the writer (WriteFrames), sharing a
+	unicam.Recording. Both in threads here, so that one that hangs fails the
+	test rather than hanging it.
+	"""
+
+	def __init__(self, monkeypatch, p, camera):
+		monkeypatch.setattr(unicam, "ImportCam", lambda make: camera)
+		monkeypatch.setattr(writer, "QueueKeyboardInterrupt", NoSignal)
+		sleep = time.sleep
+		monkeypatch.setattr(time, "sleep", lambda s: None if s >= 1 else sleep(s)) # the writer's 1 s wait to close
+		self.p, self.camera = p, camera
+		self.recording = unicam.Recording()
+		self.writeQueue, self.dispQueue = deque(), deque([], 2)
+		self.stopReadQueue, self.stopWriteQueue, self.openQueue = deque([], 1), deque([], 1), deque([], 1)
+
+	def Run(self, timeout=20, stop_after=None):
+		t0 = time.monotonic()
+		grab = threading.Thread(target=unicam.GrabFrames, daemon=True, args=(self.p, self.writeQueue,
+			self.dispQueue, self.stopReadQueue, self.stopWriteQueue, self.openQueue, self.recording))
+		write = threading.Thread(target=writer.WriteFrames, daemon=True, args=(self.p, self.writeQueue,
+			self.stopReadQueue, self.stopWriteQueue, self.openQueue), kwargs=dict(recording=self.recording))
+		grab.start()
+		write.start()
+		if stop_after is not None: # Ctrl-C
+			time.sleep(stop_after)
+			self.stopReadQueue.append("STOP")
+		grab.join(timeout)
+		write.join(max(0.1, timeout - (time.monotonic() - t0)))
+		assert not grab.is_alive(), "the camera thread did not end"
+		assert not write.is_alive(), "the writer did not end"
+		return time.monotonic() - t0
+
+	def Folder(self):
+		return os.path.join(self.p["videoFolder"], self.p["cameraName"])
+
+	def Metadata(self):
+		with open(os.path.join(self.Folder(), "metadata.csv")) as f:
+			return dict(csv.reader(f))
+
+	def FrameTimes(self):
+		return np.load(os.path.join(self.Folder(), "frametimes.npy"))
+
+	def VideoFrames(self):
+		return imageio_ffmpeg.count_frames_and_secs(os.path.join(self.Folder(), "0.mp4"))[0]
+
+
+# ------------------------------------------------------------------ the camera fails to close
+
+def test_a_camera_that_fails_to_close_still_finishes_its_video_and_metadata(tmp_path, monkeypatch, capsys):
+	# FLIR's CloseCamera raised a SpinnakerException (EndAcquisition on an
+	# unplugged camera, or one that never started). GrabFrames ended without
+	# telling the writer, which then waited forever: no video, no totals.
+	camera = FakeCamera(close_error=RuntimeError("Spinnaker: Camera is not started. [-1002]"))
+	run = CameraProcess(monkeypatch, params(tmp_path), camera)
+	run.Run()
+	assert camera.closed
+	out = capsys.readouterr().out
+	assert "Camera0: could not close the camera: Spinnaker: Camera is not started. [-1002]\n" in out
+	assert "Saved metadata for Camera0." in out
+	meta = run.Metadata()
+	assert meta["totalFrames"] == meta["framesWritten"] == "50"
+	assert "cameraError" not in meta and "videoError" not in meta # the recording itself is whole
+	assert os.path.exists(os.path.join(run.Folder(), "frametimes.mat"))
+	assert run.VideoFrames() == 50
+	assert list(run.dispQueue)[-1] == "STOP" # and the display was told
+	assert run.recording.Failures() == []
+
+
+def test_each_frame_is_released_whatever_happens_to_it(tmp_path, monkeypatch):
+	# A frame that could not be read or shown was never released: a FLIR
+	# camera holds its buffer, and stops once they are all held
+	camera = FakeCamera(bad_frames={5, 20})
+	run = CameraProcess(monkeypatch, params(tmp_path), camera)
+	run.Run()
+	assert camera.released == camera.grabbed and len(camera.grabbed) >= 50
+
+
+# ------------------------------------------------------------------ the camera does not send
+
+def test_a_camera_that_did_not_start_grabbing_ends_at_once(tmp_path, monkeypatch, capsys):
+	# It used to loop for ever, retrying a camera that was never started
+	camera = FakeCamera(start=False)
+	run = CameraProcess(monkeypatch, params(tmp_path, recTimeInSec=60), camera)
+	assert run.Run() < 10
+	assert camera.grabbed == [] and camera.closed
+	assert "Camera0 did not start grabbing, so it records nothing.\n" in capsys.readouterr().out
+	assert run.recording.Failures() == ["did not start grabbing"]
+	meta = run.Metadata() # says why there is nothing
+	assert meta["cameraError"] == "did not start grabbing" and meta["totalFrames"] == "0"
+
+
+def test_an_error_anywhere_in_the_camera_thread_still_closes_it(tmp_path, monkeypatch, capsys):
+	camera = FakeCamera()
+	def start(cam):
+		raise OSError("USB transfer failed")
+	camera.StartGrabbing = start
+	run = CameraProcess(monkeypatch, params(tmp_path), camera)
+	assert run.Run() < 10
+	why = "the camera thread stopped, after frame 0: USB transfer failed"
+	assert "Camera0: {}.\n".format(why) in capsys.readouterr().out
+	assert camera.closed and run.recording.Failures() == [why]
+	assert run.Metadata()["cameraError"] == why
+
+
+def test_a_camera_that_is_gone_ends_its_recording(tmp_path, monkeypatch, capsys):
+	camera = FakeCamera(lost_after=20)
+	run = CameraProcess(monkeypatch, params(tmp_path, recTimeInSec=60), camera)
+	assert run.Run() < 10
+	why = "the camera is gone, after frame 20: device removed"
+	assert "Camera0: {}. Its recording ends there.\n".format(why) in capsys.readouterr().out
+	assert run.recording.Failures() == [why] and camera.closed
+	meta = run.Metadata()
+	assert meta["cameraError"] == why
+	assert meta["totalFrames"] == meta["framesWritten"] == "20"
+	assert run.FrameTimes().shape == (2, 20) and run.VideoFrames() == 20
+
+
+@pytest.fixture
+def quick_watch(monkeypatch):
+	# Say a gap after 0.2 s, and again every 0.5 s
+	monkeypatch.setattr(unicam, "NO_FRAME_SEC", 0.2)
+	monkeypatch.setattr(unicam, "NO_FRAME_REPORT_SEC", 0.5)
+
+
+def test_a_camera_that_stops_sending_is_said_now_and_then_and_when_it_is_back(tmp_path, monkeypatch, capsys,
+		quick_watch):
+	# It used to retry every millisecond, and said nothing without cameraDebug
+	camera = FakeCamera(stall=(10, 1.3))
+	run = CameraProcess(monkeypatch, params(tmp_path), camera)
+	run.Run()
+	out = capsys.readouterr().out
+	gaps = re.findall(r"Camera0: no frame for \d+ s, since frame 10\. Last error: no frame within 20 ms\n", out)
+	assert 2 <= len(gaps) <= 4 # at 0.2, 0.7 and 1.2 s: not once a retry
+	assert re.search(r"Camera0: frames again, after 1\.\d s without \(frame 11\)\.\n", out)
+	assert run.Metadata()["totalFrames"] == "50" and run.recording.Failures() == []
+
+
+def test_nothing_is_said_before_the_first_frame(tmp_path, monkeypatch, capsys, quick_watch):
+	# A triggered camera waits for its first trigger, for as long as that takes
+	camera = FakeCamera(stall=(0, 1.0))
+	run = CameraProcess(monkeypatch, params(tmp_path, recTimeInSec=0.2), camera)
+	run.Run()
+	out = capsys.readouterr().out
+	assert "no frame for" not in out and "frames again" not in out
+	assert run.Metadata()["totalFrames"] == "20"
+
+
+def test_a_camera_that_stops_for_good_still_stops_at_ctrl_c(tmp_path, monkeypatch, capsys, quick_watch):
+	# Gone, but not known to be (a FLIR camera that stays valid): said, and
+	# Ctrl-C stops it cleanly, with what it recorded
+	camera = FakeCamera(stall=(10, 600))
+	run = CameraProcess(monkeypatch, params(tmp_path, recTimeInSec=60), camera)
+	run.Run(stop_after=0.9)
+	assert "Camera0: no frame for" in capsys.readouterr().out
+	meta = run.Metadata()
+	assert meta["totalFrames"] == meta["framesWritten"] == "10" and run.VideoFrames() == 10
+
+
+# ------------------------------------------------------------------ ffmpeg fails
+
+def test_a_killed_ffmpeg_stops_its_camera_and_is_said(tmp_path, monkeypatch, capsys):
+	# The camera used to go on recording into nothing to the end, with
+	# metadata.csv saying every frame was written
+	found = []
+	real = writer.FfmpegProcess
+	monkeypatch.setattr(writer, "FfmpegProcess", lambda w: found.append(real(w)) or found[-1])
+
+	def kill(n):
+		if n == 30:
+			while not found:
+				time.sleep(0.01)
+			found[0].kill()
+
+	camera = FakeCamera(on_frame=kill)
+	run = CameraProcess(monkeypatch, params(tmp_path, recTimeInSec=60), camera)
+	assert run.Run() < 15
+	out = capsys.readouterr().out
+	said = re.search(r"Camera0: ffmpeg stopped after taking (\d+) frames, with exit code (\S+)[^\n]*: (.*)\. "
+		r"Stopping Camera0\. Its video may be unreadable, and its metadata\.csv and frametimes\.npy count only "
+		r"the frames ffmpeg was given\. ffmpegLogLevel is \"quiet\", so ffmpeg did not say why: \"warning\" shows "
+		r"its errors\.\n", out)
+	assert said, out
+	sent = int(said.group(1))
+	if sys.platform != "win32":
+		assert said.group(2) == "-9" and "(SIGKILL)" in out
+	assert run.recording.framesSent == sent and camera.closed
+	meta = run.Metadata()
+	assert meta["videoError"] == run.recording.videoError and meta["videoError"].startswith(
+		"ffmpeg stopped after taking {} frames".format(sent))
+	# Only the frames ffmpeg was given: one row each in frametimes.npy
+	assert meta["framesWritten"] == str(sent) and run.FrameTimes().shape == (2, sent)
+	assert sent <= int(meta["totalFrames"]) < 200 # it stopped, rather than grab 6000
+	assert "Camera0 grabbed {} frames at".format(meta["totalFrames"]) in out
+	assert "ffmpeg was given {} of them before it stopped.".format(sent) in out
+
+
+def fake_write_frames(fail_at=None, sent=None):
+	# Stands in for imageio-ffmpeg's write_frames: an ffmpeg that takes
+	# fail_at frames, then breaks its pipe
+	def write_frames(path, size, **kwargs):
+		count = 0
+		while True:
+			frame = yield
+			if frame is None:
+				continue
+			if fail_at is not None and count >= fail_at:
+				raise IOError("[Errno 32] Broken pipe\n\nFFMPEG COMMAND:\nffmpeg ...")
+			count += 1
+			if sent is not None:
+				sent.append(count)
+			time.sleep(0.01)
+	return write_frames
+
+
+def test_ffmpeg_failing_after_the_camera_has_stopped(tmp_path, monkeypatch, capsys):
+	# The camera has grabbed every frame and closed, and the writer, behind,
+	# is giving ffmpeg the rest when it fails: metadata.csv, saved once the
+	# writer is done, counts only the frames it took
+	monkeypatch.setattr(writer, "write_frames", fake_write_frames(fail_at=30))
+	camera = FakeCamera(frameRate=10000) # far faster than the writer
+	run = CameraProcess(monkeypatch, params(tmp_path, frameRate=10000, recTimeInSec=0.005, writeQueueMaxSec="None"),
+		camera)
+	run.Run()
+	out = capsys.readouterr().out
+	assert "Camera0: ffmpeg stopped after taking 30 frames: [Errno 32] Broken pipe. Its video may be unreadable" in out
+	assert "Stopping Camera0" not in out # it already had
+	meta = run.Metadata()
+	assert meta["totalFrames"] == "50" and meta["framesWritten"] == "30"
+	assert meta["videoError"] == "ffmpeg stopped after taking 30 frames: [Errno 32] Broken pipe"
+	frames = run.FrameTimes()
+	assert list(frames[0]) == list(range(1, 31)) and len(np.load(os.path.join(run.Folder(), "hosttimes.npy"))) == 30
+
+
+def test_ffmpeg_that_fails_as_it_finishes_the_video(tmp_path, monkeypatch, capsys):
+	monkeypatch.setattr(writer, "write_frames", fake_write_frames())
+	monkeypatch.setattr(writer, "FfmpegProcess", lambda w: types.SimpleNamespace(returncode=1))
+	run = CameraProcess(monkeypatch, params(tmp_path), FakeCamera())
+	run.Run()
+	why = "ffmpeg ended with exit code 1 as it finished the video"
+	assert "Camera0: {}. Its video may be unreadable".format(why) in capsys.readouterr().out
+	meta = run.Metadata()
+	assert meta["videoError"] == why and meta["framesWritten"] == "50"
+
+
+def test_ffmpeg_that_does_not_start(tmp_path, monkeypatch, capsys):
+	def write_frames(path, size, **kwargs):
+		raise FileNotFoundError("no ffmpeg here")
+	monkeypatch.setattr(writer, "write_frames", write_frames)
+	camera = FakeCamera()
+	run = CameraProcess(monkeypatch, params(tmp_path, recTimeInSec=60), camera)
+	assert run.Run() < 10
+	assert "Camera0: ffmpeg did not start: no ffmpeg here. Stopping Camera0." in capsys.readouterr().out
+	assert camera.closed
+	meta = run.Metadata()
+	assert meta["videoError"] == "ffmpeg did not start: no ffmpeg here" and meta["framesWritten"] == "0"
+
+
+def test_the_ffmpeg_process_is_found():
+	# Its exit code is read from imageio-ffmpeg's own Popen
+	w = imageio_ffmpeg.write_frames(os.devnull, (16, 16), pix_fmt_in="gray", output_params=["-f", "null"])
+	w.send(None)
+	process = writer.FfmpegProcess(w)
+	assert process is not None and process.poll() is None
+	w.send(np.zeros((16, 16), np.uint8))
+	w.close()
+	assert process.returncode == 0
+	assert writer.FfmpegProcess(fake_write_frames()("x", (16, 16))) is None
+
+
+# ------------------------------------------------------------------ the camera modules
+
+class SpinError(Exception):
+	pass
+
+
+class Image:
+	def __init__(self, incomplete=False):
+		self.incomplete, self.released = incomplete, False
+
+	def IsIncomplete(self):
+		return self.incomplete
+
+	def GetImageStatus(self):
+		return 3
+
+	def Release(self):
+		self.released = True
+
+
+class SpinCamera:
+	"""A FLIR camera, as PySpin's CameraPtr: what it sends, whether it is still valid, what fails as it closes."""
+	def __init__(self, images=(), error=None, valid=True, end_error=None):
+		self.images, self.error, self.valid, self.end_error = list(images), error, valid, end_error
+		self.calls = []
+
+	def GetNextImage(self, timeout):
+		if self.error is not None:
+			raise self.error
+		return self.images.pop(0)
+
+	def IsValid(self):
+		if isinstance(self.valid, Exception):
+			raise self.valid
+		return self.valid
+
+	def EndAcquisition(self):
+		self.calls.append("EndAcquisition")
+		if self.end_error is not None:
+			raise self.end_error
+
+	def DeInit(self):
+		self.calls.append("DeInit")
+
+
+@pytest.fixture
+def flir(monkeypatch, tmp_path):
+	spin = types.ModuleType("PySpin")
+	spin.SpinnakerException = SpinError
+	monkeypatch.setitem(sys.modules, "PySpin", spin)
+	monkeypatch.delitem(sys.modules, "campy.cameras.flir", raising=False)
+	module = importlib.import_module("campy.cameras.flir")
+	monkeypatch.setattr(module, "NOTE_FOLDER", str(tmp_path / ".campy"))
+	yield module
+	sys.modules.pop("campy.cameras.flir", None)
+
+
+TIMEOUT = SpinError("Spinnaker: Failed waiting for EventData on NEW_BUFFER_DATA event. [-1011]")
+
+
+def test_flir_releases_an_incomplete_image(flir, capsys):
+	# It was raised without being released: the camera's buffer stayed held
+	image = Image(incomplete=True)
+	with pytest.raises(flir.ImageNotCompleteException):
+		flir.GrabFrame(SpinCamera([image]), 0)
+	assert image.released
+	assert flir.GrabFrame(SpinCamera([Image()]), 0).released is False # a whole one is the caller's to release
+
+
+def test_flir_timeouts_are_not_a_camera_gone(flir):
+	# A triggered camera waits for its first trigger with GetNextImage timing out
+	with pytest.raises(SpinError):
+		flir.GrabFrame(SpinCamera(error=TIMEOUT), 0)
+	# and so with any error, while Spinnaker says the camera is valid, or cannot say
+	with pytest.raises(SpinError):
+		flir.GrabFrame(SpinCamera(error=SpinError("Spinnaker: Stream has been aborted. [-1012]")), 0)
+	with pytest.raises(SpinError):
+		flir.GrabFrame(SpinCamera(error=TIMEOUT, valid=SpinError("Camera is not valid")), 0)
+
+
+def test_flir_a_camera_no_longer_valid_is_gone(flir):
+	with pytest.raises(unicam.CameraLost, match=r"Spinnaker says the camera is no longer valid \(unplugged\?\): "
+			r"Spinnaker: Stream has been aborted\. \[-1012\]"):
+		flir.GrabFrame(SpinCamera(error=SpinError("Spinnaker: Stream has been aborted. [-1012]"), valid=False), 0)
+
+
+def test_flir_close_goes_on_when_a_step_fails(flir, monkeypatch, capsys):
+	# EndAcquisition on an unplugged camera, or one that never started: it was
+	# re-raised, and the camera was neither put back nor deinitialized
+	restored = []
+	monkeypatch.setattr(flir, "RestoreFrameRate", lambda camera, cam_params: restored.append(camera))
+	camera = SpinCamera(end_error=SpinError("Spinnaker: Camera is not started. [-1002]"))
+	flir.CloseCamera({"cameraName": "Camera0"}, camera)
+	assert camera.calls == ["EndAcquisition", "DeInit"] and restored == [camera]
+	assert capsys.readouterr().out == "Closing Camera0... Please wait.\n" \
+		"Camera0: EndAcquisition failed as it closed: Spinnaker: Camera is not started. [-1002]\n"
+
+
+class Basler:
+	def __init__(self, removed=False, stop_error=None):
+		self.removed, self.stop_error, self.calls = removed, stop_error, []
+
+	def RetrieveResult(self, timeout, handling):
+		raise RuntimeError("Grab timed out")
+
+	def IsCameraDeviceRemoved(self):
+		return self.removed
+
+	def StopGrabbing(self):
+		self.calls.append("StopGrabbing")
+		if self.stop_error is not None:
+			raise self.stop_error
+
+	def Close(self):
+		self.calls.append("Close")
+
+
+@pytest.fixture
+def basler(monkeypatch):
+	pylon = types.ModuleType("pypylon.pylon")
+	pylon.TimeoutHandling_ThrowException = "ThrowException"
+	genicam = types.ModuleType("pypylon.genicam")
+	package = types.ModuleType("pypylon")
+	package.pylon, package.genicam = pylon, genicam
+	for name, module in {"pypylon": package, "pypylon.pylon": pylon, "pypylon.genicam": genicam}.items():
+		monkeypatch.setitem(sys.modules, name, module)
+	monkeypatch.delitem(sys.modules, "campy.cameras.basler", raising=False)
+	yield importlib.import_module("campy.cameras.basler")
+	sys.modules.pop("campy.cameras.basler", None)
+
+
+def test_basler_a_removed_camera_is_gone(basler):
+	with pytest.raises(RuntimeError, match="Grab timed out"):
+		basler.GrabFrame(Basler(), 0)
+	with pytest.raises(unicam.CameraLost, match="pylon says the camera was removed: Grab timed out"):
+		basler.GrabFrame(Basler(removed=True), 0)
+
+
+def test_basler_close_goes_on_when_a_step_fails(basler, capsys):
+	camera = Basler(stop_error=RuntimeError("Device has been removed"))
+	basler.CloseCamera({"cameraName": "Camera0"}, camera)
+	assert camera.calls == ["StopGrabbing", "Close"]
+	assert "Camera0: StopGrabbing failed as it closed: Device has been removed\n" in capsys.readouterr().out
+
+
+def test_emu_close_says_what_failed(capsys):
+	from campy.cameras import emu
+	def fail():
+		raise OSError("the clip is gone")
+	emu.CloseCamera({"cameraName": "Camera0"}, types.SimpleNamespace(close=fail))
+	assert "Camera0: the clip did not close: the clip is gone\n" in capsys.readouterr().out
+
+
+def ratcam_params(tmp_path, **values):
+	p = configurator.DefaultParams()
+	p.update(numCams=1, cameraMake="ratcam", ratcamPorts=["sim"], videoFolder=str(tmp_path),
+		frameWidth=160, frameHeight=120, frameRate=20, cameraExposureTimeInUs=2000,
+		recTimeInSec=1, chunkLengthInSec=1, displayFrameRate=0)
+	p.update(values)
+	p = configurator.FillCameraLists(p)
+	systems = unicam.GetDeviceList(unicam.LoadSystems(p), p)
+	return configurator.ConfigureCamParams(systems, p, 0)
+
+
+def test_a_ratcam_that_loses_its_link_ends_its_recording(tmp_path, monkeypatch, capsys):
+	# It said "lost the RatCam" once, then retried for ever
+	pytest.importorskip("nireyecam")
+	from campy.cameras import ratcam
+	grab = ratcam.GrabFrame
+	def GrabFrame(camera, frameNumber):
+		if frameNumber == 10 and camera.cam.error is None:
+			camera.cam.error = OSError(6, "Device not configured") # what its reader thread keeps when the USB link fails
+		return grab(camera, frameNumber)
+	monkeypatch.setattr(ratcam, "GrabFrame", GrabFrame)
+
+	p = ratcam_params(tmp_path, recTimeInSec=60)
+	(tmp_path / "Camera0").mkdir()
+	t0 = time.monotonic()
+	unicam.GrabFrames(p, deque(), deque([], 2), deque([], 1), deque([], 1))
+	assert time.monotonic() - t0 < 15
+	why = "the camera is gone, after frame 10: lost the RatCam: [Errno 6] Device not configured"
+	assert "Camera0: {}. Its recording ends there.\n".format(why) in capsys.readouterr().out
+	with open(tmp_path / "Camera0" / "metadata.csv") as f:
+		meta = dict(csv.reader(f))
+	assert meta["cameraError"] == why and meta["totalFrames"] == meta["framesWritten"] == "10"
+	with open(tmp_path / "Camera0" / "ratcam_frames.csv") as f:
+		assert len(list(csv.DictReader(f))) == 10 # its logs, closed with it
+
+
+# ------------------------------------------------------------------ frame times of a video cut short
+
+def test_frame_times_keep_only_the_frames_the_video_took(tmp_path):
+	times = frametimes.FrameTimes(str(tmp_path), 10)
+	for k in range(1, 36):
+		times.Add(k, 100.0 + k / 80, 1000 + k)
+	times.Close(keep=23)
+	frames, hosts = np.load(tmp_path / "frametimes.npy"), np.load(tmp_path / "hosttimes.npy")
+	assert frames.shape == (2, 23) and list(frames[0]) == list(range(1, 24))
+	assert np.allclose(frames[1], (np.arange(1, 24) - 1) / 80)
+	assert list(hosts) == list(range(1001, 1024))
+	assert os.path.getsize(tmp_path / "hosttimes.npy") == frametimes.HEADER_BYTES + 23 * 8
+
+
+@pytest.mark.parametrize("keep, count", [(None, 35), (35, 35), (99, 35), (0, 0)])
+def test_frame_times_keep(tmp_path, keep, count):
+	times = frametimes.FrameTimes(str(tmp_path), 10)
+	for k in range(1, 36):
+		times.Add(k, k / 80, k)
+	times.Close(keep=keep)
+	assert times.count == count and np.load(tmp_path / "frametimes.npy").shape == (2, count)
+
+
+# ------------------------------------------------------------------ camera processes (campy's main process)
+
+def camera_process(n_cam, readyQueue, done):
+	# What campy.RunCamera does, by camera: 0 records for 3 s; 1 dies 0.3 s
+	# after it is ready (kill -9, or a segfault); 2 records, then sends what
+	# went wrong; 3 dies before it is ready
+	name = "Camera{}".format(n_cam)
+	if n_cam == 3:
+		os._exit(70)
+	readyQueue.put((n_cam, name, True, ""))
+	if n_cam == 1:
+		time.sleep(0.3)
+		if hasattr(signal, "SIGKILL"):
+			os.kill(os.getpid(), signal.SIGKILL)
+		os._exit(9)
+	time.sleep(1.5 if n_cam == 0 else 0.5)
+	done.send([] if n_cam == 0 else ["ffmpeg stopped after taking 30 frames, with exit code -9 (SIGKILL)"])
+	done.close()
+
+
+def camera_params(n, timeout=30):
+	p = configurator.DefaultParams()
+	p.update(numCams=n, readyTimeoutSec=timeout)
+	return configurator.FillCameraLists(p)
+
+
+def test_a_camera_process_that_dies_is_said_at_once_and_the_others_go_on():
+	# campy used to wait for it in the pool's result.get() forever
+	ctx = mp.get_context("spawn")
+	said = []
+	cameras = unicam.CameraProcesses(ctx, camera_process, camera_params(3), ctx.Queue(),
+		log=lambda text: said.append((text, cameras.processes[0].is_alive())))
+	t0 = time.monotonic()
+	failures = cameras.Wait()
+	assert time.monotonic() - t0 < 20
+	why = "its camera process stopped, with exit code -9 (SIGKILL): killed, or crashed" \
+		if hasattr(signal, "SIGKILL") else "its camera process stopped, with exit code 9: killed, or crashed"
+	assert said == [("Camera1: {}. Its files end where it stopped.".format(why), True)] # while Camera0 recorded
+	assert failures == {
+		"Camera1": [why],
+		"Camera2": ["ffmpeg stopped after taking 30 frames, with exit code -9 (SIGKILL)"],
+		}
+	assert [p.exitcode for p in cameras.processes][0] == 0
+
+
+def test_a_camera_process_that_dies_before_it_is_ready_is_not_waited_for():
+	# It used to be waited for until readyTimeoutSec
+	ctx = mp.get_context("spawn")
+	readyQueue = ctx.Queue()
+	p = camera_params(4, timeout=60)
+	p["cameraNames"] = ["Camera0", "Camera1", "Camera2", "Camera3"]
+	cameras = unicam.CameraProcesses(ctx, camera_process, p, readyQueue, log=lambda text: None)
+	t0 = time.monotonic()
+	ready, missing = unicam.WaitForCameras(readyQueue, p, cameras, log=lambda text: None)
+	assert time.monotonic() - t0 < 20
+	assert missing == {"Camera3": "stopped before it was ready"}
+	assert sorted(ready) == ["Camera0", "Camera1", "Camera2"]
+	failures = cameras.Wait()
+	assert failures["Camera3"] == ["its camera process stopped, with exit code 70: killed, or crashed"]
+
+
+def test_exit_codes():
+	assert utils.ExitCodeText(None) == "no exit code"
+	assert utils.ExitCodeText(1) == "exit code 1"
+	assert utils.ExitCodeText(-11) == "exit code -11 (SIGSEGV)"
+	assert utils.ExitCodeText(3221225477) == "exit code 3221225477 (0xC0000005)" # Windows: an access violation
+
+
+# ------------------------------------------------------------------ end to end, on simulated RatCams
+
+def tree(pid):
+	# This process's descendants, as (pid, ppid, command)
+	rows = []
+	for line in subprocess.run(["ps", "-A", "-ww", "-o", "pid=,ppid=,command="], capture_output=True,
+			text=True).stdout.splitlines():
+		parts = line.split(None, 2)
+		if len(parts) == 3:
+			rows.append((int(parts[0]), int(parts[1]), parts[2]))
+	found, todo = [], [pid]
+	while todo:
+		parent = todo.pop()
+		for row in rows:
+			if row[1] == parent:
+				found.append(row)
+				todo.append(row[0])
+	return found
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="finds the processes to kill with ps")
+def test_campy_ends_and_says_which_camera_failed(tmp_path):
+	pytest.importorskip("nireyecam")
+	# Three simulated RatCams: EyeA's camera process is killed, EyeB's ffmpeg
+	# is killed, and EyeC records to the end
+	config = tmp_path / "config.yaml"
+	config.write_text("\n".join([
+		'videoFolder: "{}"'.format(tmp_path / "rec"), 'videoFilename: "0.mp4"', "recTimeInSec: 5", "numCams: 3",
+		'cameraNames: ["EyeA", "EyeB", "EyeC"]', 'cameraMake: "ratcam"', 'ratcamPorts: ["sim", "sim", "sim"]',
+		"frameRate: 30", "frameWidth: 160", "frameHeight: 120", "cameraExposureTimeInUs: 3000", "gpuID: -1",
+		'pixelFormatOutput: "yuv420p"', "displayFrameRate: 0", 'preflight: "off"', 'ffmpegLogLevel: "warning"', ""]))
+	env = dict(os.environ, PYTHONPATH=REPO, PYTHONUNBUFFERED="1")
+	code = "import sys; sys.argv = ['campy-acquire', sys.argv[1]]; from campy.campy import Main; Main()"
+	t0 = time.monotonic()
+	campy = subprocess.Popen([sys.executable, "-c", code, str(config)], cwd=str(tmp_path), env=env,
+		stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+	try:
+		# Once every camera's ffmpeg has run for a second
+		ffmpeg = {}
+		while len(ffmpeg) < 3 and time.monotonic() - t0 < 60:
+			time.sleep(0.2)
+			ffmpeg = {name: (pid, ppid) for pid, ppid, command in tree(campy.pid) if "ffmpeg" in command
+				for name in ("EyeA", "EyeB", "EyeC") if "/{}/0.mp4".format(name) in command}
+		assert len(ffmpeg) == 3, "the cameras did not all start"
+		time.sleep(1)
+		os.kill(ffmpeg["EyeA"][1], signal.SIGKILL) # its camera process
+		os.kill(ffmpeg["EyeB"][0], signal.SIGKILL) # its ffmpeg
+		out, _ = campy.communicate(timeout=60)
+	finally:
+		if campy.poll() is None:
+			campy.kill()
+			for pid, ppid, command in tree(campy.pid):
+				os.kill(pid, signal.SIGKILL)
+	assert campy.returncode == 1, out
+
+	assert "EyeA: its camera process stopped, with exit code -9 (SIGKILL): killed, or crashed. Its files end " \
+		"where it stopped.\n" in out
+	said = re.search(r"EyeB: ffmpeg stopped after taking (\d+) frames, with exit code -9 \(SIGKILL\): \[Errno 32\] "
+		r"Broken pipe\. Stopping EyeB\.", out)
+	assert said, out
+	assert "Closing systems...\n" in out # and the trigger stopped, had there been one
+	assert "2 of 3 cameras did not record to the end:\n" in out
+	assert "  EyeA: its camera process stopped, with exit code -9 (SIGKILL): killed, or crashed\n" in out
+	assert re.search(r"  EyeB: ffmpeg stopped after taking \d+ frames, with exit code -9 \(SIGKILL\)", out)
+
+	def metadata(name):
+		with open(tmp_path / "rec" / name / "metadata.csv") as f:
+			return dict(csv.reader(f))
+
+	# EyeB: closed, with what ffmpeg was given
+	sent, meta = int(said.group(1)), metadata("EyeB")
+	assert meta["framesWritten"] == str(sent) and int(meta["totalFrames"]) < 150
+	assert meta["videoError"].startswith("ffmpeg stopped after taking {} frames".format(sent))
+	assert np.load(tmp_path / "rec" / "EyeB" / "frametimes.npy").shape == (2, sent)
+	# EyeC: the whole recording
+	meta = metadata("EyeC")
+	assert meta["totalFrames"] == meta["framesWritten"] == "150" and "videoError" not in meta
+	assert imageio_ffmpeg.count_frames_and_secs(str(tmp_path / "rec" / "EyeC" / "0.mp4"))[0] == 150
+	# EyeA: killed, so no totals; its ffmpeg finished the video with the frames it had
+	assert "totalFrames" not in metadata("EyeA")
+	assert imageio_ffmpeg.count_frames_and_secs(str(tmp_path / "rec" / "EyeA" / "0.mp4"))[0] > 0
