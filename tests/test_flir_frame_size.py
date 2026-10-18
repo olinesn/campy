@@ -3,11 +3,14 @@
 import importlib
 import logging
 import sys
+import time
 import types
 
+import numpy as np
 import pytest
 
-from campy import preflight
+from campy import configurator, preflight, writer
+from campy.cameras import unicam
 from campy.preflight import FAIL
 
 
@@ -87,7 +90,7 @@ class FakeCamera:
 
 def FakePySpin():
 	spin = types.ModuleType("PySpin")
-	for kind in ("CBooleanPtr", "CFloatPtr", "CIntegerPtr", "CEnumerationPtr", "CCommandPtr"):
+	for kind in ("CBooleanPtr", "CFloatPtr", "CIntegerPtr", "CEnumerationPtr", "CCommandPtr", "CStringPtr"):
 		setattr(spin, kind, lambda node: node)
 	spin.IsAvailable = lambda node: node is not None
 	spin.IsReadable = lambda node: node is not None
@@ -218,3 +221,139 @@ def test_the_launch_check_stops_a_frame_larger_than_the_sensor(flir):
 	status, text = preflight.FrameSizeFinding(params(1440, 1080), limits)
 	assert status == FAIL and "not frameWidth x frameHeight 1440x1088" in text
 	assert text.endswith("Either:\n  - set frameWidth and frameHeight to 1280x1024 (its full frame) or less")
+
+
+# ------------------------------------------------------------------ the writer
+
+class Frame:
+	# A grabbed frame of the camera's size at the time
+	def __init__(self, width, height, number):
+		self.width, self.height, self.number = width, height, number
+
+	def IsIncomplete(self):
+		return False
+
+	def GetNDArray(self):
+		return np.zeros((self.height, self.width), dtype=np.uint8)
+
+	def GetChunkData(self):
+		return self
+
+	def GetTimestamp(self):
+		return self.number * 12_500_000 # ns, 80 fps
+
+	def Release(self):
+		pass
+
+
+class GrabbingCamera(FakeCamera):
+	# camera.Init takes 0.1-0.2 s on a Blackfly S: the camera thread sets the
+	# frame size that much after campy starts it
+	def Init(self):
+		time.sleep(0.15)
+		super().Init()
+
+	def GetTLDeviceNodeMap(self):
+		return self
+
+	def BeginAcquisition(self):
+		self.grabbed = 0
+
+	def GetNextImage(self, timeout):
+		self.grabbed += 1
+		return Frame(self.x.size, self.y.size, self.grabbed)
+
+	def EndAcquisition(self):
+		pass
+
+
+def record(flir, monkeypatch, tmp_path, camera, **values):
+	"""
+	Runs campy.AcquireOneCamera on camera, as a camera process does: it starts
+	the camera thread, then opens the writer. The writer is imageio-ffmpeg's
+	write_frames stood in for: returns the size the video was opened at, and
+	the size (width, height) of each frame it was sent.
+	"""
+	p = configurator.FillCameraLists(configurator.DefaultParams())
+	p.update(cameraMake="flir", videoFolder=str(tmp_path), frameRate=80, recTimeInSec=0.1, chunkLengthInSec=1,
+		displayFrameRate=0, pixelFormatInput="gray", preflight="off")
+	p.update(values)
+	systems = {"flir": {"system": None, "deviceList": [camera], "serials": ["24243505"]}}
+
+	opened, sent = [], []
+	def write_frames(path, size, **kwargs):
+		opened.append(tuple(size))
+		while True:
+			frame = yield
+			if frame is not None:
+				sent.append((frame.shape[1], frame.shape[0]))
+	monkeypatch.setattr(writer, "write_frames", write_frames)
+	sleep = time.sleep
+	monkeypatch.setattr(time, "sleep", lambda s: None if s >= 1 else sleep(s)) # the writer's 1 s wait to close
+
+	# campy.py sets up its systems as it is imported
+	monkeypatch.setattr(configurator, "ConfigureParams", lambda: p)
+	monkeypatch.setattr(unicam, "LoadSystems", lambda params: systems)
+	monkeypatch.setattr(unicam, "GetDeviceList", lambda systems, params: systems)
+	monkeypatch.delitem(sys.modules, "campy.campy", raising=False)
+	main = importlib.import_module("campy.campy")
+	try:
+		main.AcquireOneCamera(0)
+	finally:
+		sys.modules.pop("campy.campy", None)
+	return opened[0], sent
+
+
+def test_the_writer_opens_its_video_at_the_size_the_camera_sends(flir, monkeypatch, tmp_path, capsys):
+	camera = GrabbingCamera()
+	opened, sent = record(flir, monkeypatch, tmp_path, camera, frameWidth=1000, frameHeight=600)
+	assert camera.frame() == (1008, 608, 136, 208)
+	assert sent and set(sent) == {(1008, 608)}
+	assert opened == (1008, 608)
+	out = capsys.readouterr().out
+	assert "Camera0: frameWidth 1000 rounded up to 1008: campy sets FLIR frame sizes in steps of 16." in out
+	assert "Camera0: frameHeight 600 rounded up to 608: campy sets FLIR frame sizes in steps of 16." in out
+	assert out.index("rounded up") < out.index("Opened: ") # before the video opens
+
+
+def test_rounded_only_in_the_camera_thread_the_video_was_scrambled(flir, monkeypatch, tmp_path):
+	# What campy did before: the writer opened its video as soon as the camera
+	# thread started, before that thread had rounded the size, so 1008x608
+	# frames went into a video of 1000x600 (ffmpeg then cuts them into more
+	# frames than were recorded, each one scrambled)
+	monkeypatch.setattr(flir, "FixedParams", lambda cam_params: cam_params)
+	camera = GrabbingCamera()
+	opened, sent = record(flir, monkeypatch, tmp_path, camera, frameWidth=1000, frameHeight=600)
+	assert set(sent) == {(1008, 608)}
+	assert opened == (1000, 600)
+
+
+def test_a_size_in_steps_of_16_is_left_alone(flir, monkeypatch, tmp_path, capsys):
+	camera = GrabbingCamera(**LEFT_BY_A_SMALLER_RUN)
+	opened, sent = record(flir, monkeypatch, tmp_path, camera, frameWidth=1280, frameHeight=1024)
+	assert opened == (1280, 1024) and set(sent) == {(1280, 1024)}
+	assert "rounded up" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("asked, fixed", [
+	((1000, 600), (1008, 608)),
+	((1280, 1024), (1280, 1024)),
+	((1, 1023), (16, 1024)),
+	((640, 512), (640, 512)),
+	])
+def test_fixed_params(flir, asked, fixed):
+	cam = flir.FixedParams(params(*asked))
+	assert (cam["frameWidth"], cam["frameHeight"]) == fixed
+	# and the camera thread sets that size, unchanged
+	camera = FakeCamera()
+	flir.LoadSettings(camera, dict(cam))
+	assert camera.frame()[:2] == fixed
+
+
+def test_the_launch_check_and_the_recording_want_the_same_size(flir):
+	# The launch check opens the camera with the config's size, not FixedParams':
+	# its copy is rounded as the camera is set up
+	limits = flir.FrameRateLimits(FakeCamera(), params(1000, 600))
+	assert limits["wantedFrameSize"] == (1008, 608)
+	cam = flir.FixedParams(params(1000, 600))
+	assert (cam["frameWidth"], cam["frameHeight"]) == limits["wantedFrameSize"]

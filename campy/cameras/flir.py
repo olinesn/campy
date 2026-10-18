@@ -33,6 +33,35 @@ def GetDeviceList(system):
 
 def LoadDevice(systems, params, cam_params):
 	cam_params["camera"] = cam_params["device"]
+	return FixedParams(cam_params)
+
+
+# campy sets a FLIR camera's frame size in steps of 16 (a Blackfly S's Width
+# and Height step by 16)
+FRAME_SIZE_STEP = 16
+
+
+def FrameSide(value):
+	# frameWidth or frameHeight as campy sets it: rounded up to a multiple of 16
+	value = int(value)
+	return value + -value % FRAME_SIZE_STEP
+
+
+def FixedParams(cam_params):
+	"""
+	frameWidth and frameHeight rounded up to multiples of 16, as campy sets
+	them on the camera. Before the camera opens (LoadDevice): the writer opens
+	its video at frameWidth x frameHeight as soon as the camera thread starts,
+	before that thread has set the camera up, and takes every frame as that
+	size. Rounded only in the camera thread, 1000 wide gave 1008-wide frames
+	in a video of 1000: scrambled.
+	"""
+	for key in ("frameWidth", "frameHeight"):
+		rounded = FrameSide(cam_params[key])
+		if rounded != cam_params[key]:
+			Say("{}: {} {} rounded up to {}: campy sets FLIR frame sizes in steps of 16.".format(
+				cam_params["cameraName"], key, cam_params[key], rounded))
+			cam_params[key] = rounded
 	return cam_params
 
 
@@ -560,11 +589,8 @@ def ConfigureFrameHeight(camera, cam_params):
 		# Set frame height
 		nodemap = camera.GetNodeMap()
 
-		height_to_set = cam_params["frameHeight"]
-		if height_to_set % 16 != 0:
-			while height_to_set % 16 != 0:
-				height_to_set += 1
-			cam_params["frameHeight"] = height_to_set
+		# Rounded already in a recording (FixedParams); not in the launch check
+		height_to_set = cam_params["frameHeight"] = FrameSide(cam_params["frameHeight"])
 
 		# Get max offset values from the camera
 		max_h = height_to_set
@@ -610,11 +636,8 @@ def ConfigureFrameWidth(camera, cam_params):
 
 		nodemap = camera.GetNodeMap()
 		# Set frame width
-		width_to_set = cam_params["frameWidth"]
-		if width_to_set % 16 != 0:
-			while width_to_set % 16 != 0:
-				width_to_set += 1
-			cam_params["frameWidth"] = width_to_set
+		# Rounded already in a recording (FixedParams); not in the launch check
+		width_to_set = cam_params["frameWidth"] = FrameSide(cam_params["frameWidth"])
 
 		# Get max offset values from the camera
 		max_w = width_to_set
