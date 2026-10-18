@@ -176,6 +176,30 @@ def EncoderArgs(cam_params):
 		gop = max(1, int(round(float(cam_params["frameRate"]) * float(keyframe_interval))))
 		gpu_params.extend(["-g", str(gop)])
 
+	# Color range (colorRange). "limited" is video's usual range, 16-235, and
+	# what campy has always written: ffmpeg rescales every pixel of a camera's
+	# 0-255 frame into it. "full" keeps 0-255: a mono frame goes into the video
+	# as it is, with all 256 of its gray levels, ffmpeg does less work (Quick
+	# Sync H.265 at 1280x1024: 1.7 ms of CPU a frame instead of 3.3), and the
+	# video is marked full range, so readers decode the camera's own levels
+	# back. The same quality number then spends ~20% more bits, on the extra
+	# levels: for the same file size, raise it by about 2. Only where ffmpeg
+	# makes the YUV frames: NVENC given RGB (pixelFormatOutput "rgb0") converts
+	# them itself, to limited range.
+	if FullRange(cam_params) and pix_fmt_out not in RGB_FORMATS:
+		if pix_fmt_out == "vaapi":
+			vf = gpu_params.index("-vf") + 1
+			gpu_params[vf] = "scale=out_range=full," + gpu_params[vf]
+		else:
+			# imageio-ffmpeg pads a frame to macro_block_size with a -vf of its
+			# own, which this one would replace (ffmpeg keeps the last -vf), so
+			# the padding is done here instead
+			size = PaddedSize(cam_params, macro_block_size)
+			gpu_params.extend(["-vf", "scale=out_range=full" if size is None else
+				"scale={}:{}:out_range=full".format(*size)])
+			macro_block_size = 1
+		gpu_params.extend(["-color_range", "pc"])
+
 	return {
 		"codec": codec,
 		"pix_fmt_out": pix_fmt_out,
@@ -186,6 +210,22 @@ def EncoderArgs(cam_params):
 		"device": device,
 		"env": env,
 		}
+
+
+RGB_FORMATS = ("rgb0", "bgr0", "rgb24", "bgr24", "rgba", "bgra")
+
+
+def FullRange(cam_params):
+	return str(cam_params.get("colorRange", "limited")).lower() == "full"
+
+
+def PaddedSize(cam_params, macro_block_size):
+	# The size imageio-ffmpeg scales a frame up to, so that its sides are
+	# multiples of macro_block_size; None when they already are
+	width, height = int(cam_params["frameWidth"]), int(cam_params["frameHeight"])
+	if macro_block_size <= 1 or (width % macro_block_size == 0 and height % macro_block_size == 0):
+		return None
+	return width + -width % macro_block_size, height + -height % macro_block_size
 
 
 def SetEnvironment(env):
@@ -222,6 +262,10 @@ def OpenWriter(cam_params, queue):
 			Say("Opened: {} using CPU to compress the stream.".format(full_file_name))
 		else:
 			Say("Opened: {} using GPU {} to compress the stream.".format(full_file_name, cam_params["gpuID"]))
+		if FullRange(cam_params) and "-color_range" not in enc["output_params"]:
+			Say("{}: colorRange \"full\" does nothing with pixelFormatOutput \"{}\": {} converts RGB to limited-range "
+				"video itself. Use pixelFormatOutput \"yuv420p\" for full range.".format(
+				cam_params["cameraName"], enc["pix_fmt_out"], enc["codec"]))
 
 	except Exception as e:
 		logging.error("Caught exception at writer.py OpenWriter: {}".format(e))

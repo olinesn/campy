@@ -22,7 +22,7 @@ noise costs and little else.
 The video is measured in gray (luma): a mono camera exactly, a color camera
 by its brightness only. Even a lossless setting scores about 57 dB rather
 than infinity: yuv420p output stores brightness in video range (16-235), so
-the 256 gray levels are rounded to 220.
+the 256 gray levels are rounded to 220. colorRange "full" keeps all 256.
 
 Examples:
   campy-encode-quality --config configs/campy_config_flir_usb3.yaml --quality 18,21,24,27,30

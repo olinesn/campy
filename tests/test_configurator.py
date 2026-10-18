@@ -111,3 +111,10 @@ def test_flir_ratcam_example_config(monkeypatch, capsys):
 	eye, cam0 = configurator.CameraParams(p, 0), configurator.CameraParams(p, 1)
 	assert (eye["cameraMake"], eye["frameRate"], eye["gpuID"], eye["cameraSelection"]) == ("ratcam", 30, -1, 0)
 	assert (cam0["cameraMake"], cam0["frameRate"], cam0["gpuID"], cam0["cameraSelection"]) == ("flir", 60, 0, 0)
+
+
+def test_color_range_values():
+	configurator.ValidateColorRange({"colorRange": "full"})
+	configurator.ValidateColorRange({"colorRange": ["limited", "Full"]}) # one per camera
+	with pytest.raises(ValueError, match='colorRange is "limited" or "full", not "pc"'):
+		configurator.ValidateColorRange({"colorRange": ["full", "pc"]})

@@ -170,3 +170,117 @@ def test_cpu_writer_encodes(tmp_path):
 	ffmpeg.close()
 	frames, _ = imageio_ffmpeg.count_frames_and_secs(str(tmp_path / "Camera0" / "v.mp4"))
 	assert frames == 30
+
+
+# colorRange: "full" keeps a camera's 0-255 levels (writer.EncoderArgs)
+
+def test_limited_range_is_the_default_and_unchanged():
+	for make in (None, "nvidia", "intel", "amd", "vaapi"):
+		gpu = {} if make is None else {"gpuID": 0, "gpuMake": make}
+		default = writer.EncoderArgs(cam(**gpu))
+		assert writer.EncoderArgs(cam(colorRange="limited", **gpu)) == default
+		assert "-color_range" not in default["output_params"]
+
+
+@pytest.mark.parametrize("make", [None, "nvidia", "intel", "amd"])
+def test_full_range_args(make):
+	gpu = {} if make is None else {"gpuID": 0, "gpuMake": make}
+	enc = writer.EncoderArgs(cam(colorRange="full", **gpu))
+	assert enc["output_params"][-4:] == ["-vf", "scale=out_range=full", "-color_range", "pc"]
+	assert enc["output_params"].count("-vf") == 1
+	assert enc["macro_block_size"] == 1 # 320x240 needs no padding, and imageio's would replace -vf
+	assert writer.EncoderArgs(cam(colorRange="FULL", **gpu)) == enc
+
+
+def test_full_range_on_vaapi_scales_before_the_upload():
+	enc = writer.EncoderArgs(cam(gpuID=0, gpuMake="vaapi", colorRange="full"))
+	params = enc["output_params"]
+	assert params[params.index("-vf") + 1] == "scale=out_range=full,format=nv12,hwupload"
+	assert params.count("-vf") == 1 and params[-2:] == ["-color_range", "pc"]
+
+
+def test_full_range_pads_as_imageio_would():
+	# imageio-ffmpeg scales 330x250 up to 336x256 with a -vf of its own; with
+	# full range that scaling is in campy's -vf, and imageio adds none
+	enc = writer.EncoderArgs(cam(colorRange="full", frameWidth=330, frameHeight=250))
+	assert enc["output_params"][-4:-2] == ["-vf", "scale=336:256:out_range=full"]
+	assert enc["macro_block_size"] == 1
+	# A RatCam's sides only need to be even
+	ratcam = writer.EncoderArgs(cam(colorRange="full", cameraMake="ratcam", frameWidth=160, frameHeight=120))
+	assert ratcam["output_params"][-4:-2] == ["-vf", "scale=out_range=full"]
+
+
+def test_full_range_leaves_nvenc_rgb_input_alone(tmp_path, monkeypatch, capsys):
+	# NVENC given RGB converts it to YUV itself, in limited range: marking that
+	# video full range would be wrong, so campy leaves it and says so
+	params = cam(gpuID=0, gpuMake="nvidia", pixelFormatOutput="rgb0", colorRange="full",
+		videoFolder=str(tmp_path), videoFilename="v.mp4")
+	enc = writer.EncoderArgs(params)
+	assert enc == writer.EncoderArgs(dict(params, colorRange="limited"))
+	assert "-color_range" not in enc["output_params"] and "-vf" not in enc["output_params"]
+	cmd = CapturedCommand(params, monkeypatch)
+	assert 'colorRange "full" does nothing with pixelFormatOutput "rgb0"' in capsys.readouterr().out
+	assert "-color_range" not in cmd
+
+
+def CapturedCommand(params, monkeypatch):
+	# The ffmpeg command OpenWriter starts, without starting it
+	seen = {}
+	real_popen = imageio_ffmpeg._io.subprocess.Popen
+
+	def fake_popen(cmd, *args, **kwargs):
+		if "-vcodec" not in cmd: # imageio's own ffmpeg -version probe
+			return real_popen(cmd, *args, **kwargs)
+		seen["cmd"] = cmd
+		raise Captured()
+
+	monkeypatch.setattr(imageio_ffmpeg._io.subprocess, "Popen", fake_popen)
+	with pytest.raises(Captured):
+		writer.OpenWriter(params, [])
+	return seen["cmd"]
+
+
+def test_full_range_command(tmp_path, monkeypatch):
+	params = cam(colorRange="full", frameWidth=330, frameHeight=250, videoFolder=str(tmp_path), videoFilename="v.mp4")
+	cmd = CapturedCommand(params, monkeypatch)
+	assert cmd.count("-vf") == 1 # campy's, which pads; not imageio's as well
+	assert cmd[cmd.index("-vf") + 1] == "scale=336:256:out_range=full"
+	assert cmd[cmd.index("-color_range") + 1] == "pc" and cmd.index("-color_range") > cmd.index("-i")
+
+
+def RampVideo(tmp_path, color_range):
+	# A gray ramp, every level 0-255, through campy's CPU writer losslessly (quality 0 = CRF 0)
+	params = cam(videoFolder=str(tmp_path), videoFilename=color_range + ".mp4", frameRate=10, quality=0,
+		frameWidth=512, frameHeight=64, colorRange=color_range)
+	ramp = np.tile((np.arange(512) // 2).astype(np.uint8), (64, 1))
+	ffmpeg, writing, _ = writer.OpenWriter(params, [])
+	for _ in range(5):
+		ffmpeg.send(ramp)
+	ffmpeg.close()
+	path = str(tmp_path / "Camera0" / (color_range + ".mp4"))
+	reader = imageio_ffmpeg.read_frames(path, pix_fmt="gray", bits_per_pixel=8)
+	next(reader)
+	frame = np.frombuffer(next(reader), np.uint8).reshape(64, 512)
+	reader.close()
+	return ramp, frame, path
+
+
+def ColorRangeTag(path):
+	# What the file says, from ffmpeg's description of its video stream
+	import subprocess
+	err = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-i", path], capture_output=True, text=True).stderr
+	line = next(l for l in err.splitlines() if "Video:" in l)
+	return "pc" if ("(pc" in line or "yuvj" in line) else "tv"
+
+
+def test_full_range_video_gives_back_every_gray_level(tmp_path):
+	ramp, frame, path = RampVideo(tmp_path, "full")
+	assert ColorRangeTag(path) == "pc"
+	assert (frame == ramp).all()
+
+
+def test_limited_range_video_rounds_the_levels(tmp_path):
+	# The control: 256 levels squeezed into 220 do not all come back
+	ramp, frame, path = RampVideo(tmp_path, "limited")
+	assert ColorRangeTag(path) == "tv"
+	assert not (frame == ramp).all() and np.abs(frame.astype(int) - ramp).max() <= 1

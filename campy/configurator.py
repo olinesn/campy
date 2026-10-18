@@ -49,6 +49,7 @@ def DefaultParams():
 	params["ffmpegPath"] = "None" # "/home/usr/Documents/ffmpeg/ffmpeg"
 	params["pixelFormatInput"] = "rgb24" # "bayer_bggr8" "rgb24"
 	params["pixelFormatOutput"] = "rgb0"
+	params["colorRange"] = "limited" # "full": 0-255 video, every gray level of the camera (writer.EncoderArgs)
 	params["gpuID"] = -1
 	params["gpuMake"] = "nvidia"
 	params["codec"] = "h264"  
@@ -132,6 +133,7 @@ def ConfigureParams():
 	clargs = ParseClargs(parser)
 	params = CombineConfigAndClargs(clargs)
 	ValidateCameraLists(params)
+	ValidateColorRange(params)
 	if params["startArduino"]:
 		TriggerFrameRate(params) # fails here, with the reason, if the rates disagree
 
@@ -197,6 +199,14 @@ def ValidateCameraLists(params):
 				"or a single value for all of them.".format(key, len(value), num_cams))
 		if len(value) > num_cams:
 			Say("{} lists {} values; using the first {} (numCams).".format(key, len(value), num_cams))
+
+
+def ValidateColorRange(params):
+	# One value, or one per camera
+	values = params["colorRange"] if isinstance(params["colorRange"], list) else [params["colorRange"]]
+	for value in values:
+		if str(value).lower() not in ("limited", "full"):
+			raise ValueError('colorRange is "limited" or "full", not "{}".'.format(value))
 
 
 def TriggerFrameRate(params):
@@ -456,6 +466,12 @@ def ParseClargs(parser):
 		dest="pixelFormatOutput",
 		type=ast.literal_eval,
 		help="Pixel format output. Use 'rgb0' for best results.",
+	)
+	parser.add_argument(
+		"--colorRange",
+		dest="colorRange",
+		help="Video color range: 'limited' (16-235, the default) or 'full' (0-255: every gray level of the \
+			camera, and less CPU for ffmpeg; raise quality by about 2 for the same file size).",
 	)
 	parser.add_argument(
 		"--gpuID",
