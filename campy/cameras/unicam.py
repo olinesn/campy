@@ -417,7 +417,9 @@ def GrabData(cam_params):
 
 	# Calculate number of images and chunk length
 	grabdata["numImagesToGrab"] = int(round(cam_params["recTimeInSec"]*cam_params["frameRate"]))
-	grabdata["chunkLengthInFrames"] = int(round(cam_params["chunkLengthInSec"]*cam_params["frameRate"]))
+	# At least a frame: a chunkLengthInSec shorter than half a frame rounds to 0,
+	# and CountFPS divides by it at every frame
+	grabdata["chunkLengthInFrames"] = max(1, int(round(cam_params["chunkLengthInSec"]*cam_params["frameRate"])))
 
 	# Frames dropped because the encoder fell behind (see DropFrame)
 	grabdata["framesDropped"] = 0
@@ -459,6 +461,8 @@ def StartGrabbing(camera, cam_params, cam):
 def CountFPS(grabdata, frameNumber, timeStamp):
 	if frameNumber % grabdata["chunkLengthInFrames"] == 0:
 		timeElapsed = timeStamp - grabdata["frameTimes"].first
+		if timeElapsed <= 0:
+			return # the first frame, at a chunk of one frame: no rate yet
 		fpsCount = round((frameNumber - 1) / timeElapsed, 1)
 		Say('{} collected {} frames at {} fps for {} sec.'\
 			.format(grabdata["cameraName"], frameNumber, fpsCount, round(timeElapsed)))

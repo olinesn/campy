@@ -41,3 +41,15 @@ def test_preview_faster_than_the_camera_shows_every_frame(tmp_path, monkeypatch)
 	# not one a second (every frameRate-th)
 	shown = grab(tmp_path, monkeypatch, frameRate=20, recTimeInSec=0.5, chunkLengthInSec=1, displayFrameRate=30)
 	assert shown == list(range(1, 11))
+
+
+def test_fps_messages_at_a_chunk_shorter_than_a_frame(tmp_path, monkeypatch, capsys, caplog):
+	# chunkLengthInSec 0.001 at 80 fps is 0 frames: every frame raised
+	# ZeroDivisionError (logged with cameraDebug), and no fps was said
+	grab(tmp_path, monkeypatch, frameRate=80, recTimeInSec=0.05, chunkLengthInSec=0.001, displayFrameRate=0,
+		cameraDebug=True)
+	assert "Caught exception" not in caplog.text
+	out = capsys.readouterr().out
+	# Every frame is a chunk; the first has no rate yet
+	assert "collected 1 frames" not in out
+	assert "Camera0 collected 4 frames at 80.0 fps" in out
