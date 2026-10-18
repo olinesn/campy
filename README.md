@@ -224,6 +224,13 @@ Every FLIR camera's USB throughput limit (`DeviceLinkThroughputLimit`), triggere
 campy-acquire ./configs/campy_config.yaml
 ```
 
+Any config key can be changed for one run on the command line: `--key value` means what `key: value` means in the config file. Text needs no quotes, `False` is false, `None` is the text "None", and a key that takes one value per camera takes a list, in quotes for the shell:
+```
+campy-acquire ./configs/campy_config_chronicrecord.yaml --cameraTrigger Line3 --codec h265 --startArduino False
+campy-acquire ./configs/campy_config_3cams_gpu.yaml --quality "[24, 26, 26]" --gpuID "[0, 0, 1]"
+```
+campy 2.1.0rc2 and older needed text quoted twice (`--codec "'h265'"`, which still works), read `--startArduino False` as True, and took no lists. Paths are taken as typed (`--ffmpegPath C:\ffmpeg-btbn-8.1\bin\ffmpeg.exe`). As in the config, `yes`, `no`, `on` and `off` are True or False: the True/False keys take them, and a text key refuses them, so quote such text: `"'off'"`. `--preflight off` works as it is. A value campy cannot use stops it before any camera opens, naming the key (`argument --quality: 'high' is not a whole number, or a list of them`).
+
 ### Stop Recording:
 - Campy can be configured to stop automatically after set recording time (e.g., 1 hour):
 ```
