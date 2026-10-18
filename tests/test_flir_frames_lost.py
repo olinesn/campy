@@ -84,14 +84,17 @@ def incomplete(frame_id, status=3):
 class FakeCamera:
 	"""
 	A FLIR camera as PySpin's CameraPtr: it sends the frames given, then
-	times out, and its TL stream nodemap has Spinnaker's counters (name:
-	Node). stream_error: what GetTLStreamNodeMap raises, from the read
-	stream_error_at on (0: as the acquisition starts, 1: as it closes).
+	times out. Its TL stream nodemap has Spinnaker's counters, and its device
+	nodemap its own (name: Node). stream_error: what GetTLStreamNodeMap
+	raises, from the read stream_error_at on (0: as the acquisition starts,
+	1: as it closes). device_error: what GetNodeMap raises.
 	"""
-	def __init__(self, images=(), counters=None, stream_error=None, stream_error_at=0):
+	def __init__(self, images=(), counters=None, camera_counters=None, stream_error=None, stream_error_at=0,
+			device_error=None):
 		self.images = list(images)
-		self.stream = NodeMap(counters or {})
+		self.stream, self.device = NodeMap(counters or {}), NodeMap(camera_counters or {})
 		self.stream_error, self.stream_error_at, self.stream_reads = stream_error, stream_error_at, 0
+		self.device_error = device_error
 		self.calls = []
 
 	def Init(self):
@@ -99,6 +102,11 @@ class FakeCamera:
 
 	def GetTLDeviceNodeMap(self):
 		return NodeMap({"DeviceModelName": Node("Blackfly S BFS-U3-13Y3M")})
+
+	def GetNodeMap(self):
+		if self.device_error is not None:
+			raise self.device_error
+		return self.device
 
 	def GetTLStreamNodeMap(self):
 		self.stream_reads += 1
@@ -173,8 +181,8 @@ def record(flir, camera):
 	return cam
 
 
-def stream_keys(cam):
-	return {key for key in cam if key.startswith("flirStream")}
+def counter_keys(cam):
+	return {key for key in cam if key.startswith("flir") and key.endswith("Count")}
 
 
 CLOSING = "Closing Camera0... Please wait.\n"
@@ -289,7 +297,7 @@ def test_stream_counters_are_saved_as_they_rose(flir, capsys):
 		StreamDroppedFrameCount=(50, 0),
 		)) # no StreamReceivedFrameCount, as on USB
 	cam = record(flir, camera)
-	assert {key: cam[key] for key in stream_keys(cam)} == {
+	assert {key: cam[key] for key in counter_keys(cam)} == {
 		"flirStreamStartedFrameCount": 1015,
 		"flirStreamDeliveredFrameCount": 1002,
 		"flirStreamIncompleteFrameCount": 0,
@@ -297,15 +305,46 @@ def test_stream_counters_are_saved_as_they_rose(flir, capsys):
 		"flirStreamDroppedFrameCount": 0,
 		}
 	assert capsys.readouterr().out == CLOSING + "Camera0: the camera's frame ID skipped 8 frames: they were lost " \
-		"before reaching campy. Spinnaker lost 8 (all bufferSize buffers full, or data lost on the USB link).\n"
+		"before reaching campy. Spinnaker lost 8 (no free buffer, or data lost on the USB link).\n"
 
 
 def test_frames_spinnaker_dropped(flir, capsys):
 	camera = FakeCamera(frames(1, 2, 6), counters(StreamDroppedFrameCount=(0, 3), StreamLostFrameCount=(0, 0)))
-	record(flir, camera)
+	camera, cam = flir.OpenCamera(params(camera, bufferMode="Newest Only"))
+	flir.StartGrabbing(camera)
+	for frameNumber in range(3):
+		flir.GrabFrame(camera, frameNumber)
+	flir.CloseCamera(cam, camera)
 	assert capsys.readouterr().out == CLOSING + "Camera0: the camera's frame ID skipped 3 frames: they were lost " \
-		"before reaching campy. Spinnaker dropped 3 that campy did not take in time (bufferSize too small, or the " \
-		"computer too busy?).\n"
+		"before reaching campy. Spinnaker dropped 3 older frames that campy had not taken yet (bufferMode Newest " \
+		"Only).\n"
+
+
+def test_the_camera_s_own_counters(flir, capsys):
+	# As the EVO-X2's Blackfly S, its camera thread held for 3 s at 80 fps:
+	# 99 frames dropped on the camera, none in Spinnaker. They count from the
+	# camera's power-up: only what this recording added is saved.
+	camera = FakeCamera(frames(*range(1, 801), *range(900, 1000)),
+		counters(StreamLostFrameCount=(0, 0), StreamDroppedFrameCount=(0, 0)),
+		counters(TransferQueueOverflowCount=(270807, 270906), LinkErrorCount=(132, 132)))
+	cam = record(flir, camera)
+	assert cam["flirFramesLost"] == cam["flirTransferQueueOverflowCount"] == 99 and cam["flirLinkErrorCount"] == 0
+	assert capsys.readouterr().out == CLOSING + "Camera0: the camera's frame ID skipped 99 frames: they were lost " \
+		"before reaching campy. The camera dropped 99 it could not send in time (campy took frames too slowly, or " \
+		"USB too slow for this frame size and rate?).\n"
+
+
+def test_link_errors_are_said_with_frames_lost(flir, capsys):
+	camera = FakeCamera(frames(1) + [incomplete(2)] + frames(3), camera_counters=counters(LinkErrorCount=(132, 135)))
+	record(flir, camera)
+	assert capsys.readouterr().out.endswith("Camera0: the camera's frame ID skipped 1 frames: they were lost before "
+		"reaching campy. 1 arrived incomplete and were left out (USB link errors?); its USB link had 3 errors.\n")
+
+
+def test_link_errors_alone_are_silent(flir, capsys):
+	# The link recovered, and no frame was lost
+	cam = record(flir, FakeCamera(frames(1, 2, 3), camera_counters=counters(LinkErrorCount=(132, 133))))
+	assert cam["flirLinkErrorCount"] == 1 and capsys.readouterr().out == CLOSING
 
 
 def test_counters_say_so_without_frame_id(flir, capsys):
@@ -313,7 +352,7 @@ def test_counters_say_so_without_frame_id(flir, capsys):
 	cam = record(flir, camera)
 	assert "flirFramesLost" not in cam and cam["flirStreamLostFrameCount"] == 2
 	assert capsys.readouterr().out == CLOSING + "Camera0: frames were lost before reaching campy. Spinnaker lost 2 " \
-		"(all bufferSize buffers full, or data lost on the USB link).\n"
+		"(no free buffer, or data lost on the USB link).\n"
 
 
 def test_the_counters_are_read_before_end_acquisition(flir, monkeypatch):
@@ -322,28 +361,32 @@ def test_the_counters_are_read_before_end_acquisition(flir, monkeypatch):
 	camera, cam = flir.OpenCamera(params(camera))
 	flir.StartGrabbing(camera)
 	read = []
-	read_counters = flir.ReadStreamCounters
-	monkeypatch.setattr(flir, "ReadStreamCounters", lambda camera: read.append(list(camera.calls)) or read_counters(camera))
+	read_counters = flir.ReadCounters
+	monkeypatch.setattr(flir, "ReadCounters", lambda camera: read.append(list(camera.calls)) or read_counters(camera))
 	flir.CloseCamera(cam, camera)
 	assert read == [["Init", "BeginAcquisition"]] and cam["flirStreamLostFrameCount"] == 5
 
 
 NOT_READABLE = {
 	"no such counters": lambda: FakeCamera(frames(1, 2)),
-	"not readable": lambda: FakeCamera(frames(1, 2), {name: Node(3, readable=False) for name in COUNTERS}),
-	"reading raises": lambda: FakeCamera(frames(1, 2), {name: Node(error=SpinError("Spinnaker: read failed. [-1010]"))
-		for name in COUNTERS}),
-	"no stream nodemap": lambda: FakeCamera(frames(1, 2), stream_error=SpinError("Spinnaker: not available. [-1006]")),
+	"not readable": lambda: FakeCamera(frames(1, 2), {name: Node(3, readable=False) for name in COUNTERS},
+		{name: Node(3, readable=False) for name in CAMERA_COUNTERS}),
+	"reading raises": lambda: FakeCamera(frames(1, 2), {name: Node(error=READ_FAILED) for name in COUNTERS},
+		{name: Node(error=READ_FAILED) for name in CAMERA_COUNTERS}),
+	"no nodemaps": lambda: FakeCamera(frames(1, 2), stream_error=SpinError("Spinnaker: not available. [-1006]"),
+		device_error=SpinError("Spinnaker: not available. [-1006]")),
 	}
 COUNTERS = ("StreamStartedFrameCount", "StreamDeliveredFrameCount", "StreamReceivedFrameCount",
 	"StreamIncompleteFrameCount", "StreamLostFrameCount", "StreamDroppedFrameCount")
+CAMERA_COUNTERS = ("TransferQueueOverflowCount", "LinkErrorCount")
+READ_FAILED = SpinError("Spinnaker: read failed. [-1010]")
 
 
 @pytest.mark.parametrize("case", list(NOT_READABLE))
 def test_counters_that_cannot_be_read_are_left_out(flir, case, capsys):
 	camera = NOT_READABLE[case]()
 	cam = record(flir, camera)
-	assert stream_keys(cam) == set() # left out, not 0
+	assert counter_keys(cam) == set() # left out, not 0
 	assert cam["flirFramesLost"] == 0
 	assert camera.calls == ["Init", "BeginAcquisition", "EndAcquisition", "DeInit"]
 	assert capsys.readouterr().out == CLOSING
@@ -351,7 +394,7 @@ def test_counters_that_cannot_be_read_are_left_out(flir, case, capsys):
 
 def test_only_the_counters_it_can_read(flir):
 	camera = FakeCamera(frames(1, 2), {"StreamLostFrameCount": Node(0), "StreamDroppedFrameCount": Node(0, readable=False)})
-	assert stream_keys(record(flir, camera)) == {"flirStreamLostFrameCount"}
+	assert counter_keys(record(flir, camera)) == {"flirStreamLostFrameCount"}
 
 
 def test_a_counter_read_that_raises_at_close_still_closes(flir, capsys):
@@ -360,7 +403,7 @@ def test_a_counter_read_that_raises_at_close_still_closes(flir, capsys):
 		stream_error=SpinError("Spinnaker: Camera is not valid. [-1015]"), stream_error_at=1)
 	cam = record(flir, camera)
 	assert camera.calls == ["Init", "BeginAcquisition", "EndAcquisition", "DeInit"]
-	assert stream_keys(cam) == set() and cam["flirFramesLost"] == 0
+	assert counter_keys(cam) == set() and cam["flirFramesLost"] == 0
 	assert capsys.readouterr().out == CLOSING
 
 
@@ -404,16 +447,17 @@ def test_metadata_csv_has_the_frames_lost(flir, tmp_path, capsys):
 	assert meta["flirStreamDeliveredFrameCount"] == "10" and meta["flirStreamIncompleteFrameCount"] == "1"
 	assert meta["flirStreamLostFrameCount"] == "2" and "flirStreamDroppedFrameCount" not in meta
 	assert "Camera0: the camera's frame ID skipped 3 frames: they were lost before reaching campy. 1 arrived " \
-		"incomplete and were left out (USB link errors?); Spinnaker lost 2 (all bufferSize buffers full, or data lost " \
-		"on the USB link).\n" in capsys.readouterr().out
+		"incomplete and were left out (USB link errors?); Spinnaker lost 2 (no free buffer, or data lost on the USB " \
+		"link).\n" in capsys.readouterr().out
 
 
 def test_metadata_csv_when_the_counters_fail_at_close(flir, tmp_path):
 	camera = FakeCamera(frames(1, 2, 3), counters(StreamLostFrameCount=(0, 0)),
+		counters(TransferQueueOverflowCount=(7, 7)),
 		stream_error=SpinError("Spinnaker: Camera is not valid. [-1015]"), stream_error_at=1)
 	meta = grab_frames(flir, tmp_path, camera, 3)
 	assert meta["totalFrames"] == "3" and meta["flirFramesLost"] == "0"
-	assert not any(key.startswith("flirStream") for key in meta)
+	assert not any(key.startswith("flirStream") for key in meta) and meta["flirTransferQueueOverflowCount"] == "0"
 	assert camera.calls[-2:] == ["EndAcquisition", "DeInit"]
 
 
