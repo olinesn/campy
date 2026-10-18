@@ -142,6 +142,94 @@ def test_a_ratcam_log_cut_short_aligns_the_frames_it_has(tmp_path):
 	assert summary["cameras"]["CamA"]["warnings"] == []
 
 
+@pytest.mark.parametrize("log", ["header only", "empty", "no frametimes"])
+def test_a_ratcam_with_no_frames_logged_yet(tmp_path, log):
+	# Cut off before ratcam_frames.csv got its first batch of rows (empty: its
+	# header was still in campy's buffer), or before frametimes.npy did (it is
+	# made, empty, with the first batch), while ratcam_sync.csv had pulses
+	a = triggered_camera(tmp_path, "CamA", 5, 600)
+	ratcam(tmp_path, "Eye", 1, 600)
+	path = tmp_path / "Eye" / "ratcam_frames.csv"
+	if log == "no frametimes":
+		np.save(tmp_path / "Eye" / "frametimes.npy", np.zeros((2, 0)))
+		np.save(tmp_path / "Eye" / "hosttimes.npy", np.zeros(0, np.int64))
+	else:
+		path.write_text(path.read_text().splitlines()[0] + "\n" if log == "header only" else "")
+	summary, text = run(tmp_path)
+
+	s = summary["cameras"]["Eye"]
+	assert (s["aligned"], s["frames"], s["first_trigger"], s["pulses"]) == (True, 0, None, 600)
+	assert "Eye   ratcam  no frames; 600 pulses" in text
+	assert s["warnings"] == ["{} (the recording stopped without closing?): no frames to align".format(
+		"frametimes.npy has no frames" if log == "no frametimes" else
+		"none of its 198 frames in frametimes.npy are in ratcam_frames.csv")]
+	# Its pulses still place the other camera
+	assert summary["starts_from"] == "Eye"
+	assert {int(r["frame"]): int(r["trigger"]) for r in aligned(tmp_path, "CamA")} == a
+	assert aligned(tmp_path, "Eye") == []
+
+
+@pytest.mark.parametrize("hosttimes", ["a batch short", "longer"])
+def test_arrival_times_that_do_not_match_the_frames(tmp_path, hosttimes):
+	# frametimes.FrameTimes writes frametimes.npy, then hosttimes.npy: killed
+	# between the two, hosttimes.npy is a batch (about a second of frames)
+	# short. Killed as Close(keep) cuts the two to what the video took, longer
+	triggered_camera(tmp_path, "CamA", 1, 600)
+	b = triggered_camera(tmp_path, "CamB", 31, 600, seed=2)
+	path = tmp_path / "CamB" / "hosttimes.npy"
+	host = np.load(path)
+	np.save(path, host[:-60] if hosttimes == "a batch short" else np.concatenate([host, host[-5:] + 10**9]))
+	summary, text = run(tmp_path)
+
+	s = summary["cameras"]["CamB"]
+	assert (s["start_trigger"], s["start_from"], s["start_unsure"]) == (31, "arrival times", False)
+	assert {int(r["frame"]): int(r["trigger"]) for r in aligned(tmp_path, "CamB")} == b # every frame
+	if hosttimes == "a batch short":
+		assert s["warnings"] == ["hosttimes.npy has arrival times for 510 of its 570 frames (the recording "
+			"stopped without closing?): its start is worked out from those"]
+	else:
+		assert s["warnings"] == ["hosttimes.npy has 5 more arrival times than frametimes.npy has frames, "
+			"and they are left out"]
+	assert "assumed" not in text
+
+
+def test_no_arrival_times_yet(tmp_path):
+	# Killed after frametimes.npy got its first batch, before hosttimes.npy did
+	triggered_camera(tmp_path, "CamA", 1, 600)
+	triggered_camera(tmp_path, "CamB", 31, 600, seed=2)
+	np.save(tmp_path / "CamB" / "hosttimes.npy", np.zeros(0, np.int64))
+	summary, text = run(tmp_path)
+	s = summary["cameras"]["CamB"]
+	assert (s["start_from"], s["warnings"]) == ("assumed", ["hosttimes.npy has arrival times for 0 of its 570 "
+		"frames (the recording stopped without closing?)"])
+	assert "CamB  flir    570 frames, triggers 1-570; started at trigger 1 (assumed: no arrival times)" in text
+
+
+def test_sync_pulses_out_of_order(tmp_path):
+	# ratcam_sync.csv is put in order of time only when the recording closes.
+	# Out of order, each step back counted as triggers without a pulse, and the
+	# first row as the RatCam's first pulse
+	a = triggered_camera(tmp_path, "CamA", 1, 600)
+	eye = ratcam(tmp_path, "Eye", 1, 600)
+	path = tmp_path / "Eye" / "ratcam_sync.csv"
+	with open(path, newline="") as f:
+		header, *rows = list(csv.reader(f))
+	rows[0], rows[1] = rows[1], rows[0]
+	for i in range(30, len(rows) - 4, 60): # one pulse in 60 written three later
+		rows.insert(i + 3, rows.pop(i))
+	write_csv(path, header, rows)
+	summary, text = run(tmp_path)
+
+	s = summary["cameras"]["Eye"]
+	assert (s["start_trigger"], s["triggers_without_pulse"], s["frames_outside_pulses"], s["warnings"]) == \
+		(1, 0, 0, [])
+	rows = aligned(tmp_path, "Eye")
+	got = np.array([float(r["trigger"]) for r in rows])
+	want = np.array([eye[int(r["frame"])] for r in rows])
+	assert np.max(np.abs(got - want)) < 1e-3
+	assert {int(r["frame"]): int(r["trigger"]) for r in aligned(tmp_path, "CamA")} == a
+
+
 def test_cameras_that_started_after_the_trigger(tmp_path):
 	# The trigger was running before anyone listened: CamA saw trigger 5 first,
 	# the RatCam trigger 31, CamB trigger 417. Trigger 1 becomes CamA's first.
@@ -164,6 +252,15 @@ def test_cameras_that_started_after_the_trigger(tmp_path):
 	# Frames before the RatCam heard its first pulse still get a place, flagged
 	early = [r for r in rows if r["between_pulses"] == "0"]
 	assert early and all(float(r["trigger"]) < 27 for r in early)
+
+
+def test_a_short_last_window_does_not_tilt_the_clock():
+	# 1151 pulses: the last window of WINDOW arrivals has one, and it waited
+	# 95 ms behind a frame on USB
+	dev = 123.4 + np.arange(1151) * T_TRUE
+	host = HOST0 + (dev - 123.4) * 1e9 + 0.3e6
+	host[-1] += 95e6
+	assert align.ClockMap(dev, host)(dev[0]) == pytest.approx(HOST0 + 0.3e6, abs=1e3) # within 1 us
 
 
 def test_without_arrival_times_starts_are_assumed(tmp_path):
@@ -275,3 +372,53 @@ def test_a_trigger_campy_did_not_start_changes_nothing(tmp_path):
 	summary, _ = run(tmp_path)
 	assert summary["ready_before_trigger"] is None
 	assert summary["cameras"]["CamB"]["start_from"] == "arrival times"
+
+
+@pytest.mark.parametrize("lag_ms, unsure", [(3, False), (9, False), (13, True)])
+def test_a_ratcam_that_was_not_ready_against_ready_triggered_cameras(tmp_path, lag_ms, unsure):
+	# The triggered cameras' frames arrive lag_ms after their trigger (0.18, 0.54
+	# and 0.78 of a period at 60 Hz), its pulses 0.3 ms after. Rounded to
+	# nearest, the RatCam came out a trigger early from 0.5 of a period on, and
+	# from 0.7 on was sure of it
+	a = triggered_camera(tmp_path, "CamA", 1, 1200, lag_ms=lag_ms)
+	triggered_camera(tmp_path, "CamB", 1, 1200, lag_ms=lag_ms, seed=3)
+	eye = ratcam(tmp_path, "Eye", 50, 1199, start_s=trigger_s(50) + 0.003, duration_s=15)
+	trigger_record(tmp_path, {"CamA", "CamB"})
+	summary, text = run(tmp_path)
+
+	s = summary["cameras"]["Eye"]
+	assert (s["start_trigger"], s["start_from"], s["start_unsure"]) == (50, "arrival times", unsure)
+	rows = aligned(tmp_path, "Eye")
+	assert max(abs(float(r["trigger"]) - eye[int(r["frame"])]) for r in rows) < 1e-3
+	assert {int(r["frame"]): int(r["trigger"]) for r in aligned(tmp_path, "CamA")} == a
+	# What placed it: the reference's frames, this long after the RatCam's pulses
+	ref = summary["cameras"][summary["starts_from"]]
+	assert ref["frame_lag_after_pulse_ms"] == pytest.approx(lag_ms - 0.3, abs=0.2)
+	assert ("off by one" in text) == unsure
+
+
+def test_placements_the_rounding_already_got_right(tmp_path):
+	# A ready RatCam places the triggered cameras that were not, rounding down
+	# (CamC's frames take 0.78 of a period: could be off by one); between
+	# triggered cameras, to nearest. Both as before
+	with_ratcam, triggered = tmp_path / "with_ratcam", tmp_path / "triggered"
+	with_ratcam.mkdir()
+	triggered.mkdir()
+	triggered_camera(with_ratcam, "CamA", 20, 900, lag_ms=3)
+	b = triggered_camera(with_ratcam, "CamB", 300, 900, lag_ms=9, seed=9)
+	c = triggered_camera(with_ratcam, "CamC", 41, 900, lag_ms=13, seed=10)
+	ratcam(with_ratcam, "Eye", 1, 900, duration_s=14.5)
+	trigger_record(with_ratcam, {"Eye"})
+	summary, _ = run(with_ratcam)
+	got = {name: (s["start_trigger"], s["start_unsure"]) for name, s in summary["cameras"].items()}
+	assert got == {"CamA": (20, False), "CamB": (300, False), "CamC": (41, True), "Eye": (1, False)}
+	for name, truth in (("CamB", b), ("CamC", c)):
+		assert {int(r["frame"]): int(r["trigger"]) for r in aligned(with_ratcam, name)} == truth
+
+	triggered_camera(triggered, "CamA", 1, 900, lag_ms=9, seed=11)
+	b = triggered_camera(triggered, "CamB", 300, 900, lag_ms=9, seed=9)
+	trigger_record(triggered, {"CamA"})
+	summary, _ = run(triggered)
+	s = summary["cameras"]["CamB"]
+	assert (s["start_trigger"], s["start_from"], s["start_unsure"]) == (300, "arrival times", False)
+	assert {int(r["frame"]): int(r["trigger"]) for r in aligned(triggered, "CamB")} == b
