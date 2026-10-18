@@ -6,10 +6,11 @@ by displayDownsample, in dispQueue (DisplayImage in campy/cameras/); this
 shows the newest in a plain Qt window, scaled to fit it. A mono frame is
 shown as gray as it comes, a color frame as RGB.
 
-The preview used to be a matplotlib figure. Each redraw ran the frame
-through matplotlib's image resampling, 10-22 ms a frame (100-200 dpi), so at
-displayFrameRate 10 every camera spent 10-22% of a CPU core on its preview.
-Qt draws the same frame in well under a millisecond.
+The preview used to be a matplotlib figure, and every frame it showed went
+through matplotlib's image drawing: 33 ms of CPU per frame on the
+ChronicRecord PC (Core Ultra 9 285), 21 ms on an M-series Mac, so at
+displayFrameRate 10 every camera spent a fifth to a third of a CPU core on
+its preview. Qt draws the same frame, 640x512, in 0.2 ms.
 
 DisplayFrames runs in its own thread (campy.ShowPreview), so Qt's
 application object is made, and its events run, in that thread. Import this
