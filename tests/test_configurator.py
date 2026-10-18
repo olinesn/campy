@@ -1,9 +1,11 @@
-"""Per-camera lists: one value for all cameras, one per camera, or more than needed."""
+"""Per-camera lists: one value for all cameras, one per camera, or more than needed.
+Command-line overrides: --key value means what key: value means in the config."""
 
 import os
 import sys
 import pytest
 import yaml
+from argparse import ArgumentParser
 
 from campy import configurator
 
@@ -118,3 +120,98 @@ def test_color_range_values():
 	configurator.ValidateColorRange({"colorRange": ["limited", "Full"]}) # one per camera
 	with pytest.raises(ValueError, match='colorRange is "limited" or "full", not "pc"'):
 		configurator.ValidateColorRange({"colorRange": ["full", "pc"]})
+
+
+def overrides(*argv):
+	# What ParseClargs makes of campy-acquire c.yaml argv..., without the options not given
+	clargs = configurator.ParseClargs(ArgumentParser(prog="campy-acquire"), ["c.yaml"] + list(argv))
+	return {k: v for k, v in vars(clargs).items() if v is not None and k != "config"}
+
+
+def refusal(capsys, *argv):
+	# argparse's error for argv: it exits, and says why on stderr
+	with pytest.raises(SystemExit):
+		overrides(*argv)
+	return capsys.readouterr().err
+
+
+def test_false_is_false():
+	# type=bool read every non-empty word as True, so --startArduino False started the trigger
+	assert overrides("--startArduino", "False", "--disableGamma", "False", "--cameraDebug", "False") == \
+		{"startArduino": False, "disableGamma": False, "cameraDebug": False}
+	assert overrides("--startArduino", "True", "--vaapiLinearSurfaces", "false") == \
+		{"startArduino": True, "vaapiLinearSurfaces": False}
+	assert overrides("--cameraDebug", "yes", "--disableGamma", "off") == {"cameraDebug": True, "disableGamma": False}
+	assert overrides("--ratcamSyncOut", "[True, False]") == {"ratcamSyncOut": [True, False]}
+
+
+def test_text_needs_no_quotes():
+	# These needed --cameraTrigger "'Line3'": literal_eval refused Line3
+	assert overrides("--cameraTrigger", "Line3", "--codec", "h265", "--gpuMake", "intel", "--serialPort", "COM3") == \
+		{"cameraTrigger": "Line3", "codec": "h265", "gpuMake": "intel", "serialPort": "COM3"}
+	assert overrides("--cameraTrigger", "'Line3'", "--codec", "\"h265\"") == {"cameraTrigger": "Line3", "codec": "h265"}
+	assert overrides("--cameraNames", "[EyeL, Cam0]", "--ratcamPorts", "['/dev/ttyACM1']") == \
+		{"cameraNames": ["EyeL", "Cam0"], "ratcamPorts": ["/dev/ttyACM1"]}
+
+
+def test_one_value_per_camera():
+	assert overrides("--quality", "[24, 26]", "--gpuID", "[0,1]", "--cameraSelection", "[0, 2]") == \
+		{"quality": [24, 26], "gpuID": [0, 1], "cameraSelection": [0, 2]}
+	assert overrides("--quality", "24", "--frameRate", "59.94", "--recTimeInSec", "1e3") == \
+		{"quality": 24, "frameRate": 59.94, "recTimeInSec": 1000.0}
+	assert overrides("--colorRange", "[full, limited]", "--codec", "[h264, h265]") == \
+		{"colorRange": ["full", "limited"], "codec": ["h264", "h265"]}
+
+
+def test_none_is_the_text_none():
+	# campy compares with the text "None" (writer's preset, trigger, FreeRuns), as the configs
+	# write it. literal_eval gave the None object, which then counted as not given.
+	assert overrides("--cameraTrigger", "None", "--preset", "None", "--triggerController", "None") == \
+		{"cameraTrigger": "None", "preset": "None", "triggerController": "None"}
+	assert overrides("--keyframeInterval", "None", "--writeQueueMaxSec", "None", "--blinkPin", "None") == \
+		{"keyframeInterval": "None", "writeQueueMaxSec": "None", "blinkPin": "None"}
+	assert overrides("--cameraLinkLimitMBps", "auto") == {"cameraLinkLimitMBps": "auto"}
+	assert overrides("--cameraLinkLimitMBps", "380") == {"cameraLinkLimitMBps": 380}
+
+
+def test_paths_are_taken_as_typed():
+	ffmpeg = r"C:\ffmpeg-btbn-8.1\bin\ffmpeg.exe"
+	assert overrides("--ffmpegPath", ffmpeg, "--videoFolder", r"D:\videos\rat 12") == \
+		{"ffmpegPath": ffmpeg, "videoFolder": r"D:\videos\rat 12"}
+	assert overrides("--cameraSettings", "'./configs/rgb24.pfs'") == {"cameraSettings": "./configs/rgb24.pfs"}
+	assert overrides("--capacityFile", "None", "--vaapiDevice", "/dev/dri/renderD129") == \
+		{"capacityFile": "None", "vaapiDevice": "/dev/dri/renderD129"}
+	assert overrides("--preflight", "off") == {"preflight": "off"} # YAML would read off as False
+
+
+def test_every_option_takes_its_default():
+	# Each default, typed as it would be in the config, comes back as that default
+	for key, value in configurator.DefaultParams().items():
+		assert overrides("--" + key, str(value)) == {key: value}, key
+
+
+def test_bad_values_name_the_option(capsys):
+	assert "argument --quality: 'high' is not a whole number" in refusal(capsys, "--quality", "high")
+	assert "argument --quality: '[24, 26' is not a value campy can read" in refusal(capsys, "--quality", "[24, 26")
+	assert "argument --startArduino: 1 is not True or False" in refusal(capsys, "--startArduino", "1")
+	assert "argument --codec: False is not text" in refusal(capsys, "--codec", "off")
+	assert "argument --preset: None is not text" in refusal(capsys, "--preset", "")
+	assert "argument --numCams: [2, 3] is not a whole number" in refusal(capsys, "--numCams", "[2, 3]")
+	assert "argument --recTimeInSec" in refusal(capsys, "--recTimeInSec", "[10, 20]") # read once for the rig
+	assert "argument --keyframeInterval" in refusal(capsys, "--keyframeInterval", "none")
+
+
+def test_overrides_get_the_config_checks(tmp_path, monkeypatch, capsys):
+	config = tmp_path / "c.yaml"
+	config.write_text(yaml.safe_dump({"numCams": 2, "cameraMake": "emu", "cameraTrigger": "Line3"}))
+	argv = ["campy-acquire", str(config), "--quality", "[24, 26]", "--cameraTrigger", "None", "--frameRate", "-5"]
+	monkeypatch.setattr(sys, "argv", argv)
+	p = configurator.ConfigureParams()
+	assert [configurator.CameraParams(p, n)["quality"] for n in range(2)] == [24, 26]
+	assert p["cameraTrigger"] == "None"
+	assert p["frameRate"] == 100 # range-checked like the config's own values
+	assert "frameRate set to invalid value" in capsys.readouterr().out
+
+	monkeypatch.setattr(sys, "argv", ["campy-acquire", str(config), "--numCams", "4", "--gpuID", "[0, 1]"])
+	with pytest.raises(ValueError, match="gpuID has 2 values for 4 cameras"):
+		configurator.ConfigureParams()
