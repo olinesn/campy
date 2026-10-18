@@ -18,6 +18,16 @@ def test_synthetic_frames():
 	assert sweep.SyntheticFrames(64, 48, "rgb24", 1)[0].shape == (48, 64, 3)
 
 
+def test_clean_frames_in_the_same_pass():
+	# campy-encode-quality's reference: the frames noise 0 gives, made with the noisy ones
+	for pix_fmt in ("gray", "rgb24"):
+		noisy, clean = sweep.SyntheticFrames(64, 48, pix_fmt, 4, 3.0, seed=1, clean=True)
+		for got, alone in ((noisy, sweep.SyntheticFrames(64, 48, pix_fmt, 4, 3.0, seed=1)),
+				(clean, sweep.SyntheticFrames(64, 48, pix_fmt, 4, 0.0, seed=1))):
+			assert len(got) == 4 and all(np.array_equal(a, b) for a, b in zip(got, alone))
+		assert not np.array_equal(noisy[0], clean[0])
+
+
 def test_encoder_specs():
 	base = configurator.DefaultParams()
 	assert sweep.EncoderParams(base, "cpu:veryfast")["gpuID"] == -1

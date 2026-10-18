@@ -86,11 +86,16 @@ def CellSignals(frames):
 	return np.stack(out), cell, clipped
 
 
-def RoiSignal(frames, roi):
+def RoiSignal(frames, roi, name):
 	"""Mean brightness inside roi (x, y, w, h) per frame, and the frames in which it clipped."""
 	x, y, w, h = roi
 	means, clipped = [], 0
 	for f in frames:
+		# numpy would cut a box that does not fit down to what does, or to
+		# nothing ("zero-size array to reduction operation maximum")
+		if not means and not (x >= 0 and y >= 0 and x + w <= f.shape[1] and y + h <= f.shape[0]):
+			raise SyncTestError("{}: --roi {}={},{},{},{} is not inside its {}x{} frames".format(
+				name, name, x, y, w, h, f.shape[1], f.shape[0]))
 		box = f[y:y + h, x:x + w]
 		means.append(box.mean(dtype=np.float64))
 		clipped += int(box.max() >= SATURATED)
@@ -207,7 +212,7 @@ def Analyze(folder, blink_hz=None, reference=None, rois=None, tolerance_us=TOLER
 		t_all = (np.asarray(c["trigger"], float) - 1) * period
 		if c["name"] in (rois or {}):
 			roi = rois[c["name"]]
-			b, clipped = RoiSignal(ReadFrames(path), roi)
+			b, clipped = RoiSignal(ReadFrames(path), roi, c["name"])
 		else:
 			grid, cell, clipped_cells = CellSignals(ReadFrames(path))
 			n = min(len(grid), len(t_all))

@@ -234,7 +234,7 @@ campy 2.1.0rc2 and older needed text quoted twice (`--codec "'h265'"`, which sti
 ### Stop Recording:
 - Campy can be configured to stop automatically after set recording time (e.g., 1 hour):
 ```
-recTimeInSeconds: 3600
+recTimeInSec: 3600
 ```
 - To manually end, press Ctrl^C. Please wait until campy exits! Each camera stops, closes its video and saves its metadata. If one hangs as it closes (in a camera driver, or waiting for an ffmpeg that does not exit), press Ctrl^C again: campy then stops that camera's process at once, without closing it, and names it. Its files are those of a recording that stopped without closing (below), and its ffmpeg is left to finish the video from the frames it has; campy gives its pid, to end it if it hangs. Two presses within a second count as one.
 - When campy starts the trigger itself (`startArduino: True`), it writes "trigger.json" in the videoFolder: whether the trigger started, which cameras were already grabbing (and why any were not), when the start command went out, on the clock of "hosttimes.npy", and the test LED's pin and rate if one is set. `campy-align` and `campy-synctest` read it.
@@ -325,7 +325,7 @@ cameraExposureTimeInUs: 2000
 ```
 campy-synctest ./test        # the recording's videoFolder
 ```
-It reports each camera's exposure offset from the first camera's (or `--reference`), with its standard error: from frames in which both cameras caught an edge of the blink (a few µs), or from the blink's phase when they are more than one exposure apart (about 10 µs). It also counts the triggers on which the LED was clearly on in one camera and off in the other (0 when the cameras are locked). It passes when every 2-second stretch is within `--tolerance-us` (default 100), and writes `synctest.json`. It pairs frames by trigger with `campy-align`, so it writes that tool's files too. A better `quality` (a lower number) makes the edge measurement finer, since the LED's brightness goes through the video encoder.
+It reports each camera's exposure offset from the first camera's (or `--reference`), with its standard error: from frames in which both cameras caught an edge of the blink (a few µs), or from the blink's phase (about 10 µs) when they are more than half an exposure apart, their exposures differ, the LED saturates, or too few frames caught an edge in both. It also counts the triggers on which the LED was clearly on in one camera and off in the other (0 when the cameras are locked). It passes when every 2-second stretch is within `--tolerance-us` (default 100), and writes `synctest.json`. It pairs frames by trigger with `campy-align`, so it writes that tool's files too. A better `quality` (a lower number) makes the edge measurement finer, since the LED's brightness goes through the video encoder.
 
 ### Running the tests
 ```

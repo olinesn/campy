@@ -128,3 +128,14 @@ def test_needs_the_blink_rate(tmp_path, capsys):
 	assert "no blink rate" in capsys.readouterr().err
 	assert synctest.Main([str(tmp_path), "--blink-hz", "43", "--roi", "CamB=54,10,12,12"]) == 0
 	assert json.loads((tmp_path / "synctest.json").read_text())["cameras"]["CamB"]["roi"] == [54, 10, 12, 12]
+
+
+@pytest.mark.parametrize("roi", ["100,10,8,8", "70,10,12,12", "-2,10,8,8"])
+def test_an_roi_outside_the_frame_is_said(tmp_path, capsys, roi):
+	# It crashed with "zero-size array to reduction operation maximum" (or, for a
+	# box partly outside, measured a smaller one without a word)
+	camera(tmp_path, "CamA", 50)
+	camera(tmp_path, "CamB", 50, seed=8)
+	record(tmp_path, ["CamA", "CamB"])
+	assert synctest.Main([str(tmp_path), "--roi", "CamB=" + roi]) == 2
+	assert "CamB: --roi CamB={} is not inside its 80x64 frames".format(roi) in capsys.readouterr().err
