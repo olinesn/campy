@@ -120,6 +120,28 @@ def test_every_camera_from_the_first_trigger(tmp_path):
 	assert "CamA" in text and "1 missed by the camera" in text
 
 
+def test_a_ratcam_log_cut_short_aligns_the_frames_it_has(tmp_path):
+	# A recording that stopped without closing: frametimes.npy holds frames
+	# that ratcam_frames.csv had not written yet (each writes about every second)
+	triggered_camera(tmp_path, "CamA", 1, 600)
+	eye = ratcam(tmp_path, "Eye", 1, 600)
+	path = tmp_path / "Eye" / "ratcam_frames.csv"
+	with open(path, newline="") as f:
+		rows = list(csv.reader(f))
+	assert len(rows) == 1 + 198
+	write_csv(path, rows[0], rows[1:151])
+	summary, text = run(tmp_path)
+
+	rows = aligned(tmp_path, "Eye")
+	assert [int(r["frame"]) for r in rows] == list(range(1, 151))
+	got = np.array([float(r["trigger"]) for r in rows])
+	want = np.array([eye[int(r["frame"])] for r in rows])
+	assert np.max(np.abs(got - want)) < 1e-3
+	assert summary["cameras"]["Eye"]["frames"] == 150
+	assert "its last 48 frames in frametimes.npy are not in ratcam_frames.csv" in text
+	assert summary["cameras"]["CamA"]["warnings"] == []
+
+
 def test_cameras_that_started_after_the_trigger(tmp_path):
 	# The trigger was running before anyone listened: CamA saw trigger 5 first,
 	# the RatCam trigger 31, CamB trigger 417. Trigger 1 becomes CamA's first.

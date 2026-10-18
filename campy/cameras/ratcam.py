@@ -26,7 +26,12 @@ Besides campy's frametimes and metadata, each RatCam folder gets:
 	ratcam_frames.csv  every frame grabbed: campy's frame number, the camera's
 	                   frame counter (a gap = a frame lost before campy saw it),
 	                   its timestamp in us, and the computer's arrival time in ns
-	ratcam_sync.csv    every SYNC input pulse: its counter and timestamp in us
+	ratcam_sync.csv    every SYNC input pulse: its counter, its timestamp in us,
+	                   and the computer's arrival time in ns, in order of time
+Both are written while the recording runs: opened when the camera starts
+grabbing, a batch of rows about every second, closed with the camera. So
+memory does not grow with the recording, and one that stops without closing
+(campy crashed or was killed) keeps its rows up to the last second.
 """
 
 import csv, os, queue, time
@@ -35,19 +40,116 @@ from campy.utils.utils import Say
 
 PIXEL_FORMAT = "gray" # every RatCam frame is 8-bit mono
 GRAB_TIMEOUT_S = 0.05 # like flir.GrabFrame: wait this long for the next frame
+WRITE_EVERY_NS = 1_000_000_000 # the logs' rows go to disk about this often
 
 
 class RatCamError(Exception):
 	pass
 
 
-class RatCam:
-	"""One open RatCam, and the frames and sync pulses it delivered."""
+class CsvLog:
+	"""
+	A CSV file that grows as rows arrive. They wait in memory until Write,
+	and then go to disk together and are flushed, so the file on disk ends
+	with a whole row.
+	"""
 
-	def __init__(self, cam):
+	def __init__(self, path, header):
+		self.path, self.header = path, header
+		self.file = None # opened by Open, when the camera starts grabbing
+		self.rows = []   # not yet on disk
+		self.count = 0   # rows in all, besides the header
+
+	def Add(self, row):
+		self.rows.append(row)
+		self.count += 1
+
+	def Open(self):
+		if self.file is None:
+			self.file = open(self.path, "w", newline="")
+			csv.writer(self.file).writerow(self.header)
+			self.Write() # rows from before it opened
+
+	def Write(self):
+		if self.file is not None and self.rows:
+			csv.writer(self.file).writerows(self.rows)
+			self.file.flush()
+			self.rows = []
+
+	def Close(self):
+		self.Open()
+		self.Write()
+		self.file.close()
+
+
+def SortByTime(path):
+	# Rewrites a log in order of t_us, keeping the order of rows with equal
+	# times. Through a new file renamed over the old, so a crash here leaves
+	# the log as it was.
+	with open(path, newline="") as f:
+		rows = list(csv.reader(f))
+	t = rows[0].index("t_us")
+	rows[1:] = sorted(rows[1:], key=lambda row: int(row[t]))
+	with open(path + ".sorting", "w", newline="") as f:
+		csv.writer(f).writerows(rows)
+	os.replace(path + ".sorting", path)
+
+
+class Logs:
+	"""ratcam_frames.csv and ratcam_sync.csv of one RatCam."""
+
+	def __init__(self, folder):
+		self.folder = folder
+		self.frames = CsvLog(os.path.join(folder, "ratcam_frames.csv"), ["frame", "camera_frame", "t_us", "host_ns"])
+		self.sync = CsvLog(os.path.join(folder, "ratcam_sync.csv"), ["pulse", "t_us", "host_ns"])
+		self.counter = None # the camera's frame counter at the last frame
+		self.lost = 0       # frames it skipped: lost before they reached campy
+		self.pulse_us = None # the last pulse's time
+		self.in_order = True # every pulse so far after the one before
+		self.written_ns = time.monotonic_ns()
+
+	def Frame(self, counter, t_us, host_ns):
+		# Each grabbed frame, in campy's order: frame is campy's frame number
+		if self.counter is not None:
+			self.lost += max(counter - self.counter - 1, 0)
+		self.counter = counter
+		self.frames.Add((self.frames.count + 1, counter, t_us, host_ns))
+
+	def Pulse(self, counter, t_us, host_ns):
+		# Pulses come in order, from one queue; one that does not puts the
+		# log in order of time when it closes
+		if self.pulse_us is not None and t_us < self.pulse_us:
+			self.in_order = False
+		self.pulse_us = t_us
+		self.sync.Add((counter, t_us, host_ns))
+
+	def Open(self):
+		os.makedirs(self.folder, exist_ok=True)
+		self.frames.Open()
+		self.sync.Open()
+		self.written_ns = time.monotonic_ns()
+
+	def WriteIfDue(self):
+		now = time.monotonic_ns()
+		if now - self.written_ns >= WRITE_EVERY_NS:
+			self.written_ns = now
+			self.frames.Write()
+			self.sync.Write()
+
+	def Close(self):
+		os.makedirs(self.folder, exist_ok=True)
+		self.frames.Close()
+		self.sync.Close()
+		if not self.in_order:
+			SortByTime(self.sync.path)
+
+
+class RatCam:
+	"""One open RatCam, and the logs of the frames and sync pulses it delivers."""
+
+	def __init__(self, cam, folder):
 		self.cam = cam    # nireyecam.device.Camera
-		self.frames = []  # (counter, t_us, host_ns) per grabbed frame, in campy's order
-		self.sync = []    # (counter, t_us, host_ns) per SYNC input pulse
+		self.logs = Logs(folder)
 		self.lost_link = False
 
 
@@ -126,7 +228,7 @@ def Drain(camera):
 def Keep(camera, packet, host_ns):
 	from nireyecam import protocol
 	if packet.type == protocol.SYNC:
-		camera.sync.append((packet.seq, packet.t_us, host_ns))
+		camera.logs.Pulse(packet.seq, packet.t_us, host_ns)
 
 
 def MeasureLineTimeNs(camera, frame_length, frames=8, timeout_s=3.0):
@@ -217,7 +319,8 @@ def Configure(camera, cam_params):
 def OpenCamera(cam_params):
 	from nireyecam.device import open_camera
 	device = cam_params["device"]
-	camera = RatCam(open_camera(device["port"], cam_params["cameraName"]))
+	camera = RatCam(open_camera(device["port"], cam_params["cameraName"]),
+		os.path.join(cam_params["videoFolder"], cam_params["cameraName"]))
 	try:
 		cam_params = Configure(camera, FixedParams(cam_params))
 	except Exception:
@@ -234,6 +337,7 @@ def OpenCamera(cam_params):
 def StartGrabbing(camera):
 	try:
 		Drain(camera)
+		camera.logs.Open() # with any sync pulses from while it was configured
 		camera.cam.command("START")
 		return True
 	except Exception as e:
@@ -244,6 +348,7 @@ def StartGrabbing(camera):
 def GrabFrame(camera, frameNumber):
 	from nireyecam import protocol
 	cam = camera.cam
+	camera.logs.WriteIfDue() # here, so they are written while no frames come too
 	deadline = time.monotonic() + GRAB_TIMEOUT_S
 	while True:
 		if cam.error is not None:
@@ -256,7 +361,7 @@ def GrabFrame(camera, frameNumber):
 		except queue.Empty:
 			raise RatCamError("no frame within {:g} ms".format(GRAB_TIMEOUT_S * 1000))
 		if packet.type == protocol.FRAME:
-			camera.frames.append((packet.seq, packet.t_us, host_ns))
+			camera.logs.Frame(packet.seq, packet.t_us, host_ns)
 			return packet
 		Keep(camera, packet, host_ns)
 
@@ -306,25 +411,12 @@ def CloseCamera(cam_params, camera):
 
 
 def SaveLogs(cam_params, camera):
-	folder = os.path.join(cam_params["videoFolder"], cam_params["cameraName"])
-	os.makedirs(folder, exist_ok=True)
-
-	with open(os.path.join(folder, "ratcam_frames.csv"), "w", newline="") as f:
-		w = csv.writer(f)
-		w.writerow(["frame", "camera_frame", "t_us", "host_ns"])
-		for n, (counter, t_us, host_ns) in enumerate(camera.frames, start=1):
-			w.writerow([n, counter, t_us, host_ns])
-
-	with open(os.path.join(folder, "ratcam_sync.csv"), "w", newline="") as f:
-		w = csv.writer(f)
-		w.writerow(["pulse", "t_us", "host_ns"])
-		for counter, t_us, host_ns in sorted(camera.sync, key=lambda s: s[1]):
-			w.writerow([counter, t_us, host_ns])
-
-	counters = [counter for counter, _, _ in camera.frames]
-	lost = sum(max(b - a - 1, 0) for a, b in zip(counters, counters[1:]))
+	# The last rows, and the totals for metadata.csv
+	logs = camera.logs
+	logs.Close()
+	lost = logs.lost
 	cam_params["ratcamFramesLost"] = lost
-	cam_params["ratcamSyncPulses"] = len(camera.sync)
+	cam_params["ratcamSyncPulses"] = logs.sync.count
 	if lost:
 		Say("{}: the camera's frame counter skipped {} frames: they were lost before reaching campy "
 			"(USB too slow for this frame size and rate?).".format(cam_params["cameraName"], lost))

@@ -92,6 +92,15 @@ def LoadCamera(folder):
 		sync = ReadColumns(os.path.join(folder, "ratcam_sync.csv"))
 		# The frames campy wrote, on the camera's own clock (frametimes is zeroed)
 		t_us = dict(zip(frames.get("frame", []).tolist(), frames.get("t_us", []).tolist()))
+		# A recording that stopped without closing has each file up to its own
+		# last write, about a second apart: align the frames both have
+		have = np.array([n in t_us for n in cam["frame"].tolist()], dtype=bool)
+		if not have.all():
+			cam["warnings"].append("its last {} frames in frametimes.npy are not in ratcam_frames.csv "
+				"(the recording stopped without closing?), and are left out".format(int(np.sum(~have))))
+			cam["frame"], cam["t"] = cam["frame"][have], cam["t"][have]
+			if cam["host_ns"] is not None:
+				cam["host_ns"] = cam["host_ns"][have]
 		cam["frame_t"] = np.array([t_us[n] for n in cam["frame"].tolist()], dtype=float) / 1e6
 		cam["pulse"] = sync.get("pulse", np.zeros(0, np.int64))
 		cam["pulse_t"] = sync.get("t_us", np.zeros(0, np.int64)) / 1e6
