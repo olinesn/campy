@@ -810,6 +810,34 @@ def test_a_wait_for_the_camera_processes_that_ctrl_c_interrupts_goes_on(monkeypa
 	assert cameras.processes[0].exitcode == 0 # Camera0 recorded to the end, and closed
 
 
+class EndingProcess:
+	# A camera process that is still running when Check looks, and has ended,
+	# having said what went wrong, by the time Wait looks again
+	def __init__(self):
+		self.calls = 0
+		self.exitcode, self.sentinel = 0, None
+
+	def is_alive(self):
+		self.calls += 1
+		return self.calls == 1
+
+	def join(self, timeout=None):
+		pass
+
+
+def test_a_camera_process_that_ends_just_after_check_still_has_its_failures_reported():
+	# Two cameras that refused to record (files already there) ended together:
+	# Wait returned with the failures of only one
+	receive, send = mp.Pipe(duplex=False)
+	send.send(("done", ["not recording"]))
+	cameras = unicam.CameraProcesses.__new__(unicam.CameraProcesses)
+	cameras.names, cameras.log = ["Camera0"], lambda text: None
+	cameras.processes, cameras.connections = [EndingProcess()], [receive]
+	cameras.failures, cameras.ended, cameras.done, cameras.ffmpeg, cameras.stopped = {}, set(), {}, {}, set()
+	cameras.interrupted = False
+	assert cameras.Wait() == {"Camera0": ["not recording"]}
+
+
 def test_after_a_wait_that_ctrl_c_interrupts_a_second_ctrl_c_still_stops_a_camera_that_hangs(monkeypatch):
 	ctx = mp.get_context("spawn")
 	said = []

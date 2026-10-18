@@ -35,6 +35,7 @@ memory does not grow with the recording, and one that stops without closing
 """
 
 import csv, os, queue, time
+from campy import newfiles
 from campy.cameras import unicam
 from campy.utils.utils import Say
 
@@ -67,7 +68,7 @@ class CsvLog:
 
 	def Open(self):
 		if self.file is None:
-			self.file = open(self.path, "w", newline="")
+			self.file = newfiles.Open(self.path, "w", newline="") # never over a recording's log
 			csv.writer(self.file).writerow(self.header)
 			self.Write() # rows from before it opened
 

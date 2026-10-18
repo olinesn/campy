@@ -8,7 +8,7 @@ import multiprocessing.connection
 import numpy as np
 from collections import deque
 from scipy import io as sio
-from campy import frametimes
+from campy import frametimes, newfiles
 from campy.utils.utils import Say, ExitCodeText, ErrorText
 
 
@@ -236,6 +236,10 @@ class CameraProcesses:
 			self.Check()
 			alive = [p.sentinel for n, p in enumerate(self.processes) if p.is_alive() and n not in self.stopped]
 			if not alive:
+				# One that ended since Check looked is reported too: cameras that
+				# stop together (recTimeInSec, or none recording) end within
+				# moments of each other, and one's failures were missed
+				self.Check()
 				return self.failures
 			try:
 				multiprocessing.connection.wait(alive, timeout=every)
@@ -624,7 +628,7 @@ def WriteMetadata(cam_params):
 	# metadata.csv: the camera's parameters, one per row (not the objects)
 	folder = CameraFolder(cam_params)
 	os.makedirs(folder, exist_ok=True)
-	with open(os.path.join(folder, "metadata.csv"), "w", newline="") as f:
+	with newfiles.Open(os.path.join(folder, "metadata.csv"), "w", newline="") as f:
 		w = csv.writer(f, delimiter=",", quoting=csv.QUOTE_ALL)
 		for row in cam_params.items():
 			if isinstance(row[1], (list, str, int, float)):
@@ -672,7 +676,8 @@ def SaveMetadata(cam_params, grabdata, recording=None):
 			matdata = {}
 			matdata['frameNumber'] = x[0].astype(int) # as integers, as they were
 			matdata['timeStamp'] = x[1]
-			sio.savemat(mat_filename, matdata, do_compression=True)
+			with newfiles.Open(mat_filename, "wb") as f:
+				sio.savemat(f, matdata, do_compression=True)
 
 		# Save parameters and recording metadata to csv spreadsheet. With a
 		# failure, also what went wrong (cameraError, videoError, above).

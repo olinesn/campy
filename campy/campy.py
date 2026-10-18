@@ -19,7 +19,7 @@ campy-acquire ./configs/campy_config.yaml
 import os, time, sys, logging, threading, queue
 from collections import deque
 import multiprocessing as mp
-from campy import writer, configurator, preflight
+from campy import writer, configurator, preflight, newfiles
 from campy.trigger import trigger
 from campy.cameras import unicam
 from campy.utils.utils import HandleKeyboardInterrupt, Say, ErrorText
@@ -27,6 +27,15 @@ from campy.utils.utils import HandleKeyboardInterrupt, Say, ErrorText
 def OpenSystems():
 	# Configure parameters
 	params = configurator.ConfigureParams()
+
+	# A recording never replaces one: stop now, before anything opens, if any
+	# file it would write is already there. Whatever preflight is set to.
+	if mp.current_process().name == "MainProcess":
+		try:
+			newfiles.Check(params)
+		except newfiles.WouldOverwrite as e:
+			print(e, flush=True)
+			sys.exit(1)
 
 	# Load Camera Systems and Devices
 	systems = unicam.LoadSystems(params)
@@ -69,6 +78,17 @@ def AcquireOneCamera(n_cam):
 	# whether the camera opened; and what the camera thread and the writer tell
 	# each other, and what went wrong (unicam.Recording)
 	recording = unicam.Recording()
+
+	# Its files are campy's own, empty (Main made them, newfiles.Claim): if
+	# any holds something, this camera records nothing, and opens nothing
+	try:
+		newfiles.CheckCamera(cam_params)
+	except newfiles.WouldOverwrite as e:
+		recording.cameraError = str(e)
+		Say("{}: {}".format(cam_params["cameraName"], e))
+		unicam.SignalReady(cam_params, False, "its files are already there")
+		return recording
+
 	dispQueue = deque([], 2)
 	writeQueue = deque()
 	stopReadQueue = deque([],1)
@@ -138,6 +158,15 @@ def Main():
 	# Ctrl-C stops every camera, each closing its video, and Main waits for
 	# them; a second Ctrl-C stops the ones that hang as they close
 	with HandleKeyboardInterrupt() as interrupts:
+		# Every file of the recording, made empty now, each only if it is not
+		# there: of two campys started into one folder, only one records
+		try:
+			claimed = newfiles.Claim(params)
+		except newfiles.WouldOverwrite as e:
+			print(e, flush=True)
+			CloseSystems(systems, params)
+			sys.exit(1)
+
 		# One process per camera, started the same way on Windows and Linux
 		# (spawn), and watched: one that dies is said at once, and the others
 		# go on recording
@@ -159,6 +188,10 @@ def Main():
 			failures = cameras.Wait(interrupts)
 		finally:
 			CloseSystems(systems, params)
+			# The files still empty go: a camera that saved no frames leaves
+			# what it always left. Not a stopped camera's, whose ffmpeg may still
+			# be finishing its video.
+			newfiles.Release([(path, n) for path, n in claimed if n is None or n in cameras.done])
 
 	# A camera that did not record to the end makes campy's exit code 1
 	if failures:
