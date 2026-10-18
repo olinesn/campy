@@ -85,6 +85,31 @@ def GetModelName(camera):
 	return device_model_name
 
 
+def GigeDiscovery(system):
+	# Whether Spinnaker searches the network interfaces for GigE cameras each
+	# time it starts (EnumerateGEVInterfaces; campy-flir-reset --gige turns it
+	# off), or None where this Spinnaker cannot say
+	node = system.GetTLNodeMap().GetNode("EnumerateGEVInterfaces")
+	if node is None:
+		return None
+	node = PySpin.CBooleanPtr(node)
+	if PySpin.IsAvailable(node) and PySpin.IsReadable(node):
+		return node.GetValue()
+	return None
+
+
+def DeviceType(device):
+	# How a camera is connected, read without opening it: "USB3Vision",
+	# "GigEVision", or None where Spinnaker cannot say
+	node = device.GetTLDeviceNodeMap().GetNode("DeviceType")
+	if node is None:
+		return None
+	node = PySpin.CEnumerationPtr(node)
+	if PySpin.IsAvailable(node) and PySpin.IsReadable(node):
+		return node.GetCurrentEntry().GetSymbolic()
+	return None
+
+
 def OpenCamera(cam_params):
 
 	# Load camera

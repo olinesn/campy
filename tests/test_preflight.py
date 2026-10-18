@@ -1,5 +1,6 @@
 """Launch check, against a fake sysfs USB tree and a hand-written capacity table."""
 
+import importlib
 import os
 import socket
 import sys
@@ -742,3 +743,132 @@ def test_run_stops_on_a_frame_size_it_cannot_set(tmp_path, monkeypatch, capsys):
 	with pytest.raises(preflight.PreflightError, match="1 check failed"):
 		preflight.Run(systems, dict(p, preflight="error"), str(tmp_path / "no-sysfs"))
 	assert "set frameWidth: 640 and frameHeight: 512" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ GigE search
+
+GIGE_WARN = (WARN, "every FLIR camera here is USB3 (Camera0), but Spinnaker searches each network interface for "
+	"GigE cameras as it starts, here and in each camera process: about 0.25 s per interface. Without the search, "
+	"campy was ready to trigger in 1.0 s instead of 2.9 on the EVO-X2. To turn it off for this user: "
+	"campy-flir-reset --gige off")
+
+
+def gige_report(found, serials=("24243505",), **values):
+	_, cams = cameras(list(serials), **values)
+	report = preflight.Report()
+	preflight.CheckGige(cams, report, lambda: found)
+	return lines(report)
+
+
+def test_gige_search_for_usb3_cameras():
+	# As the EVO-X2 was until 2026-10-18: the search on, one Blackfly S on USB3
+	assert gige_report((True, ["USB3Vision"])) == [GIGE_WARN]
+
+
+def test_gige_search_that_is_needed():
+	# A GigE camera, or one Spinnaker cannot say: the search stays
+	assert gige_report((True, ["USB3Vision", "GigEVision"]), ["1", "2"]) == []
+	assert gige_report((True, [None])) == []
+	# A camera that was not found may be a GigE camera
+	_, _, cams = missing_camera(["1", "2", "3"])
+	report = preflight.Report()
+	preflight.CheckGige(cams, report, lambda: (True, ["USB3Vision"] * 3))
+	assert report.lines == []
+
+
+def test_gige_search_off():
+	assert gige_report((False, ["USB3Vision"])) == [
+		(OK, "Spinnaker does not search for GigE cameras (campy-flir-reset --gige off)")]
+	# Then a camera that was not found may be a GigE camera it did not look for
+	_, _, cams = missing_camera(["1", "2", "3"])
+	report = preflight.Report()
+	preflight.CheckGige(cams, report, lambda: (False, ["USB3Vision"] * 3))
+	assert lines(report) == [(WARN, "Spinnaker's search for GigE cameras is off for this user, so it finds no GigE "
+		"camera. If Camera3 is one, turn the search on: campy-flir-reset --gige on.")]
+
+
+def test_gige_not_checked():
+	# No FLIR system, a Spinnaker without the setting, no FLIR camera in the config
+	assert gige_report(None) == []
+	assert gige_report((None, ["USB3Vision"])) == []
+	assert gige_report((True, ["USB3Vision"]), cameraMake="basler") == []
+	# Spinnaker would not say: the launch check goes on
+	report = preflight.Report()
+
+	def broken():
+		raise RuntimeError("Spinnaker: node map not readable")
+
+	preflight.CheckGige(cameras(["1"])[1], report, broken)
+	assert lines(report) == [(WARN, "could not read whether Spinnaker searches for GigE cameras (Spinnaker: node "
+		"map not readable)")]
+
+
+def test_flir_discovery(monkeypatch):
+	class Make:
+		@staticmethod
+		def GigeDiscovery(system):
+			return system == "system with the search on"
+
+		@staticmethod
+		def DeviceType(device):
+			return {"device a": "USB3Vision", "device b": "GigEVision"}[device]
+
+	monkeypatch.setattr(preflight.unicam, "ImportCam", lambda make: Make)
+	systems = {"flir": {"system": "system with the search on", "serials": ["a", "b"],
+		"deviceList": ["device a", "device b"]}}
+	assert preflight.FlirDiscovery(systems) == (True, ["USB3Vision", "GigEVision"])
+	# Nothing to ask: no FLIR system, or no device list (as in the other tests here)
+	assert preflight.FlirDiscovery({}) is None
+	assert preflight.FlirDiscovery({"flir": {"serials": ["a"]}}) is None
+
+
+def test_run_warns_of_the_gige_search(tmp_path, monkeypatch):
+	monkeypatch.setattr(preflight, "CheckEncoders", lambda cams, report: None)
+	monkeypatch.setattr(preflight, "FlirDiscovery", lambda systems: (True, ["USB3Vision"]))
+	p, _ = cameras(["24243505"], capacityFile=str(tmp_path / "none.json"), videoFolder=str(tmp_path))
+	systems = {"flir": {"serials": ["24243505"]}}
+	# A WARN: it does not stop campy
+	report = preflight.Run(systems, dict(p, preflight="error"), str(tmp_path / "no-sysfs"))
+	assert lines(report, "gige") == [GIGE_WARN]
+
+
+class Value:
+	def __init__(self, value):
+		self.value = value
+
+	def GetValue(self):
+		return self.value
+
+	def GetCurrentEntry(self):
+		return self
+
+	def GetSymbolic(self):
+		return self.value
+
+
+class NodeMap(dict):
+	def GetNode(self, name):
+		return self.get(name)
+
+
+@pytest.fixture
+def flir(monkeypatch):
+	spin = types.ModuleType("PySpin")
+	for kind in ("CBooleanPtr", "CEnumerationPtr"):
+		setattr(spin, kind, lambda node: node)
+	spin.IsAvailable = lambda node: node is not None
+	spin.IsReadable = lambda node: node is not None
+	monkeypatch.setitem(sys.modules, "PySpin", spin)
+	monkeypatch.delitem(sys.modules, "campy.cameras.flir", raising=False)
+	yield importlib.import_module("campy.cameras.flir")
+	sys.modules.pop("campy.cameras.flir", None)
+
+
+def test_flir_reads_the_search_and_the_connection(flir):
+	system = lambda nodes: types.SimpleNamespace(GetTLNodeMap=lambda: NodeMap(nodes))
+	assert flir.GigeDiscovery(system({"EnumerateGEVInterfaces": Value(True)})) is True
+	assert flir.GigeDiscovery(system({"EnumerateGEVInterfaces": Value(False)})) is False
+	assert flir.GigeDiscovery(system({})) is None # before Spinnaker 3.2
+	device = lambda nodes: types.SimpleNamespace(GetTLDeviceNodeMap=lambda: NodeMap(nodes))
+	assert flir.DeviceType(device({"DeviceType": Value("USB3Vision")})) == "USB3Vision"
+	assert flir.DeviceType(device({})) is None

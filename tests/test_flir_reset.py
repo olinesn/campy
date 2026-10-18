@@ -106,10 +106,29 @@ class CameraList:
 		self.cams = []
 
 
+class Flag:
+	# A boolean node: EnumerateGEVInterfaces
+	def __init__(self, value, writable=True, sticks=True):
+		self.value, self.writable, self.sticks = value, writable, sticks
+
+	def GetValue(self):
+		return self.value
+
+	def SetValue(self, value):
+		assert self.writable, "set a read-only node"
+		if self.sticks:
+			self.value = value
+
+
 class FakeSystem:
-	"""Spinnaker's camera list. hidden: UpdateCameras calls before the cameras show up (the computer starting)."""
-	def __init__(self, cams, hidden=0):
+	"""
+	Spinnaker's camera list. hidden: UpdateCameras calls before the cameras
+	show up (the computer starting). gige: its search for GigE cameras
+	(EnumerateGEVInterfaces, a Flag; None: a Spinnaker without the setting).
+	"""
+	def __init__(self, cams, hidden=0, gige=None):
 		self.cams, self.hidden, self.updates = cams, hidden, 0
+		self.gige, self.released = gige, False
 		self.present = list(cams) if hidden == 0 else []
 		self.gone = {} # camera: UpdateCameras calls until it is back
 		for cam in cams:
@@ -134,6 +153,12 @@ class FakeSystem:
 	def GetCameras(self):
 		return CameraList(self.present)
 
+	def GetTLNodeMap(self):
+		return NodeMap({} if self.gige is None else {"EnumerateGEVInterfaces": self.gige})
+
+	def ReleaseInstance(self):
+		self.released = True
+
 
 class Clock:
 	# time.time and time.sleep: sleeping moves the clock, at once
@@ -149,10 +174,11 @@ class Clock:
 
 def FakePySpin():
 	spin = types.ModuleType("PySpin")
-	for kind in ("CStringPtr", "CIntegerPtr", "CEnumerationPtr", "CCommandPtr"):
+	for kind in ("CStringPtr", "CIntegerPtr", "CEnumerationPtr", "CCommandPtr", "CBooleanPtr"):
 		setattr(spin, kind, lambda node: node)
 	spin.IsAvailable = lambda node: node is not None
 	spin.IsReadable = lambda node: node is not None
+	spin.IsWritable = lambda node: node is not None and node.writable
 	spin.SpinnakerException = SpinError
 	return spin
 
@@ -258,3 +284,70 @@ def test_connected_flir_devices(flirreset, tmp_path):
 	(tmp_path / "2-0.1.0").mkdir() # an interface (2-0:1.0 in sysfs, but Windows forbids ":"): no idVendor
 	assert flirreset.ConnectedFlirDevices(str(tmp_path)) == 2
 	assert flirreset.ConnectedFlirDevices(str(tmp_path / "nowhere")) == 0
+
+
+# ------------------------------------------------------------------ --gige
+
+@pytest.fixture
+def user(reset, monkeypatch):
+	monkeypatch.setattr(reset.getpass, "getuser", lambda: "falknerlab")
+	return reset
+
+
+def test_gige_off(user, capsys):
+	# As on the EVO-X2 on 2026-10-18: the search was on, and goes off; no camera is looked at
+	cam = FakeCamera()
+	system = FakeSystem([cam], gige=Flag(True))
+	assert user.SetGige(system, False) == 0
+	assert system.gige.value is False
+	assert system.updates == 0 and cam.inits == 0
+	out = capsys.readouterr().out
+	assert "Spinnaker's search for GigE cameras is off for user falknerlab" in out
+	assert "no program this user runs finds a GigE camera, SpinView included, until campy-flir-reset --gige on." in out
+
+
+def test_gige_on(user, capsys):
+	system = FakeSystem([], gige=Flag(False))
+	assert user.SetGige(system, True) == 0
+	assert system.gige.value is True
+	assert "Spinnaker's search for GigE cameras is on again for user falknerlab: programs find GigE cameras" \
+		in capsys.readouterr().out
+
+
+def test_gige_already_as_asked(user, capsys):
+	system = FakeSystem([], gige=Flag(False, writable=False))
+	assert user.SetGige(system, False) == 0 # not even set: a node that is read only here is no matter
+	assert "Spinnaker's search for GigE cameras was already off for user falknerlab." in capsys.readouterr().out
+
+
+def test_gige_spinnaker_without_the_setting(user, capsys):
+	assert user.SetGige(FakeSystem([]), False) == 1
+	assert "This Spinnaker has no EnumerateGEVInterfaces setting: 3.2 and newer have it." in capsys.readouterr().out
+
+
+def test_gige_read_only(user, capsys):
+	system = FakeSystem([], gige=Flag(True, writable=False))
+	assert user.SetGige(system, False) == 1
+	assert system.gige.value is True
+	assert "Spinnaker's EnumerateGEVInterfaces setting cannot be changed here." in capsys.readouterr().out
+
+
+def test_gige_not_taken(user, capsys):
+	system = FakeSystem([], gige=Flag(True, sticks=False))
+	assert user.SetGige(system, False) == 1
+	assert "Spinnaker did not take EnumerateGEVInterfaces = False." in capsys.readouterr().out
+
+
+def test_main_gige_releases_the_system(user, monkeypatch, capsys):
+	cam = FakeCamera()
+	system = FakeSystem([cam], gige=Flag(True))
+	monkeypatch.setattr(user.PySpin, "System", types.SimpleNamespace(GetInstance=lambda: system), raising=False)
+	assert user.Main(["--gige", "off"]) == 0
+	assert system.gige.value is False and system.released
+	assert cam.resets == 0 and system.updates == 0
+	# Without --gige it resets cameras, as before, and leaves the search alone
+	system = FakeSystem([cam], gige=Flag(True))
+	assert user.Main([]) == 0
+	assert cam.resets == 1 and system.gige.value is True and system.released
+	with pytest.raises(SystemExit):
+		user.Main(["--gige", "maybe"])
