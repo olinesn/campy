@@ -51,9 +51,9 @@ cd ~\Documents\
 mkdir campy
 cd campy
 ```
-5. Clone or download campy to local folder:
+5. Clone campy to that folder. `master` is the released campy; `dev`, the repository's default branch, holds work not released yet (see [Development and releases](#development-and-releases)):
 ```
-git clone https://github.com/ksseverson57/campy.git
+git clone -b master https://github.com/olinesn/campy.git
 ```
 6. Navigate to the cloned campy folder
 ```
@@ -293,9 +293,25 @@ It reports each camera's exposure offset from the first camera's (or `--referenc
 pip install -e . pytest
 pytest tests
 ```
-GitHub Actions runs them on every push to master and every pull request, on Python 3.9, 3.10 and 3.12 on Linux and Python 3.12 on Windows (`.github/workflows/tests.yml`). The RatCam tests need nir-eye-cam's `nireyecam`, from a private repository, and are skipped without it. To run them in CI too, add a repository secret `NIREYECAM_TOKEN`: a fine-grained personal access token with read-only access to the contents of `olinesn/nir-eye-cam`.
+GitHub Actions runs them on every push to master or dev and every pull request, on Python 3.9, 3.10 and 3.12 on Linux and Python 3.12 on Windows (`.github/workflows/tests.yml`). The RatCam tests need nir-eye-cam's `nireyecam`, from a private repository, and are skipped without it. To run them in CI too, add a repository secret `NIREYECAM_TOKEN`: a fine-grained personal access token with read-only access to the contents of `olinesn/nir-eye-cam`.
 
 The tests run `trigger.ino` as plain C++ against a simulated Arduino. A second workflow (`.github/workflows/sketch.yml`) compiles it for real boards (an Arduino Uno, a Teensy 4.0 and a Teensy 3.2) whenever the sketch changes.
+
+### Development and releases
+Everything lands on `dev` first. `master` is the released campy, and changes only when `dev` is promoted to it.
+
+- **Pull requests** go to `dev`, the repository's default branch.
+- **Trying `dev` on a rig:** in its clone, `git fetch`, `git checkout dev` and `git pull`; `git checkout master` goes back. `pip install -e .` follows whichever branch is checked out, so nothing needs reinstalling unless `setup.py`'s dependencies changed.
+- **A pre-release** marks a state of `dev` to test, for example on the rigs:
+  ```
+  gh release create v2.1.0rc1 --target dev --prerelease --generate-notes
+  ```
+  Pre-release tags take Python's form, `v2.1.0rc1`, `v2.1.0rc2`, ..., which pip orders before `2.1.0`. A rig checks one out with `git checkout v2.1.0rc1`.
+- **A release:** set `version` in `setup.py` to it (`2.1.0`) in a pull request to `dev`. Then run **Actions ▸ Promote dev to master ▸ Run workflow** with the tag `v2.1.0`, or:
+  ```
+  gh workflow run promote.yml -f tag=v2.1.0
+  ```
+  It moves `master` forward to `dev` and publishes release `v2.1.0` on that commit, with notes listing the pull requests merged since the last release. With no tag it only promotes. It changes nothing if `setup.py`'s version is not the tag's, or if `master` has a commit that `dev` lacks: promotion only ever fast-forwards, because merging or squashing `dev` into `master` would leave the two histories apart, and every later promotion would conflict.
 
 ### Helpful tips
 - To debug broken ffmpeg pipe error, include this in config.yaml:

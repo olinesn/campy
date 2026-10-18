@@ -1,0 +1,78 @@
+name: Promote dev to master
+
+# Makes master what dev is: the work merged into dev, and tried on the rigs,
+# becomes the released campy. Run it from the Actions tab (Run workflow), or
+#   gh workflow run promote.yml -f tag=v2.1.0
+#
+# It only fast-forwards, and stops if master has a commit that dev does not:
+# everything lands in dev first, and nothing is committed to master directly.
+# Merging or squashing dev into master instead would leave the two histories
+# apart, and every later promotion would conflict.
+#
+# With a release tag (vX.Y.Z) it also publishes that release, on the commit it
+# promoted, with notes listing the pull requests since the last release.
+# setup.py's version must already say it, so a pip install of the release
+# reports the same version. Pre-releases (v2.1.0rc1) are cut from dev by hand:
+# see the README's "Development and releases".
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release to publish, e.g. v2.1.0. Empty: only promote."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Check the release tag
+        if: inputs.tag != ''
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::A release tag is vX.Y.Z, e.g. v2.1.0. Pre-releases (v2.1.0rc1) are cut from dev by hand."
+            exit 1
+          fi
+          version=$(sed -nE "s/^[[:space:]]*version[[:space:]]*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/p" setup.py)
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::setup.py on dev says version '$version', not '${TAG#v}'. Set it in a pull request to dev first."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null; then
+            echo "::error::$TAG already exists."
+            exit 1
+          fi
+
+      - name: Fast-forward master to dev
+        run: |
+          dev=$(git rev-parse origin/dev)
+          if ! git merge-base --is-ancestor origin/master "$dev"; then
+            echo "::error::master has commits that dev does not ($(git log --format=%h origin/dev..origin/master | xargs)). Merge master into dev in a pull request, then promote."
+            exit 1
+          fi
+          ahead=$(git rev-list --count "origin/master..$dev")
+          if [ "$ahead" = 0 ]; then
+            echo "master is already at dev (${dev:0:7})."
+          else
+            git push origin "$dev:refs/heads/master" # not forced: a push that is not a fast-forward fails
+            echo "master moved forward $ahead commit(s), to dev (${dev:0:7})."
+          fi
+
+      - name: Publish the release
+        if: inputs.tag != ''
+        run: gh release create "$TAG" --target "$(git rev-parse origin/dev)" --title "$TAG" --generate-notes
