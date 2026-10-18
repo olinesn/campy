@@ -11,8 +11,10 @@ through matplotlib's image resampling, 10-22 ms a frame (100-200 dpi), so at
 displayFrameRate 10 every camera spent 10-22% of a CPU core on its preview.
 Qt draws the same frame in well under a millisecond.
 
-DisplayFrames runs in its own thread (campy.AcquireOneCamera), so Qt's
-application object is made, and its events run, in that thread.
+DisplayFrames runs in its own thread (campy.ShowPreview), so Qt's
+application object is made, and its events run, in that thread. Import this
+module in that thread too: Qt takes the first thread that loads it as its
+main thread, and the QApplication has to be made in that one.
 """
 import sys, time
 import numpy as np

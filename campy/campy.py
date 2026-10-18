@@ -64,11 +64,10 @@ def AcquireOneCamera(n_cam):
 	stopWriteQueue = deque([],1)
 
 	# Start image window display thread, unless running headless
-	# (displayFrameRate 0). Imported here so headless runs need no Qt.
+	# (displayFrameRate 0)
 	if cam_params["displayFrameRate"] > 0:
-		from campy import display
 		threading.Thread(
-			target = display.DisplayFrames,
+			target = ShowPreview,
 			daemon = True,
 			args = (cam_params, dispQueue,),
 			).start()
@@ -82,6 +81,15 @@ def AcquireOneCamera(n_cam):
 
 	# Start video file writer (main "consumer" process)
 	writer.WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue)
+
+
+def ShowPreview(cam_params, dispQueue):
+	# The display thread. Qt is imported here, not in the camera process's main
+	# thread: Qt takes the first thread that loads it as its main thread, and
+	# the preview's QApplication has to be made in that one ("QApplication was
+	# not created in the main() thread" otherwise). Headless runs load no Qt.
+	from campy import display
+	display.DisplayFrames(cam_params, dispQueue)
 
 
 def InitCameraProcess(readyQueue):

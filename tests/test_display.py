@@ -108,26 +108,29 @@ def test_the_window_shows_the_frame_scaled_to_fit(qt):
 
 @needs_qt
 def test_runs_in_its_own_thread_until_the_camera_stops():
-	# As in a camera process: Qt's application made in the display thread.
-	# A frame it cannot show is reported once, and the frames after it are shown.
+	# As in a camera process (campy.ShowPreview): Qt loaded, and its application
+	# made, in the display thread, so Qt does not warn that it is not its main
+	# thread. A frame it cannot show is reported once; the frames after it are shown.
 	script = textwrap.dedent("""
 		import threading
 		from collections import deque
 		import numpy as np
-		from campy import display
 
 		shown = []
-		show = display.PreviewWindow.ShowFrame
-		def ShowFrame(self, img):
-			show(self, img)
-			shown.append((img.shape, self.width(), self.height()))
-		display.PreviewWindow.ShowFrame = ShowFrame
+		def ShowPreview(cam, frames):
+			from campy import display
+			show = display.PreviewWindow.ShowFrame
+			def ShowFrame(self, img):
+				show(self, img)
+				shown.append((img.shape, self.width(), self.height()))
+			display.PreviewWindow.ShowFrame = ShowFrame
+			display.DisplayFrames(cam, frames)
 
 		frames = deque([np.zeros((48, 64), np.uint8), np.zeros((4, 4, 2), np.uint8),
 			np.full((48, 64, 3), 200, np.uint8), np.zeros((4, 4, 2), np.uint8), "STOP"])
 		cam = {"cameraName": "Camera0", "cameraMake": "flir", "frameWidth": 128, "frameHeight": 96,
 			"displayDownsample": 2}
-		thread = threading.Thread(target=display.DisplayFrames, args=(cam, frames), daemon=True)
+		thread = threading.Thread(target=ShowPreview, args=(cam, frames), daemon=True)
 		thread.start()
 		thread.join(30)
 		print("finished", not thread.is_alive(), "left", len(frames))
@@ -135,6 +138,7 @@ def test_runs_in_its_own_thread_until_the_camera_stops():
 		""")
 	done = subprocess.run([sys.executable, "-c", script], env=OFFSCREEN, capture_output=True, text=True, timeout=120)
 	assert done.returncode == 0, done.stderr
+	assert "main() thread" not in done.stderr + done.stdout
 	lines = done.stdout.splitlines()
 	assert "finished True left 0" in lines
 	assert "shown [((48, 64), 64, 48), ((48, 64, 3), 64, 48)]" in lines
