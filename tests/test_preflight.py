@@ -6,6 +6,7 @@ import sys
 import types
 
 import pytest
+import yaml
 
 from campy import configurator, preflight
 from campy.preflight import OK, WARN, FAIL
@@ -356,6 +357,8 @@ def test_run_modes(tmp_path, monkeypatch):
 	report = preflight.Run(systems, dict(p, preflight="warn"), root)
 	assert report.count(FAIL) == 1
 	assert preflight.Run(systems, dict(p, preflight="off"), root) is None
+	# Unquoted, a config's off is YAML's False: that ran the check in error mode
+	assert preflight.Run(systems, dict(p, **yaml.safe_load("preflight: off")), root) is None
 
 
 def test_run_stops_on_nvenc_failure(tmp_path, monkeypatch):
