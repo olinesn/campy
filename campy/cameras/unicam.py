@@ -69,6 +69,13 @@ def WaitForCameras(readyQueue, params, result=None, log=Say, interrupted=None):
 		gone = [n for n in pending if ended(n)]
 		try:
 			n_cam, name, ok, error = readyQueue.get(timeout=0.2)
+		except InterruptedError:
+			# Ctrl-C, on Windows: the queue's wait gives up when a signal comes
+			# (CameraProcesses.Wait says why). Nothing was read: look again,
+			# unless that was campy being stopped.
+			if interrupted is not None and interrupted():
+				break
+			continue
 		except queue.Empty:
 			for n in gone:
 				if n in pending:
@@ -230,7 +237,16 @@ class CameraProcesses:
 			alive = [p.sentinel for n, p in enumerate(self.processes) if p.is_alive() and n not in self.stopped]
 			if not alive:
 				return self.failures
-			multiprocessing.connection.wait(alive, timeout=every)
+			try:
+				multiprocessing.connection.wait(alive, timeout=every)
+			except InterruptedError:
+				# Ctrl-C, on Windows. There this wait (_winapi.WaitForMultipleObjects)
+				# also waits on Python's SIGINT event, and gives up when it is set:
+				# once campy's handler has counted the press, it raises this, where
+				# POSIX waits wait on (PEP 475). It used to end Main, and with it its
+				# camera processes (daemon), as they closed their videos. Look again
+				# instead, from the top: a second press stops them.
+				pass
 
 
 class CameraLost(Exception):
