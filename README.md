@@ -234,7 +234,7 @@ campy 2.1.0rc2 and older needed text quoted twice (`--codec "'h265'"`, which sti
 ### Stop Recording:
 - Campy can be configured to stop automatically after set recording time (e.g., 1 hour):
 ```
-recTimeInSeconds: 3600
+recTimeInSec: 3600
 ```
 - To manually end, press Ctrl^C. Please wait until campy exits! Each camera stops, closes its video and saves its metadata. If one hangs as it closes (in a camera driver, or waiting for an ffmpeg that does not exit), press Ctrl^C again: campy then stops that camera's process at once, without closing it, and names it. Its files are those of a recording that stopped without closing (below), and its ffmpeg is left to finish the video from the frames it has; campy gives its pid, to end it if it hangs. Two presses within a second count as one.
 - When campy starts the trigger itself (`startArduino: True`), it writes "trigger.json" in the videoFolder: whether the trigger started, which cameras were already grabbing (and why any were not), when the start command went out, on the clock of "hosttimes.npy", and the test LED's pin and rate if one is set. `campy-align` and `campy-synctest` read it.
