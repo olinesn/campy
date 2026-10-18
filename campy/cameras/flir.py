@@ -121,6 +121,10 @@ def FrameRateLimits(device, cam_params):
 	       bytes/s (DeviceLinkThroughputLimit; None where the camera has none)
 	  exposureUs, frameRateCap: the exposure, and AcquisitionFrameRate when
 	       AcquisitionFrameRateEnable caps the rate (else None)
+	  frameSize, wantedFrameSize: the frames it would send, (width, height),
+	       and frameWidth x frameHeight as campy rounds them; maxFrameSize:
+	       its full frame (WidthMax, HeightMax); frameSizeLocked: its frame
+	       size cannot be changed now (FormatLocked). None where unreadable.
 	A free-running camera is read without the cap campy gives it (frameRate,
 	ConfigureFrameRate), so fps is the most it can do. It is read with the USB
 	limit campy gives it (ConfigureLinkLimit), and closed with the frame rate
@@ -149,6 +153,10 @@ def FrameRateLimits(device, cam_params):
 			"throughputLimit": ReadNode(nodemap, "DeviceLinkThroughputLimit", PySpin.CIntegerPtr),
 			"exposureUs": ReadNode(nodemap, "ExposureTime", PySpin.CFloatPtr),
 			"frameRateCap": ReadNode(nodemap, "AcquisitionFrameRate", PySpin.CFloatPtr) if enabled else None,
+			"frameSize": FrameSize(nodemap),
+			"wantedFrameSize": (int(settings["frameWidth"]), int(settings["frameHeight"])),
+			"maxFrameSize": FrameSize(nodemap, "WidthMax", "HeightMax"),
+			"frameSizeLocked": FormatLocked(nodemap),
 			}
 	finally:
 		if settings is not None:
@@ -668,19 +676,24 @@ def ZeroOffset(nodemap, offset, size):
 		logging.error("Caught exception at cameras/flir.py ZeroOffset {}: {}".format(offset, e))
 
 
+def FrameSize(nodemap, width="Width", height="Height"):
+	# (width, height) read from the camera, or None where it cannot be read
+	size = (ReadNode(nodemap, width, PySpin.CIntegerPtr), ReadNode(nodemap, height, PySpin.CIntegerPtr))
+	return size if None not in size else None
+
+
 def CheckFrameSize(camera, cam_params):
 	"""
 	Says when the camera's frame size is not frameWidth x frameHeight (a
 	setting it refused, logged above): the writer takes its frames as that
-	size, so its video would be scrambled.
+	size, so its video would be scrambled. The launch check stops campy
+	before that (preflight.FrameSizeFinding); this is for a run without it.
 	"""
-	nodemap = camera.GetNodeMap()
-	width = ReadNode(nodemap, "Width", PySpin.CIntegerPtr)
-	height = ReadNode(nodemap, "Height", PySpin.CIntegerPtr)
+	size = FrameSize(camera.GetNodeMap())
 	wanted = (int(cam_params["frameWidth"]), int(cam_params["frameHeight"]))
-	if width is not None and height is not None and (width, height) != wanted:
+	if size is not None and size != wanted:
 		Say("{}: its frames are {}x{}, not frameWidth x frameHeight {}x{}, so its video will be scrambled.".format(
-			cam_params["cameraName"], width, height, *wanted))
+			cam_params["cameraName"], *(size + wanted)))
 	return cam_params
 
 

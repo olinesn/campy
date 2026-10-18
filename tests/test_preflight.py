@@ -499,3 +499,68 @@ def test_run_stops_on_a_slow_camera(tmp_path, monkeypatch):
 	systems = {"flir": {"serials": ["24243505"]}}
 	with pytest.raises(preflight.PreflightError, match="1 check failed"):
 		preflight.Run(systems, dict(p, preflight="error"), str(tmp_path / "no-sysfs"))
+
+
+# ------------------------------------------------------------------ frame size
+
+# The same camera, as the launch check read it: its frames, frameWidth x
+# frameHeight, its full frame, and whether its frame size can be changed now
+RIGHT_SIZE = dict(FULL_LINK, frameSize=(1280, 1024), wantedFrameSize=(1280, 1024), maxFrameSize=(1280, 1024),
+	frameSizeLocked=False)
+# Left at 640x512 by an earlier run, and still acquiring from it
+STUCK = dict(RIGHT_SIZE, frameSize=(640, 512), frameSizeLocked=True)
+OK_LINE = (OK, "Camera0 (24243505): up to 170.2 fps with campy's settings; frameRate 60")
+
+
+def test_frame_size_fits():
+	assert frame_rate_report(RIGHT_SIZE) == [OK_LINE]
+	# A make or camera that cannot say
+	assert frame_rate_report(dict(RIGHT_SIZE, frameSize=None)) == [OK_LINE]
+
+
+def test_frame_size_locked_by_an_earlier_run():
+	assert frame_rate_report(STUCK) == [OK_LINE, (FAIL,
+		"Camera0 (24243505) would send 640x512 frames, not frameWidth x frameHeight 1280x1024, so its video would be "
+		"scrambled. Either:\n"
+		"  - unplug it and plug it back in: its frame size cannot be changed now\n"
+		"  - set frameWidth: 640 and frameHeight: 512, the frames it sends now")]
+
+
+def test_frame_size_refused_for_another_reason():
+	[_, (status, text)] = frame_rate_report(dict(STUCK, frameSizeLocked=False))
+	assert status == FAIL and "  - unplug it and plug it back in\n" in text and "cannot be changed" not in text
+
+
+def test_frame_size_larger_than_the_sensor():
+	# frameWidth 1440 x frameHeight 1080 on a 1280x1024 camera, which kept its full frame
+	[_, (status, text)] = frame_rate_report(dict(RIGHT_SIZE, wantedFrameSize=(1440, 1088)))
+	assert status == FAIL and text == (
+		"Camera0 (24243505) would send 1280x1024 frames, not frameWidth x frameHeight 1440x1088, so its video would be "
+		"scrambled. Either:\n"
+		"  - set frameWidth and frameHeight to 1280x1024 (its full frame) or less")
+	# and the frames it sends now, when they are not that
+	[_, (_, text)] = frame_rate_report(dict(STUCK, wantedFrameSize=(1440, 1088), frameSizeLocked=False))
+	assert text.endswith("  - set frameWidth and frameHeight to 1280x1024 (its full frame) or less\n"
+		"  - set frameWidth: 640 and frameHeight: 512, the frames it sends now")
+
+
+def test_frame_size_report_text():
+	# The options go under the finding, indented with its other lines
+	report = preflight.Report()
+	status, text = preflight.FrameSizeFinding(cameras(["24243505"])[1][0], STUCK)
+	report.add(status, "camera", text)
+	assert report.text("Launch check:").splitlines()[1:] == [
+		"  FAIL  camera    Camera0 (24243505) would send 640x512 frames, not frameWidth x frameHeight 1280x1024, "
+		"so its video would be scrambled. Either:",
+		"                    - unplug it and plug it back in: its frame size cannot be changed now",
+		"                    - set frameWidth: 640 and frameHeight: 512, the frames it sends now"]
+
+
+def test_run_stops_on_a_frame_size_it_cannot_set(tmp_path, monkeypatch, capsys):
+	monkeypatch.setattr(preflight, "CheckEncoders", lambda cams, report: None)
+	monkeypatch.setattr(preflight, "CameraLimits", lambda systems, cam: STUCK)
+	p, _ = cameras(["24243505"], capacityFile=str(tmp_path / "none.json"), videoFolder=str(tmp_path))
+	systems = {"flir": {"serials": ["24243505"]}}
+	with pytest.raises(preflight.PreflightError, match="1 check failed"):
+		preflight.Run(systems, dict(p, preflight="error"), str(tmp_path / "no-sysfs"))
+	assert "set frameWidth: 640 and frameHeight: 512" in capsys.readouterr().out

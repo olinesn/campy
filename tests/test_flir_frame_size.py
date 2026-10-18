@@ -7,6 +7,9 @@ import types
 
 import pytest
 
+from campy import preflight
+from campy.preflight import FAIL
+
 
 class SpinError(Exception):
 	pass
@@ -62,6 +65,8 @@ class FakeCamera:
 				lambda: 16, lambda a=axis: a.sensor - a.offset, 16, writable=lambda a=axis: a.size_writable)
 			self.nodes[offset] = Node(lambda a=axis: a.offset, lambda v, a=axis: setattr(a, "offset", v),
 				lambda: 0, lambda a=axis: a.sensor - a.size, 4)
+			self.nodes[size + "Max"] = Node(lambda a=axis: a.sensor, None, lambda: 0, lambda: 0, 1,
+				writable=lambda: False)
 		self.calls = []
 
 	def frame(self):
@@ -184,3 +189,32 @@ def test_a_camera_without_frame_size_nodes(flir, capsys):
 	assert flir.CheckFrameSize(camera, params())["frameWidth"] == 1280
 	flir.ZeroOffset(camera, "OffsetX", "Width")
 	assert "scrambled" not in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ the launch check
+
+def test_the_launch_check_reads_the_frame_size(flir):
+	camera = FakeCamera(**LEFT_BY_A_SMALLER_RUN)
+	limits = flir.FrameRateLimits(camera, params(1000, 600))
+	assert limits["frameSize"] == limits["wantedFrameSize"] == (1008, 608) # rounded up to 16, as campy does
+	assert limits["maxFrameSize"] == (1280, 1024) and limits["frameSizeLocked"] is False
+	assert preflight.FrameSizeFinding(params(1000, 600), limits) is None
+
+
+def test_the_launch_check_stops_a_camera_it_cannot_resize(flir):
+	camera = FakeCamera(**LEFT_BY_A_SMALLER_RUN)
+	camera.x.size_writable = camera.y.size_writable = False
+	limits = flir.FrameRateLimits(camera, params())
+	assert preflight.FrameSizeFinding(params(), limits) == (FAIL,
+		"Camera0 (24243505) would send 640x512 frames, not frameWidth x frameHeight 1280x1024, so its video would be "
+		"scrambled. Either:\n"
+		"  - unplug it and plug it back in: its frame size cannot be changed now\n"
+		"  - set frameWidth: 640 and frameHeight: 512, the frames it sends now")
+
+
+def test_the_launch_check_stops_a_frame_larger_than_the_sensor(flir):
+	camera = FakeCamera()
+	limits = flir.FrameRateLimits(camera, params(1440, 1080))
+	status, text = preflight.FrameSizeFinding(params(1440, 1080), limits)
+	assert status == FAIL and "not frameWidth x frameHeight 1440x1088" in text
+	assert text.endswith("Either:\n  - set frameWidth and frameHeight to 1280x1024 (its full frame) or less")

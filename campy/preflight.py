@@ -19,8 +19,9 @@ FAILs; "warn" reports and records anyway; "off" skips the check.
             on this computer (capacityFile)
   usb       camera data per USB bus, against a budget (Linux: read from sysfs)
   disk      free space for the recording, when the sweep measured a bitrate
-  camera    each camera can run at frameRate with campy's settings (FLIR:
-            each is opened, set up as a recording sets it up, and read)
+  camera    each camera can run at frameRate with campy's settings, and
+            (FLIR) sends frames of frameWidth x frameHeight: each is opened,
+            set up as a recording sets it up, and read
 """
 
 import os, re, sys, json, shlex, shutil, socket, tempfile, subprocess
@@ -634,11 +635,38 @@ def FrameRateFinding(cam, limits):
 		who, fps, rate, " is close to that" if close else "")
 
 
+def FrameSizeFinding(cam, limits):
+	"""
+	(FAIL, text) when the camera would send frames of another size than
+	frameWidth x frameHeight, else None. The writer takes its frames as that
+	size, so the video would be scrambled (a 1280x1024 video of a camera
+	left at 640x512 held four frames in each). The text gives the ways out.
+	"""
+	size, wanted = limits.get("frameSize"), limits.get("wantedFrameSize")
+	if not size or not wanted or tuple(size) == tuple(wanted):
+		return None
+	largest = limits.get("maxFrameSize")
+	too_large = largest is not None and (wanted[0] > largest[0] or wanted[1] > largest[1])
+	options = []
+	if too_large:
+		options.append("set frameWidth and frameHeight to {}x{} (its full frame) or less".format(*largest))
+	elif limits.get("frameSizeLocked"):
+		options.append("unplug it and plug it back in: its frame size cannot be changed now")
+	else:
+		options.append("unplug it and plug it back in")
+	if not too_large or tuple(size) != tuple(largest):
+		options.append("set frameWidth: {} and frameHeight: {}, the frames it sends now".format(*size))
+	return FAIL, "\n".join(["{} ({}) would send {}x{} frames, not frameWidth x frameHeight {}x{}, so its video "
+		"would be scrambled. Either:".format(cam["cameraName"], cam["cameraSerialNo"], size[0], size[1], *wanted)]
+		+ ["  - " + option for option in options])
+
+
 def CheckFrameRate(cams, report, limits):
 	"""
 	Each camera can run at frameRate with campy's settings. One that cannot
 	does not stop: free-running, it records more slowly than its video says;
-	triggered, it misses triggers. limits(cam) returns what limits a camera
+	triggered, it misses triggers. And it sends frames of frameWidth x
+	frameHeight (FrameSizeFinding). limits(cam) returns what limits a camera
 	(CameraLimits), or None to skip it.
 	"""
 	for cam in cams:
@@ -650,6 +678,9 @@ def CheckFrameRate(cams, report, limits):
 		if found is not None:
 			status, text = FrameRateFinding(cam, found)
 			report.add(status, "camera", text)
+			size = FrameSizeFinding(cam, found)
+			if size is not None:
+				report.add(size[0], "camera", size[1])
 
 
 def Run(systems, params, sysfs_root="/sys"):
