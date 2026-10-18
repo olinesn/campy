@@ -199,11 +199,51 @@ def EncoderArgs(cam_params):
 			macro_block_size = 1
 		gpu_params.extend(["-color_range", "pc"])
 
+	# Fragmented MP4 (fragmentedVideo, on by default), for .mp4 and .mov. A
+	# plain MP4 keeps its index (the moov atom) in memory and writes it when
+	# ffmpeg closes the file: if ffmpeg stops first (a power cut, an OS crash,
+	# ffmpeg killed), none of the video can be read, however long it ran. A
+	# fragmented MP4 indexes each fragment as it writes it, and stays readable
+	# up to the last one. ffmpeg kill -9'd 4-20 s into a 1280x1024, 80 fps
+	# recording (libx264, preset fast): the plain MP4 had no readable frame;
+	# the fragmented one lost its last 0.7-1.5 s (0.9 s with keyframeInterval
+	# 0.5), 0.7 s of which was still inside the encoder (55 frames).
+	# - frag_keyframe starts a fragment at each keyframe, so with keyframeInterval
+	#   up to 1 s every fragment starts with one, as fragmented MP4s usually do;
+	#   -frag_duration starts one at least every second when keyframes are
+	#   further apart (keyframeInterval "None": libx264 and NVENC every 250
+	#   frames, 3 s at 80 fps). Such a fragment can end on a frame that the
+	#   CPU path's libx264 encoded ahead of the B-frames shown before it, so a
+	#   video cut off there lacks those: its last 5 frames read back need not
+	#   be the last 5 sent (11 of 20 cuts at 10 fps). GPU paths have no B-frames.
+	# - empty_moov writes the header before the first fragment, and delay_moov
+	#   holds it until that fragment is cut, so that it gets an edit list for
+	#   the B-frames' reordering delay, as a plain MP4's header does. Without
+	#   one, the CPU path's video (-bf 4) starts 2 frames late, and ffmpeg -ss
+	#   gave the keyframe for each of the 2 frames before every keyframe (122
+	#   of 2401 frames with keyframeInterval 0.5)
+	# - default_base_moof: offsets within a fragment count from the fragment
+	# - -flush_packets 1: ffmpeg otherwise writes 256 KB at a time, so a
+	#   fragment reached the disk only once later ones had filled the buffer:
+	#   29 s of a simulated 160x120 RatCam's video
+	# The header then has no frame count (ffprobe's nb_frames is N/A): readers
+	# count the frames, or take them from the duration, which is exact. The
+	# file is 0.2-0.6 KB a second larger (1-2 MB per camera-hour; 140 bytes
+	# more for each keyframe the encoder adds itself, at a scene cut). Other
+	# containers are left as they are.
+	muxer_params = []
+	if Fragmented(cam_params):
+		muxer_params = [
+			"-movflags", "+frag_keyframe+empty_moov+delay_moov+default_base_moof",
+			"-frag_duration", "1000000", # microseconds
+			"-flush_packets", "1",
+			]
+
 	return {
 		"codec": codec,
 		"pix_fmt_out": pix_fmt_out,
 		"input_params": input_params,
-		"output_params": gpu_params,
+		"output_params": muxer_params + gpu_params,
 		"macro_block_size": macro_block_size,
 		"key": codec if key_preset is None else "{}/{}".format(codec, key_preset),
 		"device": device,
@@ -216,6 +256,12 @@ RGB_FORMATS = ("rgb0", "bgr0", "rgb24", "bgr24", "rgba", "bgra")
 
 def FullRange(cam_params):
 	return str(cam_params.get("colorRange", "limited")).lower() == "full"
+
+
+def Fragmented(cam_params):
+	# Whether the video is written in fragments (fragmentedVideo: see EncoderArgs)
+	extension = os.path.splitext(str(cam_params.get("videoFilename", "")))[1].lower()
+	return bool(cam_params.get("fragmentedVideo", True)) and extension in (".mp4", ".m4v", ".mov")
 
 
 def PaddedSize(cam_params, macro_block_size):
@@ -333,8 +379,11 @@ def VideoFailed(cam_params, recording, stopReadQueue, why, stopping=True):
 	recording.videoError = why # before the stop: the camera thread reads it as it stops
 	if stopping:
 		stopReadQueue.append("STOP")
-	said = "{}: {}. {}Its video may be unreadable, and its metadata.csv and frametimes.npy count only the frames " \
-		"ffmpeg was given.".format(name, why, "Stopping {}. ".format(name) if stopping else "")
+	# A fragmented video can be read up to the last fragment ffmpeg wrote; a
+	# plain MP4 only once ffmpeg has closed it (writes its index)
+	kept = "can be read up to its last fragment" if Fragmented(cam_params) else "may be unreadable"
+	said = "{}: {}. {}Its video {}, and its metadata.csv and frametimes.npy count only the frames " \
+		"ffmpeg was given.".format(name, why, "Stopping {}. ".format(name) if stopping else "", kept)
 	if str(cam_params.get("ffmpegLogLevel")) == "quiet":
 		said += " ffmpegLogLevel is \"quiet\", so ffmpeg did not say why: \"warning\" shows its errors."
 	Say(said)
@@ -400,7 +449,7 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 		time.sleep(1)
 		writer.close()
 
-		# ffmpeg finishes the video as it closes: an error there can leave it unreadable
+		# ffmpeg finishes the video as it closes: an error there can leave it unfinished
 		code = ffmpeg.returncode if ffmpeg is not None else None
 		if code:
 			VideoFailed(cam_params, recording, stopReadQueue,

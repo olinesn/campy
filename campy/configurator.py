@@ -56,6 +56,7 @@ def DefaultParams():
 	params["quality"] = 21
 	params["preset"] = "None"
 	params["keyframeInterval"] = "None" # seconds between keyframes; "None" = encoder default
+	params["fragmentedVideo"] = True # .mp4/.mov in fragments of up to 1 s, readable after a crash (writer.EncoderArgs)
 	params["vaapiDevice"] = "/dev/dri/renderD128" # gpuMake "vaapi" only
 	params["vaapiLinearSurfaces"] = True # gpuMake "vaapi" on AMD GPUs: see writer.EncoderArgs
 	params["writeQueueMaxSec"] = 5 # frames waiting for the encoder, in seconds; "None" = unbounded
@@ -630,6 +631,15 @@ def ParseClargs(parser, argv=None):
 		help="Seconds between keyframes (I-frames), e.g. 0.5. Shorter makes seeking and \
 			sparse frame sampling cheaper (LUCID's image ID-switch check needs 0.5) \
 			but files larger. Default: the encoder's own (NVENC: every 250 frames).",
+	)
+	parser.add_argument(
+		"--fragmentedVideo",
+		dest="fragmentedVideo",
+		type=ConfigValue(bool),
+		help="Write .mp4 and .mov videos in fragments of at most a second (default: True), so that a \
+			video whose ffmpeg is stopped before it closes the file (a power cut, an OS crash, ffmpeg \
+			killed) is still readable up to its last fragment. A plain MP4 is then unreadable. \
+			False writes a plain MP4.",
 	)
 
 	# Display and CLI feedback arguments
