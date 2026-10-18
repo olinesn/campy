@@ -31,18 +31,19 @@ ENCODER_MAKES = ("cpu", "vaapi", "nvidia", "intel", "amd")
 
 # ------------------------------------------------------------------ frames
 
-def SyntheticFrames(width, height, pix_fmt, count, noise=3.0, seed=0):
+def SyntheticFrames(width, height, pix_fmt, count, noise=3.0, seed=0, clean=False):
 	"""
 	count frames of a lit scene: a smooth background with low-frequency
 	texture, two bright blobs moving across it, and Gaussian sensor noise of
 	standard deviation noise (in gray levels), fresh in every frame.
+	clean True: (frames, the same frames without the noise), made in one pass.
 	"""
 	rng = np.random.default_rng(seed)
 	y, x = np.mgrid[0:height, 0:width].astype(np.float32)
 	phase = rng.uniform(0, 2 * np.pi, 4)
 	background = (70 + 25 * x / width + 15 * y / height
 		+ 8 * np.sin(x / 37.0 + phase[0]) * np.sin(y / 23.0 + phase[1]))
-	frames = []
+	frames, clean_frames = [], []
 	for i in range(count):
 		t = 2 * np.pi * i / count
 		img = background.copy()
@@ -51,10 +52,12 @@ def SyntheticFrames(width, height, pix_fmt, count, noise=3.0, seed=0):
 			cy = height * (0.5 + ay * np.sin(t * (k + 2) + phase[3]))
 			rx, ry = 0.06 * width, 0.04 * height
 			img += 120 * np.exp(-(((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2))
+		if clean: # the frame noise 0 gives; the noise is still drawn, so the noisy frames do not change
+			clean_frames.append(ToPixelFormat(np.clip(img, 0, 255).astype(np.uint8), pix_fmt))
 		img += rng.standard_normal((height, width), dtype=np.float32) * noise
 		gray = np.clip(img, 0, 255).astype(np.uint8)
 		frames.append(ToPixelFormat(gray, pix_fmt))
-	return frames
+	return (frames, clean_frames) if clean else frames
 
 
 def ToPixelFormat(gray, pix_fmt):

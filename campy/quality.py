@@ -244,10 +244,12 @@ def Main(argv=None):
 		else:
 			w, h, fps = base["frameWidth"], base["frameHeight"], float(base["frameRate"])
 			n = max(1, int(round(args.seconds * fps)))
-			frames = sweep.SyntheticFrames(w, h, "gray", n, args.noise, seed=0)
-			# Same seed, no noise: the same scene and motion without the sensor noise.
+			# With the same scene and motion without the sensor noise, made in the
+			# same pass: the scene takes most of the time (3 s for 120 frames of 1280x1024)
+			frames, clean = sweep.SyntheticFrames(w, h, "gray", n, args.noise, seed=0, clean=True)
 			references["clean"] = os.path.join(work, "clean.gray")
-			WriteRaw(references["clean"], sweep.SyntheticFrames(w, h, "gray", n, 0.0, seed=0))
+			WriteRaw(references["clean"], clean)
+			del clean # as large as the clip
 			references["input"] = os.path.join(work, "input.gray")
 			WriteRaw(references["input"], frames)
 			source = "synthetic frames, sensor noise {:g} gray levels".format(args.noise)

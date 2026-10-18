@@ -34,6 +34,15 @@ def test_synthetic_frames(tmp_path, capsys):
 	assert "PSNR clean" in capsys.readouterr().out
 
 
+def test_synthetic_scene_is_made_once(tmp_path, monkeypatch):
+	# Noisy and clean in one pass: the scene was made twice, ~3 s each for 120 frames of 1280x1024
+	made, calls = sweep.SyntheticFrames, []
+	monkeypatch.setattr(sweep, "SyntheticFrames", lambda *a, **k: calls.append(k) or made(*a, **k))
+	quality.Main(["--width", "64", "--height", "48", "--frameRate", "30", "--seconds", "0.5",
+		"--encoder", "cpu:ultrafast", "--quality", "21"])
+	assert calls == [{"seed": 0, "clean": True}]
+
+
 def test_real_clip_is_read_at_its_own_size_and_rate(tmp_path):
 	clip = str(tmp_path / "clip.mkv")
 	frames = sweep.SyntheticFrames(96, 64, "gray", 50, noise=3.0, seed=4)
