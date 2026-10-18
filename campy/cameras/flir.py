@@ -4,7 +4,6 @@ import PySpin
 from campy.cameras import unicam
 from campy.utils.utils import Say
 import os, io, sys, time, logging, contextlib
-import numpy as np
 
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -211,12 +210,8 @@ def DisplayImage(cam_params, dispQueue, grabResult):
 		# Convert to Numpy array
 		img = GetImageArray(grabResult)
 
-		# Downsample image
+		# Downsample image (the display shows a mono image as gray as it is)
 		img = img[::cam_params["displayDownsample"], ::cam_params["displayDownsample"]]
-
-		# The display shows RGB: repeat a mono image's one channel
-		if img.ndim == 2:
-			img = np.repeat(img[:, :, np.newaxis], 3, axis=2)
 
 		# Send to display queue
 		dispQueue.append(img)

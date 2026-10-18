@@ -8,7 +8,6 @@ setup(
 	install_requires=[
 					'imageio',
 					'imageio-ffmpeg',
-					'matplotlib',
 					'numpy',
 					'pyserial',
 					'pyyaml',
