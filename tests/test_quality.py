@@ -56,3 +56,32 @@ def test_real_clip_is_read_at_its_own_size_and_rate(tmp_path):
 	assert lossless["ssim_input"] > 0.998
 	assert lossy["psnr_input"] < 50 and lossy["ssim_input"] < lossless["ssim_input"]
 	assert not any(k.endswith("_clean") for k in lossless) # no clean scene for a real clip
+
+
+def test_a_size_the_writer_stretches_is_scored(tmp_path, capsys):
+	# 200x150 is not a multiple of 16: the writer stretches it to 208x160, and
+	# ffmpeg's psnr and ssim gave NaN for inputs of two sizes, saying nothing
+	out = tmp_path / "q.json"
+	quality.Main(["--width", "200", "--height", "150", "--frameRate", "30", "--seconds", "1",
+		"--encoder", "cpu:ultrafast", "--quality", "0,30", "--json", str(out)])
+	lossless, lossy = json.load(open(out))["rows"]
+	for row in (lossless, lossy):
+		assert all(math.isfinite(row[k]) for k in ("psnr_clean", "psnr_input", "ssim_clean", "ssim_input"))
+	# Scored against the clip stretched as the writer did: about 53 dB lossless.
+	# A crop of the video would compare shifted pixels (~36 dB), and the video
+	# shrunk back would score the stretch too (~45 dB).
+	assert lossless["psnr_input"] > 50 and lossless["ssim_input"] > 0.99
+	assert lossy["psnr_input"] < lossless["psnr_input"]
+	assert "stretches 200x150 frames to 208x160" in capsys.readouterr().out
+
+
+def test_a_score_ffmpeg_cannot_give_is_said(tmp_path):
+	base = sweep.BaseParams(quality.ParseArgs(["--width", "64", "--height", "48", "--frameRate", "30"]))
+	base.update(pixelFormatInput="gray", videoFilename="quality.mp4", videoFolder=str(tmp_path))
+	frames = sweep.SyntheticFrames(64, 48, "gray", 10, seed=0)
+	logged = []
+	[row] = quality.Measure(base, ["cpu:ultrafast"], [21], frames, {"input": str(tmp_path / "missing.gray")},
+		log=logged.append)
+	assert math.isnan(row["psnr_input"]) and math.isnan(row["ssim_input"])
+	said = [line for line in logged if "no PSNR against the input frames" in line]
+	assert len(said) == 1 and "No such file or directory" in said[0] # ffmpeg's reason

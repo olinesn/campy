@@ -23,6 +23,9 @@ The video is measured in gray (luma): a mono camera exactly, a color camera
 by its brightness only. Even a lossless setting scores about 57 dB rather
 than infinity: yuv420p output stores brightness in video range (16-235), so
 the 256 gray levels are rounded to 220. colorRange "full" keeps all 256.
+A frame whose sides are not multiples of 16 (1000x750) is stretched to ones
+that are (1008x752) by the writer, in a recording as here, and is scored
+against the clip stretched the same way: lossless then scores a little lower.
 
 Examples:
   campy-encode-quality --config configs/campy_config_flir_usb3.yaml --quality 18,21,24,27,30
@@ -60,15 +63,52 @@ def WriteRaw(path, frames):
 
 # ------------------------------------------------------------------ scoring
 
-def Score(ffmpeg, reference, video, width, height, fps, metric):
-	"""Mean PSNR (dB) or SSIM of a video against raw gray reference frames; NaN if ffmpeg gives none."""
+class ScoreError(Exception):
+	pass
+
+
+def VideoSize(path):
+	"""A video's frame size, as ffmpeg reads it; None if it cannot (Score then says why)."""
+	import imageio_ffmpeg
+	try:
+		reader = imageio_ffmpeg.read_frames(path)
+		try:
+			return tuple(next(reader)["size"])
+		finally:
+			reader.close()
+	except Exception:
+		return None
+
+
+def Score(ffmpeg, reference, video, width, height, fps, metric, video_size):
+	"""
+	Mean PSNR (dB) or SSIM of a video against raw gray reference frames of
+	width x height. Raises ScoreError, with ffmpeg's reason, when it gives none.
+	"""
+	# ffmpeg's psnr and ssim need two inputs of one size. A video of another
+	# size (video_size) was stretched by the writer (imageio-ffmpeg scales a
+	# frame up to multiples of macro_block_size), so the reference is stretched
+	# the same way: cropping the video would compare shifted pixels, and
+	# shrinking it back would score the stretch along with the encoder.
+	stretch, ref = "", "[0:v]"
+	if video_size is not None and tuple(video_size) != (width, height):
+		stretch, ref = "[0:v]scale={}:{}[r];".format(*video_size), "[r]"
 	out = subprocess.run([ffmpeg, "-hide_banner", "-f", "rawvideo", "-pix_fmt", "gray",
 		"-s", "{}x{}".format(width, height), "-r", str(fps), "-i", reference, "-i", video,
-		"-lavfi", "[1:v]format=gray[d];[0:v][d]{}".format(metric), "-f", "null", "-"],
+		"-lavfi", "{}[1:v]format=gray[d];{}[d]{}".format(stretch, ref, metric), "-f", "null", "-"],
 		capture_output=True, text=True).stderr
 	pattern = r"average:(\d+(?:\.\d+)?|inf)" if metric == "psnr" else r"All:(\d+(?:\.\d+)?)"
 	m = re.search(pattern, out)
-	return float(m.group(1)) if m else float("nan")
+	if not m:
+		raise ScoreError(FfmpegReason(out))
+	return float(m.group(1))
+
+
+def FfmpegReason(stderr):
+	# ffmpeg's first complaint, without its "[name @ 0x...]" prefix
+	lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+	said = [line for line in lines if line.startswith("[Parsed_") or "rror" in line] or lines[-1:]
+	return re.sub(r"^\[[^\]]*\]\s*", "", said[0]) if said else "ffmpeg said nothing"
 
 
 def Encode(params, frames):
@@ -91,7 +131,7 @@ def Measure(base, encoders, qualities, frames, references, log=print):
 	ffmpeg = FfmpegExe(base)
 	w, h, fps = base["frameWidth"], base["frameHeight"], float(base["frameRate"])
 	work = base["videoFolder"]
-	rows = []
+	rows, stretched = [], set()
 	for spec in encoders:
 		for q in qualities:
 			params = sweep.EncoderParams(base, spec)
@@ -102,9 +142,19 @@ def Measure(base, encoders, qualities, frames, references, log=print):
 			mbps = os.path.getsize(path) * 8 / (len(frames) / fps) / 1e6
 			row = {"encoder": key, "quality": q, "mbps": mbps, "gb_per_hour": mbps * 3600 / 8 / 1000,
 				"encode_fps": len(frames) / took if took > 0 else float("inf")}
+			size = VideoSize(path)
+			if size not in (None, (w, h)) and key not in stretched:
+				stretched.add(key)
+				log("{} stretches {}x{} frames to {}x{}, as in a recording; scored against the clip "
+					"stretched the same way.".format(key, w, h, *size))
 			for label, ref in references.items():
-				row["psnr_" + label] = Score(ffmpeg, ref, path, w, h, fps, "psnr")
-				row["ssim_" + label] = Score(ffmpeg, ref, path, w, h, fps, "ssim")
+				for metric in ("psnr", "ssim"):
+					try:
+						row[metric + "_" + label] = Score(ffmpeg, ref, path, w, h, fps, metric, size)
+					except ScoreError as e:
+						row[metric + "_" + label] = float("nan")
+						log("{} at quality {}: no {} against the {} frames. ffmpeg: {}".format(
+							key, q, metric.upper(), label, e))
 			rows.append(row)
 			log(FormatRow(row, list(references)))
 			shutil.rmtree(os.path.join(work, params["cameraName"]), ignore_errors=True)
