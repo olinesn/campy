@@ -4,6 +4,7 @@ ends, closes what it can, and says what happened.
 """
 
 import csv
+import errno
 import importlib
 import os
 import queue
@@ -751,6 +752,185 @@ def test_exit_codes():
 	assert utils.ExitCodeText(1) == "exit code 1"
 	assert utils.ExitCodeText(-11) == "exit code -11 (SIGSEGV)"
 	assert utils.ExitCodeText(3221225477) == "exit code 3221225477 (0xC0000005)" # Windows: an access violation
+
+
+# ------------------------------------------------------------------ Ctrl-C on Windows: waits that give up
+
+# On Windows, a wait in the main thread on a multiprocessing pipe, queue or
+# process also waits on Python's SIGINT event, and gives up when Ctrl-C sets
+# it: once campy's handler has counted the press, it raises InterruptedError.
+# POSIX waits wait on (PEP 475), so this does it as Windows does.
+
+def interrupted_function_call():
+	return InterruptedError(errno.EINTR, "Interrupted function call")
+
+
+class WindowsWait:
+	"""
+	multiprocessing.connection.wait, for unicam only, as on Windows when
+	Ctrl-C comes. presses: (after how many seconds, interrupts.count after
+	it). The first call at or after that time counts the press, as campy's
+	handler does, and raises InterruptedError; others wait as wait does.
+	"""
+
+	def __init__(self, monkeypatch, interrupts, presses):
+		self.interrupts, self.presses = interrupts, list(presses)
+		self.raised = 0
+		self.t0 = time.monotonic()
+		self.real = mp.connection.wait
+		monkeypatch.setattr(unicam, "multiprocessing", types.SimpleNamespace(
+			connection=types.SimpleNamespace(wait=self.wait)))
+
+	def wait(self, objects, timeout=None):
+		if self.presses and time.monotonic() - self.t0 >= self.presses[0][0]:
+			_, self.interrupts.count = self.presses.pop(0)
+			self.raised += 1
+			raise interrupted_function_call()
+		return self.real(objects, timeout)
+
+
+def test_a_wait_for_the_camera_processes_that_ctrl_c_interrupts_goes_on(monkeypatch):
+	# On Windows (the ChronicRecord PC) the InterruptedError ended Main while
+	# its camera closed its video, and the camera process (daemon) with it
+	ctx = mp.get_context("spawn")
+	interrupts = types.SimpleNamespace(count=0)
+	windows = WindowsWait(monkeypatch, interrupts, [(0, 1), (0, 1)]) # Ctrl-C, then a double press: the same one
+	cameras = unicam.CameraProcesses(ctx, camera_process, camera_params(3), ctx.Queue(), log=lambda text: None)
+	t0 = time.monotonic()
+	failures = cameras.Wait(interrupts)
+	assert time.monotonic() - t0 < 20
+	assert windows.raised == 2
+	why = "its camera process stopped, with exit code -9 (SIGKILL), after Ctrl-C" \
+		if hasattr(signal, "SIGKILL") else "its camera process stopped, with exit code 9, after Ctrl-C"
+	assert failures == {
+		"Camera1": [why],
+		"Camera2": ["ffmpeg stopped after taking 30 frames, with exit code -9 (SIGKILL)"],
+		}
+	assert not any(p.is_alive() for p in cameras.processes)
+	assert cameras.processes[0].exitcode == 0 # Camera0 recorded to the end, and closed
+
+
+def test_after_a_wait_that_ctrl_c_interrupts_a_second_ctrl_c_still_stops_a_camera_that_hangs(monkeypatch):
+	ctx = mp.get_context("spawn")
+	said = []
+	interrupts = types.SimpleNamespace(count=0)
+	windows = WindowsWait(monkeypatch, interrupts, [(0, 1), (2.5, 2)]) # Camera0 closes, Camera1 hangs
+	cameras = unicam.CameraProcesses(ctx, hanging_camera_process, camera_params(2), ctx.Queue(), log=said.append)
+	cameras.grace = 0.5
+	t0 = time.monotonic()
+	try:
+		failures = cameras.Wait(interrupts)
+	finally:
+		# Camera1 ignores SIGTERM: left running, it would keep pytest from ending
+		for p in cameras.processes:
+			if p.is_alive():
+				p.kill()
+	assert time.monotonic() - t0 < 15
+	assert windows.raised == 2
+	assert failures == {"Camera1": ["stopped at the second Ctrl-C, before it had closed"]}
+	assert said[0] == "Ctrl-C again: stopping Camera1 now, without closing it."
+	assert not cameras.processes[1].is_alive()
+	assert cameras.processes[0].exitcode == 0
+
+
+class InterruptedQueue:
+	# A ready queue as on Windows: reads are the messages it gives, in turn,
+	# and None for a Ctrl-C (counted, and that read raises InterruptedError)
+	def __init__(self, reads, interrupts):
+		self.reads, self.interrupts = list(reads), interrupts
+
+	def get(self, timeout=None):
+		if not self.reads:
+			time.sleep(timeout)
+			raise queue.Empty
+		read = self.reads.pop(0)
+		if read is None:
+			self.interrupts.count += 1
+			raise interrupted_function_call()
+		return read
+
+
+def test_a_wait_for_cameras_that_ctrl_c_interrupts_stops_waiting():
+	interrupts = types.SimpleNamespace(count=0)
+	q = InterruptedQueue([(0, "Camera0", True, ""), None, (1, "Camera1", True, "")], interrupts)
+	ready, missing = unicam.WaitForCameras(q, camera_params(2, timeout=30), log=lambda text: None,
+		interrupted=lambda: interrupts.count > 0)
+	assert ready == ["Camera0"] and missing == {"Camera1": "not ready when campy was stopped (Ctrl-C)"}
+
+
+def test_a_wait_for_cameras_that_a_signal_interrupts_reads_again():
+	interrupts = types.SimpleNamespace(count=0)
+	q = InterruptedQueue([None, (0, "Camera0", True, ""), None, None, (1, "Camera1", True, "")], interrupts)
+	ready, missing = unicam.WaitForCameras(q, camera_params(2, timeout=30), log=lambda text: None)
+	assert ready == ["Camera0", "Camera1"] and missing == {}
+	assert q.reads == []
+
+
+@pytest.fixture
+def ctrl_c(monkeypatch):
+	"""
+	Real Ctrl-C presses, from another thread: signal.raise_signal sets
+	Python's SIGINT event, as Ctrl-C does. On Windows the main thread's wait
+	then gives up, with InterruptedError (gave_up has when): unicam's real
+	_winapi path. Elsewhere the wait goes on, and campy's handler runs after.
+	"""
+	gave_up = []
+	real = mp.connection.wait
+	def wait(objects, timeout=None):
+		try:
+			return real(objects, timeout)
+		except InterruptedError:
+			gave_up.append(time.monotonic())
+			raise
+	monkeypatch.setattr(mp.connection, "wait", wait) # a multiprocessing Queue's get waits with it too
+
+	def press():
+		# On Windows, again until a wait has given up (a press can come as the
+		# main thread is between waits), for at most 0.8 s: presses within a
+		# second of the first are the same one (HandleKeyboardInterrupt).
+		# Elsewhere once: the handler runs only as the wait ends, so presses
+		# 0.8 s apart could be counted 1 s apart.
+		t0 = time.monotonic()
+		signal.raise_signal(signal.SIGINT)
+		while sys.platform == "win32" and time.monotonic() - t0 < 0.8:
+			time.sleep(0.05)
+			if gave_up:
+				break
+			signal.raise_signal(signal.SIGINT)
+
+	old = signal.getsignal(signal.SIGINT)
+	try:
+		yield types.SimpleNamespace(press=press, gave_up=gave_up)
+	finally:
+		signal.signal(signal.SIGINT, old) # HandleKeyboardInterrupt leaves its handler
+
+
+def test_ctrl_c_as_campy_waits_for_its_cameras_to_be_ready(ctrl_c):
+	ctx = mp.get_context("spawn")
+	readyQueue = ctx.Queue()
+	def press_then_ready():
+		ctrl_c.press()
+		readyQueue.put((0, "Camera0", True, ""))
+	with utils.HandleKeyboardInterrupt() as interrupts:
+		threading.Thread(target=press_then_ready, daemon=True).start()
+		ready, missing = unicam.WaitForCameras(readyQueue, camera_params(1, timeout=20), log=lambda text: None)
+	assert ready == ["Camera0"] and missing == {}
+	assert interrupts.count == 1
+	if sys.platform == "win32":
+		assert ctrl_c.gave_up
+
+
+def test_ctrl_c_as_campy_waits_for_its_camera_processes(ctrl_c):
+	# The ChronicRecord PC's first rc3 recording, stopped with one Ctrl-C
+	ctx = mp.get_context("spawn")
+	with utils.HandleKeyboardInterrupt() as interrupts:
+		cameras = unicam.CameraProcesses(ctx, camera_process, camera_params(1), ctx.Queue(), log=lambda text: None)
+		threading.Thread(target=ctrl_c.press, daemon=True).start()
+		failures = cameras.Wait(interrupts)
+	assert failures == {} and interrupts.count == 1
+	assert cameras.processes[0].exitcode == 0 # Camera0 closed by itself: Main waited
+	if sys.platform == "win32":
+		assert ctrl_c.gave_up
 
 
 # ------------------------------------------------------------------ end to end, on simulated RatCams
