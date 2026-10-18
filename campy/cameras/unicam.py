@@ -7,6 +7,7 @@ import os, sys, time, csv, queue, logging
 import numpy as np
 from collections import deque
 from scipy import io as sio
+from campy import frametimes
 from campy.utils.utils import Say
 
 
@@ -147,9 +148,10 @@ def GetMakeList(params):
 
 def GrabData(cam_params):
 	grabdata = {}
-	grabdata["timeStamp"] = []
-	grabdata["hostTime"] = [] # the computer's clock when each frame arrived (campy-align)
-	grabdata["frameNumber"] = []
+	# Each written frame's number, camera timestamp, and when it reached the
+	# computer (campy-align): frametimes.npy and hosttimes.npy, written as the
+	# recording goes, about every second
+	grabdata["frameTimes"] = frametimes.FrameTimes(CameraFolder(cam_params), cam_params["frameRate"])
 	grabdata["cameraName"] = cam_params["cameraName"]
 
 	# Calculate display rate
@@ -181,8 +183,8 @@ def MaxQueueFrames(cam_params):
 
 def DropFrame(grabdata, frameNumber, maxQueue):
 	# The writer is maxQueue frames behind, so this frame is counted instead of
-	# queued. Its frame number is left out of grabdata: frametimes.npy keeps one
-	# row per video frame, and the gap in frameNumber marks the drop.
+	# queued. Its frame number is left out of frametimes.npy, which keeps one
+	# row per video frame: the gap in its frame numbers marks the drop.
 	grabdata["framesDropped"] += 1
 	now = time.perf_counter()
 	if now - grabdata["lastDropReport"] >= 5:
@@ -201,7 +203,7 @@ def StartGrabbing(camera, cam_params, cam):
 
 def CountFPS(grabdata, frameNumber, timeStamp):
 	if frameNumber % grabdata["chunkLengthInFrames"] == 0:
-		timeElapsed = timeStamp - grabdata["timeStamp"][0]
+		timeElapsed = timeStamp - grabdata["frameTimes"].first
 		fpsCount = round((frameNumber - 1) / timeElapsed, 1)
 		Say('{} collected {} frames at {} fps for {} sec.'\
 			.format(grabdata["cameraName"], frameNumber, fpsCount, round(timeElapsed)))
@@ -222,6 +224,11 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue)
 	# Start grabbing frames from the camera
 	grabbing = StartGrabbing(camera, cam_params, cam)
 
+	# The camera's settings, now, so that a recording that stops without
+	# closing (SaveMetadata) still has them; SaveMetadata adds the totals
+	if grabbing:
+		WriteMetadata(cam_params)
+
 	frameNumber = 0
 	while(not stopReadQueue):
 		try:
@@ -236,9 +243,7 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue)
 			# unless the writer is writeQueueMaxSec behind
 			if maxQueue is None or len(writeQueue) < maxQueue:
 				writeQueue.append(img)
-				grabdata['frameNumber'].append(frameNumber)
-				grabdata['timeStamp'].append(timeStamp)
-				grabdata['hostTime'].append(hostTime)
+				grabdata["frameTimes"].Add(frameNumber, timeStamp, hostTime)
 			else:
 				DropFrame(grabdata, frameNumber, maxQueue)
 
@@ -267,54 +272,55 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue)
 	stopWriteQueue.append('STOP')
 
 
+def CameraFolder(cam_params):
+	return os.path.join(cam_params["videoFolder"], cam_params["cameraName"])
+
+
+def WriteMetadata(cam_params):
+	# metadata.csv: the camera's parameters, one per row (not the objects)
+	folder = CameraFolder(cam_params)
+	os.makedirs(folder, exist_ok=True)
+	with open(os.path.join(folder, "metadata.csv"), "w", newline="") as f:
+		w = csv.writer(f, delimiter=",", quoting=csv.QUOTE_ALL)
+		for row in cam_params.items():
+			if isinstance(row[1], (list, str, int, float)):
+				w.writerow(row)
+
+
 def SaveMetadata(cam_params, grabdata):
-	full_folder_name = os.path.join(cam_params["videoFolder"], cam_params["cameraName"])
+	full_folder_name = CameraFolder(cam_params)
+	times = grabdata["frameTimes"]
 
 	try:
-		# Zero timeStamps
-		timeFirstGrab = grabdata["timeStamp"][0]
-		grabdata["timeStamp"] = [i - timeFirstGrab for i in grabdata["timeStamp"]]
+		# The last frames into frametimes.npy and hosttimes.npy
+		times.Close()
+		if not times.count:
+			Say("{} saved no frames.".format(cam_params["cameraName"]))
+			return
 
 		# Get the frame and time counts to save into metadata
-		frame_count = grabdata.get('framesGrabbed', grabdata['frameNumber'][-1])
-		time_count = grabdata['timeStamp'][-1]
-		fps_count = int(round(frame_count/time_count))
+		frame_count = grabdata["framesGrabbed"]
+		time_count = times.last
+		fps_count = int(round(frame_count/time_count)) if time_count > 0 else 0
 		Say('{} saved {} frames at {} fps.'.format(cam_params["cameraName"], frame_count, fps_count))
 		if grabdata["framesDropped"]:
 			Say('{} dropped {} of them: the encoder fell more than {} s behind (writeQueueMaxSec).'\
 				.format(cam_params["cameraName"], grabdata["framesDropped"], cam_params["writeQueueMaxSec"]))
 
-		meta = cam_params
-
-		# Save frame data to numpy file
-		npy_filename = os.path.join(full_folder_name, 'frametimes.npy')
-		x = np.array([grabdata['frameNumber'], grabdata['timeStamp']])
-		np.save(npy_filename,x)
-
-		# When each of those frames reached the computer (time.monotonic_ns, one
-		# clock for every camera process): campy-align compares cameras with it
-		np.save(os.path.join(full_folder_name, 'hosttimes.npy'), np.array(grabdata['hostTime'], dtype=np.int64))
-
 		# Also save frame data to MATLAB file
+		x = np.load(os.path.join(full_folder_name, 'frametimes.npy'))
 		mat_filename = os.path.join(full_folder_name, 'frametimes.mat')
-		matdata = {};
-		matdata['frameNumber'] = grabdata['frameNumber']
-		matdata['timeStamp'] = grabdata['timeStamp']
+		matdata = {}
+		matdata['frameNumber'] = x[0].astype(int) # as integers, as they were
+		matdata['timeStamp'] = x[1]
 		sio.savemat(mat_filename, matdata, do_compression=True)
 
 		# Save parameters and recording metadata to csv spreadsheet
-		csv_filename = os.path.join(full_folder_name, 'metadata.csv')
-		meta['totalFrames'] = frame_count
-		meta['totalTime'] = grabdata['timeStamp'][-1]
-		meta['framesWritten'] = len(grabdata['frameNumber'])
-		meta['framesDropped'] = grabdata['framesDropped']
-		
-		with open(csv_filename, 'w', newline='') as f:
-			w = csv.writer(f, delimiter=',', quoting=csv.QUOTE_ALL)
-			for row in meta.items():
-				# Print items that are not objects or dicts
-				if isinstance(row[1],(list,str,int,float)):
-					w.writerow(row)
+		cam_params['totalFrames'] = frame_count
+		cam_params['totalTime'] = time_count
+		cam_params['framesWritten'] = times.count
+		cam_params['framesDropped'] = grabdata['framesDropped']
+		WriteMetadata(cam_params)
 
 		Say('Saved metadata for {}.'.format(cam_params['cameraName']))
 
