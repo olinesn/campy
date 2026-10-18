@@ -249,7 +249,7 @@ def OpenWriter(cam_params, queue):
 		full_file_name = os.path.join(folder_name, file_name)
 
 		if not os.path.isdir(folder_name):
-			os.makedirs(folder_name)
+			os.makedirs(folder_name, exist_ok=True) # the grab thread may make it too (metadata.csv)
 			Say("Made directory {}.".format(folder_name))
 
 		# Flip blue and red for flir camera input

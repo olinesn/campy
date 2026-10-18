@@ -1,0 +1,98 @@
+"""
+Frame times, written to disk while the recording runs.
+
+Each camera's folder gets frametimes.npy (2 x frames: campy's frame number,
+and the camera's timestamp in seconds from its first frame) and hosttimes.npy
+(when each frame reached the computer, time.monotonic_ns). They used to be
+kept in Python lists and saved when the recording ended: about 110 bytes of
+memory per frame (780 MB per camera per day at 80 fps), and nothing at all if
+campy stopped without closing the camera. Now each file grows as frames
+arrive, a batch about every second, and is a valid .npy after every batch:
+its header, padded to a fixed size, is rewritten in place to say how many
+frames it holds. A recording cut short keeps its frames up to the last batch.
+
+frametimes.npy is stored column by column (the .npy format's fortran_order),
+so that each frame's column can be appended to the 2 x frames array; np.load
+returns the same array as before, of the same shape and values.
+"""
+import os, struct
+import numpy as np
+
+HEADER_BYTES = 128 # the whole .npy header: a multiple of 64, as numpy writes it, with room for any shape
+
+
+class GrowingNpy:
+	"""
+	An .npy file that grows. rows None: a 1-D array, appended to value by
+	value. rows n: an n x N array, appended to column by column.
+	"""
+
+	def __init__(self, path, dtype, rows=None):
+		self.dtype, self.rows, self.count = np.dtype(dtype), rows, 0
+		self.file = open(path, "wb")
+		self.WriteHeader()
+
+	def WriteHeader(self):
+		shape = (self.count,) if self.rows is None else (self.rows, self.count)
+		text = "{{'descr': {!r}, 'fortran_order': {}, 'shape': {}, }}".format(
+			np.lib.format.dtype_to_descr(self.dtype), self.rows is not None, shape)
+		text = text.ljust(HEADER_BYTES - 11) + "\n" # magic, version and length take 10 bytes
+		self.file.seek(0)
+		self.file.write(b"\x93NUMPY\x01\x00" + struct.pack("<H", len(text)) + text.encode("latin1"))
+		self.file.seek(0, os.SEEK_END)
+
+	def Append(self, values):
+		# values: one per frame, or one column (of rows values) per frame. The
+		# frames go in first and the header after, so a file cut off between
+		# the two still says only what it holds (np.load reads that many).
+		values = np.asarray(values, self.dtype)
+		self.file.write(values.tobytes())
+		self.count += len(values)
+		self.WriteHeader()
+		self.file.flush()
+
+	def Close(self):
+		self.file.close()
+
+
+class FrameTimes:
+	"""
+	One camera's frametimes.npy and hosttimes.npy, written in batches of
+	`every` frames, and the rest when closed. The camera's timestamps count
+	from its first frame's.
+	"""
+
+	def __init__(self, folder, every):
+		self.folder, self.every = folder, max(1, int(round(float(every))))
+		self.files = None # made with the first batch, as before only for a camera that grabbed
+		self.frames, self.hosts = [], [] # the batch not yet written
+		self.first = None # the first frame's camera timestamp
+		self.last = None  # the last frame's, from the first
+		self.count = 0
+
+	def Add(self, frameNumber, timeStamp, hostTime):
+		if self.first is None:
+			self.first = timeStamp
+		self.last = timeStamp - self.first
+		self.frames.append((frameNumber, self.last))
+		self.hosts.append(hostTime)
+		self.count += 1
+		if len(self.hosts) >= self.every:
+			self.Write()
+
+	def Write(self):
+		if not self.hosts:
+			return
+		if self.files is None:
+			os.makedirs(self.folder, exist_ok=True)
+			self.files = (GrowingNpy(os.path.join(self.folder, "frametimes.npy"), np.float64, rows=2),
+				GrowingNpy(os.path.join(self.folder, "hosttimes.npy"), np.int64))
+		self.files[0].Append(self.frames)
+		self.files[1].Append(self.hosts)
+		self.frames, self.hosts = [], []
+
+	def Close(self):
+		self.Write()
+		if self.files is not None:
+			for f in self.files:
+				f.Close()
