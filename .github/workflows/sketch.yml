@@ -5,7 +5,7 @@ name: Trigger sketch
 # what only a board's compiler and core would (an 8-bit int, a missing API).
 on:
   push:
-    branches: [master]
+    branches: [master, dev]
     paths:
       - "campy/trigger/trigger.ino"
       - ".github/workflows/sketch.yml"
