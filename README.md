@@ -301,16 +301,16 @@ recTimeInSec: 3600
 - When campy starts the trigger itself (`startArduino: True`), it writes "trigger.json" in the run's folder: whether the trigger started, which cameras were already grabbing (and why any were not), when the start command went out, on the clock of "hosttimes.npy", and the test LED's pin and rate if one is set. `campy-align` and `campy-synctest` read it.
 - Three files, "frametimes.mat", "frametimes.npy", and "metadata.csv", will be saved along with the video file in each camera folder containing timestamps, frame numbers, and other recording metadata. "hosttimes.npy" holds when each of those frames reached the computer, on one clock for every camera (`time.monotonic_ns`); `campy-align` uses it.
 - Each run records into a folder of its own, inside `videoFolder`, named by the local date and time it started (`sessionFolder: True`, the default): `C:\campy_data\chronicRecording\2026-10-18_17-30-05\`. Each camera writes into `<that folder>/<cameraName>/` (its video, "frametimes.npy", "hosttimes.npy", "frametimes.mat", "metadata.csv", and a RatCam's "ratcam_frames.csv" and "ratcam_sync.csv"), and "trigger.json" goes into the run's folder. So `campy-acquire` can be run again and again with the same config: each run gets a new folder, and no recording replaces another. Two runs started in the same second get `..._17-30-05` and `..._17-30-05_2`. "metadata.csv" records the run's folder as `videoFolder` and the configured one as `videoFolderRoot`. Point `campy-align` and `campy-synctest` at the run's folder. An emulated camera (`cameraMake: "emu"`) still reads its clip from `<videoFolder>/<cameraName>/`.
-- A calibration session puts each camera's video in `<cameraName>/calibration_images/`, where luc3d and sleap-anipose look for a camera's calibration video. A session is a calibration session when the name of its `videoFolder` (the folder itself, not the folders above it) has "calibration" in it, in any case: `--videoFolder C:\campy_data\2026-10-18\calibration`, or `2026-10-18_Calibration`. campy says so as it starts. The camera's other files ("frametimes.npy", "metadata.csv", ...) stay in `<cameraName>/`, so the calibration folder holds only the video:
+- A calibration video goes into `<cameraName>/calibration_images/`, where luc3d and sleap-anipose look for a camera's calibration video. A video is a calibration video when its `videoFilename` has "calibration" in it, in any case: `videoFilename: "0-calibration.mp4"`, or for one run `--videoFilename 0-calibration.mp4`. With one `videoFilename` per camera, only the cameras whose name has it. campy says so as it starts (`Calibration video ("calibration" in videoFilename) for Camera0: each goes into <camera>\calibration_images\.`). The camera's other files ("frametimes.npy", "metadata.csv", ...) stay in `<cameraName>/`, so the calibration folder holds only the video:
   ```
-  C:\campy_data\2026-10-18\calibration\2026-10-18_17-30-05\
+  C:\campy_data\chronicRecording\2026-10-18_17-30-05\
     trigger.json
     Camera0\
       calibration_images\
-        0.mp4
+        0-calibration.mp4
       frametimes.npy, hosttimes.npy, frametimes.mat, metadata.csv
   ```
-  The video keeps its `videoFilename`: luc3d and sleap-anipose find it by its folder. `campy-synctest` finds it there too.
+  `campy-synctest` finds the video there too.
 - `sessionFolder: False` (or `--sessionFolder False`) records into `videoFolder` itself, as campy 2.1.0rc4 and older did, for scripts that choose the folder themselves. Even then a recording never replaces another: if any of the files above is already there, `campy-acquire` stops at once, before it looks for a camera and before the launch check, whatever `preflight` is set to, names the folder and the files, and exits with code 1. Nothing in the folder is changed:
   ```
   Stopped before recording: C:\campy_data\2026-10-18\chronicRecording already holds a recording, and campy never replaces one. These files are there:

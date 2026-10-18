@@ -7,10 +7,10 @@ named by the date and time it started: <videoFolder>/2026-10-18_17-30-05/
 run again and again with the same config. sessionFolder False records into
 videoFolder itself, as campy always did, under the checks below.
 
-A calibration session, one whose videoFolder's name has "calibration" in it
-(C:/campy_data/2026-10-18/calibration), puts each camera's video in
-<cameraName>/calibration_images/, where luc3d and sleap-anipose look for a
-camera's calibration video. Its other files stay in <cameraName>/.
+A calibration video, one whose videoFilename has "calibration" in it
+(0-calibration.mp4), goes into <cameraName>/calibration_images/, where luc3d
+and sleap-anipose look for a camera's calibration video. The camera's other
+files stay in <cameraName>/.
 
 A recording writes, for each camera, into <videoFolder>/<cameraName>/: its
 video (videoFilename), frametimes.npy, hosttimes.npy, frametimes.mat and
@@ -45,8 +45,8 @@ import os, time
 SESSION_ENV = "CAMPY_SESSION_FOLDER"
 SESSION_FORMAT = "%Y-%m-%d_%H-%M-%S" # no colons: Windows paths cannot hold them
 
-# A calibration session's videos go into this folder in each camera's: where
-# luc3d and sleap-anipose look for them (Calibration)
+# A calibration video goes into this folder in its camera's: where luc3d
+# and sleap-anipose look for it (Calibration)
 CALIBRATION_WORD = "calibration"
 CALIBRATION_FOLDER = "calibration_images"
 
@@ -63,15 +63,21 @@ def CameraFolder(cam_params):
 	return os.path.join(cam_params["videoFolder"], cam_params["cameraName"])
 
 
-def Calibration(params):
-	# A calibration session: the configured videoFolder's own name has
-	# "calibration" in it, in any case. Not the session folder's, a date.
-	folder = params.get("videoFolderRoot", params["videoFolder"])
-	return CALIBRATION_WORD in os.path.basename(os.path.normpath(str(folder))).lower()
+def Calibration(cam_params):
+	# A calibration video: the camera's videoFilename has "calibration" in
+	# it, in any case (0-calibration.mp4)
+	return CALIBRATION_WORD in os.path.basename(str(cam_params["videoFilename"])).lower()
+
+
+def CalibrationCameras(params):
+	# The cameras whose video is a calibration video (videoFilename can be one per camera)
+	from campy import configurator
+	return [params["cameraNames"][n] for n in range(params["numCams"])
+		if Calibration(configurator.CameraParams(params, n))]
 
 
 def VideoFolder(cam_params):
-	# Where the camera's video goes: its folder, or in a calibration session
+	# Where the camera's video goes: its folder, or for a calibration video
 	# the calibration_images folder in it
 	folder = CameraFolder(cam_params)
 	return os.path.join(folder, CALIBRATION_FOLDER) if Calibration(cam_params) else folder

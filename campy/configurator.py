@@ -365,8 +365,7 @@ def ParseClargs(parser, argv=None):
 		dest="videoFolder", 
 		type=TextValue,
 		help="Folder in which to save videos. Each run records into a new folder inside it, \
-			named by the date and time it started (sessionFolder). A name with \"calibration\" \
-			in it makes a calibration session: each video goes into <camera>/calibration_images/.",
+			named by the date and time it started (sessionFolder).",
 	)
 	parser.add_argument(
 		"--sessionFolder",
@@ -380,7 +379,8 @@ def ParseClargs(parser, argv=None):
 		"--videoFilename", 
 		dest="videoFilename", 
 		type=TextValue,
-		help="Name for video output file.",
+		help="Name for video output file. A name with \"calibration\" in it (0-calibration.mp4) \
+			is a calibration video: it goes into <camera>/calibration_images/.",
 	)
 	parser.add_argument(
 		"--frameRate", 

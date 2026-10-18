@@ -28,12 +28,12 @@ CAMERA_FILES = ("0.mp4", "frametimes.npy", "hosttimes.npy", "frametimes.mat", "m
 	"ratcam_frames.csv", "ratcam_sync.csv")
 
 
-def config(tmp_path, folder, preflight="off", recTimeInSec=1, name="config.yaml", session=False):
+def config(tmp_path, folder, preflight="off", recTimeInSec=1, name="config.yaml", session=False, video="0.mp4"):
 	# Two simulated RatCams: every file a recording writes, a RatCam's logs too.
 	# Into folder itself (sessionFolder False), unless session.
 	path = tmp_path / name
 	path.write_text("\n".join([
-		'videoFolder: "{}"'.format(folder), 'videoFilename: "0.mp4"', "recTimeInSec: {}".format(recTimeInSec),
+		'videoFolder: "{}"'.format(folder), 'videoFilename: "{}"'.format(video), "recTimeInSec: {}".format(recTimeInSec),
 		"numCams: 2", 'cameraNames: ["EyeA", "EyeB"]', 'cameraMake: "ratcam"', 'ratcamPorts: ["sim", "sim"]',
 		"frameRate: 30", "frameWidth: 160", "frameHeight: 120", "cameraExposureTimeInUs: 3000", "gpuID: -1",
 		'pixelFormatOutput: "yuv420p"', "displayFrameRate: 0", 'preflight: "{}"'.format(preflight),
@@ -70,17 +70,19 @@ def snapshot(folder):
 	return found
 
 
-def recorded(folder, names=("EyeA", "EyeB"), video=""):
+def recorded(folder, names=("EyeA", "EyeB"), video="", filename="0.mp4"):
 	# A whole recording: every camera's files, none empty, and its video's
-	# frames. video: the folder its video is in, in the camera's
+	# frames. video: the folder its video (filename) is in, in the camera's
 	for name in names:
 		for file in CAMERA_FILES:
-			path = os.path.join(folder, name, video if file == "0.mp4" else "", file)
+			if file == "0.mp4":
+				file = os.path.join(video, filename)
+			path = os.path.join(folder, name, file)
 			assert os.path.getsize(path) > 0, (name, file)
 		with open(os.path.join(folder, name, "metadata.csv")) as f:
 			meta = dict(csv.reader(f))
 		assert int(meta["framesWritten"]) > 0
-		assert imageio_ffmpeg.count_frames_and_secs(os.path.join(folder, name, video, "0.mp4"))[0] == \
+		assert imageio_ffmpeg.count_frames_and_secs(os.path.join(folder, name, video, filename))[0] == \
 			int(meta["framesWritten"]) == np.load(os.path.join(folder, name, "frametimes.npy")).shape[1]
 	assert os.path.getsize(os.path.join(folder, "trigger.json")) > 0
 
@@ -149,52 +151,57 @@ def test_a_session_run_still_stops_on_two_cameras_with_one_name(tmp_path):
 	assert not (tmp_path / "rec").exists()
 
 
-# ------------------------------------------------------------------ calibration sessions
+# ------------------------------------------------------------------ calibration videos
 
-@pytest.mark.parametrize("folder, calibration", [
-	("calibration", True), ("2026-10-18_Calibration", True), ("rig2-calibration-board", True),
-	("test", False), ("calib", False), (os.path.join("calibration", "mouse1"), False)])
-def test_a_calibration_session_has_calibration_in_its_folders_name(folder, calibration):
-	assert newfiles.Calibration({"videoFolder": folder}) == calibration
-	assert newfiles.Calibration({"videoFolder": folder + os.sep}) == calibration
-	# The configured folder's name, not the session folder's (a date)
-	assert newfiles.Calibration(newfiles.UseSession({"videoFolder": folder},
-		os.path.join(folder, "2026-10-18_17-30-05"))) == calibration
+@pytest.mark.parametrize("name, calibration", [
+	("0-calibration.mp4", True), ("Calibration.mp4", True), ("0_CALIBRATION_board.mkv", True),
+	("0.mp4", False), ("calib.mp4", False)])
+def test_a_calibration_video_has_calibration_in_its_name(name, calibration):
+	assert newfiles.Calibration({"videoFilename": name}) == calibration
 
 
-def test_a_calibration_sessions_video_goes_into_calibration_images():
-	p = dict(configurator.DefaultParams(), videoFolder=os.path.join("data", "calibration"), cameraName="Camera0")
-	assert newfiles.VideoPath(p) == os.path.join("data", "calibration", "Camera0", "calibration_images", "0.mp4")
-	assert newfiles.CameraFiles(p)[1:] == [os.path.join("data", "calibration", "Camera0", name)
+def test_a_calibration_video_goes_into_calibration_images():
+	p = dict(configurator.DefaultParams(), videoFolder=os.path.join("data", "test"), cameraName="Camera0",
+		videoFilename="0-calibration.mp4")
+	assert newfiles.VideoPath(p) == os.path.join("data", "test", "Camera0", "calibration_images", "0-calibration.mp4")
+	assert newfiles.CameraFiles(p)[1:] == [os.path.join("data", "test", "Camera0", name)
 		for name in ("frametimes.npy", "hosttimes.npy", "frametimes.mat", "metadata.csv")]
-	p["videoFolder"] = os.path.join("data", "test")
-	assert newfiles.VideoPath(p) == os.path.join("data", "test", "Camera0", "0.mp4")
+	# A folder named calibration does not make one
+	p.update(videoFolder=os.path.join("data", "calibration"), videoFilename="0.mp4")
+	assert newfiles.VideoPath(p) == os.path.join("data", "calibration", "Camera0", "0.mp4")
+
+
+def test_calibration_cameras_with_one_video_name_per_camera():
+	p = configurator.FillCameraLists(dict(configurator.DefaultParams(), numCams=3,
+		videoFilename=["0.mp4", "1-calibration.mp4", "2-Calibration.mp4"]))
+	assert newfiles.CalibrationCameras(p) == ["Camera1", "Camera2"]
+	assert newfiles.CalibrationCameras(dict(p, videoFilename="0.mp4")) == []
 
 
 @pytest.mark.parametrize("session", [True, False], ids=["session", "folder itself"])
-def test_a_calibration_session_records_its_videos_as_luc3d_and_sleap_anipose_expect(tmp_path, ratcams, session):
+def test_calibration_videos_are_recorded_as_luc3d_and_sleap_anipose_expect(tmp_path, ratcams, session):
 	# <camera>/calibration_images/<video>, the camera's other files beside it
-	folder = tmp_path / "2026-10-18_calibration"
-	code, out = acquire(tmp_path, config(tmp_path, folder, session=session))
+	folder = tmp_path / "rec"
+	code, out = acquire(tmp_path, config(tmp_path, folder, session=session, video="0-calibration.mp4"))
 	assert code == 0, out
-	assert "A calibration session (\"calibration\" in videoFolder's name): each camera's video goes into " \
+	assert "Calibration video (\"calibration\" in videoFilename) for EyeA, EyeB: each goes into " \
 		"<camera>{0}calibration_images{0}.\n".format(os.sep) in out
 	run = folder / sessions(folder)[0] if session else folder
-	recorded(str(run), video="calibration_images")
+	recorded(str(run), video="calibration_images", filename="0-calibration.mp4")
 	for name in ("EyeA", "EyeB"):
-		assert os.listdir(run / name / "calibration_images") == ["0.mp4"]
-		assert not (run / name / "0.mp4").exists()
+		assert os.listdir(run / name / "calibration_images") == ["0-calibration.mp4"]
+		assert not (run / name / "0-calibration.mp4").exists()
 
 
-def test_a_calibration_session_never_replaces_one(tmp_path):
-	folder = tmp_path / "calibration"
-	video = folder / "EyeA" / "calibration_images" / "0.mp4"
+def test_a_calibration_video_never_replaces_one(tmp_path):
+	folder = tmp_path / "rec"
+	video = folder / "EyeA" / "calibration_images" / "0-calibration.mp4"
 	video.parent.mkdir(parents=True)
 	video.write_bytes(b"an earlier calibration")
-	code, out = acquire(tmp_path, config(tmp_path, folder))
+	code, out = acquire(tmp_path, config(tmp_path, folder, video="0-calibration.mp4"))
 	assert code == 1, out
-	assert "These files are there:\n  {}\n".format(os.path.join("EyeA", "calibration_images", "0.mp4")) in out
-	assert snapshot(folder) == {os.path.join("EyeA", "calibration_images", "0.mp4"):
+	assert "These files are there:\n  {}\n".format(os.path.join("EyeA", "calibration_images", "0-calibration.mp4")) in out
+	assert snapshot(folder) == {os.path.join("EyeA", "calibration_images", "0-calibration.mp4"):
 		hashlib.sha256(b"an earlier calibration").hexdigest()}
 
 
