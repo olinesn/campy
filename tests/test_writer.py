@@ -284,3 +284,14 @@ def test_limited_range_video_rounds_the_levels(tmp_path):
 	ramp, frame, path = RampVideo(tmp_path, "limited")
 	assert ColorRangeTag(path) == "tv"
 	assert not (frame == ramp).all() and np.abs(frame.astype(int) - ramp).max() <= 1
+
+
+def test_a_bayer_pattern_goes_to_ffmpeg_as_configured(tmp_path, monkeypatch):
+	# OpenWriter used to "flip blue and red" for FLIR bayer_bggr8 with a comparison
+	# that changed nothing; the line is gone, and ffmpeg still gets the pattern the
+	# config names, for every camera make
+	for make in ("flir", "basler"):
+		params = cam(cameraMake=make, pixelFormatInput="bayer_bggr8", videoFolder=str(tmp_path), videoFilename="v.mp4")
+		cmd = CapturedCommand(params, monkeypatch)
+		assert cmd[cmd.index("-pix_fmt") + 1] == "bayer_bggr8" and cmd.index("-pix_fmt") < cmd.index("-i")
+		assert params["pixelFormatInput"] == "bayer_bggr8"
