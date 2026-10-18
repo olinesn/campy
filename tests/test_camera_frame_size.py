@@ -77,8 +77,8 @@ def without_the_wait(monkeypatch):
 	# thread started, without waiting for the camera to open
 	write = writer.WriteFrames
 	monkeypatch.setattr(writer, "WriteFrames",
-		lambda cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=None:
-			write(cam_params, writeQueue, stopReadQueue, stopWriteQueue))
+		lambda cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=None, recording=None:
+			write(cam_params, writeQueue, stopReadQueue, stopWriteQueue, recording=recording))
 
 
 # ------------------------------------------------------------------ Basler

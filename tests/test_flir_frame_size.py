@@ -324,8 +324,8 @@ def test_rounded_only_in_the_camera_thread_the_video_was_scrambled(flir, monkeyp
 	monkeypatch.setattr(flir, "FixedParams", lambda cam_params: cam_params)
 	write = writer.WriteFrames
 	monkeypatch.setattr(writer, "WriteFrames", # without waiting for the camera to open
-		lambda cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=None:
-			write(cam_params, writeQueue, stopReadQueue, stopWriteQueue))
+		lambda cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=None, recording=None:
+			write(cam_params, writeQueue, stopReadQueue, stopWriteQueue, recording=recording))
 	camera = GrabbingCamera()
 	opened, sent = record(flir, monkeypatch, tmp_path, camera, frameWidth=1000, frameHeight=600)
 	assert set(sent) == {(1008, 608)}

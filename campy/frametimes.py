@@ -51,6 +51,13 @@ class GrowingNpy:
 		self.WriteHeader()
 		self.file.flush()
 
+	def Truncate(self, count):
+		# Keeps the first count values (or columns), and drops the rest
+		self.count = min(self.count, max(0, int(count)))
+		self.file.truncate(HEADER_BYTES + self.count * self.dtype.itemsize * (self.rows or 1))
+		self.WriteHeader()
+		self.file.flush()
+
 	def Close(self):
 		self.file.close()
 
@@ -91,8 +98,16 @@ class FrameTimes:
 		self.files[1].Append(self.hosts)
 		self.frames, self.hosts = [], []
 
-	def Close(self):
+	def Close(self, keep=None):
+		# keep: how many frames to keep, from the first, when the video took
+		# fewer than were added (its ffmpeg stopped). The rest are dropped from
+		# both files. None keeps them all.
 		self.Write()
+		if keep is not None and keep < self.count:
+			self.count = max(0, int(keep))
+			if self.files is not None:
+				for f in self.files:
+					f.Truncate(self.count)
 		if self.files is not None:
 			for f in self.files:
 				f.Close()

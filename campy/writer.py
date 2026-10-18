@@ -8,7 +8,8 @@ command a recording runs.
 """
 from imageio_ffmpeg import write_frames
 import os, sys, time, logging
-from campy.utils.utils import QueueKeyboardInterrupt, Say
+from campy.cameras import unicam
+from campy.utils.utils import QueueKeyboardInterrupt, Say, ErrorText, ExitCodeText
 
 
 def EncoderArgs(cam_params):
@@ -300,38 +301,114 @@ def OpenWriter(cam_params, queue):
 
 	return writer, writing, readQueue
 
-def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=None):
-	# Ctrl-C from here on stops the camera (stopReadQueue), which then stops
-	# the writer, instead of ending the camera process
-	with QueueKeyboardInterrupt({"queue": stopReadQueue, "message": "STOP"}):
-		# Wait for the camera thread to open the camera (openQueue: whether it
-		# opened). Opening it can set frameWidth and frameHeight (a Basler's
-		# cameraSettings file, an emu clip), and ffmpeg takes every frame as the
-		# size it was started with: opened before, the video was scrambled. A
-		# camera that did not open gets no video.
-		if openQueue is not None:
-			while not openQueue:
-				time.sleep(0.01)
-			if not openQueue[0]:
+def FfmpegProcess(writer):
+	"""
+	The ffmpeg process (its subprocess.Popen) behind imageio-ffmpeg's writer,
+	for its exit code. write_frames keeps it to itself, as p in the generator
+	it returns (imageio-ffmpeg 0.6); None where it is not there, as in a
+	stand-in for write_frames.
+	"""
+	frame = getattr(writer, "gi_frame", None)
+	process = frame.f_locals.get("p") if frame is not None else None
+	return process if hasattr(process, "poll") else None
+
+
+def FfmpegStopped(ffmpeg, error, frames):
+	# Why the video took no more frames, with ffmpeg's exit code where it can be read
+	code = None
+	if ffmpeg is not None:
+		try:
+			code = ffmpeg.wait(timeout=5) # imageio-ffmpeg has already waited for it, or killed it
+		except Exception:
+			code = ffmpeg.poll()
+	why = "ffmpeg stopped after taking {} frames".format(frames)
+	if code is not None:
+		why += ", with {}".format(ExitCodeText(code))
+	return "{}: {}".format(why, ErrorText(error).splitlines()[0])
+
+
+def VideoFailed(cam_params, recording, stopReadQueue, why, stopping=True):
+	# The video takes no more frames: said at once, and the camera is stopped
+	# (stopReadQueue), so that it is closed and its metadata saved, rather
+	# than recording on into nothing
+	name = cam_params["cameraName"]
+	recording.videoError = why # before the stop: the camera thread reads it as it stops
+	if stopping:
+		stopReadQueue.append("STOP")
+	said = "{}: {}. {}Its video may be unreadable, and its metadata.csv and frametimes.npy count only the frames " \
+		"ffmpeg was given.".format(name, why, "Stopping {}. ".format(name) if stopping else "")
+	if str(cam_params.get("ffmpegLogLevel")) == "quiet":
+		said += " ffmpegLogLevel is \"quiet\", so ffmpeg did not say why: \"warning\" shows its errors."
+	Say(said)
+
+
+def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=None, recording=None):
+	# recording: what the writer and the camera thread tell each other
+	# (unicam.Recording): how many frames ffmpeg was given, and why the video
+	# failed, if it did. The camera thread saves metadata once the writer is
+	# done (recording.written).
+	if recording is None:
+		recording = unicam.Recording()
+	ffmpeg = None
+	try:
+		# Ctrl-C from here on stops the camera (stopReadQueue), which then stops
+		# the writer, instead of ending the camera process
+		with QueueKeyboardInterrupt({"queue": stopReadQueue, "message": "STOP"}):
+			# Wait for the camera thread to open the camera (openQueue: whether it
+			# opened). Opening it can set frameWidth and frameHeight (a Basler's
+			# cameraSettings file, an emu clip), and ffmpeg takes every frame as the
+			# size it was started with: opened before, the video was scrambled. A
+			# camera that did not open gets no video.
+			if openQueue is not None:
+				while not openQueue:
+					time.sleep(0.01)
+				if not openQueue[0]:
+					return
+
+			# Start ffmpeg video writer
+			try:
+				writer, writing, _ = OpenWriter(cam_params, stopReadQueue)
+			except Exception as e:
+				VideoFailed(cam_params, recording, stopReadQueue, "ffmpeg did not start: {}".format(ErrorText(e)))
+				return
+			ffmpeg = FfmpegProcess(writer)
+			if ffmpeg is not None:
+				# campy's main process says it, if it has to stop this process at a
+				# second Ctrl-C while ffmpeg still runs
+				unicam.TellMain(("ffmpeg", ffmpeg.pid))
+
+			# Write until interrupted and/or stop message received
+			try:
+				while(writing):
+					if writeQueue:
+						writer.send(writeQueue.popleft())
+						recording.framesSent += 1
+					else:
+						# Once queue is depleted and grabber stops, then stop writing
+						if stopWriteQueue:
+							writing = False
+						# Otherwise continue writing
+						time.sleep(0.01)
+			except Exception as e:
+				# ffmpeg has stopped (killed, crashed, or an encoder error), and the
+				# frames still queued will not reach the video. The camera is
+				# stopped, unless it already has (stopWriteQueue).
+				VideoFailed(cam_params, recording, stopReadQueue, FfmpegStopped(ffmpeg, e, recording.framesSent),
+					stopping=not stopWriteQueue)
 				return
 
-		# Start ffmpeg video writer
-		writer, writing, _ = OpenWriter(cam_params, stopReadQueue)
+		# Close up...
+		Say("Closing video writer for {}. Please wait...".format(cam_params["cameraName"]))
+		time.sleep(1)
+		writer.close()
 
-		# Write until interrupted and/or stop message received
-		while(writing):
-			if writeQueue:
-				writer.send(writeQueue.popleft())
-			else:
-				# Once queue is depleted and grabber stops, then stop writing
-				if stopWriteQueue:
-					writing = False
-				# Otherwise continue writing
-				time.sleep(0.01)
+		# ffmpeg finishes the video as it closes: an error there can leave it unreadable
+		code = ffmpeg.returncode if ffmpeg is not None else None
+		if code:
+			VideoFailed(cam_params, recording, stopReadQueue,
+				"ffmpeg ended with {} as it finished the video".format(ExitCodeText(code)), stopping=False)
 
-	# Close up...
-	Say("Closing video writer for {}. Please wait...".format(cam_params["cameraName"]))
-	time.sleep(1)
-	writer.close()
-
-
+	finally:
+		if ffmpeg is not None:
+			unicam.TellMain(("ffmpeg", None))
+		recording.written.set()

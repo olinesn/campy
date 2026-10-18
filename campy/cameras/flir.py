@@ -207,15 +207,37 @@ def StartGrabbing(camera):
 
 
 def GrabFrame(camera, frameNumber):
-	image_result = camera.GetNextImage(50) # timeout to wait for next frame, in ms
+	try:
+		image_result = camera.GetNextImage(50) # timeout to wait for next frame, in ms
+	except PySpin.SpinnakerException as e:
+		if Gone(camera):
+			raise unicam.CameraLost("Spinnaker says the camera is no longer valid (unplugged?): {}".format(e))
+		raise
 
-	#  Ensure image completion
+	#  Ensure image completion. An incomplete image is released here: its
+	#  buffer is the camera's, and one never released is one it cannot fill.
 	if image_result.IsIncomplete():
 		image_status = image_result.GetImageStatus()
+		image_result.Release()
 		Say("Image incomplete with image status %d ..." % image_status)
 		raise ImageNotCompleteException("Image not complete", image_status)
 
 	return image_result
+
+
+def Gone(camera):
+	"""
+	True when Spinnaker says the camera can no longer be used (IsValid False:
+	unplugged), asked after GetNextImage fails. Nothing else counts, an error
+	code included: a triggered camera waits for its first trigger with
+	GetNextImage timing out, for as long as that takes, and which errors an
+	unplugged camera gives has not been seen on a rig. A camera that is gone
+	but still valid is said to send no frames (unicam.FrameWatch) until Ctrl-C.
+	"""
+	try:
+		return camera.IsValid() is False
+	except Exception:
+		return False
 
 
 def GetImageArray(grabResult):
@@ -273,26 +295,24 @@ def ReleaseFrame(grabResult):
 
 
 def CloseCamera(cam_params, camera):
-	Say("Closing {}... Please wait.".format(cam_params["cameraName"]))
-	# Close camera after acquisition stops
-	while True:
+	"""
+	Stops the acquisition, puts back the frame rate settings, and lets the
+	camera go. Each step is tried whatever the one before did, and what fails
+	is said, not raised: EndAcquisition fails on a camera that was unplugged,
+	or that never started, and campy's camera thread still has the writer to
+	stop and metadata to save. A camera left acquiring is stopped at its next
+	open (RecoverAcquisition), and its frame rate cap is put back then
+	(RecoverFrameRate).
+	"""
+	name = cam_params["cameraName"]
+	Say("Closing {}... Please wait.".format(name))
+	for step, close in (("EndAcquisition", camera.EndAcquisition),
+			("RestoreFrameRate", lambda: RestoreFrameRate(camera, cam_params)),
+			("DeInit", camera.DeInit)):
 		try:
-			try:
-				# Close camera
-				camera.EndAcquisition()
-				RestoreFrameRate(camera, cam_params)
-				camera.DeInit()
-				del camera
-				break
-			except PySpin.SpinnakerException as e:
-				Say("Error: {}".format(e))
-				raise
-			except Exception as e:
-				logging.error("Caught exception at cameras/flir.py CloseCamera: {}".format(e))
-				raise
-				break
-		except KeyboardInterrupt:
-			break
+			close()
+		except Exception as e:
+			Say("{}: {} failed as it closed: {}".format(name, step, e))
 
 
 def CloseSystem(system, device_list):

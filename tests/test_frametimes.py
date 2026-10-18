@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
 import types
 from collections import deque
 
@@ -90,21 +91,27 @@ def test_a_process_that_dies_keeps_the_frames_it_wrote(tmp_path):
 	assert list(hosts) == list(range(1001, 1031))
 
 
-class Stopped(BaseException):
-	# Not an Exception: GrabFrames' loop does not catch it, so it ends GrabFrames
-	# the way a crash would, without SaveMetadata
-	pass
+class Hold:
+	"""
+	Holds the camera thread as it grabs frame `at` + 1, until go is set: what
+	is on disk then is what a recording killed there (kill -9, a crash)
+	leaves. (An exception no longer stands in for that: GrabFrames closes the
+	camera and saves metadata whatever it raises.)
+	"""
+	def __init__(self, at):
+		self.at, self.reached, self.go = at, threading.Event(), threading.Event()
 
 
-def fake_camera_module(crash_after=None):
+def fake_camera_module(hold=None):
 	def OpenCamera(cam_params):
 		cam_params["cameraModel"] = "fake"
 		cam_params["cameraSerialNo"] = "0"
 		return object(), cam_params
 
 	def GrabFrame(camera, n):
-		if crash_after is not None and n >= crash_after:
-			raise Stopped()
+		if hold is not None and n == hold.at:
+			hold.reached.set()
+			hold.go.wait(30)
 		return n
 
 	return types.SimpleNamespace(
@@ -119,8 +126,8 @@ def fake_camera_module(crash_after=None):
 		)
 
 
-def record(tmp_path, monkeypatch, crash_after=None):
-	monkeypatch.setattr(unicam, "ImportCam", lambda make: fake_camera_module(crash_after))
+def record(tmp_path, monkeypatch, hold=None):
+	monkeypatch.setattr(unicam, "ImportCam", lambda make: fake_camera_module(hold))
 	p = configurator.DefaultParams()
 	p.update(cameraMake="fake", cameraName="Camera0", videoFolder=str(tmp_path), frameRate=100,
 		recTimeInSec=3, chunkLengthInSec=1, displayFrameRate=0, writeQueueMaxSec="None")
@@ -132,20 +139,26 @@ def record(tmp_path, monkeypatch, crash_after=None):
 
 
 def test_a_recording_cut_short_keeps_its_settings_and_frames(tmp_path, monkeypatch):
-	with pytest.raises(Stopped):
-		record(tmp_path, monkeypatch, crash_after=250)
-	folder = tmp_path / "Camera0"
-	with open(folder / "metadata.csv") as f:
-		meta = dict(csv.reader(f))
-	# The settings, from when the camera started grabbing; no totals, which only a closed recording has
-	assert meta["cameraName"] == "Camera0" and meta["cameraModel"] == "fake" and meta["frameRate"] == "100"
-	assert "totalFrames" not in meta
-	# Every frame up to the last batch (one a second at 100 fps): 200 of the 250
-	frames = np.load(folder / "frametimes.npy")
-	assert list(frames[0]) == list(range(1, 201))
-	assert np.allclose(frames[1], np.arange(200) * 0.01)
-	assert len(np.load(folder / "hosttimes.npy")) == 200
-	assert not (folder / "frametimes.mat").exists() # written when the recording closes
+	hold = Hold(250)
+	thread = threading.Thread(target=record, args=(tmp_path, monkeypatch, hold), daemon=True)
+	thread.start()
+	try:
+		assert hold.reached.wait(30)
+		folder = tmp_path / "Camera0"
+		with open(folder / "metadata.csv") as f:
+			meta = dict(csv.reader(f))
+		# The settings, from when the camera started grabbing; no totals, which only a closed recording has
+		assert meta["cameraName"] == "Camera0" and meta["cameraModel"] == "fake" and meta["frameRate"] == "100"
+		assert "totalFrames" not in meta
+		# Every frame up to the last batch (one a second at 100 fps): 200 of the 250
+		frames = np.load(folder / "frametimes.npy")
+		assert list(frames[0]) == list(range(1, 201))
+		assert np.allclose(frames[1], np.arange(200) * 0.01)
+		assert len(np.load(folder / "hosttimes.npy")) == 200
+		assert not (folder / "frametimes.mat").exists() # written when the recording closes
+	finally:
+		hold.go.set()
+		thread.join(30)
 
 
 def test_a_closed_recording_has_every_file(tmp_path, monkeypatch):
