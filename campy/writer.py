@@ -60,6 +60,16 @@ def EncoderArgs(cam_params):
 			codec = "libx264"
 		elif cam_params["codec"] == "h265":
 			codec = "libx265"
+			# Closed GOP: every keyframe an IDR, like libx264's and the GPU
+			# encoders'. libx265's default open GOP makes every keyframe after
+			# the first a CRA frame, whose leading B-frames (shown before the
+			# keyframe, decoded after it) predict from the frames before it.
+			# Apple's decoder then fails ("Cannot Decode" in QuickTime), and a
+			# reader that seeks to one of those B-frames starts at the keyframe
+			# and gives the keyframe instead: imageio, PyAV, MATLAB and Chrome,
+			# asked for frame 39, gave 40. Files are about 1% larger with
+			# keyframeInterval 0.5.
+			gpu_params += ["-x265-params", "open-gop=0"]
 
 	# GPU compression
 	else:
@@ -252,6 +262,16 @@ def EncoderArgs(cam_params):
 			"-flush_packets", "1",
 			]
 
+	# H.265 in an MP4 or MOV is tagged hvc1 rather than ffmpeg's hev1, which
+	# Apple's decoder refuses: MATLAB R2023b's VideoReader on a Mac, QuickTime
+	# and Safari would not open any hev1 video ("Cannot Decode"); Chrome opens
+	# either. hvc1 keeps the parameter sets (VPS, SPS, PPS) in the file's
+	# header, where ffmpeg puts them for every encoder. Quick Sync and VA-API
+	# also repeat them before each keyframe: their video decodes to the same
+	# frames either way. (.m4v takes no H.265.)
+	if (codec == "libx265" or codec.startswith("hevc")) and Extension(cam_params) in (".mp4", ".mov"):
+		muxer_params += ["-tag:v", "hvc1"]
+
 	return {
 		"codec": codec,
 		"pix_fmt_out": pix_fmt_out,
@@ -269,6 +289,11 @@ RGB_FORMATS = ("rgb0", "bgr0", "rgb24", "bgr24", "rgba", "bgra")
 
 def FullRange(cam_params):
 	return str(cam_params.get("colorRange", "limited")).lower() == "full"
+
+
+def Extension(cam_params):
+	# The video file's extension, lower case: ".mp4", ".mov", ".mkv", ...
+	return os.path.splitext(str(cam_params.get("videoFilename", "")))[1].lower()
 
 
 @functools.lru_cache(maxsize=None)
@@ -289,8 +314,7 @@ def FfmpegVersion(exe=None):
 
 def Fragmented(cam_params):
 	# Whether the video is written in fragments (fragmentedVideo: see EncoderArgs)
-	extension = os.path.splitext(str(cam_params.get("videoFilename", "")))[1].lower()
-	return bool(cam_params.get("fragmentedVideo", True)) and extension in (".mp4", ".m4v", ".mov")
+	return bool(cam_params.get("fragmentedVideo", True)) and Extension(cam_params) in (".mp4", ".m4v", ".mov")
 
 
 def PaddedSize(cam_params, macro_block_size):

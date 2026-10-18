@@ -6,12 +6,14 @@ import numpy as np
 import pytest
 import imageio_ffmpeg
 
-from campy import configurator, writer
+from campy import configurator, preflight, writer
 
 
 # Every .mp4 starts with these (fragmentedVideo; tests/test_fragmented_video.py)
 FRAGMENTED = ["-movflags", "+frag_keyframe+empty_moov+delay_moov+default_base_moof",
 	"-frag_duration", "1000000", "-flush_packets", "1"]
+# and an H.265 one also this (Apple's decoders need hvc1)
+HVC1 = ["-tag:v", "hvc1"]
 
 
 def cam(**overrides):
@@ -37,7 +39,7 @@ def test_cpu_args_unchanged():
 def test_nvidia_amd_intel_args_unchanged():
 	nv = writer.EncoderArgs(cam(gpuID=1, gpuMake="nvidia", codec="h265"))
 	assert nv["codec"] == "hevc_nvenc"
-	assert nv["output_params"] == FRAGMENTED + ["-preset", "fast", "-qp", "21", "-bf:v", "0", "-gpu", "1"]
+	assert nv["output_params"] == FRAGMENTED + HVC1 + ["-preset", "fast", "-qp", "21", "-bf:v", "0", "-gpu", "1"]
 	assert nv["key"] == "hevc_nvenc/fast"
 
 	amd = writer.EncoderArgs(cam(gpuID=0, gpuMake="amd"))
@@ -105,7 +107,8 @@ def test_av1_on_nvenc_and_quick_sync():
 	# H.264 and H.265 on Quick Sync keep quality + 1
 	for codec, name in (("h264", "h264_qsv"), ("h265", "hevc_qsv")):
 		enc = writer.EncoderArgs(cam(gpuID=0, gpuMake="intel", codec=codec, quality=24))
-		assert enc["codec"] == name and enc["output_params"] == FRAGMENTED + ["-bf:v", "0", "-preset", "faster", "-q", "25"]
+		tag = HVC1 if codec == "h265" else []
+		assert enc["codec"] == name and enc["output_params"] == FRAGMENTED + tag + ["-bf:v", "0", "-preset", "faster", "-q", "25"]
 
 
 def test_keyframe_interval_applies_to_vaapi():
@@ -187,6 +190,66 @@ def test_cpu_h264_says_nothing_at_warning_level(tmp_path, capfd):
 		ffmpeg.send(np.full((240, 320), i * 8, dtype=np.uint8))
 	ffmpeg.close()
 	assert capfd.readouterr().err == ""
+
+
+# H.265 in an MP4 or MOV is tagged hvc1: Apple's decoders refuse ffmpeg's
+# default, hev1 (MATLAB R2023b's VideoReader on a Mac: "Cannot Decode")
+
+H265 = {None: "libx265", "nvidia": "hevc_nvenc", "amd": "hevc_amf", "intel": "hevc_qsv", "vaapi": "hevc_vaapi"}
+
+
+@pytest.mark.parametrize("make", list(H265))
+def test_h265_in_mp4_or_mov_is_tagged_hvc1(make):
+	gpu = {} if make is None else {"gpuID": 0, "gpuMake": make}
+	for name in ("0.mp4", "0.mov", "0.MP4"):
+		for fragmented in (True, False):
+			enc = writer.EncoderArgs(cam(codec="h265", videoFilename=name, fragmentedVideo=fragmented, **gpu))
+			assert enc["codec"] == H265[make]
+			params = enc["output_params"]
+			assert params.count("-tag:v") == 1 and params[params.index("-tag:v") + 1] == "hvc1"
+	# Not H.264 or AV1, nor H.265 in another container: Matroska has no such
+	# tag, and .m4v (ffmpeg's ipod muxer) takes no H.265 at all
+	for codec in ("h264", "av1"):
+		assert "-tag:v" not in writer.EncoderArgs(cam(codec=codec, **gpu))["output_params"]
+	for name in ("0.mkv", "0.avi", "0.m4v"):
+		assert "-tag:v" not in writer.EncoderArgs(cam(codec="h265", videoFilename=name, **gpu))["output_params"]
+
+
+def test_libx265_closes_its_gops():
+	# Open-GOP keyframes, libx265's default, made Apple's decoder fail and
+	# seeks to the frame before a keyframe give the keyframe
+	params = writer.EncoderArgs(cam(codec="h265"))["output_params"]
+	assert params[params.index("-x265-params") + 1] == "open-gop=0"
+	for make in (None, "nvidia", "amd", "intel", "vaapi"):
+		gpu = {} if make is None else {"gpuID": 0, "gpuMake": make}
+		for codec in ("h264", "h265", "av1"):
+			if (make, codec) != (None, "h265"):
+				assert "-x265-params" not in writer.EncoderArgs(cam(codec=codec, **gpu))["output_params"]
+
+
+def test_libx265_video_is_hvc1_and_seeks_exactly(tmp_path):
+	exe = imageio_ffmpeg.get_ffmpeg_exe()
+	if "libx265" not in (preflight.FfmpegEncoders(exe) or ()):
+		pytest.skip("this ffmpeg has no libx265")
+	params = cam(codec="h265", videoFolder=str(tmp_path), videoFilename="v.mp4", frameRate=30, keyframeInterval=0.5)
+	ffmpeg, writing, _ = writer.OpenWriter(params, [])
+	assert writing
+	for i in range(30):
+		ffmpeg.send(np.full((240, 320), i * 8, dtype=np.uint8))
+	ffmpeg.close()
+	path = str(tmp_path / "Camera0" / "v.mp4")
+	import subprocess
+	err = subprocess.run([exe, "-hide_banner", "-i", path], capture_output=True, text=True).stderr
+	assert "hevc" in err and "(hvc1 / 0x31637668)" in err
+	assert imageio_ffmpeg.count_frames_and_secs(path)[0] == 30
+	# Keyframes at 0 and 15: a seek to 14 starts at 0, and gives frame 14
+	for k in (13, 14, 15, 16):
+		reader = imageio_ffmpeg.read_frames(path, pix_fmt="gray", bits_per_pixel=8,
+			input_params=["-ss", "{:.4f}".format((k - 0.25) / 30)])
+		next(reader)
+		level = np.frombuffer(next(reader), np.uint8).mean()
+		reader.close()
+		assert abs(level - k * 8) <= 2, (k, level)
 
 
 # colorRange: "full" keeps a camera's 0-255 levels (writer.EncoderArgs)
