@@ -6,8 +6,9 @@
 # 2026-10-16. At 200 us the fan's blades and the faces drawn on them were
 # sharp; at 1500 us they smeared. Gain 7 dB was the brightest that left the
 # white faces unclipped. Gain brightens the sensor's noise with the image, and
-# the encoder spends bits on that noise: at quality 24 one camera wrote
-# 1.0 Mbit/s at 1 dB, 1.9 at 7 dB and 9.7 at 18 dB (the camera's maximum).
+# the encoder spends bits on that noise: at quality 24 in limited range one
+# camera wrote 1.0 Mbit/s at 1 dB, 1.9 at 7 dB and 9.7 at 18 dB (the camera's
+# maximum).
 # Set the gain for your own light, so that the brightest parts of the animals
 # stay below white, without editing this file:
 #   campy-acquire configs/campy_config_chronicrecord.yaml --cameraGain 10
@@ -39,9 +40,17 @@ disableGamma: True
 gpuID: 0
 gpuMake: "intel"                      # Quick Sync
 codec: "h265"                         # hevc_qsv
-# Quick Sync's constant quantizer (campy passes quality + 1). At 7 dB, 24 kept
-# the fan's detail at about 1.9 Mbit/s, 0.84 GB per camera-hour.
-quality: 24
+# Full range: the camera's 0-255 go into the video as they are. Limited range
+# squeezes them into 16-235, which merges the 256 gray levels into 220 and took
+# ffmpeg 3.3 ms of CPU a frame on this PC, against 1.7 in full range. Every
+# level of a 0-255 chart came back to within 0.2 through OpenCV 4.6 to 5.0,
+# PyAV, imageio-ffmpeg, sleap-io and MATLAB R2023b on a Mac (README, colorRange).
+colorRange: "full"
+# Quick Sync's constant quantizer (campy passes quality + 1). Full range spends
+# about 20% more bits at the same number. On the fan at 7 dB, 26 wrote
+# 1.70 Mbit/s (0.77 GB per camera-hour) and scored 0.2 dB higher than limited
+# range at 24, which kept the fan's detail at 1.87 Mbit/s.
+quality: 26
 pixelFormatOutput: "yuv420p"          # 4:2:0: what every decoder supports
 keyframeInterval: 0.5                 # seconds; makes seeking cheap
 # conda-forge's ffmpeg for Windows has no Quick Sync: use BtbN's 8.1 build
