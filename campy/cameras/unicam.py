@@ -412,7 +412,8 @@ def GrabData(cam_params):
 	elif cam_params["displayFrameRate"] > 0 and cam_params["displayFrameRate"] <= cam_params['frameRate']:
 		grabdata["frameRatio"] = int(round(cam_params["frameRate"]/cam_params["displayFrameRate"]))
 	else:
-		grabdata["frameRatio"] = cam_params["frameRate"]
+		# A preview asked to be faster than the camera shows every frame
+		grabdata["frameRatio"] = 1
 
 	# Calculate number of images and chunk length
 	grabdata["numImagesToGrab"] = int(round(cam_params["recTimeInSec"]*cam_params["frameRate"]))
