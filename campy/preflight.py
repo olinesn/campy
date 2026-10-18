@@ -20,6 +20,8 @@ FAILs; "warn" reports and records anyway; "off" skips the check.
             count the sweep found too slow; a count it did not try is a WARN
   usb       camera data per USB bus, against a budget (Linux: read from sysfs)
   disk      free space for the recording, when the sweep measured a bitrate
+  gige      (FLIR) Spinnaker searches for GigE cameras, about a second at
+            each start, although every FLIR camera is USB3
   camera    each camera's cameraSelection picks a device that was found;
             each camera can run at frameRate with campy's settings, and
             (FLIR) sends frames of frameWidth x frameHeight: each is opened,
@@ -166,6 +168,62 @@ def CheckDevices(systems, cams, report):
 				0 if found == 1 else "0 to {}".format(found - 1))
 		report.add(FAIL, "camera", "{}: no {} camera for cameraSelection {}; {}".format(
 			cam["cameraName"], make, cam["cameraSelection"], text))
+
+
+# ------------------------------------------------------------------ GigE search
+
+def FlirDiscovery(systems):
+	"""
+	(whether Spinnaker searches for GigE cameras, how each FLIR camera found is
+	connected: "USB3Vision", "GigEVision" or None, by its index in the device
+	list), or None without a FLIR system
+	"""
+	flir = systems.get("flir", {})
+	if "system" not in flir or "deviceList" not in flir:
+		return None
+	module = unicam.ImportCam("flir")
+	devices = flir["deviceList"]
+	return module.GigeDiscovery(flir["system"]), [module.DeviceType(devices[i]) for i in range(len(devices))]
+
+
+def CheckGige(cams, report, discover):
+	"""
+	Each time a program starts Spinnaker (System.GetInstance), Spinnaker
+	broadcasts for GigE cameras on every network interface and waits about
+	0.25 s on each. campy starts it in this process and again in each camera
+	process: on the EVO-X2 (three interfaces, one Blackfly S) that was 1.9 s
+	of its 2.9 s to ready to trigger. A rig whose FLIR cameras are all USB3
+	does not need it, and campy-flir-reset --gige off turns it off. With it
+	off no GigE camera is found, so a FLIR camera that is missing may be one.
+	discover() returns what FlirDiscovery does.
+	"""
+	try:
+		found = discover()
+	except Exception as e:
+		report.add(WARN, "gige", "could not read whether Spinnaker searches for GigE cameras ({})".format(e))
+		return
+	if found is None or found[0] is None:
+		return
+	searches, connections = found
+	flir = [cam for cam in cams if cam["cameraMake"] == "flir"]
+	if not flir:
+		return
+	missing = [cam for cam in flir if cam["cameraSerialNo"] is None]
+	if not searches:
+		if missing:
+			report.add(WARN, "gige", "Spinnaker's search for GigE cameras is off for this user, so it finds no "
+				"GigE camera. If {} {} one, turn the search on: campy-flir-reset --gige on.".format(
+				Names(missing), "is" if len(missing) == 1 else "are"))
+		else:
+			report.add(OK, "gige", "Spinnaker does not search for GigE cameras (campy-flir-reset --gige off)")
+		return
+	# The search is on: a WARN only when every FLIR camera was found, and on USB3
+	if missing or any(connections[cam["cameraSelection"]] != "USB3Vision" for cam in flir):
+		return
+	report.add(WARN, "gige", "every FLIR camera here is USB3 ({}), but Spinnaker searches each network "
+		"interface for GigE cameras as it starts, here and in each camera process: about 0.25 s per "
+		"interface. Without the search, campy was ready to trigger in 1.0 s instead of 2.9 on the EVO-X2. "
+		"To turn it off for this user: campy-flir-reset --gige off".format(Names(flir)))
 
 
 # ------------------------------------------------------------------ encoders
@@ -854,6 +912,7 @@ def Run(systems, params, sysfs_root="/sys"):
 
 	report = Report()
 	CheckDevices(systems, cams, report)
+	CheckGige(cams, report, lambda: FlirDiscovery(systems))
 	encoders = CheckEncoders(cams, report)
 	CheckNvenc(cams, report, encoders=encoders)
 	CheckCapacity(cams, table, report, path)

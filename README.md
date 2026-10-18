@@ -45,6 +45,7 @@ To encode on an NVIDIA GPU, check this ffmpeg first: see [NVIDIA GPU encoding (N
   ```
   - An environment with an older PySpin (e.g. Spinnaker 2.x's, for Python 3.7) works only with that older SDK, so upgrade a computer's Spinnaker and its campy environment together.
   - On Linux, have `campy-flir-reset` run at startup, so that a camera left plugged in through a restart does not stay at 43 MB/s: see [FLIR cameras at 43 MB/s after a restart](#flir-cameras-at-43-mbs-after-a-restart).
+  - If all of a computer's FLIR cameras are USB3, turn off Spinnaker's search for GigE cameras, which costs about a second each time campy starts: `campy-flir-reset --gige off`, after step 7. See [Faster startup: Spinnaker's search for GigE cameras](#faster-startup-spinnakers-search-for-gige-cameras).
 4. Create a folder to clone campy:
 ```
 cd ~\Documents\
@@ -186,6 +187,32 @@ sudo systemctl enable --now campy-flir-reset.service
 journalctl -b -u campy-flir-reset.service    # what it found and did at this startup
 ```
 The user needs the camera access that Spinnaker's installer sets up on Linux (group `flirimaging`); if a FLIR camera is plugged in but Spinnaker does not see it, the service says so. On the EVO-X2, after each of two restarts, it found the camera at 43 MB/s 7 s into startup and had it back at 380 MB/s by 14.4 s; after both shutdowns it found 380 MB/s and left the camera alone. The login screen came up no later than without it (22.5 s after the kernel started, against 23.3 s). `campy-flir-reset` also runs by hand, on Windows too, but the restart behaviour above was not measured on Windows.
+
+### Faster startup: Spinnaker's search for GigE cameras
+Each time a program starts Spinnaker (`PySpin.System.GetInstance`), Spinnaker searches for GigE Vision cameras: it broadcasts on every network interface and waits about 0.25 s on each, one after another, whether or not a GigE camera is there. campy starts Spinnaker in `campy-acquire` and again in each camera process. On a computer whose FLIR cameras are all USB3, that is time spent looking for cameras it does not have. Measured on the EVO-X2 (Ubuntu 24.04, Spinnaker 4.4.0.246, one BFS-U3-13Y3M; three network interfaces: Ethernet, Tailscale and Docker's), in October 2026, with 3 runs each way:
+
+| | Search on | Search off |
+|---|---:|---:|
+| `System.GetInstance` in `campy-acquire` | 0.95 s | 0.016 s |
+| `System.GetInstance` in the camera process | 0.96 s | 0.026 s |
+| `campy-acquire` started to ready to trigger | 2.86 s | 0.99 s |
+| `System.ReleaseInstance` as `campy-acquire` ends | 0.75 s | 0.013 s |
+
+Every run recorded 400 frames at 80 fps, and everything else (imports, opening the camera, ffmpeg) took the same time either way. The camera processes start Spinnaker at the same time, so with more cameras the search still costs about a second there, not a second per camera: 8 processes at once took 0.96-1.0 s each with the search, and 0.09-0.13 s without.
+
+To turn the search off, with the campy environment active, run this as the user who records (not with `sudo`: the setting is per user). It touches no camera:
+```
+campy-flir-reset --gige off
+```
+and to turn it back on:
+```
+campy-flir-reset --gige on
+```
+It changes Spinnaker's own setting, `EnumerateGEVInterfaces` (on the System's node map), not campy's. Spinnaker 4.0 and newer keep it for that user, on Linux in `~/.config/spinnaker/GenTLSysReg.ini`. So while it is off, no program that user runs finds a GigE camera, SpinView included. Leave it on for a computer with GigE cameras.
+
+`campy-acquire`'s launch check reports it on a `gige` line: a WARN while Spinnaker searches and every FLIR camera found for the config is USB3, and with the search off, an OK, or a WARN when a FLIR camera was not found, in case it is a GigE camera.
+
+Not measured on Windows (the ChronicRecord PC): what the search costs there, and where Spinnaker keeps the setting, were not checked. `campy-flir-reset --gige off` should work the same way there, but has not been run on Windows.
 
 ## Usage
 
