@@ -253,9 +253,9 @@ def EncoderArgs(cam_params):
 	# Apple's decoder refuses: MATLAB R2023b's VideoReader on a Mac, QuickTime
 	# and Safari would not open any hev1 video ("Cannot Decode"); Chrome opens
 	# either. hvc1 keeps the parameter sets (VPS, SPS, PPS) in the file's
-	# header, where ffmpeg puts them for every encoder. Quick Sync also repeats
-	# them before each keyframe: its video decodes to the same frames either
-	# way. (.m4v takes no H.265.)
+	# header, where ffmpeg puts them for every encoder. Quick Sync and VA-API
+	# also repeat them before each keyframe: their video decodes to the same
+	# frames either way. (.m4v takes no H.265.)
 	if (codec == "libx265" or codec.startswith("hevc")) and Extension(cam_params) in (".mp4", ".mov"):
 		muxer_params += ["-tag:v", "hvc1"]
 
