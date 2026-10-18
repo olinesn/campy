@@ -7,7 +7,7 @@ calls EncoderArgs() too, so the capacity it measures is for the same ffmpeg
 command a recording runs.
 """
 from imageio_ffmpeg import write_frames
-import os, sys, time, logging
+import os, re, sys, time, logging, functools, subprocess
 from campy.cameras import unicam
 from campy.utils.utils import QueueKeyboardInterrupt, Say, ErrorText, ExitCodeText
 
@@ -186,16 +186,29 @@ def EncoderArgs(cam_params):
 	# makes the YUV frames: NVENC given RGB (pixelFormatOutput "rgb0") converts
 	# them itself, to limited range.
 	if FullRange(cam_params) and pix_fmt_out not in RGB_FORMATS:
+		# ffmpeg before 8 converts gray frames to full-range NV12, what Quick
+		# Sync and VA-API take, with both chroma planes 0 instead of 128: the
+		# gray levels are right, but a reader that shows the video in colour
+		# shows it green (MATLAB, QuickTime, Chrome: black as 28, white as
+		# 109). Its full-range yuv420p is right, so the frames go through that,
+		# then to NV12 with the range given on both sides (6.1 squeezes it back
+		# to limited range otherwise). That costs 0.2-0.5 ms of CPU a 1280x1024
+		# frame, so only where it is needed: 6.1, 7.0 and 7.1 do this; 8.0 and
+		# 8.1 do not, and RGB and Bayer frames get their chroma right.
+		to_nv12 = []
+		if (pix_fmt_out in ("nv12", "vaapi") and cam_params.get("pixelFormatInput") == "gray"
+				and (FfmpegVersion() or (0,)) < (8,)):
+			to_nv12 = ["format=yuv420p", "scale=in_range=full:out_range=full"]
 		if pix_fmt_out == "vaapi":
 			vf = gpu_params.index("-vf") + 1
-			gpu_params[vf] = "scale=out_range=full," + gpu_params[vf]
+			gpu_params[vf] = ",".join(["scale=out_range=full"] + to_nv12 + [gpu_params[vf]])
 		else:
 			# imageio-ffmpeg pads a frame to macro_block_size with a -vf of its
 			# own, which this one would replace (ffmpeg keeps the last -vf), so
 			# the padding is done here instead
 			size = PaddedSize(cam_params, macro_block_size)
-			gpu_params.extend(["-vf", "scale=out_range=full" if size is None else
-				"scale={}:{}:out_range=full".format(*size)])
+			scale = "scale=out_range=full" if size is None else "scale={}:{}:out_range=full".format(*size)
+			gpu_params.extend(["-vf", ",".join([scale] + to_nv12)])
 			macro_block_size = 1
 		gpu_params.extend(["-color_range", "pc"])
 
@@ -256,6 +269,22 @@ RGB_FORMATS = ("rgb0", "bgr0", "rgb24", "bgr24", "rgba", "bgra")
 
 def FullRange(cam_params):
 	return str(cam_params.get("colorRange", "limited")).lower() == "full"
+
+
+@functools.lru_cache(maxsize=None)
+def FfmpegVersion(exe=None):
+	# (major, minor) of the ffmpeg campy records with (imageio-ffmpeg's, or
+	# ffmpegPath); None if it would not run, or names no release (a build
+	# from ffmpeg's master branch says "N-121234-g...")
+	try:
+		if exe is None:
+			import imageio_ffmpeg
+			exe = imageio_ffmpeg.get_ffmpeg_exe()
+		out = subprocess.run([exe, "-version"], capture_output=True, text=True, timeout=30).stdout
+	except Exception:
+		return None
+	m = re.match(r"ffmpeg version n?(\d+)\.(\d+)", out)
+	return (int(m.group(1)), int(m.group(2))) if m else None
 
 
 def Fragmented(cam_params):
