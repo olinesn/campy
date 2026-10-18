@@ -195,7 +195,7 @@ Campy's trigger module supports Python integration with Arduino and Teensy micro
 ```
 startArduino: True
 cameraTrigger: "Line0" # or "Line3", whichever color wire you used, but be consistent!
-digitalPins: [<pin IDs>] # e.g., [0,1,2]
+digitalPins: [<pin IDs>] # e.g., [0,1,2], or 2 for one pin
 serialPort: "<port>" # e.g., "COM3" or "/dev/ttyACM0"
 triggerController: "arduino"
 ```
@@ -262,7 +262,7 @@ Every `campy-acquire` then starts with a launch check, printed before recording:
 ```
 - **disk**: free space for the recording.
 
-With `preflight: "error"` (the default), a failed check stops campy before recording; `"warn"` records anyway; `"off"` skips the check. `displayFrameRate: 0` runs without display windows, for example over SSH.
+With `preflight: "error"` (the default), a failed check stops campy before recording; `"warn"` records anyway; `"off"` (quoted or not) skips the check. `displayFrameRate: 0` runs without display windows, for example over SSH.
 
 ### RatCam (nir-eye-cam) cameras
 `cameraMake: "ratcam"` records the NIR eye cameras of [nir-eye-cam](https://github.com/olinesn/nir-eye-cam) (an HM01B0 on an RP2040, or a VD55G1 on an ESP32-P4) alongside the other cameras. Each is a USB serial device. Install its host package, `nireyecam` (Python 3.9 or newer), into campy's environment:

@@ -684,7 +684,9 @@ def CheckFrameRate(cams, report, limits):
 
 
 def Run(systems, params, sysfs_root="/sys"):
-	mode = str(params.get("preflight", "error")).lower()
+	mode = params.get("preflight", "error")
+	# preflight: off without quotes is YAML's False, which read as "false" ran the check
+	mode = "off" if mode is False else str(mode).lower()
 	if mode == "off":
 		return None
 

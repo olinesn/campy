@@ -83,6 +83,24 @@ def test_a_trigger_that_never_opened_is_left_alone(capsys):
 	arduino.StopTriggers(systems) # used to raise KeyError
 
 
+class Port:
+	# Stands in for serial.Serial: keeps what campy writes
+	def __init__(self):
+		self.written = b""
+
+	def write(self, data):
+		self.written += data
+
+
+def test_one_pin_without_a_list(capsys):
+	# digitalPins: 2 is one pin. len(2) failed, and the trigger did not start.
+	p = params(n=1)
+	p.update(digitalPins=2, frameRate=60)
+	systems = arduino.StartTriggers({"serial": Port()}, p)
+	assert systems["serial"].written == b"1,2,60,-1,0" # pin count, pins, fps, no test LED
+	assert "is triggering pins [2] at 60 fps" in capsys.readouterr().out
+
+
 # ------------------------------------------------------------------ end to end
 
 def write_clip(path, frames=30):
