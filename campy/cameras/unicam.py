@@ -121,8 +121,24 @@ def OpenCamera(cam_params, stopWriteQueue):
 		logging.error("Caught error at cameras/unicam.py OpenCamera: {}".format(e))
 		SignalReady(cam_params, False, "failed to open: {}".format(e))
 		stopWriteQueue.append('STOP')
+		camera = None
 
 	return cam, camera, cam_params
+
+
+def SetFrameSize(cam_params, width, height, source):
+	"""
+	frameWidth and frameHeight set to the size of the frames the camera sends,
+	as it opens (source: where that size comes from), and said when that is not
+	the config's. The writer opens its video after this, at that size.
+	"""
+	size = (int(width), int(height))
+	asked = (cam_params["frameWidth"], cam_params["frameHeight"])
+	if size != asked:
+		Say("{}: frameWidth x frameHeight {}x{} changed to {}x{}, {}.".format(
+			cam_params["cameraName"], *(asked + size + (source,))))
+	cam_params["frameWidth"], cam_params["frameHeight"] = size
+	return cam_params
 
 
 def GetDeviceList(systems, params):
@@ -209,9 +225,19 @@ def CountFPS(grabdata, frameNumber, timeStamp):
 			.format(grabdata["cameraName"], frameNumber, fpsCount, round(timeElapsed)))
 
 
-def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue):
-	# Open the camera object
-	cam, camera, cam_params = OpenCamera(cam_params, stopWriteQueue)
+def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue, openQueue=None):
+	# Open the camera object, then tell the writer whether it opened
+	# (openQueue): the writer opens its video after that, since opening a
+	# camera can set frameWidth and frameHeight (writer.WriteFrames)
+	camera = None
+	try:
+		cam, camera, cam_params = OpenCamera(cam_params, stopWriteQueue)
+	finally:
+		if openQueue is not None:
+			openQueue.append(camera is not None)
+	if camera is None:
+		dispQueue.append('STOP') # OpenCamera has said why, and stopped the writer
+		return
 
 	# Use Basler's default display window on Windows. Not supported on Linux
 	if sys.platform=='win32' and cam_params["cameraMake"] == 'basler':

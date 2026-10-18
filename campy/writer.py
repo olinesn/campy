@@ -300,11 +300,24 @@ def OpenWriter(cam_params, queue):
 
 	return writer, writing, readQueue
 
-def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue):
-	# Start ffmpeg video writer
-	writer, writing, readQueue = OpenWriter(cam_params, stopReadQueue)
+def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=None):
+	# Ctrl-C from here on stops the camera (stopReadQueue), which then stops
+	# the writer, instead of ending the camera process
+	with QueueKeyboardInterrupt({"queue": stopReadQueue, "message": "STOP"}):
+		# Wait for the camera thread to open the camera (openQueue: whether it
+		# opened). Opening it can set frameWidth and frameHeight (a Basler's
+		# cameraSettings file, an emu clip), and ffmpeg takes every frame as the
+		# size it was started with: opened before, the video was scrambled. A
+		# camera that did not open gets no video.
+		if openQueue is not None:
+			while not openQueue:
+				time.sleep(0.01)
+			if not openQueue[0]:
+				return
 
-	with QueueKeyboardInterrupt(readQueue):
+		# Start ffmpeg video writer
+		writer, writing, _ = OpenWriter(cam_params, stopReadQueue)
+
 		# Write until interrupted and/or stop message received
 		while(writing):
 			if writeQueue:

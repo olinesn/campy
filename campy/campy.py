@@ -57,11 +57,13 @@ def AcquireOneCamera(n_cam):
 	# Initialize param dictionary for this camera stream
 	cam_params = configurator.ConfigureCamParams(systems, params, n_cam)
 
-	# Initialize queues for display, video writer, and stop messages
+	# Initialize queues for display, video writer, and stop messages, and for
+	# whether the camera opened
 	dispQueue = deque([], 2)
 	writeQueue = deque()
 	stopReadQueue = deque([],1)
 	stopWriteQueue = deque([],1)
+	openQueue = deque([],1)
 
 	# Start image window display thread, unless running headless
 	# (displayFrameRate 0)
@@ -76,11 +78,12 @@ def AcquireOneCamera(n_cam):
 	threading.Thread(
 		target = unicam.GrabFrames,
 		daemon = True,
-		args = (cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,),
+		args = (cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue, openQueue,),
 		).start()
 
-	# Start video file writer (main "consumer" process)
-	writer.WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue)
+	# Start video file writer (main "consumer" process), once the camera is
+	# open: opening it can change the frame size
+	writer.WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue)
 
 
 def ShowPreview(cam_params, dispQueue):
