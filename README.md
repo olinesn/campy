@@ -400,8 +400,8 @@ The tests run `trigger.ino` as plain C++ against a simulated Arduino. A second w
 Everything lands on `dev` first. `master` is the released campy, and changes only when `dev` is promoted to it.
 
 - **Pull requests** go to `dev`, the repository's default branch.
-- **Trying `dev` on a rig:** in its clone, `git fetch`, `git checkout dev` and `git pull`; `git checkout master` goes back. `pip install -e .` follows whichever branch is checked out, so nothing needs reinstalling unless `setup.py`'s dependencies changed.
-- **A pre-release** marks a state of `dev` to test, for example on the rigs. Set `version` in `setup.py` to it (`2.1.0rc1`) in a pull request to `dev`, so a rig running it reports that version, then:
+- **Trying `dev` on a rig:** in its clone, `git fetch`, `git checkout dev` and `git pull`; `git checkout master` goes back. The code is current as soon as the branch is checked out, because `pip install -e .` runs it from the clone. But `pip show campy` keeps the version from the last `pip install -e .`, so to have it report the checked-out version, run `pip install -e . --no-deps` with the campy environment active (`--no-deps` leaves the other packages alone; without it, pip may also update dependencies). Run a full `pip install -e .` when `setup.py`'s dependencies changed.
+- **A pre-release** marks a state of `dev` to test, for example on the rigs. Set `version` in `setup.py` to it (`2.1.0rc1`) in a pull request to `dev`, so a rig reports that version once it has run `pip install -e . --no-deps` on it, then:
   ```
   gh release create v2.1.0rc1 --target dev --prerelease --generate-notes
   ```
