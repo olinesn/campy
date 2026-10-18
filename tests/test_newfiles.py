@@ -327,8 +327,8 @@ def test_a_claim_that_fails_removes_only_what_it_made(tmp_path):
 		numCams=2, cameraMake="ratcam"))
 	last = newfiles.RecordingFiles(p)[-1][0] # Camera1's ratcam_sync.csv: made after all the others
 	os.makedirs(os.path.dirname(last))
-	with open(last, "w") as f:
-		f.write("pulse,t_us,host_ns\n")
+	with open(last, "wb") as f: # bytes: in text mode Windows writes \r\n
+		f.write(b"pulse,t_us,host_ns\n")
 	with pytest.raises(newfiles.WouldOverwrite) as e:
 		newfiles.Claim(p)
 	assert snapshot(tmp_path / "rec") == {os.path.join("Camera1", "ratcam_sync.csv"):
