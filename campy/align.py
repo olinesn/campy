@@ -82,29 +82,57 @@ def LoadCamera(folder):
 	cam["t"] = frametimes[1].astype(float) # seconds on the camera's clock, from its first frame
 	path = os.path.join(folder, "hosttimes.npy")
 	cam["host_ns"] = np.load(path).astype(np.int64) if os.path.exists(path) else None
-	if cam["host_ns"] is not None and len(cam["host_ns"]) != len(cam["frame"]):
-		cam["host_ns"] = None
 	cam["ratcam"] = cam["make"] == "ratcam"
 	cam["triggered"] = not cam["ratcam"] and str(meta.get("cameraTrigger", "None")) != "None"
+	if cam["host_ns"] is not None and len(cam["host_ns"]) != len(cam["frame"]):
+		if cam["ratcam"]:
+			# Not needed: a RatCam's arrival times are its pulses' (ratcam_sync.csv)
+			cam["host_ns"] = None
+		elif len(cam["host_ns"]) < len(cam["frame"]):
+			# frametimes.FrameTimes writes a batch to frametimes.npy, then to
+			# hosttimes.npy: a recording killed between the two has about a second
+			# more frames than arrival times. Every frame still has its timestamp,
+			# and the first frames' arrival times are what place the camera (Starts)
+			cam["warnings"].append("hosttimes.npy has arrival times for {} of its {} frames (the recording "
+				"stopped without closing?){}".format(len(cam["host_ns"]), len(cam["frame"]),
+				": its start is worked out from those" if len(cam["host_ns"]) else ""))
+			if not len(cam["host_ns"]):
+				cam["host_ns"] = None
+		else:
+			# FrameTimes.Close(keep) cuts frametimes.npy, then hosttimes.npy, to the
+			# frames the video took: killed between the two
+			cam["warnings"].append("hosttimes.npy has {} more arrival times than frametimes.npy has frames, "
+				"and they are left out".format(len(cam["host_ns"]) - len(cam["frame"])))
+			cam["host_ns"] = cam["host_ns"][:len(cam["frame"])]
 
 	if cam["ratcam"]:
 		frames = ReadColumns(os.path.join(folder, "ratcam_frames.csv"))
 		sync = ReadColumns(os.path.join(folder, "ratcam_sync.csv"))
 		# The frames campy wrote, on the camera's own clock (frametimes is zeroed)
-		t_us = dict(zip(frames.get("frame", []).tolist(), frames.get("t_us", []).tolist()))
+		t_us = dict(zip(frames.get("frame", np.zeros(0)).tolist(), frames.get("t_us", np.zeros(0)).tolist()))
 		# A recording that stopped without closing has each file up to its own
 		# last write, about a second apart: align the frames both have
 		have = np.array([n in t_us for n in cam["frame"].tolist()], dtype=bool)
-		if not have.all():
+		if not have.any():
+			# Cut off before either file got its first batch: its pulses can still
+			# place the other cameras
+			cam["warnings"].append("{} (the recording stopped without closing?): no frames to align".format(
+				"none of its {} frames in frametimes.npy are in ratcam_frames.csv".format(len(have)) if len(have)
+				else "frametimes.npy has no frames"))
+		elif not have.all():
 			cam["warnings"].append("its last {} frames in frametimes.npy are not in ratcam_frames.csv "
 				"(the recording stopped without closing?), and are left out".format(int(np.sum(~have))))
-			cam["frame"], cam["t"] = cam["frame"][have], cam["t"][have]
-			if cam["host_ns"] is not None:
-				cam["host_ns"] = cam["host_ns"][have]
+		cam["frame"], cam["t"] = cam["frame"][have], cam["t"][have]
+		if cam["host_ns"] is not None:
+			cam["host_ns"] = cam["host_ns"][have]
 		cam["frame_t"] = np.array([t_us[n] for n in cam["frame"].tolist()], dtype=float) / 1e6
-		cam["pulse"] = sync.get("pulse", np.zeros(0, np.int64))
-		cam["pulse_t"] = sync.get("t_us", np.zeros(0, np.int64)) / 1e6
-		cam["pulse_host_ns"] = sync.get("host_ns", np.zeros(0, np.int64))
+		# In order of time, keeping the order of equal times, as SortByTime
+		# (ratcam.py) leaves them. It sorts only when the recording closes, and
+		# the steps between pulses, the first pulse and np.interp all need it
+		order = np.argsort(sync.get("t_us", np.zeros(0, np.int64)), kind="stable")
+		cam["pulse"] = sync.get("pulse", np.zeros(0, np.int64))[order]
+		cam["pulse_t"] = sync.get("t_us", np.zeros(0, np.int64))[order] / 1e6
+		cam["pulse_host_ns"] = sync.get("host_ns", np.zeros(0, np.int64))[order]
 	return cam
 
 
@@ -213,10 +241,16 @@ def ClockMap(dev_s, host_ns):
 	only ever delayed (USB, queues, a busy process), so the fit goes through
 	the earliest arrival in each window of WINDOW: the delay that is always
 	there, without the ones that come and go. It is a line, for clock drift.
+	A last window shorter than WINDOW joins the one before: a few arrivals
+	need not include one that came without delay, and one 100 ms late, at the
+	end of the line, tilts it by milliseconds at the start.
 	"""
 	d = np.asarray(dev_s, float)
 	lag = np.asarray(host_ns, float) - d * 1e9
-	low = [i + int(np.argmin(lag[i:i + WINDOW])) for i in range(0, len(d), WINDOW)]
+	edges = list(range(0, len(d), WINDOW))
+	if len(edges) > 1 and len(d) - edges[-1] < WINDOW:
+		edges.pop()
+	low = [a + int(np.argmin(lag[a:b])) for a, b in zip(edges, edges[1:] + [len(d)])]
 	if len(low) >= 2 and np.ptp(d[low]) > 0:
 		slope, offset = np.polyfit(d[low], lag[low], 1)
 	else:
@@ -234,6 +268,10 @@ def Starts(cams, period, ready=None):
 	frame arrives after its exposure, readout and transfer, a good part of a
 	period later. So against a RatCam, a camera's start is rounded down after
 	allowing FRAME_LAG periods early; between cameras of one kind, to nearest.
+	A RatCam placed against a triggered camera (the RatCam was not ready, and
+	that camera was) is the same pair the other way round: rounded up after
+	allowing FRAME_LAG periods late, so that either way round the pair ends up
+	the same number of triggers apart, and is as sure of it.
 
 	ready: the cameras that were grabbing before campy started the trigger
 	(trigger.json). Their first frame is the trigger's first pulse, so they
@@ -250,8 +288,9 @@ def Starts(cams, period, ready=None):
 		c["ready"] = c["name"] in ready
 		if c["ratcam"] and "q" in c and len(c["pulse_host_ns"]) == len(c["pulse_t"]):
 			c["anchor_ns"] = float(ClockMap(c["pulse_t"], c["pulse_host_ns"])(c["pulse_t"][0]))
-		elif not c["ratcam"] and c.get("host_ns") is not None and len(c["t"]):
-			c["anchor_ns"] = float(ClockMap(c["t"], c["host_ns"])(c["t"][0]))
+		elif not c["ratcam"] and c.get("host_ns") is not None and len(c["host_ns"]):
+			# host_ns can stop short of the frames (LoadCamera): those it has
+			c["anchor_ns"] = float(ClockMap(c["t"][:len(c["host_ns"])], c["host_ns"])(c["t"][0]))
 
 	anchored = [c for c in cams if "anchor_ns" in c]
 	armed = [c for c in anchored if c["ready"]]
@@ -281,10 +320,14 @@ def ArrivalStarts(anchored, period, candidates):
 	ref = min(pulses or candidates, key=lambda c: c["anchor_ns"])
 	for c in anchored:
 		delta = (c["anchor_ns"] - ref["anchor_ns"]) / (period * 1e9)
-		if ref["ratcam"] and not c["ratcam"]:
-			start = int(np.floor(delta + FRAME_LAG))
-			c["lag_ms"] = round((delta - start) * period * 1e3, 2)
-			c["unsure"] = delta - start > 1 - UNSURE
+		if ref["ratcam"] != c["ratcam"]:
+			# The triggered camera of the pair, and how many periods after the
+			# RatCam's first pulse its first frame arrived
+			triggered, after = (c, delta) if ref["ratcam"] else (ref, -delta)
+			apart = int(np.floor(after + FRAME_LAG)) # triggers from the RatCam's start to the camera's
+			triggered["lag_ms"] = round((after - apart) * period * 1e3, 2)
+			c["unsure"] = after - apart > 1 - UNSURE
+			start = apart if ref["ratcam"] else -apart
 		else:
 			start = int(np.rint(delta))
 			c["unsure"] = abs(delta - start) > UNSURE
@@ -381,7 +424,9 @@ def WriteAligned(c):
 def Describe(c):
 	if not c["usable"]:
 		return "not aligned"
-	if c["ratcam"]:
+	if c["ratcam"] and not len(c["frame"]):
+		text = "no frames; {} pulses".format(len(c["pulse_t"]))
+	elif c["ratcam"]:
 		text = "{} frames between triggers {:.1f} and {:.1f}; {} pulses".format(
 			len(c["frame"]), c["trigger"][0], c["trigger"][-1], len(c["pulse_t"]))
 	else:
