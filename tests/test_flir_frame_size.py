@@ -322,10 +322,22 @@ def test_rounded_only_in_the_camera_thread_the_video_was_scrambled(flir, monkeyp
 	# frames went into a video of 1000x600 (ffmpeg then cuts them into more
 	# frames than were recorded, each one scrambled)
 	monkeypatch.setattr(flir, "FixedParams", lambda cam_params: cam_params)
+	write = writer.WriteFrames
+	monkeypatch.setattr(writer, "WriteFrames", # without waiting for the camera to open
+		lambda cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=None:
+			write(cam_params, writeQueue, stopReadQueue, stopWriteQueue))
 	camera = GrabbingCamera()
 	opened, sent = record(flir, monkeypatch, tmp_path, camera, frameWidth=1000, frameHeight=600)
 	assert set(sent) == {(1008, 608)}
 	assert opened == (1000, 600)
+
+
+def test_the_writer_waiting_for_the_camera_is_enough_too(flir, monkeypatch, tmp_path):
+	# Rounded only in the camera thread, as before, but the writer now opens
+	# its video once the camera is open (tests/test_camera_frame_size.py)
+	monkeypatch.setattr(flir, "FixedParams", lambda cam_params: cam_params)
+	opened, sent = record(flir, monkeypatch, tmp_path, GrabbingCamera(), frameWidth=1000, frameHeight=600)
+	assert opened == (1008, 608) and set(sent) == {(1008, 608)}
 
 
 def test_a_size_in_steps_of_16_is_left_alone(flir, monkeypatch, tmp_path, capsys):

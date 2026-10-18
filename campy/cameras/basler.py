@@ -59,11 +59,10 @@ def LoadSettings(cam_params, camera):
 		camera.AcquisitionFrameRateEnable.SetValue(True)
 		camera.AcquisitionFrameRate.SetValue(cam_params["frameRate"])
 	
-	# Get camera information and save to cam_params for metadata
-	cam_params['frameWidth'] = camera.Width.GetValue()
-	cam_params['frameHeight'] = camera.Height.GetValue()
-
-	return cam_params
+	# The frame size cameraSettings gave the camera, for the writer and metadata.
+	# Known only once the camera is open: the writer waits for it.
+	return unicam.SetFrameSize(cam_params, camera.Width.GetValue(), camera.Height.GetValue(),
+		"the camera's frame size with its cameraSettings")
 
 
 def StartGrabbing(camera):

@@ -74,10 +74,8 @@ def OpenCamera(cam_params):
 	reader = imageio.get_reader(full_file_name)
 	camera = EmulatedCamera(reader, cam_params["frameRate"])
 
-	# Set features manually or automatically, depending on configuration
-	frame_size = reader.get_meta_data()['size']
-	cam_params['frameWidth'] = frame_size[0]
-	cam_params['frameHeight'] = frame_size[1]
+	# The clip's frame size, for the writer (which waits for it) and metadata
+	cam_params = unicam.SetFrameSize(cam_params, *reader.get_meta_data()['size'], "the clip's frame size")
 	cam_params['cameraModel'] = GetModelName(camera)
 
 	Say("Opened {} emulation.".format(cam_params["cameraName"]))

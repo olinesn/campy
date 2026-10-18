@@ -178,6 +178,7 @@ The user needs the camera access that Spinnaker's installer sets up on Linux (gr
 
 ### Configuration
 - For Basler cameras, use the Pylon Viewer to configure and save your '.pfs' camera settings file. Examples are included in campy/configs.
+- A Basler camera's video has the frame size its '.pfs' file gives the camera, and an emulated camera's (`cameraMake: "emu"`) its clip's. campy says so when that is not `frameWidth` x `frameHeight` (`Camera0: frameWidth x frameHeight 1152x1024 changed to 1280x1024, the camera's frame size with its cameraSettings.`). Each video opens once its camera is open: it used to open first, at `frameWidth` x `frameHeight`, and frames of another size scrambled it. A camera that fails to open gets no video.
 - Edit the config.yaml file to fit your system and recording configuration.
 - Several example config files are located in campy/configs.
 - For help setting config parameters:
