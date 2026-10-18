@@ -232,8 +232,7 @@ def EncoderArgs(cam_params):
 	# more for each keyframe the encoder adds itself, at a scene cut). Other
 	# containers are left as they are.
 	muxer_params = []
-	extension = os.path.splitext(str(cam_params.get("videoFilename", "")))[1].lower()
-	if cam_params.get("fragmentedVideo", True) and extension in (".mp4", ".m4v", ".mov"):
+	if Fragmented(cam_params):
 		muxer_params = [
 			"-movflags", "+frag_keyframe+empty_moov+delay_moov+default_base_moof",
 			"-frag_duration", "1000000", # microseconds
@@ -257,6 +256,12 @@ RGB_FORMATS = ("rgb0", "bgr0", "rgb24", "bgr24", "rgba", "bgra")
 
 def FullRange(cam_params):
 	return str(cam_params.get("colorRange", "limited")).lower() == "full"
+
+
+def Fragmented(cam_params):
+	# Whether the video is written in fragments (fragmentedVideo: see EncoderArgs)
+	extension = os.path.splitext(str(cam_params.get("videoFilename", "")))[1].lower()
+	return bool(cam_params.get("fragmentedVideo", True)) and extension in (".mp4", ".m4v", ".mov")
 
 
 def PaddedSize(cam_params, macro_block_size):
@@ -374,8 +379,11 @@ def VideoFailed(cam_params, recording, stopReadQueue, why, stopping=True):
 	recording.videoError = why # before the stop: the camera thread reads it as it stops
 	if stopping:
 		stopReadQueue.append("STOP")
-	said = "{}: {}. {}Its video may be unreadable, and its metadata.csv and frametimes.npy count only the frames " \
-		"ffmpeg was given.".format(name, why, "Stopping {}. ".format(name) if stopping else "")
+	# A fragmented video can be read up to the last fragment ffmpeg wrote; a
+	# plain MP4 only once ffmpeg has closed it (writes its index)
+	kept = "can be read up to its last fragment" if Fragmented(cam_params) else "may be unreadable"
+	said = "{}: {}. {}Its video {}, and its metadata.csv and frametimes.npy count only the frames " \
+		"ffmpeg was given.".format(name, why, "Stopping {}. ".format(name) if stopping else "", kept)
 	if str(cam_params.get("ffmpegLogLevel")) == "quiet":
 		said += " ffmpegLogLevel is \"quiet\", so ffmpeg did not say why: \"warning\" shows its errors."
 	Say(said)
@@ -441,7 +449,7 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 		time.sleep(1)
 		writer.close()
 
-		# ffmpeg finishes the video as it closes: an error there can leave it unreadable
+		# ffmpeg finishes the video as it closes: an error there can leave it unfinished
 		code = ffmpeg.returncode if ffmpeg is not None else None
 		if code:
 			VideoFailed(cam_params, recording, stopReadQueue,

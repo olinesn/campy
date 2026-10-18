@@ -4,7 +4,7 @@ stopped before it closes the file (a power cut, an OS crash, ffmpeg killed)
 is readable up to its last fragment, where a plain MP4 is not readable at all.
 """
 
-import os, sys, time, struct
+import os, sys, time, types, struct
 
 import numpy as np
 import pytest
@@ -264,3 +264,14 @@ def test_a_video_cut_after_any_fragment_reads_up_to_there(tmp_path, capsys, keyf
 		assert InOrder(numbers, but_last=0 if keyframe_interval == 0.5 else TAIL), numbers
 		counts.append(len(numbers))
 	assert counts == sorted(set(counts)) and counts[-1] == 60 # each fragment adds frames
+
+
+def test_a_stopped_video_is_said_to_be_readable_to_its_last_fragment(capsys):
+	# writer.VideoFailed, when ffmpeg stops mid-recording (tests/test_failures.py)
+	for overrides, kept in (({}, "Its video can be read up to its last fragment,"),
+			({"fragmentedVideo": False}, "Its video may be unreadable,"),
+			({"videoFilename": "0.mkv"}, "Its video may be unreadable,")):
+		recording, stop = types.SimpleNamespace(videoError=None), []
+		writer.VideoFailed(cam(**overrides), recording, stop, "ffmpeg stopped after taking 30 frames")
+		assert kept in capsys.readouterr().out
+		assert stop == ["STOP"] and recording.videoError == "ffmpeg stopped after taking 30 frames"

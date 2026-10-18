@@ -302,7 +302,8 @@ def test_a_killed_ffmpeg_stops_its_camera_and_is_said(tmp_path, monkeypatch, cap
 	assert run.Run() < 15
 	out = capsys.readouterr().out
 	said = re.search(r"Camera0: ffmpeg stopped after taking (\d+) frames, with exit code (\S+)[^\n]*: (.*)\. "
-		r"Stopping Camera0\. Its video may be unreadable, and its metadata\.csv and frametimes\.npy count only "
+		r"Stopping Camera0\. Its video can be read up to its last fragment, and its metadata\.csv and frametimes\.npy "
+		r"count only "
 		r"the frames ffmpeg was given\. ffmpegLogLevel is \"quiet\", so ffmpeg did not say why: \"warning\" shows "
 		r"its errors\.\n", out)
 	assert said, out
@@ -348,7 +349,8 @@ def test_ffmpeg_failing_after_the_camera_has_stopped(tmp_path, monkeypatch, caps
 		camera)
 	run.Run()
 	out = capsys.readouterr().out
-	assert "Camera0: ffmpeg stopped after taking 30 frames: [Errno 32] Broken pipe. Its video may be unreadable" in out
+	assert "Camera0: ffmpeg stopped after taking 30 frames: [Errno 32] Broken pipe. Its video can be read up to " \
+		"its last fragment" in out
 	assert "Stopping Camera0" not in out # it already had
 	meta = run.Metadata()
 	assert meta["totalFrames"] == "50" and meta["framesWritten"] == "30"
@@ -363,7 +365,7 @@ def test_ffmpeg_that_fails_as_it_finishes_the_video(tmp_path, monkeypatch, capsy
 	run = CameraProcess(monkeypatch, params(tmp_path), FakeCamera())
 	run.Run()
 	why = "ffmpeg ended with exit code 1 as it finished the video"
-	assert "Camera0: {}. Its video may be unreadable".format(why) in capsys.readouterr().out
+	assert "Camera0: {}. Its video can be read up to its last fragment".format(why) in capsys.readouterr().out
 	meta = run.Metadata()
 	assert meta["videoError"] == why and meta["framesWritten"] == "50"
 
