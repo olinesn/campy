@@ -19,7 +19,7 @@ Examples:
   campy-encode-sweep --config configs/campy_config_8cams_flir_usb3.yaml --streams 1,2,4,6,8,10,12
 """
 
-import os, sys, json, time, socket, shutil, platform, argparse, datetime, statistics, subprocess, tempfile
+import os, sys, json, time, queue, socket, shutil, platform, argparse, datetime, statistics, subprocess, tempfile
 import multiprocessing as mp
 import numpy as np
 
@@ -119,31 +119,91 @@ def EncodeWorker(index, cam_params, settings, ready, go, results):
 		})
 
 
-def RunStreams(cam_params, n, settings, out_dir):
+# How long a stream may take to open its ffmpeg, and how often RunStreams
+# looks for a stream that died while it waits for the others
+READY_TIMEOUT = 300
+POLL_SEC = 0.5
+
+
+def Gather(messages, procs, index_of, timeout, before, late):
+	"""
+	One message from each stream's process, by stream index, and an error for
+	each that sent none. A process that died without sending (a crash in
+	ffmpeg's or numpy's native code, an OOM kill) never will: waiting out the
+	whole timeout for it hung the sweep for 5 minutes, and queue.Empty then
+	stopped it with nothing saved. So this stops at the first process found
+	dead, or at the timeout. before, late: the error's words for a process
+	that died ("before it was ready") and for one still running at the
+	timeout ("was not ready after 300 s").
+	"""
+	got = {}
+	deadline = time.monotonic() + timeout
+	timed_out = False
+	while len(got) < len(procs):
+		try:
+			message = messages.get(timeout=POLL_SEC)
+			got[index_of(message)] = message
+			continue
+		except queue.Empty:
+			pass
+		if any(i not in got and not p.is_alive() for i, p in enumerate(procs)):
+			# A process sends its message before it exits, so one that has just
+			# exited may have left it after the last read
+			while True:
+				try:
+					message = messages.get(timeout=POLL_SEC)
+				except queue.Empty:
+					break
+				got[index_of(message)] = message
+			break
+		if time.monotonic() > deadline:
+			timed_out = True
+			break
+
+	errors = []
+	for i, p in enumerate(procs):
+		if i in got:
+			continue
+		if not p.is_alive():
+			code = p.exitcode
+			how = "was killed (signal {})".format(-code) if code < 0 else "exited with code {}".format(code)
+			errors.append("stream {}: {} {}".format(i, how, before))
+		elif timed_out:
+			errors.append("stream {}: {}".format(i, late))
+	return got, errors
+
+
+def RunStreams(cam_params, n, settings, out_dir, worker=None):
 	"""
 	Runs n streams at once. Returns one result dict per stream, the errors,
-	and the computer's average CPU use while they ran (None without psutil).
+	and the computer's average CPU use while they ran (None without psutil,
+	or when a stream failed before they started). worker: what each stream's
+	process runs, EncodeWorker unless a test gives another.
 	"""
 	ctx = mp.get_context("spawn")
 	ready, results, go = ctx.Queue(), ctx.Queue(), ctx.Event()
 	params = dict(cam_params, videoFolder=out_dir)
-	procs = [ctx.Process(target=EncodeWorker, args=(i, params, settings, ready, go, results))
+	procs = [ctx.Process(target=worker or EncodeWorker, args=(i, params, settings, ready, go, results))
 		for i in range(n)]
 	for p in procs:
 		p.start()
-	errors = []
-	for _ in range(n):
-		index, error = ready.get(timeout=300)
-		if error:
-			errors.append("stream {}: {}".format(index, error))
-	CpuPercent() # starts the CPU average here, once every stream is ready
-	go.set()
-	out = []
+	opened, errors = Gather(ready, procs, lambda message: message[0], READY_TIMEOUT,
+		"before it was ready", "was not ready after {} s".format(READY_TIMEOUT))
+	errors += ["stream {}: {}".format(i, error) for i, (_, error) in sorted(opened.items()) if error]
+	out, cpu = [], None
 	if not errors:
+		CpuPercent() # starts the CPU average here, once every stream is ready
+		go.set()
 		timeout = settings["warmup"] + settings["seconds"] + 120
-		out = [results.get(timeout=timeout) for _ in range(n)]
-	cpu = CpuPercent()
+		done, errors = Gather(results, procs, lambda result: result["index"], timeout,
+			"before it sent its result", "sent no result after {:g} s".format(timeout))
+		out = [done[i] for i in sorted(done)]
+		cpu = CpuPercent()
 	for p in procs:
+		if errors:
+			# Waiting for go, or encoding for a count that has already failed.
+			# Its ffmpeg sees its input close, and exits.
+			p.terminate()
 		p.join(timeout=30)
 		if p.is_alive():
 			p.terminate()
