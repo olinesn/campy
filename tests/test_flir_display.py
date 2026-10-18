@@ -69,8 +69,8 @@ def test_mono_frames_need_no_conversion(flir):
 	queue = deque()
 	flir.DisplayImage({"pixelFormatInput": "gray", "displayDownsample": 2}, queue, image)
 	[img] = queue
-	assert img.shape == (4, 5, 3)
-	assert all((img[:, :, c] == frame()[::2, ::2]).all() for c in range(3))
+	assert img.shape == (4, 5) # gray: the display shows it as it is
+	assert (img == frame()[::2, ::2]).all()
 	assert image.converted == [] and getattr(flir.PySpin, "calls", []) == []
 
 

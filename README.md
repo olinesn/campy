@@ -14,7 +14,7 @@
 1. Update graphics drivers
 2. Create and activate a new Anaconda environment with Python 3.12. campy needs Python 3.9 or newer, and 3.12 is the version it is set up for: FLIR's PySpin (Spinnaker 4.4) is built for Python 3.12 on Windows, macOS and Ubuntu 24.04. On Ubuntu 22.04, PySpin is built for Python 3.10 only, so use `python=3.10` there.
 ```
-conda create -n campy python=3.12 imageio-ffmpeg matplotlib ffmpeg=8.1 -c conda-forge
+conda create -n campy python=3.12 imageio-ffmpeg ffmpeg=8.1 -c conda-forge
 conda activate campy
 pip install -U setuptools
 ```

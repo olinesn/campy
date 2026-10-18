@@ -272,10 +272,9 @@ def GetTimeStamp(grabResult):
 
 
 def DisplayImage(cam_params, dispQueue, grabResult):
-	# Mono to RGB, so the display shows grey levels rather than a colour map
+	# Mono: the display shows it as gray
 	step = cam_params["displayDownsample"]
-	img = grabResult.image()[::step, ::step]
-	dispQueue.append(img[:, :, None].repeat(3, axis=2))
+	dispQueue.append(grabResult.image()[::step, ::step])
 
 
 def ReleaseFrame(grabResult):
