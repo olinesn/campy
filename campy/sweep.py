@@ -19,7 +19,7 @@ Examples:
   campy-encode-sweep --config configs/campy_config_8cams_flir_usb3.yaml --streams 1,2,4,6,8,10,12
 """
 
-import os, sys, json, time, socket, shutil, platform, argparse, datetime, statistics, subprocess, tempfile
+import os, sys, json, time, queue, socket, shutil, platform, argparse, datetime, statistics, subprocess, tempfile
 import multiprocessing as mp
 import numpy as np
 
@@ -31,18 +31,19 @@ ENCODER_MAKES = ("cpu", "vaapi", "nvidia", "intel", "amd")
 
 # ------------------------------------------------------------------ frames
 
-def SyntheticFrames(width, height, pix_fmt, count, noise=3.0, seed=0):
+def SyntheticFrames(width, height, pix_fmt, count, noise=3.0, seed=0, clean=False):
 	"""
 	count frames of a lit scene: a smooth background with low-frequency
 	texture, two bright blobs moving across it, and Gaussian sensor noise of
 	standard deviation noise (in gray levels), fresh in every frame.
+	clean True: (frames, the same frames without the noise), made in one pass.
 	"""
 	rng = np.random.default_rng(seed)
 	y, x = np.mgrid[0:height, 0:width].astype(np.float32)
 	phase = rng.uniform(0, 2 * np.pi, 4)
 	background = (70 + 25 * x / width + 15 * y / height
 		+ 8 * np.sin(x / 37.0 + phase[0]) * np.sin(y / 23.0 + phase[1]))
-	frames = []
+	frames, clean_frames = [], []
 	for i in range(count):
 		t = 2 * np.pi * i / count
 		img = background.copy()
@@ -51,10 +52,12 @@ def SyntheticFrames(width, height, pix_fmt, count, noise=3.0, seed=0):
 			cy = height * (0.5 + ay * np.sin(t * (k + 2) + phase[3]))
 			rx, ry = 0.06 * width, 0.04 * height
 			img += 120 * np.exp(-(((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2))
+		if clean: # the frame noise 0 gives; the noise is still drawn, so the noisy frames do not change
+			clean_frames.append(ToPixelFormat(np.clip(img, 0, 255).astype(np.uint8), pix_fmt))
 		img += rng.standard_normal((height, width), dtype=np.float32) * noise
 		gray = np.clip(img, 0, 255).astype(np.uint8)
 		frames.append(ToPixelFormat(gray, pix_fmt))
-	return frames
+	return (frames, clean_frames) if clean else frames
 
 
 def ToPixelFormat(gray, pix_fmt):
@@ -119,31 +122,91 @@ def EncodeWorker(index, cam_params, settings, ready, go, results):
 		})
 
 
-def RunStreams(cam_params, n, settings, out_dir):
+# How long a stream may take to open its ffmpeg, and how often RunStreams
+# looks for a stream that died while it waits for the others
+READY_TIMEOUT = 300
+POLL_SEC = 0.5
+
+
+def Gather(messages, procs, index_of, timeout, before, late):
+	"""
+	One message from each stream's process, by stream index, and an error for
+	each that sent none. A process that died without sending (a crash in
+	ffmpeg's or numpy's native code, an OOM kill) never will: waiting out the
+	whole timeout for it hung the sweep for 5 minutes, and queue.Empty then
+	stopped it with nothing saved. So this stops at the first process found
+	dead, or at the timeout. before, late: the error's words for a process
+	that died ("before it was ready") and for one still running at the
+	timeout ("was not ready after 300 s").
+	"""
+	got = {}
+	deadline = time.monotonic() + timeout
+	timed_out = False
+	while len(got) < len(procs):
+		try:
+			message = messages.get(timeout=POLL_SEC)
+			got[index_of(message)] = message
+			continue
+		except queue.Empty:
+			pass
+		if any(i not in got and not p.is_alive() for i, p in enumerate(procs)):
+			# A process sends its message before it exits, so one that has just
+			# exited may have left it after the last read
+			while True:
+				try:
+					message = messages.get(timeout=POLL_SEC)
+				except queue.Empty:
+					break
+				got[index_of(message)] = message
+			break
+		if time.monotonic() > deadline:
+			timed_out = True
+			break
+
+	errors = []
+	for i, p in enumerate(procs):
+		if i in got:
+			continue
+		if not p.is_alive():
+			code = p.exitcode
+			how = "was killed (signal {})".format(-code) if code < 0 else "exited with code {}".format(code)
+			errors.append("stream {}: {} {}".format(i, how, before))
+		elif timed_out:
+			errors.append("stream {}: {}".format(i, late))
+	return got, errors
+
+
+def RunStreams(cam_params, n, settings, out_dir, worker=None):
 	"""
 	Runs n streams at once. Returns one result dict per stream, the errors,
-	and the computer's average CPU use while they ran (None without psutil).
+	and the computer's average CPU use while they ran (None without psutil,
+	or when a stream failed before they started). worker: what each stream's
+	process runs, EncodeWorker unless a test gives another.
 	"""
 	ctx = mp.get_context("spawn")
 	ready, results, go = ctx.Queue(), ctx.Queue(), ctx.Event()
 	params = dict(cam_params, videoFolder=out_dir)
-	procs = [ctx.Process(target=EncodeWorker, args=(i, params, settings, ready, go, results))
+	procs = [ctx.Process(target=worker or EncodeWorker, args=(i, params, settings, ready, go, results))
 		for i in range(n)]
 	for p in procs:
 		p.start()
-	errors = []
-	for _ in range(n):
-		index, error = ready.get(timeout=300)
-		if error:
-			errors.append("stream {}: {}".format(index, error))
-	CpuPercent() # starts the CPU average here, once every stream is ready
-	go.set()
-	out = []
+	opened, errors = Gather(ready, procs, lambda message: message[0], READY_TIMEOUT,
+		"before it was ready", "was not ready after {} s".format(READY_TIMEOUT))
+	errors += ["stream {}: {}".format(i, error) for i, (_, error) in sorted(opened.items()) if error]
+	out, cpu = [], None
 	if not errors:
+		CpuPercent() # starts the CPU average here, once every stream is ready
+		go.set()
 		timeout = settings["warmup"] + settings["seconds"] + 120
-		out = [results.get(timeout=timeout) for _ in range(n)]
-	cpu = CpuPercent()
+		done, errors = Gather(results, procs, lambda result: result["index"], timeout,
+			"before it sent its result", "sent no result after {:g} s".format(timeout))
+		out = [done[i] for i in sorted(done)]
+		cpu = CpuPercent()
 	for p in procs:
+		if errors:
+			# Waiting for go, or encoding for a count that has already failed.
+			# Its ffmpeg sees its input close, and exits.
+			p.terminate()
 		p.join(timeout=30)
 		if p.is_alive():
 			p.terminate()
@@ -251,6 +314,10 @@ def Sweep(cam_params, encoders, counts, settings, keep_going=False, log=print):
 				if not keep_going:
 					break
 		passing = [r for r in rows if r.get("pass") and r["streams"] == max_streams]
+		# An encoder that stopped with an error before it measured any count (one
+		# this computer does not have, say) measured nothing: it is saved as an
+		# error, not as keeping up with 0 streams
+		error = rows[-1]["error"] if rows and all("error" in r for r in rows) else None
 		entries.append({
 			"key": enc["key"],
 			"codec": enc["codec"],
@@ -266,7 +333,8 @@ def Sweep(cam_params, encoders, counts, settings, keep_going=False, log=print):
 			"max_tested": max(r["streams"] for r in rows),
 			"max_mpx_s": round(max_streams * w * h * fps / 1e6, 1),
 			"bitrate_mbps": passing[0]["bitrate_mbps"] if passing else None,
-			"measured": datetime.datetime.now().isoformat(timespec="seconds"),
+			"error": error,
+			"measured":datetime.datetime.now().isoformat(timespec="seconds"),
 			"results": rows,
 			})
 	return entries
@@ -274,7 +342,10 @@ def Sweep(cam_params, encoders, counts, settings, keep_going=False, log=print):
 
 def SaveEntries(path, entries, host):
 	# Merge into the capacity table: a new measurement replaces the one for the
-	# same encoder and frame shape. A table from another computer is replaced.
+	# same encoder and frame shape. An encoder that stopped with an error
+	# replaces only an earlier error, never a measurement: an encoder that
+	# failed to start once still keeps up with what it was measured to. A
+	# table from another computer is replaced.
 	table = None
 	try:
 		with open(path) as f:
@@ -289,6 +360,8 @@ def SaveEntries(path, entries, host):
 		fields = ("key", "width", "height", "fps", "pix_fmt_in", "pix_fmt_out")
 		return all(a[f] == b[f] for f in fields)
 
+	measured = [e for e in table["entries"] if not e.get("error")]
+	entries = [n for n in entries if not (n.get("error") and any(same(e, n) for e in measured))]
 	kept = [e for e in table["entries"] if not any(same(e, n) for n in entries)]
 	table["entries"] = kept + entries
 	os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -371,13 +444,19 @@ def Main(argv=None):
 
 	print()
 	for e in entries:
+		if e["error"]:
+			print("{}: stopped with an error (above), so nothing was measured.".format(e["key"]))
+			continue
 		more = "+" if e["max_streams"] >= e["max_tested"] else ""
 		print("{}: keeps up with {}{} camera{} at {}x{} {:g} fps.".format(e["key"], e["max_streams"],
 			more, "" if e["max_streams"] == 1 else "s", e["width"], e["height"], e["fps"]))
 	if not args.no_save:
 		from campy import preflight
 		path = args.out or preflight.CapacityPath(params)
-		SaveEntries(path, entries, HostInfo(params))
+		table = SaveEntries(path, entries, HostInfo(params))
+		for e in entries:
+			if e not in table["entries"]:
+				print("{}: kept its earlier measurement.".format(e["key"]))
 		print("Saved to {}.".format(path))
 
 

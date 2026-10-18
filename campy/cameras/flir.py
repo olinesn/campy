@@ -93,6 +93,9 @@ def OpenCamera(cam_params):
 	# Initialize camera object
 	camera.Init()
 
+	# What it loses before its frames reach campy, from here to CloseCamera
+	_frameCounts[id(camera)] = (camera, FrameCount(cam_params["cameraName"]))
+
 	# Reset to factory default settings
 	# camera.UserSetSelector.SetValue(PySpin.UserSetSelector_Default)
 	# camera.UserSetLoad()
@@ -197,25 +200,53 @@ def FrameRateLimits(device, cam_params):
 def StartGrabbing(camera):
 	try:
 		camera.BeginAcquisition()
-		return True
 	except PySpin.SpinnakerException as e:
 		Say("Error: {}".format(e))
 		return False
 	except Exception as e:
 		Say("Exception in cameras/flir.py function StartGrabbing(camera): {}".format(e))
 		return False
+	# Spinnaker's stream counters as the acquisition starts (outside the try:
+	# a counter that cannot be read is left out, and stops nothing)
+	Counts(camera).Start(camera)
+	return True
 
 
 def GrabFrame(camera, frameNumber):
-	image_result = camera.GetNextImage(50) # timeout to wait for next frame, in ms
+	try:
+		image_result = camera.GetNextImage(50) # timeout to wait for next frame, in ms
+	except PySpin.SpinnakerException as e:
+		if Gone(camera):
+			raise unicam.CameraLost("Spinnaker says the camera is no longer valid (unplugged?): {}".format(e))
+		raise
 
-	#  Ensure image completion
+	#  Ensure image completion. An incomplete image is released here: its
+	#  buffer is the camera's, and one never released is one it cannot fill.
+	#  It is counted, and said at most every few seconds.
+	counts = Counts(camera)
 	if image_result.IsIncomplete():
 		image_status = image_result.GetImageStatus()
-		Say("Image incomplete with image status %d ..." % image_status)
+		image_result.Release()
+		counts.Incomplete(image_status, frameNumber)
 		raise ImageNotCompleteException("Image not complete", image_status)
 
+	counts.Frame(image_result)
 	return image_result
+
+
+def Gone(camera):
+	"""
+	True when Spinnaker says the camera can no longer be used (IsValid False:
+	unplugged), asked after GetNextImage fails. Nothing else counts, an error
+	code included: a triggered camera waits for its first trigger with
+	GetNextImage timing out, for as long as that takes, and which errors an
+	unplugged camera gives has not been seen on a rig. A camera that is gone
+	but still valid is said to send no frames (unicam.FrameWatch) until Ctrl-C.
+	"""
+	try:
+		return camera.IsValid() is False
+	except Exception:
+		return False
 
 
 def GetImageArray(grabResult):
@@ -273,26 +304,27 @@ def ReleaseFrame(grabResult):
 
 
 def CloseCamera(cam_params, camera):
-	Say("Closing {}... Please wait.".format(cam_params["cameraName"]))
-	# Close camera after acquisition stops
-	while True:
+	"""
+	Saves the frames the camera lost before they reached campy, stops the
+	acquisition, puts back the frame rate settings, and lets the camera go.
+	The frames lost first: ending the acquisition can reset Spinnaker's
+	counters. Each step is tried whatever the one before did, and what fails
+	is said, not raised: EndAcquisition fails on a camera that was unplugged,
+	or that never started, and campy's camera thread still has the writer to
+	stop and metadata to save. A camera left acquiring is stopped at its next
+	open (RecoverAcquisition), and its frame rate cap is put back then
+	(RecoverFrameRate).
+	"""
+	name = cam_params["cameraName"]
+	Say("Closing {}... Please wait.".format(name))
+	for step, close in (("SaveFramesLost", lambda: SaveFramesLost(cam_params, camera)),
+			("EndAcquisition", camera.EndAcquisition),
+			("RestoreFrameRate", lambda: RestoreFrameRate(camera, cam_params)),
+			("DeInit", camera.DeInit)):
 		try:
-			try:
-				# Close camera
-				camera.EndAcquisition()
-				RestoreFrameRate(camera, cam_params)
-				camera.DeInit()
-				del camera
-				break
-			except PySpin.SpinnakerException as e:
-				Say("Error: {}".format(e))
-				raise
-			except Exception as e:
-				logging.error("Caught exception at cameras/flir.py CloseCamera: {}".format(e))
-				raise
-				break
-		except KeyboardInterrupt:
-			break
+			close()
+		except Exception as e:
+			Say("{}: {} failed as it closed: {}".format(name, step, e))
 
 
 def CloseSystem(system, device_list):
@@ -408,6 +440,9 @@ def ConfigureBuffer(camera, cam_params):
 		# Display Buffer Info
 		buffer_count.SetValue(cam_params["bufferSize"])
 		Say("Buffer count now set to: %d" % buffer_count.GetValue())
+		# For metadata.csv: the count the camera took. (This was the "Manual"
+		# entry's value, 0, so every recording said bufferSize 0.)
+		cam_params["bufferSize"] = buffer_count.GetValue()
 
 		if cam_params["bufferMode"] == "OldestFirst":
 			handling_mode_entry = handling_mode.GetEntryByName("OldestFirst")
@@ -424,7 +459,6 @@ def ConfigureBuffer(camera, cam_params):
 		handling_mode.SetIntValue(handling_mode_entry.GetValue())
 		Say("BufferMode has been set to {}".format(handling_mode_entry.GetDisplayName()))
 
-		cam_params["bufferSize"] = stream_buffer_count_mode_manual.GetValue()
 		cam_params["bufferMode"] = handling_mode_entry.GetDisplayName()
 	
 	except Exception as e:
@@ -1326,6 +1360,210 @@ def RecoverAcquisition(camera, cam_params):
 	else:
 		Say("{}: still acquiring from a run that did not close it. Stopped it, so its frame size and pixel format "
 			"can be set.".format(name))
+
+
+# ------------------------------------------------------------------ frames lost before campy
+#
+# campy numbers the frames it grabs itself (unicam.GrabFrames), so a frame the
+# camera made that never reached campy, lost on the camera, the USB link or in
+# Spinnaker, leaves frametimes.npy's frame numbers whole: only a longer step
+# between its timestamps shows it. Three things count those frames. The
+# camera numbers each frame it makes in its FrameID chunk (ConfigureChunkData
+# turns it on), so a step of more than 1 between the frames campy gets is
+# frames lost (FrameCount). The camera counts the frames it dropped because it
+# could not send them (CAMERA_COUNTERS). And Spinnaker counts the frames its
+# stream lost, dropped or got incomplete (STREAM_COUNTERS). CloseCamera saves
+# them in metadata.csv (SaveFramesLost), and says so when frames were lost.
+#
+# Over USB a camera sends a frame only when Spinnaker has a buffer for it, so
+# a camera thread that falls behind loses its frames on the camera, not in
+# Spinnaker. A BFS-U3-13Y3M on the EVO-X2 (PySpin 4.4, 2026-10-18), free-running
+# at 80 fps, its camera thread held for 3 s: of the 240 frames it made, 100
+# waited in Spinnaker's buffers (bufferSize) and 41 in the camera's transfer
+# queue (TransferQueueMaxBlockCount), and the other 99 were dropped on the
+# camera. FrameID skipped 99, as did its timestamps, while Spinnaker's
+# StreamLostFrameCount and StreamDroppedFrameCount stayed 0.
+
+# The camera's own counters, in its device nodemap. They count from its power-up.
+CAMERA_COUNTERS = (
+	"TransferQueueOverflowCount", # frames dropped before they were sent: its transfer queue was full
+	"LinkErrorCount", # errors on its USB link
+	)
+
+# Spinnaker's counters of the camera's stream, in its TL stream nodemap
+# (TransportLayerStream.h). A Blackfly S on PySpin 4.4 (Linux) reads all of
+# them but StreamReceivedFrameCount (GigE Vision only).
+STREAM_COUNTERS = (
+	"StreamStartedFrameCount", # frames it began to receive
+	"StreamDeliveredFrameCount", # frames it gave campy
+	"StreamReceivedFrameCount", # frames received whole (GigE Vision)
+	"StreamIncompleteFrameCount", # frames with data missing (campy leaves them out: flirFramesIncomplete)
+	"StreamLostFrameCount", # frames it had no free buffer for, or never received whole
+	"StreamDroppedFrameCount", # frames it dropped before campy took them (bufferMode NewestOnly, NewestFirst)
+	)
+
+# An incomplete frame is said at most this often, with the count so far (as
+# unicam.DropFrame says the frames it drops)
+INCOMPLETE_REPORT_SEC = 5
+
+# Each open camera and its FrameCount, by id(camera): GrabFrame is given only
+# the camera. The camera is kept with it, so that no other object takes its id
+# while it is here.
+_frameCounts = {}
+
+
+def Counts(camera):
+	# The camera's FrameCount; made here for a camera OpenCamera did not open
+	entry = _frameCounts.get(id(camera))
+	if entry is None:
+		entry = _frameCounts[id(camera)] = (camera, FrameCount("The FLIR camera"))
+	return entry[1]
+
+
+class FrameCount:
+	"""
+	What a camera loses before its frames reach campy, counted as it records:
+	the frames its FrameID skipped, the incomplete frames GrabFrame left out,
+	and the camera's and Spinnaker's counters as its acquisition started.
+	"""
+
+	def __init__(self, name):
+		self.name = name
+		self.frameID = None # the last frame's FrameID: None before the first, or after one it could not read
+		self.counted = False # FrameID has stepped forward once, so lost counts something
+		self.lost = 0 # frames FrameID skipped
+		self.incomplete = 0 # incomplete frames left out
+		self.reported = float("-inf") # when they were last said
+		self.started = {} # CAMERA_COUNTERS and STREAM_COUNTERS as the acquisition started
+
+	def Start(self, camera):
+		# A new acquisition, where FrameID can start over
+		self.frameID = None
+		self.started = ReadCounters(camera)
+
+	def Frame(self, image):
+		"""
+		Each frame GrabFrame returns. FrameID goes up by 1 from one frame the
+		camera makes to the next, so a bigger step is frames that never
+		reached campy. A step back, or none, is FrameID starting over (a
+		counter that wraps, or was reset), not frames lost: counting goes on
+		from there. A frame whose FrameID cannot be read breaks the count, so
+		nothing is counted across it. A FrameID that never steps forward (a
+		camera that sends no FrameID chunk, read as 0) counts nothing, and
+		leaves flirFramesLost out.
+		"""
+		try:
+			frameID = int(GetFrameID(image.GetChunkData()))
+		except Exception:
+			self.frameID = None
+			return
+		if self.frameID is not None and frameID > self.frameID:
+			self.lost += frameID - self.frameID - 1
+			self.counted = True
+		self.frameID = frameID
+
+	def Incomplete(self, status, frameNumber):
+		# An incomplete frame left out: counted, and said at most every
+		# INCOMPLETE_REPORT_SEC. Said for every one, a camera on a failing USB
+		# link printed a line per frame.
+		self.incomplete += 1
+		now = time.perf_counter()
+		if now - self.reported >= INCOMPLETE_REPORT_SEC:
+			self.reported = now
+			Say("{}: a frame arrived incomplete (image status {}). Left out {} incomplete frames so far (latest: "
+				"after frame {}).".format(self.name, ImageStatusText(status), self.incomplete, frameNumber))
+
+
+def ImageStatusText(status):
+	# An image status and its name in PySpin, in words: "3: missing packets"
+	prefix = "SPINNAKER_IMAGE_STATUS_"
+	for key in dir(PySpin):
+		if key.startswith(prefix) and getattr(PySpin, key) == status:
+			return "{}: {}".format(status, key[len(prefix):].lower().replace("_", " "))
+	return str(status)
+
+
+def ReadCounters(camera):
+	# The CAMERA_COUNTERS and STREAM_COUNTERS the camera can read now, by name. Never raises.
+	counters = {}
+	for nodemap, names in ((lambda: camera.GetNodeMap(), CAMERA_COUNTERS),
+			(lambda: camera.GetTLStreamNodeMap(), STREAM_COUNTERS)):
+		try:
+			nodemap = nodemap()
+		except Exception as e:
+			logging.error("Caught error at cameras/flir.py ReadCounters: {}".format(e))
+			continue
+		for name in names:
+			try:
+				value = ReadNode(nodemap, name, PySpin.CIntegerPtr)
+			except Exception as e:
+				logging.error("Caught error at cameras/flir.py ReadCounters, {}: {}".format(name, e))
+				continue
+			if value is not None:
+				counters[name] = int(value)
+	return counters
+
+
+def SaveFramesLost(cam_params, camera):
+	"""
+	The frames the camera lost before they reached campy, into cam_params
+	for metadata.csv, and a line when it lost any (FramesLostText):
+	  flirFramesLost        the frames its FrameID skipped; left out when
+	                        FrameID could not be read
+	  flirFramesIncomplete  the incomplete frames GrabFrame left out
+	  flir<counter>         each of the CAMERA_COUNTERS and STREAM_COUNTERS
+	                        it can read, as much as it rose while the camera
+	                        acquired
+	Read before EndAcquisition (CloseCamera).
+	"""
+	entry = _frameCounts.pop(id(camera), None)
+	counts = entry[1] if entry is not None else FrameCount(cam_params["cameraName"])
+	if counts.counted:
+		cam_params["flirFramesLost"] = counts.lost
+	cam_params["flirFramesIncomplete"] = counts.incomplete
+	for name, value in ReadCounters(camera).items():
+		# A counter lower than at the start was reset since: all of it is this recording's
+		before = counts.started.get(name, 0)
+		cam_params["flir" + name] = value - before if value >= before else value
+	text = FramesLostText(cam_params)
+	if text:
+		Say(text)
+
+
+def FramesLostText(cam_params):
+	# One line on the frames a camera lost before they reached campy, and
+	# where, as far as the counters say; None when it lost none
+	causes = []
+	incomplete = cam_params.get("flirFramesIncomplete", 0)
+	if incomplete:
+		causes.append("{} arrived incomplete and were left out (USB link errors?)".format(incomplete))
+	overflow = cam_params.get("flirTransferQueueOverflowCount", 0)
+	if overflow:
+		causes.append("the camera dropped {} it could not send in time (campy took frames too slowly, or USB too "
+			"slow for this frame size and rate?)".format(overflow))
+	dropped = cam_params.get("flirStreamDroppedFrameCount", 0)
+	if dropped:
+		causes.append("Spinnaker dropped {} older frames that campy had not taken yet (bufferMode {})".format(
+			dropped, cam_params.get("bufferMode")))
+	lost = cam_params.get("flirStreamLostFrameCount", 0)
+	if lost:
+		causes.append("Spinnaker lost {} (no free buffer, or data lost on the USB link)".format(lost))
+	skipped = cam_params.get("flirFramesLost", 0)
+	if not skipped and not causes:
+		return None
+
+	errors = cam_params.get("flirLinkErrorCount", 0)
+	if errors:
+		causes.append("its USB link had {} errors".format(errors))
+	name = cam_params["cameraName"]
+	if skipped:
+		text = "{}: the camera's frame ID skipped {} frames: they were lost before reaching campy".format(name, skipped)
+	else:
+		text = "{}: frames were lost before reaching campy".format(name)
+	if not causes:
+		return text + " (USB too slow for this frame size and rate?)."
+	causes = "; ".join(causes)
+	return "{}. {}.".format(text, causes[0].upper() + causes[1:])
 
 
 def PrintDeviceInfo(nodemap, cam_params):

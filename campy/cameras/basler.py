@@ -74,8 +74,20 @@ def StartGrabbing(camera):
 
 
 def GrabFrame(camera, frameNumber):
+	try:
+		return camera.RetrieveResult(0, pylon.TimeoutHandling_ThrowException)
+	except Exception as e:
+		# No frame yet, unless pylon says the camera is gone (unplugged)
+		if Removed(camera):
+			raise unicam.CameraLost("pylon says the camera was removed: {}".format(e))
+		raise
 
-	return camera.RetrieveResult(0, pylon.TimeoutHandling_ThrowException)
+
+def Removed(camera):
+	try:
+		return bool(camera.IsCameraDeviceRemoved())
+	except Exception:
+		return False
 
 
 def GetImageArray(grabResult):
@@ -116,9 +128,13 @@ def ReleaseFrame(grabResult):
 
 def CloseCamera(cam_params, camera):
 	Say('Closing {}... Please wait.'.format(cam_params["cameraName"]))
-	# Close Basler camera after acquisition stops
-	camera.StopGrabbing()
-	camera.Close()
+	# Close Basler camera after acquisition stops. Each step whatever the one
+	# before did, and what fails is said, not raised (flir.CloseCamera).
+	for step, close in (("StopGrabbing", camera.StopGrabbing), ("Close", camera.Close)):
+		try:
+			close()
+		except Exception as e:
+			Say("{}: {} failed as it closed: {}".format(cam_params["cameraName"], step, e))
 
 
 def CloseSystem(system, device_list):

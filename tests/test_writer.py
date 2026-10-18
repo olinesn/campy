@@ -27,7 +27,7 @@ def test_cpu_args_unchanged():
 	assert enc["codec"] == "libx264"
 	assert enc["pix_fmt_out"] == "yuv420p" # rgb0 is mapped for the CPU path
 	assert enc["output_params"] == FRAGMENTED + ["-preset", "fast", "-tune", "fastdecode", "-crf", "21",
-		"-bufsize", "20M", "-maxrate", "10M", "-bf:v", "4", "-x264-params", "nal-hrd=cbr"]
+		"-bufsize", "20M", "-maxrate", "10M", "-bf:v", "4"]
 	assert enc["input_params"] == ["-an"]
 	assert enc["macro_block_size"] == 16
 	assert enc["key"] == "libx264/fast"
@@ -175,6 +175,18 @@ def test_cpu_writer_encodes(tmp_path):
 	ffmpeg.close()
 	frames, _ = imageio_ffmpeg.count_frames_and_secs(str(tmp_path / "Camera0" / "v.mp4"))
 	assert frames == 30
+
+
+def test_cpu_h264_says_nothing_at_warning_level(tmp_path, capfd):
+	# -x264-params nal-hrd=cbr made libx264 warn "CBR HRD requires constant
+	# bitrate" on every CPU H.264 recording: CBR signalling cannot go with -crf
+	params = cam(videoFolder=str(tmp_path), videoFilename="v.mp4", frameRate=30, ffmpegLogLevel="warning")
+	ffmpeg, writing, _ = writer.OpenWriter(params, [])
+	assert writing
+	for i in range(10):
+		ffmpeg.send(np.full((240, 320), i * 8, dtype=np.uint8))
+	ffmpeg.close()
+	assert capfd.readouterr().err == ""
 
 
 # colorRange: "full" keeps a camera's 0-255 levels (writer.EncoderArgs)

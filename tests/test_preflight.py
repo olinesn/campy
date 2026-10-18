@@ -6,6 +6,7 @@ import sys
 import types
 
 import pytest
+import yaml
 
 from campy import configurator, preflight
 from campy.preflight import OK, WARN, FAIL
@@ -170,6 +171,181 @@ def test_capacity_unmeasured_and_mixed():
 	report = preflight.Report()
 	preflight.CheckCapacity(cams, None, report, "t.json")
 	assert lines(report)[0][0] == WARN and "campy-encode-sweep" in lines(report)[0][1]
+
+
+# A sweep with --streams 1,2,4,6,8 that kept up at every count: 8 is as many
+# as it tried, not the encoder's limit
+SWEPT_ALL = dict(TABLE["entries"][0], max_streams=8, max_tested=8, max_mpx_s=629.1,
+	results=[{"streams": n, "pass": True} for n in (1, 2, 4, 6, 8)])
+
+# What campy-encode-sweep saved for an encoder this computer does not have
+# (VA-API on a Mac), before it marked such an entry as an error
+ERRORED = dict(TABLE["entries"][0], key="h264_vaapi", max_streams=0, max_tested=1, max_mpx_s=0.0,
+	bitrate_mbps=None, results=[{"streams": 1, "error": "stream 0: OSError('[Errno 32] Broken pipe')",
+	"pass": False}])
+
+
+def capacity(cams, *entries):
+	report = preflight.Report()
+	preflight.CheckCapacity(cams, dict(TABLE, entries=list(entries)), report, "t.json")
+	return lines(report)
+
+
+def test_too_many_from_the_sweeps_rows():
+	rows = lambda *counts: [{"streams": n, "pass": ok} for n, ok in counts]
+	assert preflight.TooMany(SWEPT_ALL) is None
+	# --keep-going: 6 was too slow, and 8 kept up once after it. 6 is the limit.
+	assert preflight.TooMany(dict(SWEPT_ALL, max_streams=4, results=rows((4, True), (6, False), (8, True)))) == 6
+	# A table without the sweep's rows: the sweep stops at the first count that fails
+	assert preflight.TooMany(TABLE["entries"][0]) == 8
+
+
+def test_capacity_beyond_the_counts_tried():
+	# 10 cameras, after a sweep that kept up at every count up to 8: a WARN, not a FAIL
+	ten = cameras([str(n) for n in range(10)])[1]
+	assert capacity(ten, SWEPT_ALL) == [(WARN, "libx264/veryfast: 10 cameras at 1280x1024 60 fps; measured to "
+		"keep up with 8+ (x1.25 headroom). It was not tried with more than 8: run campy-encode-sweep with "
+		"--streams up to 10.")]
+	# At another frame rate: 629 Mpx/s is what it kept up with, not its limit
+	ten = cameras([str(n) for n in range(10)], frameRate=62)[1]
+	assert capacity(ten, SWEPT_ALL) == [(WARN, "libx264/veryfast: 10 cameras need 813 Mpx/s; the 1280x1024 "
+		"60 fps measurement kept up with 629+ Mpx/s (estimate for 62 fps). It was not tried with more than 8 "
+		"streams: run campy-encode-sweep with this config and --streams up to 10 to measure it.")]
+
+
+def test_capacity_between_the_counts_tried():
+	# 6 kept up and 8 did not: 7 was not tried, and 8 FAILs (test_capacity_fits_and_fails)
+	[(status, text)] = capacity(cameras(list("1234567"))[1], TABLE["entries"][0])
+	assert status == WARN and text.endswith(". It did not keep up with 8, and 7 was not tried: run "
+		"campy-encode-sweep with --streams 7.")
+	# At 62 fps: 7 cameras need more than 6 streams of the measurement, less than 8
+	[(status, text)] = capacity(cameras(list("1234567"), frameRate=62)[1], TABLE["entries"][0])
+	assert status == WARN and "need 569 Mpx/s; the 1280x1024 60 fps measurement kept up with 472 Mpx/s, and not "\
+		"with 629 (estimate for 62 fps). It was not tried in between" in text
+	[(status, text)] = capacity(cameras(list("12345678"), frameRate=62)[1], TABLE["entries"][0])
+	assert status == FAIL and text.startswith("libx264/veryfast: 8 cameras need 650 Mpx/s")
+
+
+def test_capacity_per_gpu():
+	# 16 NVENC cameras, 8 on each of two GPUs, and a sweep that kept up with
+	# 12 on one: each GPU has its own encoder
+	entry = dict(TABLE["entries"][0], key="hevc_nvenc/fast", max_streams=12, max_tested=16)
+	assert capacity(nvenc_cameras(16, gpuID=[0] * 8 + [1] * 8), entry) == [
+		(OK, "hevc_nvenc/fast on GPU 0: 8 cameras at 1280x1024 60 fps; measured to keep up with 12 on one GPU "
+			"(x1.25 headroom)"),
+		(OK, "hevc_nvenc/fast on GPU 1: 8 cameras at 1280x1024 60 fps; measured to keep up with 12 on one GPU "
+			"(x1.25 headroom)"),
+		(WARN, "encoders were measured one at a time, and hevc_nvenc/fast on GPU 0 and hevc_nvenc/fast on GPU 1 "
+			"share this computer's CPU (VA-API converts every frame on the CPU too). Check the mix with a test "
+			"recording."),
+		]
+	# All 16 on one GPU: the sweep found 16 too slow
+	[(status, text)] = capacity(nvenc_cameras(16), entry)
+	assert status == FAIL and text.startswith("hevc_nvenc/fast: 16 cameras")
+
+	# VA-API: one encoder per render node
+	_, cams = cameras(list("12"), gpuID=0, gpuMake="vaapi", vaapiDevice=["/dev/dri/renderD128", "/dev/dri/renderD129"])
+	found = capacity(cams, dict(entry, key="h264_vaapi"))
+	assert [t.split(":")[0] for s, t in found if s == OK] == ["h264_vaapi on /dev/dri/renderD128",
+		"h264_vaapi on /dev/dri/renderD129"]
+	# Quick Sync takes the default GPU whatever gpuID says: one encoder
+	_, cams = cameras(list("12"), gpuID=[0, 1], gpuMake="intel")
+	assert capacity(cams, dict(entry, key="h264_qsv/veryfast")) == [(OK, "h264_qsv/veryfast: 2 cameras at "
+		"1280x1024 60 fps; measured to keep up with 12 (x1.25 headroom)")]
+
+
+def test_capacity_estimate_says_what_differs():
+	entry = TABLE["entries"][0]
+	# Only pixelFormatInput differs: rgb24 frames have 3 times the bytes of the
+	# measured gray ones for ffmpeg to read, so 2 cameras come close
+	assert capacity(cameras(list("12"), pixelFormatInput="rgb24")[1], entry) == [(WARN, "libx264/veryfast: "
+		"2 cameras need 157 Mpx/s; the 1280x1024 60 fps gray measurement kept up with 472 Mpx/s, and not with "
+		"629 (estimate for rgb24 input: 3 bytes a pixel, not 1). With 3 times the bytes a pixel for ffmpeg to "
+		"read, that may be close to its limit.")]
+	[(status, _)] = capacity(cameras(["1"], pixelFormatInput="rgb24")[1], entry)
+	assert status == OK
+	# Gray cameras against an rgb24 measurement: fewer bytes may keep up with more
+	[(status, text)] = capacity(cameras(list("12345678"))[1], dict(entry, pix_fmt_in="rgb24"))
+	assert status == WARN and "(estimate for gray input: 1 byte a pixel, not 3). With fewer bytes a pixel it "\
+		"may keep up with more" in text
+	# Frame size and rate
+	[(_, text)] = capacity(cameras(list("12"), frameWidth=640, frameHeight=512, frameRate=30)[1], entry)
+	assert text.endswith("(estimate for 640x512 frames at 30 fps)")
+	[(_, text)] = capacity(cameras(list("12"), frameRate=[60, 30])[1], entry)
+	assert text.endswith("(estimate for cameras of 2 frame shapes)")
+
+
+def test_capacity_errored_sweep_is_not_measured():
+	_, cams = cameras(list("12"), gpuID=0, gpuMake="vaapi")
+	unmeasured = (WARN, "h264_vaapi was not measured (Camera0, Camera1): campy-encode-sweep stopped with an "
+		"error on it, which t.json holds. Check that this encoder works here, then run campy-encode-sweep again.")
+	# As sweeps saved it before (only error rows), and as they save it now
+	assert capacity(cams, ERRORED) == [unmeasured]
+	assert capacity(cams, dict(ERRORED, error="stream 0: OSError('[Errno 32] Broken pipe')")) == [unmeasured]
+	# A measurement at another frame shape still gives an estimate
+	[(status, text)] = capacity(cams, ERRORED, dict(TABLE["entries"][0], key="h264_vaapi", fps=30.0))
+	assert status == OK and text.endswith("(estimate for 60 fps)")
+	# and no recording size comes from it
+	assert preflight.FindEntry(dict(TABLE, entries=[ERRORED]), cams[0]) is None
+
+
+def missing_camera(serials):
+	# numCams 4, cameraSelection 0 to 3, with these cameras connected
+	p, _ = cameras(list("1234"))
+	systems = {"flir": {"serials": serials}}
+	return p, systems, preflight.CameraList(systems, p)
+
+
+def test_missing_camera_fails():
+	_, systems, cams = missing_camera(["1", "2", "3"])
+	report = preflight.Report()
+	preflight.CheckDevices(systems, cams, report)
+	assert lines(report) == [(FAIL, "Camera3: no flir camera for cameraSelection 3; 3 were found (cameraSelection "
+		"0 to 2). Check that it is connected, or change cameraSelection.")]
+
+	_, systems, cams = missing_camera(["1"])
+	report = preflight.Report()
+	preflight.CheckDevices(systems, cams, report)
+	assert [s for s, _ in lines(report)] == [FAIL] * 3
+	assert lines(report)[0][1].endswith("; 1 was found (cameraSelection 0). Check that it is connected, or change "
+		"cameraSelection.")
+
+	_, systems, cams = missing_camera([])
+	report = preflight.Report()
+	preflight.CheckDevices(systems, cams, report)
+	assert lines(report)[0] == (FAIL, "Camera0: no flir camera for cameraSelection 0; none were found. Check that "
+		"it is connected.")
+
+	# A make that does not list its devices is not checked
+	report = preflight.Report()
+	preflight.CheckDevices({}, cams, report)
+	assert report.lines == []
+
+
+def test_run_stops_on_a_missing_camera(tmp_path, monkeypatch):
+	root = make_sysfs(tmp_path / "sys", [(CTRL_A, 4, 10000, "4-{}".format(n), FLIR, str(n), 5000) for n in (1, 2, 3)])
+	monkeypatch.setattr(preflight, "CheckEncoders", lambda cams, report: None)
+	p, systems, _ = missing_camera(["1", "2", "3"])
+	p.update(capacityFile=str(tmp_path / "none.json"), videoFolder=str(tmp_path))
+	with pytest.raises(preflight.PreflightError, match="1 check failed"):
+		preflight.Run(systems, dict(p, preflight="error"), root)
+	# The USB check leaves it to that FAIL: it has no serial number to look for
+	report = preflight.Run(systems, dict(p, preflight="warn"), root)
+	assert lines(report, "camera") == [(FAIL, "Camera3: no flir camera for cameraSelection 3; 3 were found "
+		"(cameraSelection 0 to 2). Check that it is connected, or change cameraSelection.")]
+	assert not any("Camera3" in t for _, t in lines(report, "usb"))
+
+
+def test_run_reads_ffmpegs_encoders_once(tmp_path, monkeypatch):
+	fake_ffmpeg(monkeypatch)
+	monkeypatch.setattr(preflight, "FfmpegExe", lambda: "ffmpeg")
+	asked = []
+	monkeypatch.setattr(preflight, "FfmpegEncoders", lambda exe: asked.append(exe) or {"hevc_nvenc"})
+	p, _ = cameras(["1"], gpuID=0, gpuMake="nvidia", codec="h265",
+		capacityFile=str(tmp_path / "none.json"), videoFolder=str(tmp_path))
+	report = preflight.Run({"flir": {"serials": ["1"]}}, dict(p, preflight="warn"), str(tmp_path / "no-sysfs"))
+	assert asked == ["ffmpeg"]
+	assert [s for s, _ in lines(report, "encoders")] == [OK, OK] # has hevc_nvenc; it encodes
 
 
 def test_encoder_check():
@@ -356,6 +532,8 @@ def test_run_modes(tmp_path, monkeypatch):
 	report = preflight.Run(systems, dict(p, preflight="warn"), root)
 	assert report.count(FAIL) == 1
 	assert preflight.Run(systems, dict(p, preflight="off"), root) is None
+	# Unquoted, a config's off is YAML's False: that ran the check in error mode
+	assert preflight.Run(systems, dict(p, **yaml.safe_load("preflight: off")), root) is None
 
 
 def test_run_stops_on_nvenc_failure(tmp_path, monkeypatch):

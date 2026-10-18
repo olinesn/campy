@@ -15,11 +15,13 @@ FAILs; "warn" reports and records anyway; "off" skips the check.
 
   encoders  the ffmpeg binary has each camera's encoder, a VA-API device can
             be opened, and NVENC encodes a few test frames with campy's settings
-  capacity  cameras per encoder, against the table campy-encode-sweep measured
-            on this computer (capacityFile)
+  capacity  cameras per encoder and GPU, against the table campy-encode-sweep
+            measured on this computer (capacityFile). It FAILs only from a
+            count the sweep found too slow; a count it did not try is a WARN
   usb       camera data per USB bus, against a budget (Linux: read from sysfs)
   disk      free space for the recording, when the sweep measured a bitrate
-  camera    each camera can run at frameRate with campy's settings, and
+  camera    each camera's cameraSelection picks a device that was found;
+            each camera can run at frameRate with campy's settings, and
             (FLIR) sends frames of frameWidth x frameHeight: each is opened,
             set up as a recording sets it up, and read
 """
@@ -124,18 +126,46 @@ class Report:
 
 def CameraList(systems, params):
 	# Each camera's parameters, as its process will see them, plus the serial
-	# number of the device it will open
+	# number of the device it will open (None when there is no such device)
 	cams = []
 	for n in range(params["numCams"]):
 		cam = configurator.CameraParams(params, n)
 		if cam["cameraMake"] == "ratcam":
 			cam = ratcam.FixedParams(cam)
 		serials = systems.get(cam["cameraMake"], {}).get("serials", [])
-		sel = cam["cameraSelection"]
-		ok = isinstance(sel, int) and 0 <= sel < len(serials)
-		cam["cameraSerialNo"] = serials[sel] if ok else None
+		cam["cameraSerialNo"] = serials[cam["cameraSelection"]] if Selects(cam, serials) else None
 		cams.append(cam)
 	return cams
+
+
+def Selects(cam, serials):
+	# cameraSelection picks one of the devices found
+	sel = cam["cameraSelection"]
+	return isinstance(sel, int) and 0 <= sel < len(serials)
+
+
+def CheckDevices(systems, cams, report):
+	"""
+	Each camera's cameraSelection picks a device of its make that was found.
+	A camera whose device is not there (cameraSelection 3 with three FLIR
+	cameras connected) stopped its own process with an IndexError as it
+	opened, after the other cameras had started, and has no serial number
+	for the USB and frame rate checks to find it by.
+	"""
+	for cam in cams:
+		make = cam["cameraMake"]
+		serials = systems.get(make, {}).get("serials")
+		if serials is None or Selects(cam, serials):
+			continue # found, or a make that does not list its devices
+		found = len(serials)
+		if found == 0:
+			text = "none were found. Check that it is connected."
+		else:
+			text = "{} {} found (cameraSelection {}). Check that it is connected, or change "\
+				"cameraSelection.".format(found, "was" if found == 1 else "were",
+				0 if found == 1 else "0 to {}".format(found - 1))
+		report.add(FAIL, "camera", "{}: no {} camera for cameraSelection {}; {}".format(
+			cam["cameraName"], make, cam["cameraSelection"], text))
 
 
 # ------------------------------------------------------------------ encoders
@@ -162,12 +192,14 @@ def FfmpegEncoders(exe):
 
 
 def CheckEncoders(cams, report, exe=None, encoders=None):
+	# Returns the encoders this ffmpeg has (none when it would not run), for
+	# CheckNvenc: ffmpeg -encoders takes a second or so to answer
 	exe = exe or FfmpegExe()
 	if encoders is None:
 		encoders = FfmpegEncoders(exe)
 	if encoders is None:
 		report.add(FAIL, "encoders", "could not run ffmpeg at {}. Set ffmpegPath.".format(exe))
-		return
+		return set()
 	by_codec = OrderedDict()
 	for cam in cams:
 		by_codec.setdefault(writer.EncoderArgs(cam)["codec"], []).append(cam)
@@ -189,6 +221,7 @@ def CheckEncoders(cams, report, exe=None, encoders=None):
 		elif not os.access(device, os.R_OK | os.W_OK):
 			report.add(FAIL, "encoders", "cannot open VA-API device {} ({}): add this user to the "
 				"device's group (usually 'render') and log in again.".format(device, Names(group)))
+	return encoders
 
 
 # ------------------------------------------------------------------ NVENC
@@ -341,15 +374,142 @@ def EntryShape(entry):
 	return (entry["width"], entry["height"], float(entry["fps"]), entry["pix_fmt_in"])
 
 
+def EntryError(entry):
+	"""
+	What stopped campy-encode-sweep before it measured anything (an encoder
+	this computer does not have, say), or None for a measurement. Tables
+	saved before the sweep marked these hold them as keeping up with 0
+	streams, with only error rows.
+	"""
+	if entry.get("error"):
+		return entry["error"]
+	rows = entry.get("results") or []
+	if rows and all(row.get("error") for row in rows):
+		return rows[-1]["error"]
+	return None
+
+
+def TooMany(entry):
+	"""
+	The fewest streams campy-encode-sweep tried that did not keep up (too
+	slow, or stopped with an error), or None when every count it tried kept
+	up: max_streams is then only as many as it tried, not the encoder's limit.
+	"""
+	cap = entry["max_streams"]
+	rows = entry.get("results")
+	if rows is None: # a table without the sweep's rows: it stops at the first count that fails
+		return entry["max_tested"] if cap < entry["max_tested"] else None
+	failed = [row["streams"] for row in rows if not row.get("pass") and row["streams"] > cap]
+	return min(failed) if failed else None
+
+
 def FindEntry(table, cam):
 	# The measurement for this camera's encoder and frame shape, if there is one
 	if not table:
 		return None
 	key = writer.EncoderArgs(cam)["key"]
 	for entry in table.get("entries", []):
-		if entry["key"] == key and EntryShape(entry) == Shape(cam):
+		if entry["key"] == key and EntryShape(entry) == Shape(cam) and not EntryError(entry):
 			return entry
 	return None
+
+
+def EncoderDevice(cam):
+	"""
+	The device a camera's encoder runs on, where a computer can have more than
+	one: NVENC's and AMF's gpuID, VA-API's vaapiDevice. None for the CPU, and
+	for Quick Sync, which takes the default device whatever gpuID says
+	(writer.EncoderArgs passes it none).
+	"""
+	if cam["gpuID"] == -1:
+		return None
+	if cam["gpuMake"] in ("nvidia", "amd"):
+		return "GPU {}".format(cam["gpuID"])
+	if cam["gpuMake"] == "vaapi":
+		return str(cam["vaapiDevice"])
+	return None
+
+
+def ExactFinding(name, group, entry, on_one):
+	# (status, text) for cameras of the frame shape the sweep measured
+	n = len(group)
+	cap, tested, too_many = entry["max_streams"], entry["max_tested"], TooMany(entry)
+	w, h, fps, _ = EntryShape(entry)
+	text = "{}: {} camera{} at {}x{} {:g} fps; measured to keep up with {}{}{} (x{:g} headroom)".format(
+		name, n, "s" if n > 1 else "", w, h, fps, cap, "+" if too_many is None else "", on_one,
+		entry["headroom"])
+	if n <= cap:
+		return OK, text
+	# More cameras than kept up: a FAIL only from a count the sweep found too slow
+	if too_many is None:
+		return WARN, text + ". It was not tried with more than {}: run campy-encode-sweep with --streams "\
+			"up to {}.".format(tested, n)
+	if n < too_many:
+		return WARN, text + ". It did not keep up with {}, and {} was not tried: run campy-encode-sweep "\
+			"with --streams {}.".format(too_many, n, n)
+	return FAIL, text + ". Move cameras to another encoder or lower the load."
+
+
+def EstimateFor(group, entry):
+	# What differs from the measurement, in words: "62 fps", "rgb24 input: ..."
+	shapes = set(Shape(cam) for cam in group)
+	if len(shapes) > 1:
+		return "cameras of {} frame shapes".format(len(shapes))
+	w, h, fps, pix = next(iter(shapes))
+	frames = []
+	if (w, h) != (entry["width"], entry["height"]):
+		frames.append("{}x{} frames".format(w, h))
+	if fps != float(entry["fps"]):
+		frames.append("{:g} fps".format(fps))
+	differs = [" at ".join(frames)] if frames else []
+	if pix != entry["pix_fmt_in"]:
+		bpp, measured = BytesPerPixel(pix), BytesPerPixel(str(entry["pix_fmt_in"]))
+		differs.append("{} input{}".format(pix, "" if bpp is None or measured is None else
+			": {:g} byte{} a pixel, not {:g}".format(bpp, "" if bpp == 1 else "s", measured)))
+	return " and ".join(differs)
+
+
+def EstimateFinding(name, group, entries, on_one):
+	"""
+	(status, text) for cameras of a frame shape the sweep did not measure:
+	their pixel rate against the measurement closest in pixel rate per
+	stream. A FAIL only when they need at least what the sweep found too slow.
+	"""
+	n = len(group)
+	need = sum(PixelRate(cam) for cam in group) / 1e6
+	entry = min(entries, key=lambda e: abs(e["width"] * e["height"] * e["fps"] / 1e6 - need / n))
+	have, too_many = entry["max_mpx_s"], TooMany(entry)
+	too_much = None if too_many is None else too_many * entry["width"] * entry["height"] * entry["fps"] / 1e6
+	# ffmpeg reads and converts every byte of a frame on the CPU, so frames of
+	# more bytes a pixel than the measured ones may not reach its pixel rate
+	# (counted at that ratio, for a WARN), and frames of fewer may pass it
+	pix_fmt = str(entry["pix_fmt_in"])
+	measured_bpp = BytesPerPixel(pix_fmt)
+	ratios = [bpp / measured_bpp for bpp in (BytesPerPixel(str(cam["pixelFormatInput"])) for cam in group)
+		if bpp and measured_bpp] or [1]
+	same_input = all(str(cam["pixelFormatInput"]) == pix_fmt for cam in group)
+	measured = "the {}x{} {:g} fps{} measurement kept up with {:.0f}{} Mpx/s{}".format(entry["width"],
+		entry["height"], entry["fps"], "" if same_input else " " + pix_fmt, have,
+		"+" if too_much is None else "", on_one)
+	if too_much is not None:
+		measured += ", and not with {:.0f}".format(too_much)
+	text = "{}: {} camera{} need{} {:.0f} Mpx/s; {} (estimate for {})".format(name, n, "s" if n > 1 else "",
+		"" if n > 1 else "s", need, measured, EstimateFor(group, entry))
+	if need <= have:
+		if need > WARN_FRACTION * have:
+			return WARN, text
+		if need * max(ratios) > WARN_FRACTION * have:
+			return WARN, text + ". With {:g} times the bytes a pixel for ffmpeg to read, that may be close "\
+				"to its limit.".format(max(ratios))
+		return OK, text
+	measure = ": run campy-encode-sweep with this config and --streams up to {} to measure it.".format(n)
+	if too_much is None:
+		return WARN, text + ". It was not tried with more than {} streams{}".format(entry["max_tested"], measure)
+	if need < too_much:
+		return WARN, text + ". It was not tried in between" + measure
+	if min(ratios) < 1:
+		return WARN, text + ". With fewer bytes a pixel it may keep up with more" + measure
+	return FAIL, text + ". Move cameras to another encoder or lower the load."
 
 
 def CheckCapacity(cams, table, report, path):
@@ -362,52 +522,48 @@ def CheckCapacity(cams, table, report, path):
 		report.add(WARN, "capacity", "{} was measured on {}, not on this computer ({})."\
 			.format(path, measured_on, socket.gethostname()))
 
+	# One group per encoder and device: cameras split over two GPUs load an
+	# encoder each
 	groups = OrderedDict()
 	for cam in cams:
-		groups.setdefault(writer.EncoderArgs(cam)["key"], []).append(cam)
+		groups.setdefault((writer.EncoderArgs(cam)["key"], EncoderDevice(cam)), []).append(cam)
+	devices = OrderedDict()
+	for key, device in groups:
+		devices.setdefault(key, []).append(device)
 
-	for key, group in groups.items():
+	names = []
+	for (key, device), group in groups.items():
+		# An encoder used on more than one device is named with each. The sweep
+		# runs every stream on one device and the table does not say which, so
+		# its count is applied to each: right for GPUs of the same model.
+		split = len(devices[key]) > 1
+		name = "{} on {}".format(key, device) if split else key
+		on_one = " on one GPU" if split else ""
+		names.append(name)
 		entries = [e for e in table.get("entries", []) if e["key"] == key]
+		measured = [e for e in entries if not EntryError(e)]
 		if not entries:
 			report.add(WARN, "capacity", "{} was not measured ({}). Run campy-encode-sweep with "
-				"this encoder.".format(key, Names(group)))
+				"this encoder.".format(name, Names(group)))
+			continue
+		if not measured:
+			report.add(WARN, "capacity", "{} was not measured ({}): campy-encode-sweep stopped with an "
+				"error on it, which {} holds. Check that this encoder works here, then run "
+				"campy-encode-sweep again.".format(name, Names(group), path))
 			continue
 
-		n = len(group)
 		shapes = set(Shape(cam) for cam in group)
-		exact = [e for e in entries if len(shapes) == 1 and EntryShape(e) == next(iter(shapes))]
+		exact = [e for e in measured if len(shapes) == 1 and EntryShape(e) == next(iter(shapes))]
 		if exact:
-			entry = exact[0]
-			cap, tested = entry["max_streams"], entry["max_tested"]
-			w, h, fps, _ = EntryShape(entry)
-			measured = "{}{}".format(cap, "+" if cap >= tested else "")
-			text = "{}: {} camera{} at {}x{} {:g} fps; measured to keep up with {} (x{:g} headroom)"\
-				.format(key, n, "s" if n > 1 else "", w, h, fps, measured, entry["headroom"])
-			if n > cap:
-				report.add(FAIL, "capacity", text + ". Move cameras to another encoder or lower the load.")
-			else:
-				report.add(OK, "capacity", text)
+			status, text = ExactFinding(name, group, exact[0], on_one)
 		else:
-			# Another frame size or rate than measured: compare pixel rates, from
-			# the measurement closest in pixel rate per stream
-			need = sum(PixelRate(cam) for cam in group) / 1e6
-			per_stream = need / n
-			entry = min(entries, key=lambda e: abs(e["width"] * e["height"] * e["fps"] / 1e6 - per_stream))
-			have = entry["max_mpx_s"]
-			text = "{}: {} cameras need {:.0f} Mpx/s; the {}x{} {:g} fps measurement kept up with "\
-				"{:.0f} Mpx/s (estimate: a different frame size or rate)"\
-				.format(key, n, need, entry["width"], entry["height"], entry["fps"], have)
-			if need > have:
-				report.add(FAIL, "capacity", text)
-			elif need > WARN_FRACTION * have:
-				report.add(WARN, "capacity", text)
-			else:
-				report.add(OK, "capacity", text)
+			status, text = EstimateFinding(name, group, measured, on_one)
+		report.add(status, "capacity", text)
 
 	if len(groups) > 1:
 		report.add(WARN, "capacity", "encoders were measured one at a time, and {} share this "
 			"computer's CPU (VA-API converts every frame on the CPU too). Check the mix with a test "
-			"recording.".format(" and ".join(groups)))
+			"recording.".format(" and ".join(names)))
 
 
 # ------------------------------------------------------------------ USB
@@ -503,6 +659,8 @@ def CheckUsb(cams, params, report, sysfs_root="/sys"):
 	devices = ListUsbDevices(sysfs_root)
 	buses = OrderedDict()
 	for cam in usb_cams:
+		if cam.get("cameraSerialNo") is None:
+			continue # no device was found for it: CheckDevices FAILs that
 		device = FindCameraDevice(devices, cam)
 		if device is None:
 			report.add(WARN, "usb", "{} (serial {}) is not on the USB bus: a GigE camera, or its USB "
@@ -684,7 +842,9 @@ def CheckFrameRate(cams, report, limits):
 
 
 def Run(systems, params, sysfs_root="/sys"):
-	mode = str(params.get("preflight", "error")).lower()
+	mode = params.get("preflight", "error")
+	# preflight: off without quotes is YAML's False, which read as "false" ran the check
+	mode = "off" if mode is False else str(mode).lower()
 	if mode == "off":
 		return None
 
@@ -693,8 +853,9 @@ def Run(systems, params, sysfs_root="/sys"):
 	table = LoadCapacity(path)
 
 	report = Report()
-	CheckEncoders(cams, report)
-	CheckNvenc(cams, report)
+	CheckDevices(systems, cams, report)
+	encoders = CheckEncoders(cams, report)
+	CheckNvenc(cams, report, encoders=encoders)
 	CheckCapacity(cams, table, report, path)
 	CheckUsb(cams, params, report, sysfs_root)
 	CheckFrameRate(cams, report, lambda cam: CameraLimits(systems, cam))

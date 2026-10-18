@@ -122,9 +122,11 @@ def ReleaseFrame(grabResult):
 
 def CloseCamera(cam_params, camera):
 	Say('Closing {}... Please wait.'.format(cam_params["cameraName"]))
-	# Close camera after acquisition stops
-	camera.close()
-	del camera
+	# Close camera after acquisition stops; what fails is said, not raised
+	try:
+		camera.close()
+	except Exception as e:
+		Say("{}: the clip did not close: {}".format(cam_params["cameraName"], e))
 
 
 def CloseSystem(system, device_list):

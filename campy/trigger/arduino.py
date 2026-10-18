@@ -40,7 +40,10 @@ def StartTriggers(systems, params):
 		# reads them in this order; a sketch from before the test LED ignores the last two)
 		frameRate = configurator.TriggerFrameRate(params)
 		blinkPin, blinkHz = configurator.BlinkSettings(params)
-		serialList = [len(params["digitalPins"])] + list(params["digitalPins"]) + [frameRate, blinkPin, blinkHz]
+		# One pin can be written without a list (digitalPins: 2), which len() refused
+		pins = params["digitalPins"]
+		pins = list(pins) if isinstance(pins, (list, tuple)) else [pins]
+		serialList = [len(pins)] + pins + [frameRate, blinkPin, blinkHz]
 		systems["serialCommand"] = serialList
 		serialString = ",".join(str(item) for item in serialList)
 
@@ -49,7 +52,7 @@ def StartTriggers(systems, params):
 		systems["serial"].write(serialString.encode())
 
 		Say("Arduino on port {} is triggering pins {} at {} fps{}."\
-			.format(params["serialPort"], params["digitalPins"], frameRate,
+			.format(params["serialPort"], pins, frameRate,
 				", and blinking the test LED on pin {} at {} Hz".format(blinkPin, blinkHz) if blinkPin >= 0 else ""))
 
 	except Exception as e:
