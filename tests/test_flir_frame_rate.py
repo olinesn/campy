@@ -1,6 +1,8 @@
 """A free-running FLIR camera runs at frameRate, against stand-ins for PySpin and the camera."""
 
 import importlib
+import json
+import os
 import sys
 import types
 
@@ -69,7 +71,7 @@ class Enumeration:
 		return next((e for e in self.entries if e.symbolic == name), None)
 
 	def SetIntValue(self, value):
-		setattr(self.camera, self.attr, self.entries[value].symbolic)
+		self.camera.write(self.attr, self.entries[value].symbolic)
 
 
 class FakeCamera:
@@ -165,7 +167,7 @@ def FakePySpin():
 
 
 @pytest.fixture
-def flir(monkeypatch):
+def flir(monkeypatch, tmp_path):
 	monkeypatch.setitem(sys.modules, "PySpin", FakePySpin())
 	monkeypatch.delitem(sys.modules, "campy.cameras.flir", raising=False)
 	module = importlib.import_module("campy.cameras.flir")
@@ -173,6 +175,8 @@ def flir(monkeypatch):
 	# stand-in does not have: here they do nothing
 	monkeypatch.setattr(module, "ConfigureTrigger", lambda camera, cam_params: cam_params)
 	monkeypatch.setattr(module, "ConfigureCustomImageSettings", lambda camera, cam_params: cam_params)
+	# The frame rate notes go here, not to ~/.campy
+	monkeypatch.setattr(module, "NOTE_FOLDER", str(tmp_path / ".campy"))
 	yield module
 	sys.modules.pop("campy.cameras.flir", None)
 
@@ -292,7 +296,7 @@ def test_closing_puts_back_what_it_found(flir, model, found):
 	assert camera.enabled and camera.rate == pytest.approx(80, abs=0.01)
 	flir.CloseCamera(cam, camera)
 	assert camera.calls == ["EndAcquisition", "DeInit"]
-	assert camera.enabled == found["enabled"]
+	assert camera.enabled == found["enabled"] and not os.path.exists(note(flir))
 	if found["enabled"]:
 		assert camera.rate == pytest.approx(59.9947, abs=0.01)
 	if model:
@@ -314,6 +318,7 @@ def test_launch_check_reads_the_most_it_can_do(flir, model, found):
 			"Camera0 (24243505): up to 170.2 fps with campy's settings; frameRate 80")
 	# It closes the camera as it found it, for the camera's own process to set up
 	assert camera.calls == ["Init", "DeInit"] and camera.enabled == found["enabled"]
+	assert not os.path.exists(note(flir))
 	if found["enabled"]:
 		assert camera.rate == pytest.approx(59.9947, abs=0.01)
 	if model:
@@ -337,6 +342,196 @@ def test_launch_check_still_names_a_cap_on_a_triggered_camera(flir):
 	limits = flir.FrameRateLimits(camera, params(cameraTrigger="Line3"))
 	assert limits["frameRateCap"] == 30.0 and limits["fps"] == 30.0
 	assert camera.writes == [] and camera.enabled
+
+
+# ------------------------------------------------------------------ a run that never closes the camera
+
+FOUND = [{"enabled": False}, {"enabled": True, "rate": 59.9947}]
+
+
+def note(flir):
+	return flir.FrameRateNotePath(params())
+
+
+def killed_run(flir, camera):
+	# A free-running recording whose process dies before CloseCamera (killed,
+	# crashed, the computer lost power but the camera did not): the camera keeps
+	# campy's cap, and the next run starts from a new cam_params
+	flir.LoadSettings(camera, params())
+	assert camera.enabled and camera.rate == pytest.approx(80, abs=0.01)
+	assert os.path.exists(note(flir))
+
+
+def capped(found, model):
+	# An older model with AcquisitionFrameRateAuto Continuous picks its own rate: no cap
+	return found["enabled"] and not model
+
+
+@pytest.mark.parametrize("found", FOUND)
+def test_the_next_run_puts_back_what_a_killed_run_found(flir, model, found, capsys):
+	camera = FakeCamera(legacy=model, **found)
+	killed_run(flir, camera)
+	capsys.readouterr()
+	# The next run puts that back before it reads what the camera has, so it
+	# does not take the killed run's cap for the camera's own and put it back
+	# again at its close
+	cam = flir.LoadSettings(camera, params())
+	said = "Camera0: campy did not close it last time and left it capped at 80.0 fps. "
+	said += "Cap set back to 60.0 fps, as before." if capped(found, model) else "Cap removed, as before."
+	assert said in capsys.readouterr().out
+	assert cam["frameRateFound"]["enabled"] == found["enabled"]
+	flir.CloseCamera(cam, camera)
+	assert camera.enabled == found["enabled"] and not os.path.exists(note(flir))
+	if found["enabled"]:
+		assert camera.rate == pytest.approx(59.9947, abs=0.01)
+	if model:
+		assert camera.auto == "Continuous"
+
+
+def test_a_triggered_run_after_a_killed_one_removes_its_cap(flir, model, capsys):
+	# Else it drops triggers faster than the cap: a Blackfly S capped at 10 fps
+	# kept 21 of 100 software triggers at 50 Hz
+	camera = FakeCamera(legacy=model)
+	killed_run(flir, camera)
+	capsys.readouterr()
+	cam = flir.LoadSettings(camera, params(cameraTrigger="Line3"))
+	assert not camera.enabled and not os.path.exists(note(flir))
+	if model:
+		assert camera.auto == "Continuous"
+	assert "Camera0: campy did not close it last time and left it capped at 80.0 fps. Cap removed, as before." \
+		in capsys.readouterr().out
+	camera.writes.clear()
+	flir.CloseCamera(cam, camera)
+	assert camera.writes == []
+
+
+def test_the_launch_check_puts_it_back_and_says_so(flir, capsys):
+	# It opens the cameras before their own processes do, and hides the
+	# Configure* progress lines; this one is not hidden
+	camera = FakeCamera()
+	killed_run(flir, camera)
+	capsys.readouterr()
+	limits = flir.FrameRateLimits(camera, params(cameraTrigger="Line3"))
+	assert capsys.readouterr().out == \
+		"Camera0: campy did not close it last time and left it capped at 80.0 fps. Cap removed, as before.\n"
+	# So the cap the killed run left does not fail a triggered camera's check
+	assert limits["frameRateCap"] is None and limits["fps"] == pytest.approx(FakeCamera.SENSOR_FPS)
+	assert not camera.enabled and not os.path.exists(note(flir))
+	# and the camera's own process finds nothing left to put back
+	flir.LoadSettings(camera, params(cameraTrigger="Line3"))
+	assert "did not close" not in capsys.readouterr().out
+
+
+def test_a_launch_check_that_never_closes_the_camera(flir, monkeypatch, capsys):
+	# Killed after it took the cap off to read the most the camera can do
+	camera = FakeCamera(enabled=True, rate=59.9947)
+	restore = flir.RestoreFrameRate
+	monkeypatch.setattr(flir, "RestoreFrameRate", lambda camera, cam_params: None)
+	flir.FrameRateLimits(camera, params())
+	assert not camera.enabled
+	monkeypatch.setattr(flir, "RestoreFrameRate", restore)
+	cam = flir.LoadSettings(camera, params())
+	assert "Camera0: campy did not close it last time. Cap set back to 60.0 fps, as before." \
+		in capsys.readouterr().out
+	assert cam["frameRateFound"]["enabled"]
+	flir.CloseCamera(cam, camera)
+	assert camera.enabled and camera.rate == pytest.approx(59.9947, abs=0.01)
+
+
+def test_the_note_is_written_before_the_camera_changes(flir, model):
+	# A run killed between the two still leaves it
+	camera = FakeCamera(legacy=model, enabled=True, rate=59.9947)
+	notes = []
+	write = camera.write
+	camera.write = lambda attr, value: notes.append(flir.ReadFrameRateNote(note(flir))) or write(attr, value)
+	flir.LoadSettings(camera, params())
+	expected = {"enabled": True, "rate": 59.9947, "auto": "Continuous" if model else None}
+	assert notes and all(n == expected for n in notes)
+
+
+def test_the_note(flir):
+	camera = FakeCamera()
+	cam = flir.LoadSettings(camera, params())
+	path = note(flir)
+	assert os.path.dirname(path) == flir.NOTE_FOLDER
+	assert os.path.basename(path) == "flir-frame-rate-24243505.json"
+	with open(path) as f:
+		saved = json.load(f)
+	assert saved["enabled"] is False and saved["auto"] is None
+	assert saved["cameraName"] == "Camera0" and saved["cameraSerialNo"] == "24243505"
+	flir.CloseCamera(cam, camera)
+	assert os.listdir(flir.NOTE_FOLDER) == [] # nothing half-written left behind either
+
+
+def test_a_camera_unplugged_since_is_not_reported(flir, capsys):
+	# Unplugging it took the cap off already: nothing to say
+	killed_run(flir, FakeCamera())
+	capsys.readouterr()
+	camera = FakeCamera()
+	flir.LoadSettings(camera, params(cameraTrigger="Line3"))
+	assert "did not close" not in capsys.readouterr().out
+	assert not camera.enabled and not os.path.exists(note(flir))
+
+
+def test_a_note_that_cannot_be_put_back_is_kept(flir):
+	camera = FakeCamera(enabled=True, rate=59.9947)
+	killed_run(flir, camera)
+	switch = camera.nodes["AcquisitionFrameRateEnable"]
+	real = switch.set
+
+	def refuse_once(on):
+		switch.set = real
+		raise SpinError("AccessException")
+
+	switch.set = refuse_once
+	cam = flir.LoadSettings(camera, params())
+	# This run takes what to put back from the note, not from the cap the killed run left
+	assert cam["frameRateFound"]["rate"] == pytest.approx(59.9947)
+	assert flir.ReadFrameRateNote(note(flir))["rate"] == pytest.approx(59.9947)
+	flir.CloseCamera(cam, camera)
+	assert camera.enabled and camera.rate == pytest.approx(59.9947, abs=0.01)
+	assert not os.path.exists(note(flir))
+
+
+def test_an_unreadable_note_is_dropped(flir):
+	os.makedirs(flir.NOTE_FOLDER)
+	with open(note(flir), "w") as f:
+		f.write("{")
+	camera = FakeCamera(enabled=True, rate=30.0)
+	flir.LoadSettings(camera, params(cameraTrigger="Line3"))
+	assert camera.writes == [] and not os.path.exists(note(flir))
+
+
+def test_a_note_that_cannot_be_written(flir, monkeypatch, tmp_path, capsys):
+	# The recording goes ahead, and says what it risks
+	(tmp_path / "file").write_text("")
+	monkeypatch.setattr(flir, "NOTE_FOLDER", str(tmp_path / "file" / ".campy"))
+	camera = FakeCamera()
+	cam = flir.LoadSettings(camera, params())
+	assert camera.rate == pytest.approx(80, abs=0.01)
+	out = capsys.readouterr().out
+	assert "Camera0: could not write " in out
+	assert "If campy stops without closing this camera, it keeps its frame rate cap until it is unplugged." in out
+	flir.CloseCamera(cam, camera)
+	assert not camera.enabled
+
+
+@pytest.mark.parametrize("serial", [None, []])
+def test_a_camera_without_a_serial_number(flir, serial):
+	# No note to key by it: it is still set and put back
+	camera = FakeCamera()
+	cam = flir.LoadSettings(camera, params(cameraSerialNo=serial))
+	assert camera.rate == pytest.approx(80, abs=0.01) and not os.path.exists(flir.NOTE_FOLDER)
+	flir.CloseCamera(cam, camera)
+	assert not camera.enabled
+
+
+def test_each_camera_has_its_own_note(flir, capsys):
+	killed_run(flir, FakeCamera())
+	other = FakeCamera(enabled=True, rate=30.0)
+	flir.LoadSettings(other, params(cameraName="Camera1", cameraSerialNo="24243506", cameraTrigger="Line3"))
+	assert other.writes == [] and os.path.exists(note(flir))
+	assert "did not close" not in capsys.readouterr().out
 
 
 # ------------------------------------------------------------------ USB throughput limit

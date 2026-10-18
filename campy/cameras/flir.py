@@ -3,7 +3,7 @@
 import PySpin
 from campy.cameras import unicam
 from campy.utils.utils import Say
-import os, io, sys, time, logging, contextlib
+import os, io, sys, json, time, logging, contextlib
 
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -83,6 +83,9 @@ def OpenCamera(cam_params):
 
 def LoadSettings(camera, cam_params):
 
+	# First, what an earlier run that did not close the camera left on it
+	RecoverFrameRate(camera, cam_params)
+
 	try:
 		# Configure trigger
 		cam_params = ConfigureTrigger(camera, cam_params)
@@ -119,12 +122,15 @@ def FrameRateLimits(device, cam_params):
 	A free-running camera is read without the cap campy gives it (frameRate,
 	ConfigureFrameRate), so fps is the most it can do. It is read with the USB
 	limit campy gives it (ConfigureLinkLimit), and closed with the frame rate
-	settings and USB limit it had.
+	settings and USB limit it had. Before anything else it puts back what an
+	earlier run that did not close the camera left on it (RecoverFrameRate),
+	where its message is not hidden with the progress lines.
 	"""
 	camera = device
 	camera.Init()
 	settings = None
 	try:
+		RecoverFrameRate(camera, cam_params)
 		with contextlib.redirect_stdout(io.StringIO()): # the Configure* progress lines
 			settings = LoadSettings(camera, dict(cam_params))
 		nodemap = camera.GetNodeMap()
@@ -940,7 +946,9 @@ def ConfigureFrameRate(camera, cam_params):
 	below it. So campy reads back the rate the camera will run at
 	(AcquisitionResultingFrameRate), keeps it as resultingFrameRate (in
 	metadata.csv), and says why when it is not frameRate. What the camera had
-	is put back when campy closes it (RestoreFrameRate).
+	is put back when campy closes it (RestoreFrameRate), and is noted in a file
+	first, for the next run to put back if this one never closes it
+	(RecoverFrameRate).
 
 	A triggered camera is left as it is: the trigger sets its rate.
 	"""
@@ -958,12 +966,15 @@ def ConfigureFrameRate(camera, cam_params):
 				"own rate, not at frameRate {:g}.".format(name, rate))
 			return cam_params
 
-		# What the camera had, for RestoreFrameRate
-		cam_params["frameRateFound"] = {
-			"enabled": switch.GetValue(),
-			"rate": node.GetValue(),
-			"auto": auto.GetCurrentEntry().GetSymbolic() if auto is not None else None,
-			}
+		# What the camera had, for RestoreFrameRate. A note still there is one
+		# RecoverFrameRate could not put back: the camera still has an earlier
+		# run's settings, and the note has what it had before them.
+		path = FrameRateNotePath(cam_params)
+		found = ReadFrameRateNote(path)
+		if found is None:
+			found = FrameRateState(nodemap)
+			WriteFrameRateNote(path, cam_params, found)
+		cam_params["frameRateFound"] = found
 
 		if auto is not None and PySpin.IsWritable(auto):
 			off = auto.GetEntryByName("Off")
@@ -1013,6 +1024,38 @@ def FrameRateShortfall(cam_params, nodemap, fps, lowest):
 		name, fps, rate, preflight.FrameRateReason(cam_params, limits, rate), result)
 
 
+def FrameRateState(nodemap):
+	# A camera's frame rate settings, as ConfigureFrameRate finds them
+	switch = FrameRateSwitch(nodemap)
+	node = GetNode(nodemap, "AcquisitionFrameRate", PySpin.CFloatPtr)
+	auto = GetNode(nodemap, FRAME_RATE_AUTO, PySpin.CEnumerationPtr)
+	return {
+		"enabled": switch.GetValue(),
+		"rate": node.GetValue(),
+		"auto": auto.GetCurrentEntry().GetSymbolic() if auto is not None else None,
+		}
+
+
+def SetFrameRateState(nodemap, state):
+	# Gives a camera the frame rate settings FrameRateState read
+	# The switch first: the rate can be set only while it is on, and turning
+	# it off resets the rate (to the most the camera can do)
+	FrameRateSwitch(nodemap).SetValue(state["enabled"])
+	node = GetNode(nodemap, "AcquisitionFrameRate", PySpin.CFloatPtr)
+	if state["enabled"] and node is not None and PySpin.IsWritable(node):
+		node.SetValue(min(max(state["rate"], node.GetMin()), node.GetMax()))
+	auto = GetNode(nodemap, FRAME_RATE_AUTO, PySpin.CEnumerationPtr)
+	if state["auto"] is not None and auto is not None and PySpin.IsWritable(auto):
+		auto.SetIntValue(auto.GetEntryByName(state["auto"]).GetValue())
+
+
+def Cap(state):
+	# The rate frame rate settings cap a camera at, to 0.1 fps; None when they do not
+	if state["enabled"] and state["auto"] in (None, "Off"):
+		return round(state["rate"], 1)
+	return None
+
+
 def RestoreFrameRate(camera, cam_params):
 	"""
 	Puts back the frame rate settings ConfigureFrameRate found on a
@@ -1020,23 +1063,115 @@ def RestoreFrameRate(camera, cam_params):
 	the cap on it drops triggers that come faster than AcquisitionFrameRate (a
 	Blackfly S capped at 10 fps kept 21 of 100 software triggers at 50 Hz), so
 	a triggered recording after this one would be held to this one's frameRate.
+	Once they are back, their note (WriteFrameRateNote) is removed.
 	"""
 	found = cam_params.get("frameRateFound")
 	if not found:
 		return
 	try:
-		nodemap = camera.GetNodeMap()
-		# The switch first: the rate can be set only while it is on, and turning
-		# it off resets the rate (to the most the camera can do)
-		FrameRateSwitch(nodemap).SetValue(found["enabled"])
-		node = GetNode(nodemap, "AcquisitionFrameRate", PySpin.CFloatPtr)
-		if found["enabled"] and node is not None and PySpin.IsWritable(node):
-			node.SetValue(min(max(found["rate"], node.GetMin()), node.GetMax()))
-		auto = GetNode(nodemap, FRAME_RATE_AUTO, PySpin.CEnumerationPtr)
-		if found["auto"] is not None and auto is not None and PySpin.IsWritable(auto):
-			auto.SetIntValue(auto.GetEntryByName(found["auto"]).GetValue())
+		SetFrameRateState(camera.GetNodeMap(), found)
 	except Exception as e:
 		logging.error("Caught error at cameras/flir.py RestoreFrameRate: {}".format(e))
+		return # the note stays, for the next run to try again
+	RemoveFrameRateNote(FrameRateNotePath(cam_params))
+
+
+# ------------------------------------------------------------------ the frame rate note
+#
+# A camera keeps campy's frame rate cap until it is unplugged. When campy's
+# camera process stops without closing the camera (a crash, a kill, a
+# restart of the computer, which leaves the camera powered), RestoreFrameRate
+# never runs, and the next run would find the cap and put it back again at
+# its own close. So ConfigureFrameRate notes what it found in a file, one per camera,
+# before it changes anything; RestoreFrameRate removes the note once it has
+# put those settings back; and every later open of the camera, triggered or
+# not, puts back a note it finds first (RecoverFrameRate).
+
+# Where the notes are kept, with campy-encode-sweep's capacity.json
+NOTE_FOLDER = os.path.join(os.path.expanduser("~"), ".campy")
+
+
+def FrameRateNotePath(cam_params):
+	# This camera's note, by serial number; None when it has none
+	serial = "".join(c for c in str(cam_params.get("cameraSerialNo") or "") if c.isalnum())
+	return os.path.join(NOTE_FOLDER, "flir-frame-rate-{}.json".format(serial)) if serial else None
+
+
+def ReadFrameRateNote(path):
+	# The settings a note holds, or None when there is no note (or it cannot be read)
+	if path is None or not os.path.exists(path):
+		return None
+	try:
+		with open(path) as f:
+			note = json.load(f)
+		return {key: note[key] for key in ("enabled", "rate", "auto")}
+	except (OSError, ValueError, KeyError, TypeError) as e:
+		logging.error("Caught error at cameras/flir.py ReadFrameRateNote, reading {}: {}".format(path, e))
+		return None
+
+
+def WriteFrameRateNote(path, cam_params, found):
+	if path is None:
+		return
+	note = dict(found, cameraName=cam_params["cameraName"], cameraSerialNo=str(cam_params["cameraSerialNo"]),
+		written=time.strftime("%Y-%m-%d %H:%M:%S"), pid=os.getpid())
+	try:
+		os.makedirs(NOTE_FOLDER, exist_ok=True)
+		# Whole or not at all: a note cut short by a crash would be no note
+		with open(path + ".tmp", "w") as f:
+			json.dump(note, f, indent=1)
+		os.replace(path + ".tmp", path)
+	except OSError as e:
+		Say("{}: could not write {} ({}). If campy stops without closing this camera, it keeps its frame "
+			"rate cap until it is unplugged.".format(cam_params["cameraName"], path, e))
+
+
+def RemoveFrameRateNote(path):
+	if path is None:
+		return
+	try:
+		os.remove(path)
+	except FileNotFoundError:
+		pass
+	except OSError as e:
+		logging.error("Caught error at cameras/flir.py RemoveFrameRateNote: {}".format(e))
+
+
+def RecoverFrameRate(camera, cam_params):
+	"""
+	When campy last ran this camera free-running and did not close it, the
+	camera still has that run's frame rate settings: puts back the ones that
+	run found (its note), and says so. Done at every open, triggered or not,
+	since a triggered camera drops triggers above a cap. Silent when the
+	camera already has them, as after it has been unplugged. A cap with no
+	note was set by another program, or by a campy without these notes, and
+	is left alone: the launch check reports one that is below a triggered
+	camera's frameRate.
+	"""
+	path = FrameRateNotePath(cam_params)
+	if path is None or not os.path.exists(path):
+		return
+	found = ReadFrameRateNote(path)
+	if found is None: # unreadable: nothing to put back
+		RemoveFrameRateNote(path)
+		return
+	try:
+		nodemap = camera.GetNodeMap()
+		left = FrameRateState(nodemap)
+		SetFrameRateState(nodemap, found)
+	except Exception as e:
+		logging.error("Caught error at cameras/flir.py RecoverFrameRate: {}".format(e))
+		return # the note stays, for this run's close or the next run to try again
+	RemoveFrameRateNote(path)
+	if Cap(left) == Cap(found):
+		return
+	said = "{}: campy did not close it last time".format(cam_params["cameraName"])
+	if Cap(left) is not None:
+		said += " and left it capped at {:.1f} fps".format(Cap(left))
+	if Cap(found) is not None:
+		Say("{}. Cap set back to {:.1f} fps, as before.".format(said, Cap(found)))
+	else:
+		Say("{}. Cap removed, as before.".format(said))
 
 
 def PrintDeviceInfo(nodemap, cam_params):
