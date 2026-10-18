@@ -1,6 +1,6 @@
 """Encoder settings (writer.EncoderArgs) and the ffmpeg command they make."""
 
-import os
+import os, subprocess, types
 
 import numpy as np
 import pytest
@@ -199,8 +199,17 @@ def test_limited_range_is_the_default_and_unchanged():
 		assert "-color_range" not in default["output_params"]
 
 
+@pytest.fixture
+def ffmpeg_version(monkeypatch):
+	# Pins the ffmpeg version EncoderArgs sees (writer.FfmpegVersion)
+	def pin(version):
+		monkeypatch.setattr(writer, "FfmpegVersion", lambda exe=None: version)
+	return pin
+
+
 @pytest.mark.parametrize("make", [None, "nvidia", "intel", "amd"])
-def test_full_range_args(make):
+def test_full_range_args(make, ffmpeg_version):
+	ffmpeg_version((8, 1))
 	gpu = {} if make is None else {"gpuID": 0, "gpuMake": make}
 	enc = writer.EncoderArgs(cam(colorRange="full", **gpu))
 	assert enc["output_params"][-4:] == ["-vf", "scale=out_range=full", "-color_range", "pc"]
@@ -209,11 +218,73 @@ def test_full_range_args(make):
 	assert writer.EncoderArgs(cam(colorRange="FULL", **gpu)) == enc
 
 
-def test_full_range_on_vaapi_scales_before_the_upload():
+def test_full_range_on_vaapi_scales_before_the_upload(ffmpeg_version):
+	ffmpeg_version((8, 1))
 	enc = writer.EncoderArgs(cam(gpuID=0, gpuMake="vaapi", colorRange="full"))
 	params = enc["output_params"]
 	assert params[params.index("-vf") + 1] == "scale=out_range=full,format=nv12,hwupload"
 	assert params.count("-vf") == 1 and params[-2:] == ["-color_range", "pc"]
+
+
+# ffmpeg before 8 converts gray frames to full-range NV12 with chroma 0 (a
+# green picture in any reader that shows colour): campy goes through yuv420p
+
+DETOUR = "format=yuv420p,scale=in_range=full:out_range=full"
+
+
+@pytest.mark.parametrize("version", [(7, 1), (7, 0), (6, 1), (4, 4), None])
+def test_full_range_nv12_from_gray_goes_through_yuv420p_before_ffmpeg_8(version, ffmpeg_version):
+	ffmpeg_version(version)
+	def vf(**values):
+		params = writer.EncoderArgs(cam(colorRange="full", **values))["output_params"]
+		return params[params.index("-vf") + 1]
+	assert vf(gpuID=0, gpuMake="intel") == "scale=out_range=full," + DETOUR
+	assert vf(gpuID=0, gpuMake="intel", frameWidth=330, frameHeight=250) == "scale=336:256:out_range=full," + DETOUR
+	assert vf(gpuID=0, gpuMake="vaapi") == "scale=out_range=full," + DETOUR + ",format=nv12,hwupload"
+	# yuv420p (CPU, NVENC, AMF) and colour cameras' frames come out right as they are
+	for gpu in ({}, {"gpuID": 0, "gpuMake": "nvidia"}, {"gpuID": 0, "gpuMake": "amd"}):
+		assert vf(**gpu) == "scale=out_range=full"
+	assert vf(gpuID=0, gpuMake="intel", pixelFormatInput="bayer_bggr8") == "scale=out_range=full"
+	assert vf(gpuID=0, gpuMake="vaapi", pixelFormatInput="rgb24") == "scale=out_range=full,format=nv12,hwupload"
+
+
+@pytest.mark.parametrize("version", [(8, 0), (8, 1), (9, 0)])
+def test_full_range_nv12_is_left_alone_from_ffmpeg_8(version, ffmpeg_version):
+	ffmpeg_version(version)
+	for make in ("intel", "vaapi"):
+		params = writer.EncoderArgs(cam(colorRange="full", gpuID=0, gpuMake=make))["output_params"]
+		assert DETOUR not in params[params.index("-vf") + 1]
+
+
+def test_ffmpeg_version(monkeypatch):
+	said = {
+		"ffmpeg version 8.1.2 Copyright (c) 2000-2026 the FFmpeg developers": (8, 1),
+		"ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers": (6, 1), # Ubuntu 24.04
+		"ffmpeg version n8.1-11-g3c2b1a0-20260301 Copyright (c) 2000-2026 the FFmpeg developers": (8, 1), # BtbN
+		"ffmpeg version N-121234-g0123abcd-20260301 Copyright (c) 2000-2026 the FFmpeg developers": None, # master
+		"": None,
+		}
+	# each fake exe's name is the first line its -version prints
+	monkeypatch.setattr(writer.subprocess, "run", lambda cmd, **kw: types.SimpleNamespace(stdout=cmd[0] + "\n"))
+	for line, version in said.items():
+		assert writer.FfmpegVersion(line) == version
+	writer.FfmpegVersion.cache_clear()
+	assert writer.FfmpegVersion("/nonexistent/ffmpeg") is None
+
+
+@pytest.mark.parametrize("make", ["intel", "vaapi"])
+def test_full_range_nv12_keeps_gray_chroma_neutral(make):
+	# What campy's -vf makes of a gray ramp for Quick Sync and VA-API, with
+	# this machine's ffmpeg: every level as it is, and both chroma planes 128
+	exe = imageio_ffmpeg.get_ffmpeg_exe()
+	params = writer.EncoderArgs(cam(gpuID=0, gpuMake=make, colorRange="full", frameWidth=256, frameHeight=16))["output_params"]
+	vf = params[params.index("-vf") + 1].replace(",hwupload", "")
+	ramp = np.tile(np.arange(256, dtype=np.uint8), (16, 1))
+	out = subprocess.run([exe, "-v", "error", "-f", "rawvideo", "-pix_fmt", "gray", "-s", "256x16", "-i", "-", "-vf", vf,
+		"-f", "rawvideo", "-pix_fmt", "nv12", "-"], input=ramp.tobytes(), capture_output=True, check=True).stdout
+	assert len(out) == 256 * 16 * 3 // 2
+	assert (np.frombuffer(out[:256 * 16], np.uint8).reshape(16, 256) == ramp).all()
+	assert set(out[256 * 16:]) == {128}
 
 
 def test_full_range_pads_as_imageio_would():
