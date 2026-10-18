@@ -84,6 +84,7 @@ def OpenCamera(cam_params):
 def LoadSettings(camera, cam_params):
 
 	# First, what an earlier run that did not close the camera left on it
+	RecoverAcquisition(camera, cam_params)
 	RecoverFrameRate(camera, cam_params)
 
 	try:
@@ -123,13 +124,15 @@ def FrameRateLimits(device, cam_params):
 	ConfigureFrameRate), so fps is the most it can do. It is read with the USB
 	limit campy gives it (ConfigureLinkLimit), and closed with the frame rate
 	settings and USB limit it had. Before anything else it puts back what an
-	earlier run that did not close the camera left on it (RecoverFrameRate),
-	where its message is not hidden with the progress lines.
+	earlier run that did not close the camera left on it (RecoverAcquisition,
+	RecoverFrameRate), where their messages are not hidden with the progress
+	lines.
 	"""
 	camera = device
 	camera.Init()
 	settings = None
 	try:
+		RecoverAcquisition(camera, cam_params)
 		RecoverFrameRate(camera, cam_params)
 		with contextlib.redirect_stdout(io.StringIO()): # the Configure* progress lines
 			settings = LoadSettings(camera, dict(cam_params))
@@ -1172,6 +1175,70 @@ def RecoverFrameRate(camera, cam_params):
 		Say("{}. Cap set back to {:.1f} fps, as before.".format(said, Cap(found)))
 	else:
 		Say("{}. Cap removed, as before.".format(said))
+
+
+# ------------------------------------------------------------------ an acquisition left running
+#
+# CloseCamera's EndAcquisition stops the camera's acquisition. When campy's
+# camera process stops without closing the camera (a kill, a crash), the
+# camera goes on acquiring, and while it acquires, its frame size and pixel
+# format are read only to every process that opens it: ConfigureFrameWidth,
+# ConfigureFrameHeight and ConfigurePixelFormat only log an error, and the
+# camera sends frames of the size the killed run set into a video of the size
+# asked for, which scrambles it when they differ. TLParamsLocked does not
+# show it: a new process reads 0, and setting it changes nothing. What
+# ends it is the camera's own AcquisitionStop, or Spinnaker's own
+# BeginAcquisition and EndAcquisition, from the new process (two Blackfly S
+# on PySpin 4.4, one on Linux and one on Windows, 2026-10-18). So every open
+# stops such an acquisition first (RecoverAcquisition).
+
+# Read only while the camera acquires
+FORMAT_NODES = (("PixelFormat", "CEnumerationPtr"), ("Width", "CIntegerPtr"), ("Height", "CIntegerPtr"))
+
+
+def FormatLocked(nodemap):
+	# True when the camera's frame size or pixel format cannot be set now
+	nodes = [GetNode(nodemap, name, getattr(PySpin, kind)) for name, kind in FORMAT_NODES]
+	return any(node is not None and not PySpin.IsWritable(node) for node in nodes)
+
+
+def StopAcquisition(camera, nodemap):
+	# Stops an acquisition another process started: the camera's own command,
+	# then, where that does not do it, Spinnaker's own start and stop
+	node = nodemap.GetNode("AcquisitionStop")
+	stop = PySpin.CCommandPtr(node) if node is not None else None
+	if stop is not None and PySpin.IsAvailable(stop) and PySpin.IsWritable(stop):
+		try:
+			stop.Execute()
+		except PySpin.SpinnakerException as e:
+			logging.error("Caught error at cameras/flir.py StopAcquisition, AcquisitionStop: {}".format(e))
+	if FormatLocked(nodemap):
+		camera.BeginAcquisition()
+		camera.EndAcquisition()
+
+
+def RecoverAcquisition(camera, cam_params):
+	"""
+	When an earlier run did not close this camera, it is still acquiring and
+	its frame size and pixel format cannot be set (above): stops that
+	acquisition, and says so. Silent when they can be set.
+	"""
+	name = cam_params["cameraName"]
+	try:
+		nodemap = camera.GetNodeMap()
+		if not FormatLocked(nodemap):
+			return
+		StopAcquisition(camera, nodemap)
+		stuck = FormatLocked(nodemap)
+	except Exception as e:
+		logging.error("Caught error at cameras/flir.py RecoverAcquisition: {}".format(e))
+		stuck = True
+	if stuck:
+		Say("{}: its frame size and pixel format cannot be set, even after stopping its acquisition, so it keeps "
+			"the ones it has. Unplug it and plug it back in.".format(name))
+	else:
+		Say("{}: still acquiring from a run that did not close it. Stopped it, so its frame size and pixel format "
+			"can be set.".format(name))
 
 
 def PrintDeviceInfo(nodemap, cam_params):
