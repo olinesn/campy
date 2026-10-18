@@ -49,6 +49,9 @@ class Node:
 			raise SpinError("AccessException: node is not writable")
 		self.set(value)
 
+	def GetMin(self):
+		return 0
+
 	def GetMax(self):
 		return self.maximum
 

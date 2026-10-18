@@ -94,6 +94,7 @@ def LoadSettings(camera, cam_params):
 		# Configure custom image settings (acquisition, white balance, frame height/width/offsets, 
 		# pixel format, exposure, gain, gamma, buffer and chunkdata mode (e.g. timestamp/frame info))
 		cam_params = ConfigureCustomImageSettings(camera, cam_params)
+		cam_params = CheckFrameSize(camera, cam_params)
 
 		# The USB link's limit, for the frame size and pixel format set above
 		cam_params = ConfigureLinkLimit(camera, cam_params)
@@ -120,6 +121,10 @@ def FrameRateLimits(device, cam_params):
 	       bytes/s (DeviceLinkThroughputLimit; None where the camera has none)
 	  exposureUs, frameRateCap: the exposure, and AcquisitionFrameRate when
 	       AcquisitionFrameRateEnable caps the rate (else None)
+	  frameSize, wantedFrameSize: the frames it would send, (width, height),
+	       and frameWidth x frameHeight as campy rounds them; maxFrameSize:
+	       its full frame (WidthMax, HeightMax); frameSizeLocked: its frame
+	       size cannot be changed now (FormatLocked). None where unreadable.
 	A free-running camera is read without the cap campy gives it (frameRate,
 	ConfigureFrameRate), so fps is the most it can do. It is read with the USB
 	limit campy gives it (ConfigureLinkLimit), and closed with the frame rate
@@ -148,6 +153,10 @@ def FrameRateLimits(device, cam_params):
 			"throughputLimit": ReadNode(nodemap, "DeviceLinkThroughputLimit", PySpin.CIntegerPtr),
 			"exposureUs": ReadNode(nodemap, "ExposureTime", PySpin.CFloatPtr),
 			"frameRateCap": ReadNode(nodemap, "AcquisitionFrameRate", PySpin.CFloatPtr) if enabled else None,
+			"frameSize": FrameSize(nodemap),
+			"wantedFrameSize": (int(settings["frameWidth"]), int(settings["frameHeight"])),
+			"maxFrameSize": FrameSize(nodemap, "WidthMax", "HeightMax"),
+			"frameSizeLocked": FormatLocked(nodemap),
 			}
 	finally:
 		if settings is not None:
@@ -560,6 +569,7 @@ def ConfigureFrameHeight(camera, cam_params):
 		# Get max offset values from the camera
 		max_h = height_to_set
 		try:
+			ZeroOffset(nodemap, "OffsetY", "Height")
 			max_h = PySpin.CIntegerPtr(nodemap.GetNode("Height")).GetMax()
 		except Exception as e:
 			logging.error("Caught exception at cameras/flir.py GetMax: {}".format(e))
@@ -609,6 +619,7 @@ def ConfigureFrameWidth(camera, cam_params):
 		# Get max offset values from the camera
 		max_w = width_to_set
 		try:
+			ZeroOffset(nodemap, "OffsetX", "Width")
 			max_w = PySpin.CIntegerPtr(nodemap.GetNode("Width")).GetMax()
 		except Exception as e:
 			logging.error("Caught exception at cameras/flir.py GetMax: {}".format(e))
@@ -641,6 +652,48 @@ def ConfigureFrameWidth(camera, cam_params):
 	except Exception as e:
 		logging.error("Caught exception at cameras/flir.py ConfigureFrameWidth: {}".format(e))
 
+	return cam_params
+
+
+def ZeroOffset(nodemap, offset, size):
+	"""
+	Moves the frame to the sensor's edge (OffsetX or OffsetY 0) before
+	ConfigureFrameWidth or ConfigureFrameHeight sets its size and centres it.
+	Width's maximum is what is left of the sensor right of OffsetX (Height's,
+	below OffsetY), so with the offset a smaller centred frame left on the
+	camera (640x512 of 1280x1024, at offsets 160 and 128), a full frame could
+	not be set ("Value = 1280 must be equal or smaller than Max = 1120"), and
+	a frame of the same size was centred on the wrong maximum. Left alone when
+	the size cannot be set, so the frame it has is not moved.
+	"""
+	try:
+		size_node = PySpin.CIntegerPtr(nodemap.GetNode(size))
+		offset_node = PySpin.CIntegerPtr(nodemap.GetNode(offset))
+		if PySpin.IsAvailable(size_node) and PySpin.IsWritable(size_node) \
+		and PySpin.IsAvailable(offset_node) and PySpin.IsWritable(offset_node):
+			offset_node.SetValue(offset_node.GetMin())
+	except Exception as e:
+		logging.error("Caught exception at cameras/flir.py ZeroOffset {}: {}".format(offset, e))
+
+
+def FrameSize(nodemap, width="Width", height="Height"):
+	# (width, height) read from the camera, or None where it cannot be read
+	size = (ReadNode(nodemap, width, PySpin.CIntegerPtr), ReadNode(nodemap, height, PySpin.CIntegerPtr))
+	return size if None not in size else None
+
+
+def CheckFrameSize(camera, cam_params):
+	"""
+	Says when the camera's frame size is not frameWidth x frameHeight (a
+	setting it refused, logged above): the writer takes its frames as that
+	size, so its video would be scrambled. The launch check stops campy
+	before that (preflight.FrameSizeFinding); this is for a run without it.
+	"""
+	size = FrameSize(camera.GetNodeMap())
+	wanted = (int(cam_params["frameWidth"]), int(cam_params["frameHeight"]))
+	if size is not None and size != wanted:
+		Say("{}: its frames are {}x{}, not frameWidth x frameHeight {}x{}, so its video will be scrambled.".format(
+			cam_params["cameraName"], *(size + wanted)))
 	return cam_params
 
 
