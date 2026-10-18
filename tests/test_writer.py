@@ -9,6 +9,11 @@ import imageio_ffmpeg
 from campy import configurator, writer
 
 
+# Every .mp4 starts with these (fragmentedVideo; tests/test_fragmented_video.py)
+FRAGMENTED = ["-movflags", "+frag_keyframe+empty_moov+delay_moov+default_base_moof",
+	"-frag_duration", "1000000", "-flush_packets", "1"]
+
+
 def cam(**overrides):
 	params = configurator.DefaultParams()
 	params.update(cameraName="Camera0", frameWidth=320, frameHeight=240,
@@ -21,7 +26,7 @@ def test_cpu_args_unchanged():
 	enc = writer.EncoderArgs(cam(pixelFormatOutput="rgb0"))
 	assert enc["codec"] == "libx264"
 	assert enc["pix_fmt_out"] == "yuv420p" # rgb0 is mapped for the CPU path
-	assert enc["output_params"] == ["-preset", "fast", "-tune", "fastdecode", "-crf", "21",
+	assert enc["output_params"] == FRAGMENTED + ["-preset", "fast", "-tune", "fastdecode", "-crf", "21",
 		"-bufsize", "20M", "-maxrate", "10M", "-bf:v", "4", "-x264-params", "nal-hrd=cbr"]
 	assert enc["input_params"] == ["-an"]
 	assert enc["macro_block_size"] == 16
@@ -32,19 +37,19 @@ def test_cpu_args_unchanged():
 def test_nvidia_amd_intel_args_unchanged():
 	nv = writer.EncoderArgs(cam(gpuID=1, gpuMake="nvidia", codec="h265"))
 	assert nv["codec"] == "hevc_nvenc"
-	assert nv["output_params"] == ["-preset", "fast", "-qp", "21", "-bf:v", "0", "-gpu", "1"]
+	assert nv["output_params"] == FRAGMENTED + ["-preset", "fast", "-qp", "21", "-bf:v", "0", "-gpu", "1"]
 	assert nv["key"] == "hevc_nvenc/fast"
 
 	amd = writer.EncoderArgs(cam(gpuID=0, gpuMake="amd"))
 	assert amd["codec"] == "h264_amf"
-	assert amd["output_params"] == ["-usage", "lowlatency", "-rc", "cqp", "-qp_i", "21",
+	assert amd["output_params"] == FRAGMENTED + ["-usage", "lowlatency", "-rc", "cqp", "-qp_i", "21",
 		"-qp_p", "21", "-qp_b", "21", "-bf:v", "0", "-hwaccel_device", "0"]
 	assert amd["key"] == "h264_amf"
 
 	qsv = writer.EncoderArgs(cam(gpuID=0, gpuMake="intel", pixelFormatOutput="rgb0"))
 	assert qsv["codec"] == "h264_qsv"
 	assert qsv["pix_fmt_out"] == "nv12"
-	assert qsv["output_params"] == ["-bf:v", "0", "-preset", "faster", "-q", "22"]
+	assert qsv["output_params"] == FRAGMENTED + ["-bf:v", "0", "-preset", "faster", "-q", "22"]
 
 
 @pytest.mark.parametrize("codec", ["h264", "h265", "av1"])
@@ -66,7 +71,7 @@ def test_vaapi_args():
 	assert enc["codec"] == "h264_vaapi"
 	assert enc["input_params"] == ["-an", "-init_hw_device", "vaapi=va:/dev/dri/renderD129",
 		"-filter_hw_device", "va"]
-	assert enc["output_params"] == ["-vf", "format=nv12,hwupload", "-rc_mode", "CQP", "-qp", "21", "-bf", "0"]
+	assert enc["output_params"] == FRAGMENTED + ["-vf", "format=nv12,hwupload", "-rc_mode", "CQP", "-qp", "21", "-bf", "0"]
 	assert enc["pix_fmt_out"] == "vaapi"
 	assert enc["macro_block_size"] == 1 # no padding filter: it would replace -vf
 	assert enc["key"] == "h264_vaapi"
@@ -89,18 +94,18 @@ def test_av1_on_nvenc_and_quick_sync():
 	# As on VA-API, quality is AV1's quantizer index (0-255), passed as it is
 	nv = writer.EncoderArgs(cam(gpuID=0, gpuMake="nvidia", codec="av1", quality=88))
 	assert nv["codec"] == "av1_nvenc"
-	assert nv["output_params"] == ["-preset", "fast", "-qp", "88", "-bf:v", "0", "-gpu", "0"]
+	assert nv["output_params"] == FRAGMENTED + ["-preset", "fast", "-qp", "88", "-bf:v", "0", "-gpu", "0"]
 	assert nv["key"] == "av1_nvenc/fast"
 
 	qsv = writer.EncoderArgs(cam(gpuID=0, gpuMake="intel", codec="av1", quality=88))
 	assert qsv["codec"] == "av1_qsv"
-	assert qsv["output_params"] == ["-bf:v", "0", "-preset", "faster", "-q", "88"]
+	assert qsv["output_params"] == FRAGMENTED + ["-bf:v", "0", "-preset", "faster", "-q", "88"]
 	assert qsv["key"] == "av1_qsv/faster"
 
 	# H.264 and H.265 on Quick Sync keep quality + 1
 	for codec, name in (("h264", "h264_qsv"), ("h265", "hevc_qsv")):
 		enc = writer.EncoderArgs(cam(gpuID=0, gpuMake="intel", codec=codec, quality=24))
-		assert enc["codec"] == name and enc["output_params"] == ["-bf:v", "0", "-preset", "faster", "-q", "25"]
+		assert enc["codec"] == name and enc["output_params"] == FRAGMENTED + ["-bf:v", "0", "-preset", "faster", "-q", "25"]
 
 
 def test_keyframe_interval_applies_to_vaapi():

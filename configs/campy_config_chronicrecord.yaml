@@ -43,7 +43,8 @@ codec: "h265"                         # hevc_qsv
 # the fan's detail at about 1.9 Mbit/s, 0.84 GB per camera-hour.
 quality: 24
 pixelFormatOutput: "yuv420p"          # 4:2:0: what every decoder supports
-keyframeInterval: 0.5                 # seconds; makes seeking cheap
+keyframeInterval: 0.5                 # seconds; makes seeking cheap, and the video's fragments (fragmentedVideo,
+                                      # README) 0.5 s long: a power cut loses the last one, and what the encoder holds
 # conda-forge's ffmpeg for Windows has no Quick Sync: use BtbN's 8.1 build
 ffmpegPath: 'C:\ffmpeg-btbn-8.1\bin\ffmpeg.exe'
 ffmpegLogLevel: "warning"
