@@ -991,7 +991,8 @@ def test_campy_ends_and_says_which_camera_failed(tmp_path):
 		'videoFolder: "{}"'.format(tmp_path / "rec"), 'videoFilename: "0.mp4"', "recTimeInSec: 5", "numCams: 3",
 		'cameraNames: ["EyeA", "EyeB", "EyeC"]', 'cameraMake: "ratcam"', 'ratcamPorts: ["sim", "sim", "sim"]',
 		"frameRate: 30", "frameWidth: 160", "frameHeight: 120", "cameraExposureTimeInUs: 3000", "gpuID: -1",
-		'pixelFormatOutput: "yuv420p"', "displayFrameRate: 0", 'preflight: "off"', 'ffmpegLogLevel: "warning"', ""]))
+		'pixelFormatOutput: "yuv420p"', "displayFrameRate: 0", 'preflight: "off"', 'ffmpegLogLevel: "warning"',
+		"sessionFolder: False", ""]))
 	env = dict(os.environ, PYTHONPATH=REPO, PYTHONUNBUFFERED="1")
 	code = "import sys; sys.argv = ['campy-acquire', sys.argv[1]]; from campy.campy import Main; Main()"
 	t0 = time.monotonic()
@@ -1084,7 +1085,8 @@ def test_a_second_ctrl_c_ends_campy_when_a_camera_hangs_as_it_closes(tmp_path):
 		'videoFolder: "{}"'.format(tmp_path / "rec"), 'videoFilename: "0.mp4"', "recTimeInSec: 60", "numCams: 2",
 		'cameraNames: ["EyeA", "EyeB"]', 'cameraMake: "ratcam"', 'ratcamPorts: ["sim", "sim"]',
 		"frameRate: 30", "frameWidth: 160", "frameHeight: 120", "cameraExposureTimeInUs: 3000", "gpuID: -1",
-		'pixelFormatOutput: "yuv420p"', "displayFrameRate: 0", 'preflight: "off"', 'ffmpegLogLevel: "warning"', ""]))
+		'pixelFormatOutput: "yuv420p"', "displayFrameRate: 0", 'preflight: "off"', 'ffmpegLogLevel: "warning"',
+		"sessionFolder: False", ""]))
 	env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(hook), REPO]), PYTHONUNBUFFERED="1",
 		CAMPY_TEST_HANG_CLOSE="EyeA")
 	code = "import sys; sys.argv = ['campy-acquire', sys.argv[1]]; from campy.campy import Main; Main()"

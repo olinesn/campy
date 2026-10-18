@@ -1,7 +1,7 @@
 """
 campy-align: put every camera of a recording on one timeline.
 
-	campy-align ./test        # the recording's videoFolder
+	campy-align ./test/2026-10-18_17-30-05        # the recording's folder
 
 The timeline is the trigger. A triggered camera (cameraTrigger set) makes one
 frame per trigger pulse. A RatCam (cameraMake "ratcam") runs on its own
@@ -481,7 +481,7 @@ def Run(folder, log=print):
 def Main(argv=None):
 	parser = argparse.ArgumentParser(prog="campy-align",
 		description="Put every camera of a campy recording on the trigger's timeline.")
-	parser.add_argument("folder", help="the recording's videoFolder")
+	parser.add_argument("folder", help="the recording's folder: videoFolder/<date_time> (sessionFolder), or videoFolder")
 	args = parser.parse_args(argv)
 	try:
 		summary = Run(args.folder)

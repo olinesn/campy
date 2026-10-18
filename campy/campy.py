@@ -29,13 +29,20 @@ def OpenSystems():
 	params = configurator.ConfigureParams()
 
 	# A recording never replaces one: stop now, before anything opens, if any
-	# file it would write is already there. Whatever preflight is set to.
+	# file it would write is already there, whatever preflight is set to. Each
+	# run records into a new folder of its own (sessionFolder), made in Main;
+	# the camera processes are told which.
 	if mp.current_process().name == "MainProcess":
 		try:
-			newfiles.Check(params)
+			if newfiles.SessionFolders(params):
+				newfiles.CheckNames(params)
+			else:
+				newfiles.Check(params)
 		except newfiles.WouldOverwrite as e:
 			print(e, flush=True)
 			sys.exit(1)
+	elif os.environ.get(newfiles.SESSION_ENV):
+		params = newfiles.UseSession(params, os.environ[newfiles.SESSION_ENV])
 
 	# Load Camera Systems and Devices
 	systems = unicam.LoadSystems(params)
@@ -158,6 +165,15 @@ def Main():
 	# Ctrl-C stops every camera, each closing its video, and Main waits for
 	# them; a second Ctrl-C stops the ones that hang as they close
 	with HandleKeyboardInterrupt() as interrupts:
+		# This run's own folder, inside videoFolder, named by the date and time
+		# (sessionFolder): the camera processes, which read the config again,
+		# find it in their environment
+		if newfiles.SessionFolders(params):
+			folder = newfiles.MakeSessionFolder(params)
+			newfiles.UseSession(params, folder)
+			os.environ[newfiles.SESSION_ENV] = folder
+			Say("Recording into {}".format(folder))
+
 		# Every file of the recording, made empty now, each only if it is not
 		# there: of two campys started into one folder, only one records
 		try:

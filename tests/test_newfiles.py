@@ -1,12 +1,15 @@
 """
-A recording never replaces one: campy-acquire stops before recording when
-any file it would write is already there, whatever preflight is set to, and
-a camera process refuses on its own. The old files stay byte for byte.
+Each run of campy-acquire records into a new folder inside videoFolder,
+named by the date and time (sessionFolder). And a recording never replaces
+one: with sessionFolder False, campy-acquire stops before recording when any
+file it would write is already there, whatever preflight is set to, and a
+camera process refuses on its own. The old files stay byte for byte.
 """
 
 import csv
 import hashlib
 import os
+import re
 import subprocess
 import sys
 import time
@@ -25,15 +28,17 @@ CAMERA_FILES = ("0.mp4", "frametimes.npy", "hosttimes.npy", "frametimes.mat", "m
 	"ratcam_frames.csv", "ratcam_sync.csv")
 
 
-def config(tmp_path, folder, preflight="off", recTimeInSec=1, name="config.yaml"):
-	# Two simulated RatCams: every file a recording writes, a RatCam's logs too
+def config(tmp_path, folder, preflight="off", recTimeInSec=1, name="config.yaml", session=False):
+	# Two simulated RatCams: every file a recording writes, a RatCam's logs too.
+	# Into folder itself (sessionFolder False), unless session.
 	path = tmp_path / name
 	path.write_text("\n".join([
 		'videoFolder: "{}"'.format(folder), 'videoFilename: "0.mp4"', "recTimeInSec: {}".format(recTimeInSec),
 		"numCams: 2", 'cameraNames: ["EyeA", "EyeB"]', 'cameraMake: "ratcam"', 'ratcamPorts: ["sim", "sim"]',
 		"frameRate: 30", "frameWidth: 160", "frameHeight: 120", "cameraExposureTimeInUs: 3000", "gpuID: -1",
 		'pixelFormatOutput: "yuv420p"', "displayFrameRate: 0", 'preflight: "{}"'.format(preflight),
-		'ffmpegLogLevel: "warning"', 'capacityFile: "{}"'.format(tmp_path / "none.json"), ""]))
+		'ffmpegLogLevel: "warning"', 'capacityFile: "{}"'.format(tmp_path / "none.json"),
+		"sessionFolder: {}".format(session), ""]))
 	return path
 
 
@@ -81,6 +86,65 @@ def recorded(folder, names=("EyeA", "EyeB")):
 @pytest.fixture
 def ratcams():
 	pytest.importorskip("nireyecam")
+
+
+# ------------------------------------------------------------------ a new folder for each run
+
+SESSION = r"\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d(_\d+)?"
+
+
+def sessions(folder):
+	return sorted(d for d in os.listdir(folder) if re.fullmatch(SESSION, d))
+
+
+def test_each_run_records_into_a_new_folder(tmp_path, first_recording):
+	# The same config, run twice, into a videoFolder that already holds a
+	# recording of its own (campy 2.1.0rc4's layout): two new folders, each a
+	# whole recording, and the old one as it was
+	import shutil
+	folder = tmp_path / "rec"
+	shutil.copytree(first_recording, folder)
+	before = snapshot(folder)
+	outs = []
+	for run in range(2):
+		code, out = acquire(tmp_path, config(tmp_path, folder, session=True))
+		assert code == 0, out
+		outs.append(out)
+	made = sessions(folder)
+	assert len(made) == 2, made
+	for session, out in zip(made, outs):
+		assert "Recording into {}\n".format(folder / session) in out
+		recorded(str(folder / session))
+	after = snapshot(folder)
+	assert {k: after[k] for k in before} == before
+
+
+def test_the_session_folder_is_on_by_default(tmp_path):
+	p = configurator.DefaultParams()
+	assert p["sessionFolder"] is True and newfiles.SessionFolders(p)
+
+
+def test_runs_started_in_the_same_second_get_folders_of_their_own(tmp_path):
+	p = dict(configurator.DefaultParams(), videoFolder=str(tmp_path / "rec"))
+	now = time.mktime((2026, 10, 18, 17, 30, 5, 0, 0, -1))
+	made = [newfiles.MakeSessionFolder(p, now) for _ in range(3)]
+	assert [os.path.basename(m) for m in made] == ["2026-10-18_17-30-05", "2026-10-18_17-30-05_2",
+		"2026-10-18_17-30-05_3"]
+	assert all(os.path.isdir(m) and os.path.isabs(m) for m in made)
+
+
+def test_use_session_keeps_the_configured_folder(tmp_path):
+	p = newfiles.UseSession({"videoFolder": "./test"}, "/data/test/2026-10-18_17-30-05")
+	assert p == {"videoFolder": "/data/test/2026-10-18_17-30-05", "videoFolderRoot": "./test"}
+
+
+def test_a_session_run_still_stops_on_two_cameras_with_one_name(tmp_path):
+	path = config(tmp_path, tmp_path / "rec", session=True)
+	path.write_text(path.read_text().replace('cameraNames: ["EyeA", "EyeB"]', 'cameraNames: ["Eye", "Eye"]'))
+	code, out = acquire(tmp_path, path)
+	assert code == 1, out
+	assert "Eye and Eye would both write" in out
+	assert not (tmp_path / "rec").exists()
 
 
 # ------------------------------------------------------------------ a new folder records as before

@@ -1,5 +1,11 @@
 """
-A recording never replaces files that are already there.
+Each run records into a new folder, and never replaces files already there.
+
+Each run of campy-acquire records into a new folder inside videoFolder,
+named by the date and time it started: <videoFolder>/2026-10-18_17-30-05/
+(sessionFolder, on by default; MakeSessionFolder). So campy-acquire can be
+run again and again with the same config. sessionFolder False records into
+videoFolder itself, as campy always did, under the checks below.
 
 A recording writes, for each camera, into <videoFolder>/<cameraName>/: its
 video (videoFilename), frametimes.npy, hosttimes.npy, frametimes.mat and
@@ -10,7 +16,8 @@ videoFolder replaced the first one's files without a word (the ChronicRecord
 PC, 2026-10-18). Now:
 
 - campy-acquire stops before it looks for cameras when any of those files is
-  there, whatever preflight is set to, and says which and what to do (Check).
+  there, whatever preflight is set to, and says which and what to do (Check;
+  a new session folder holds none).
 - Before the camera processes start, it makes every one of them, empty, each
   only if it is not there (Claim, O_EXCL). Of two campys started into the
   same folder, only one gets them; the other stops, and removes only the
@@ -26,7 +33,12 @@ There is no setting to turn this off: a new recording goes into a new
 videoFolder, or the old one is moved away first.
 """
 
-import os
+import os, time
+
+# The session folder, for the camera processes: they read the config again,
+# and would otherwise make a folder of their own (UseSession)
+SESSION_ENV = "CAMPY_SESSION_FOLDER"
+SESSION_FORMAT = "%Y-%m-%d_%H-%M-%S" # no colons: Windows paths cannot hold them
 
 TRIGGER_FILE = "trigger.json" # trigger.SaveStart
 RATCAM_FILES = ("ratcam_frames.csv", "ratcam_sync.csv") # ratcam.Logs
@@ -88,12 +100,52 @@ def Message(params, existing):
 		"or move this one away first.".format(root, Listing(existing, root))
 
 
+def SessionFolders(params):
+	return bool(params.get("sessionFolder", True))
+
+
+def MakeSessionFolder(params, now=None):
+	"""
+	Makes this run's folder inside videoFolder, named by the date and time
+	(local), and returns its path. A name already taken (two runs started in
+	the same second) gets _2, _3, ...: os.mkdir makes a folder only if it is
+	not there, so no two runs get the same one.
+	"""
+	base = params["videoFolder"]
+	stamp = time.strftime(SESSION_FORMAT, time.localtime(now))
+	os.makedirs(base, exist_ok=True)
+	count = 1
+	while True:
+		path = os.path.join(base, stamp if count == 1 else "{}_{}".format(stamp, count))
+		try:
+			os.mkdir(path)
+			return os.path.abspath(path)
+		except FileExistsError:
+			count += 1
+
+
+def UseSession(params, folder):
+	# This run records into folder; the configured videoFolder is kept as
+	# videoFolderRoot (an emu camera reads its clip from there)
+	params["videoFolderRoot"] = params["videoFolder"]
+	params["videoFolder"] = folder
+	return params
+
+
 def Check(params):
 	"""
 	Raises WouldOverwrite, saying why, when a recording with these params
 	would replace a file: one already there, or one two cameras would both
 	write (the same cameraNames). Opens nothing: campy-acquire runs it first.
 	"""
+	CheckNames(params)
+	existing = [path for path, n in RecordingFiles(params) if os.path.lexists(path)]
+	if existing:
+		raise WouldOverwrite(Message(params, existing))
+
+
+def CheckNames(params):
+	# Two cameras with one name would write the same files
 	owners = {}
 	names = params["cameraNames"]
 	for path, n in RecordingFiles(params):
@@ -102,9 +154,6 @@ def Check(params):
 			who = ["trigger.json" if m is None else names[m] for m in (other, n)]
 			raise WouldOverwrite("Stopped before recording: {} and {} would both write {}. Give each camera "
 				"its own name (cameraNames).".format(who[0], who[1], path))
-	existing = [path for path, n in RecordingFiles(params) if os.path.lexists(path)]
-	if existing:
-		raise WouldOverwrite(Message(params, existing))
 
 
 def Claim(params):

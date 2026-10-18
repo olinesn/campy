@@ -70,7 +70,9 @@ def GetModelName(camera):
 def OpenCamera(cam_params):
 	# Open video reader for emulation
 	videoFileName = cam_params["videoFilename"][3:len(cam_params["videoFilename"])]
-	full_file_name = os.path.join(cam_params["videoFolder"], cam_params["cameraName"], videoFileName)
+	# The clip is in the configured videoFolder, not in this run's session folder
+	folder = cam_params.get("videoFolderRoot", cam_params["videoFolder"])
+	full_file_name = os.path.join(folder, cam_params["cameraName"], videoFileName)
 	reader = imageio.get_reader(full_file_name)
 	camera = EmulatedCamera(reader, cam_params["frameRate"])
 

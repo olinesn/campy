@@ -1,7 +1,7 @@
 """
 campy-synctest: check that triggered cameras expose together, by filming one blinking LED.
 
-	campy-synctest ./test        # a recording's videoFolder, made with blinkPin and blinkHz set
+	campy-synctest ./test/2026-10-18_17-30-05        # a recording's folder, made with blinkPin and blinkHz set
 
 Wire an LED, through a resistor (330 ohm from the pin), to a spare pin of the
 trigger controller, where every camera can see it, and set blinkPin and blinkHz.
@@ -367,7 +367,7 @@ def RoiArg(text):
 def Main(argv=None):
 	parser = argparse.ArgumentParser(prog="campy-synctest", description=__doc__.split("\n\n")[0].strip(),
 		formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
-	parser.add_argument("folder", help="the recording's videoFolder")
+	parser.add_argument("folder", help="the recording's folder: videoFolder/<date_time> (sessionFolder), or videoFolder")
 	parser.add_argument("--blink-hz", type=float, help="LED blink rate (default: blinkHz, from trigger.json)")
 	parser.add_argument("--reference", help="camera the others are compared with (default: the first)")
 	parser.add_argument("--roi", action="append", type=RoiArg, default=[], metavar="NAME=X,Y,W,H",
