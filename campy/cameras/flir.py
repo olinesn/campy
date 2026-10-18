@@ -164,7 +164,7 @@ def StartGrabbing(camera):
 		Say("Error: {}".format(e))
 		return False
 	except Exception as e:
-		Say("Exception in cameras/flir.py function StartGrabbing(camera): {}".foramt(e))
+		Say("Exception in cameras/flir.py function StartGrabbing(camera): {}".format(e))
 		return False
 
 
@@ -759,7 +759,13 @@ def ConfigurePixelFormat(camera, cam_params):
 		elif pixelFormat == "gray":
 			camera.PixelFormat.SetValue(PySpin.PixelFormat_Mono8)
 		else:
-			eval("camera.PixelFormat.SetValue(PySpin.PixelFormat_{}".format(pixelFormat))
+			# pixelFormatInput is also ffmpeg's name for the frames (writer.py),
+			# so only the four above name a format that both ffmpeg and the
+			# camera have. (This branch looked up PySpin.PixelFormat_<name>, with
+			# a call never closed, so it always failed, and silently.)
+			Say("{}: campy does not set pixelFormatInput \"{}\" on a FLIR camera, only \"gray\", \"rgb24\", "
+				"\"bayer_rggb8\" or \"bayer_bggr8\". The camera keeps its own pixel format.".format(
+				cam_params["cameraName"], pixelFormat))
 
 	except Exception as e:
 		logging.error("Error setting pixel format to {}: {}".format(pixelFormat, e))
@@ -812,8 +818,13 @@ def ConfigureTrigger(camera, cam_params):
 			Say("Trigger source set to None...")
 			return cam_params
 		else:
-			# eval("camera.TriggerSource.SetValue(PySpin.TriggerSource_%s)" % cameraTrigger)
-			eval("camera.TriggerSource.SetValue(PySpin.TriggerSource_{})".format(cameraTrigger))
+			# A line, e.g. "Line3": PySpin.TriggerSource_Line3
+			source = getattr(PySpin, "TriggerSource_{}".format(cameraTrigger), None)
+			if source is None:
+				Say("{}: cameraTrigger \"{}\" is not a FLIR trigger source (\"Line0\" to \"Line3\", \"Software\", "
+					"or \"None\" to free-run). Trigger mode is left off.".format(cam_params["cameraName"], cameraTrigger))
+				return cam_params
+			camera.TriggerSource.SetValue(source)
 			Say("Trigger source set to {}...".format(cameraTrigger))
 
 		# Turn trigger mode on

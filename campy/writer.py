@@ -252,10 +252,6 @@ def OpenWriter(cam_params, queue):
 			os.makedirs(folder_name, exist_ok=True) # the grab thread may make it too (metadata.csv)
 			Say("Made directory {}.".format(folder_name))
 
-		# Flip blue and red for flir camera input
-		if cam_params["pixelFormatInput"] == "bayer_bggr8" and cam_params["cameraMake"] == "flir":
-			cam_params["pixelFormatInput"] == "bayer_rggb8"
-
 		enc = EncoderArgs(cam_params)
 		SetEnvironment(enc["env"])
 		if enc["device"] == "cpu":
