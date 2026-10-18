@@ -17,6 +17,7 @@ returns the same array as before, of the same shape and values.
 """
 import os, struct
 import numpy as np
+from campy import newfiles
 
 HEADER_BYTES = 128 # the whole .npy header: a multiple of 64, as numpy writes it, with room for any shape
 
@@ -29,7 +30,7 @@ class GrowingNpy:
 
 	def __init__(self, path, dtype, rows=None):
 		self.dtype, self.rows, self.count = np.dtype(dtype), rows, 0
-		self.file = open(path, "wb")
+		self.file = newfiles.Open(path, "wb") # never over a recording's file
 		self.WriteHeader()
 
 	def WriteHeader(self):

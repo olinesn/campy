@@ -8,6 +8,7 @@ command a recording runs.
 """
 from imageio_ffmpeg import write_frames
 import os, re, sys, time, logging, functools, subprocess
+from campy import newfiles
 from campy.cameras import unicam
 from campy.utils.utils import QueueKeyboardInterrupt, Say, ErrorText, ExitCodeText
 
@@ -339,16 +340,23 @@ def SetEnvironment(env):
 			os.environ[key] = value
 
 
-def OpenWriter(cam_params, queue):
+def OpenWriter(cam_params, queue, new=False):
+	# new: the video must be a new file (a recording's, WriteFrames). ffmpeg
+	# opens its output with -y (imageio-ffmpeg), and would replace a video
+	# already there: the file is made here first (newfiles.Take), or this
+	# raises newfiles.WouldOverwrite. campy-encode-sweep and
+	# campy-encode-quality write into folders of their own.
 	try:
 		writing = False
-		folder_name = os.path.join(cam_params["videoFolder"], cam_params["cameraName"])
-		file_name = cam_params["videoFilename"]
-		full_file_name = os.path.join(folder_name, file_name)
+		# The camera's folder, or in a calibration session its calibration_images
+		folder_name = newfiles.VideoFolder(cam_params)
+		full_file_name = newfiles.VideoPath(cam_params)
 
 		if not os.path.isdir(folder_name):
 			os.makedirs(folder_name, exist_ok=True) # the grab thread may make it too (metadata.csv)
 			Say("Made directory {}.".format(folder_name))
+		if new:
+			newfiles.Take(full_file_name)
 
 		enc = EncoderArgs(cam_params)
 		SetEnvironment(enc["env"])
@@ -361,6 +369,8 @@ def OpenWriter(cam_params, queue):
 				"video itself. Use pixelFormatOutput \"yuv420p\" for full range.".format(
 				cam_params["cameraName"], enc["pix_fmt_out"], enc["codec"]))
 
+	except newfiles.WouldOverwrite:
+		raise
 	except Exception as e:
 		logging.error("Caught exception at writer.py OpenWriter: {}".format(e))
 		raise
@@ -467,7 +477,14 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 
 			# Start ffmpeg video writer
 			try:
-				writer, writing, _ = OpenWriter(cam_params, stopReadQueue)
+				writer, writing, _ = OpenWriter(cam_params, stopReadQueue, new=True)
+			except newfiles.WouldOverwrite as e:
+				# Its video is there already (a recording campy-acquire's own check
+				# did not see): no ffmpeg, and the camera is stopped
+				recording.videoError = "not recording: {}".format(e)
+				stopReadQueue.append("STOP")
+				Say("{}: {}".format(cam_params["cameraName"], recording.videoError))
+				return
 			except Exception as e:
 				VideoFailed(cam_params, recording, stopReadQueue, "ffmpeg did not start: {}".format(ErrorText(e)))
 				return

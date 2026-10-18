@@ -810,6 +810,34 @@ def test_a_wait_for_the_camera_processes_that_ctrl_c_interrupts_goes_on(monkeypa
 	assert cameras.processes[0].exitcode == 0 # Camera0 recorded to the end, and closed
 
 
+class EndingProcess:
+	# A camera process that is still running when Check looks, and has ended,
+	# having said what went wrong, by the time Wait looks again
+	def __init__(self):
+		self.calls = 0
+		self.exitcode, self.sentinel = 0, None
+
+	def is_alive(self):
+		self.calls += 1
+		return self.calls == 1
+
+	def join(self, timeout=None):
+		pass
+
+
+def test_a_camera_process_that_ends_just_after_check_still_has_its_failures_reported():
+	# Two cameras that refused to record (files already there) ended together:
+	# Wait returned with the failures of only one
+	receive, send = mp.Pipe(duplex=False)
+	send.send(("done", ["not recording"]))
+	cameras = unicam.CameraProcesses.__new__(unicam.CameraProcesses)
+	cameras.names, cameras.log = ["Camera0"], lambda text: None
+	cameras.processes, cameras.connections = [EndingProcess()], [receive]
+	cameras.failures, cameras.ended, cameras.done, cameras.ffmpeg, cameras.stopped = {}, set(), {}, {}, set()
+	cameras.interrupted = False
+	assert cameras.Wait() == {"Camera0": ["not recording"]}
+
+
 def test_after_a_wait_that_ctrl_c_interrupts_a_second_ctrl_c_still_stops_a_camera_that_hangs(monkeypatch):
 	ctx = mp.get_context("spawn")
 	said = []
@@ -963,7 +991,8 @@ def test_campy_ends_and_says_which_camera_failed(tmp_path):
 		'videoFolder: "{}"'.format(tmp_path / "rec"), 'videoFilename: "0.mp4"', "recTimeInSec: 5", "numCams: 3",
 		'cameraNames: ["EyeA", "EyeB", "EyeC"]', 'cameraMake: "ratcam"', 'ratcamPorts: ["sim", "sim", "sim"]',
 		"frameRate: 30", "frameWidth: 160", "frameHeight: 120", "cameraExposureTimeInUs: 3000", "gpuID: -1",
-		'pixelFormatOutput: "yuv420p"', "displayFrameRate: 0", 'preflight: "off"', 'ffmpegLogLevel: "warning"', ""]))
+		'pixelFormatOutput: "yuv420p"', "displayFrameRate: 0", 'preflight: "off"', 'ffmpegLogLevel: "warning"',
+		"sessionFolder: False", ""]))
 	env = dict(os.environ, PYTHONPATH=REPO, PYTHONUNBUFFERED="1")
 	code = "import sys; sys.argv = ['campy-acquire', sys.argv[1]]; from campy.campy import Main; Main()"
 	t0 = time.monotonic()
@@ -1056,7 +1085,8 @@ def test_a_second_ctrl_c_ends_campy_when_a_camera_hangs_as_it_closes(tmp_path):
 		'videoFolder: "{}"'.format(tmp_path / "rec"), 'videoFilename: "0.mp4"', "recTimeInSec: 60", "numCams: 2",
 		'cameraNames: ["EyeA", "EyeB"]', 'cameraMake: "ratcam"', 'ratcamPorts: ["sim", "sim"]',
 		"frameRate: 30", "frameWidth: 160", "frameHeight: 120", "cameraExposureTimeInUs: 3000", "gpuID: -1",
-		'pixelFormatOutput: "yuv420p"', "displayFrameRate: 0", 'preflight: "off"', 'ffmpegLogLevel: "warning"', ""]))
+		'pixelFormatOutput: "yuv420p"', "displayFrameRate: 0", 'preflight: "off"', 'ffmpegLogLevel: "warning"',
+		"sessionFolder: False", ""]))
 	env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(hook), REPO]), PYTHONUNBUFFERED="1",
 		CAMPY_TEST_HANG_CLOSE="EyeA")
 	code = "import sys; sys.argv = ['campy-acquire', sys.argv[1]]; from campy.campy import Main; Main()"

@@ -17,6 +17,7 @@ def DefaultParams():
 	# Recording default parameters
 	params["numCams"] = 1
 	params["videoFolder"] = "./test"
+	params["sessionFolder"] = True # each run records into a new <videoFolder>/<date_time>/ (newfiles.MakeSessionFolder)
 	params["videoFilename"] = "0.mp4"
 	params["frameRate"] = 100
 	params["recTimeInSec"] = 10
@@ -363,13 +364,23 @@ def ParseClargs(parser, argv=None):
 		"--videoFolder", 
 		dest="videoFolder", 
 		type=TextValue,
-		help="Folder in which to save videos.",
+		help="Folder in which to save videos. Each run records into a new folder inside it, \
+			named by the date and time it started (sessionFolder).",
+	)
+	parser.add_argument(
+		"--sessionFolder",
+		dest="sessionFolder",
+		type=ConfigValue(bool),
+		help="Record each run into a new folder inside videoFolder, named by the date and time \
+			it started, e.g. 2026-10-18_17-30-05 (default: True). False records into videoFolder \
+			itself, and stops if a recording is already there.",
 	)
 	parser.add_argument(
 		"--videoFilename", 
 		dest="videoFilename", 
 		type=TextValue,
-		help="Name for video output file.",
+		help="Name for video output file. A name with \"calibration\" in it (0-calibration.mp4) \
+			is a calibration video: it goes into <camera>/calibration_images/.",
 	)
 	parser.add_argument(
 		"--frameRate", 

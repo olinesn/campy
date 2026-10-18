@@ -165,12 +165,19 @@ def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path):
 	# and the stop command at the end
 	# (the two writes run together): start with the test LED, then stop with it off
 	assert "".join(data for _, data in received) == "2,2,3,20,13,43" + "2,2,3,-1,-1,0"
+	# The run's own folder, inside videoFolder (sessionFolder); the emu
+	# cameras read their clips from videoFolder itself
+	sessions = [d for d in tmp_path.iterdir() if re.fullmatch(r"\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d", d.name)]
+	assert len(sessions) == 1, out
+	session = sessions[0]
+	assert "Recording into {}\n".format(session) in out
+
 	# Each video has the clip's frame size, not the config's (1152x1024, the
 	# default), and every frame: it was opened at 1152x1024, and came out empty
 	import imageio
 	for name in ("Camera0", "Camera1"):
 		assert "{}: frameWidth x frameHeight 1152x1024 changed to 64x48, the clip's frame size.".format(name) in out
-		video = imageio.get_reader(str(tmp_path / name / "emuclip.mp4"))
+		video = imageio.get_reader(str(session / name / "emuclip.mp4"))
 		try:
 			assert video.get_meta_data()["size"] == (64, 48)
 			assert video.count_frames() == 120 # 6 s at 20 fps
@@ -178,7 +185,7 @@ def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path):
 			video.close()
 
 	# What campy-align reads: which cameras were grabbing when campy started the trigger
-	record = json.loads((tmp_path / "trigger.json").read_text())
+	record = json.loads((session / "trigger.json").read_text())
 	assert (record["triggerStarted"], record["startedBy"]) == (True, "campy")
 	assert record["readyBeforeTrigger"] == ["Camera0", "Camera1"] and record["notReady"] == {}
 	assert isinstance(record["startedHostNs"], int) and record["startedHostNs"] > 0

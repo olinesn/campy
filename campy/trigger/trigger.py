@@ -3,7 +3,7 @@ Trigger nexus
 """
 
 import json, logging, os
-from campy import configurator
+from campy import configurator, newfiles
 from campy.utils.utils import Say
 
 def ImportTrigger(params):
@@ -53,8 +53,8 @@ def SaveStart(params, ready, missing, startedNs):
 	if started and blinkPin >= 0:
 		record.update(blinkPin=blinkPin, blinkHz=blinkHz) # campy-synctest reads the rate
 	os.makedirs(params["videoFolder"], exist_ok=True)
-	path = os.path.join(params["videoFolder"], "trigger.json")
-	with open(path, "w") as f:
+	path = os.path.join(params["videoFolder"], newfiles.TRIGGER_FILE)
+	with newfiles.Open(path, "w") as f: # never over another recording's
 		json.dump(record, f, indent=2)
 	return path
 
