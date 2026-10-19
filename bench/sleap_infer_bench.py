@@ -32,13 +32,14 @@ What is measured
   because TorchBackend only autocasts on cuda (the model is wrapped so that
   autocast runs inside the backend and fp32 confmaps come out, as on cuda).
   fp16 is skipped on CPU.
-* With --memory-format nchw,channels_last, both memory layouts. sleap-nn's
-  models are channels-first (NCHW); cuDNN runs its tensor-core convolutions
-  channels-last and converts every activation to and from that layout, about a
-  fifth of the forward time on an RTX 2000 Ada. channels_last converts the
-  models' weights (model.to(memory_format=torch.channels_last)) so activations
-  stay channels-last and the conversions go. On ROCm it changed nothing, and on
-  Apple MPS it was slower.
+* Memory layout (--memory-format). sleap-nn's models are channels-first
+  (NCHW); cuDNN runs its tensor-core convolutions channels-last and converts
+  every activation to and from that layout, about a fifth of the forward time
+  on an RTX 2000 Ada. channels_last converts the models' weights
+  (model.to(memory_format=torch.channels_last)) so activations stay
+  channels-last and the conversions go. On ROCm it changed nothing, and on
+  Apple MPS it was slower. So the default, auto, runs channels_last on an
+  Nvidia CUDA GPU and nchw everywhere else; nchw,channels_last times both.
 * With --cuda-graphs (cuda only), each model's forward pass is captured as a
   CUDA graph on its first call and replayed after that, so its ~100-150 kernel
   launches cost one launch. sleap-nn's peak finding and cropping stay as they
@@ -305,6 +306,13 @@ def synchronize(device):
         torch.cuda.synchronize()
     elif device == "mps":
         torch.mps.synchronize()
+
+
+def default_memory_format(device):
+    """channels_last on an Nvidia CUDA GPU (cuDNN's layout); nchw on ROCm, MPS and CPU."""
+    if device.startswith("cuda") and torch.version.hip is None:
+        return "channels_last"
+    return "nchw"
 
 
 def device_description(device):
@@ -587,8 +595,9 @@ def parse_args():
                    help="cuda is also the ROCm/HIP device")
     p.add_argument("--precision", default="fp32,fp16",
                    help="comma list of fp32, fp16 (fp16 = autocast; skipped on cpu)")
-    p.add_argument("--memory-format", default="nchw",
-                   help="comma list of nchw, channels_last (model weights and activations)")
+    p.add_argument("--memory-format", default="auto",
+                   help="auto (channels_last on Nvidia CUDA, nchw elsewhere), or a comma list "
+                        "of nchw, channels_last (model weights and activations)")
     p.add_argument("--cuda-graphs", action="store_true",
                    help="cuda: replay each model's forward pass as a CUDA graph")
     p.add_argument("--compile", action="store_true",
@@ -635,6 +644,8 @@ def main():
         if prec not in ("fp32", "fp16"):
             sys.exit(f"--precision: unknown {prec!r} (use fp32 and/or fp16; bf16 is deliberately not offered)")
     memory_formats = [s.strip() for s in args.memory_format.split(",") if s.strip()]
+    if memory_formats == ["auto"]:
+        memory_formats = [default_memory_format(device)]
     for mf in memory_formats:
         if mf not in ("nchw", "channels_last"):
             sys.exit(f"--memory-format: unknown {mf!r} (use nchw and/or channels_last)")
