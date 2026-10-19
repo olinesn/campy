@@ -67,7 +67,7 @@ def test_linux_inhibitor():
 		time.sleep(0.5)
 		# Idle and sleep, or idle only where polkit refuses sleep (over SSH)
 		assert awake.how in ("systemd-inhibit, blocking idle and sleep", "systemd-inhibit, blocking idle; sleep refused")
-		assert awake.refused == ([] if "sleep" in awake.how else ["sleep"])
+		assert awake.refused == (["sleep"] if awake.how.endswith("sleep refused") else [])
 		listed = subprocess.run(["systemd-inhibit", "--list"], capture_output=True, text=True).stdout
 		assert keepawake.REASON in listed
 	listed = subprocess.run(["systemd-inhibit", "--list"], capture_output=True, text=True).stdout
