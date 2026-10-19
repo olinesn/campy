@@ -32,6 +32,13 @@ What is measured
   because TorchBackend only autocasts on cuda (the model is wrapped so that
   autocast runs inside the backend and fp32 confmaps come out, as on cuda).
   fp16 is skipped on CPU.
+* With --memory-format nchw,channels_last, both memory layouts. sleap-nn's
+  models are channels-first (NCHW); cuDNN runs its tensor-core convolutions
+  channels-last and converts every activation to and from that layout, about a
+  fifth of the forward time on an RTX 2000 Ada. channels_last converts the
+  models' weights (model.to(memory_format=torch.channels_last)) so activations
+  stay channels-last and the conversions go. On ROCm it changed nothing, and on
+  Apple MPS it was slower.
 * With --stages, each stage alone as well: CentroidLayer.predict on the
   uploaded frames, and CenteredInstanceLayer.predict on a (N*K, 1, crop, crop)
   uint8 crop batch already on the device.
@@ -371,7 +378,7 @@ def summarize(first, second, lat):
 # One benchmark run
 # --------------------------------------------------------------------------
 
-def make_layers(c, ci, args, device, precision, k):
+def make_layers(c, ci, args, device, precision, k, memory_format="nchw"):
     """Build fresh backends/layers (use_fp16/use_compile are construction-time)."""
     cm_h = math.ceil(FRAME_H * c["scale"] / c["max_stride"]) * c["max_stride"] // c["output_stride"]
     cm_w = math.ceil(FRAME_W * c["scale"] / c["max_stride"]) * c["max_stride"] // c["output_stride"]
@@ -388,6 +395,9 @@ def make_layers(c, ci, args, device, precision, k):
     # module, not when a parent module (the wrappers below) is moved.
     centroid_module.to(device)
     instance_module.to(device)
+    if memory_format == "channels_last":
+        centroid_module.to(memory_format=torch.channels_last)
+        instance_module.to(memory_format=torch.channels_last)
     centroid_net = SyntheticCentroidPeaks(centroid_module, args.frames, cm_h, cm_w, k)
     instance_net = instance_module
     if precision == "fp16" and device == "mps":
@@ -430,10 +440,10 @@ def make_layers(c, ci, args, device, precision, k):
     return topdown, centroid_layer, instance_layer, centroid_module, instance_module
 
 
-def run_one(c, ci, args, device, precision, k, frames_host, what):
+def run_one(c, ci, args, device, precision, k, frames_host, what, memory_format="nchw"):
     """what: 'pipeline', 'centroid' or 'instance'. Returns a result dict."""
     topdown, centroid_layer, instance_layer, centroid_module, instance_module = make_layers(
-        c, ci, args, device, precision, k
+        c, ci, args, device, precision, k, memory_format
     )
     n = args.frames
 
@@ -450,7 +460,8 @@ def run_one(c, ci, args, device, precision, k, frames_host, what):
             return layer.predict(x)
 
     first, second, lat, out = time_calls(fn, device, args.iters, args.warmup)
-    result = {"stage": what, "precision": precision, "crops_per_frame": k}
+    result = {"stage": what, "precision": precision, "memory_format": memory_format,
+              "crops_per_frame": k}
     result.update(summarize(first, second, lat))
 
     # Check the shapes really were what we meant to time.
@@ -510,6 +521,8 @@ def parse_args():
                    help="cuda is also the ROCm/HIP device")
     p.add_argument("--precision", default="fp32,fp16",
                    help="comma list of fp32, fp16 (fp16 = autocast; skipped on cpu)")
+    p.add_argument("--memory-format", default="nchw",
+                   help="comma list of nchw, channels_last (model weights and activations)")
     p.add_argument("--compile", action="store_true",
                    help="experimental: TorchBackend(use_compile=True, compile_mode='reduce-overhead')")
     p.add_argument("--iters", type=int, default=2000, help="timed sets per measurement")
@@ -553,6 +566,10 @@ def main():
     for prec in precisions:
         if prec not in ("fp32", "fp16"):
             sys.exit(f"--precision: unknown {prec!r} (use fp32 and/or fp16; bf16 is deliberately not offered)")
+    memory_formats = [s.strip() for s in args.memory_format.split(",") if s.strip()]
+    for mf in memory_formats:
+        if mf not in ("nchw", "channels_last"):
+            sys.exit(f"--memory-format: unknown {mf!r} (use nchw and/or channels_last)")
     skipped = []
     if device == "cpu" and "fp16" in precisions:
         precisions.remove("fp16")
@@ -602,7 +619,8 @@ def main():
     for note in skipped:
         print(f"note: {note}")
     print(f"{args.frames} frames {FRAME_W}x{FRAME_H} uint8 per set, {args.nodes} nodes, "
-          f"iters {args.iters}, warmup {args.warmup}, compile {args.compile}")
+          f"iters {args.iters}, warmup {args.warmup}, compile {args.compile}, "
+          f"memory format {','.join(memory_formats)}")
     print("timing: sleap-nn TopDownLayer.predict; centroid confmaps -> K synthetic peaks/frame "
           "(model still runs) so crops are fixed")
 
@@ -632,12 +650,13 @@ def main():
                     c if kind != "instance" else None, ci if kind != "centroid" else None, args, k
                 )
             for prec in precisions:
-                r = run_one(c, ci, args, device, prec, k, frames_host, kind)
-                r["centroid"] = dict(c) if kind != "instance" else None
-                r["instance"] = dict(ci) if kind != "centroid" else None
-                r.update(stats_cache[key])
-                results.append(r)
-                print_row(r, header_needed=len(results) == 1)
+                for mf in memory_formats:
+                    r = run_one(c, ci, args, device, prec, k, frames_host, kind, mf)
+                    r["centroid"] = dict(c) if kind != "instance" else None
+                    r["instance"] = dict(ci) if kind != "centroid" else None
+                    r.update(stats_cache[key])
+                    results.append(r)
+                    print_row(r, header_needed=len(results) == 1)
 
     print(f"\ndone in {time.perf_counter() - t_start:.1f} s")
     print_table(results)
@@ -649,7 +668,7 @@ def main():
 
 
 COLUMNS = [
-    ("stage", 8), ("centroid", 20), ("instance", 21), ("prec", 4), ("K", 2), ("GFLOP", 6),
+    ("stage", 8), ("centroid", 20), ("instance", 21), ("prec", 4), ("mem", 4), ("K", 2), ("GFLOP", 6),
     ("1st ms", 8), ("2nd ms", 7), ("p50", 7), ("p95", 7), ("p99", 7), ("max", 7), ("sets/s", 7),
 ]
 
@@ -661,7 +680,8 @@ def row_cells(r):
         r["stage"],
         centroid_label(r["centroid"]) if r["centroid"] else "-",
         instance_label(r["instance"]) if r["instance"] else "-",
-        r["precision"], str(r["crops_per_frame"]), f"{gflop:.1f}",
+        r["precision"], "cl" if r.get("memory_format") == "channels_last" else "nchw",
+        str(r["crops_per_frame"]), f"{gflop:.1f}",
         f"{r['first_call_ms']:.0f}", f"{r['second_call_ms']:.1f}",
         f"{r['p50_ms']:.2f}", f"{r['p95_ms']:.2f}", f"{r['p99_ms']:.2f}", f"{r['max_ms']:.2f}",
         f"{r['sets_per_s']:.1f}",
@@ -681,8 +701,8 @@ def print_row(r, header_needed):
 
 
 def print_table(results):
-    print("\nSummary (latency per set in ms; GFLOP per set; K = crops per frame; "
-          "1st/2nd = first calls of the shape):")
+    print("\nSummary (latency per set in ms; GFLOP per set; mem = memory format, cl = "
+          "channels_last; K = crops per frame; 1st/2nd = first calls of the shape):")
     print(format_row([name for name, _ in COLUMNS]))
     print("-" * (sum(w for _, w in COLUMNS) + 2 * (len(COLUMNS) - 1)))
     order = {"centroid": 0, "instance": 1, "pipeline": 2}
