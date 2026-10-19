@@ -331,6 +331,16 @@ recTimeInSec: 3600
   - A camera that stops sending frames is reported after 3 s without one, every 30 s while it lasts, and when frames come again; Ctrl-C ends it as usual. A camera that is gone for good ends its recording there, with `cameraError` in "metadata.csv": a RatCam that lost its USB link, a FLIR camera Spinnaker no longer counts as valid, a Basler pylon says was removed. So does a camera that did not start grabbing.
   - A camera that fails to close is reported, and its video and "metadata.csv" are still finished.
 
+### Keeping the computer awake (keepAwake)
+
+While it records, campy keeps the computer out of sleep and standby (`keepAwake: True`, the default). A Windows PC that uses Modern Standby otherwise goes into standby when its screen times out, recording or not, if nobody touches it. On a Core Ultra 9 285 PC with nobody signed in, the screen turned off after 10 minutes and campy fell from 80 to 25 frames a second.
+
+- Windows: a power request that keeps the screen, the system and campy's processes running. As administrator, `powercfg /requests` lists it as "campy is recording". Windows refuses the screen part to a campy started over SSH while nobody is signed in, and campy says so: on such a PC, also set the screen timeout to Never (Settings > System > Power).
+- Linux: `systemd-inhibit` blocks idle and sleep. Over SSH, polkit allows blocking idle only, and campy says so.
+- macOS: `caffeinate` keeps the display and the system awake.
+
+campy says how as it starts (`Keeping this computer awake while recording (keepAwake): a Windows power request.`). The request ends with the recording, and with campy if it is killed. Where it cannot be made, campy says why and records anyway. `keepAwake: False` (or `--keepAwake False`) turns it off.
+
 ### Scaling the number of cameras
 Change `numCams`; nothing else in a config has to depend on it. A setting can be one value for every camera, or a list with one value per camera. A list longer than `numCams` uses its first items, so a config written for 8 cameras also runs 4. `configs/campy_config_flir_usb3.yaml` is an example.
 

@@ -19,7 +19,7 @@ campy-acquire ./configs/campy_config.yaml
 import os, time, sys, logging, threading, queue
 from collections import deque
 import multiprocessing as mp
-from campy import writer, configurator, preflight, newfiles
+from campy import writer, configurator, preflight, newfiles, keepawake
 from campy.trigger import trigger
 from campy.cameras import unicam
 from campy.utils.utils import HandleKeyboardInterrupt, Say, ErrorText
@@ -149,6 +149,8 @@ def RunCamera(n_cam, readyQueue, done):
 	# and Main says so.
 	InitCameraProcess(readyQueue)
 	unicam.SetMainConnection(done)
+	# Not throttled should standby start anyway (Windows); released as it ends
+	keepawake.KeepAwake(params.get("keepAwake", True), whole=False).Start()
 	recording = AcquireOneCamera(n_cam)
 	readyQueue.close()
 	readyQueue.join_thread()
@@ -187,6 +189,16 @@ def Main():
 			CloseSystems(systems, params)
 			sys.exit(1)
 
+		# The computer stays awake until the cameras have finished: a PC with
+		# Modern Standby would otherwise go into standby when its screen times
+		# out, mid-recording (keepAwake)
+		awake = keepawake.KeepAwake(params.get("keepAwake", True)).Start()
+		if awake.how:
+			Say("Keeping this computer awake while recording (keepAwake): {}.".format(awake.how))
+		elif awake.problem:
+			Say("Could not keep this computer awake while recording: {}. Set its screen and sleep \
+timeouts to Never, or it may go into standby mid-recording.".format(awake.problem))
+
 		# One process per camera, started the same way on Windows and Linux
 		# (spawn), and watched: one that dies is said at once, and the others
 		# go on recording
@@ -207,6 +219,7 @@ def Main():
 			trigger.SaveStart(params, ready, missing, systems.get("triggerStartedNs"))
 			failures = cameras.Wait(interrupts)
 		finally:
+			awake.Stop()
 			CloseSystems(systems, params)
 			# The files still empty go: a camera that saved no frames leaves
 			# what it always left. Not a stopped camera's, whose ffmpeg may still

@@ -61,6 +61,7 @@ def DefaultParams():
 	params["vaapiDevice"] = "/dev/dri/renderD128" # gpuMake "vaapi" only
 	params["vaapiLinearSurfaces"] = True # gpuMake "vaapi" on AMD GPUs: see writer.EncoderArgs
 	params["writeQueueMaxSec"] = 5 # frames waiting for the encoder, in seconds; "None" = unbounded
+	params["keepAwake"] = True # keep the computer out of sleep and standby while recording (keepawake.py)
 
 	# Launch check parameters (campy/preflight.py)
 	params["preflight"] = "error" # "error", "warn" or "off"
@@ -592,6 +593,14 @@ def ParseClargs(parser, argv=None):
 		help="Most frames held waiting for the encoder, in seconds of video. When the encoder \
 			falls this far behind, new frames are dropped and counted (frametimes.npy shows the \
 			gaps, metadata.csv the count) instead of filling memory. 'None' = unbounded.",
+	)
+	parser.add_argument(
+		"--keepAwake",
+		dest="keepAwake",
+		type=ConfigValue(bool, lists=False),
+		help="Keep the computer out of sleep and standby while recording, screen included \
+			(default: True). A Windows PC with Modern Standby otherwise goes into standby when \
+			its screen times out, and the recording slows to a crawl.",
 	)
 	parser.add_argument(
 		"--preflight",
