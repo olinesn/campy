@@ -34,7 +34,7 @@ All numbers little-endian. One ring holds a header and `slots` slots:
   32      8 bytes     frame dtype, numpy's dtype.str, NUL-padded ("|u1")
   40      uint64      slot bytes: from one slot to the next
   48      uint64      frame bytes
-  56      int64       ring id: time.time_ns() when made, new for every recording
+  56      int64       ring id: a random number, new for every ring made
   64      int64       state: 1 recording, 2 ended (the camera stopped)
   72      int64       latest: the newest frame number written, 0 before the first
   80      float64     frame rate (frameRate)
@@ -245,7 +245,10 @@ class RingWriter:
 		frameBytes = int(np.prod(shape)) * dtype.itemsize
 		values = {"version": VERSION, "headerBytes": HEADER_BYTES, "slots": slots,
 			"height": shape[0], "width": shape[1], "channels": shape[2],
-			"slotBytes": SlotBytes(frameBytes), "frameBytes": frameBytes, "ringId": time.time_ns(),
+			"slotBytes": SlotBytes(frameBytes), "frameBytes": frameBytes,
+			# Random, not the time: Windows' clock moves in steps of ms, and a
+			# ring made again within one (_Make) must still look new to readers
+			"ringId": int.from_bytes(os.urandom(8), "little") >> 1,
 			"frameRate": float(frameRate), "camera": int(camera)}
 		for key, value in values.items():
 			at, kind = _HEADER[key]
