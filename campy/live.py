@@ -37,6 +37,16 @@ sleap    trained sleap-nn models: --centroid <model folder> and --instance
          <model folder> (each with training_config.yaml and best.ckpt).
 none     no model: reads and logs the sets only, to check the feed.
 
+3D (--calibration)
+------------------
+With --calibration <anipose calibration.toml>, each set's keypoints also go
+to campy/pose3d.py's Tracker, in the same loop: it decides which detection in
+each camera is the same animal, keeps each animal's identity (0 to
+--animals - 1) from set to set, and triangulates the ones that 2 or more
+cameras see. The cameras are found in the calibration by campy's camera names
+(the feed's), or by --calibration-names, in feed order. It takes about 0.5 ms
+a set on one core for 5 animals.
+
 Output
 ------
 <out>.npy, one row per set processed (a structured array; np.load reads it,
@@ -55,6 +65,16 @@ also while campy-live runs), and <out>.json, the summary. Fields of each row:
   centroid_vals  per camera, per animal: the centroid's confidence
   keypoints      per camera, per animal, per node: x, y in the frame
   peak_vals      per camera, per animal, per node: confidence
+
+and with --calibration:
+
+  pose3d_ns      when the 3D poses were made (time.monotonic_ns)
+  points3d       per animal (identity), per node: x, y, z in the calibration's
+                 units (mm); NaN when fewer than 2 cameras saw it
+  members        per animal, per camera: which of that camera's animals it
+                 is (an index into keypoints), -1 none
+  n_views        per animal: how many cameras saw it
+  reproj_px      per animal, per node: mean reprojection error, pixels
 
 Latency, from a frame reaching the computer to its keypoints, is done_ns
 minus host_ns (on Linux and macOS, one clock in every process). The summary
@@ -436,15 +456,47 @@ class TrainedTopDown(TopDown):
 MODELS = {"random": RandomTopDown, "sleap": TrainedTopDown, "none": NoModel}
 
 
+# ---------------------------------------------------------------- 3D
+
+class Pose3D:
+	"""
+	campy/pose3d.py's Tracker on each set's keypoints (--calibration): which
+	detection in each camera is which animal, and each animal's 3D pose.
+	"""
+
+	def __init__(self, args, cameraNames):
+		from campy import pose3d
+		names = args.calibration_names.split(",") if args.calibration_names else list(cameraNames)
+		if len(names) != len(cameraNames):
+			raise SystemExit("--calibration-names gives {} cameras; the feed has {}".format(len(names), len(cameraNames)))
+		self.names = names
+		self.cameras = pose3d.LoadCalibration(args.calibration, names=names)
+		self.animals = args.animals
+		self.tracker = pose3d.Tracker(self.cameras, n_animals=self.animals)
+		self.text = "{} animals, cameras {} of {}".format(self.animals, ", ".join(names), args.calibration)
+		Say("3D: {}.".format(self.text))
+
+	def Update(self, keypoints, scores, frame):
+		return self.tracker.Update(keypoints, scores, frame=frame)
+
+	def Describe(self):
+		return self.text
+
+
 # ---------------------------------------------------------------- the log
 
-def RowType(n_cameras, instances, nodes):
+def RowType(n_cameras, instances, nodes, animals3d=0):
 	c, i, n = n_cameras, max(1, instances), max(1, nodes)
-	return np.dtype([
+	fields = [
 		("frame", "<i8"), ("host_ns", "<i8", (c,)), ("written_ns", "<i8", (c,)), ("stamp", "<f8", (c,)),
 		("read_ns", "<i8"), ("done_ns", "<i8"), ("skipped", "<i4"), ("found", "<i2", (c,)),
 		("centroids", "<f4", (c, i, 2)), ("centroid_vals", "<f4", (c, i)),
-		("keypoints", "<f4", (c, i, n, 2)), ("peak_vals", "<f4", (c, i, n))])
+		("keypoints", "<f4", (c, i, n, 2)), ("peak_vals", "<f4", (c, i, n))]
+	if animals3d:
+		a = animals3d
+		fields += [("pose3d_ns", "<i8"), ("points3d", "<f4", (a, n, 3)), ("members", "<i2", (a, c)),
+			("n_views", "<i1", (a,)), ("reproj_px", "<f4", (a, n))]
+	return np.dtype(fields)
 
 
 def Fit(value, shape):
@@ -460,10 +512,11 @@ def Fit(value, shape):
 class Log:
 	"""The rows, written about every second, and the numbers for the summary."""
 
-	def __init__(self, path, n_cameras, instances, nodes, frameRate):
+	def __init__(self, path, n_cameras, instances, nodes, frameRate, animals3d=0):
 		self.path = path
-		self.rows_type = RowType(n_cameras, instances, nodes)
+		self.rows_type = RowType(n_cameras, instances, nodes, animals3d)
 		self.file = GrowingNpy(path, self.rows_type, header_bytes=1024)
+		self.latency_3d, self.pose3d = [], []
 		self.rows = []
 		self.every = max(1, int(round(frameRate or 60)))
 		self.frameRate = frameRate
@@ -472,9 +525,10 @@ class Log:
 		self.first = self.lastFrame = None
 		self.started = None # when the first set was read
 
-	def Add(self, frames, skipped, read_ns, done_ns, result):
+	def Row(self, frames, skipped, read_ns, done_ns, result):
+		# One set's row: its frames, and the model's results
 		row = np.zeros((), self.rows_type)
-		host = np.array([f.hostTime for f in frames], np.int64)
+		host = [f.hostTime for f in frames]
 		row["frame"] = frames[0].frameNumber
 		row["host_ns"] = host
 		row["written_ns"] = [f.written for f in frames]
@@ -483,6 +537,18 @@ class Log:
 		for key in ("centroids", "centroid_vals", "keypoints", "peak_vals"):
 			row[key] = Fit(result.get(key), row[key].shape)
 		row["found"] = (~np.isnan(row["centroids"]).any(-1)).sum(-1)
+		return row
+
+	def Add(self, row, frames, poses=None, pose3d_ns=None):
+		# The row, with its 3D poses (pose3d.Poses) when they were made
+		if poses is not None:
+			row["pose3d_ns"] = pose3d_ns
+			row["points3d"] = poses.points3d
+			row["members"] = poses.members
+			row["n_views"] = poses.n_views
+			row["reproj_px"] = poses.reproj_px
+		read_ns, done_ns, skipped = int(row["read_ns"]), int(row["done_ns"]), int(row["skipped"])
+		host = np.array([f.hostTime for f in frames], np.int64)
 		self.rows.append(row)
 		if len(self.rows) >= self.every:
 			self.Write()
@@ -501,6 +567,9 @@ class Log:
 		self.latency_first.append(done_ns - host.min())
 		self.read.append(read_ns - host.max())
 		self.predict.append(done_ns - read_ns)
+		if poses is not None:
+			self.latency_3d.append(pose3d_ns - host.max())
+			self.pose3d.append(pose3d_ns - done_ns)
 
 	def Write(self):
 		if self.rows:
@@ -521,7 +590,8 @@ class Log:
 			"latency_from_last_frame_ms": Ms(self.latency_last),
 			"latency_from_first_frame_ms": Ms(self.latency_first),
 			"wait_and_read_ms": Ms(self.read), "inference_ms": Ms(self.predict), # upload, model, results back
-			"host_time_spread_ms": Ms(self.spread)}
+			"host_time_spread_ms": Ms(self.spread),
+			"latency_to_3d_from_last_frame_ms": Ms(self.latency_3d), "pose3d_ms": Ms(self.pose3d)}
 
 	def Close(self):
 		self.Write()
@@ -551,8 +621,8 @@ def Run(args):
 		frameRate = cameras.readers[0].Info("frameRate")
 
 		model = MODELS[args.model](args, len(names), shape)
-		host = HostBuffer(args.model, (len(names),) + shape, cameras.readers[0].dtype)
-		if args.model != "none":
+		host = HostBuffer(getattr(model, "torch", None) is not None, (len(names),) + shape, cameras.readers[0].dtype)
+		if hasattr(model, "Warm"):
 			t = time.perf_counter()
 			model.Warm(host.tensor, crops=range(1, len(names) * args.max_instances + 1)
 				if args.model == "sleap" else ())
@@ -560,8 +630,11 @@ def Run(args):
 		else:
 			Say("Model: {}.".format(model.Describe()))
 
+		tracker = Pose3D(args, [r.cameraName for r in cameras.readers]) if args.calibration else None
+
 		out = args.out or "campy-live_{}".format(datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
-		log = Log(out + ".npy", len(names), model.instances, model.nodes or args.nodes, frameRate)
+		log = Log(out + ".npy", len(names), model.instances, model.nodes or args.nodes, frameRate,
+			tracker.animals if tracker else 0)
 		Say("Logging to {}.npy.".format(out))
 		reported, since = time.monotonic(), 0
 		while True:
@@ -572,13 +645,20 @@ def Run(args):
 			read_ns = time.monotonic_ns()
 			result = model.Predict(model.Upload(host.tensor)) # ends with the results on the host
 			done_ns = time.monotonic_ns()
-			log.Add(frames, skipped, read_ns, done_ns, result)
+			row = log.Row(frames, skipped, read_ns, done_ns, result)
+			if tracker is None:
+				log.Add(row, frames)
+			else:
+				# Which animal is which across the cameras, and its 3D pose
+				poses = tracker.Update(row["keypoints"], row["peak_vals"], int(row["frame"]))
+				log.Add(row, frames, poses, time.monotonic_ns())
 			if args.report_sec and time.monotonic() - reported >= args.report_sec:
 				Say(Line(log.Summary(since), log))
 				reported, since = time.monotonic(), len(log.latency_last)
 		log.Close()
 		summary = log.Summary()
-		summary.update(model=model.Describe(), nodes=getattr(model, "nodeNames", None), cameras=[r.cameraName for r in cameras.readers],
+		summary.update(model=model.Describe(), nodes=getattr(model, "nodeNames", None),
+			pose3d=tracker.Describe() if tracker else None, cameras=[r.cameraName for r in cameras.readers],
 			rings=names, frame_shape=list(shape), frame_rate=frameRate, log=out + ".npy",
 			ended="stopped (Ctrl-C)" if stop() else "the recording ended")
 		with open(out + ".json", "x") as f:
@@ -594,10 +674,15 @@ def Run(args):
 def Line(s, log):
 	lat = s.get("latency_from_last_frame_ms", {})
 	inf = s.get("inference_ms", {})
-	return "{} sets ({:.1f}/s), {} skipped, {} misaligned; latency p50 {:.1f} p99 {:.1f} max {:.1f} ms; " \
+	text = "{} sets ({:.1f}/s), {} skipped, {} misaligned; latency p50 {:.1f} p99 {:.1f} max {:.1f} ms; " \
 		"inference p50 {:.1f} p99 {:.1f} ms".format(s["sets"] if "sets" in s else 0, s.get("sets_per_s", 0),
 		s.get("skipped", 0), s.get("misaligned", 0), lat.get("p50", float("nan")), lat.get("p99", float("nan")),
 		lat.get("max", float("nan")), inf.get("p50", float("nan")), inf.get("p99", float("nan")))
+	lat3, p3 = s.get("latency_to_3d_from_last_frame_ms", {}), s.get("pose3d_ms", {})
+	if lat3:
+		text += "; to 3D p50 {:.1f} p99 {:.1f} max {:.1f} ms (3D alone p50 {:.2f} p99 {:.2f} ms)".format(
+			lat3["p50"], lat3["p99"], lat3["max"], p3["p50"], p3["p99"])
+	return text
 
 
 class HostBuffer:
@@ -607,8 +692,8 @@ class HostBuffer:
 	that (a faster upload to a discrete GPU).
 	"""
 
-	def __init__(self, model, shape, dtype):
-		if model == "none":
+	def __init__(self, torch, shape, dtype):
+		if not torch:
 			self.array = np.empty(shape, dtype)
 			self.tensor = self.array
 			return
@@ -641,7 +726,12 @@ def ParseArgs(argv=None):
 		help="auto: channels_last on Nvidia GPUs, where it is faster, and nchw elsewhere (ROCm, MPS, CPU), \
 			as bench/sleap_infer_bench.py.")
 	p.add_argument("--max-instances", type=int, default=5, help="Most animals per frame.")
-	p.add_argument("--animals", type=int, default=5, help="--model random: animals found per frame.")
+	p.add_argument("--animals", type=int, default=5, help="How many animals there are: with --calibration, the 3D \
+		identities 0 .. animals-1; with --model random, the animals it finds per frame.")
+	p.add_argument("--calibration", default="", help="anipose calibration.toml: match the animals across the \
+		cameras and triangulate them each set (campy/pose3d.py). Default: 2D only.")
+	p.add_argument("--calibration-names", default="", help="With --calibration: the cameras' names in it, \
+		comma-separated, in feed order (default: campy's cameraNames, as the feed gives them).")
 	p.add_argument("--nodes", type=int, default=15, help="--model random: nodes per animal.")
 	p.add_argument("--centroid-scale", type=float, default=RANDOM_CENTROID["scale"])
 	p.add_argument("--centroid-filters", type=int, default=RANDOM_CENTROID["filters"])

@@ -447,3 +447,59 @@ def test_campy_live_without_a_feed_gives_up(tmp_path):
 	code = live.Run(live.ParseArgs(["--model", "none", "--cameras", "1", "--name", name(),
 		"--out", str(tmp_path / "x"), "--wait-sec", "0.3"]))
 	assert code == 1
+
+
+# -------------------------------------------------------------- campy-live in 3D
+
+def test_campy_live_matches_and_triangulates_the_animals(tmp_path, monkeypatch):
+	# A model that "sees" 3 known mice through 3 calibrated cameras: campy-live
+	# hands its keypoints to pose3d, and logs each mouse's 3D under one identity
+	from campy import pose3d
+	import test_pose3d as scene3d
+	cams = scene3d.rig()
+	names = ["top", "left", "right"]
+	with open(tmp_path / "calibration.toml", "w") as f:
+		for i, (cam, label) in enumerate(zip(cams, names)):
+			f.write('[cam_{}]\nname = "{}"\nsize = [1280, 1024]\nmatrix = {}\ndistortions = {}\nrotation = {}\n'
+				'translation = {}\n\n'.format(i, label, cam.K.tolist(), cam.dist.tolist(), cam.R.tolist(), cam.t.tolist()))
+	truth = scene3d.scene(1, n=3)[0] # (3 mice, 15 nodes, 3)
+	rng = np.random.default_rng(0)
+	keypoints, scores, order = scene3d.observe(cams, truth, rng, noise=0.2, drop_node=0.0, instances=5)
+
+	class Seeing(live.NoModel):
+		instances, nodes = 5, truth.shape[1]
+
+		def __init__(self, args, n_frames, shape):
+			pass
+
+		def Predict(self, frames):
+			return {"keypoints": keypoints, "peak_vals": scores,
+				"centroids": keypoints[:, :, 0]} # where each mouse is: its first node
+
+	monkeypatch.setitem(live.MODELS, "seeing", Seeing)
+	prefix = name()
+	t = threading.Thread(target=_record, args=(prefix, 3, 60, 200, 0.3))
+	t.start()
+	try:
+		out = str(tmp_path / "live3d")
+		code = live.Run(live.ParseArgs(["--model", "seeing", "--cameras", "3", "--name", prefix, "--out", out,
+			"--report-sec", "0", "--wait-sec", "30", "--animals", "3", "--calibration", str(tmp_path / "calibration.toml"),
+			"--calibration-names", ",".join(names)]))
+	finally:
+		t.join()
+	assert code == 0
+	rows = np.load(out + ".npy")
+	summary = json.load(open(out + ".json"))
+	last = rows[-1]
+	assert list(last["n_views"]) == [3, 3, 3]
+	# Each identity is one true mouse, seen as the right detection in every camera, and in the right place
+	for identity in range(3):
+		mouse = order[0][last["members"][identity][0]]
+		assert all(order[c][last["members"][identity][c]] == mouse for c in range(3))
+		error = np.linalg.norm(last["points3d"][identity] - truth[mouse], axis=-1)
+		assert np.nanmax(error) < 3 # mm
+	# The same identities in every set (the same frames each time)
+	assert np.all(rows["members"] == rows["members"][0])
+	assert np.all(rows["done_ns"] <= rows["pose3d_ns"])
+	assert summary["pose3d"].startswith("3 animals, cameras top, left, right")
+	assert summary["pose3d_ms"]["p50"] > 0

@@ -363,7 +363,11 @@ Frames of one trigger pulse have the same frame number on every camera, as long 
 
 The shared memory's layout is documented in `campy/livefeed.py`, and plain numpy can read it, from any program.
 
-Each row's `keypoints` (cameras, animals, nodes, 2), `peak_vals` and `frame` are what `campy/pose3d.py`'s `Tracker.Update` takes to match animals across cameras and triangulate them ([below](#3d-poses-from-live-2d-predictions-campypose3dpy)). `campy-live` does not call it yet.
+With `--calibration <calibration.toml>` (anipose's), `campy-live` also turns each set into 3D, in the same loop ([3D poses from live 2D predictions](#3d-poses-from-live-2d-predictions-campypose3dpy)): it works out which animal in each camera is the same one, gives each animal an identity (0 to `--animals` − 1) that it keeps from set to set, and triangulates each animal that 2 or more cameras see. The cameras are found in the calibration by campy's camera names, or by `--calibration-names`, in the feed's camera order:
+```
+campy-live --cameras 3 --model sleap --centroid <folder> --instance <folder> --animals 3 --calibration calibration.toml
+```
+Each row then also has `points3d` (per animal and node, x, y, z in the calibration's units, mm), `members` (which detection in each camera is that animal), `n_views` and `reproj_px`, and the summary gives the latency from frames to 3D.
 
 ### Scaling the number of cameras
 Change `numCams`; nothing else in a config has to depend on it. A setting can be one value for every camera, or a list with one value per camera. A list longer than `numCams` uses its first items, so a config written for 8 cameras also runs 4. `configs/campy_config_flir_usb3.yaml` is an example.
