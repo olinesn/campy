@@ -572,3 +572,58 @@ def test_campy_live_matches_and_triangulates_the_animals(tmp_path, monkeypatch):
 	assert np.all(rows["done_ns"] <= rows["pose3d_ns"])
 	assert summary["pose3d"].startswith("3 animals, cameras top, left, right")
 	assert summary["pose3d_ms"]["p50"] > 0
+
+
+# -------------------------------------------------------------- campy-live's warm-up
+
+def test_warm_up_covers_every_count_of_crops():
+	# 3 cameras, at most 5 animals each: 1 to 15 crops, spread over the frames,
+	# and a frame with more animals than are kept
+	counts = live.WarmCounts(3, 5, range(1, 16))
+	assert [sum(c) for c in counts[:-1]] == list(range(1, 16))
+	assert all(len(c) == 3 and max(c) <= 5 for c in counts[:-1])
+	assert counts[-1] == [6, 0, 0]
+	assert live.WarmCounts(3, 5, ()) == [] # the random model: its own peaks
+
+
+def test_warm_up_runs_the_whole_layer_with_animals_found(monkeypatch):
+	# Each count goes through the model's Predict (the path a real set takes),
+	# with the fake peaks in place only meanwhile
+	backend = object()
+	seen = []
+
+	class Layer:
+		centroid_layer = types.SimpleNamespace(backend=backend)
+
+	model = object.__new__(live.TopDown)
+	model.n_frames, model.instances, model.layer = 3, 5, Layer()
+	monkeypatch.setattr(model, "Upload", lambda host: host, raising=False)
+	monkeypatch.setattr(live, "Synchronize", lambda device: None)
+	model.device = "cpu"
+
+	def Predict(frames):
+		b = model.layer.centroid_layer.backend
+		seen.append(b.counts if isinstance(b, live.FakeCentroids) else None)
+	model.Predict = Predict
+	model.Warm("frames", crops=range(1, 16))
+	assert seen[:3] == [None] * 3 # the frames as they are
+	assert seen[3:] == live.WarmCounts(3, 5, range(1, 16))
+	assert model.layer.centroid_layer.backend is backend
+
+
+def test_fake_centroids_give_that_many_peaks():
+	torch = pytest.importorskip("torch")
+
+	class Backend:
+		device = "cpu"
+
+		def __call__(self, x):
+			return {"output": torch.zeros(len(x), 1, 64, 80)}
+
+	layer = types.SimpleNamespace(backend=Backend())
+	with live.FakeCentroids(layer, [2, 0, 6]) as fake:
+		assert layer.backend is fake and fake.device == "cpu"
+		cm = layer.backend(torch.zeros(3, 1, 256, 320))["output"]
+	assert isinstance(layer.backend, Backend)
+	peaks = (cm == torch.nn.functional.max_pool2d(cm, 3, 1, 1)) & (cm > 0.2)
+	assert peaks.sum((1, 2, 3)).tolist() == [2, 0, 6]
