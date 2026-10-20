@@ -38,7 +38,9 @@ frameWidth: 1280
 frameHeight: 1024
 pixelFormatInput: "gray"              # Mono8
 cameraTrigger: "Line3"                # the Arduino's pulses; "None" to free-run at frameRate
-cameraExposureTimeInUs: 200
+# 750 us on the mice (2026-10-20): 200 us left them at about a fifth of the
+# range in a dim cage, 400 us roughly doubled every camera's brightness.
+cameraExposureTimeInUs: 750
 cameraGain: 7                         # dB (up to 18 on this camera)
 disableGamma: True
 
