@@ -189,7 +189,7 @@ def write_clip(path, frames=30):
 	w.close()
 
 
-def run_campy(tmp_path, port, rec=10):
+def start_campy(tmp_path, port, rec=10):
 	# campy-acquire, two emulated cameras, the trigger Arduino on port
 	config = tmp_path / "config.yaml"
 	config.write_text("\n".join([
@@ -202,8 +202,17 @@ def run_campy(tmp_path, port, rec=10):
 	env = dict(os.environ, PYTHONPATH=REPO, PYTHONUNBUFFERED="1")
 	env.pop("IMAGEIO_FFMPEG_EXE", None)
 	code = "import sys; sys.argv = ['campy-acquire', sys.argv[1]]; from campy.campy import Main; Main()"
-	return subprocess.run([sys.executable, "-c", code, str(config)], cwd=str(tmp_path), env=env,
-		capture_output=True, text=True, timeout=120)
+	return subprocess.Popen([sys.executable, "-c", code, str(config)], cwd=str(tmp_path), env=env,
+		stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def run_campy(tmp_path, port, rec=10):
+	proc = start_campy(tmp_path, port, rec)
+	try:
+		proc.stdout_text, proc.stderr_text = proc.communicate(timeout=120)
+	finally:
+		proc.kill()
+	return subprocess.CompletedProcess(proc.args, proc.returncode, proc.stdout_text, proc.stderr_text)
 
 
 def sessions(tmp_path):
@@ -324,6 +333,47 @@ def test_campy_stops_before_the_cameras_when_the_arduino_does_not_answer(tmp_pat
 			"Unplug its USB cable and plug it back in (or power-cycle it), then run campy again.".format(port) in out
 		assert time.monotonic() - t0 > arduino.CHECK_TIMEOUT_S
 	# Before anything started: no camera, no recording folder
+	assert "Camera0" not in out and "Recording into" not in out, out
+	assert sessions(tmp_path) == []
+
+
+def test_ctrl_c_stops_the_check_and_campy(monkeypatch):
+	monkeypatch.setattr(arduino, "RESEND_S", 0.1)
+	port, t0 = Port(answer=None), time.monotonic()
+	with pytest.raises(arduino.TriggerInterrupted) as e:
+		monkeypatch.setattr(arduino.serial, "Serial", lambda **kwargs: port)
+		arduino.OpenTriggers({}, {"serialPort": "COM7", "digitalPins": [2]},
+			interrupted=lambda: time.monotonic() - t0 > 0.35)
+	assert time.monotonic() - t0 < 1 # not the 8 s timeout
+	assert str(e.value) == "Stopped (Ctrl-C) while checking the trigger Arduino on COM7, before any camera started: nothing was recorded."
+	assert port.closed and 3 <= len(port.writes) <= 5
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal and SIGINT")
+def test_ctrl_c_during_the_check_stops_campy_at_once(tmp_path):
+	import select, signal
+	master, slave = pty() # nothing answers on the other end
+	port = os.ttyname(slave)
+	proc = start_campy(tmp_path, port)
+	try:
+		# Once the check has sent its first stop command, Ctrl-C
+		heard = b""
+		while b"2,2,3,-1,-1,0" not in heard:
+			assert select.select([master], [], [], 60)[0], "campy sent no stop command"
+			heard += os.read(master, 1024)
+		t0 = time.monotonic()
+		proc.send_signal(signal.SIGINT)
+		out, err = proc.communicate(timeout=30)
+		stopped = time.monotonic() - t0
+	finally:
+		proc.kill()
+		os.close(slave)
+		os.close(master)
+	assert proc.returncode == 1, out + err
+	assert stopped < 3, out # not the check's 8 s
+	assert "Stopped (Ctrl-C) while checking the trigger Arduino on {}, before any camera started: "\
+		"nothing was recorded.".format(port) in out, out
+	assert "did not answer" not in out
 	assert "Camera0" not in out and "Recording into" not in out, out
 	assert sessions(tmp_path) == []
 
