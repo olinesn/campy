@@ -14,8 +14,17 @@ frames it holds. A recording cut short keeps its frames up to the last batch.
 frametimes.npy is stored column by column (the .npy format's fortran_order),
 so that each frame's column can be appended to the 2 x frames array; np.load
 returns the same array as before, of the same shape and values.
+
+The batches are written by a thread of their own (FrameTimes' writer), not by
+the camera thread that adds the frames: a write, its header rewrite and its
+flush sometimes wait tens of ms for the disk (ext4's journal, while ffmpeg
+writes the videos), and the camera thread, waiting with them, gave the frames
+after late arrival times, and handed them late to the live feed (the EVO-X2,
+3 cameras at 60 fps: every gap over 25 ms in hosttimes.npy, up to 48 ms, was
+right after a batch). A recording cut short keeps its frames up to the last
+batch written; Close waits for the batches still queued.
 """
-import os, struct
+import logging, os, queue, struct, threading
 import numpy as np
 from campy import newfiles
 
@@ -68,16 +77,20 @@ class FrameTimes:
 	"""
 	One camera's frametimes.npy and hosttimes.npy, written in batches of
 	`every` frames, and the rest when closed. The camera's timestamps count
-	from its first frame's.
+	from its first frame's. Add hands each batch to the writer thread, which
+	writes it while the camera goes on; Close waits for it.
 	"""
 
 	def __init__(self, folder, every):
 		self.folder, self.every = folder, max(1, int(round(float(every))))
 		self.files = None # made with the first batch, as before only for a camera that grabbed
-		self.frames, self.hosts = [], [] # the batch not yet written
+		self.frames, self.hosts = [], [] # the batch not yet handed to the writer
 		self.first = None # the first frame's camera timestamp
 		self.last = None  # the last frame's, from the first
 		self.count = 0
+		self.batches = queue.Queue() # (frames, hosts), for the writer; None stops it
+		self.writer = None # started with the first batch
+		self.error = None # the first write that failed, raised by Close
 
 	def Add(self, frameNumber, timeStamp, hostTime):
 		if self.first is None:
@@ -90,26 +103,63 @@ class FrameTimes:
 			self.Write()
 
 	def Write(self):
+		# Hands the batch to the writer thread
 		if not self.hosts:
 			return
+		if self.writer is None:
+			self.writer = threading.Thread(target=self.WriteBatches, daemon=True,
+				name="frametimes " + os.path.basename(os.path.normpath(self.folder)))
+			self.writer.start()
+		self.batches.put((self.frames, self.hosts))
+		self.frames, self.hosts = [], []
+
+	def WriteBatches(self):
+		# The writer thread: a daemon, so a process that ends without Close
+		# is not held open by it (its files keep the batches written)
+		while True:
+			batch = self.batches.get()
+			try:
+				if batch is None:
+					return
+				if self.error is None:
+					self.WriteBatch(*batch)
+			except Exception as e:
+				# Said once; the batches after are left out, as a file the
+				# failed write may have cut is not appended to
+				self.error = e
+				logging.error("Could not write the frame times in {}: {}".format(self.folder, e))
+			finally:
+				self.batches.task_done()
+
+	def WriteBatch(self, frames, hosts):
 		if self.files is None:
 			os.makedirs(self.folder, exist_ok=True)
 			self.files = (GrowingNpy(os.path.join(self.folder, "frametimes.npy"), np.float64, rows=2),
 				GrowingNpy(os.path.join(self.folder, "hosttimes.npy"), np.int64))
-		self.files[0].Append(self.frames)
-		self.files[1].Append(self.hosts)
-		self.frames, self.hosts = [], []
+		self.files[0].Append(frames)
+		self.files[1].Append(hosts)
+
+	def Wait(self):
+		# Until every batch handed to the writer is in the files
+		self.batches.join()
 
 	def Close(self, keep=None):
 		# keep: how many frames to keep, from the first, when the video took
 		# fewer than were added (its ffmpeg stopped). The rest are dropped from
 		# both files. None keeps them all.
 		self.Write()
-		if keep is not None and keep < self.count:
-			self.count = max(0, int(keep))
+		if self.writer is not None:
+			self.batches.put(None)
+			self.writer.join()
+		try:
+			if self.error is not None:
+				raise self.error
+			if keep is not None and keep < self.count:
+				self.count = max(0, int(keep))
+				if self.files is not None:
+					for f in self.files:
+						f.Truncate(self.count)
+		finally:
 			if self.files is not None:
 				for f in self.files:
-					f.Truncate(self.count)
-		if self.files is not None:
-			for f in self.files:
-				f.Close()
+					f.Close()
