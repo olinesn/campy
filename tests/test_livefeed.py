@@ -520,10 +520,10 @@ def test_campy_live_without_a_feed_gives_up(tmp_path):
 
 # -------------------------------------------------------------- campy-live in 3D
 
-def test_campy_live_matches_and_triangulates_the_animals(tmp_path, monkeypatch):
-	# A model that "sees" 3 known mice through 3 calibrated cameras: campy-live
-	# hands its keypoints to pose3d, and logs each mouse's 3D under one identity
-	from campy import pose3d
+def seeing(tmp_path, monkeypatch):
+	# A model that "sees" 3 known mice through 3 calibrated cameras, as
+	# --model seeing; returns campy-live's 3D arguments, the mice, and which
+	# detection is which mouse in each camera
 	import test_pose3d as scene3d
 	cams = scene3d.rig()
 	names = ["top", "left", "right"]
@@ -546,16 +546,27 @@ def test_campy_live_matches_and_triangulates_the_animals(tmp_path, monkeypatch):
 				"centroids": keypoints[:, :, 0]} # where each mouse is: its first node
 
 	monkeypatch.setitem(live.MODELS, "seeing", Seeing)
-	prefix = name()
-	t = threading.Thread(target=_record, args=(prefix, 3, 60, 200, 0.3))
+	args = ["--model", "seeing", "--report-sec", "0", "--wait-sec", "30", "--animals", "3",
+		"--calibration", str(tmp_path / "calibration.toml"), "--calibration-names", ",".join(names)]
+	return args, truth, order
+
+
+def run_live(prefix, out, args, frames=60, rate=200, delay=0.3):
+	# campy-live on a recording of 3 cameras' frames, from a thread
+	t = threading.Thread(target=_record, args=(prefix, 3, frames, rate, delay))
 	t.start()
 	try:
-		out = str(tmp_path / "live3d")
-		code = live.Run(live.ParseArgs(["--model", "seeing", "--cameras", "3", "--name", prefix, "--out", out,
-			"--report-sec", "0", "--wait-sec", "30", "--animals", "3", "--calibration", str(tmp_path / "calibration.toml"),
-			"--calibration-names", ",".join(names)]))
+		return live.Run(live.ParseArgs(["--cameras", "3", "--name", prefix, "--out", out] + args))
 	finally:
 		t.join()
+
+
+def test_campy_live_matches_and_triangulates_the_animals(tmp_path, monkeypatch):
+	# campy-live hands the model's keypoints to pose3d, and logs each mouse's
+	# 3D under one identity
+	args, truth, order = seeing(tmp_path, monkeypatch)
+	out = str(tmp_path / "live3d")
+	code = run_live(name(), out, args)
 	assert code == 0
 	rows = np.load(out + ".npy")
 	summary = json.load(open(out + ".json"))
@@ -570,8 +581,80 @@ def test_campy_live_matches_and_triangulates_the_animals(tmp_path, monkeypatch):
 	# The same identities in every set (the same frames each time)
 	assert np.all(rows["members"] == rows["members"][0])
 	assert np.all(rows["done_ns"] <= rows["pose3d_ns"])
+	assert rows["frame"][-1] == 60 and np.all(np.diff(rows["frame"]) > 0)
 	assert summary["pose3d"].startswith("3 animals, cameras top, left, right")
 	assert summary["pose3d_ms"]["p50"] > 0
+
+
+def test_campy_live_makes_the_3d_while_the_model_runs_on_the_next_set(tmp_path, monkeypatch):
+	# The 3D of a set is made on a thread of its own: the first set's 3D
+	# waits until the model has run on a later set, which, made in turn,
+	# would never come. The tracker still has every set in order. 3 s of
+	# frames, for a campy-live that comes late to them (a slow runner).
+	from campy import pose3d
+	args, truth, order = seeing(tmp_path, monkeypatch)
+	predicted = [] # one per set the model ran on
+	predict = live.MODELS["seeing"].Predict
+	def Predict(model, frames):
+		predicted.append(1)
+		return predict(model, frames)
+	monkeypatch.setattr(live.MODELS["seeing"], "Predict", Predict)
+	update = pose3d.Tracker.Update
+	seen = []
+	def Update(tracker, keypoints, scores=None, frame=None):
+		if not seen:
+			deadline = time.monotonic() + 10
+			while len(predicted) < 2:
+				assert time.monotonic() < deadline, "the model did not go on to the next set"
+				time.sleep(0.001)
+		seen.append(frame)
+		return update(tracker, keypoints, scores, frame)
+	monkeypatch.setattr(pose3d.Tracker, "Update", Update)
+	out = str(tmp_path / "live3d")
+	assert run_live(name(), out, args, frames=600) == 0
+	rows = np.load(out + ".npy")
+	assert list(rows["frame"]) == seen and seen == sorted(seen) and seen[-1] == 600
+	assert np.all(rows["done_ns"] <= rows["pose3d_ns"]) and np.all(rows["n_views"] == 3)
+
+
+def test_campy_live_stops_at_a_3d_error(tmp_path, monkeypatch):
+	from campy import pose3d
+	args, truth, order = seeing(tmp_path, monkeypatch)
+	def Update(tracker, keypoints, scores=None, frame=None):
+		raise ValueError("the 3D failed")
+	monkeypatch.setattr(pose3d.Tracker, "Update", Update)
+	with pytest.raises(ValueError, match="the 3D failed"):
+		run_live(name(), str(tmp_path / "live3d"), args, frames=200)
+
+
+def test_campy_live_makes_its_model_before_the_feed_comes(tmp_path, monkeypatch, capsys):
+	# For --frame-shape's frames, while it waits; again for a feed of
+	# another size (16x20 here), which is then logged as any
+	made = []
+
+	class Model(live.NoModel):
+		def __init__(self, args, n_frames, shape):
+			made.append((n_frames, tuple(shape)))
+			self.instances = 0
+
+	monkeypatch.setitem(live.MODELS, "made", Model)
+	out = str(tmp_path / "live")
+	assert run_live(name(), out, ["--model", "made", "--report-sec", "0", "--wait-sec", "30",
+		"--frame-shape", "32x40"], delay=0.5) == 0
+	assert made == [(3, (32, 40, 1)), (3, (16, 20, 1))]
+	text = capsys.readouterr().out
+	assert text.index("Model: ") < text.index("Waiting for the live feed") < text.index("making it again")
+	rows = np.load(out + ".npy")
+	assert rows["frame"][-1] == 60
+
+
+def test_campy_live_frame_shape():
+	assert live.FrameShape("1024x1280x1") == (1024, 1280, 1)
+	assert live.FrameShape("1024X1280") == (1024, 1280, 1)
+	assert live.FrameShape("480x640x3") == (480, 640, 3)
+	for bad in ("1024", "1024x0x1", "ax2", "1x2x3x4"):
+		with pytest.raises(SystemExit):
+			live.FrameShape(bad)
 
 
 # -------------------------------------------------------------- campy-live's warm-up
