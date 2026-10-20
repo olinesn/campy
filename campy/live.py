@@ -527,6 +527,8 @@ class Log:
 		self.file = GrowingNpy(path, self.rows_type, header_bytes=1024)
 		self.latency_3d, self.pose3d = [], []
 		self.writer = Writer("campy-live log", path)
+		self.error = None # a write that failed, said when closing and in the summary (log_error)
+		self.closed = False
 		self.rows = []
 		self.every = max(1, int(round(frameRate or 60)))
 		self.frameRate = frameRate
@@ -605,13 +607,22 @@ class Log:
 			"latency_from_first_frame_ms": Ms(self.latency_first),
 			"wait_and_read_ms": Ms(self.read), "inference_ms": Ms(self.predict), # upload, model, results back
 			"host_time_spread_ms": Ms(self.spread),
-			"latency_to_3d_from_last_frame_ms": Ms(self.latency_3d), "pose3d_ms": Ms(self.pose3d)}
+			"latency_to_3d_from_last_frame_ms": Ms(self.latency_3d), "pose3d_ms": Ms(self.pose3d),
+			**({"log_error": self.error} if self.error else {})}
 
 	def Close(self):
-		# The rows still queued written first
+		# The rows still queued written first. A write that failed is said,
+		# and goes in the summary: the sets went on without it, and the
+		# summary is still written.
+		if self.closed:
+			return
+		self.closed = True
 		self.Write()
 		try:
 			self.writer.Close()
+		except Exception as e:
+			self.error = "{}: {}".format(type(e).__name__, e)
+			Say("Could not write {}: {}. Its rows end where the writes stopped.".format(self.path, self.error))
 		finally:
 			self.file.Close()
 
@@ -630,6 +641,11 @@ def Run(args):
 			Say("Could not lower this program's priority (--nice): {}".format(e))
 
 	cameras = Cameras(names, poll=args.poll_ms / 1e3)
+	log = None
+	# The progress lines, from a thread of their own: printed in the loop,
+	# into a log file on the disk the videos go to, one could wait as long as
+	# a log write
+	printer = Writer("campy-live printer", "the progress line")
 	try:
 		if not cameras.Attach(wait=args.wait_sec, stop=stop):
 			Say("No live feed: stopped." if stop() else "No live feed after {:g} s.".format(args.wait_sec))
@@ -672,9 +688,10 @@ def Run(args):
 				pose3d_ns, pose3d_pc = time.monotonic_ns(), time.perf_counter_ns()
 				log.Add(row, frames, poses, pose3d_ns, durations=(done_pc - read_pc, pose3d_pc - done_pc))
 			if args.report_sec and time.monotonic() - reported >= args.report_sec:
-				Say(Line(log.Summary(since), log))
+				printer.Do(Say, Line(log.Summary(since), log))
 				reported, since = time.monotonic(), len(log.latency_last)
 		log.Close()
+		printer.Close()
 		summary = log.Summary()
 		summary.update(model=model.Describe(), nodes=getattr(model, "nodeNames", None),
 			pose3d=tracker.Describe() if tracker else None, cameras=[r.cameraName for r in cameras.readers],
@@ -686,8 +703,14 @@ def Run(args):
 		Say("Summary in {}.json.".format(out))
 		return 0
 	finally:
-		cameras.Close()
-		signal.signal(signal.SIGINT, previous)
+		# Stopped by an error too: the rows and lines still queued are written
+		try:
+			if log is not None:
+				log.Close()
+			printer.Close()
+		finally:
+			cameras.Close()
+			signal.signal(signal.SIGINT, previous)
 
 
 def Line(s, log):

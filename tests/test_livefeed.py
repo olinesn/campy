@@ -475,15 +475,41 @@ def test_campy_live_log_writes_do_not_hold_up_the_sets(tmp_path, monkeypatch):
 	assert list(rows["host_ns"][:, 2]) == [1000 * n + 2 for n in range(1, 321)]
 
 
-def test_campy_live_log_says_a_write_that_fails(tmp_path, monkeypatch, caplog):
+def test_campy_live_log_says_a_write_that_fails(tmp_path, monkeypatch, caplog, capsys):
+	# The sets go on, and the summary is still made, saying what failed
 	def Append(npy, values):
 		raise OSError(28, "No space left on device")
 	monkeypatch.setattr(frametimes.GrowingNpy, "Append", Append)
 	log = live.Log(str(tmp_path / "live.npy"), 3, 5, 15, 60)
-	log_sets(log, 1, 200) # never raises: the sets go on
-	with pytest.raises(OSError, match="No space left"):
-		log.Close()
+	log_sets(log, 1, 200) # never raises
+	log.Close()
+	log.Close() # once is enough
 	assert caplog.text.count("Could not write") == 1
+	assert capsys.readouterr().out.count("No space left on device. Its rows end where the writes stopped.") == 1
+	summary = log.Summary()
+	assert summary["sets"] == 200 and summary["log_error"] == "OSError: [Errno 28] No space left on device"
+
+
+def test_campy_live_stopped_by_an_error_keeps_its_rows(tmp_path, monkeypatch):
+	# The rows already handed to the log's writer thread are written, though
+	# the loop never got to close the log
+	add = live.Log.Add
+	def Add(log, *a, **k):
+		if log.sets == 50:
+			raise RuntimeError("the model failed")
+		add(log, *a, **k)
+	monkeypatch.setattr(live.Log, "Add", Add)
+	prefix = name()
+	t = threading.Thread(target=_record, args=(prefix, 3, 400, 200, 0.5))
+	t.start()
+	try:
+		out = str(tmp_path / "live")
+		with pytest.raises(RuntimeError, match="the model failed"):
+			live.Run(live.ParseArgs(["--model", "none", "--cameras", "3", "--name", prefix,
+				"--out", out, "--report-sec", "0", "--wait-sec", "30"]))
+	finally:
+		t.join()
+	assert len(np.load(out + ".npy")) == 50
 
 
 def test_campy_live_without_a_feed_gives_up(tmp_path):
