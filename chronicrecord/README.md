@@ -78,18 +78,34 @@ The log is `~/Documents/<date>/timestamps.txt`, as before. The program's own out
 
 ## Setting it up (not done yet)
 
-1. **Flash the Nano.** In the Arduino IDE, choose board "Arduino Nano ESP32", open `chronic_timer/chronic_timer.ino`, and upload. In the Serial Monitor (newline line ending), `id` should answer `ok chronic_timer 1`.
-2. **Wire it.**
-   - Connect D2, D3, D4 and D5 on the screw-terminal shield to the BNC breakout's rows for outputs A–D, in place of the Pi's GPIO 5, 12, 13 and 19.
-   - Connect the Nano's GND to the breakout's ground.
-   - Fit a 10 kΩ resistor from each of the four outputs to GND. While the Nano resets or is being flashed, its pins float. A floating gate or LED input could otherwise read high and start a SpikeGLX file or flash an LED.
-3. **Voltage.** The Nano's outputs are 3.3 V, the same as the Pi's GPIO that drives these inputs today. The Blackfly S Line3 counts 2.6 V or more as high, so 3.3 V works, with a small margin. For more margin over long BNC cables, a 74AHCT125 buffer powered from 5 V would turn the 3.3 V outputs into 5 V ones. That's optional: today's 3.3 V works on this rig.
-4. **Plug the Nano into the Pi by USB.** It shows up as `/dev/serial/by-id/usb-Arduino_Nano_ESP32_...`, which `chronic_control.py` finds by itself. The ChronicRecord PC's COM9 is a Nano ESP32 used by `campy_config_chronicrecord_v02c_arduinoTrigger.yaml`. If that is the same board, that config won't find it once it's on the Pi.
-5. **Set up the Pi.**
+The board is the Nano ESP32 now on the ChronicRecord PC's COM9 (until now campy's trigger, `campy_config_chronicrecord_v02c_arduinoTrigger.yaml`). It goes on an Arduino [Nano Screw Terminal Adapter](https://store-usa.arduino.cc/products/nano-screw-terminal) and is plugged into the Pi.
+
+1. **Flash it while it is still on the PC, before any cable moves.** Its pins aren't connected to anything yet.
+   - In the Arduino IDE, choose board "Arduino Nano ESP32", port COM9, and keep *Tools > Pin Numbering* on **"By Arduino pin (default)"**. With "By GPIO number" the sketch's pins 2–5 would be different physical pins.
+   - Open `chronic_timer/chronic_timer.ino` and upload.
+   - In the Serial Monitor (line ending "Newline"), `id` should answer `ok chronic_timer 1`.
+2. **Move the BNC cables** from the Pi's breakout to the adapter's screw terminals:
+
+   | BNC (was on the Pi) | Adapter terminal |
+   |---|---|
+   | A, OneBox record gate (GPIO 5) | D2 |
+   | B, camera Line3 (GPIO 12) | D3 |
+   | C, blue LED controller (GPIO 13) | D4 |
+   | D, yellow LED controller (GPIO 19) | D5 |
+   | every cable's shield / ground wire | GND |
+
+   The Nano has only two GND pins. Twist the four ground wires together into one GND terminal, or make a ground strip on the adapter's prototyping area.
+3. **Pull-down resistors.** Fit a 10 kΩ resistor from each of D2–D5 to GND. The adapter's 9×8 prototyping area is a good place: solder each resistor between its pin's row and a ground strip.
+   - Why: while the Nano resets or is being flashed, its pins float, and a floating gate or LED input could read high and start a SpikeGLX file or flash an LED.
+   - Until they're fitted, don't reflash the Nano while the OneBox and LED controllers are on.
+4. **Voltage.** The Nano's outputs are 3.3 V, the same as the Pi's GPIO that drives these inputs today. The Blackfly S Line3 counts 2.6 V or more as high, so 3.3 V works, with a small margin. For more margin over long BNC cables, a 74AHCT125 buffer powered from 5 V (it fits on the prototyping area) would turn the 3.3 V outputs into 5 V ones. That's optional: today's 3.3 V works on this rig.
+5. **Plug the Nano into the Pi by USB.** It shows up as `/dev/serial/by-id/usb-Arduino_Nano_ESP32_...`, which `chronic_control.py` finds by itself. On the PC, `campy_config_chronicrecord_v02c_arduinoTrigger.yaml` (`startArduino: True`, COM9) no longer has a board. Record with a config that has `cameraTrigger: "Line3"`, `startArduino: False` and `frameRate: 60`.
+6. **Set up the Pi.**
    - `sudo apt install python3-serial`.
    - Copy `chronic_control.py` to `~`.
    - Check that the user is in the `dialout` group (`groups`).
    - Run `python3 chronic_control.py plan` and check the timeline.
+   - Don't run chronicControlv13.py again once the cables are on the Nano: it would drive GPIO pins that nothing is wired to.
 
 ## Commands the Nano takes
 
