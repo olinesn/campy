@@ -77,7 +77,10 @@ and with --calibration:
   reproj_px      per animal, per node: mean reprojection error, pixels
 
 Latency, from a frame reaching the computer to its keypoints, is done_ns
-minus host_ns (on Linux and macOS, one clock in every process). The summary
+minus host_ns (on Linux and macOS, one clock in every process). On Windows
+before Python 3.13 that clock moves in steps of 15.6 ms, so latencies from
+host times are that coarse there; the summary's inference and 3D times are
+timed with time.perf_counter_ns, precise everywhere. The summary
 gives it from the set's last frame (the earliest the set could be read) and
 its first.
 """
@@ -539,8 +542,10 @@ class Log:
 		row["found"] = (~np.isnan(row["centroids"]).any(-1)).sum(-1)
 		return row
 
-	def Add(self, row, frames, poses=None, pose3d_ns=None):
-		# The row, with its 3D poses (pose3d.Poses) when they were made
+	def Add(self, row, frames, poses=None, pose3d_ns=None, durations=None):
+		# The row, with its 3D poses (pose3d.Poses) when they were made.
+		# durations: (inference, 3D) in ns, timed with time.perf_counter_ns:
+		# on Windows before Python 3.13, time.monotonic_ns moves in 15.6 ms steps
 		if poses is not None:
 			row["pose3d_ns"] = pose3d_ns
 			row["points3d"] = poses.points3d
@@ -566,10 +571,11 @@ class Log:
 		self.latency_last.append(done_ns - host.max())
 		self.latency_first.append(done_ns - host.min())
 		self.read.append(read_ns - host.max())
-		self.predict.append(done_ns - read_ns)
+		inference, pose3d = durations if durations is not None else (done_ns - read_ns, None)
+		self.predict.append(inference)
 		if poses is not None:
 			self.latency_3d.append(pose3d_ns - host.max())
-			self.pose3d.append(pose3d_ns - done_ns)
+			self.pose3d.append(pose3d_ns - done_ns if pose3d is None else pose3d)
 
 	def Write(self):
 		if self.rows:
@@ -642,16 +648,17 @@ def Run(args):
 			if got is None:
 				break
 			frames, skipped = got
-			read_ns = time.monotonic_ns()
+			read_ns, read_pc = time.monotonic_ns(), time.perf_counter_ns()
 			result = model.Predict(model.Upload(host.tensor)) # ends with the results on the host
-			done_ns = time.monotonic_ns()
+			done_ns, done_pc = time.monotonic_ns(), time.perf_counter_ns()
 			row = log.Row(frames, skipped, read_ns, done_ns, result)
 			if tracker is None:
-				log.Add(row, frames)
+				log.Add(row, frames, durations=(done_pc - read_pc, None))
 			else:
 				# Which animal is which across the cameras, and its 3D pose
 				poses = tracker.Update(row["keypoints"], row["peak_vals"], int(row["frame"]))
-				log.Add(row, frames, poses, time.monotonic_ns())
+				pose3d_ns, pose3d_pc = time.monotonic_ns(), time.perf_counter_ns()
+				log.Add(row, frames, poses, pose3d_ns, durations=(done_pc - read_pc, pose3d_pc - done_pc))
 			if args.report_sec and time.monotonic() - reported >= args.report_sec:
 				Say(Line(log.Summary(since), log))
 				reported, since = time.monotonic(), len(log.latency_last)
