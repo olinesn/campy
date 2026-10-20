@@ -11,7 +11,7 @@ from collections import deque
 import numpy as np
 import pytest
 
-from campy import configurator, livefeed, live
+from campy import configurator, frametimes, livefeed, live
 from campy.cameras import unicam
 
 _count = itertools.count()
@@ -441,6 +441,75 @@ def test_campy_live_reads_a_recording_to_its_end(tmp_path, capsys):
 	assert summary["ended"] == "the recording ended"
 	text = capsys.readouterr().out
 	assert "Waiting for the live feed" in text and "Done, the recording ended" in text
+
+
+def log_sets(log, first, count):
+	# count sets of 3 cameras' frames, as campy-live's loop gives them to Log.Row and Log.Add
+	for n in range(first, first + count):
+		frames = [types.SimpleNamespace(frameNumber=n, hostTime=1000 * n + c, written=1000 * n + 5, timeStamp=n / 60)
+			for c in range(3)]
+		log.Add(log.Row(frames, 0, 1000 * n + 10, 1000 * n + 20, {}), frames)
+
+
+def test_campy_live_log_writes_do_not_hold_up_the_sets(tmp_path, monkeypatch):
+	# A write the disk makes wait holds up only the log's writer thread, not
+	# the next set; Close waits for it, and the file has every row
+	go, waiting = threading.Event(), threading.Event()
+	append = frametimes.GrowingNpy.Append
+	def Append(npy, values):
+		waiting.set()
+		assert go.wait(30)
+		append(npy, values)
+	monkeypatch.setattr(frametimes.GrowingNpy, "Append", Append)
+	log = live.Log(str(tmp_path / "live.npy"), 3, 5, 15, 60)
+	start = time.monotonic()
+	log_sets(log, 1, 300) # 5 seconds' rows, at 60 sets a second
+	assert waiting.wait(30)
+	assert time.monotonic() - start < 5 and log.sets == 300
+	assert len(np.load(tmp_path / "live.npy")) == 0 # the first write still waiting
+	threading.Timer(0.3, go.set).start()
+	log_sets(log, 301, 20)
+	log.Close()
+	rows = np.load(tmp_path / "live.npy")
+	assert list(rows["frame"]) == list(range(1, 321))
+	assert list(rows["host_ns"][:, 2]) == [1000 * n + 2 for n in range(1, 321)]
+
+
+def test_campy_live_log_says_a_write_that_fails(tmp_path, monkeypatch, caplog, capsys):
+	# The sets go on, and the summary is still made, saying what failed
+	def Append(npy, values):
+		raise OSError(28, "No space left on device")
+	monkeypatch.setattr(frametimes.GrowingNpy, "Append", Append)
+	log = live.Log(str(tmp_path / "live.npy"), 3, 5, 15, 60)
+	log_sets(log, 1, 200) # never raises
+	log.Close()
+	log.Close() # once is enough
+	assert caplog.text.count("Could not write") == 1
+	assert capsys.readouterr().out.count("No space left on device. Its rows end where the writes stopped.") == 1
+	summary = log.Summary()
+	assert summary["sets"] == 200 and summary["log_error"] == "OSError: [Errno 28] No space left on device"
+
+
+def test_campy_live_stopped_by_an_error_keeps_its_rows(tmp_path, monkeypatch):
+	# The rows already handed to the log's writer thread are written, though
+	# the loop never got to close the log
+	add = live.Log.Add
+	def Add(log, *a, **k):
+		if log.sets == 50:
+			raise RuntimeError("the model failed")
+		add(log, *a, **k)
+	monkeypatch.setattr(live.Log, "Add", Add)
+	prefix = name()
+	t = threading.Thread(target=_record, args=(prefix, 3, 400, 200, 0.5))
+	t.start()
+	try:
+		out = str(tmp_path / "live")
+		with pytest.raises(RuntimeError, match="the model failed"):
+			live.Run(live.ParseArgs(["--model", "none", "--cameras", "3", "--name", prefix,
+				"--out", out, "--report-sec", "0", "--wait-sec", "30"]))
+	finally:
+		t.join()
+	assert len(np.load(out + ".npy")) == 50
 
 
 def test_campy_live_without_a_feed_gives_up(tmp_path):
