@@ -18,7 +18,13 @@ struct SimSerial {
 	void begin(uint32_t) {}
 	int available();
 	float parseFloat();
-	template <typename T> void print(T) {}
-	template <typename T> void println(T) {}
+	// What the sketch says: Print's formatting (floats with 2 decimals)
+	void print(const char* text);
+	void print(int value);
+	void print(unsigned int value);
+	void print(long value);
+	void print(unsigned long value);
+	void print(double value);
+	template <typename T> void println(T value) { print(value); print("\r\n"); }
 };
 extern SimSerial Serial;

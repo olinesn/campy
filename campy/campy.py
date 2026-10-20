@@ -167,6 +167,15 @@ def Main():
 	# Ctrl-C stops every camera, each closing its video, and Main waits for
 	# them; a second Ctrl-C stops the ones that hang as they close
 	with HandleKeyboardInterrupt() as interrupts:
+		# The trigger Arduino answers, or nothing starts: a dead one used to
+		# leave the cameras waiting for frames that never came
+		try:
+			systems = trigger.OpenTriggers(systems, params)
+		except trigger.TriggerError as e:
+			print(e, flush=True)
+			CloseSystems(systems, params)
+			sys.exit(1)
+
 		# This run's own folder, inside videoFolder, named by the date and time
 		# (sessionFolder): the camera processes, which read the config again,
 		# find it in their environment
@@ -209,12 +218,12 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 		# The trigger stops and the systems close whatever happens here
 		try:
 			# Start the trigger only once every camera is grabbing, so that every
-			# camera's first frame is the trigger's first pulse. The serial port
-			# opens meanwhile: the Arduino needs a few seconds after it opens.
-			systems = trigger.OpenTriggers(systems, params)
+			# camera's first frame is the trigger's first pulse, and once the
+			# Arduino is done with the check's command (a few seconds after it)
 			ready, missing = unicam.WaitForCameras(readyQueue, params, cameras,
 				interrupted=lambda: interrupts.count > 0)
-			if ready and not cameras.ready() and not interrupts.count: # not if the cameras are stopping (Ctrl-C)
+			if ready and trigger.WaitToStart(systems, params, interrupted=lambda: interrupts.count > 0) \
+				and not cameras.ready() and not interrupts.count: # not if the cameras are stopping (Ctrl-C)
 				systems = trigger.StartTriggers(systems, params)
 			trigger.SaveStart(params, ready, missing, systems.get("triggerStartedNs"))
 			failures = cameras.Wait(interrupts)
