@@ -1,6 +1,12 @@
-# The ChronicRecord PC (Windows 11, Core Ultra 9 285 + RTX 2000 Ada): FLIR
-# Blackfly S USB3 cameras (BFS-U3-13Y3M: 1280x1024, mono) free-running at
-# 80 fps, encoded with Intel Quick Sync (H.265) on the processor's GPU.
+# The ChronicRecord PC (Windows 11, Core Ultra 9 285 + RTX 2000 Ada): three
+# FLIR Blackfly S USB3 cameras (BFS-U3-13Y3M: 1280x1024, mono) at 30 fps,
+# triggered on Line3 by an Arduino Nano (trigger.ino) on COM9, pin 6, and
+# encoded with Intel Quick Sync (H.265) on the processor's GPU.
+#
+# Calibration videos use the same rig, slower and shorter:
+#   campy-acquire configs/campy_config_chronicrecord.yaml --frameRate 10 --recTimeInSec 90 --videoFilename calibration.mp4
+# Without the Arduino, the cameras free-run at frameRate:
+#   campy-acquire configs/campy_config_chronicrecord.yaml --cameraTrigger None --startArduino False
 #
 # Exposure and gain were chosen on a test scene, a spinning fan, on
 # 2026-10-16. At 200 us the fan's blades and the faces drawn on them were
@@ -17,21 +23,21 @@
 #
 # Then check what quality costs on your own scene (a lossless clip, see the
 # README's campy-encode-quality section). Quick Sync kept up with 16 or more
-# cameras on this PC; set numCams to the number of cameras.
+# cameras on this PC.
 
 # Recording parameters
-videoFolder: "./test"
+videoFolder: "C:\\campy_data\\chronicRecording"   # each run records into a new dated folder in it
 videoFilename: "0.mp4"
-frameRate: 80
+frameRate: 30
 recTimeInSec: 3600
 
 # Camera parameters
-numCams: 1
+numCams: 3
 cameraMake: "flir"
 frameWidth: 1280
 frameHeight: 1024
 pixelFormatInput: "gray"              # Mono8
-cameraTrigger: "None"                 # free-run: campy sets the camera's frame rate to frameRate
+cameraTrigger: "Line3"                # the Arduino's pulses; "None" to free-run at frameRate
 cameraExposureTimeInUs: 200
 cameraGain: 7                         # dB (up to 18 on this camera)
 disableGamma: True
@@ -50,6 +56,11 @@ colorRange: "full"
 # about 20% more bits at the same number. On the fan at 7 dB, 26 wrote
 # 1.70 Mbit/s (0.77 GB per camera-hour) and scored 0.2 dB higher than limited
 # range at 24, which kept the fan's detail at 1.87 Mbit/s.
+# On three mice in their home cage (2026-10-20, 30 fps, 7 dB), a SLEAP model
+# run on a 26 video missed 1.6% of the animals it found in the lossless clip,
+# and moved their nodes 0.2 px (median; 4.5 px p95). 26 wrote 1.26 Mbit/s a
+# camera, 14 GB a camera-day. 22 missed 1.1% at 2.12 Mbit/s; 30 missed 3.7%,
+# 34 missed 7.7%.
 quality: 26
 pixelFormatOutput: "yuv420p"          # 4:2:0: what every decoder supports
 keyframeInterval: 0.5                 # seconds; makes seeking cheap, and the video's fragments (fragmentedVideo,
@@ -64,3 +75,8 @@ preflight: "error"                    # "warn" records even when a check fails
 
 # Display parameters
 displayFrameRate: 10                  # 0 = no display windows (headless)
+
+# Trigger parameters
+startArduino: True                    # starts once every camera is grabbing
+serialPort: "COM9"
+digitalPins: [6]                      # one pin drives all three cameras
