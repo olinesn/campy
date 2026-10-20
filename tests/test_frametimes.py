@@ -180,9 +180,15 @@ class Hold:
 
 
 def written(path, count):
-	# The file, once it holds count frames (the writer thread writes them while the camera goes on)
+	# The file, once it holds count frames (the writer thread writes them while
+	# the camera goes on; until its first batch, the file is there but empty)
 	deadline = time.monotonic() + 30
-	while np.load(path).shape[-1] < count and time.monotonic() < deadline:
+	while time.monotonic() < deadline:
+		try:
+			if np.load(path).shape[-1] >= count:
+				break
+		except (OSError, EOFError, ValueError):
+			pass
 		time.sleep(0.01)
 	return np.load(path)
 
