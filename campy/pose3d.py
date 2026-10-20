@@ -21,17 +21,39 @@ settings, so the live identities and 3D are what LUC3D would make offline:
   start of the set; each target's 3D is solved again once, at the end.
 - A camera's detection older than `stale` frames is dropped from its target
   before the set is matched, so a target is never held in place by a view it
-  has not had for a while (LUC3D's stale-anchor fix). The one setting changed
-  from LUC3D's: 60 frames instead of 20. With 3 cameras an animal is often
+  has not had for a while (LUC3D's stale-anchor fix). A setting changed from
+  LUC3D's: 60 frames instead of 20. With 3 cameras an animal is often
   seen by one camera only for a while, and its target, left with that view,
   keeps its old 3D; on recorded sessions (bench/pose3d_validate.py) 60 gave
   fewer identity switches against LUC3D's own 8-camera tracking on 3 of 12
   camera triples and more on none.
 - Detections left over in two cameras start new targets, paired by epipolar
-  distance, until there are n_animals targets. Targets never end, so
-  identities are the numbers 0 .. n_animals-1 for the whole recording: an
-  animal that is lost (unseen) keeps its number and is matched again when it
-  comes back.
+  distance (the median over nodes), until there are n_animals targets.
+  Targets never end, so identities are the numbers 0 .. n_animals-1 for the
+  whole recording: an animal that is lost (unseen) keeps its number and is
+  matched again when it comes back.
+- Three changes from LUC3D, for a 2D model that sometimes puts a node in the
+  wrong place (one trained on another rig, say). A misplaced node
+  triangulates to a 3D point far from its animal, often metres away, and
+  LUC3D's per-node 3D term has no floor, so that one node outweighed all the
+  others and a detection went to whichever target its bad node was least
+  far from. Here:
+  - a node's 3D term is never below -max_penalty x corr3d (4), so a node
+    more than 5 x distance_threshold (125 mm, about a mouse's length) from
+    the detection's ray counts the same however far it is. A floor of 1 did
+    as well on ChronicRecord, but fighting mice, whose nodes are often 50 to
+    125 mm apart, swapped more with it;
+  - each target's own 3D, which the next set is matched against, keeps only
+    the nodes whose views agree within match_reproj px (20): a node over it
+    loses its worst view (down to 2), then is dropped;
+  - new targets are paired by the median epipolar distance of their nodes,
+    where LUC3D takes the mean.
+  On the ChronicRecord rig (3 cameras, 3 white mice, a model trained on
+  another rig) LUC3D's way grouped 56% of the mice right across the cameras
+  and this one 97% (of the mice whose views can be grouped cleanly: every
+  camera within 15 px; bench/pose3d_live_log.py). On 22 proofread sessions
+  of another rig, 3 of its cameras at a time, it also more than halved the
+  lasting identity switches (bench/pose3d_proofread.py).
 
 Then each animal seen in at least 2 cameras this set is triangulated from this
 set's detections only (DLT on undistorted points, in LUC3D's camera-centred
@@ -345,12 +367,18 @@ class Tracker:
 	min_score           nodes scored below this are treated as missing (0: none)
 	weighted            weight each view's DLT rows by its node score (scores needed)
 	reproj_threshold    px: a node over it loses its worst view (down to 2), then is dropped (0: off)
-	birth_threshold     px: new targets only from detection pairs within this mean epipolar distance (0: any, as LUC3D)
+	birth_threshold     px: new targets only from detection pairs within this median epipolar distance (0: any, as LUC3D)
+	max_penalty         a node's 3D term is never below -max_penalty x corr3d (None: no floor, as LUC3D; 4 here:
+	                    see the module docstring)
+	match_reproj        px: each target's own 3D, which the next set is matched against, keeps only nodes whose
+	                    views agree within it; a node over it loses its worst view (down to 2), then is dropped
+	                    (0: off, as LUC3D; 20 here: see the module docstring)
 	"""
 
 	def __init__(self, cameras, n_animals, corr2d=1.0, corr3d=6.0, velocity_threshold=10.0,
 			distance_threshold=25.0, time_penalty=0.1, stale=60, node_weights=None, min_nodes=0,
-			min_score=0.0, weighted=False, reproj_threshold=0.0, birth_threshold=0.0):
+			min_score=0.0, weighted=False, reproj_threshold=0.0, birth_threshold=0.0,
+			max_penalty=4.0, match_reproj=20.0):
 		self.cameras = list(cameras)
 		self.n_animals = int(n_animals)
 		self.corr2d, self.corr3d = float(corr2d), float(corr3d)
@@ -361,6 +389,8 @@ class Tracker:
 		self.weighted = bool(weighted)
 		self.reproj_threshold = float(reproj_threshold)
 		self.birth_threshold = float(birth_threshold)
+		self.max_penalty = None if max_penalty is None else float(max_penalty)
+		self.match_reproj = float(match_reproj)
 		self.frame_of_cameras = _Frame(self.cameras)
 		self._f = np.array([c.f for c in self.cameras])[:, None, None]       # (C, 1, 1, 2)
 		self._c = np.array([c.c for c in self.cameras])[:, None, None]
@@ -472,9 +502,13 @@ class Tracker:
 		if vxy.shape[1]:
 			Xall = Triangulate(vxy, self.cameras, vw, self.frame_of_cameras)
 			k = len(out)
+			# The targets' own 3D: with match_reproj, only nodes whose views agree
+			Xm = Xall
+			if self.match_reproj > 0:
+				Xm, _, _ = TriangulateChecked(vxy, self.cameras, vw, self.match_reproj, self.frame_of_cameras, Xall)
 			reuse = touched[out] & same[out]
-			self.X[out[reuse]] = Xall[:k][reuse]
-			self.X[extra] = Xall[k:]
+			self.X[out[reuse]] = Xm[:k][reuse]
+			self.X[extra] = Xm[k:]
 			if k:
 				Xo, err, _ = TriangulateChecked(vxy[:, :k], self.cameras, None if vw is None else vw[:, :k],
 					self.reproj_threshold, self.frame_of_cameras, Xall[:k])
@@ -511,7 +545,10 @@ class Tracker:
 			cy = v[..., 2] * r[..., 0] - v[..., 0] * r[..., 2]
 			cz = v[..., 0] * r[..., 1] - v[..., 1] * r[..., 0]
 			d3 = np.sqrt(cx * cx + cy * cy + cz * cz)
-			s3 = self.corr3d * (1 - d3 / self.dist_thr)
+			s3 = 1 - d3 / self.dist_thr
+			if self.max_penalty is not None:
+				s3 = np.maximum(s3, -self.max_penalty)
+			s3 = self.corr3d * s3
 		s = np.where(np.isfinite(s2), s2, 0.0) + np.where(np.isfinite(s3), s3, 0.0)
 		return (s * nw).sum(-1)
 
@@ -536,7 +573,8 @@ class Tracker:
 			t = self.n_targets
 			self._Take(t, a, La[i], xy[a, La[i]], w[a, La[i]], f)
 			self._Take(t, b, Lb[j], xy[b, Lb[j]], w[b, Lb[j]], f)
-			self.X[t] = Triangulate(self.det_xy[t], self.cameras, None, self.frame_of_cameras)
+			self.X[t] = TriangulateChecked(self.det_xy[t], self.cameras, None, self.match_reproj,
+				self.frame_of_cameras)[0]
 			self.n_targets += 1
 			born += 1
 			usedA.add(i)
@@ -546,13 +584,16 @@ class Tracker:
 		return born
 
 	def _Epipolar(self, a, b, pa, pb):
-		# Mean distance (px in camera b) of b's nodes to the epipolar lines of a's: (len(pa), len(pb))
+		# Median distance (px in camera b) of b's nodes to the epipolar lines of a's: (len(pa), len(pb)).
+		# LUC3D takes the mean, which one misplaced node can make larger for the right pair than
+		# for a wrong one.
 		E = self.E[a, b]
 		ha = np.concatenate([pa, np.ones(pa.shape[:-1] + (1,))], -1)        # (Da, N, 3)
 		lines = ha @ E.T                                                      # (Da, N, 3)
 		hb = np.concatenate([pb, np.ones(pb.shape[:-1] + (1,))], -1)        # (Db, N, 3)
-		with np.errstate(invalid="ignore", divide="ignore"):
+		with np.errstate(invalid="ignore", divide="ignore"), warnings.catch_warnings():
+			warnings.simplefilter("ignore", RuntimeWarning)                  # all-NaN rows
 			num = np.abs((lines[:, None] * hb[None]).sum(-1))                # (Da, Db, N)
 			d = num / np.linalg.norm(lines[..., :2], axis=-1)[:, None] * self.cameras[b].f.mean()
-			ok = np.isfinite(d)
-			return np.where(ok.any(-1), np.where(ok, d, 0).sum(-1) / np.maximum(ok.sum(-1), 1), np.inf)
+			m = np.nanmedian(d, -1)
+		return np.where(np.isfinite(m), m, np.inf)
