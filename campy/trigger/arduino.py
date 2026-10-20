@@ -29,18 +29,24 @@ class TriggerError(Exception):
 	pass
 
 
+class TriggerInterrupted(TriggerError):
+	# Ctrl-C during the check
+	pass
+
+
 def Pins(params):
 	# One pin can be written without a list (digitalPins: 2), which len() refused
 	pins = params["digitalPins"]
 	return list(pins) if isinstance(pins, (list, tuple)) else [pins]
 
 
-def OpenTriggers(systems, params):
+def OpenTriggers(systems, params, interrupted=lambda: False):
 	"""
 	Open the trigger's serial port and check that the Arduino answers, before
-	any camera starts; TriggerError says why not. Its answer replaces the 3 s
-	campy used to wait for it blindly. StartTriggers sends the frame rate once
-	every camera is grabbing.
+	any camera starts; TriggerError says why not, TriggerInterrupted if
+	interrupted (Ctrl-C) meanwhile. Its answer replaces the 3 s campy used to
+	wait for it blindly. StartTriggers sends the frame rate once every camera
+	is grabbing.
 	"""
 	port = params["serialPort"]
 	again = "Unplug its USB cable and plug it back in (or power-cycle it), then run campy again."
@@ -52,7 +58,12 @@ def OpenTriggers(systems, params):
 			"another campy) has it open. {}".format(port, e, again))
 	try:
 		pins = Pins(params)
-		systems["triggerCheckedAt"] = Check(connection, ",".join(str(item) for item in [len(pins)] + pins + [-1, -1, 0]))
+		systems["triggerCheckedAt"] = Check(connection, ",".join(str(item) for item in [len(pins)] + pins + [-1, -1, 0]),
+			interrupted=interrupted)
+	except TriggerInterrupted:
+		connection.close()
+		raise TriggerInterrupted("Stopped (Ctrl-C) while checking the trigger Arduino on {}, before any camera "
+			"started: nothing was recorded.".format(port))
 	except Exception as e:
 		connection.close()
 		raise TriggerError("The trigger Arduino on {} did not answer ({}). {}".format(port, e, again))
@@ -61,15 +72,18 @@ def OpenTriggers(systems, params):
 	return systems
 
 
-def Check(connection, command, timeout=None, resend=None):
+def Check(connection, command, timeout=None, resend=None, interrupted=lambda: False):
 	# Send the stop command until the sketch answers it. Returns when the
 	# answer came (time.monotonic): the sketch says it as it reads the command.
+	# Ctrl-C (interrupted) stops it within a read's timeout: TriggerInterrupted.
 	timeout = CHECK_TIMEOUT_S if timeout is None else timeout
 	resend = RESEND_S if resend is None else resend
 	connection.reset_input_buffer() # what it said before campy asked
 	t0 = time.monotonic()
 	sent, heard = None, ""
 	while True:
+		if interrupted():
+			raise TriggerInterrupted("interrupted")
 		now = time.monotonic()
 		if sent is None or now - sent >= resend:
 			if now - t0 >= timeout:

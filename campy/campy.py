@@ -168,9 +168,10 @@ def Main():
 	# them; a second Ctrl-C stops the ones that hang as they close
 	with HandleKeyboardInterrupt() as interrupts:
 		# The trigger Arduino answers, or nothing starts: a dead one used to
-		# leave the cameras waiting for frames that never came
+		# leave the cameras waiting for frames that never came. Ctrl-C stops
+		# the check, and campy, at once.
 		try:
-			systems = trigger.OpenTriggers(systems, params)
+			systems = trigger.OpenTriggers(systems, params, interrupted=lambda: interrupts.count > 0)
 		except trigger.TriggerError as e:
 			print(e, flush=True)
 			CloseSystems(systems, params)

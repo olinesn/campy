@@ -5,7 +5,7 @@ Trigger nexus
 import json, logging, os
 from campy import configurator, newfiles
 from campy.utils.utils import Say
-from campy.trigger.arduino import TriggerError
+from campy.trigger.arduino import TriggerError, TriggerInterrupted
 
 def ImportTrigger(params):
 	if params["triggerController"] == "Arduino" or params["triggerController"] == "arduino":
@@ -22,10 +22,11 @@ def DrivesTrigger(params):
 	return bool(params["startArduino"]) and params["triggerController"] != "None"
 
 
-def OpenTriggers(systems, params):
-	# Raises TriggerError when the trigger does not answer: nothing should start then
+def OpenTriggers(systems, params, interrupted=lambda: False):
+	# Raises TriggerError when the trigger does not answer, and TriggerInterrupted
+	# (one) when interrupted meanwhile: nothing should start then
 	if DrivesTrigger(params):
-		systems = ImportTrigger(params).OpenTriggers(systems, params)
+		systems = ImportTrigger(params).OpenTriggers(systems, params, interrupted)
 	return systems
 
 
