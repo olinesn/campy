@@ -309,14 +309,73 @@ class TopDown:
 
 	def Warm(self, host, crops=()):
 		# The first call of each shape is slow (MIOpen finds its kernels on
-		# ROCm): made before the recording's frames come
+		# ROCm), and so is the first of each GPU operation: made before the
+		# recording's frames come. Blank frames have no animals, and a set
+		# with animals goes on to crop around each, run the instance model on
+		# the crops and put their keypoints back in the frame, operations a
+		# set with none never runs (the first set with animals took 200 ms
+		# when only the instance model had been warmed). So the whole layer
+		# runs again for each count of crops, with that many peaks put into
+		# the centroid model's output (FakeCentroids).
 		frames = self.Upload(host)
 		for _ in range(3):
 			self.Predict(frames)
-		for n in crops:
-			self.layer.centered_instance_layer.predict(
-				self.torch.zeros((n, self.shape[2]) + self.crop, dtype=self.torch.uint8, device=self.device))
+		for counts in WarmCounts(self.n_frames, self.instances, crops):
+			with FakeCentroids(self.layer.centroid_layer, counts):
+				self.Predict(frames)
 		Synchronize(self.device)
+
+
+def WarmCounts(n_frames, most, crops):
+	"""
+	The animals per frame to warm up with: for each count of crops, that many
+	spread over the frames, and one frame with more than most (the centroid
+	layer keeps its most confident most).
+	"""
+	counts = [[n // n_frames + (b < n % n_frames) for b in range(n_frames)] for n in crops]
+	if crops:
+		counts.append([most + 1] + [0] * (n_frames - 1))
+	return counts
+
+
+class FakeCentroids:
+	"""
+	For warm-up, around the centroid layer's model: adds counts[b] peaks to
+	frame b's confidence maps, as many animals found (as the random model's
+	SyntheticCentroidPeaks), while in a with block.
+	"""
+
+	def __init__(self, layer, counts):
+		self.layer, self.counts = layer, counts
+
+	def __enter__(self):
+		self.backend = self.layer.backend
+		self.layer.backend = self
+		return self
+
+	def __exit__(self, *exc):
+		self.layer.backend = self.backend
+
+	def __getattr__(self, name):
+		return getattr(self.backend, name)
+
+	def __call__(self, x):
+		import torch
+		out = self.backend(x)
+		return {k: self.Peaks(v) if isinstance(v, torch.Tensor) and v.ndim == 4 else v for k, v in out.items()}
+
+	def Peaks(self, cm):
+		# Gaussians of height 1 on whole pixels (one local maximum each),
+		# across the middle of the map, over the model's own output, made small
+		import torch
+		b, c, h, w = cm.shape
+		yy, xx = torch.meshgrid(torch.arange(h, device=cm.device), torch.arange(w, device=cm.device), indexing="ij")
+		blobs = torch.zeros_like(cm)
+		for f, k in enumerate(self.counts[:b]):
+			for i in range(k):
+				cx, cy = (w * (i + 1)) // (k + 1), (h * (3 + 4 * (i % 2))) // 10
+				blobs[f, :] += torch.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / 8.0).to(cm.dtype)
+		return cm.clamp(-1, 1) * 1e-3 + blobs
 
 
 class RandomTopDown(TopDown):
