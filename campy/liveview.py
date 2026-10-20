@@ -43,9 +43,11 @@ The panel lists each identity's cameras and reprojection error (campy-live's:
 mean over nodes and cameras, undistorted px), and how late the results and
 the view are.
 
-Keys, in its window: 1-9 that camera alone; 0 or a every camera; d the 2D, p
-the 3D, l the lines on or off; space pause; s save the view as a PNG (into
---png, or the current folder); q or Esc quit.
+Buttons at the top of the panel turn the predictions (the 2D), the
+reprojections (the 3D) and the lines on or off, as do the keys d, p and l.
+Other keys, in its window: 1-9 that camera alone; 0 or a every camera; space
+pause (the buttons still work on the paused view); s save the view as a PNG
+(into --png, or the current folder); q or Esc quit.
 """
 
 import argparse, json, os, sys, time
@@ -68,6 +70,7 @@ OUTLINE = (0, 0, 0)
 TEXT = (230, 230, 230)
 DIM = (150, 150, 150)
 BOX = (25, 25, 25)
+BUTTON_ON = (90, 70, 20) # a button that is on (BGR: dark blue)
 SHIFT = 4 # cv2's subpixel bits
 RADIUS_2D, RADIUS_3D = 4, 2 # px: a detection's open circles, a 3D node's dot
 FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -439,8 +442,8 @@ class Viewer:
 		return self.layout
 
 	def PanelLines(self):
-		# Lines in the strip below the frames, when it is one (the panel's lines wrap)
-		return 7 + (int(self.description.get("animals") or 0) if self.calibration else 0)
+		# Lines in the strip below the frames, when it is one (the panel's lines wrap), the buttons' two
+		return 9 + (int(self.description.get("animals") or 0) if self.calibration else 0)
 
 	def Compose(self, frames, row):
 		start = time.perf_counter()
@@ -465,11 +468,38 @@ class Viewer:
 			y, x = layout.Cell(k)
 			canvas[y:y + layout.tile[0], x:x + layout.tile[1]] = tile
 		self.Panel(canvas, layout, frames, row)
+		self.last = (frames, row) # drawn again when a button is clicked while paused
 		self.drawMs.append((time.perf_counter() - start) * 1e3)
 		return canvas
 
+	def Buttons(self, canvas, y0, x0):
+		# The on/off buttons, at (x0, y0) of canvas; where each is, for Click
+		self.buttons = []
+		x = x0 + PAD
+		for label, key, on in (("Predictions (d)", ord("d"), self.show2d), ("Reprojections (p)", ord("p"), self.show3d),
+				("Lines (l)", ord("l"), self.lines)):
+			(tw, th), _ = cv2.getTextSize(label, FONT, 0.5, 1)
+			box = (x, y0 + PAD, x + tw + 34, y0 + PAD + 26)
+			cv2.rectangle(canvas, box[:2], box[2:], BUTTON_ON if on else BOX, -1)
+			cv2.rectangle(canvas, box[:2], box[2:], TEXT if on else DIM, 1)
+			mark = (box[0] + 8, box[1] + 7, box[0] + 20, box[1] + 19) # a check box
+			cv2.rectangle(canvas, mark[:2], mark[2:], TEXT if on else DIM, -1 if on else 1)
+			Text(canvas, label, (box[0] + 26, box[1] + 18), TEXT if on else DIM, 0.5, box=False)
+			self.buttons.append(box + (key,))
+			x = box[2] + 10
+		return 26 + 2 * PAD
+
+	def Click(self, x, y):
+		# A click at (x, y) of the view: the key of the button there, or None
+		for x0, y0, x1, y1, key in getattr(self, "buttons", ()):
+			if x0 <= x <= x1 and y0 <= y <= y1:
+				return key
+		return None
+
 	def Panel(self, canvas, layout, frames, row):
 		y0, x0, h, w = layout.panel
+		top = self.Buttons(canvas, y0, x0)
+		y0, h = y0 + top, h - top
 		panel = canvas[y0:y0 + h, x0:x0 + w]
 		lines = [] # (text, colour)
 		if row is not None:
@@ -497,10 +527,10 @@ class Viewer:
 		lines.append(("campy-live: {:.1f} results/s. Drawn: {}; their frames gone: {}".format(rate,
 			self.rows - self.gone, self.gone), DIM))
 		if row is not None:
-			lines.append(("Dots: the 3D, projected. Open circles: this camera's 2D (white: matched to no "
-				"animal). Line: from the 2D to the 3D. Label: #identity, and px between them.", DIM))
-		lines.append(("Keys: 1-{} one camera, 0 all; d 2D, p 3D, l lines; space pause, s save, q quit".format(
-			len(self.ringNames)), DIM))
+			lines.append(("Reprojections (dots): the 3D, projected. Predictions (open circles): this camera's 2D "
+				"(white: matched to no animal). Line: from the 2D to the 3D. Label: #identity, and px between them.", DIM))
+		lines.append(("Keys: 1-{} one camera, 0 all; d predictions, p reprojections, l lines; space pause, "
+			"s save, q quit".format(len(self.ringNames)), DIM))
 		y = PAD + 14
 		for text, color in lines:
 			for part in Wrap(text, w - 2 * PAD, 0.45):
@@ -577,6 +607,10 @@ def Run(args):
 	viewer = Viewer(args)
 	start = time.monotonic()
 	shownSize, paused, image, count = None, False, None, 0
+	clicks = [] # the keys of the buttons clicked
+	if window:
+		cv2.setMouseCallback(TITLE, lambda event, x, y, flags, param: clicks.append(viewer.Click(x, y))
+			if event == cv2.EVENT_LBUTTONDOWN else None)
 	Say("Showing {}; results from {}.".format(", ".join(viewer.ringNames), viewer.resultsName))
 	try:
 		while True:
@@ -599,6 +633,8 @@ def Run(args):
 			if window:
 				# The window's events, without waiting: waitKey(1) waits a whole clock tick on Windows (15.6 ms)
 				key = cv2.pollKey() if hasattr(cv2, "pollKey") else cv2.waitKey(1)
+				if key < 0 and clicks:
+					key = clicks.pop(0) or -1
 				if key >= 0:
 					key &= 0xFF
 					if key == ord(" "):
@@ -609,6 +645,9 @@ def Run(args):
 						Say("Saved {}.".format(path))
 					elif not viewer.Key(key):
 						break
+					elif paused and image is not None and getattr(viewer, "last", None):
+						image = viewer.Compose(*viewer.last) # the same frames, with the change
+						cv2.imshow(TITLE, image)
 				if cv2.getWindowProperty(TITLE, cv2.WND_PROP_VISIBLE) < 1:
 					break # its window closed
 				if got is None:

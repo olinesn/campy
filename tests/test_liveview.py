@@ -326,6 +326,44 @@ def test_keys_pick_the_cameras_and_what_is_drawn():
 	assert not viewer.Key(ord("q")) and not viewer.Key(27)
 
 
+def test_buttons_turn_the_predictions_and_reprojections_on_and_off():
+	# Clicked in the panel, the buttons do what d, p and l do, and show it
+	cams, truth, keypoints, scores, order = mice()
+	viewer = liveview.Viewer(view_args(name()))
+	viewer.description = {"cameras": ["Camera0", "Camera1", "Camera2"], "edges": EDGES, "animals": 3}
+	viewer.calibration = cams
+	frames = [types.SimpleNamespace(image=np.zeros((1024, 1280, 1), np.uint8), frameNumber=5, hostTime=0)
+		for _ in range(3)]
+	row = row_for(5, cams, truth, keypoints, scores, order)
+	viewer.lastSeen = 30.0
+	image = viewer.Compose(frames, row)
+	keys = [b[4] for b in viewer.buttons]
+	assert keys == [ord("d"), ord("p"), ord("l")]
+	def Centre(key):
+		x0, y0, x1, y1, _ = next(b for b in viewer.buttons if b[4] == key)
+		return (x0 + x1) // 2, (y0 + y1) // 2
+	on = image[Centre(ord("d"))[1], Centre(ord("d"))[0] + 60].copy()
+	assert viewer.Click(*Centre(ord("d"))) == ord("d") and viewer.Click(*Centre(ord("p"))) == ord("p")
+	assert viewer.Click(5, 5) is None # a camera's tile
+	def tiles(image): # the identities' colours on the cameras' frames, not in the panel
+		y, x, h, w = viewer.layout.panel
+		image = image.copy()
+		image[y:y + h, x:x + w] = 0
+		return sum(like(image, liveview.Color(a)).sum() for a in range(3))
+	both = tiles(image)
+	viewer.Key(viewer.Click(*Centre(ord("p"))))
+	assert not viewer.show3d and viewer.show2d
+	image = viewer.Compose(frames, row)
+	off = image[Centre(ord("p"))[1], Centre(ord("p"))[0] + 60]
+	assert tuple(on) != tuple(off) # drawn as off
+	predictions = tiles(image)
+	viewer.Key(viewer.Click(*Centre(ord("d"))))
+	image = viewer.Compose(frames, row)
+	assert 0 < predictions < both and tiles(image) == 0 # neither: nothing of the animals drawn
+	viewer.Key(viewer.Click(*Centre(ord("p"))))
+	assert 0 < tiles(viewer.Compose(frames, row)) < both # the reprojections alone
+
+
 # -------------------------------------------------------------- with campy-live
 
 def test_campy_live_publishes_every_row_it_logs(tmp_path, monkeypatch):

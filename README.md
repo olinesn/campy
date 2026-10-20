@@ -383,7 +383,7 @@ It runs in campy-live's environment, with OpenCV (`pip install opencv-python`), 
 campy-live-view                   # every camera, in a grid
 campy-live-view --camera 0        # camera 0 alone
 ```
-Keys: 1-9 one camera, 0 every camera, `d` / `p` / `l` the 2D / 3D / lines on or off, space pause, `s` save the view as a PNG, `q` quit. Without a desktop (over SSH), `campy-live-view --no-window --png <folder>` saves every 30th view instead, and ends with the recording. `python -m pydoc campy.liveview` says more.
+Buttons at the top of the panel turn the predictions (2D), the reprojections (3D) and the lines on or off; so do the keys `d`, `p` and `l`. Other keys: 1-9 one camera, 0 every camera, space pause, `s` save the view as a PNG, `q` quit. Without a desktop (over SSH), `campy-live-view --no-window --png <folder>` saves every 30th view instead, and ends with the recording. `python -m pydoc campy.liveview` says more.
 
 Each result is drawn on the frames it was made from, never on newer ones. campy-live puts each set's row in shared memory as it logs it (`campy-live-results`, laid out in `campy/liveresults.py`; `--results-feed off` stops that), and the view reads that row's frame number back from the live feed, which holds each camera's newest 8 frames (0.27 s at 30 fps). A result whose frames are gone by then is counted and left out.
 
