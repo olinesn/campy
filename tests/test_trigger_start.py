@@ -193,7 +193,8 @@ def run_campy(tmp_path, port, rec=10):
 	# campy-acquire, two emulated cameras, the trigger Arduino on port
 	config = tmp_path / "config.yaml"
 	config.write_text("\n".join([
-		"numCams: 2", 'cameraMake: "emu"', 'videoFolder: "{}"'.format(tmp_path), 'videoFilename: "emuclip.mp4"',
+		# Forward slashes: in YAML's double quotes, Windows' C:\Users would be an escape
+		"numCams: 2", 'cameraMake: "emu"', 'videoFolder: "{}"'.format(tmp_path.as_posix()), 'videoFilename: "emuclip.mp4"',
 		"frameRate: 20", "recTimeInSec: {}".format(rec), "chunkLengthInSec: 1", "displayFrameRate: 0",
 		'pixelFormatInput: "rgb24"', 'pixelFormatOutput: "yuv420p"', "gpuID: -1", 'codec: "h264"',
 		'preflight: "off"', "startArduino: True", 'triggerController: "arduino"',
@@ -317,7 +318,7 @@ def test_campy_stops_before_the_cameras_when_the_arduino_does_not_answer(tmp_pat
 	out = proc.stdout
 	assert proc.returncode == 1, out + proc.stderr
 	if how == "no port":
-		assert "Could not open the trigger Arduino's serial port {} (serialPort): ".format(port) in out
+		assert "Could not open the trigger Arduino's serial port {} (serialPort): ".format(port) in out, out + proc.stderr
 	else:
 		assert "The trigger Arduino on {} did not answer (no reply to the stop command 2,2,3,-1,-1,0 within 8 s). "\
 			"Unplug its USB cable and plug it back in (or power-cycle it), then run campy again.".format(port) in out
