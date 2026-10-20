@@ -45,7 +45,9 @@ jobs:
           cache: pip
           cache-dependency-path: setup.py
       - name: Install campy
-        run: python -m pip install -e . pytest
+        # OpenCV (headless) for campy-live-view's tests: it is installed in campy-live's
+        # environment, not campy's
+        run: python -m pip install -e . pytest opencv-python-headless
       - name: Install nireyecam (RatCam support)
         if: env.NIREYECAM_TOKEN != ''
         run: python -m pip install "nireyecam @ git+https://x-access-token:${NIREYECAM_TOKEN}@github.com/olinesn/nir-eye-cam.git#subdirectory=host"

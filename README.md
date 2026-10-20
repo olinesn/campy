@@ -358,7 +358,7 @@ campy says how as it starts (`Keeping this computer awake while recording (keepA
 
 With `liveFeed: True` (or `--liveFeed True`), each camera process also copies every frame it grabs into a ring of shared memory, named `campy-live-0`, `campy-live-1`, ... for cameras 0, 1, ... (`liveFeedName: "campy-live"`), holding the newest `liveFeedSlots` (8) frames, each with its frame number, its camera timestamp, and when it reached the computer (as in "hosttimes.npy"). It is one copy per frame (0.05 ms for a 1280x1024 frame on the EVO-X2), and campy never waits for whatever reads it: a reader that falls behind finds the frames it missed replaced by newer ones. If the feed fails, the camera says so once and records on without it. Off by default.
 
-`campy-live` reads the feed and runs a SLEAP top-down model (sleap-nn) on the cameras' frames as campy records. Each time, it takes the newest set of frames that every camera has (the same frame number on each), runs the model on the set as one batch, logs the keypoints, and goes straight back to the newest set. A set that came while it was busy is skipped and counted, never queued, so it is never more than one set behind. It runs in its own Python environment, the one with torch and sleap-nn: it imports only numpy and campy's `livefeed` and `frametimes` modules, so the camera drivers are not needed there. In that environment:
+`campy-live` reads the feed and runs a SLEAP top-down model (sleap-nn) on the cameras' frames as campy records. Each time, it takes the newest set of frames that every camera has (the same frame number on each), runs the model on the set as one batch, logs the keypoints, and goes straight back to the newest set. A set that came while it was busy is skipped and counted, never queued, so it is never more than one set behind. It runs in its own Python environment, the one with torch and sleap-nn: it imports only numpy and campy's `livefeed`, `liveresults` and `frametimes` modules, so the camera drivers are not needed there. In that environment:
 ```
 pip install --no-deps -e <campy folder>     # or: PYTHONPATH=<campy folder> python -m campy.live ...
 campy-live --cameras 3                                      # random-weight models of the benchmark's sizes
@@ -375,6 +375,26 @@ With `--calibration <calibration.toml>` (anipose's), `campy-live` also turns eac
 campy-live --cameras 3 --model sleap --centroid <folder> --instance <folder> --animals 3 --calibration calibration.toml
 ```
 Each row then also has `points3d` (per animal and node, x, y, z in the calibration's units, mm), `members` (which detection in each camera is that animal), `n_views` and `reproj_px`, and the summary gives the latency from frames to 3D.
+
+#### Watching it live (campy-live-view)
+
+`campy-live-view` shows the cameras' frames as campy records them, with campy-live's results drawn on them:
+- **3D**: each animal's 3D pose, projected into the camera through the calibration: filled dots and thick lines, one colour per identity. Its label gives the identity (`#0`, `#1`, ...) and how far, in that camera, the projection is from the 2D it was made from (px, mean over the nodes).
+- **2D**: what the model found in that camera: open circles and thin lines, in the colour of the identity campy-live matched them to, or white when it matched them to none.
+- A line from each detection to its identity's 3D.
+
+When campy-live matched an animal right, its open circles sit on its dots. A long line, or a mouse with open circles of one colour and dots of another, is a wrong match. A panel lists each identity's cameras and reprojection error, and how long after its frames each result was ready and shown.
+
+It runs in campy-live's environment, with OpenCV (`pip install opencv-python`), on the computer that records, as a program of its own at a lower priority. Start it before or after the others; it stays open from one recording to the next:
+```
+campy-live-view                   # every camera, in a grid
+campy-live-view --camera 0        # camera 0 alone
+```
+Buttons at the top of the panel turn the predictions (2D), the reprojections (3D) and the lines on or off; so do the keys `d`, `p` and `l`. Other keys: 1-9 one camera, 0 every camera, space pause, `s` save the view as a PNG, `q` quit. Without a desktop (over SSH), `campy-live-view --no-window --png <folder>` saves every 30th view instead, and ends with the recording. `python -m pydoc campy.liveview` says more.
+
+Each result is drawn on the frames it was made from, never on newer ones. campy-live puts each set's row in shared memory as it logs it (`campy-live-results`, laid out in `campy/liveresults.py`; `--results-feed off` stops that), and the view reads that row's frame number back from the live feed, which holds each camera's newest 8 frames (0.27 s at 30 fps). A result whose frames are gone by then is counted and left out.
+
+It costs campy-live almost nothing. On the ChronicRecord PC (3 cameras of 1280x1024 at 30 fps, 3 mice, a recording replayed into the feed, 60 s twice each way), campy-live's inference took 27.44 and 27.45 ms (p50) alone and 27.54 and 27.53 ms with the view running, and it skipped no set either way. Drawing one view of the 3 cameras takes the view 7-8 ms of one core. Results reach it 30 ms after their frames (p50; p99 33), and each is drawn by 38 ms (p99 41).
 
 ### Scaling the number of cameras
 Change `numCams`; nothing else in a config has to depend on it. A setting can be one value for every camera, or a list with one value per camera. A list longer than `numCams` uses its first items, so a config written for 8 cameras also runs 4. `configs/campy_config_flir_usb3.yaml` is an example.

@@ -400,6 +400,59 @@ def test_the_newest_set_all_cameras_hold(rings):
 		cams.Close()
 
 
+def half_made(writer):
+	# The writer's ring as campy-acquire leaves it for a moment: the shared memory made,
+	# its header not written yet. Returns what makes it whole again.
+	header = writer.ring.header
+	magic = header[:8].copy()
+	header[:8] = 0
+	def Finish():
+		header[:8] = magic
+	return Finish
+
+
+def test_a_ring_still_being_made_is_refused_and_let_go_of(rings, monkeypatch):
+	# The reader closes the memory it opened: left open, it could not be closed
+	# later (views of it were made), and on Windows it would keep the ring's memory
+	opened = []
+	attach = livefeed.Attach
+	monkeypatch.setattr(livefeed, "Attach", lambda n: opened.append(attach(n)) or opened[-1])
+	w = rings(name(), (16, 20), np.uint8, slots=4)
+	finish = half_made(w)
+	for _ in range(3):
+		with pytest.raises(ValueError, match="not a campy live feed ring"):
+			livefeed.RingReader(w.name)
+	assert len(opened) == 3 and all(shm.buf is None for shm in opened)
+	finish()
+	reader = livefeed.RingReader(w.name)
+	reader.Close()
+
+
+def test_campy_live_waits_for_a_ring_still_being_made(rings):
+	# Started before campy-acquire, campy-live can look at a camera's ring
+	# between its making and its header: it waits, as for a ring not there yet
+	# (it stopped with "is not a campy live feed ring")
+	prefix = name()
+	writers = [rings(livefeed.RingName(prefix, c), (16, 20), np.uint8, slots=4) for c in range(2)]
+	finish = half_made(writers[1])
+	cams = live.Cameras([w.name for w in writers], poll=0.0001)
+	try:
+		threading.Timer(0.5, finish).start()
+		start = time.monotonic()
+		assert cams.Attach(wait=10)
+		assert time.monotonic() - start >= 0.4
+		# The next recording's ring, being made as the others still record: not an
+		# error, and the recording counts as ended once it is made
+		writers[0].Close()
+		w = rings(livefeed.RingName(prefix, 0), (16, 20), np.uint8, slots=4)
+		finish = half_made(w)
+		cams.Ended() # does not raise
+		finish()
+		assert cams.Ended()
+	finally:
+		cams.Close()
+
+
 def _record(prefix, cameras, frames, rate, delay):
 	time.sleep(delay)
 	writers = [livefeed.RingWriter(livefeed.RingName(prefix, c), (16, 20), np.uint8, slots=4, frameRate=rate,

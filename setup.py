@@ -29,6 +29,7 @@ setup(
 			"campy-synctest = campy.synctest:Main",
 			"campy-flir-reset = campy.flirreset:Main",
 			"campy-live = campy.live:Main",
+			"campy-live-view = campy.liveview:Main",
 		]
 	}
 )
