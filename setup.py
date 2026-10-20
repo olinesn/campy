@@ -11,6 +11,7 @@ setup(
 					'numpy',
 					'pyserial',
 					'pyyaml',
+					'scipy',
 					'psutil',
 					'scikit-image',
 					'PyQt5',
