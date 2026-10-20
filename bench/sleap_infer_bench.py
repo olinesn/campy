@@ -32,13 +32,24 @@ What is measured
   because TorchBackend only autocasts on cuda (the model is wrapped so that
   autocast runs inside the backend and fp32 confmaps come out, as on cuda).
   fp16 is skipped on CPU.
-* With --memory-format nchw,channels_last, both memory layouts. sleap-nn's
-  models are channels-first (NCHW); cuDNN runs its tensor-core convolutions
-  channels-last and converts every activation to and from that layout, about a
-  fifth of the forward time on an RTX 2000 Ada. channels_last converts the
-  models' weights (model.to(memory_format=torch.channels_last)) so activations
-  stay channels-last and the conversions go. On ROCm it changed nothing, and on
-  Apple MPS it was slower.
+* Memory layout (--memory-format). sleap-nn's models are channels-first
+  (NCHW); cuDNN runs its tensor-core convolutions channels-last and converts
+  every activation to and from that layout, about a fifth of the forward time
+  on an RTX 2000 Ada. channels_last converts the models' weights
+  (model.to(memory_format=torch.channels_last)) so activations stay
+  channels-last and the conversions go. On ROCm it changed nothing, and on
+  Apple MPS it was slower. So the default, auto, runs channels_last on an
+  Nvidia CUDA GPU and nchw everywhere else; nchw,channels_last times both.
+* With --cuda-graphs (cuda only), each model's forward pass is captured as a
+  CUDA graph on its first call and replayed after that, so its ~100-150 kernel
+  launches cost one launch. sleap-nn's peak finding and cropping stay as they
+  are: they make data-dependent decisions (nonzero, .item()) that a graph
+  cannot record. A graph only replays the shapes it was captured with; a new
+  shape (another crop count) is captured again. fp16 then runs under the
+  wrapper's own autocast with its weight cache off, as graph capture requires.
+  Each row records the largest difference between the graph's output and the
+  eager forward on the capture input. torch.compile's reduce-overhead mode does
+  the same automatically but needs Triton, which Windows lacks.
 * With --stages, each stage alone as well: CentroidLayer.predict on the
   uploaded frames, and CenteredInstanceLayer.predict on a (N*K, 1, crop, crop)
   uint8 crop batch already on the device.
@@ -297,6 +308,13 @@ def synchronize(device):
         torch.mps.synchronize()
 
 
+def default_memory_format(device):
+    """channels_last on an Nvidia CUDA GPU (cuDNN's layout); nchw on ROCm, MPS and CPU."""
+    if device.startswith("cuda") and torch.version.hip is None:
+        return "channels_last"
+    return "nchw"
+
+
 def device_description(device):
     if device.startswith("cuda"):
         props = torch.cuda.get_device_properties(0)
@@ -324,6 +342,53 @@ class MPSAutocast(torch.nn.Module):
         with torch.autocast(device_type="mps", dtype=torch.float16):
             out = self.inner(img)
         return out.float()
+
+
+class CUDAGraphed(torch.nn.Module):
+    """Replay a model's forward pass as a CUDA graph, captured per input shape.
+
+    Runs the inner forward under fp16 autocast when asked (with autocast's
+    weight cache off, which graph capture needs) and returns fp32 outputs, as
+    TorchBackend does. The returned tensor is the graph's static output, valid
+    until the next call: the layers read it before then.
+    """
+
+    def __init__(self, inner, fp16):
+        super().__init__()
+        self.inner = inner
+        self.fp16 = fp16
+        self.graphs = {}  # (shape, dtype) -> (graph, static_in, static_out)
+        self.max_abs_diff = 0.0
+
+    def _eager(self, x):
+        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.fp16,
+                            cache_enabled=False):
+            return self.inner(x).float()
+
+    def _capture(self, x):
+        static_in = x.clone()
+        side = torch.cuda.Stream()
+        side.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side):
+            for _ in range(3):  # warm up cuDNN/cuBLAS outside the capture
+                self._eager(static_in)
+        torch.cuda.current_stream().wait_stream(side)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            static_out = self._eager(static_in)
+        graph.replay()
+        diff = (static_out - self._eager(static_in)).abs().max().item()
+        self.max_abs_diff = max(self.max_abs_diff, diff)
+        return graph, static_in, static_out
+
+    def forward(self, x):
+        key = (tuple(x.shape), x.dtype)
+        if key not in self.graphs:
+            self.graphs[key] = self._capture(x)
+        graph, static_in, static_out = self.graphs[key]
+        static_in.copy_(x)
+        graph.replay()
+        return static_out
 
 
 # --------------------------------------------------------------------------
@@ -402,8 +467,12 @@ def make_layers(c, ci, args, device, precision, k, memory_format="nchw"):
     instance_net = instance_module
     if precision == "fp16" and device == "mps":
         centroid_net, instance_net = MPSAutocast(centroid_net), MPSAutocast(instance_net)
+    graphed = args.cuda_graphs and device.startswith("cuda")
+    if graphed:
+        centroid_net = CUDAGraphed(centroid_net, precision == "fp16")
+        instance_net = CUDAGraphed(instance_net, precision == "fp16")
 
-    use_fp16 = precision == "fp16" and device.startswith("cuda")
+    use_fp16 = precision == "fp16" and device.startswith("cuda") and not graphed
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)  # TorchBackend's fp16/compile notices
         centroid_backend = TorchBackend(
@@ -461,8 +530,13 @@ def run_one(c, ci, args, device, precision, k, frames_host, what, memory_format=
 
     first, second, lat, out = time_calls(fn, device, args.iters, args.warmup)
     result = {"stage": what, "precision": precision, "memory_format": memory_format,
-              "crops_per_frame": k}
+              "cuda_graphs": False, "crops_per_frame": k}
     result.update(summarize(first, second, lat))
+    graphed = [m for m in (centroid_layer.backend.model, instance_layer.backend.model)
+               if isinstance(m, CUDAGraphed) and m.graphs]
+    if graphed:
+        result["cuda_graphs"] = True
+        result["cuda_graph_max_abs_diff"] = max(m.max_abs_diff for m in graphed)
 
     # Check the shapes really were what we meant to time.
     if what in ("pipeline", "centroid"):
@@ -521,8 +595,11 @@ def parse_args():
                    help="cuda is also the ROCm/HIP device")
     p.add_argument("--precision", default="fp32,fp16",
                    help="comma list of fp32, fp16 (fp16 = autocast; skipped on cpu)")
-    p.add_argument("--memory-format", default="nchw",
-                   help="comma list of nchw, channels_last (model weights and activations)")
+    p.add_argument("--memory-format", default="auto",
+                   help="auto (channels_last on Nvidia CUDA, nchw elsewhere), or a comma list "
+                        "of nchw, channels_last (model weights and activations)")
+    p.add_argument("--cuda-graphs", action="store_true",
+                   help="cuda: replay each model's forward pass as a CUDA graph")
     p.add_argument("--compile", action="store_true",
                    help="experimental: TorchBackend(use_compile=True, compile_mode='reduce-overhead')")
     p.add_argument("--iters", type=int, default=2000, help="timed sets per measurement")
@@ -567,6 +644,8 @@ def main():
         if prec not in ("fp32", "fp16"):
             sys.exit(f"--precision: unknown {prec!r} (use fp32 and/or fp16; bf16 is deliberately not offered)")
     memory_formats = [s.strip() for s in args.memory_format.split(",") if s.strip()]
+    if memory_formats == ["auto"]:
+        memory_formats = [default_memory_format(device)]
     for mf in memory_formats:
         if mf not in ("nchw", "channels_last"):
             sys.exit(f"--memory-format: unknown {mf!r} (use nchw and/or channels_last)")
@@ -574,6 +653,10 @@ def main():
     if device == "cpu" and "fp16" in precisions:
         precisions.remove("fp16")
         skipped.append("fp16 skipped on cpu")
+    if args.cuda_graphs and args.compile:
+        sys.exit("--cuda-graphs and --compile both capture graphs: choose one")
+    if args.cuda_graphs and not device.startswith("cuda"):
+        skipped.append("--cuda-graphs ignored: cuda only")
     if args.compile and device == "mps":
         skipped.append("--compile ignored on mps (sleap-nn's TorchBackend disables it)")
     ks = [int(s) for s in args.crops_per_frame.split(",")]
@@ -620,6 +703,7 @@ def main():
         print(f"note: {note}")
     print(f"{args.frames} frames {FRAME_W}x{FRAME_H} uint8 per set, {args.nodes} nodes, "
           f"iters {args.iters}, warmup {args.warmup}, compile {args.compile}, "
+          f"CUDA graphs {args.cuda_graphs and device.startswith('cuda')}, "
           f"memory format {','.join(memory_formats)}")
     print("timing: sleap-nn TopDownLayer.predict; centroid confmaps -> K synthetic peaks/frame "
           "(model still runs) so crops are fixed")
@@ -668,7 +752,7 @@ def main():
 
 
 COLUMNS = [
-    ("stage", 8), ("centroid", 20), ("instance", 21), ("prec", 4), ("mem", 4), ("K", 2), ("GFLOP", 6),
+    ("stage", 8), ("centroid", 20), ("instance", 21), ("prec", 4), ("mem", 4), ("cg", 2), ("K", 2), ("GFLOP", 6),
     ("1st ms", 8), ("2nd ms", 7), ("p50", 7), ("p95", 7), ("p99", 7), ("max", 7), ("sets/s", 7),
 ]
 
@@ -681,6 +765,7 @@ def row_cells(r):
         centroid_label(r["centroid"]) if r["centroid"] else "-",
         instance_label(r["instance"]) if r["instance"] else "-",
         r["precision"], "cl" if r.get("memory_format") == "channels_last" else "nchw",
+        "y" if r.get("cuda_graphs") else "-",
         str(r["crops_per_frame"]), f"{gflop:.1f}",
         f"{r['first_call_ms']:.0f}", f"{r['second_call_ms']:.1f}",
         f"{r['p50_ms']:.2f}", f"{r['p95_ms']:.2f}", f"{r['p99_ms']:.2f}", f"{r['max_ms']:.2f}",
@@ -702,7 +787,8 @@ def print_row(r, header_needed):
 
 def print_table(results):
     print("\nSummary (latency per set in ms; GFLOP per set; mem = memory format, cl = "
-          "channels_last; K = crops per frame; 1st/2nd = first calls of the shape):")
+          "channels_last; cg = CUDA graphs; K = crops per frame; 1st/2nd = first calls of "
+          "the shape):")
     print(format_row([name for name, _ in COLUMNS]))
     print("-" * (sum(w for _, w in COLUMNS) + 2 * (len(COLUMNS) - 1)))
     order = {"centroid": 0, "instance": 1, "pipeline": 2}
