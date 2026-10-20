@@ -838,33 +838,64 @@ def ConfigureGain(camera, cam_params):
 	return cam_params
 
 
+# The switch that turns a camera's gamma on: GammaEnable on a Blackfly S and
+# other recent models, GammaEnabled on older Point Grey ones
+GAMMA_SWITCHES = ("GammaEnable", "GammaEnabled")
+
+
 def ConfigureGamma(camera, cam_params):
-	"""This function disables the gamma correction.
-	:param cam: Camera to disable gamma correction.
-	:type cam: CameraPtr
 	"""
-
+	The gamma the camera applies to each frame, from cameraGamma: a number
+	turns the camera's gamma on (GammaEnable) at that value (Gamma), and "Off"
+	turns it off, so that brightness is in proportion to the light. The camera
+	applies brightness out = brightness in ^ Gamma, on a 0-1 scale: below 1
+	brightens the dark and middle grays and leaves black and white where they
+	are. A value outside what the camera takes (Gamma's minimum and maximum)
+	is set to the nearest of them, and said. The gamma the camera has after
+	this goes into metadata.csv as gamma ("Off" when off). Like gain and
+	exposure, it is not put back when the camera closes: every open sets it.
+	"""
+	name = cam_params["cameraName"]
 	try:
-		if cam_params["disableGamma"]:
-			if cam_params["cameraDebug"]:
-				Say("*** DISABLING GAMMA CORRECTION ***\n")
+		setting = cam_params["cameraGamma"]
+		if cam_params["cameraDebug"]:
+			Say("*** CONFIGURING GAMMA ***\n")
+		nodemap = camera.GetNodeMap()
+		switch = None
+		for switch_name in GAMMA_SWITCHES:
+			switch = GetNode(nodemap, switch_name, PySpin.CBooleanPtr)
+			if switch is not None:
+				break
 
-			# Retrieve GenICam nodemap (nodemap)
-			nodemap = camera.GetNodeMap()
-
-			# Retrieve node (boolean)
-			node_gamma_enable_bool = PySpin.CBooleanPtr(nodemap.GetNode("GammaEnable"))
-
-			if not PySpin.IsAvailable(node_gamma_enable_bool) or not PySpin.IsWritable(node_gamma_enable_bool):
-				Say("Unable to disable gamma (boolean retrieval). Aborting...")
+		if str(setting).lower() == "off":
+			if switch is None or not PySpin.IsWritable(switch):
+				Say("{}: could not turn its gamma off (cameraGamma \"Off\"): it has no GammaEnable it can "
+					"change.".format(name))
 				return cam_params
+			switch.SetValue(False)
+			cam_params["gamma"] = "Off"
+			Say("Gamma off.")
+			return cam_params
 
-			# Set value to False (disable gamma correction)
-			node_gamma_enable_bool.SetValue(False)
-			Say("Gamma correction disabled.")
+		# On first: Gamma can be set only while it is on
+		if switch is not None and PySpin.IsWritable(switch):
+			switch.SetValue(True)
+		node = GetNode(nodemap, "Gamma", PySpin.CFloatPtr)
+		if node is None or not PySpin.IsWritable(node):
+			Say("{}: could not set its gamma to {} (cameraGamma): it has no Gamma it can change.".format(
+				name, setting))
+			return cam_params
+		lowest, highest = node.GetMin(), node.GetMax()
+		gamma = min(max(float(setting), lowest), highest)
+		if gamma != float(setting):
+			Say("{}: cameraGamma {} is outside what this camera takes, {:g} to {:g}. Gamma set to {:g}.".format(
+				name, setting, lowest, highest, gamma))
+		node.SetValue(gamma)
+		cam_params["gamma"] = round(node.GetValue(), 4)
+		Say("Gamma set to {:g}.".format(cam_params["gamma"]))
 
 	except Exception as e:
-		logging.error("Caught error at cameras/flir.py at ConfigureGamma: {}".format(e))
+		logging.error("Caught error at cameras/flir.py ConfigureGamma for {}: {}".format(name, e))
 
 	return cam_params
 

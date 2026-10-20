@@ -44,7 +44,10 @@ cameraTrigger: "Line3"                # the Arduino's pulses; "None" to free-run
 # mouse pixels clipped in Camera0 and Camera1, which the light is more above.
 cameraExposureTimeInUs: 750
 cameraGain: [4, 3, 7]                 # dB per camera (up to 18)
-disableGamma: True
+# Gamma off: the exposure and gains above were set with it off, to keep the mice
+# at 20-80% of the range. 0.6 (campy's default) would lift their middle grays
+# from about 50% to about 66%.
+cameraGamma: "Off"
 
 # Compression parameters
 gpuID: 0
