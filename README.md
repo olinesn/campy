@@ -341,6 +341,24 @@ While it records, campy keeps the computer out of sleep and standby (`keepAwake:
 
 campy says how as it starts (`Keeping this computer awake while recording (keepAwake): a Windows power request.`). The request ends with the recording, and with campy if it is killed. Where it cannot be made, campy says why and records anyway. `keepAwake: False` (or `--keepAwake False`) turns it off.
 
+### Live pose estimation (liveFeed, campy-live)
+
+With `liveFeed: True` (or `--liveFeed True`), each camera process also copies every frame it grabs into a ring of shared memory, named `campy-live-0`, `campy-live-1`, ... for cameras 0, 1, ... (`liveFeedName: "campy-live"`), holding the newest `liveFeedSlots` (8) frames, each with its frame number, its camera timestamp, and when it reached the computer (as in "hosttimes.npy"). It is one copy per frame (0.05 ms for a 1280x1024 frame on the EVO-X2), and campy never waits for whatever reads it: a reader that falls behind finds the frames it missed replaced by newer ones. If the feed fails, the camera says so once and records on without it. Off by default.
+
+`campy-live` reads the feed and runs a SLEAP top-down model (sleap-nn) on the cameras' frames as campy records. Each time, it takes the newest set of frames that every camera has (the same frame number on each), runs the model on the set as one batch, logs the keypoints, and goes straight back to the newest set. A set that came while it was busy is skipped and counted, never queued, so it is never more than one set behind. It runs in its own Python environment, the one with torch and sleap-nn: it imports only numpy and campy's `livefeed` and `frametimes` modules, so the camera drivers are not needed there. In that environment:
+```
+pip install --no-deps -e <campy folder>     # or: PYTHONPATH=<campy folder> python -m campy.live ...
+campy-live --cameras 3                                      # random-weight models of the benchmark's sizes
+campy-live --cameras 3 --model sleap --centroid <centroid model folder> --instance <centered-instance model folder>
+```
+Start it before or after `campy-acquire`. It waits for the feed, and ends when the recording does (or at Ctrl-C). It writes `campy-live_<date_time>.npy`, one row per set (frame number, each camera's host time, the keypoints and their confidence, the centroids, and when the set was read and finished), and a summary `.json`: sets processed and skipped, and the latency from frames to keypoints. `python -m pydoc campy.live` describes the fields and the models. `--model random` (the default) times random-weight models of the sizes `bench/sleap_infer_bench.py` picked, with a fixed number of animals per frame; `--model none` only reads the feed.
+
+Frames of one trigger pulse have the same frame number on every camera, as long as every camera starts on the trigger's first pulse (campy starts the trigger once all are grabbing) and none loses a frame before campy gets it. A camera that loses one (`flirFramesLost` in "metadata.csv") numbers its later frames one lower than the others. `campy-live` counts the sets whose host times are more than half a frame apart (`misaligned`).
+
+The shared memory's layout is documented in `campy/livefeed.py`, and plain numpy can read it, from any program.
+
+Each row's `keypoints` (cameras, animals, nodes, 2), `peak_vals` and `frame` are what `campy/pose3d.py`'s `Tracker.Update` takes to match animals across cameras and triangulate them ([below](#3d-poses-from-live-2d-predictions-campypose3dpy)). `campy-live` does not call it yet.
+
 ### Scaling the number of cameras
 Change `numCams`; nothing else in a config has to depend on it. A setting can be one value for every camera, or a list with one value per camera. A list longer than `numCams` uses its first items, so a config written for 8 cameras also runs 4. `configs/campy_config_flir_usb3.yaml` is an example.
 

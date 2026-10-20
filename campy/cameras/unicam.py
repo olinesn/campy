@@ -8,7 +8,7 @@ import multiprocessing.connection
 import numpy as np
 from collections import deque
 from scipy import io as sio
-from campy import frametimes, newfiles
+from campy import frametimes, newfiles, livefeed
 from campy.utils.utils import Say, ExitCodeText, ErrorText
 
 
@@ -517,12 +517,17 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 	grabdata = GrabData(cam_params)
 	maxQueue = MaxQueueFrames(cam_params)
 	watch = FrameWatch(cam_params)
+	feed = livefeed.Feed(cam_params, say=Say) # liveFeed: every frame into shared memory too
 	frameNumber = 0
 
 	# Whatever happens from here on, the camera is closed, the writer and the
 	# display are told to stop, and metadata is saved (finally, below). Without
 	# its stop, the writer waits forever and the video is never finished.
 	try:
+		# The live feed's shared memory first (liveFeed), before campy is told
+		# this camera is ready and starts the trigger
+		feed.Prepare(cam_params)
+
 		# Start grabbing frames from the camera
 		grabbing = StartGrabbing(camera, cam_params, cam)
 
@@ -558,8 +563,16 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 
 				# Queue the frame for the writer, with its frameNumber and timeStamp,
 				# unless the writer is writeQueueMaxSec behind
-				if maxQueue is None or len(writeQueue) < maxQueue:
+				queued = maxQueue is None or len(writeQueue) < maxQueue
+				if queued:
 					writeQueue.append(img)
+
+				# Into the live feed's shared memory too: one copy, never waiting.
+				# Before frametimes.npy takes the frame, which writes its batch to
+				# disk about every second, and can take tens of ms doing it.
+				feed.Write(img, frameNumber, hostTime, timeStamp)
+
+				if queued:
 					grabdata["frameTimes"].Add(frameNumber, timeStamp, hostTime)
 				else:
 					DropFrame(grabdata, frameNumber, maxQueue)
@@ -594,6 +607,7 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 		# the writer has given ffmpeg the frames still queued, save metadata
 		grabdata["framesGrabbed"] = frameNumber
 		CloseCamera(cam, cam_params, camera)
+		feed.Close()
 		if not sys.platform=='win32' or not cam_params['cameraMake'] == 'basler':
 			dispQueue.append('STOP')
 		stopWriteQueue.append('STOP')

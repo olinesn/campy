@@ -62,6 +62,9 @@ def DefaultParams():
 	params["vaapiLinearSurfaces"] = True # gpuMake "vaapi" on AMD GPUs: see writer.EncoderArgs
 	params["writeQueueMaxSec"] = 5 # frames waiting for the encoder, in seconds; "None" = unbounded
 	params["keepAwake"] = True # keep the computer out of sleep and standby while recording (keepawake.py)
+	params["liveFeed"] = False # also copy every frame into shared memory, for campy-live (livefeed.py)
+	params["liveFeedName"] = "campy-live" # the shared memory of camera n is <liveFeedName>-<n>
+	params["liveFeedSlots"] = 8 # frames each camera's shared memory holds
 
 	# Launch check parameters (campy/preflight.py)
 	params["preflight"] = "error" # "error", "warn" or "off"
@@ -601,6 +604,28 @@ def ParseClargs(parser, argv=None):
 		help="Keep the computer out of sleep and standby while recording, screen included \
 			(default: True). A Windows PC with Modern Standby otherwise goes into standby when \
 			its screen times out, and the recording slows to a crawl.",
+	)
+	parser.add_argument(
+		"--liveFeed",
+		dest="liveFeed",
+		type=ConfigValue(bool),
+		help="Also copy every frame each camera grabs into shared memory, for a program that \
+			reads them live, such as campy-live (default: False). One copy per frame: campy \
+			never waits for the reader.",
+	)
+	parser.add_argument(
+		"--liveFeedName",
+		dest="liveFeedName",
+		type=TextValue,
+		help="Name of the live feed's shared memory: camera n's is <liveFeedName>-<n> \
+			(default: campy-live). Two campys running at once each need their own.",
+	)
+	parser.add_argument(
+		"--liveFeedSlots",
+		dest="liveFeedSlots",
+		type=ConfigValue(int, lists=False),
+		help="Frames each camera's live feed holds (default: 8): how far behind a reader can \
+			be and still read a frame.",
 	)
 	parser.add_argument(
 		"--preflight",
