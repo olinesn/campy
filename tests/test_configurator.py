@@ -137,11 +137,11 @@ def refusal(capsys, *argv):
 
 def test_false_is_false():
 	# type=bool read every non-empty word as True, so --startArduino False started the trigger
-	assert overrides("--startArduino", "False", "--disableGamma", "False", "--cameraDebug", "False") == \
-		{"startArduino": False, "disableGamma": False, "cameraDebug": False}
+	assert overrides("--startArduino", "False", "--vaapiLinearSurfaces", "False", "--cameraDebug", "False") == \
+		{"startArduino": False, "vaapiLinearSurfaces": False, "cameraDebug": False}
 	assert overrides("--startArduino", "True", "--vaapiLinearSurfaces", "false") == \
 		{"startArduino": True, "vaapiLinearSurfaces": False}
-	assert overrides("--cameraDebug", "yes", "--disableGamma", "off") == {"cameraDebug": True, "disableGamma": False}
+	assert overrides("--cameraDebug", "yes", "--sessionFolder", "off") == {"cameraDebug": True, "sessionFolder": False}
 	assert overrides("--ratcamSyncOut", "[True, False]") == {"ratcamSyncOut": [True, False]}
 
 
@@ -215,3 +215,64 @@ def test_overrides_get_the_config_checks(tmp_path, monkeypatch, capsys):
 	monkeypatch.setattr(sys, "argv", ["campy-acquire", str(config), "--numCams", "4", "--gpuID", "[0, 1]"])
 	with pytest.raises(ValueError, match="gpuID has 2 values for 4 cameras"):
 		configurator.ConfigureParams()
+
+
+def run_config(tmp_path, monkeypatch, config, *argv):
+	# What campy-acquire c.yaml argv... makes of config
+	path = tmp_path / "c.yaml"
+	path.write_text(yaml.safe_dump(dict({"numCams": 2, "cameraMake": "emu"}, **config)))
+	monkeypatch.setattr(sys, "argv", ["campy-acquire", str(path)] + list(argv))
+	return configurator.ConfigureParams()
+
+
+def test_gamma_defaults_to_0_6(tmp_path, monkeypatch):
+	p = run_config(tmp_path, monkeypatch, {})
+	assert [configurator.CameraParams(p, n)["cameraGamma"] for n in range(2)] == [0.6, 0.6]
+
+
+def test_gamma_values(tmp_path, monkeypatch):
+	# A number, "Off", or one per camera. YAML reads off as False, which is "Off" too.
+	assert run_config(tmp_path, monkeypatch, {"cameraGamma": 1})["cameraGamma"] == 1
+	assert run_config(tmp_path, monkeypatch, {"cameraGamma": "Off"})["cameraGamma"] == "Off"
+	p = run_config(tmp_path, monkeypatch, {"cameraGamma": [0.45, False]})
+	assert [configurator.CameraParams(p, n)["cameraGamma"] for n in range(2)] == [0.45, "Off"]
+	assert run_config(tmp_path, monkeypatch, {}, "--cameraGamma", "Off")["cameraGamma"] == "Off"
+	assert run_config(tmp_path, monkeypatch, {}, "--cameraGamma", "[0.5, off]")["cameraGamma"] == [0.5, "Off"]
+	assert overrides("--cameraGamma", "1.0") == {"cameraGamma": 1.0}
+
+
+def test_bad_gamma_is_refused(tmp_path, monkeypatch, capsys):
+	for bad in (0, -1, "high", True, None):
+		with pytest.raises(ValueError, match='cameraGamma is a number above 0 \\(e.g. 0.6\\) or "Off", not '):
+			run_config(tmp_path, monkeypatch, {"cameraGamma": [0.6, bad]})
+	assert 'argument --cameraGamma: cameraGamma is a number above 0 (e.g. 0.6) or "Off", not -2' in \
+		refusal(capsys, "--cameraGamma", "-2")
+	assert "argument --cameraGamma" in refusal(capsys, "--cameraGamma", "on") # YAML: True
+
+
+def test_disable_gamma_is_read_as_camera_gamma(tmp_path, monkeypatch, capsys):
+	# Configs written before cameraGamma: disableGamma True kept the camera linear, False now means 0.6
+	p = run_config(tmp_path, monkeypatch, {"disableGamma": True})
+	assert p["cameraGamma"] == "Off" and "disableGamma" not in p
+	assert "The config says disableGamma: True, read as cameraGamma: Off." in capsys.readouterr().out
+	assert run_config(tmp_path, monkeypatch, {"disableGamma": False})["cameraGamma"] == 0.6
+	assert run_config(tmp_path, monkeypatch, {"disableGamma": [True, False]})["cameraGamma"] == ["Off", 0.6]
+	assert run_config(tmp_path, monkeypatch, {}, "--disableGamma", "True")["cameraGamma"] == "Off"
+	# The command line's either one wins over the config's other one
+	assert run_config(tmp_path, monkeypatch, {"disableGamma": True}, "--cameraGamma", "1")["cameraGamma"] == 1
+	assert run_config(tmp_path, monkeypatch, {"cameraGamma": 1}, "--disableGamma", "True")["cameraGamma"] == "Off"
+
+
+def test_disable_gamma_and_camera_gamma_together_are_refused(tmp_path, monkeypatch):
+	with pytest.raises(ValueError, match="The config gives both cameraGamma and disableGamma"):
+		run_config(tmp_path, monkeypatch, {"disableGamma": True, "cameraGamma": 0.6})
+	with pytest.raises(ValueError, match="The command line gives both cameraGamma and disableGamma"):
+		run_config(tmp_path, monkeypatch, {}, "--disableGamma", "False", "--cameraGamma", "0.6")
+
+
+def test_flir_example_configs_set_gamma_0_6(monkeypatch):
+	monkeypatch.setattr(os, "environ", dict(os.environ)) # the configs' ffmpegPath sets IMAGEIO_FFMPEG_EXE
+	for name in ("campy_config_chronicrecord.yaml", "campy_config_1cam_flir.yaml"):
+		config = os.path.join(os.path.dirname(__file__), "..", "configs", name)
+		monkeypatch.setattr(sys, "argv", ["campy-acquire", config])
+		assert configurator.ConfigureParams()["cameraGamma"] == 0.6, name

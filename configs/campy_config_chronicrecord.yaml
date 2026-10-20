@@ -34,7 +34,7 @@ pixelFormatInput: "gray"              # Mono8
 cameraTrigger: "None"                 # free-run: campy sets the camera's frame rate to frameRate
 cameraExposureTimeInUs: 200
 cameraGain: 7                         # dB (up to 18 on this camera)
-disableGamma: True
+cameraGamma: 0.6                      # brightens dark and middle grays, not black or white; "Off" = linear
 
 # Compression parameters
 gpuID: 0

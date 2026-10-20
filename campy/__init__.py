@@ -23,7 +23,7 @@ def CampyParams():
 	params["cameraExposureTimeInUs"] = 750
 	params["bufferSize"] = 100
 	params["cameraGain"] = 1
-	params["disableGamma"] = True
+	params["cameraGamma"] = 0.6
 	params["cameraTrigger"] = "Line3"
 
 	# Compression default parameters

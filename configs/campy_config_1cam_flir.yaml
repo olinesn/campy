@@ -18,7 +18,7 @@ cameraTrigger: "None" # "Line3"
 bufferSize: 100
 cameraExposureTimeInUs: 1500
 cameraGain: 1
-disableGamma: True
+cameraGamma: 0.6 # brightens dark and middle grays; "Off" = linear
 
 # Compression parameters
 gpuID: -1

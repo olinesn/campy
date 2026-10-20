@@ -36,7 +36,7 @@ def DefaultParams():
 	params["bufferSize"] = 100
 	params["cameraExposureTimeInUs"] = 1500
 	params["cameraGain"] = 1
-	params["disableGamma"] = True
+	params["cameraGamma"] = 0.6 # a number turns the camera's gamma on at that value; "Off" = linear
 	params["cameraLinkLimitMBps"] = "auto" # USB throughput limit: "auto", MB/s, or "None" (flir.ConfigureLinkLimit)
 
 	# RatCam (nir-eye-cam) parameters: see campy/cameras/ratcam.py
@@ -140,6 +140,7 @@ def ConfigureParams():
 	params = CombineConfigAndClargs(clargs)
 	ValidateCameraLists(params)
 	ValidateColorRange(params)
+	ValidateGamma(params)
 	if params["startArduino"]:
 		TriggerFrameRate(params) # fails here, with the reason, if the rates disagree
 
@@ -215,6 +216,49 @@ def ValidateColorRange(params):
 			raise ValueError('colorRange is "limited" or "full", not "{}".'.format(value))
 
 
+# cameraGamma's word for the camera's gamma turned off (GammaEnable False)
+GAMMA_OFF = "Off"
+
+
+def GammaSetting(value):
+	# One camera's cameraGamma as campy uses it: a number above 0, or "Off".
+	# YAML reads off, Off and no as False, which means "Off" here too.
+	if value is False or (isinstance(value, str) and value.strip().lower() == "off"):
+		return GAMMA_OFF
+	if not isinstance(value, bool):
+		try:
+			number = float(value)
+		except (TypeError, ValueError):
+			number = None
+		if number is not None and 0 < number < float("inf"):
+			return value if isinstance(value, (int, float)) else number
+	raise ValueError('cameraGamma is a number above 0 (e.g. 0.6) or "Off", not {!r}.'.format(value))
+
+
+def ValidateGamma(params):
+	# One value, or one per camera
+	value = params["cameraGamma"]
+	params["cameraGamma"] = [GammaSetting(v) for v in value] if isinstance(value, list) else GammaSetting(value)
+
+
+def GammaFromDisableGamma(values, where):
+	# disableGamma, the key cameraGamma replaced, read as cameraGamma: True is
+	# "Off" (linear, as it was), False the default. A config with both is
+	# refused, since they can disagree.
+	if "disableGamma" not in values:
+		return values
+	old = values.pop("disableGamma")
+	if "cameraGamma" in values:
+		raise ValueError("{} gives both cameraGamma and disableGamma. cameraGamma replaced disableGamma: "
+			"remove disableGamma.".format(where))
+	default = DefaultParams()["cameraGamma"]
+	new = [GAMMA_OFF if v else default for v in old] if isinstance(old, list) else (GAMMA_OFF if old else default)
+	values["cameraGamma"] = new
+	Say("{} says disableGamma: {}, read as cameraGamma: {}. cameraGamma replaced disableGamma; write it "
+		"instead.".format(where, old, new))
+	return values
+
+
 def TriggerFrameRate(params):
 	# The rate the trigger controller pulses at: the frame rate of the cameras it
 	# triggers (cameraTrigger set), or of every camera if none is set. With one
@@ -285,9 +329,11 @@ def CombineConfigAndClargs(clargs):
 	params = LoadConfig(clargs.config)
 	# Overrides go in before CheckConfig, so a value from the command line gets
 	# the same range check as one from the config
-	for key, value in clargs.__dict__.items():
-		if value is not None:
-			params[key] = value
+	overrides = {key: value for key, value in clargs.__dict__.items() if value is not None}
+	if "cameraGamma" in overrides:
+		params.pop("disableGamma", None) # the command line's gamma wins
+	params = GammaFromDisableGamma(params, "The config")
+	params.update(GammaFromDisableGamma(overrides, "The command line"))
 	params = CheckConfig(params, clargs)
 	params = FillCameraLists(params)
 	return params
@@ -342,6 +388,18 @@ def ConfigValue(kind, words=(), lists=True):
 		return Check(value)
 
 	return Parse
+
+
+def GammaValue(text):
+	# --cameraGamma: a number above 0 or "Off" (GammaSetting), or a list of them
+	try:
+		value = yaml.safe_load(text)
+	except yaml.YAMLError:
+		value = text
+	try:
+		return [GammaSetting(v) for v in value] if isinstance(value, list) else GammaSetting(value)
+	except ValueError as e:
+		raise ArgumentTypeError(str(e))
 
 
 def TextValue(text):
@@ -475,10 +533,21 @@ def ParseClargs(parser, argv=None):
 		help="Intensity gain applied to each camera frame.",
 	)
 	parser.add_argument(
-		"--disableGamma", 
+		"--cameraGamma",
+		dest="cameraGamma",
+		type=GammaValue,
+		help="FLIR cameras: the gamma the camera applies to each frame (Gamma, with GammaEnable on): \
+			brightness out = brightness in ^ cameraGamma, so below 1 brightens the dark and middle grays \
+			and leaves black and white where they are. Default 0.6. 'Off' turns the camera's gamma off \
+			(GammaEnable False: brightness in proportion to the light, what disableGamma True did). \
+			A value the camera cannot take is set to its nearest limit (a Blackfly S takes 0.25 to 4), and \
+			metadata.csv's gamma says what the camera has. Basler cameras take gamma from their .pfs file.",
+	)
+	parser.add_argument(
+		"--disableGamma",
 		dest="disableGamma",
 		type=ConfigValue(bool),
-		help="Whether to disable gamma (default: True).",
+		help="Replaced by cameraGamma, and read as it: True is cameraGamma 'Off', False is the default, 0.6.",
 	)
 	parser.add_argument(
 		"--cameraLinkLimitMBps",
