@@ -89,7 +89,7 @@ import argparse, json, math, os, signal, sys, time
 from datetime import datetime
 import numpy as np
 from campy import livefeed
-from campy.frametimes import GrowingNpy
+from campy.frametimes import GrowingNpy, Writer
 
 # The random models: what bench/sleap_infer_bench.py's default pair is
 RANDOM_CENTROID = dict(scale=0.25, filters=16, max_stride=16, output_stride=4)
@@ -513,13 +513,20 @@ def Fit(value, shape):
 
 
 class Log:
-	"""The rows, written about every second, and the numbers for the summary."""
+	"""
+	The rows, written about every second, and the numbers for the summary.
+	Each second's rows are written by a thread of their own (Writer, as
+	campy's frametimes.npy): written here, between two sets, a write the disk
+	made wait (tens of ms, while campy's ffmpegs write the videos) held up
+	the next set, and was most of campy-live's latency over 20 ms.
+	"""
 
 	def __init__(self, path, n_cameras, instances, nodes, frameRate, animals3d=0):
 		self.path = path
 		self.rows_type = RowType(n_cameras, instances, nodes, animals3d)
 		self.file = GrowingNpy(path, self.rows_type, header_bytes=1024)
 		self.latency_3d, self.pose3d = [], []
+		self.writer = Writer("campy-live log", path)
 		self.rows = []
 		self.every = max(1, int(round(frameRate or 60)))
 		self.frameRate = frameRate
@@ -578,8 +585,9 @@ class Log:
 			self.pose3d.append(pose3d_ns - done_ns if pose3d is None else pose3d)
 
 	def Write(self):
+		# Hands the rows to the writer thread
 		if self.rows:
-			self.file.Append(np.array(self.rows, self.rows_type))
+			self.writer.Do(self.file.Append, np.array(self.rows, self.rows_type))
 			self.rows = []
 
 	def Summary(self, since=0):
@@ -600,8 +608,12 @@ class Log:
 			"latency_to_3d_from_last_frame_ms": Ms(self.latency_3d), "pose3d_ms": Ms(self.pose3d)}
 
 	def Close(self):
+		# The rows still queued written first
 		self.Write()
-		self.file.Close()
+		try:
+			self.writer.Close()
+		finally:
+			self.file.Close()
 
 
 # ---------------------------------------------------------------- the program

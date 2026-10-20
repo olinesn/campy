@@ -73,6 +73,57 @@ class GrowingNpy:
 		self.file.close()
 
 
+class Writer:
+	"""
+	A thread of its own that makes the writes handed to it, one after
+	another, in order: the thread that hands them over (a camera's, or
+	campy-live's) goes on at once, whatever the disk makes the write wait.
+	A daemon, started with the first write, so a process that ends without
+	Close is not held open by it; its files keep what was written. A write
+	that fails is said once, and the ones after it are left out, as a file
+	the failed write may have cut is not appended to; Close raises it.
+	"""
+
+	def __init__(self, name, what):
+		self.name, self.what = name, what # what: said with an error ("the frame times in <folder>")
+		self.writes = queue.Queue() # (function, args); None stops the thread
+		self.thread = None
+		self.error = None
+
+	def Do(self, write, *args):
+		if self.thread is None:
+			self.thread = threading.Thread(target=self.Run, daemon=True, name=self.name)
+			self.thread.start()
+		self.writes.put((write, args))
+
+	def Run(self):
+		while True:
+			item = self.writes.get()
+			try:
+				if item is None:
+					return
+				if self.error is None:
+					item[0](*item[1])
+			except Exception as e:
+				self.error = e
+				logging.error("Could not write {}: {}".format(self.what, e))
+			finally:
+				self.writes.task_done()
+
+	def Wait(self):
+		# Until every write handed over is made
+		self.writes.join()
+
+	def Close(self):
+		# Waits for the writes still queued; raises the one that failed
+		if self.thread is not None:
+			self.writes.put(None)
+			self.thread.join()
+			self.thread = None
+		if self.error is not None:
+			raise self.error
+
+
 class FrameTimes:
 	"""
 	One camera's frametimes.npy and hosttimes.npy, written in batches of
@@ -88,9 +139,8 @@ class FrameTimes:
 		self.first = None # the first frame's camera timestamp
 		self.last = None  # the last frame's, from the first
 		self.count = 0
-		self.batches = queue.Queue() # (frames, hosts), for the writer; None stops it
-		self.writer = None # started with the first batch
-		self.error = None # the first write that failed, raised by Close
+		self.writer = Writer("frametimes " + os.path.basename(os.path.normpath(folder)),
+			"the frame times in {}".format(folder))
 
 	def Add(self, frameNumber, timeStamp, hostTime):
 		if self.first is None:
@@ -106,30 +156,8 @@ class FrameTimes:
 		# Hands the batch to the writer thread
 		if not self.hosts:
 			return
-		if self.writer is None:
-			self.writer = threading.Thread(target=self.WriteBatches, daemon=True,
-				name="frametimes " + os.path.basename(os.path.normpath(self.folder)))
-			self.writer.start()
-		self.batches.put((self.frames, self.hosts))
+		self.writer.Do(self.WriteBatch, self.frames, self.hosts)
 		self.frames, self.hosts = [], []
-
-	def WriteBatches(self):
-		# The writer thread: a daemon, so a process that ends without Close
-		# is not held open by it (its files keep the batches written)
-		while True:
-			batch = self.batches.get()
-			try:
-				if batch is None:
-					return
-				if self.error is None:
-					self.WriteBatch(*batch)
-			except Exception as e:
-				# Said once; the batches after are left out, as a file the
-				# failed write may have cut is not appended to
-				self.error = e
-				logging.error("Could not write the frame times in {}: {}".format(self.folder, e))
-			finally:
-				self.batches.task_done()
 
 	def WriteBatch(self, frames, hosts):
 		if self.files is None:
@@ -141,19 +169,15 @@ class FrameTimes:
 
 	def Wait(self):
 		# Until every batch handed to the writer is in the files
-		self.batches.join()
+		self.writer.Wait()
 
 	def Close(self, keep=None):
 		# keep: how many frames to keep, from the first, when the video took
 		# fewer than were added (its ffmpeg stopped). The rest are dropped from
 		# both files. None keeps them all.
 		self.Write()
-		if self.writer is not None:
-			self.batches.put(None)
-			self.writer.join()
 		try:
-			if self.error is not None:
-				raise self.error
+			self.writer.Close()
 			if keep is not None and keep < self.count:
 				self.count = max(0, int(keep))
 				if self.files is not None:
