@@ -3,14 +3,15 @@
 # an Arduino Nano ESP32 running campy's trigger.ino (pin 6 to each camera's Line3),
 # encoded with VA-API H.264 on the Radeon (Ubuntu's ffmpeg 6.1).
 #
-# writeQueueMaxSec is 30 here, not 5. This computer's system SSD (a DRAM-less Lexar
-# NQ790 2TB) twice stopped completing writes for about 10 s during a 3-camera
-# recording (October 2026: 2 in 4.5 hours of recording, nothing in the kernel log).
-# ffmpeg waits on the disk then, the frames wait in memory, and with 5 s the
-# recording dropped 290 frames per camera. 30 s holds 7.1 GB of frames for 3 cameras
-# at most (1.31 MB a frame, 60 fps); during live SLEAP inference at least 56 GB of
-# memory stayed free or reclaimable. VA-API encoded 3 streams at about 600 fps each,
-# so a 30-s backlog is gone 3 to 4 s after the disk comes back.
+# writeQueueMaxSec is 60 here, not 5. This computer's system SSD (a DRAM-less Lexar
+# NQ790 2TB) sometimes stops completing writes: for 9.6, 10 and 16 s, in about 7.5
+# hours of 3-camera recording and disk tests (October 2026, nothing in the kernel log,
+# with and without the drive's power saving, APST). ffmpeg waits on the disk then, the
+# frames wait in memory, and with 5 s a 10-s stall dropped 290 frames per camera.
+# 60 s holds 14.2 GB of frames for 3 cameras at most (1.31 MB a frame, 60 fps); during
+# live SLEAP inference at least 56 GB of memory stayed free or reclaimable. VA-API
+# encoded 3 streams at about 600 fps each, so a backlog drains about 9 times faster
+# than it built up once the disk comes back.
 
 # Recording parameters
 videoFolder: "./test"
@@ -37,7 +38,7 @@ pixelFormatOutput: "yuv420p"
 keyframeInterval: 0.5                 # seconds
 ffmpegPath: "/usr/bin/ffmpeg"
 ffmpegLogLevel: "warning"
-writeQueueMaxSec: 30                  # drop (and count) frames past this backlog: see above
+writeQueueMaxSec: 60                  # drop (and count) frames past this backlog: see above
 
 # Launch check
 preflight: "error"
