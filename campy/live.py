@@ -22,7 +22,11 @@ or run it from campy's folder:
     PYTHONPATH=<campy folder> python -m campy.live --cameras 3
 
 Start it before or after campy-acquire; it waits for the cameras' feeds, and
-ends when the recording does (or at Ctrl-C), with a summary.
+ends when the recording does (or at Ctrl-C), with a summary. Best before: it
+loads and warms up the model first (5-8 s with trained models), for frames of
+--frame-shape (1024x1280x1, campy's FLIR cameras), and only then waits for the
+feed, so it is ready for the recording's first frame. A feed of another frame
+size has the model built again (and its first seconds missed).
 
 Models (--model)
 ----------------
@@ -40,12 +44,14 @@ none     no model: reads and logs the sets only, to check the feed.
 3D (--calibration)
 ------------------
 With --calibration <anipose calibration.toml>, each set's keypoints also go
-to campy/pose3d.py's Tracker, in the same loop: it decides which detection in
-each camera is the same animal, keeps each animal's identity (0 to
---animals - 1) from set to set, and triangulates the ones that 2 or more
-cameras see. The cameras are found in the calibration by campy's camera names
-(the feed's), or by --calibration-names, in feed order. It takes about 0.5 ms
-a set on one core for 5 animals.
+to campy/pose3d.py's Tracker: it decides which detection in each camera is the
+same animal, keeps each animal's identity (0 to --animals - 1) from set to
+set, and triangulates the ones that 2 or more cameras see. The cameras are
+found in the calibration by campy's camera names (the feed's), or by
+--calibration-names, in feed order. It takes about 1 ms a set on one core for
+5 animals. It runs in a thread of its own, on each set in turn, while the
+model runs on the next set: a set takes the longer of the two, not their sum.
+A set's row is logged once its 3D is made.
 
 Output
 ------
@@ -85,7 +91,7 @@ gives it from the set's last frame (the earliest the set could be read) and
 its first.
 """
 
-import argparse, json, math, os, signal, sys, time
+import argparse, json, math, os, queue, signal, sys, threading, time
 from datetime import datetime
 import numpy as np
 from campy import livefeed
@@ -545,6 +551,56 @@ class Pose3D:
 		return self.text
 
 
+class Pose3DThread:
+	"""
+	The Tracker on a thread of its own, so the model can go on to the next
+	set meanwhile: it takes the sets in the order they are put, makes their
+	3D poses and adds their rows to the log. An error stops it, and is raised
+	by the next Put, or by Close.
+	"""
+
+	def __init__(self, tracker, log, queued=8):
+		self.tracker, self.log = tracker, log
+		self.sets = queue.Queue(maxsize=queued) # (row, frames, inference ns); None stops it
+		self.error = None
+		self.thread = threading.Thread(target=self.Run, daemon=True, name="campy-live 3D")
+		self.thread.start()
+
+	def Put(self, row, frames, inference):
+		# Waits only if the 3D is that many sets behind
+		if self.error is not None:
+			raise self.error
+		self.sets.put((row, frames, inference))
+
+	def Run(self):
+		while True:
+			item = self.sets.get()
+			if item is None:
+				return
+			if self.error is not None:
+				continue
+			row, frames, inference = item
+			try:
+				# Which animal is which across the cameras, and its 3D pose
+				start = time.perf_counter_ns()
+				poses = self.tracker.Update(row["keypoints"], row["peak_vals"], int(row["frame"]))
+				pose3d_ns, pose3d_pc = time.monotonic_ns(), time.perf_counter_ns()
+				self.log.Add(row, frames, poses, pose3d_ns, durations=(inference, pose3d_pc - start))
+			except BaseException as e:
+				self.error = e
+
+	def Stop(self):
+		# After the sets put so far
+		if self.thread.is_alive():
+			self.sets.put(None)
+			self.thread.join()
+
+	def Close(self):
+		self.Stop()
+		if self.error is not None:
+			raise self.error
+
+
 # ---------------------------------------------------------------- the log
 
 def RowType(n_cameras, instances, nodes, animals3d=0):
@@ -700,34 +756,40 @@ def Run(args):
 			Say("Could not lower this program's priority (--nice): {}".format(e))
 
 	cameras = Cameras(names, poll=args.poll_ms / 1e3)
-	log = None
+	log = worker = None
 	# The progress lines, from a thread of their own: printed in the loop,
 	# into a log file on the disk the videos go to, one could wait as long as
 	# a log write
 	printer = Writer("campy-live printer", "the progress line")
 	try:
+		# The model first, for the frames expected, so it is ready when the
+		# feed's first frame comes (campy makes its rings only a few seconds
+		# before the trigger); pose3d's imports too
+		expected = (FrameShape(args.frame_shape), np.dtype(np.uint8))
+		model, host = Prepare(args, len(names), *expected)
+		if args.calibration:
+			from campy import pose3d
 		if not cameras.Attach(wait=args.wait_sec, stop=stop):
 			Say("No live feed: stopped." if stop() else "No live feed after {:g} s.".format(args.wait_sec))
 			return 1
 		Say("Live feed: {}.".format(cameras.Describe()))
-		shape = cameras.readers[0].shape
+		shape, dtype = cameras.readers[0].shape, cameras.readers[0].dtype
 		frameRate = cameras.readers[0].Info("frameRate")
-
-		model = MODELS[args.model](args, len(names), shape)
-		host = HostBuffer(getattr(model, "torch", None) is not None, (len(names),) + shape, cameras.readers[0].dtype)
-		if hasattr(model, "Warm"):
-			t = time.perf_counter()
-			model.Warm(host.tensor, crops=range(1, len(names) * args.max_instances + 1)
-				if args.model == "sleap" else ())
-			Say("Model: {}. Warmed up in {:.1f} s.".format(model.Describe(), time.perf_counter() - t))
-		else:
-			Say("Model: {}.".format(model.Describe()))
+		if (shape, dtype) != expected:
+			if args.model == "none":
+				host = HostBuffer(False, (len(names),) + shape, dtype)
+			else:
+				Say("The feed's frames are {}x{}x{} {}, not the {}x{}x{} {} the model was made for (--frame-shape): "
+					"making it again, for these.".format(*(shape + (dtype,) + expected[0] + (expected[1],))))
+				del model, host
+				model, host = Prepare(args, len(names), shape, dtype)
 
 		tracker = Pose3D(args, [r.cameraName for r in cameras.readers]) if args.calibration else None
 
 		out = args.out or "campy-live_{}".format(datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 		log = Log(out + ".npy", len(names), model.instances, model.nodes or args.nodes, frameRate,
 			tracker.animals if tracker else 0)
+		worker = Pose3DThread(tracker.tracker, log) if tracker else None
 		Say("Logging to {}.npy.".format(out))
 		reported, since = time.monotonic(), 0
 		while True:
@@ -739,16 +801,15 @@ def Run(args):
 			result = model.Predict(model.Upload(host.tensor)) # ends with the results on the host
 			done_ns, done_pc = time.monotonic_ns(), time.perf_counter_ns()
 			row = log.Row(frames, skipped, read_ns, done_ns, result)
-			if tracker is None:
+			if worker is None:
 				log.Add(row, frames, durations=(done_pc - read_pc, None))
 			else:
-				# Which animal is which across the cameras, and its 3D pose
-				poses = tracker.Update(row["keypoints"], row["peak_vals"], int(row["frame"]))
-				pose3d_ns, pose3d_pc = time.monotonic_ns(), time.perf_counter_ns()
-				log.Add(row, frames, poses, pose3d_ns, durations=(done_pc - read_pc, pose3d_pc - done_pc))
+				worker.Put(row, frames, done_pc - read_pc) # its 3D while the model runs on the next set
 			if args.report_sec and time.monotonic() - reported >= args.report_sec:
 				printer.Do(Say, Line(log.Summary(since), log))
 				reported, since = time.monotonic(), len(log.latency_last)
+		if worker is not None:
+			worker.Close()
 		log.Close()
 		printer.Close()
 		summary = log.Summary()
@@ -764,12 +825,41 @@ def Run(args):
 	finally:
 		# Stopped by an error too: the rows and lines still queued are written
 		try:
+			if worker is not None:
+				worker.Stop()
 			if log is not None:
 				log.Close()
 			printer.Close()
 		finally:
 			cameras.Close()
 			signal.signal(signal.SIGINT, previous)
+
+
+def Prepare(args, n_frames, shape, dtype):
+	# The model, for sets of n_frames frames of shape and dtype, warmed up, and
+	# the host buffer the sets are copied into
+	model = MODELS[args.model](args, n_frames, shape)
+	host = HostBuffer(getattr(model, "torch", None) is not None, (n_frames,) + tuple(shape), dtype)
+	if hasattr(model, "Warm"):
+		t = time.perf_counter()
+		model.Warm(host.tensor, crops=range(1, n_frames * args.max_instances + 1) if args.model == "sleap" else ())
+		Say("Model: {}. Warmed up in {:.1f} s.".format(model.Describe(), time.perf_counter() - t))
+	else:
+		Say("Model: {}.".format(model.Describe()))
+	return model, host
+
+
+def FrameShape(text):
+	# "1024x1280x1" (height x width x channels; channels 1 if left out)
+	try:
+		shape = tuple(int(x) for x in text.lower().split("x"))
+	except ValueError:
+		shape = ()
+	if len(shape) == 2:
+		shape += (1,)
+	if len(shape) != 3 or min(shape) < 1:
+		raise SystemExit("--frame-shape {}: give it as height x width x channels, e.g. 1024x1280x1".format(text))
+	return shape
 
 
 def Line(s, log):
@@ -817,6 +907,8 @@ def ParseArgs(argv=None):
 	p.add_argument("--name", default=livefeed.DEFAULT_NAME, help="campy's liveFeedName.")
 	p.add_argument("--rings", default="", help="Or the rings' names, comma-separated, in camera order.")
 	p.add_argument("--model", default="random", choices=sorted(MODELS), help="See campy-live's help (python -m pydoc campy.live).")
+	p.add_argument("--frame-shape", default="1024x1280x1", help="The frames' height x width x channels the model \
+		is made and warmed up for before the feed comes; a feed of another size has it made again.")
 	p.add_argument("--centroid", default="", help="--model sleap: the trained centroid model's folder.")
 	p.add_argument("--instance", default="", help="--model sleap: the trained centered-instance model's folder.")
 	p.add_argument("--centroid-threshold", type=float, default=0.2, help="--model sleap: centroid peak threshold.")
