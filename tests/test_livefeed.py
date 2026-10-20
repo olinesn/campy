@@ -589,7 +589,8 @@ def test_campy_live_matches_and_triangulates_the_animals(tmp_path, monkeypatch):
 def test_campy_live_makes_the_3d_while_the_model_runs_on_the_next_set(tmp_path, monkeypatch):
 	# The 3D of a set is made on a thread of its own: the first set's 3D
 	# waits until the model is running on a later set, which, made in turn,
-	# would never come. The tracker still has every set in order.
+	# would never come. The tracker still has every set in order. 3 s of
+	# frames: a slow runner may start the 3D thread late.
 	from campy import pose3d
 	args, truth, order = seeing(tmp_path, monkeypatch)
 	predicting = threading.Event()
@@ -608,9 +609,9 @@ def test_campy_live_makes_the_3d_while_the_model_runs_on_the_next_set(tmp_path, 
 		return update(tracker, keypoints, scores, frame)
 	monkeypatch.setattr(pose3d.Tracker, "Update", Update)
 	out = str(tmp_path / "live3d")
-	assert run_live(name(), out, args) == 0
+	assert run_live(name(), out, args, frames=600) == 0
 	rows = np.load(out + ".npy")
-	assert list(rows["frame"]) == seen and seen == sorted(seen) and seen[-1] == 60
+	assert list(rows["frame"]) == seen and seen == sorted(seen) and seen[-1] == 600
 	assert np.all(rows["done_ns"] <= rows["pose3d_ns"]) and np.all(rows["n_views"] == 3)
 
 
