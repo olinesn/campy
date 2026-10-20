@@ -28,8 +28,9 @@ class GrowingNpy:
 	value. rows n: an n x N array, appended to column by column.
 	"""
 
-	def __init__(self, path, dtype, rows=None):
+	def __init__(self, path, dtype, rows=None, header_bytes=HEADER_BYTES):
 		self.dtype, self.rows, self.count = np.dtype(dtype), rows, 0
+		self.header_bytes = header_bytes # a multiple of 64, with room for the shape to grow
 		self.file = newfiles.Open(path, "wb") # never over a recording's file
 		self.WriteHeader()
 
@@ -37,7 +38,7 @@ class GrowingNpy:
 		shape = (self.count,) if self.rows is None else (self.rows, self.count)
 		text = "{{'descr': {!r}, 'fortran_order': {}, 'shape': {}, }}".format(
 			np.lib.format.dtype_to_descr(self.dtype), self.rows is not None, shape)
-		text = text.ljust(HEADER_BYTES - 11) + "\n" # magic, version and length take 10 bytes
+		text = text.ljust(self.header_bytes - 11) + "\n" # magic, version and length take 10 bytes
 		self.file.seek(0)
 		self.file.write(b"\x93NUMPY\x01\x00" + struct.pack("<H", len(text)) + text.encode("latin1"))
 		self.file.seek(0, os.SEEK_END)
@@ -55,7 +56,7 @@ class GrowingNpy:
 	def Truncate(self, count):
 		# Keeps the first count values (or columns), and drops the rest
 		self.count = min(self.count, max(0, int(count)))
-		self.file.truncate(HEADER_BYTES + self.count * self.dtype.itemsize * (self.rows or 1))
+		self.file.truncate(self.header_bytes + self.count * self.dtype.itemsize * (self.rows or 1))
 		self.WriteHeader()
 		self.file.flush()
 

@@ -28,6 +28,7 @@ setup(
 			"campy-align = campy.align:Main",
 			"campy-synctest = campy.synctest:Main",
 			"campy-flir-reset = campy.flirreset:Main",
+			"campy-live = campy.live:Main",
 		]
 	}
 )
