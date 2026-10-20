@@ -22,7 +22,7 @@ import multiprocessing as mp
 from campy import writer, configurator, preflight, newfiles, keepawake
 from campy.trigger import trigger
 from campy.cameras import unicam
-from campy.utils.utils import HandleKeyboardInterrupt, Say, ErrorText
+from campy.utils.utils import HandleKeyboardInterrupt, Say, ErrorText, StartPrinter, StopPrinter
 
 def OpenSystems():
 	# Configure parameters
@@ -147,15 +147,21 @@ def RunCamera(n_cam, readyQueue, done):
 	# One camera process: records its camera, then tells Main what went wrong,
 	# if anything (done: unicam.TellMain). One that ends without saying died,
 	# and Main says so.
-	InitCameraProcess(readyQueue)
-	unicam.SetMainConnection(done)
-	# Not throttled should standby start anyway (Windows); released as it ends
-	keepawake.KeepAwake(params.get("keepAwake", True), whole=False).Start()
-	recording = AcquireOneCamera(n_cam)
-	readyQueue.close()
-	readyQueue.join_thread()
-	unicam.TellMain(("done", recording.Failures()))
-	done.close()
+	# What it says is written by a thread of its own, so that a slow console
+	# or log file never holds up its camera; all of it, before it ends
+	StartPrinter()
+	try:
+		InitCameraProcess(readyQueue)
+		unicam.SetMainConnection(done)
+		# Not throttled should standby start anyway (Windows); released as it ends
+		keepawake.KeepAwake(params.get("keepAwake", True), whole=False).Start()
+		recording = AcquireOneCamera(n_cam)
+		readyQueue.close()
+		readyQueue.join_thread()
+		unicam.TellMain(("done", recording.Failures()))
+		done.close()
+	finally:
+		StopPrinter()
 	# Then it ends at once, as campy's pool workers did (they were terminated):
 	# without running the camera drivers' own cleanup at exit, which campy has
 	# never run, and which could otherwise crash or hang after a good recording
