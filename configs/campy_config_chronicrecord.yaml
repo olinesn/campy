@@ -38,10 +38,12 @@ frameWidth: 1280
 frameHeight: 1024
 pixelFormatInput: "gray"              # Mono8
 cameraTrigger: "Line3"                # the Arduino's pulses; "None" to free-run at frameRate
-# 750 us on the mice (2026-10-20): 200 us left them at about a fifth of the
-# range in a dim cage, 400 us roughly doubled every camera's brightness.
+# One exposure for every camera; gain evens out their brightness. On the white
+# mice in the lit home cage (2026-10-20), 750 us with these gains put the mice
+# in the middle of the range in each view: at 7 dB on all three, a fifth of the
+# mouse pixels clipped in Camera0 and Camera1, which the light is more above.
 cameraExposureTimeInUs: 750
-cameraGain: 7                         # dB (up to 18 on this camera)
+cameraGain: [4, 3, 7]                 # dB per camera (up to 18)
 disableGamma: True
 
 # Compression parameters
