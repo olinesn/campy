@@ -9,6 +9,10 @@
 # the encoder spends bits on that noise: at quality 24 in limited range one
 # camera wrote 1.0 Mbit/s at 1 dB, 1.9 at 7 dB and 9.7 at 18 dB (the camera's
 # maximum).
+# The gain was chosen with the camera's gamma off. Gamma 0.6 (cameraGamma)
+# brightens the dark and middle grays but leaves white where it is, so it
+# clips nothing that was not clipped; it also brightens the noise in the dark,
+# which can cost the encoder some bits.
 # Set the gain for your own light, so that the brightest parts of the animals
 # stay below white, without editing this file:
 #   campy-acquire configs/campy_config_chronicrecord.yaml --cameraGain 10
