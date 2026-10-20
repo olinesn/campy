@@ -134,7 +134,7 @@ class Cameras:
 				if self.readers[i] is None:
 					try:
 						reader = livefeed.RingReader(name)
-					except FileNotFoundError:
+					except (OSError, ValueError): # not there yet, or being made (its header not written yet)
 						continue
 					if reader.Ended():
 						reader.Close()
@@ -181,7 +181,7 @@ class Cameras:
 			if ended[i]:
 				try:
 					reader = livefeed.RingReader(name)
-				except FileNotFoundError:
+				except (OSError, ValueError): # not there, or the next one still being made
 					continue
 				replaced = reader.ringId != self.readers[i].ringId
 				reader.Close()

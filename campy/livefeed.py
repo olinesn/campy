@@ -191,12 +191,17 @@ class Ring:
 	def __init__(self, shm):
 		self.shm = shm
 		buf = shm.buf
-		self.header = np.frombuffer(buf, np.uint8, HEADER_BYTES)
-		if bytes(self.header[:8]) != MAGIC:
+		# Checked on a copy, before any view of the memory is made: shared memory with a view
+		# open cannot close, so a ring refused here could not be let go of
+		head = bytes(buf[:16]) if len(buf) >= HEADER_BYTES else b""
+		if head[:8] != MAGIC:
+			# Also a ring still being made: its header not written yet
 			raise ValueError("{} is not a campy live feed ring".format(shm.name))
-		if self.Get("version") != VERSION:
+		version = int(np.frombuffer(head, "<u4", 1, 8)[0])
+		if version != VERSION:
 			raise ValueError("{} has layout version {}; this campy reads version {}".format(
-				shm.name, self.Get("version"), VERSION))
+				shm.name, version, VERSION))
+		self.header = np.frombuffer(buf, np.uint8, HEADER_BYTES)
 		self.slots = int(self.Get("slots"))
 		self.shape = (int(self.Get("height")), int(self.Get("width")), int(self.Get("channels")))
 		self.dtype = np.dtype(bytes(self.header[_DTYPE_AT:_DTYPE_AT + 8]).rstrip(b"\0").decode("ascii"))
@@ -397,7 +402,11 @@ class RingReader:
 	def __init__(self, name):
 		self.name = name
 		self.shm = Attach(name)
-		self.ring = Ring(self.shm)
+		try:
+			self.ring = Ring(self.shm)
+		except BaseException:
+			self.shm.close()
+			raise
 		self.shape, self.dtype, self.slots = self.ring.shape, self.ring.dtype, self.ring.slots
 		self.cameraName = self.ring.cameraName
 		self.ringId = self.ring.ringId
