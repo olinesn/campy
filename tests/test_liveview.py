@@ -416,9 +416,9 @@ def small_seeing(tmp_path, monkeypatch, s=0.25):
 
 
 def record(prefix, frames, rate, delay, shape=(256, 320)):
-	# 3 cameras' frames of shape, gray, into the feed
+	# 3 cameras' frames of shape, gray, into the feed: 32 slots, for a slow test runner
 	time.sleep(delay)
-	writers = [livefeed.RingWriter(livefeed.RingName(prefix, c), shape, np.uint8, frameRate=rate, camera=c,
+	writers = [livefeed.RingWriter(livefeed.RingName(prefix, c), shape, np.uint8, slots=32, frameRate=rate, camera=c,
 		cameraName="Camera{}".format(c)) for c in range(3)]
 	try:
 		start = time.perf_counter()
