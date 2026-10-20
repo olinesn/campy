@@ -42,6 +42,10 @@ All numbers little-endian. One ring holds a header and `slots` slots:
   96      64 bytes    camera name, UTF-8, NUL-padded
   160     int64       frames written
   168     int64       frames not written (a frame of another size or type)
+  176     uint32      description bytes (0: none)
+  256     text        description, UTF-8: what the ring holds, for rings that
+                      are not a camera's (campy/liveresults.py's), written
+                      before the state; at most 3840 bytes
 
 Slot i starts at header bytes + i * slot bytes, and holds frame number n in
 slot n % slots:
@@ -99,8 +103,11 @@ _HEADER = {
 	"slotBytes": (40, "<u8"), "frameBytes": (48, "<u8"), "ringId": (56, "<i8"),
 	"state": (64, "<i8"), "latest": (72, "<i8"), "frameRate": (80, "<f8"),
 	"camera": (88, "<i8"), "written": (160, "<i8"), "notWritten": (168, "<i8"),
+	"descriptionBytes": (176, "<u4"),
 	}
 _DTYPE_AT, _NAME_AT, _NAME_BYTES = 32, 96, 64
+_DESCRIPTION_AT = 256
+DESCRIPTION_BYTES = HEADER_BYTES - _DESCRIPTION_AT
 
 # Slot fields, as int64 words (the camera timestamp is a float64 in word 4)
 BEGIN, END, FRAME, HOST, STAMP, WRITTEN = range(6)
@@ -209,6 +216,10 @@ class Ring:
 		at, kind = _HEADER[key]
 		return np.frombuffer(self.header, kind, 1, at)[0].item()
 
+	def Description(self):
+		n = min(int(self.Get("descriptionBytes")), DESCRIPTION_BYTES)
+		return bytes(self.header[_DESCRIPTION_AT:_DESCRIPTION_AT + n]).decode("utf-8", "replace")
+
 	def Set(self, key, value):
 		self.fields[key][0] = value
 
@@ -228,13 +239,18 @@ class RingWriter:
 	and never waits; Close marks the ring ended and removes its name.
 	"""
 
-	def __init__(self, name, shape, dtype, slots=DEFAULT_SLOTS, frameRate=0.0, camera=0, cameraName=""):
+	def __init__(self, name, shape, dtype, slots=DEFAULT_SLOTS, frameRate=0.0, camera=0, cameraName="",
+			description=""):
 		if len(shape) == 2:
 			shape = tuple(shape) + (1,)
 		dtype = np.dtype(dtype)
 		slots = int(slots)
 		if slots < 2:
 			raise ValueError("a ring needs at least 2 slots, not {}".format(slots))
+		description = str(description).encode("utf-8")
+		if len(description) > DESCRIPTION_BYTES:
+			raise ValueError("a ring's description is at most {} bytes, not {}".format(DESCRIPTION_BYTES,
+				len(description)))
 		self.name = name
 		size = RingBytes(shape, dtype, slots)
 		self.shm = self._Make(name, size)
@@ -257,6 +273,8 @@ class RingWriter:
 		header[_DTYPE_AT:_DTYPE_AT + len(text)] = np.frombuffer(text, np.uint8)
 		text = str(cameraName).encode("utf-8")[:_NAME_BYTES]
 		header[_NAME_AT:_NAME_AT + len(text)] = np.frombuffer(text, np.uint8)
+		header[_DESCRIPTION_AT:_DESCRIPTION_AT + len(description)] = np.frombuffer(description, np.uint8)
+		np.ndarray((1,), "<u4", self.shm.buf, _HEADER["descriptionBytes"][0])[0] = len(description)
 		del header
 		self.ring = Ring(self.shm)
 		self.ring.slotFields[:] = 0
@@ -399,6 +417,10 @@ class RingReader:
 
 	def Info(self, key):
 		return self.ring.Get(key)
+
+	def Description(self):
+		# What the ring's writer said it holds ("" for a camera's)
+		return self.ring.Description()
 
 	def Read(self, frameNumber, out=None):
 		"""

@@ -10,8 +10,8 @@ again. Sets that came while it was busy are skipped, and counted, never
 queued, so it is never further behind than one set.
 
 It runs in its own Python environment, the one with torch and sleap-nn: it
-imports only numpy and this package's livefeed and frametimes, which need
-nothing else, so campy's camera drivers need not be installed there. In that
+imports only numpy and this package's livefeed, liveresults and frametimes,
+which need nothing else, so campy's camera drivers need not be installed there. In that
 environment, either install campy without its dependencies
 
     pip install --no-deps -e <campy folder>
@@ -82,6 +82,10 @@ and with --calibration:
   n_views        per animal: how many cameras saw it
   reproj_px      per animal, per node: mean reprojection error, pixels
 
+With --results-feed on (the default), each row also goes into shared memory,
+campy-live-results (campy/liveresults.py), as it is logged: campy-live-view
+(campy/liveview.py) shows them on the cameras' frames.
+
 Latency, from a frame reaching the computer to its keypoints, is done_ns
 minus host_ns (on Linux and macOS, one clock in every process). On Windows
 before Python 3.13 that clock moves in steps of 15.6 ms, so latencies from
@@ -94,7 +98,7 @@ its first.
 import argparse, json, math, os, queue, signal, sys, threading, time
 from datetime import datetime
 import numpy as np
-from campy import livefeed
+from campy import livefeed, liveresults
 from campy.frametimes import GrowingNpy, Writer
 
 # The random models: what bench/sleap_infer_bench.py's default pair is
@@ -259,6 +263,7 @@ class NoModel:
 	"""--model none: no inference, the feed alone."""
 	device = "cpu"
 	nodes = 0
+	edges = None
 
 	def __init__(self, args, n_frames, shape):
 		self.instances = 0
@@ -290,7 +295,7 @@ class TopDown:
 		if self.memoryFormat == "auto":
 			nvidia = self.device.startswith("cuda") and not getattr(torch.version, "hip", None)
 			self.memoryFormat = "channels_last" if nvidia else "nchw"
-		self.nodes, self.nodeNames = None, None
+		self.nodes, self.nodeNames, self.edges = None, None, None
 		self.layer, self.text = self.Build(args)
 
 	def Fp16(self, backends):
@@ -508,6 +513,10 @@ class TrainedTopDown(TopDown):
 		if skeleton is not None:
 			self.nodeNames = [node.name for node in skeleton.nodes]
 			self.nodes = len(self.nodeNames)
+			try: # for campy-live-view: pairs of node indices
+				self.edges = [[int(a), int(b)] for a, b in skeleton.edge_inds]
+			except Exception:
+				self.edges = None
 		self.Fp16([layer.centroid_layer.backend, layer.centered_instance_layer.backend])
 		if self.memoryFormat == "channels_last":
 			for backend in (layer.centroid_layer.backend, layer.centered_instance_layer.backend):
@@ -644,6 +653,7 @@ class Log:
 		self.writer = Writer("campy-live log", path)
 		self.error = None # a write that failed, said when closing and in the summary (log_error)
 		self.closed = False
+		self.results = None # a liveresults.Publisher: each row also into shared memory
 		self.rows = []
 		self.every = max(1, int(round(frameRate or 60)))
 		self.frameRate = frameRate
@@ -676,6 +686,8 @@ class Log:
 			row["members"] = poses.members
 			row["n_views"] = poses.n_views
 			row["reproj_px"] = poses.reproj_px
+		if self.results is not None:
+			self.results.Write(row)
 		read_ns, done_ns, skipped = int(row["read_ns"]), int(row["done_ns"]), int(row["skipped"])
 		host = np.array([f.hostTime for f in frames], np.int64)
 		self.rows.append(row)
@@ -732,6 +744,8 @@ class Log:
 		if self.closed:
 			return
 		self.closed = True
+		if self.results is not None:
+			self.results.Close()
 		self.Write()
 		try:
 			self.writer.Close()
@@ -789,6 +803,8 @@ def Run(args):
 		out = args.out or "campy-live_{}".format(datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 		log = Log(out + ".npy", len(names), model.instances, model.nodes or args.nodes, frameRate,
 			tracker.animals if tracker else 0)
+		if args.results_feed == "on":
+			log.results = Publish(args, log, names, cameras, model, tracker, frameRate)
 		worker = Pose3DThread(tracker.tracker, log) if tracker else None
 		Say("Logging to {}.npy.".format(out))
 		reported, since = time.monotonic(), 0
@@ -816,6 +832,7 @@ def Run(args):
 		summary.update(model=model.Describe(), nodes=getattr(model, "nodeNames", None),
 			pose3d=tracker.Describe() if tracker else None, cameras=[r.cameraName for r in cameras.readers],
 			rings=names, frame_shape=list(shape), frame_rate=frameRate, log=out + ".npy",
+			results_feed=log.results.name if log.results else None,
 			ended="stopped (Ctrl-C)" if stop() else "the recording ended")
 		with open(out + ".json", "x") as f:
 			json.dump(summary, f, indent=2)
@@ -833,6 +850,19 @@ def Run(args):
 		finally:
 			cameras.Close()
 			signal.signal(signal.SIGINT, previous)
+
+
+def Publish(args, log, names, cameras, model, tracker, frameRate):
+	# The rows into shared memory too, with what campy-live-view needs to draw them
+	name = liveresults.RingName(args.name)
+	results = liveresults.Publisher(name, log.rows_type, say=Say, cameras=[r.cameraName for r in cameras.readers],
+		rings=names, nodes=getattr(model, "nodeNames", None), edges=getattr(model, "edges", None),
+		calibration=os.path.abspath(args.calibration) if tracker else None,
+		calibration_names=tracker.names if tracker else None, animals=tracker.animals if tracker else 0,
+		frame_rate=frameRate)
+	if results.writer is not None:
+		Say("Results in shared memory {} too, for campy-live-view.".format(name))
+	return results
 
 
 def Prepare(args, n_frames, shape, dtype):
@@ -936,6 +966,8 @@ def ParseArgs(argv=None):
 	p.add_argument("--instance-output-stride", type=int, default=RANDOM_INSTANCE["output_stride"])
 	p.add_argument("--filters-rate", type=float, default=2.0)
 	p.add_argument("--out", default="", help="Log file name, without .npy (default: campy-live_<date_time>).")
+	p.add_argument("--results-feed", default="on", choices=["on", "off"], help="on: each set's row also into \
+		shared memory <name>-results, as it is logged, for campy-live-view to show on the frames.")
 	p.add_argument("--wait-sec", type=float, default=float("inf"), help="How long to wait for the feed.")
 	p.add_argument("--poll-ms", type=float, default=0.5, help="How often to look for a new set.")
 	p.add_argument("--report-sec", type=float, default=10, help="Say how it goes this often; 0: only at the end.")
