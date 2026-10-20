@@ -387,6 +387,8 @@ Keys: 1-9 one camera, 0 every camera, `d` / `p` / `l` the 2D / 3D / lines on or 
 
 Each result is drawn on the frames it was made from, never on newer ones. campy-live puts each set's row in shared memory as it logs it (`campy-live-results`, laid out in `campy/liveresults.py`; `--results-feed off` stops that), and the view reads that row's frame number back from the live feed, which holds each camera's newest 8 frames (0.27 s at 30 fps). A result whose frames are gone by then is counted and left out.
 
+It costs campy-live almost nothing. On the ChronicRecord PC (3 cameras of 1280x1024 at 30 fps, 3 mice, a recording replayed into the feed, 60 s twice each way), campy-live's inference took 27.44 and 27.45 ms (p50) alone and 27.54 and 27.53 ms with the view running, and it skipped no set either way. Drawing one view of the 3 cameras takes the view 7-8 ms of one core. Results reach it 30 ms after their frames (p50; p99 33), and each is drawn by 38 ms (p99 41).
+
 ### Scaling the number of cameras
 Change `numCams`; nothing else in a config has to depend on it. A setting can be one value for every camera, or a list with one value per camera. A list longer than `numCams` uses its first items, so a config written for 8 cameras also runs 4. `configs/campy_config_flir_usb3.yaml` is an example.
 
