@@ -270,9 +270,11 @@ def test_disable_gamma_and_camera_gamma_together_are_refused(tmp_path, monkeypat
 		run_config(tmp_path, monkeypatch, {}, "--disableGamma", "False", "--cameraGamma", "0.6")
 
 
-def test_flir_example_configs_set_gamma_0_6(monkeypatch):
+def test_flir_example_configs_gamma(monkeypatch):
+	# The ChronicRecord rig's exposure and gains were tuned with gamma off, to keep
+	# its white mice at 20-80% of the range; the other FLIR example uses the default
 	monkeypatch.setattr(os, "environ", dict(os.environ)) # the configs' ffmpegPath sets IMAGEIO_FFMPEG_EXE
-	for name in ("campy_config_chronicrecord.yaml", "campy_config_1cam_flir.yaml"):
+	for name, gamma in (("campy_config_chronicrecord.yaml", "Off"), ("campy_config_1cam_flir.yaml", 0.6)):
 		config = os.path.join(os.path.dirname(__file__), "..", "configs", name)
 		monkeypatch.setattr(sys, "argv", ["campy-acquire", config])
-		assert configurator.ConfigureParams()["cameraGamma"] == 0.6, name
+		assert configurator.ConfigureParams()["cameraGamma"] == gamma, name
