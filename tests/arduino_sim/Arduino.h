@@ -1,4 +1,5 @@
-// Just enough of the Arduino API to run campy/trigger/trigger.ino on a computer,
+// Just enough of the Arduino API to run campy/trigger/trigger.ino (and
+// chronicrecord/chronic_timer/chronic_timer.ino) on a computer,
 // with a simulated clock (see sim.cpp). For tests only.
 #pragma once
 #include <cstdint>
@@ -17,6 +18,7 @@ void interrupts();
 struct SimSerial {
 	void begin(uint32_t) {}
 	int available();
+	int read();
 	float parseFloat();
 	// What the sketch says: Print's formatting (floats with 2 decimals)
 	void print(const char* text);

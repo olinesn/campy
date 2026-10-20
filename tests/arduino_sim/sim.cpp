@@ -1,8 +1,10 @@
-// Runs trigger.ino against a simulated clock and prints every pin change as
+// Runs trigger.ino (or another sketch) against a simulated clock and prints every pin change as
 // "<microseconds> <pin> <level>", and what the sketch says on its serial port
 // as "serial <microseconds> <text>" (text with \r and \n written as such).
 //   sim <end_us> <command> [<at_us>:<command> ...]
 // The first command is waiting at power-up; the others arrive at their times.
+// SIM_START_US in the environment starts the clock there instead of at 0 (to
+// run a sketch across micros()'s 32-bit wrap); all times printed are the clock's.
 //
 //   sim live
 // Runs it in real time instead, as a serial device: it reads its commands
@@ -131,6 +133,11 @@ int SimSerial::available() {
 	return (int) (input.size() - pos);
 }
 
+int SimSerial::read() {
+	if (available() <= 0) return -1;
+	return (unsigned char) input[pos++];
+}
+
 static int TimedPeek() {
 	// Stream::timedPeek: the next character, waiting up to the 1 s default
 	// timeout for it; -1 if none came
@@ -178,6 +185,7 @@ int main(int argc, char** argv) {
 		while (true) loop();
 	}
 	if (argc < 3) return 2;
+	if (std::getenv("SIM_START_US")) now_us = std::strtoull(std::getenv("SIM_START_US"), 0, 10);
 	unsigned long long end = std::strtoull(argv[1], 0, 10);
 	input = argv[2];
 	for (int i = 3; i < argc; i++) {
