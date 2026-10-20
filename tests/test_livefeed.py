@@ -462,8 +462,12 @@ def _record(prefix, cameras, frames, rate, delay):
 		for n in range(1, frames + 1):
 			while time.perf_counter() < start + n / rate:
 				pass
+			# One host time for the set, as for cameras on one trigger: stamped
+			# one by one, a thread switch between them (Python's is every 5 ms)
+			# could put the set more than half a frame apart, misaligned
+			host = time.monotonic_ns()
 			for w in writers:
-				w.Write(frame(n), n, time.monotonic_ns(), n / rate)
+				w.Write(frame(n), n, host, n / rate)
 	finally:
 		for w in writers:
 			w.Close()

@@ -310,6 +310,47 @@ def test_tracker_ignores_padding_and_extra_detections():
 		assert ids == first and len(ids) == 3
 
 
+def junk_nodes(kp, sc, order, rng, rate):
+	# What a model trained on another rig does: some nodes put anywhere in the image,
+	# at a low score
+	for c in range(len(order)):
+		for slot in range(len(order[c])):
+			bad = rng.random(kp.shape[2]) < rate
+			kp[c, slot, bad] = rng.uniform([0, 0], SIZE, (bad.sum(), 2))
+			sc[c, slot, bad] = rng.uniform(0.1, 0.4, bad.sum())
+
+
+@pytest.mark.parametrize("seed", [1, 2])
+def test_tracker_is_not_thrown_by_misplaced_nodes(seed):
+	# A misplaced node triangulates to a 3D point far from the animal. With LUC3D's
+	# unbounded per-node penalty that one node outweighs all the others, so detections
+	# are matched to the wrong animal; with each node's penalty capped (max_penalty) and
+	# the animals' own 3D keeping only nodes whose views agree (match_reproj), they are not.
+	def run(**options):
+		cams = rig()
+		X = scene(300, n=3, seed=seed)
+		rng = np.random.default_rng(seed + 100)
+		tracker = pose3d.Tracker(cams, n_animals=3, **options)
+		mixed, switched, first = 0, 0, None
+		for f in range(len(X)):
+			kp, sc, order = observe(cams, X[f], rng)
+			junk_nodes(kp, sc, order, rng, 0.15)
+			poses = tracker.Update(kp, sc, frame=f)
+			ids = {}
+			for ident, row in enumerate(poses.members):
+				truth = {order[c][slot] for c, slot in enumerate(row) if slot >= 0}
+				if len(truth) > 1:
+					mixed += 1
+				elif truth:
+					ids[truth.pop()] = ident
+			first = first or ids
+			switched += sum(first.get(a) != i for a, i in ids.items())
+		return mixed, switched
+	luc3d = run(max_penalty=None, match_reproj=0.0)
+	assert luc3d[0] > 10, "LUC3D's scoring should mix animals here: the test lost its point"
+	assert run() == (0, 0)
+
+
 def test_tracker_input_checks():
 	tracker = pose3d.Tracker(rig(), n_animals=2)
 	with pytest.raises(ValueError):
