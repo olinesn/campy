@@ -444,7 +444,7 @@ def test_campy_live_reads_a_recording_to_its_end(tmp_path, capsys):
 
 
 def log_sets(log, first, count):
-	# count sets of 3 cameras' frames, as campy-live's loop gives them to Log.Add
+	# count sets of 3 cameras' frames, as campy-live's loop gives them to Log.Row and Log.Add
 	for n in range(first, first + count):
 		frames = [types.SimpleNamespace(frameNumber=n, hostTime=1000 * n + c, written=1000 * n + 5, timeStamp=n / 60)
 			for c in range(3)]
