@@ -143,6 +143,7 @@ def LoadSettings(camera, cam_params):
 	# First, what an earlier run that did not close the camera left on it
 	RecoverAcquisition(camera, cam_params)
 	RecoverFrameRate(camera, cam_params)
+	ExpectLeftovers(camera, cam_params)
 
 	try:
 		# Configure trigger
@@ -231,6 +232,7 @@ def StartGrabbing(camera):
 	except Exception as e:
 		Say("Exception in cameras/flir.py function StartGrabbing(camera): {}".format(e))
 		return False
+	DiscardLeftovers(camera) # before the counters start, so they count this run's frames only
 	# Spinnaker's stream counters as the acquisition starts (outside the try:
 	# a counter that cannot be read is left out, and stops nothing)
 	Counts(camera).Start(camera)
@@ -1416,6 +1418,110 @@ def RecoverAcquisition(camera, cam_params):
 	else:
 		Say("{}: still acquiring from a run that did not close it. Stopped it, so its frame size and pixel format "
 			"can be set.".format(name))
+	NoteLeftovers(cam_params)
+
+
+# ------------------------------------------------------------------ frames left on the camera
+#
+# A triggered camera whose process was killed goes on taking a frame at each
+# pulse until the trigger stops, and keeps the ones nobody read in its own
+# transfer queue. Stopping its acquisition (RecoverAcquisition) does not empty
+# that queue: the next run's BeginAcquisition sends them first, before any
+# pulse of its own. Taken as that run's first frames, they number each of the
+# camera's later frames one (or more) ahead of the other cameras' frames of the
+# same pulse, for the whole recording, and so does campy-live's live feed. On
+# the ChronicRecord PC (three BFS-U3-13Y3M, PySpin 4.4, Windows, 2026-10-20),
+# runs after a killed one had a camera deliver one frame more than it started
+# (flirStreamDeliveredFrameCount 11741, the others 11740), its frames reached
+# the computer one frame period after the others' of the same number, and
+# campy-live's 3D paired frames of different pulses. Its first frame came at
+# once, then nothing until the trigger started (3 s later).
+#
+# When campy starts the trigger itself (startArduino, or a software trigger),
+# no pulse comes before every camera says it is ready to trigger, so every
+# frame that comes between BeginAcquisition and then is one of those:
+# StartGrabbing discards them. RecoverAcquisition notes, in a file like the
+# frame rate note, that a camera may hold some, because the launch check
+# usually finds the acquisition first, in another process than the camera's.
+
+LEFTOVER_WAIT_MS = 300 # a frame the camera holds came within a few ms of BeginAcquisition
+LEFTOVER_MOST = 1000 # a transfer queue holds far fewer
+_leftovers = {} # id(camera): (cameraName, note), for StartGrabbing
+
+
+def CampyTriggers(cam_params):
+	# Whether no pulse can come before campy starts the trigger: campy's own Arduino, or software
+	trigger = str(cam_params.get("cameraTrigger", "None")).lower()
+	if trigger == "software":
+		return True
+	return trigger != "none" and bool(cam_params.get("startArduino"))
+
+
+def LeftoverNotePath(cam_params):
+	serial = "".join(c for c in str(cam_params.get("cameraSerialNo") or "") if c.isalnum())
+	return os.path.join(NOTE_FOLDER, "flir-leftover-frames-{}".format(serial)) if serial else None
+
+
+def NoteLeftovers(cam_params):
+	# After an acquisition left running was stopped: the camera may still hold its frames
+	trigger = str(cam_params.get("cameraTrigger", "None")).lower()
+	if trigger == "none":
+		return # free-running: its frames are not numbered against a trigger's pulses
+	if not CampyTriggers(cam_params):
+		Say("{}: it may still hold frames from that run, which would number its frames ahead of the other "
+			"cameras' (campy does not start this trigger, so it cannot tell them apart). Check campy-align's report "
+			"of the recording, or unplug the camera and plug it back in first.".format(cam_params["cameraName"]))
+		return
+	path = LeftoverNotePath(cam_params)
+	if path is None:
+		return
+	try:
+		os.makedirs(NOTE_FOLDER, exist_ok=True)
+		with open(path, "w") as f:
+			f.write("{}\n".format(cam_params["cameraName"]))
+	except OSError as e:
+		logging.error("Caught error at cameras/flir.py NoteLeftovers: {}".format(e))
+
+
+def ExpectLeftovers(camera, cam_params):
+	# The camera's process: StartGrabbing is to discard what the camera holds, if a note says it may
+	path = LeftoverNotePath(cam_params)
+	if path is not None and os.path.exists(path) and CampyTriggers(cam_params):
+		_leftovers[id(camera)] = (cam_params["cameraName"], path)
+
+
+def DiscardLeftovers(camera):
+	"""
+	Right after BeginAcquisition, before any pulse: releases every frame the
+	camera still held from a run that did not close it (see above). Returns
+	how many.
+	"""
+	name, path = _leftovers.pop(id(camera), (None, None))
+	if name is None:
+		return 0
+	n = 0
+	while n < LEFTOVER_MOST:
+		try:
+			image = camera.GetNextImage(LEFTOVER_WAIT_MS)
+		except PySpin.SpinnakerException:
+			break # none came: nothing (more) held
+		except Exception as e:
+			logging.error("Caught error at cameras/flir.py DiscardLeftovers: {}".format(e))
+			break
+		n += 1
+		try:
+			image.Release()
+		except Exception:
+			pass
+	try:
+		os.remove(path)
+	except OSError:
+		pass
+	if n:
+		Say("{}: discarded {} frame{} it still held from the run that did not close it. Recorded as this run's "
+			"first, {} would have numbered every later frame of this camera {} ahead of the other cameras'.".format(
+			name, n, "" if n == 1 else "s", "it" if n == 1 else "they", "one" if n == 1 else n))
+	return n
 
 
 # ------------------------------------------------------------------ frames lost before campy
