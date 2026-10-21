@@ -119,7 +119,9 @@ campy-live-view's c key moves them back and forth while they run.
 replays it in one go (a CUDA graph), instead of launching its hundred or so
 GPU operations one by one, each costing the CPU some microseconds: the
 results are the same, and campy-live says how far from the same they were
-when it made the graphs (0 is the same).
+when it made the graphs (0 is the same). Each count of animals found is
+another shape, so another graph: a model's graphs share one pool of GPU
+memory (CUDAGraphed), and campy-live says how much they hold.
 
 With --results-feed on (the default), each row also goes into shared memory,
 campy-live-results (campy/liveresults.py), as it is logged: campy-live-view

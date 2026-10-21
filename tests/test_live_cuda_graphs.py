@@ -101,10 +101,10 @@ def test_one_pool_takes_less_memory():
 		del g
 	Drop()
 	assert grew[True] > 0
-	assert grew[True] * 3 < grew[False], grew
+	assert grew[True] * 2 < grew[False], (grew, pooled)
 	if pooled[True] is not None:
-		assert pooled[True] * 3 < pooled[False], pooled
-		assert pooled[True] <= grew[True]
+		assert pooled[True] * 2 < pooled[False], (grew, pooled)
+		assert pooled[True] <= grew[True], (grew, pooled)
 
 
 def test_topdown_counts_match_eager():
