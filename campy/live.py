@@ -85,18 +85,26 @@ and with --calibration:
 
 Speed
 -----
-GPU clock (--hold-gpu-clock): an NVIDIA GPU sets its own clock by how busy
-it looks, and campy-live's work, a burst every frame, didn't look busy
-enough. Waiting for the feed, an RTX 2000 Ada dropped to its idle clock (210
-MHz), so the first sets of a recording took 110-130 ms and the next ones
-were skipped; then it settled at 780 MHz of its 2500, and each set took 27
-ms where 13 would do. So from the feed's coming to the end, campy-live keeps
-a few of the GPU's blocks spinning (torch.cuda._sleep), on streams of the
-lowest priority: 4 while it waits for frames, 1 while they come. The GPU
-then looks busy and stays at its full clock, for about 20 W while waiting
-(against 2.5 W idle). The model's work is not slowed: it takes the GPU's
-other blocks first. auto: on with NVIDIA's CUDA; off with ROCm (AMD's GPUs
-kept their speed), MPS and the CPU.
+GPU clock (--hold-gpu-clock): a GPU sets its own clock by how busy it
+looks, and campy-live's work, a burst every frame, didn't look busy enough.
+Waiting for the feed, an RTX 2000 Ada dropped to its idle clock (210 MHz),
+so the first sets of a recording took 110-130 ms and the next ones were
+skipped; then it settled at 780 MHz of its 2500, and each set took 27 ms
+where 13 would do. The EVO-X2's AMD GPU ran light models at 2100 of its
+2900 MHz, 10% slower. So from the feed's coming to the end, campy-live
+keeps a few of the GPU's blocks spinning (torch.cuda._sleep), on streams of
+the lowest priority: 4 while it waits for frames, and while they come, 0 to
+2 (--hold-gpu-clock-blocks auto): it reads the GPU's clock every half
+second (NVML, through the nvidia-ml-py package's pynvml if installed, else
+nvidia-smi; on ROCm the driver's pp_dpm_sclk) and spins one block more
+when the clock falls below 90% of the fastest it has seen, one fewer after
+10 s at full clock. The GPU then looks busy and stays at its full clock,
+for about 20 W while waiting (against 2.5 W idle). The model's work goes
+first, on the GPU's other blocks, but a spinning block still costs it
+about 0.3 ms a set (2, 0.55 ms), so none spin when the clock stays up
+without them (an RTX 2000 Ada did so after a restart, not after two days up). A clock that the
+GPU's power or heat limit holds down is left alone. auto: on with a GPU
+(NVIDIA's CUDA and AMD's ROCm); off with MPS and the CPU.
 
 CPUs (--cpus, --priority, --campy-cpus): on a CPU with performance cores
 (P-cores) and efficiency cores (E-cores), as Intel's Core Ultra, campy-live
@@ -473,33 +481,58 @@ class GpuClock:
 	GPU keeps its full clock. While no set has come for WAITING_S (before
 	the recording's first frames), WAITING_BLOCKS spin: with one alone, an
 	RTX 2000 Ada still judged itself idle and fell to 1000 MHz, and the first
-	second's sets took 20 ms instead of 13. While sets come (Busy), one
-	spins: more cost the model about 1 ms a set. Each spinner's thread waits
-	on an event that lets it sleep, so they cost no CPU core. Each spins on
-	a stream of its own, the same at every Start (FixedStream).
+	second's sets took 20 ms instead of 13. While sets come (Busy), blocks
+	spin (--hold-gpu-clock-blocks): a number, or auto, from 0 to MOST_BUSY as
+	the GPU's clock needs (Adjust), read by a ClockReader. Each spinner's
+	thread waits on an event that lets it sleep, so they cost no CPU core.
+	Each spins on a stream of its own, the same at every Start (FixedStream).
 	"""
 
 	CYCLES = 5000000 # one spin: 2 ms at 2.5 GHz, 24 ms at the idle clock
 	WAITING_BLOCKS, WAITING_S = 4, 0.5
+	# auto, while sets come: at most 2 (in the benchmark, an RTX 2000 Ada that
+	# had fallen into its slow clock reached 1635 MHz with 1, 2295 with 2, and
+	# 8 left the model waiting, 37 ms a set instead of 12); 1 to begin with
+	MOST_BUSY, FIRST_BUSY = 2, 1
+	LOOK_S = 0.5 # how often auto reads the clock
+	LOW = 0.9 # a clock below this share of the fastest seen is too slow
+	LOW_LOOKS = 2 # this many slow looks in a row: one block more
+	CALM_S = 10.0 # at full clock this long: one block fewer...
+	MOST_CALM_S = 320.0 # ...or twice as long as last time, up to this, when the last one fewer was too few
 
-	def __init__(self, device):
+	def __init__(self, device, blocks="auto", reader=None):
 		import torch
 		self.torch, self.device = torch, device
 		self.stop = threading.Event()
 		self.threads = []
 		self.spins = 0
 		self.lastSet = 0.0 # time.monotonic() of the last set (Busy)
+		self.auto = blocks == "auto"
+		self.reader = (reader or ClockReader.For(device)) if self.auto else None
+		# without the clock to read, auto spins FIRST_BUSY
+		self.busy = self.FIRST_BUSY if self.auto else int(blocks)
+		self.fastest = self.mhz = 0.0 # MHz
+		self.clocks = [] # MHz, read while sets came
+		self.time = {} # blocks spinning while sets came: seconds
+		self.changes = 0
+		self.calm = self.CALM_S
 
 	def Busy(self):
 		self.lastSet = time.monotonic()
 
+	def Waiting(self):
+		return time.monotonic() - self.lastSet >= self.WAITING_S
+
 	def Start(self):
 		if not self.threads:
 			self.stop.clear()
+			n = max(self.WAITING_BLOCKS, self.MOST_BUSY if self.auto else self.busy)
 			with self.torch.cuda.device(self.device):
-				streams = [FixedStream("gpu clock {}".format(i)) for i in range(self.WAITING_BLOCKS)] # 0: the lowest priority
+				streams = [FixedStream("gpu clock {}".format(i)) for i in range(n)] # 0: the lowest priority
 			self.threads = [threading.Thread(target=self.Run, args=(i, streams[i]), daemon=True,
-				name="campy-live GPU clock {}".format(i)) for i in range(self.WAITING_BLOCKS)]
+				name="campy-live GPU clock {}".format(i)) for i in range(n)]
+			if self.reader is not None:
+				self.threads.append(threading.Thread(target=self.Watch, daemon=True, name="campy-live GPU clock reader"))
 			for thread in self.threads:
 				thread.start()
 
@@ -508,8 +541,8 @@ class GpuClock:
 		with torch.cuda.device(self.device):
 			done = torch.cuda.Event(blocking=True)
 			while not self.stop.is_set():
-				if i and time.monotonic() - self.lastSet < self.WAITING_S:
-					self.stop.wait(0.05) # sets come: the first spinner alone
+				if i >= (self.WAITING_BLOCKS if self.Waiting() else self.busy):
+					self.stop.wait(0.05)
 					continue
 				with torch.cuda.stream(stream):
 					torch.cuda._sleep(self.CYCLES)
@@ -517,21 +550,225 @@ class GpuClock:
 				done.synchronize()
 				self.spins += 1
 
+	def Watch(self):
+		low, calmSince, fewerAt = 0, time.monotonic(), None
+		while not self.stop.wait(self.LOOK_S):
+			look = self.reader.Read()
+			if look is None:
+				continue
+			mhz, limited = look
+			self.fastest = max(self.fastest, mhz)
+			if self.Waiting():
+				low, calmSince = 0, time.monotonic()
+				continue
+			self.clocks.append(mhz)
+			self.mhz = mhz
+			self.time[self.busy] = self.time.get(self.busy, 0.0) + self.LOOK_S
+			low, calmSince, fewerAt = self.Adjust(mhz, limited, low, calmSince, fewerAt, time.monotonic())
+
+	def Adjust(self, mhz, limited, low, calmSince, fewerAt, now):
+		"""
+		One look at the clock while sets come: LOW_LOOKS in a row below LOW
+		of the fastest seen (which the WAITING_BLOCKS reach), one block more;
+		calm (at full clock) for self.calm, one fewer. A clock held down by
+		the GPU's power or heat (limited) is not raised: more blocks would
+		only take power from the model. When one fewer turned out too few
+		within self.calm, the next try waits twice as long.
+		"""
+		if mhz < self.LOW * self.fastest and not limited:
+			low += 1
+			if low >= self.LOW_LOOKS and self.busy < self.MOST_BUSY:
+				self.busy += 1
+				self.changes += 1
+				if fewerAt is not None and now - fewerAt < self.calm:
+					self.calm = min(2 * self.calm, self.MOST_CALM_S)
+				return 0, now, None
+			return low, now, fewerAt
+		if now - calmSince >= self.calm and self.busy > 0:
+			self.busy -= 1
+			self.changes += 1
+			return 0, now, now
+		return 0, calmSince, fewerAt
+
+	def Now(self):
+		# for the progress line
+		if not self.auto:
+			return ""
+		blocks = "{} block{} spinning".format(self.busy, "" if self.busy == 1 else "s")
+		return "; GPU clock {:.0f} MHz, {}".format(self.mhz, blocks) if self.mhz else "; GPU clock not read, " + blocks
+
+	def Describe(self):
+		d = {"blocks_while_sets_come": "auto" if self.auto else self.busy}
+		if self.auto:
+			total = sum(self.time.values())
+			d.update(clock_read_by=self.reader.name if self.reader else None,
+				blocks_share={str(b): round(t / total, 3) for b, t in sorted(self.time.items())} if total else None,
+				block_changes=self.changes)
+			if self.clocks:
+				d.update(clock_mhz_p50=float(np.median(self.clocks)), clock_mhz_min=float(min(self.clocks)),
+					fastest_mhz=self.fastest)
+		return d
+
 	def Stop(self):
 		if self.threads:
 			self.stop.set()
 			for thread in self.threads:
 				thread.join()
 			self.threads = []
+			if self.reader is not None:
+				self.reader.Close()
+
+
+class ClockReader:
+	"""
+	The GPU's clock, for GpuClock's auto: Read() gives (MHz, limited) or
+	None, limited when the GPU says its power or heat holds the clock down.
+	NVIDIA: through NVML (the nvidia-ml-py package's pynvml) if it is
+	installed, else from nvidia-smi, run once for the whole run, reading
+	every half second. ROCm (amdgpu): the clock the driver's pp_dpm_sclk
+	marks. For(device) gives None where none of them works.
+	"""
+
+	# NVML's clock event reasons that more blocks spinning would not lift:
+	# SW power cap, HW slowdown, SW thermal, HW thermal, HW power brake
+	LIMITED = 0x4 | 0x8 | 0x20 | 0x40 | 0x80
+	name = None
+
+	@staticmethod
+	def For(device):
+		import torch
+		if not str(device).startswith("cuda"):
+			return None
+		if getattr(torch.version, "hip", None):
+			kinds = [SysfsClock]
+		else:
+			kinds = [NvmlClock, SmiClock]
+		for kind in kinds:
+			try:
+				reader = kind(torch, device)
+			except Exception: # not installed, no driver, no such GPU: the next kind
+				continue
+			if reader.Read() is not None:
+				return reader
+			reader.Close()
+		return None
+
+	@staticmethod
+	def Uuid(torch, device):
+		# nvidia-smi's and NVML's numbering can differ from CUDA's: the GPU's UUID
+		props = torch.cuda.get_device_properties(torch.device(device))
+		uuid = str(getattr(props, "uuid", "") or "")
+		if not uuid:
+			raise RuntimeError("no UUID for {}".format(device))
+		return uuid if uuid.startswith("GPU-") else "GPU-" + uuid
+
+	def Close(self):
+		pass
+
+
+class NvmlClock(ClockReader):
+	name = "NVML"
+
+	def __init__(self, torch, device):
+		import pynvml
+		self.nvml = pynvml
+		pynvml.nvmlInit()
+		self.handle = pynvml.nvmlDeviceGetHandleByUUID(self.Uuid(torch, device))
+		self.reasons = getattr(pynvml, "nvmlDeviceGetCurrentClocksEventReasons", None) or \
+			pynvml.nvmlDeviceGetCurrentClocksThrottleReasons
+
+	def Read(self):
+		try:
+			mhz = self.nvml.nvmlDeviceGetClockInfo(self.handle, self.nvml.NVML_CLOCK_SM)
+			return float(mhz), bool(self.reasons(self.handle) & self.LIMITED)
+		except self.nvml.NVMLError:
+			return None
+
+	def Close(self):
+		try:
+			self.nvml.nvmlShutdown()
+		except Exception:
+			pass
+
+
+class SmiClock(ClockReader):
+	name = "nvidia-smi"
+	PERIOD_MS = 500
+
+	def __init__(self, torch, device):
+		import shutil, subprocess
+		smi = shutil.which("nvidia-smi")
+		if not smi:
+			raise RuntimeError("no nvidia-smi")
+		uuid = self.Uuid(torch, device)
+		# Older drivers name the reasons throttle, newer event
+		for reasons in ("clocks_event_reasons.active", "clocks_throttle_reasons.active"):
+			query = [smi, "-i", uuid, "--query-gpu=clocks.sm," + reasons, "--format=csv,noheader,nounits"]
+			try:
+				out = subprocess.run(query, capture_output=True, text=True, timeout=20)
+			except (OSError, subprocess.TimeoutExpired):
+				raise RuntimeError("nvidia-smi did not answer")
+			if out.returncode == 0 and out.stdout.strip() and self.Parse(out.stdout.strip().splitlines()[-1]):
+				break
+		else:
+			raise RuntimeError("nvidia-smi gave no clock")
+		self.last = None
+		self.proc = subprocess.Popen(query + ["-lms", str(self.PERIOD_MS)], stdout=subprocess.PIPE,
+			stderr=subprocess.DEVNULL, text=True, creationflags=0x08000000 if os.name == "nt" else 0) # no console window
+		self.thread = threading.Thread(target=self.Follow, daemon=True, name="campy-live nvidia-smi")
+		self.thread.start()
+		deadline = time.monotonic() + 5
+		while self.last is None and self.proc.poll() is None and time.monotonic() < deadline:
+			time.sleep(0.05)
+
+	def Parse(self, line):
+		try:
+			mhz, mask = (c.strip() for c in line.split(","))
+			return float(mhz), bool(int(mask, 16) & self.LIMITED)
+		except ValueError:
+			return None
+
+	def Follow(self):
+		for line in self.proc.stdout:
+			look = self.Parse(line)
+			if look is not None:
+				self.last = look
+
+	def Read(self):
+		return self.last
+
+	def Close(self):
+		self.proc.terminate()
+		try:
+			self.proc.wait(timeout=5)
+		except Exception:
+			self.proc.kill()
+
+
+class SysfsClock(ClockReader):
+	name = "sysfs pp_dpm_sclk"
+
+	def __init__(self, torch, device, paths=None):
+		import glob
+		paths = paths if paths is not None else sorted(glob.glob("/sys/class/drm/card*/device/pp_dpm_sclk"))
+		if not paths:
+			raise RuntimeError("no pp_dpm_sclk")
+		self.path = paths[0]
+
+	def Read(self):
+		try:
+			with open(self.path) as f:
+				for line in f:
+					if line.rstrip().endswith("*"):
+						return float(line.split()[1].lower().rstrip("mhz")), False
+		except (OSError, ValueError, IndexError):
+			pass
+		return None
 
 
 def HoldsClock(args, model):
-	# --hold-gpu-clock: auto is on with NVIDIA's CUDA
-	device = getattr(model, "device", "cpu")
-	if args.hold_gpu_clock == "off" or not device.startswith("cuda"):
-		return False
-	import torch
-	return args.hold_gpu_clock == "on" or not getattr(torch.version, "hip", None)
+	# --hold-gpu-clock: auto is on with a GPU (NVIDIA's CUDA or AMD's ROCm)
+	return args.hold_gpu_clock != "off" and getattr(model, "device", "cpu").startswith("cuda")
 
 
 def WarmCounts(n_frames, most, crops):
@@ -987,7 +1224,7 @@ def Run(args):
 			return 1
 		Say("Live feed: {}.".format(cameras.Describe()))
 		if HoldsClock(args, model):
-			clock = GpuClock(model.device)
+			clock = GpuClock(model.device, args.hold_gpu_clock_blocks)
 			clock.Start()
 		if placed:
 			PlaceCampy(args, cameras.readers)
@@ -1028,7 +1265,7 @@ def Run(args):
 			else:
 				worker.Put(row, frames, done_pc - read_pc) # its 3D while the model runs on the next set
 			if args.report_sec and time.monotonic() - reported >= args.report_sec:
-				printer.Do(Say, Line(log.Summary(since), log))
+				printer.Do(Say, Line(log.Summary(since), log) + (clock.Now() if clock is not None else ""))
 				reported, since = time.monotonic(), len(log.latency_last)
 		if worker is not None:
 			worker.Close()
@@ -1042,7 +1279,7 @@ def Run(args):
 			rings=names, frame_shape=list(shape), frame_rate=frameRate, log=out + ".npy", cpus=placed,
 			cuda_graphs=model.DescribeGraphs() if hasattr(model, "DescribeGraphs") else None,
 			results_feed=log.results.name if log.results else None,
-			gpu_clock_held=clock is not None,
+			gpu_clock_held=clock is not None, gpu_clock=clock.Describe() if clock is not None else None,
 			ended="stopped (Ctrl-C)" if stop() else "the recording ended")
 		with open(out + ".json", "x") as f:
 			json.dump(summary, f, indent=2)
@@ -1271,9 +1508,12 @@ def ParseArgs(argv=None):
 		the performance ones), efficiency, all, none, or a list.")
 	p.add_argument("--cuda-graphs", action="store_true", help="Record each model's GPU work as a CUDA graph per \
 		input shape and replay it (CUDA and ROCm): the same results, with less CPU time to launch it.")
-	p.add_argument("--hold-gpu-clock", default="auto", choices=["auto", "on", "off"], help="Keep one block of the \
-		GPU spinning at the lowest priority from the feed's coming to the end, so an NVIDIA GPU keeps its full clock \
-		(see campy-live's help). auto: on with NVIDIA's CUDA.")
+	p.add_argument("--hold-gpu-clock", default="auto", choices=["auto", "on", "off"], help="Keep a few blocks of \
+		the GPU spinning at the lowest priority from the feed's coming to the end, so the GPU keeps its full clock \
+		(see campy-live's help). auto: on with a GPU (NVIDIA's CUDA or AMD's ROCm).")
+	p.add_argument("--hold-gpu-clock-blocks", default="auto", type=lambda v: v if v == "auto" else str(int(v)),
+		help="How many blocks spin while sets come: auto (0 to 2, as the GPU's clock needs, read through NVML, \
+		nvidia-smi or sysfs; 1 when it can't be read) or a number.")
 	return p.parse_args(argv)
 
 
