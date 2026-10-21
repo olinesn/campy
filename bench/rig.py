@@ -27,6 +27,10 @@ only their CPU use):
            loaded (a process that can open, reset or enumerate the cameras)
   trigger  /dev/ttyACM*, /dev/ttyUSB*  the trigger Arduino
   load     the CPU (cores) and disk (MB/s) used by everything outside the job
+  desktop  a desktop drawing on the GPU (gnome-shell, Xwayland, Xorg, ...; any user,
+           the login screen too). run does not wait for it (it would not go away),
+           but says in the log which was up, and a desktop that starts or ends
+           during the run contaminates it.
 
 A process belongs to the job when it carries the job's RIG_JOB in its
 environment (everything the job starts does, even with setsid or nohup), is in
@@ -37,7 +41,7 @@ already part of the rig's current job.
 Linux only; the Python standard library only (run it with /usr/bin/python3).
 """
 
-import argparse, fcntl, os, re, shlex, signal, subprocess, sys, time
+import argparse, fcntl, os, pwd, re, shlex, signal, subprocess, sys, time
 
 ROOT = os.path.expanduser(os.environ.get("RIG_ROOT", "~/sleap-bench"))
 LOCK = os.path.join(ROOT, ".rig.lock")
@@ -46,6 +50,9 @@ PERIOD = float(os.environ.get("RIG_PERIOD", 2.0))  # s between looks
 # Other files to watch as one of the kinds, e.g. RIG_EXTRA="trigger=/dev/ttyS0,gpu=/dev/nvidia0"
 EXTRA = dict(reversed(kv.split("=", 1)) for kv in os.environ.get("RIG_EXTRA", "").split(",") if "=" in kv)
 KINDS = ("gpu", "encoder", "camera", "trigger")
+# Desktops drawing on the GPU, by /proc/<pid>/comm
+DESKTOP = {"gnome-shell", "Xwayland", "Xorg", "Xvnc", "mutter", "kwin_wayland", "kwin_x11", "plasmashell",
+	"sway", "weston", "Hyprland", "xfwm4", "TeamViewer"}
 FLIR_VENDOR = "1e10"
 HZ = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 
@@ -79,7 +86,7 @@ def flir_cameras():
 	return out
 
 class Proc:
-	__slots__ = ("pid", "ppid", "sid", "start", "ticks", "io", "kinds", "cmd", "job")
+	__slots__ = ("pid", "ppid", "sid", "start", "ticks", "io", "kinds", "cmd", "job", "user")
 
 def read_proc(pid, cameras):
 	"""A Proc for pid, or None if it is gone or a kernel thread."""
@@ -103,7 +110,14 @@ def read_proc(pid, cameras):
 		p.cmd = ""
 	if not p.cmd:
 		p.cmd = "[" + stat[stat.index("(") + 1:stat.rindex(")")] + "]"
-	p.kinds, p.io, p.job = set(), None, None
+	p.kinds, p.io, p.job, p.user = set(), None, None, None
+	if stat[stat.index("(") + 1:stat.rindex(")")] in DESKTOP:
+		p.kinds.add("desktop")
+		try:
+			p.user = pwd.getpwuid(os.stat("/proc/%d" % pid).st_uid).pw_name
+		except (OSError, KeyError):
+			pass
+		return p
 	try:
 		fds = os.listdir("/proc/%d/fd" % pid)
 	except OSError:
@@ -153,6 +167,7 @@ class Watch:
 		self.job, self.sid, self.root_pid = job, sid, root_pid
 		self.me = {os.getpid()}
 		self.prev, self.prev_t = {}, None
+		self.desktops = {}  # (pid, start): Proc, every desktop up at the last sample
 
 	def own(self, p, procs):
 		if p.pid in self.me or (self.job and p.job == self.job) or (self.sid and p.sid == self.sid):
@@ -168,10 +183,11 @@ class Watch:
 		"""(foreign device users, foreign load) now: [(Proc, kinds)], (cores, MB/s, [(cores, MB/s, Proc)])."""
 		t, procs = time.monotonic(), scan()
 		users, load, cpu, io = [], [], 0.0, 0.0
+		self.desktops = {(p.pid, p.start): p for p in procs.values() if "desktop" in p.kinds}
 		for p in procs.values():
 			if self.own(p, procs):
 				continue
-			if p.kinds:
+			if p.kinds - {"desktop"}:
 				users.append(p)
 			key = (p.pid, p.start)
 			if self.prev_t is not None and key in self.prev:
@@ -190,6 +206,10 @@ class Watch:
 
 def describe(p, width=150):
 	return "%d %s %s" % (p.pid, ",".join(sorted(p.kinds)) or "-", p.cmd[:width])
+
+def desktop_text(desktops):
+	return ", ".join(sorted(set("%s (%s%s)" % (p.cmd.split()[0].rsplit("/", 1)[-1], p.user or "?",
+		", the login screen" if p.user == "gdm" else "") for p in desktops.values()))) or "none"
 
 def load_text(load, n=3):
 	cpu, io, top = load
@@ -274,7 +294,7 @@ def clear_info():
 
 def watch(w, alive, log, args, on_signal):
 	"""Log what is outside the job every PERIOD s until alive() is False; returns the sighting counts."""
-	counts = dict.fromkeys(KINDS + ("load",), 0)
+	counts = dict.fromkeys(KINDS + ("desktop", "load"), 0)
 	last = {}  # what was logged when, so a process that stays is logged every 30 s, not every 2 s
 	def note(key, text):
 		now = time.monotonic()
@@ -282,8 +302,15 @@ def watch(w, alive, log, args, on_signal):
 			last[key] = now
 			log(text)
 	w.sample()
+	before = dict(w.desktops)
+	log("desktop on the GPU: %s" % desktop_text(before))
 	while alive():
 		users, load = w.sample()
+		for key in set(before) ^ set(w.desktops):
+			counts["desktop"] += 1
+			p = w.desktops.get(key) or before[key]
+			log("DESKTOP %s: %s" % ("started" if key in w.desktops else "ended", describe(p)))
+		before = dict(w.desktops)
 		for p in users:
 			for k in p.kinds:
 				counts[k] += 1
@@ -294,16 +321,19 @@ def watch(w, alive, log, args, on_signal):
 		if on_signal[0]:
 			break
 		time.sleep(PERIOD)
+	counts["desktops"] = desktop_text(w.desktops)
 	return counts
 
 def finish(counts, log, aborted=None):
+	desktops = counts.pop("desktops", "none")
 	n = sum(counts.values())
 	if aborted:
 		log("RIG_ABORTED by %s" % aborted)
+	note = "" if desktops == "none" else "; desktop on the GPU: " + desktops
 	if n == 0:
-		log("RIG_CLEAN")
+		log("RIG_CLEAN" + (" (%s)" % note[2:] if note else ""))
 	else:
-		log("RIG_CONTAMINATED (%d sightings: %s)" % (n, ", ".join("%s %d" % kv for kv in counts.items())))
+		log("RIG_CONTAMINATED (%d sightings: %s%s)" % (n, ", ".join("%s %d" % kv for kv in counts.items()), note))
 
 def logger(path):
 	def log(text):
@@ -411,6 +441,8 @@ def cmd_status(args):
 		print("%-48s %s" % (names[k] + ":", "free" if not users else ""))
 		for p in users:
 			print("    %s%s" % ("[job] " if job and p.job == job else "", describe(p, 120)))
+	print("%-48s %s" % ("desktop on the GPU (not waited for):", desktop_text(
+		{(p.pid, p.start): p for p in procs.values() if "desktop" in p.kinds})))
 	if load:
 		mine = [x for x in load[2] if not (job and x[2].job == job)]
 		print("load outside the job (1 s): cpu %.1f cores, disk %.0f MB/s%s" % (

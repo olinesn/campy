@@ -3,7 +3,7 @@
 A temporary file stands in for the GPU (RIG_EXTRA), so no device is needed; Linux only (/proc).
 """
 
-import os, subprocess, sys, time
+import os, re, shutil, subprocess, sys, time
 
 import pytest
 
@@ -12,6 +12,11 @@ pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="ri
 BENCH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bench")
 RIG = os.path.join(BENCH, "rig.py")
 HOLD_OPEN = "import sys, time; f = open(sys.argv[1]); time.sleep(float(sys.argv[2]))"
+
+
+def last(log):
+	# the log's last line, without its time
+	return log.strip().splitlines()[-1].split(" ", 1)[1]
 
 
 @pytest.fixture
@@ -47,7 +52,7 @@ def test_clean_run_and_its_own_device_use(rig):
 	r = rig("run", "tester", "clean", "--", sys.executable, "-c", job)
 	assert r.returncode == 0, r.stdout + r.stderr
 	log = rig.log("clean")
-	assert "FOREIGN" not in log and log.strip().endswith("RIG_CLEAN"), log
+	assert "FOREIGN" not in log and last(log).startswith("RIG_CLEAN"), log
 	assert (rig.root / "RIG_BUSY").read_text() == ""
 
 
@@ -59,7 +64,7 @@ def test_overlap_is_caught(rig):
 	assert r.wait(30) == 0
 	log = rig.log("overlap")
 	assert "FOREIGN %d gpu" % other.pid in log, log
-	assert "RIG_CONTAMINATED" in log.splitlines()[-1] and "gpu " in log.splitlines()[-1], log
+	assert last(log).startswith("RIG_CONTAMINATED") and re.search(r"\bgpu [1-9]", last(log)), log
 
 
 def test_cpu_load_outside_the_job_is_caught(rig):
@@ -110,7 +115,7 @@ def test_hold_lasts_until_the_pid_ends(rig):
 	job = subprocess.Popen(["sleep", "1.5"])
 	r = rig("hold", "tester", "held", str(job.pid))
 	assert r.returncode == 0, r.stderr
-	assert rig.log("held").strip().endswith("RIG_CLEAN")
+	assert last(rig.log("held")).startswith("RIG_CLEAN")
 
 
 def test_guarded_script_takes_the_rig_once(rig, tmp_path):
@@ -127,5 +132,28 @@ def test_guarded_script_takes_the_rig_once(rig, tmp_path):
 	assert r.returncode == 0, r.stdout + r.stderr
 	lines = [l for l in r.stdout.splitlines() if l.startswith(("outer", "inner"))]
 	assert len(lines) == 2 and lines[0].split()[1] == lines[1].split()[1] != "", r.stdout
-	assert (tmp_path / "t1.rig.log").read_text().strip().endswith("RIG_CLEAN")
+	assert last((tmp_path / "t1.rig.log").read_text()).startswith("RIG_CLEAN")
 	assert "rig held by tester for t1" in (tmp_path / "t1.rig.log").read_text()
+
+
+def test_a_desktop_is_noted_not_waited_for_and_one_starting_mid_run_is_caught(rig, tmp_path):
+	# A desktop drawing on the GPU (here a stand-in named Xwayland) never goes away, so run does not
+	# wait for it; but one that starts during a run changes what the run measured
+	xwayland = tmp_path / "Xwayland"
+	shutil.copy(shutil.which("sleep"), str(xwayland))
+	up = subprocess.Popen([str(xwayland), "6"])
+	try:
+		r = rig("run", "tester", "desk", "--", "sleep", "1")
+		assert r.returncode == 0 and "in use outside" not in r.stdout, r.stdout
+		assert "desktop on the GPU: Xwayland" in rig.log("desk"), rig.log("desk")
+		assert last(rig.log("desk")).startswith("RIG_CLEAN (desktop on the GPU: Xwayland"), rig.log("desk")
+	finally:
+		up.kill()
+		up.wait()
+	run = rig.popen(RIG, "run", "tester", "desk2", "--", "sleep", "2.5")
+	time.sleep(1.2)
+	late = subprocess.Popen([str(xwayland), "0.6"])
+	late.wait()
+	assert run.wait(30) == 0
+	log = rig.log("desk2")
+	assert "DESKTOP started: %d" % late.pid in log and "RIG_CONTAMINATED" in last(log), log
