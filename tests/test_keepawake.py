@@ -1,18 +1,68 @@
 """
 campy keeps the computer awake while it records (keepAwake): a Windows power
 request, systemd-inhibit on Linux, caffeinate on macOS. Turned off, it does
-nothing; where it cannot be made, campy records anyway and says why.
+nothing; where it cannot be made, campy records anyway and says why. The
+command it starts ends with campy, even when campy is killed.
 """
 
+import json
+import os
 import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 from argparse import ArgumentParser
 
 import pytest
 
 from campy import configurator, keepawake
+
+COMMAND = sys.platform != "win32" # Windows makes a power request, with no command to outlive campy
+
+# A campy that keeps the computer awake, says how and its command's pid, and waits to be killed
+CAMPY = """
+import json, time
+from campy import keepawake
+awake = keepawake.KeepAwake().Start()
+process = awake._process
+print(json.dumps({"how": awake.how, "problem": awake.problem, "pid": process and process.pid,
+	"tied": process and process.tied}), flush=True)
+time.sleep(60)
+"""
+
+
+def Alive(pid):
+	if sys.platform.startswith("linux"):
+		try:
+			with open("/proc/{}/stat".format(pid)) as f:
+				return f.read().rsplit(")", 1)[1].split()[0] not in ("Z", "X") # not a zombie
+		except FileNotFoundError:
+			return False
+	try:
+		os.kill(pid, 0)
+	except ProcessLookupError:
+		return False
+	except PermissionError:
+		pass
+	return True
+
+
+def Gone(pid, within=10):
+	deadline = time.monotonic() + within
+	while time.monotonic() < deadline:
+		if not Alive(pid):
+			return True
+		time.sleep(0.05)
+	return False
+
+
+def Cwd(pid):
+	if sys.platform.startswith("linux"):
+		return os.readlink("/proc/{}/cwd".format(pid))
+	out = subprocess.run(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"], capture_output=True, text=True).stdout
+	return next(line[1:] for line in out.splitlines() if line.startswith("n"))
 
 
 def test_on_by_default_and_off_from_the_command_line():
@@ -78,3 +128,33 @@ def test_linux_inhibitor():
 def test_camera_process_request_is_windows_only():
 	with keepawake.KeepAwake(whole=False) as camera:
 		assert camera.how is None and camera.problem is None
+
+
+@pytest.mark.skipif(not COMMAND, reason="Windows starts no command")
+def test_the_command_ends_with_a_killed_campy(tmp_path):
+	# The campy starts in a folder of its own, as campy does in a recording's
+	root = os.path.dirname(os.path.dirname(os.path.abspath(keepawake.__file__)))
+	env = dict(os.environ, PYTHONPATH=os.pathsep.join([root] + [p for p in [os.environ.get("PYTHONPATH")] if p]))
+	campy = subprocess.Popen([sys.executable, "-c", CAMPY], stdout=subprocess.PIPE, text=True, env=env,
+		cwd=str(tmp_path))
+	try:
+		said = json.loads(campy.stdout.readline())
+		if said["problem"]: # no caffeinate or logind here (a container, a CI runner)
+			pytest.skip(said["problem"])
+		pid = said["pid"]
+		assert Alive(pid)
+		# It doesn't hold the folder campy was started in
+		assert os.path.samefile(Cwd(pid), tempfile.gettempdir())
+		if sys.platform.startswith("linux"):
+			assert said["tied"] == "PR_SET_PDEATHSIG"
+	finally:
+		campy.kill() # SIGKILL: no clean-up in campy
+		campy.wait()
+		campy.stdout.close()
+	try:
+		assert Gone(pid), "{} outlived the campy that started it".format(said["how"])
+	finally:
+		try:
+			os.kill(pid, signal.SIGKILL)
+		except OSError:
+			pass
