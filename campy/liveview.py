@@ -98,7 +98,11 @@ told):
 - An identity whose reprojection error is above --bad-px (20 px) is drawn
   dimmed and dashed, on the cameras' tiles and in 3D, its label red ("#2
   bad 3D: 234 px"): a detection on equipment outside the cage, say, or a
-  wrong match. On the ChronicRecord PC this all took 1.4 ms of each view's
+  wrong match. Its error's median over the last half second, not one row's:
+  on 2026-10-20's recordings a mouse's error crossed 20 px 100 to 180 times
+  a minute, and the dimming blinked several times a second; the median
+  crosses it 13 to 26 times a minute, dimmed as much of the time (within 3
+  points). On the ChronicRecord PC this all took 1.4 ms of each view's
   drawing (10.5 ms, from 9.1): 1.1 ms the warnings, the tiles' labels and
   the strip, the rest the dashes (2 of the 3 mice above 20 px most of the
   time); reading the rings' slots 0.4 ms, 20 times a second.
@@ -214,11 +218,13 @@ def Dimmed(color):
 
 
 def Bad(row, bad_px):
-	# The identities whose 3D, in row, is off by more than bad_px (mean reprojection error over the nodes)
+	# The identities whose 3D, in row alone, is off by more than bad_px (mean reprojection error over the
+	# nodes): {identity: px}. The view dims by the last half second's (livehealth.Tracking.Dimmed): steadier
 	if not Has3D(row) or not bad_px:
-		return set()
+		return {}
+	errors = livehealth.Errors(row)
 	with np.errstate(invalid="ignore"):
-		return set(np.nonzero(livehealth.Errors(row) > bad_px)[0].tolist())
+		return {int(a): float(errors[a]) for a in np.nonzero(errors > bad_px)[0]}
 
 
 def Dashes(p, q, dash=6 << SHIFT):
@@ -375,14 +381,14 @@ def Has3D(row):
 
 
 def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=True, lines=True, origin=(0, 0),
-		frame=None, words=None, bad_px=livehealth.BAD_PX):
+		frame=None, words=None, bad_px=livehealth.BAD_PX, bad=None):
 	"""
 	Camera c's part of a results row on img, its frame at scale (a number, or
 	x and y) from origin (the frame's pixel at the tile's top left: zoomed,
 	the part of the frame shown): its 2D detections, and with camera (its
-	pose3d.Camera) each animal's 3D projected into it; an identity whose
-	reprojection error is above bad_px dimmed and dashed, its label red.
-	frame, the frame's
+	pose3d.Camera) each animal's 3D projected into it; the identities in bad
+	({identity: px}; default: those whose reprojection error in row is above
+	bad_px) dimmed and dashed, their labels red. frame, the frame's
 	width and height (default: what the tile shows): the 3D off it is listed
 	at the tile's foot. words: a Pen for the text (Text). Returns {identity:
 	mean px, in this camera, between its projected 3D and the detection it
@@ -392,7 +398,8 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 	origin = np.asarray(origin, float)
 	if frame is None:
 		frame = origin + np.array(img.shape[1::-1]) / scale
-	bad = Bad(row, bad_px)
+	if bad is None:
+		bad = Bad(row, bad_px)
 	kp = np.asarray(row["keypoints"][c], float) # (instances, nodes, 2)
 	found = [i for i in range(len(kp)) if np.isfinite(kp[i]).all(-1).any()]
 	members = np.asarray(row["members"][:, c]) if Has3D(row) else np.zeros(0, int)
@@ -422,7 +429,6 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 		for a, px in projected.items():
 			DrawSkeleton(img, px, scale, edges, Dimmed(Color(a)) if a in bad else Color(a), radius=RADIUS_3D,
 				thickness=2, filled=True, dashed=a in bad, origin=origin)
-		errors = livehealth.Errors(row) if bad else None
 		away = [] # 3D that lands nowhere on the frame (or behind the camera)
 		for a, px in projected.items():
 			px = np.asarray(px, float)
@@ -442,7 +448,7 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 			if views < len(row["members"][a]): # not every camera
 				label += "  ({} cam{})".format(views, "" if views == 1 else "s")
 			if a in bad: # not to trust: campy-live's error, over every camera
-				label = "#{}  bad 3D: {:.0f} px".format(a, errors[a])
+				label = "#{}  bad 3D: {:.0f} px".format(a, bad[a])
 			Text(img, label, (p[:, 0].min(), p[:, 1].min() - 8), WARN if a in bad else Color(a), 0.45, words=words)
 		x = PAD
 		for k, a in enumerate(away):
@@ -1095,12 +1101,13 @@ class Scene:
 				# The newest band 2 px wide, the others 1 (anti-aliased, 2 px takes 10-20 times as long a point)
 				cv2.polylines(img, lines[b], False, shades[a][b], 2 if b == 0 else 1, cv2.LINE_AA, SHIFT)
 
-	def Draw(self, img, row, edges=None, words=None, trails=True, heat=False, bad_px=livehealth.BAD_PX):
+	def Draw(self, img, row, edges=None, words=None, trails=True, heat=False, bad_px=livehealth.BAD_PX, bad=None):
 		"""
 		A row's animals on img (a tile), over the grid and the cameras (and,
 		with heat, the occupancy) and the trails; nearer over farther; those
-		whose reprojection error is above bad_px dimmed and dashed, their
-		labels red, under the others. words: a Pen for its text (Text).
+		in bad ({identity: px}; default: those whose reprojection error in row
+		is above bad_px) dimmed and dashed, their labels red, under the
+		others. words: a Pen for its text (Text).
 		"""
 		img[:] = self.Background(img.shape, heat, words)
 		view = self.View(img.shape)
@@ -1108,8 +1115,8 @@ class Scene:
 			self.DrawTrails(img, view)
 		if row is None or not Has3D(row):
 			return
-		bad = Bad(row, bad_px)
-		errors = livehealth.Errors(row) if bad else None
+		if bad is None:
+			bad = Bad(row, bad_px)
 		R, eye, f, c = view
 		radius = self.reach / 100 # a node's, in the world
 		items, labels = [], [] # (depth, edge or node, identity, which); (identity, where)
@@ -1155,7 +1162,7 @@ class Scene:
 				cv2.line(img, q0, q1, color, 2, cv2.LINE_AA, SHIFT)
 		for a, at in labels:
 			if a in bad:
-				Text(img, "#{}  bad 3D: {:.0f} px".format(a, errors[a]), (at[0] + 6, at[1] - 10), WARN, 0.45,
+				Text(img, "#{}  bad 3D: {:.0f} px".format(a, bad[a]), (at[0] + 6, at[1] - 10), WARN, 0.45,
 					words=words)
 			else:
 				Text(img, "#{}".format(a), (at[0] + 6, at[1] - 10), Color(a), 0.45, words=words)
@@ -1531,6 +1538,15 @@ class Viewer:
 			return self.Compose(frames, None), newest, None
 		return None
 
+	def Dimmed(self, row):
+		# The identities to draw dimmed in row, {identity: px}: those whose error's median over the last half
+		# second is above --bad-px (livehealth.Tracking.Dimmed); without the tracking, or for a row it did not
+		# take, those above it in the row alone
+		if not Has3D(row) or not self.args.bad_px:
+			return {}
+		bad = self.tracking.Dimmed(int(row["frame"])) if self.tracking is not None else None
+		return Bad(row, self.args.bad_px) if bad is None else bad
+
 	def Showing3D(self):
 		return self.scene is not None and self.showScene
 
@@ -1589,6 +1605,7 @@ class Viewer:
 		rig = self.rig.Status() if self.rig is not None else None
 		healthS = time.perf_counter() - health
 		self.cells = []
+		bad = self.Dimmed(row)
 		for k, (c, frame) in enumerate(zip(shown, frames)):
 			y, x = layout.Cell(k)
 			words = self.words.Tile(("camera", k), y + oy, x + ox, *layout.tile) if self.words is not None else None
@@ -1598,7 +1615,7 @@ class Viewer:
 			tile = Gray(frame.image, layout.tile, scale, origin)
 			if row is not None:
 				DrawCamera(tile, scale, row, c, self.calibration[c] if self.calibration else None, edges,
-					self.show2d, self.show3d, self.lines, origin, frame.image.shape[1::-1], words, self.args.bad_px)
+					self.show2d, self.show3d, self.lines, origin, frame.image.shape[1::-1], words, bad=bad)
 			name = cameraNames[c] if c < len(cameraNames) else str(c)
 			if c < len(calibNames) and calibNames[c] != name:
 				name += " ({})".format(calibNames[c])
@@ -1678,7 +1695,7 @@ class Viewer:
 		start = time.perf_counter()
 		words = self.words.Tile("3d", y, x, h, w) if self.words is not None else None
 		self.scene.Draw(tile, row, self.description.get("edges"), words, self.trails, self.occupancy,
-			self.args.bad_px)
+			self.args.bad_px, self.Dimmed(row))
 		header = "3D  frame {}".format(frame) + ("" if row is not None else "  (no results)")
 		if self.trails and self.scene.trailSeconds > 0:
 			header += "  trails {:g} s".format(self.scene.trailSeconds)
@@ -1994,6 +2011,7 @@ class Viewer:
 				self.lastSeen, "; the last view shown {:.1f} ms after its frame".format(self.lastShown)
 				if self.lastShown is not None else ""), TEXT))
 			if Has3D(row) and self.calibration:
+				bad = self.Dimmed(row)
 				for a in range(len(row["n_views"])):
 					views = int(row["n_views"][a])
 					err = np.asarray(row["reproj_px"][a], float)
@@ -2001,8 +2019,9 @@ class Viewer:
 					if views >= 2 and np.isfinite(err).any():
 						mean = float(np.nanmean(err))
 						text = "#{}: from {} cameras, reprojection {:.1f} px".format(a, views, mean)
-						if self.args.bad_px and mean > self.args.bad_px:
-							text += ": above {:g} px, drawn dimmed, not to trust".format(self.args.bad_px)
+						if a in bad:
+							text += "; median over {:g} s {:.0f} px: above {:g} px, drawn dimmed, not to trust".format(
+								livehealth.DIM_S, bad[a], self.args.bad_px)
 							color = WARN
 					else:
 						text = "#{}: no 3D ({} camera{})".format(a, views, "" if views == 1 else "s")
@@ -2023,8 +2042,9 @@ class Viewer:
 				"(white: matched to no animal). Line: from the 2D to the 3D. Label: #identity, and px between them.", DIM))
 		if self.tracking is not None:
 			lines.append(("Strip: each identity's last {:.0f} s. Height: the cameras it was triangulated from; green: "
-				"within {:g} px, yellow: within {:g} px, red: above (dimmed and dashed); gray: no 3D.".format(
-				livehealth.WINDOW_S, livehealth.GOOD_PX, self.args.bad_px or float("inf")), DIM))
+				"within {:g} px, yellow: within {:g} px, red: above (dimmed and dashed while its median over {:g} s "
+				"is); gray: no 3D.".format(livehealth.WINDOW_S, livehealth.GOOD_PX, self.args.bad_px or float("inf"),
+				livehealth.DIM_S), DIM))
 		if self.panel and self.bookmarks.recent: # the Qt window lists them in its own panel
 			lines.append(("Bookmark {} ({} made)".format(MarkText(self.bookmarks.recent[-1]), self.bookmarks.count),
 				MARKED))
@@ -2415,7 +2435,8 @@ def ParseArgs(argv=None):
 	p.add_argument("--up", type=Direction, default=None, help="The world's up in the calibration, as x,y,z "
 		"(default: away from where the cameras look, when they look down).")
 	p.add_argument("--bad-px", type=float, default=livehealth.BAD_PX, help="An identity whose reprojection error "
-		"(campy-live's, mean over the nodes) is above this is drawn dimmed and dashed, its label red (0: never).")
+		"(campy-live's, mean over the nodes; its median over the last 0.5 s, not to flicker) is above this is drawn "
+		"dimmed and dashed, its label red (0: never).")
 	p.add_argument("--fps", type=float, default=30, help="Frames alone (no results) shown per second.")
 	p.add_argument("--no-window", action="store_true", help="No window (e.g. over SSH): with --png, saves the "
 		"views; ends with the recording.")
