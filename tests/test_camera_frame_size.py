@@ -219,7 +219,10 @@ def test_a_cameras_live_feed_says_its_folder_in_the_recording(basler, monkeypatc
 		cameraSettings=os.path.join(REPO, "configs", "mono8.pfs"), liveFeed=True,
 		liveFeedName="cf{}".format(os.getpid() % 100000))
 	assert sent and descriptions
-	assert json.loads(descriptions[0]) == {"kind": "campy camera", "folder": os.path.abspath(str(tmp_path / "Camera0"))}
+	d = json.loads(descriptions[0])
+	assert {k: d[k] for k in ("kind", "folder")} == {"kind": "campy camera", "folder": os.path.abspath(str(tmp_path / "Camera0"))}
+	# and the processes that record it, for campy-live to put on the efficiency cores (campy/cpus.py)
+	assert isinstance(d["pid"], int) and isinstance(d["parent_pid"], int)
 
 def test_without_the_wait_a_basler_video_was_scrambled(basler, monkeypatch, tmp_path):
 	# The writer opened its video at the config's 1152x1024 while the camera
