@@ -23,14 +23,21 @@ one started over SSH while nobody is signed in. The system and execution
 requests still hold, and campy says the screen one was refused; set the
 screen timeout to Never on such a PC.
 
-The request ends with the recording, or with the process. A computer where it
-cannot be made (no systemd-inhibit, say) records anyway, and campy says so.
+The request ends with the recording, or with the process, however campy ends
+(killed, crashed, its console closed): caffeinate and the tail under
+systemd-inhibit watch campy's pid, and on Linux the kernel also kills
+systemd-inhibit the moment campy dies (children.Child). The command starts in
+the temporary folder, so it never holds the folder campy was started in. A
+computer where the request cannot be made (no systemd-inhibit, say) records
+anyway, and campy says so.
 """
 
 import os
 import shutil
 import subprocess
 import sys
+
+from campy import children
 
 REASON = "campy is recording"
 
@@ -100,11 +107,7 @@ class KeepAwake:
 			self._handle = None
 			self._types = []
 		if self._process is not None:
-			self._process.terminate()
-			try:
-				self._process.wait(timeout=5)
-			except subprocess.TimeoutExpired:
-				self._process.kill()
+			self._process.Close()
 			self._process = None
 
 	def _StartWindows(self):
@@ -138,7 +141,8 @@ class KeepAwake:
 	def _StartCommand(self, command, name):
 		if shutil.which(command[0]) is None:
 			raise FileNotFoundError("{} not found".format(command[0]))
-		process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+		# Tied to campy: it ends when campy does, even killed (children.py)
+		process = children.Child(command, stdin=subprocess.DEVNULL,
 			stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 		# A lock refused (systemd-inhibit: "Access denied") ends the command at once
 		try:
@@ -148,8 +152,10 @@ class KeepAwake:
 			self._process = process
 			self.how = name
 			return
-		raise RuntimeError(process.stderr.read().decode(errors="replace").strip()
-			or "{} ended at once".format(command[0]))
+		error = process.stderr.read().decode(errors="replace").strip()
+		process.stderr.close()
+		process.Close()
+		raise RuntimeError(error or "{} ended at once".format(command[0]))
 
 
 def _Kernel32():
