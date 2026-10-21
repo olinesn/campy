@@ -85,7 +85,10 @@ told):
 - An identity whose reprojection error is above --bad-px (20 px) is drawn
   dimmed and dashed, on the cameras' tiles and in 3D, its label red ("#2
   bad 3D: 234 px"): a detection on equipment outside the cage, say, or a
-  wrong match. It took about 0.5 ms of each view's drawing.
+  wrong match. On the ChronicRecord PC this all took 1.4 ms of each view's
+  drawing (10.5 ms, from 9.1): 1.1 ms the warnings, the tiles' labels and
+  the strip, the rest the dashes (2 of the 3 mice above 20 px most of the
+  time); reading the rings' slots 0.4 ms, 20 times a second.
 
 Buttons in the panel turn the predictions (the 2D), the reprojections (the
 3D) and the lines on or off, as do the keys d, p and l, and the 3D view, as

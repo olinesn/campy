@@ -408,6 +408,8 @@ It costs campy-live almost nothing. On the ChronicRecord PC (3 cameras of 1280x1
 
 The 3D view adds about 1.5 ms per result (p50; p99 3.5), and campy-live does not notice it. With the 3D view on (same replay, 60 s runs), campy-live's inference took 27.65, 27.60, 27.54, 27.52 and 27.61 ms (p50) against 27.55, 27.55 and 27.54 ms alone, it skipped no set, and its latency stayed at 31 ms (p99 32). The view drew each result in 9.0 ms (p50; 7.6 ms with `--no-3d`) and showed it 40 ms after its frames (p99 52).
 
+The rig and tracking checks cost campy-live nothing either, and the view about 1.4 ms per result. Same replay, 60 s runs: campy-live's inference took 27.5, 27.6, 27.5 and 27.5 ms (p50) with the new view, 27.5 and 27.5 ms with the view before it, and 27.4, 27.4, 27.5 and 27.4 ms alone, with no set skipped and its latency at 31 ms (p99 32) in every run. The view drew each result in 10.5 ms (p99 12.5) against 9.1 ms (p99 11.3) before: about 1.1 ms for the warnings, the tiles' labels and the strip, and the rest for drawing the badly tracked mice dashed (on this recording, 2 of the 3 mice were above 20 px most of the time). Reading the cameras' frame numbers and times takes 0.4 ms, 20 times a second. On the replay it raised no warning (every camera at 30.0 frames/s), and with problems put into it (one camera a frame ahead, one losing a frame, one frame number missing) it flagged each of them on the right camera.
+
 ### Scaling the number of cameras
 Change `numCams`; nothing else in a config has to depend on it. A setting can be one value for every camera, or a list with one value per camera. A list longer than `numCams` uses its first items, so a config written for 8 cameras also runs 4. `configs/campy_config_flir_usb3.yaml` is an example.
 
