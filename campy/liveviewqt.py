@@ -232,6 +232,24 @@ class Window(QtWidgets.QWidget):
 				checks.addWidget(box, k // 2, k % 2)
 			self.checks[key] = box
 		column.addLayout(checks)
+		# The cameras' trails (with t): LUC3D's lengths and shades
+		trails = QtWidgets.QHBoxLayout()
+		trails.setSpacing(4)
+		self.trailsLabel = QtWidgets.QLabel("Camera trails")
+		self.trailLength, self.trailShade = QtWidgets.QComboBox(), QtWidgets.QComboBox()
+		for seconds, name in liveview.CAMERA_TRAILS:
+			self.trailLength.addItem(name, seconds)
+		for shade in liveview.TRAIL_SHADES:
+			self.trailShade.addItem(shade.replace("-", " ").capitalize(), shade)
+		self.trailLength.setToolTip("How long the cameras' node trails are (as LUC3D's); t shows or hides them")
+		self.trailShade.setToolTip("Their colour, from the identity's (as LUC3D's)")
+		for box in (self.trailLength, self.trailShade):
+			box.setFocusPolicy(Qt.NoFocus)
+			box.activated.connect(lambda index: self.Trails())
+		trails.addWidget(self.trailsLabel)
+		trails.addWidget(self.trailLength, 1)
+		trails.addWidget(self.trailShade, 1)
+		column.addLayout(trails)
 		views = QtWidgets.QHBoxLayout()
 		self.grid = QtWidgets.QPushButton("Grid (g)")
 		self.single = QtWidgets.QPushButton("Single (v)")
@@ -398,8 +416,21 @@ class Window(QtWidgets.QWidget):
 		fast = viewer.CpusOn() # campy-live on the performance cores (None: nothing to move)
 		self.checks["c"].setChecked(bool(fast))
 		self.checks["c"].setVisible(fast is not None)
+		trails = viewer.cameraTrails
+		if self.trailLength.findData(trails.seconds) < 0: # --camera-trail-seconds, not one of LUC3D's
+			self.trailLength.addItem("{:g} s".format(trails.seconds), trails.seconds)
+		self.trailLength.setCurrentIndex(self.trailLength.findData(trails.seconds))
+		self.trailShade.setCurrentIndex(max(0, self.trailShade.findData(trails.shade)))
+		for widget in (self.trailsLabel, self.trailLength, self.trailShade):
+			widget.setVisible(viewer.scene is not None)
 		self.grid.setChecked(viewer.selected is None)
 		self.single.setChecked(viewer.selected is not None)
+
+	def Trails(self):
+		# The cameras' trails' length or shade, picked
+		trails = self.viewer.cameraTrails
+		trails.seconds, trails.shade = float(self.trailLength.currentData()), self.trailShade.currentData()
+		self.Changed()
 
 	def Changed(self):
 		# What is drawn changed (a key, a button, a click)

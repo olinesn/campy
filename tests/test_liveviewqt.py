@@ -417,3 +417,27 @@ def test_the_wheel_and_keys_zoom_a_camera(qt, window):
 	assert viewer.occupancy and win.checks["o"].isChecked()
 	win.checks["t"].click()
 	assert not viewer.trails and not win.checks["t"].isChecked()
+
+
+def test_the_cameras_trails_length_and_shade_from_the_panel(qt, window):
+	# LUC3D's: Off, a quarter, half, 1 or 2 seconds (a quarter at first), and its shades (dark at first)
+	win, viewer = window.win, window.viewer
+	window.Result(9)
+	win.Sync()
+	length, shade = win.trailLength, win.trailShade
+	assert [length.itemText(k) for k in range(length.count())] == ["Off", "¼ s", "½ s", "1 s", "2 s"]
+	assert length.currentText() == "¼ s" and shade.currentText() == "Dark" and length.isVisible()
+	def pick(box, text):
+		box.setCurrentIndex(box.findText(text))
+		box.activated.emit(box.currentIndex())
+		qt.app.processEvents()
+	pick(length, "1 s")
+	pick(shade, "Very light")
+	assert (viewer.cameraTrails.seconds, viewer.cameraTrails.shade) == (1.0, "very-light")
+	assert viewer.cameraTrails.Frames() == 30 # at the feed's 30 fps
+	pick(length, "Off")
+	assert viewer.cameraTrails.seconds == 0
+	# Another length from the command line: listed too
+	viewer.cameraTrails.seconds = 0.3
+	win.Sync()
+	assert length.currentText() == "0.3 s"

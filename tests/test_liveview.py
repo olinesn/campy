@@ -1418,3 +1418,79 @@ def test_the_c_key_moves_campy_live_on_and_off_the_performance_cores(monkeypatch
 	assert "inference p50 12.0" in text
 	Placement.on = True
 	assert "on the performance cores (0-1) at high priority" in viewer.CpusText()[0]
+
+
+def test_a_trails_colour_is_luc3ds_shade_of_its_identitys():
+	orange = liveview.Color(0)
+	assert liveview.TrailColor(orange, liveview.TRAIL_SHADES["normal"], 0) == orange
+	assert liveview.TrailColor(orange, liveview.TRAIL_SHADES["dark"], 0) == tuple(round(0.6 * v) for v in orange)
+	assert liveview.TrailColor(orange, liveview.TRAIL_SHADES["dark"], 1) == tuple(round(0.6 * 0.55 * v) for v in orange)
+	light = liveview.TrailColor(orange, liveview.TRAIL_SHADES["light"], 0)
+	assert all(v >= o for v, o in zip(light, orange)) and light[0] > orange[0] # toward white
+	assert [liveview.TrailFrames(s, 30) for s, _ in liveview.CAMERA_TRAILS] == [0, 8, 15, 30, 60]
+	assert liveview.TrailFrames(0.25, None) == 8 and liveview.TrailFrames(2, 300) == 500
+
+
+def test_the_cameras_tiles_have_luc3ds_node_trails():
+	# The mice walking along x: on each camera's tile, each node's path over the last quarter second (8 rows at
+	# 30 fps, and the one shown), in its identity's hue, darker (LUC3D's dark shade), under the skeletons
+	cams, truth, keypoints, scores, order = mice()
+	viewer, frames = three_cameras(cams, None)
+	viewer.cameraTrails.fps = 30.0
+	viewer.show2d = False # the reprojections' trails (the 2D stands still here)
+	step = np.array([20.0, 0, 0]) # mm a row: 15 rows ago, well behind a mouse (about 100 mm long) and its trail
+	rows = [row_for(n, cams, truth + n * step, keypoints, scores, order) for n in range(1, 21)]
+	for row in rows:
+		viewer.cameraTrails.Add(row)
+	assert len(viewer.cameraTrails.rows) == 9
+	viewer.trails = False
+	plain = viewer.Compose(frames, rows[-1]).astype(int)
+	viewer.trails = True
+	image = viewer.Compose(frames, rows[-1]).astype(int)
+	assert viewer.cameraTrailMs and viewer.Summary(1.0)["camera_trails_ms"]["p50"] < 20
+	for c in range(3):
+		tile, before = tile_of(viewer, image, c), tile_of(viewer, plain, c)
+		moved = np.abs(tile - before).sum(-1) > 0
+		assert moved.sum() > 100
+		pixels = tile[moved].astype(float)
+		assert pixels.max() <= 0.6 * 255 + 1 # dark: at most 0.6 of the identity's colour
+		_, y0, x0, h, w = [cell for cell in viewer.cells if cell[0] == c][0]
+		scale, origin = viewer.ZoomOf(c).Window(frames[c].image.shape, viewer.layout.tile, viewer.layout.scale)
+		for a in range(3):
+			# Along its path: where its nodes were 4 rows ago; not where they were 19 rows ago (too old)
+			def At(n):
+				p = liveview.Place(liveview.Project(cams[c], (truth + n * step)[a]), scale, origin)
+				return [(int(round(x)), int(round(y))) for x, y in p if 0 <= x < w and 0 <= y < h]
+			hue = np.asarray(liveview.Color(a), float)
+			def Hued(points):
+				near = [tile[max(0, y - 2):y + 3, max(0, x - 2):x + 3][moved[max(0, y - 2):y + 3, max(0, x - 2):x + 3]]
+					for x, y in points]
+				near = np.concatenate([n for n in near if len(n)] or [np.zeros((0, 3))]).astype(float)
+				cos = near @ hue / (np.linalg.norm(near, axis=1) * np.linalg.norm(hue) + 1e-9)
+				return int((cos > 0.97).sum())
+			assert Hued(At(16)) > 5
+			assert Hued(At(1)) == 0
+	# The predictions' trails, with d (here without the reprojections: p off): each identity's detections
+	viewer.show2d, viewer.show3d = True, False
+	viewer.cameraTrails.Clear()
+	walked = [row_for(n, cams, truth, keypoints + n * np.array([15.0, 0]), scores, order) for n in range(1, 21)]
+	for row in walked:
+		viewer.cameraTrails.Add(row)
+	viewer.trails = False
+	still = viewer.Compose(frames, walked[-1]).astype(int)
+	viewer.trails = True
+	walking = viewer.Compose(frames, walked[-1]).astype(int)
+	for c in range(3):
+		moved = np.abs(tile_of(viewer, walking, c) - tile_of(viewer, still, c)).sum(-1) > 0
+		assert moved.sum() > 100 and tile_of(viewer, walking, c)[moved].max() <= 0.6 * 255 + 1
+	viewer.show2d, viewer.show3d = False, True
+	viewer.cameraTrails.Clear()
+	for row in rows:
+		viewer.cameraTrails.Add(row)
+	# Off with t (the 3D view's trails), or at 0 s: the cameras' tiles as without
+	def Tiles(image):
+		return [tile_of(viewer, image, c) for c in range(3)]
+	viewer.trails = False
+	assert all((a == b).all() for a, b in zip(Tiles(viewer.Compose(frames, rows[-1]).astype(int)), Tiles(plain)))
+	viewer.trails, viewer.cameraTrails.seconds = True, 0
+	assert all((a == b).all() for a, b in zip(Tiles(viewer.Compose(frames, rows[-1]).astype(int)), Tiles(plain)))

@@ -67,6 +67,14 @@ outside the cage in one camera does not paint them. The occupancy is drawn
 into the grid's picture, again once a second (about 3 ms); the trails each
 view (about 1.3 ms for 3 mice over 60 s on the ChronicRecord PC).
 
+With the trails on (t), the cameras' tiles have trails too, as LUC3D's node
+trails: each node's path over the last quarter second (--camera-trail-seconds;
+LUC3D's lengths: a quarter, half, 1 or 2 s), one segment from each result to
+the one before, the older thinner, more transparent and darker, in its
+identity's hue (--trail-shade: dark, its colour times 0.6, by default; very
+dark to very light), under the skeletons: the predictions' (d) and the
+reprojections' (p). The Qt panel picks the length and the shade.
+
 The 3D view is its own drawing with numpy and cv2, in this window, rather
 than matplotlib or a browser: no other package or program, the same row as
 the cameras' tiles by construction, and cheap enough to draw at 30 a second.
@@ -719,6 +727,147 @@ class Occupancy:
 		self.bins = deque((start, Moved(counts)) for start, counts in self.bins)
 
 
+# The cameras' node trails, as LUC3D's (talmolab/luc3d ui/overlays.js drawNodeTrails, after SLEAP's
+# TrackTrailOverlay): its lengths, shades and ramp
+CAMERA_TRAILS = ((0.0, "Off"), (0.25, "¼ s"), (0.5, "½ s"), (1.0, "1 s"), (2.0, "2 s")) # seconds
+TRAIL_SHADES = {"very-dark": -0.65, "dark": -0.4, "normal": 0.0, "light": 0.4, "very-light": 0.7}
+TRAIL_AGE_SHIFT = 0.45 # the oldest segment shaded this much further than the newest
+MAX_TRAIL_FRAMES = 500
+
+
+def TrailFrames(seconds, fps):
+	# Frames in a trail seconds long at fps (30 while none is known): at least 1 when on, at most 500
+	if seconds <= 0:
+		return 0
+	return int(min(MAX_TRAIL_FRAMES, max(1, round(seconds * (fps if fps and fps > 0 else 30)))))
+
+
+def TrailColor(color, amount, age):
+	# An identity's colour (BGR) in a trail of shade amount (< 0 darker: its channels times 1 + amount; > 0
+	# lighter: toward white), age (0 the newest segment, toward 1 the oldest) moving it further the same way
+	color = np.asarray(color, float)
+	if amount > 0:
+		f = amount + (1 - amount) * TRAIL_AGE_SHIFT * age
+		color = color + (255 - color) * f
+	else:
+		color = color * (1 + amount) * (1 - TRAIL_AGE_SHIFT * age)
+	return tuple(int(round(v)) for v in np.clip(color, 0, 255))
+
+
+class CameraTrails:
+	"""
+	Each identity's node trails on the cameras' tiles, as LUC3D draws them:
+	each node's path over the last rows taken (the last --camera-trail-seconds
+	of frames, and the one shown), one segment from each row to the one before,
+	the older thinner, more transparent and further shaded from the identity's
+	colour (--trail-shade: dark, its channels times 0.6, by default). Two sets:
+	the predictions' (each identity's detection in this camera, 1 px as they
+	are drawn) and the reprojections' (its 3D projected, 2 px), each with its
+	layer (d, p). A node missing in a row breaks its path there.
+	"""
+
+	def __init__(self, seconds=0.25, shade="dark"):
+		self.seconds, self.shade = float(seconds), shade
+		self.rows = deque() # (frame, row, {camera: (2D, 3D) per identity}), the newest last
+		self.fps = None
+
+	def Frames(self):
+		return TrailFrames(self.seconds, self.fps)
+
+	def Add(self, row):
+		frames = self.Frames()
+		if not frames:
+			self.rows.clear()
+			return
+		n = int(row["frame"])
+		if self.rows and n <= self.rows[-1][0]:
+			self.rows.clear() # a new recording, or campy-live again
+		self.rows.append((n, row, {}))
+		while len(self.rows) > frames + 1:
+			self.rows.popleft()
+
+	def Clear(self):
+		self.rows.clear()
+
+	def Points(self, entry, c, camera):
+		# One row's nodes in camera c: 2D (identities, nodes, 2) from its detections, 3D projected (or None)
+		n, row, cache = entry
+		if c not in cache:
+			members = np.asarray(row["members"][:, c])
+			kp = np.asarray(row["keypoints"][c], float)
+			twoD = np.full((len(members),) + kp.shape[1:], np.nan)
+			for a, i in enumerate(members):
+				if 0 <= i < len(kp):
+					twoD[a] = kp[i]
+			threeD = None
+			if camera is not None:
+				X = np.asarray(row["points3d"], float)
+				threeD = Project(camera, X.reshape(-1, 3)).reshape(X.shape[:-1] + (2,))
+			cache[c] = (twoD, threeD)
+		return cache[c]
+
+	def Draw(self, img, c, camera, scale, origin=(0, 0), show2d=True, show3d=True, bad=()):
+		"""
+		The trails on img, camera c's tile at scale from origin (as DrawCamera),
+		up to the row shown, the newest taken. bad: the identities drawn dimmed
+		(their trails in Dimmed colours).
+		"""
+		rows = [entry for entry in self.rows if Has3D(entry[1])]
+		W = len(rows)
+		if W < 2 or not (show2d or show3d):
+			return
+		rows = rows[::-1] # k = 0: the newest
+		k = np.arange(W)
+		t = 1 - k / (W + 1)
+		alpha = np.maximum(0.1, 0.9 * t)
+		taper = (W - k) / (W - 1)
+		age = 1 - t
+		amount = TRAIL_SHADES.get(self.shade, TRAIL_SHADES["dark"])
+		layers = []
+		if show3d and camera is not None:
+			layers.append((1, 2)) # the reprojections first (under), as LUC3D
+		if show2d:
+			layers.append((0, 1))
+		h, w = img.shape[:2]
+		overlay = mask = None
+		box = [w, h, 0, 0]
+		for which, width in layers:
+			P = np.stack([self.Points(entry, c, camera)[which] for entry in rows]) # (W, identities, nodes, 2)
+			Q = Place(P, np.broadcast_to(np.asarray(scale, float), (2,)), np.asarray(origin, float))
+			ok = np.isfinite(Q).all(-1) & (np.abs(Q) < 1e5).all(-1)
+			ok &= (Q[..., 0] > -w) & (Q[..., 0] < 2 * w) & (Q[..., 1] > -h) & (Q[..., 1] < 2 * h)
+			q = np.zeros(Q.shape, np.int32)
+			q[ok] = np.round(Q[ok] * (1 << SHIFT))
+			seg = ok[:-1] & ok[1:] # (W - 1, identities, nodes): the segment from row k - 1 to row k
+			if not seg.any():
+				continue
+			if overlay is None:
+				overlay, mask = np.zeros_like(img), np.zeros(img.shape[:2], np.uint8)
+			for k2 in range(W - 1, 0, -1): # the oldest first: the newer over it
+				thick = max(1, int(round(max(min(0.8, width), width * taper[k2]))))
+				for a in range(P.shape[1]):
+					s = seg[k2 - 1, a]
+					if not s.any():
+						continue
+					base = Dimmed(Color(a)) if a in bad else Color(a)
+					lines = np.stack([q[k2 - 1, a][s], q[k2, a][s]], 1) # (segments, 2, 2)
+					cv2.polylines(overlay, lines, False, TrailColor(base, amount, age[k2]), thick + 1, cv2.LINE_8, SHIFT)
+					cv2.polylines(mask, lines, False, int(round(255 * alpha[k2])), thick, cv2.LINE_AA, SHIFT)
+			pts = Q[ok]
+			box = [min(box[0], pts[:, 0].min()), min(box[1], pts[:, 1].min()), max(box[2], pts[:, 0].max()),
+				max(box[3], pts[:, 1].max())]
+		if overlay is None:
+			return
+		# One blend, over where the trails are
+		x0, y0 = max(0, int(box[0]) - 4), max(0, int(box[1]) - 4)
+		x1, y1 = min(w, int(box[2]) + 5), min(h, int(box[3]) + 5)
+		if x1 <= x0 or y1 <= y0:
+			return
+		a = mask[y0:y1, x0:x1, None].astype(np.float32) * (1 / 255)
+		part = img[y0:y1, x0:x1]
+		part[:] = (part * (1 - a) + overlay[y0:y1, x0:x1] * a + 0.5).astype(np.uint8)
+
+
 def Unit(v):
 	v = np.asarray(v, float)
 	n = np.linalg.norm(v)
@@ -1348,7 +1497,9 @@ class Viewer:
 		self.render = None # the window's: the view with its text drawn over it, for the PNGs
 		self.scene = None # the 3D tile's Scene (with a calibration)
 		self.showScene = not args.no_3d
-		self.trails = args.trail_seconds > 0 # the 3D view's trails shown
+		self.trails = args.trail_seconds > 0 # the 3D view's trails shown, and the cameras' (cameraTrails)
+		self.cameraTrails = CameraTrails(args.camera_trail_seconds, args.trail_shade)
+		self.cameraTrailMs = deque(maxlen=KEPT) # of drawMs: the cameras' trails
 		self.occupancy = args.occupancy # and the occupancy
 		self.sceneCell = None # where the 3D tile is in the view: y, x, height, width
 		self.drag = None # the mouse button dragging in the 3D tile, and where it was
@@ -1422,6 +1573,7 @@ class Viewer:
 				self.readers = readers
 				self.buffers = [np.empty(r.shape, r.dtype) for r in readers]
 				self.ended = False
+				self.cameraTrails.fps = self.cameraTrails.fps or readers[0].Info("frameRate")
 				self.rig = livehealth.Rig([r.cameraName or r.name for r in readers], readers[0].Info("frameRate"),
 					readers[0].slots)
 				self.rigAt = 0.0
@@ -1456,6 +1608,8 @@ class Viewer:
 					self.args.heat_minutes)
 		self.tracking = livehealth.Tracking(d.get("animals"), d.get("frame_rate"), self.args.bad_px) \
 			if self.calibration else None
+		self.cameraTrails.Clear() # another campy-live's rows
+		self.cameraTrails.fps = d.get("frame_rate") or self.cameraTrails.fps
 		Say("campy-live's results: {} cameras, {} nodes, {}.".format(len(rings), len(d.get("nodes") or []) or "?",
 			"3D of {} animals".format(d.get("animals")) if self.calibration else "2D only"))
 
@@ -1532,6 +1686,7 @@ class Viewer:
 						return None
 					if self.scene is not None:
 						self.scene.Learn(row, now)
+					self.cameraTrails.Add(row)
 					self.lastRow = now
 					return self.Compose(frames, row), int(row["frame"]), row
 		if now - self.lastRow > STALE_S and now - self.lastRaw >= 1.0 / max(1e-3, self.args.fps):
@@ -1613,6 +1768,7 @@ class Viewer:
 		healthS = time.perf_counter() - health
 		self.cells = []
 		bad = self.Dimmed(row)
+		trailS = 0.0
 		for k, (c, frame) in enumerate(zip(shown, frames)):
 			y, x = layout.Cell(k)
 			words = self.words.Tile(("camera", k), y + oy, x + ox, *layout.tile) if self.words is not None else None
@@ -1621,6 +1777,11 @@ class Viewer:
 			scale, origin = zoom.Window(frame.image.shape, layout.tile, layout.scale)
 			tile = Gray(frame.image, layout.tile, scale, origin)
 			if row is not None:
+				if self.trails and self.cameraTrails.seconds > 0: # under the skeletons
+					trailStart = time.perf_counter()
+					self.cameraTrails.Draw(tile, c, self.calibration[c] if self.calibration else None, scale, origin,
+						self.show2d, self.show3d, bad)
+					trailS += time.perf_counter() - trailStart
 				DrawCamera(tile, scale, row, c, self.calibration[c] if self.calibration else None, edges,
 					self.show2d, self.show3d, self.lines, origin, frame.image.shape[1::-1], words, bad=bad)
 			name = cameraNames[c] if c < len(cameraNames) else str(c)
@@ -1656,6 +1817,8 @@ class Viewer:
 		self.panned = False
 		self.drawMs.append((time.perf_counter() - start) * 1e3)
 		self.healthMs.append(healthS * 1e3)
+		if row is not None and self.trails and self.cameraTrails.seconds > 0:
+			self.cameraTrailMs.append(trailS * 1e3)
 		return full
 
 	def Badge(self, tile, c, rig):
@@ -2246,6 +2409,7 @@ class Viewer:
 			"draw_ms": {"p50": P(self.drawMs, 50), "p99": P(self.drawMs, 99)},
 			"draw_3d_ms": {"p50": P(self.sceneMs, 50), "p99": P(self.sceneMs, 99)},
 			"draw_health_ms": {"p50": P(self.healthMs, 50), "p99": P(self.healthMs, 99)},
+			"camera_trails_ms": {"p50": P(self.cameraTrailMs, 50), "p99": P(self.cameraTrailMs, 99)},
 			"rig_read_ms": {"p50": P(self.rigMs, 50), "p99": P(self.rigMs, 99)},
 			**({"qt_panel_ms": {"p50": P(self.panelMs, 50), "p99": P(self.panelMs, 99)}} if self.panelMs else {}),
 			**self.HealthSummary(),
@@ -2483,6 +2647,11 @@ def ParseArgs(argv=None):
 		"OpenCV's; auto: Qt's when PyQt5 is there.")
 	p.add_argument("--trail-seconds", type=float, default=60, help="The 3D view's trails: each identity's path over "
 		"the last this many seconds (0: none; t shows or hides them).")
+	p.add_argument("--camera-trail-seconds", type=float, default=0.25, help="The cameras' tiles' trails (LUC3D's node "
+		"trails, shown with the 3D view's: t): each node's path over the last this many seconds of frames (LUC3D's "
+		"lengths: 0.25, 0.5, 1, 2; 0: none).")
+	p.add_argument("--trail-shade", default="dark", choices=list(TRAIL_SHADES), help="The cameras' trails' colour, "
+		"from the identity's (LUC3D's shades): dark, its channels times 0.6, and darker with age.")
 	p.add_argument("--occupancy", action="store_true", help="Start with the 3D view's occupancy shown (o).")
 	p.add_argument("--heat-minutes", type=float, default=0, help="The occupancy: where the animals went over the last "
 		"this many minutes (0: since campy-live's results began).")
