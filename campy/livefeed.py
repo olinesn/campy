@@ -431,6 +431,23 @@ class RingReader:
 		# What the ring's writer said it holds ("" for a camera's)
 		return self.ring.Description()
 
+	def Slots(self):
+		"""
+		The fields of every slot the ring holds whole, without their frames:
+		frame numbers, host times, camera timestamps and written times (each an
+		array, oldest frame first). A few microseconds: campy-live-view reads
+		them about 20 times a second, to tell how each camera keeps up
+		(campy/livehealth.py).
+		"""
+		ring = self.ring
+		fields = ring.slotFields.copy()
+		stamps = ring.stamps.copy()
+		begin = ring.slotFields[:, BEGIN].copy() # again: a slot the writer began on since is left out
+		n = fields[:, FRAME]
+		whole = (n > 0) & (fields[:, BEGIN] == n) & (fields[:, END] == n) & (begin == n)
+		order = np.argsort(n[whole], kind="stable")
+		return n[whole][order], fields[whole, HOST][order], stamps[whole][order], fields[whole, WRITTEN][order]
+
 	def Read(self, frameNumber, out=None):
 		"""
 		Frame frameNumber, copied into out (an array of the ring's frame shape

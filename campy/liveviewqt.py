@@ -7,7 +7,10 @@ The view is what campy/liveview.py's Viewer draws (the cameras' tiles and the
 3D tile, from one row of campy-live's results), drawn at the size of the
 widget showing it, one pixel for one, and shown as it is: Qt only shows it,
 and passes the mouse and the keys to the Viewer. The panel says what the
-OpenCV window's drawn panel says, in Qt's fonts, a few times a second.
+OpenCV window's drawn panel says, in Qt's fonts, a few times a second: what
+is wrong (a camera behind, losing frames or a frame off the others; too few
+animals with good 3D, or one far off), in red at its top, then the tracking
+strip (each identity's last 10 s; campy/livehealth.py), then the rest.
 
 The keys are the OpenCV window's (liveview.Viewer.Key), as LUC3D's: v one
 camera alone, g every camera, the arrows the previous or next camera, \\ the
@@ -142,6 +145,15 @@ class Window(QtWidgets.QWidget):
 		self.grid.setCheckable(True)
 		self.single.setCheckable(True)
 		column.addLayout(views)
+		self.alerts = QtWidgets.QLabel() # what is wrong, in red; hidden when nothing is
+		self.alerts.setWordWrap(True)
+		self.alerts.setTextFormat(Qt.RichText)
+		self.alerts.setStyleSheet("QLabel { background: #3a1212; border: 1px solid #ff2828; padding: 4px; }")
+		self.alerts.hide()
+		column.addWidget(self.alerts)
+		self.strips = QtWidgets.QLabel() # the tracking strip (Viewer.Strips), drawn as the OpenCV panel's
+		self.strips.hide()
+		column.addWidget(self.strips)
 		self.status = QtWidgets.QLabel()
 		self.status.setWordWrap(True)
 		self.status.setTextFormat(Qt.RichText)
@@ -209,12 +221,29 @@ class Window(QtWidgets.QWidget):
 				self.Say(viewer.last[1])
 
 	def Say(self, row):
+		start = time.perf_counter()
 		self.saidAt, self.saidRow = time.monotonic(), row is not None
 		self.Sync() # the 3D view's box, once campy-live has said its calibration
+		alerts = self.viewer.Alerts()
+		self.alerts.setText(Html(alerts))
+		self.alerts.setVisible(bool(alerts))
+		ratio = self.devicePixelRatioF()
+		image = self.viewer.Strips(int(round((PANEL_WIDTH - 24) * ratio)))
+		if image is None:
+			self.strips.hide()
+		else:
+			self.stripsImage = np.ascontiguousarray(image)
+			h, w = image.shape[:2]
+			pixmap = QtGui.QPixmap.fromImage(QtGui.QImage(self.stripsImage.data, w, h, self.stripsImage.strides[0],
+				QtGui.QImage.Format_BGR888))
+			pixmap.setDevicePixelRatio(ratio)
+			self.strips.setPixmap(pixmap)
+			self.strips.show()
 		lines = self.viewer.PanelText(row)
 		if self.paused:
 			lines.insert(0, ("Paused: space goes on", liveview.TEXT))
 		self.status.setText(Html(lines))
+		self.viewer.panelMs.append((time.perf_counter() - start) * 1e3)
 
 	def Sync(self):
 		# The panel's buttons as the viewer is
