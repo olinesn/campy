@@ -1,0 +1,521 @@
+<title>Live SLEAP Hardware Guide</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..800&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column (~68ch) for prose; tables and the chart may run wider and scroll on their own. */
+:root {
+  --bg: #f6f7f8;
+  --surface: #ffffff;
+  --fg: #1b2026;
+  --muted: #5b6672;
+  --rule: #d9dee3;
+  --accent: #1f5fae;
+  --budget: #b5531b;
+  --ok: #2c7a4b;
+  --miss: #b23a3a;
+  --bar: #1f5fae;
+  --bar-soft: #9fbbe0;
+  --font-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --font-data: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161b; --surface: #1a1f26; --fg: #e4e8ec; --muted: #9aa6b2; --rule: #2e3640;
+    --accent: #7fb0ec; --budget: #f0955a; --ok: #6cc28f; --miss: #ef8585; --bar: #7fb0ec; --bar-soft: #34506f;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161b; --surface: #1a1f26; --fg: #e4e8ec; --muted: #9aa6b2; --rule: #2e3640;
+  --accent: #7fb0ec; --budget: #f0955a; --ok: #6cc28f; --miss: #ef8585; --bar: #7fb0ec; --bar-soft: #34506f;
+  color-scheme: dark;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 17px; line-height: 1.6; }
+.page { max-width: 1040px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 72px; display: grid; gap: 48px; }
+.col { max-width: 68ch; }
+h1, h2, h3 { font-family: var(--font-display); font-stretch: 85%; line-height: 1.15; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(2rem, 5vw, 2.9rem); font-weight: 800; letter-spacing: -0.01em; }
+h2 { font-size: 1.55rem; font-weight: 700; }
+h3 { font-size: 1.1rem; font-weight: 700; }
+p { margin: 0; }
+section { display: grid; gap: 16px; }
+.eyebrow { font-family: var(--font-display); font-size: 0.78rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.lede { font-size: 1.15rem; color: var(--fg); }
+.meta { font-family: var(--font-data); font-size: 0.8rem; color: var(--muted); }
+header { display: grid; gap: 14px; border-bottom: 1px solid var(--rule); padding-bottom: 28px; }
+.budgets { display: flex; flex-wrap: wrap; gap: 10px 22px; font-family: var(--font-data); font-size: 0.85rem; color: var(--muted); }
+.budgets b { color: var(--fg); font-weight: 500; }
+
+ol.recs { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; counter-reset: rec; }
+ol.recs li { counter-increment: rec; display: grid; grid-template-columns: 2.4rem minmax(0, 1fr); gap: 4px 14px; padding: 18px 0; border-top: 1px solid var(--rule); }
+ol.recs li:last-child { border-bottom: 1px solid var(--rule); }
+ol.recs li::before { content: counter(rec); font-family: var(--font-display); font-weight: 800; font-size: 1.6rem; line-height: 1.1; color: var(--accent); grid-row: span 3; }
+ol.recs h3 { font-size: 1.12rem; }
+ol.recs p { color: var(--fg); }
+ol.recs .why { color: var(--muted); font-size: 0.95rem; grid-column: 2; }
+
+.tablewrap { overflow-x: auto; border: 1px solid var(--rule); background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-family: var(--font-display); font-weight: 600; font-size: 0.8rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-family: var(--font-data); font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.mono { font-family: var(--font-data); font-size: 0.85rem; }
+.pill { display: inline-block; font-family: var(--font-data); font-size: 0.78rem; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.pill.ok { color: var(--ok); }
+.pill.miss { color: var(--miss); }
+.pill.part { color: var(--budget); }
+
+figure { margin: 0; display: grid; gap: 10px; }
+figcaption { color: var(--muted); font-size: 0.92rem; max-width: 80ch; }
+.chartwrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); padding: 12px 8px; }
+.chart { display: block; min-width: 640px; width: 100%; height: auto; }
+.chart text { font-family: var(--font-data); font-size: 12px; fill: var(--fg); }
+.chart .lab { font-family: var(--font-body); font-size: 13px; }
+.chart .sub { fill: var(--muted); font-size: 11px; }
+.chart .grp { font-family: var(--font-display); font-weight: 700; font-size: 12px; letter-spacing: 0.06em; fill: var(--muted); }
+.chart .grid { stroke: var(--rule); stroke-width: 1; }
+.chart .p50 { fill: var(--bar); }
+.chart .tail { fill: var(--bar-soft); }
+.chart .p99 { stroke: var(--fg); stroke-width: 2; }
+.chart .budget { stroke: var(--budget); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.chart .budgettxt { fill: var(--budget); font-size: 11px; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 0.85rem; color: var(--muted); font-family: var(--font-data); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { display: inline-block; width: 18px; height: 10px; }
+
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 28px; }
+.two > * { min-width: 0; }
+dl.spec { margin: 0; display: grid; grid-template-columns: 3.2rem minmax(0, 1fr); gap: 4px 12px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--rule); font-size: 0.93rem; }
+dl.spec .spec-name { grid-column: 1 / -1; font-family: var(--font-display); font-weight: 700; font-size: 1.02rem; color: var(--fg); text-transform: none; letter-spacing: 0; margin-bottom: 4px; }
+dl.spec dt { font-family: var(--font-display); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding-top: 3px; }
+dl.spec dd { margin: 0; }
+.note { border-left: 3px solid var(--budget); padding: 6px 0 6px 14px; color: var(--fg); }
+ul.plain, ol.plain { margin: 0; padding-left: 1.4em; display: grid; gap: 6px; }
+code { font-family: var(--font-data); font-size: 0.86em; }
+a { color: var(--accent); }
+footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rule); padding-top: 20px; display: grid; gap: 6px; }
+</style>
+
+<div class="page">
+
+<header>
+  <div class="eyebrow">Live pose tracking · October 2026</div>
+  <h1>What to buy for live campy + SLEAP + triangulation</h1>
+  <p class="lede col">Three machines, with four GPUs between them, were measured running campy recordings and sleap-nn top-down inference (centroid + centered-instance) at the same time, at 3 and 8 cameras. The deciding factors were the inference GPU, CPU speed, and the operating system. Memory channels didn't matter. The full live pipeline, with trained models and 3D tracking of 5 mice, was then run on the EVO-X2 and the Pro Max Slim.</p>
+  <div class="budgets"><span>Frame budget at <b>60 fps</b>: 16.7 ms per synchronized set</span><span>at <b>30 fps</b>: 33.3 ms</span><span>Pass = p99 under budget</span></div>
+</header>
+
+<section>
+  <h2>Recommendations</h2>
+  <ol class="recs">
+    <li>
+      <h3>Buy a discrete NVIDIA GPU for inference, and plug no monitor into it.</h3>
+      <p>The RTX 6000 Ada met 60 fps at p99 in every one of 32 model-size combinations at 3 cameras and in 28 of 32 at 8 cameras. The RTX 2000 Ada met it in at most 6 of 32 when idle, and while recording in none unpinned and 8 of 32 with its CPU threads pinned (below).</p>
+      <p class="why">The RTX 4000 Ada in the same workstation showed a steady 18 ms p99 floor in every configuration. It is the card the monitor is plugged into, and Windows' desktop work on that GPU is the likely cause, so its own capability is still untested.</p>
+    </li>
+    <li>
+      <h3>Pick a CPU with fast cores, and at least 8 of them for 3 cameras plus inference.</h3>
+      <p>On Windows, each set launches about 450 small GPU kernels and waits for the GPU about 20 times, so on a fast GPU latency follows the CPU. Without CUDA graphs, every model size on the RTX 6000 Ada landed between 7 and 9 ms: a CPU-side floor, not GPU compute.</p>
+      <p class="why">Squeezing 3 camera encoders and inference onto 6 cores raised the RTX 6000 Ada's p99 from 7.7 to 11.5 ms. Watching the tracking live (<code>campy-live-view</code>) adds a separate, low-priority program that needs 7–9 ms of one core per picture it draws: leave a core for it.</p>
+    </li>
+    <li>
+      <h3>On an Intel hybrid CPU, pin inference to the performance cores and raise its priority.</h3>
+      <p>While recording, Windows ran the Pro Max Slim's inference partly on its efficiency cores. Pinning inference to the 8 performance cores, moving campy and its encoders to the 16 efficiency cores and running inference at High priority took the four fastest model pairs from 17.6 ms median and 23.5 ms p99 to 11.8 and 12.3 ms. Across all 32 model sizes, 8 then fit 60 fps while recording 3 cameras at 80 fps (none did unpinned), all 32 fit 30 fps, and p99 sat about 0.3 ms above the median. The recording kept 80 fps throughout. With three real FLIR cameras triggered at 60 fps by an Arduino, the same 8 fit, and each camera kept all 126,000 frames of a 35-minute recording.</p>
+      <p class="why">A High Performance power plan, browsers and editors moved to the Intel iGPU, and nobody signed in brought the unpinned case to 13.4 / 16.2 ms, but added nothing once inference was pinned. The live program, <code>campy-live</code>, doesn't pin itself yet: the Pro Max Slim's live run below was unpinned.</p>
+    </li>
+    <li>
+      <h3>Keep Windows awake during recordings.</h3>
+      <p>With nobody signed in, the Pro Max Slim's screen timed out after 10 minutes and Windows entered Modern Standby in the middle of a recording. campy fell from 80 to 25 frames per second, and single inference sets stalled for up to 34 s. campy now asks Windows to stay awake while it records (on by default). When campy is started over SSH with nobody signed in, Windows refuses the "keep the screen on" part of that request, so on such a PC also set the screen to never turn off while plugged in.</p>
+      <p class="why">Whether the rest of campy's request alone keeps a recording at full speed through Modern Standby hasn't been tested; the screen timeout is the setting known to prevent it.</p>
+    </li>
+    <li>
+      <h3>On a fast GPU, run the models as CUDA graphs.</h3>
+      <p>Replaying each model's forward pass as a recorded CUDA graph (<code>--cuda-graphs</code> in the benchmark) made the RTX 6000 Ada's pipeline 20% faster at the median and 25% at p99: 5.2–7.8 ms across all 32 combinations, every one with p99 under 8.3 ms, half the 60 fps budget. The output was identical to running without graphs.</p>
+      <p class="why">On the RTX 2000 Ada graphs helped only 2–4%, because that card is limited by its own compute. sleap-nn doesn't use graphs on Windows by itself: <code>torch.compile</code>, which would, needs Triton, so the live pipeline has to capture them the way the benchmark does. <code>campy-live</code> doesn't do this yet.</p>
+    </li>
+    <li>
+      <h3>Choose a model with about 2 ms to spare in the benchmark.</h3>
+      <p>The live pipeline runs 1–1.7 ms slower at the median and 2–2.5 ms at p99 than the inference-only benchmark, because it also copies each set's frames in, reads the results back and logs them. On the EVO-X2 with 5 mice at 60 fps, a model needs a benchmark p99 of about 14–14.5 ms or less to keep up. The model with 160 px crops (14.0 ms in the benchmark) kept up with nothing skipped; one with 192 px crops and 24 filters (15.3 ms) still skipped a set now and then (details below).</p>
+    </li>
+    <li>
+      <h3>Dual-channel memory is enough, and 64 GB covers 3 cameras. Don't pay for 8 channels.</h3>
+      <p>Confined to one 6-core Threadripper chiplet, the workload had at most 57 GB/s of memory bandwidth, less than a dual-channel DDR5 desktop, and still met 60 fps. With the other chiplets pulling 172 GB/s at the same time, latency rose only 6–12%.</p>
+      <p class="why">Three 1280 × 1024 cameras at 80 fps are 0.3 GB/s of pixels. Inference runs in the GPU's own memory. The largest use of system memory is campy's write buffer during a disk stall: 60 s of 3 cameras at 60 fps is up to 14.2 GB, and in the live runs on the 64 GB EVO-X2 at least 56 GB stayed free or reclaimable.</p>
+    </li>
+    <li>
+      <h3>Record the videos to a disk of their own.</h3>
+      <p>The EVO-X2's SSD sometimes stops completing writes for 10–16 s, with nothing in the system logs: three stalls (9.6, 10 and 16 s) in about 7.5 hours of recording and disk tests. Turning off the drive's power saving didn't stop them. campy now buffers up to 60 s of frames in memory on the EVO-X2, which covers the longest stall seen so far with room to spare, and catches up about 9 times faster than the backlog builds. A separate drive for the videos removes the problem rather than absorbing it.</p>
+      <p class="why">For sizing that drive: H.265 on the Pro Max Slim's Quick Sync at 30 fps and quality 26 (1280 × 1024, the setting chosen after the pose models found 98.4% of the animals they found in lossless video) is 1.26 Mbit/s per camera, about 14 GB per camera per day.</p>
+    </li>
+    <li>
+      <h3>Prefer Linux for the inference machine if you can.</h3>
+      <p>In every EVO-X2 run (Linux, ROCm), recording included, no set took more than twice the median, and p99 stayed 0.4–1.0 ms above it. Every Windows GPU had occasional sets of twice the median or more, and the RTX 2000 and RTX 4000 Ada ran p99 3–7 ms above the median. The RTX 6000 Ada's p99 was as tight as the EVO-X2's, and so was the Pro Max Slim's once inference was pinned to its performance cores at High priority. GPU vendor and OS differ between these machines, so this is a strong hint rather than a controlled result.</p>
+    </li>
+    <li>
+      <h3>A Strix Halo mini-PC (EVO-X2) handles 3 cameras, but not 8.</h3>
+      <p>At 3 cameras it met 60 fps in 13–18 of 32 model combinations, recording included. With three real FLIR cameras triggered at 60 fps by an Arduino, 12–13 fit and the default pair ran at 9.2 ms median, 9.6 ms p99. With trained models it tracked every set of a 12-minute 3-camera recording from the first frame, none skipped, with 3D poses ready 13.2 ms after the last frame of a set arrived (p99 14.5 ms). With real footage of 5 mice replayed at 60 fps, the 160 px-crop model kept up with nothing skipped and 3D ready 16.8 ms after the frames (p99 19–20 ms). At 8 cameras its fastest pipeline needed 24 ms per set idle and 28 ms while recording 8 streams at 60 fps: about 35 fps. The recording itself held up: 8 × 72,000 frames over 20 minutes, none dropped, no GPU errors.</p>
+    </li>
+    <li>
+      <h3>Triangulation and 3D tracking cost little, and no longer add to the time per set.</h3>
+      <p>Linear (DLT) triangulation of 5 animals × 15 nodes took 0.15–0.19 ms per set with 3 cameras and 0.22–0.25 ms with 8, on every machine. Matching the animals across cameras, keeping their identities and triangulating took 0.7–1.3 ms per set for 5 mice. <code>campy-live</code> now does that step on its own thread while the model works on the next set, so the time per set is the longer of the two steps rather than their sum.</p>
+    </li>
+  </ol>
+</section>
+
+<section>
+  <h2>The machines</h2>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Machine</th><th>CPU</th><th>Inference GPU</th><th>Encoding</th><th>Memory</th><th>OS / stack</th></tr></thead>
+      <tbody>
+        <tr><td><b>GMKtec EVO-X2</b><br><span class="meta">mini-PC</span></td><td>Ryzen AI Max+ 395, 16 cores</td><td>Radeon 8060S iGPU (shares system memory)</td><td>VA-API, same GPU</td><td>64 GB LPDDR5X, 256-bit</td><td>Ubuntu 24.04, ROCm (torch 2.14.0+rocm10.1.0)</td></tr>
+        <tr><td><b>Dell Pro Max Slim FCS1250</b></td><td>Core Ultra 9 285, 24 cores (8 performance + 16 efficiency)</td><td>RTX 2000 Ada, 16 GB</td><td>Quick Sync, Intel iGPU</td><td>2 × 32 GB DDR5-5600, dual-channel</td><td>Windows 11, CUDA (torch 2.14.1+cu130)</td></tr>
+        <tr><td><b>Dell Precision 7875</b><br><span class="meta">tower workstation</span></td><td>Threadripper PRO 7965WX, 24 cores in 4 chiplets</td><td>RTX 6000 Ada, 48 GB <span class="meta">(RTX 4000 Ada, 20 GB, drives the monitor)</span></td><td>NVENC on the RTX 4000 Ada</td><td>8 × 16 GB DDR5-4800, 8-channel</td><td>Windows 11, CUDA (torch 2.14.1+cu130)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>Latency per set</h2>
+  <p class="col">Default model pair: centroid at 0.25 input scale (max stride 16, output stride 4) and centered-instance on 192 px crops (max stride 16), 16 base filters, fp16, 5 animals per frame. Each bar is 2,000 timed sets. "Recording" means campy was recording a real FLIR Blackfly S plus fake cameras encoding a looped FLIR clip with the same encoder settings.</p>
+  <figure>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--bar)"></i>median (p50)</span>
+      <span><i class="sw" style="background:var(--bar-soft)"></i>p50 to p99</span>
+      <span><i class="sw" style="background:var(--budget);height:2px"></i>60 fps budget, 16.7 ms</span>
+    </div>
+    <div class="chartwrap">
+      <svg class="chart" id="chart" viewBox="0 0 900 560" role="img" aria-label="Latency per set for each machine and condition, median and 99th percentile, with the 16.7 millisecond budget line"></svg>
+    </div>
+    <figcaption>RTX 2000 Ada and RTX 6000 Ada rows use channels-last memory layout (5–25% faster on NVIDIA). The EVO-X2 rows use the default layout, which is fastest on ROCm.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>How many model sizes fit</h2>
+  <p class="col">Out of 32 combinations (centroid scale 0.25 or 0.5, max stride 16 or 32, output stride 2 or 4; crops 192 or 256 px, max stride 16 or 32), how many kept p99 under the budget.</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Machine</th><th>Condition</th><th class="num">Fit 60 fps</th><th class="num">Fit 30 fps</th><th class="num">Worst single set</th></tr></thead>
+      <tbody id="fit"></tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>Memory bandwidth</h2>
+  <div class="two">
+    <div style="display:grid;gap:12px;align-content:start">
+      <p>Multi-threaded copy bandwidth from the CPU (read + write counted):</p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Machine</th><th class="num">1 thread</th><th class="num">All threads</th></tr></thead>
+          <tbody>
+            <tr><td>Dell Pro Max Slim FCS1250, dual-channel</td><td class="num">49 GB/s</td><td class="num">79 GB/s</td></tr>
+            <tr><td>EVO-X2, 256-bit LPDDR5X</td><td class="num">57 GB/s</td><td class="num">146 GB/s</td></tr>
+            <tr><td>Precision 7875, 8-channel</td><td class="num">56 GB/s</td><td class="num">221 GB/s</td></tr>
+            <tr><td>Precision 7875, one chiplet</td><td class="num">55 GB/s</td><td class="num">57 GB/s</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div style="display:grid;gap:12px;align-content:start">
+      <p>Each Threadripper chiplet tops out near 57 GB/s, below dual-channel desktop memory. Run on one chiplet with 3 fake cameras, the default pair still met 60 fps, and with the other three chiplets hammering memory at 172 GB/s:</p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>RTX 6000 Ada, one chiplet</th><th class="num">p50</th><th class="num">p99</th></tr></thead>
+          <tbody>
+            <tr><td>Idle, all cores</td><td class="num">7.2 ms</td><td class="num">7.7 ms</td></tr>
+            <tr><td>+ 3 fake cameras on the same chiplet</td><td class="num">8.4 ms</td><td class="num">11.5 ms</td></tr>
+            <tr><td>+ 172 GB/s of other memory traffic</td><td class="num">9.3 ms</td><td class="num">12.1 ms</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>EVO-X2 vs Pro Max Slim</h2>
+  <div class="two">
+    <dl class="spec">
+      <dt class="spec-name">GMKtec EVO-X2</dt>
+      <dt>CPU</dt><dd>AMD Ryzen AI Max+ 395, 16 Zen 5 cores</dd>
+      <dt>GPU</dt><dd>AMD Radeon 8060S, integrated, uses system memory</dd>
+      <dt>RAM</dt><dd>64 GB LPDDR5X, 256-bit, shared with the GPU</dd>
+      <dt>OS</dt><dd>Ubuntu 24.04, ROCm</dd>
+    </dl>
+    <dl class="spec">
+      <dt class="spec-name">Dell Pro Max Slim FCS1250</dt>
+      <dt>CPU</dt><dd>Intel Core Ultra 9 285, 8 performance + 16 efficiency cores</dd>
+      <dt>GPU</dt><dd>NVIDIA RTX 2000 Ada, 16 GB, 70 W (encoding on the Intel iGPU)</dd>
+      <dt>RAM</dt><dd>64 GB DDR5-5600, 2 × 32 GB, dual-channel</dd>
+      <dt>OS</dt><dd>Windows 11 Pro, CUDA</dd>
+    </dl>
+  </div>
+  <p class="col">The Dell Pro Max Slim loses on two counts that add up: its GPU is slower on these particular models, and on Windows the CPU-side work around each model costs about three times as much. While recording, a third factor appears, and it hits the Pro Max Slim much harder. CUDA graphs address neither of the first two, which is why they helped it so little.</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Per set of 3 frames, default pair, fp16, idle</th><th class="num">EVO-X2</th><th class="num">Pro Max Slim</th><th class="num">Difference</th></tr></thead>
+      <tbody>
+        <tr><td>Uploading the frames to the GPU</td><td class="num">0.08 ms</td><td class="num">0.32 ms</td><td class="num">+0.25 ms</td></tr>
+        <tr><td>Centroid model, GPU time</td><td class="num">1.23 ms</td><td class="num">1.76 ms</td><td class="num">+0.5 ms</td></tr>
+        <tr><td>Centered-instance model, GPU time</td><td class="num">4.84 ms</td><td class="num">6.96 ms</td><td class="num">+2.1 ms</td></tr>
+        <tr><td>&nbsp;&nbsp;of which cuDNN layout conversions</td><td class="num">none</td><td class="num">≈ 1.9 ms</td><td class="num"></td></tr>
+        <tr><td>sleap-nn's work around the centroid model</td><td class="num">0.8 ms</td><td class="num">2.9 ms</td><td class="num">+2.1 ms</td></tr>
+        <tr><td>sleap-nn's work around the centered-instance model</td><td class="num">0.6 ms</td><td class="num">1.7 ms</td><td class="num">+1.0 ms</td></tr>
+        <tr><td><b>Whole pipeline</b></td><td class="num"><b>8.6 ms</b></td><td class="num"><b>13.7 ms</b></td><td class="num"><b>+5.1 ms</b></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="meta">Channels-first layout, from a profiling run. Rows overlap slightly, so they don't sum exactly.</p>
+  <div class="two">
+    <div style="display:grid;gap:12px;align-content:start">
+      <h3>Hardware</h3>
+      <ul class="plain">
+        <li><b>Same on paper.</b> GPU memory bandwidth 212 vs 206 GB/s and fp16 matrix throughput 34 vs 35 TFLOPS.</li>
+        <li><b>Convolutions differ.</b> These models are 16-filter networks of small 3 × 3 convolutions and memory-bound steps. On a 64-channel 3 × 3 convolution, AMD's MIOpen reached 27 TFLOPS and Nvidia's cuDNN 12: cuDNN's tensor-core kernels suit wide layers. That is one shape, so read the ratio as a direction.</li>
+        <li><b>Layout conversions.</b> cuDNN converts each activation to channels-last and back. Channels-last models cut the forward passes from 2.15 to 1.67 ms and from 7.34 to 5.52 ms, against the EVO-X2's 1.40 and 5.07.</li>
+        <li><b>A small card.</b> The RTX 2000 Ada is a 70 W low-profile card, the smallest of Nvidia's Ada workstation line. On the RTX 6000 Ada the GPU part of the gap disappears.</li>
+        <li><b>Hybrid CPU.</b> The Core Ultra 9 285 has 8 performance and 16 efficiency cores; the EVO-X2 has 16 identical Zen 5 cores. While recording, the Pro Max Slim's inference slowed 21–23% (p50) against 3–7% on the EVO-X2, even though its encoders run on a separate Intel iGPU. The CPU-bound work around the models competes with campy and the encoders, and Windows moved the inference thread onto efficiency cores. Pinning it to the performance cores at High priority removed the slowdown (table below).</li>
+        <li><b>Memory</b> is not a factor (see above).</li>
+      </ul>
+    </div>
+    <div style="display:grid;gap:12px;align-content:start">
+      <h3>Operating system and drivers</h3>
+      <ul class="plain">
+        <li><b>Many small steps.</b> Around the models, sleap-nn runs about 450 tiny GPU kernels per set across the pipeline and waits for the GPU about 20 times (9 <code>.item()</code> and 11 <code>nonzero</code> calls), because each step depends on how many peaks were found.</li>
+        <li><b>Launch cost.</b> About 11 µs of CPU time per kernel on Windows/CUDA against 5 µs on Linux/ROCm: 5.1 against 2.1 ms of CPU time per set. With frequent waits the CPU can't queue work ahead, so this lands in the latency.</li>
+        <li><b>What graphs fix.</b> CUDA graphs remove the launches inside the models, not around them. The RTX 6000 Ada's models were launch-bound (graphs: −20–25%); the RTX 2000 Ada's were GPU-bound (graphs: −2–4%).</li>
+        <li><b>Tails.</b> In every EVO-X2 run no set took twice the median and p99 stayed 0.4–1.0 ms above it. The Pro Max Slim's p99 sat 3–7 ms above its median, with occasional sets of 84–122 ms. Typical Windows sources: the WDDM GPU driver model, deferred interrupt handling, background services such as backup software, and power management, including Modern Standby (see the recommendations).</li>
+        <li><b>Not separated yet.</b> OS and GPU vendor change together between these two machines. Booting the Pro Max Slim from an Ubuntu USB stick and rerunning on the same RTX 2000 Ada would separate them.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Real-time capability</th><th>EVO-X2</th><th>Pro Max Slim, channels-last</th></tr></thead>
+      <tbody>
+        <tr><td>3 cameras, idle, default pair (p50 / p99)</td><td class="mono">8.8 / 9.0 ms</td><td class="mono">12.5 / 15.1 ms (12.2 / 16.2 with graphs)</td></tr>
+        <tr><td>3 cameras, recording, default pair</td><td class="mono">9.2 / 9.6 ms</td><td class="mono">15.4 / 22.8 ms (11.4 / 11.8 pinned, High priority)</td></tr>
+        <tr><td>3 real cameras, Arduino-triggered at 60 fps, default pair</td><td class="mono">9.2 / 9.6 ms</td><td class="mono">11.5 / 11.7 ms pinned, High priority</td></tr>
+        <tr><td>Model sizes fitting 60 fps while recording</td><td><span class="pill part">13 / 32</span></td><td><span class="pill miss">0 / 32</span> unpinned; <span class="pill part">8 / 32</span> pinned, High priority</td></tr>
+        <tr><td>Model sizes fitting 30 fps while recording</td><td><span class="pill ok">32 / 32</span></td><td><span class="pill part">28 / 32</span> unpinned; <span class="pill ok">32 / 32</span> pinned</td></tr>
+        <tr><td>Full live pipeline, trained models, 3 real cameras</td><td class="mono">60 fps, ~9 detections per set: 11.6 / 12.7 ms inference, 0 skipped; 5 mice replayed: 15.0 / 16.3 ms, 0 skipped</td><td class="mono">30 fps, 3 mice: 27.4 / 28.1 ms inference, unpinned</td></tr>
+        <tr><td>8 cameras</td><td>about 35–40 fps at best</td><td>not tested; GPU-bound, so likely slower</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div style="display:grid;gap:10px">
+    <h3>Pinning and Windows settings on the Pro Max Slim</h3>
+    <p class="col">Four fastest model pairs while recording 3 cameras at 80 fps, mean of the four, p50 / p99. "After" adds a High Performance power plan, browsers and editors set to the Intel iGPU, and nobody signed in.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Inference</th><th>campy and encoders</th><th class="num">Before</th><th class="num">After</th></tr></thead>
+        <tbody>
+          <tr><td>Not pinned</td><td>Not pinned</td><td class="num">17.6 / 23.5 ms</td><td class="num">13.4 / 16.2 ms</td></tr>
+          <tr><td>Performance cores</td><td>Not pinned</td><td class="num">13.4 / 16.8 ms</td><td class="num">11.8 / 16.4 ms</td></tr>
+          <tr><td>Performance cores</td><td>Efficiency cores</td><td class="num">11.8 / 16.0 ms</td><td class="num">11.7 / 14.8 ms</td></tr>
+          <tr><td>Performance cores, High priority</td><td>Efficiency cores</td><td class="num"><b>11.8 / 12.3 ms</b></td><td class="num"><b>11.9 / 12.1 ms</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div style="display:grid;gap:10px" class="col">
+    <h3>What could close the gap on the Pro Max Slim, cheapest first</h3>
+    <ol class="plain">
+      <li>Always run the models channels-last: free, and the fastest setting on Nvidia. <code>campy-live</code> does this by default on Nvidia GPUs.</li>
+      <li>Pin inference to the performance cores at High priority, with the recording on the efficiency cores: measured in the benchmark, and the biggest single gain (table above), but not yet built into <code>campy-live</code>. A High Performance power plan and keeping desktop apps off the inference GPU help when inference isn't pinned. Still untested: Nvidia's TCC driver mode for the inference card (needs administrator rights, no display on that card and a reboot; support on the RTX 2000 Ada not checked).</li>
+      <li>A faster GPU: once the GPU is fast enough, CUDA graphs bring Windows down to a 5–8 ms floor (RTX 6000 Ada). The monitor-free RTX 4000 Ada test will show whether a mid-range card gets there.</li>
+      <li>Linux on the same hardware, which would also settle the OS question.</li>
+      <li>Software: fewer GPU waits in sleap-nn's post-processing, such as batched peak finding without per-frame <code>.item()</code> calls. This would help Windows most, on any hardware.</li>
+    </ol>
+  </div>
+</section>
+
+<section>
+  <h2>End to end with trained models, on the EVO-X2</h2>
+  <p class="col">The benchmark above times inference alone with untrained models. These tests ran the whole live pipeline instead: campy recorded three real FLIR cameras triggered at 60 fps, and <code>campy-live</code> took every synchronized set, ran 2D pose inference, matched animals across cameras and triangulated them in 3D, for 12 minutes (43,200 sets). The first two runs used a centroid model at 0.25 input scale (16 filters, max stride 16, output stride 2), untrained and then trained, with a centered-instance model on 192 px crops (24 filters, max stride 16). The third ran the current code, which loads the models before the cameras start and does the 3D step alongside inference, with the same centroid model and a centered-instance model on 160 px crops (24 filters, max stride 32). "Frame to 3D pose" is measured from the moment the last of a set's three frames arrived.</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th></th><th>Untrained models</th><th>Trained, 192 px crops</th><th>Trained, 160 px crops, current code</th></tr></thead>
+      <tbody>
+        <tr><td>Sets processed</td><td class="mono">43,200, none skipped</td><td class="mono">43,189; 11 skipped, all at start-up</td><td class="mono">43,200 from the first frame, none skipped</td></tr>
+        <tr><td>Inference, median / p99</td><td class="mono">10.3 / 11.1 ms</td><td class="mono">11.1 / 12.4 ms</td><td class="mono">11.6 / 12.7 ms</td></tr>
+        <tr><td>Frame to 3D pose, median / p99 / worst</td><td class="mono">11.9 / – / 16.3 ms</td><td class="mono">12.6 / – / 16.2 ms <span class="meta">after the first set</span></td><td class="mono">13.2 / 14.5 / 17.9 ms</td></tr>
+        <tr><td>First set</td><td class="mono">fast</td><td class="mono">201 ms</td><td class="mono">14.7 ms</td></tr>
+        <tr><td>Cross-view matching and triangulation</td><td class="mono">0.94 ms</td><td class="mono">0.84 ms</td><td class="mono">0.77 ms, alongside inference</td></tr>
+        <tr><td>Recording</td><td colspan="3">43,200 frames per camera in every run, none dropped or lost</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="meta">The first two runs' 1-in-1,000 frame-to-3D times were 13.7 and 14.6 ms; the third run reported p99 instead.</p>
+  <ul class="plain col">
+    <li><b>Every set was ready within one frame interval.</b> The trained models left about 4 ms of the 16.7 ms budget in all three runs.</li>
+    <li><b>The slow first set is fixed.</b> It used to take about 200 ms, because the warm-up ran on blank frames, which never exercise the steps that crop around each animal found. The warm-up now runs the whole model with every possible number of animals found, so on three real cameras the first set took 13.4–14.7 ms and none were skipped. No need to start recording early for it.</li>
+    <li><b>Start <code>campy-live</code> before the recording.</b> It now loads and warms up its models first, which takes 5–18 s depending on the machine, then waits for the cameras, so it analyses the recording from frame 1. Before this change it missed about the first 5 s of every recording.</li>
+    <li><b>The 3D positions here only show timing.</b> These cameras weren't calibrated and no animals were in view: two overexposed cameras gave the models 4–5 false detections per frame, and the third gave none, so the models handled about 9 crops per set instead of the 15 that 5 mice give. The 5-mouse replay below is the test at full load.</li>
+    <li><b>Disk.</b> No SSD pauses happened during these runs. Pauses of up to 16 s happened at other times on the same machine; campy's 60 s write buffer and background saving of logs and frame times keep such pauses from stalling recording or inference.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Five mice through the live pipeline, on the EVO-X2</h2>
+  <p class="col">60 s of real footage of 5 mice from 3 calibrated cameras was fed into the live pipeline at 60 fps, as if the cameras were recording it, and <code>campy-live</code> ran the full pipeline: 2D inference, cross-view matching, identity tracking and 3D. Its 2D and 3D were compared with offline SLEAP predictions of the same session. All three centered-instance models were paired with the same centroid model (0.25 input scale, 16 filters, max stride 16, output stride 2).</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Centered-instance model</th><th class="num">Benchmark p99</th><th class="num">Live inference p50 / p99</th><th class="num">Sets skipped</th><th class="num">3D vs offline, median / p90</th><th class="num">2D vs offline</th><th class="num">Identity kept</th></tr></thead>
+      <tbody>
+        <tr><td>192 px crops, 24 filters, max stride 16</td><td class="num">15.3 ms</td><td class="num">15.9 / 17.5 ms</td><td class="num"><span class="pill miss">4.6%</span></td><td class="num">4.2 / 10.5 mm</td><td class="num">3.8 px</td><td class="num">91.8%</td></tr>
+        <tr><td>192 px crops, 16 filters, max stride 16</td><td class="num">10.6 ms</td><td class="num">12.0 / 13.1 ms</td><td class="num"><span class="pill ok">0</span></td><td class="num">4.4 / 11.4 mm</td><td class="num">4.0 px</td><td class="num">94.9%</td></tr>
+        <tr><td>160 px crops (320 px at half scale), 24 filters, max stride 32</td><td class="num">14.0 ms</td><td class="num">15.4 / 16.6 ms</td><td class="num"><span class="pill part">2.4%</span></td><td class="num">4.2 / 10.6 mm</td><td class="num">3.8 px</td><td class="num"><b>99.9%</b></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="meta">Before the 3D step ran alongside inference. Benchmark p99: inference-only benchmark, 5 animals, idle. Identity kept: share of sets in which the live identities paired with the offline ones the same way.</p>
+  <p class="col">The 160 px model was as accurate as the 24-filter 192 px model and kept identities far better, but in this first version of the pipeline the 3D step ran after inference, and the two together didn't fit in 16.7 ms. Running the 3D step alongside inference fixed that:</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Same replay, old vs current code</th><th class="num">Sets skipped</th><th class="num">Frame to 3D, p50 / p99</th><th class="num">3D vs offline</th></tr></thead>
+      <tbody>
+        <tr><td>192 px, 24 filters · old</td><td class="num">311 of 3,523</td><td class="num">25.7 / 35.8 ms</td><td class="num">4.2 mm</td></tr>
+        <tr><td>192 px, 24 filters · current</td><td class="num">0 and 7 <span class="meta">(two runs)</span></td><td class="num">18.7–19.0 / 28.7–32.5 ms</td><td class="num">4.2 mm</td></tr>
+        <tr><td>160 px · old</td><td class="num">66 (2.4%)</td><td class="num">23.8 / 34.0 ms</td><td class="num">4.2 mm</td></tr>
+        <tr><td>160 px · current</td><td class="num"><b>0</b> <span class="meta">(two runs)</span></td><td class="num"><b>16.8 / 19.1–20.2 ms</b></td><td class="num">4.3 mm</td></tr>
+        <tr><td>192 px, 16 filters · current</td><td class="num">0</td><td class="num">13.9 / 15.2 ms</td><td class="num">4.5 mm</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <ul class="plain col">
+    <li><b>Accuracy was unchanged</b> by the new code: same 2D and 3D errors and identity switches.</li>
+    <li><b>The 24-filter 192 px model still has too little room.</b> Its inference takes about 15.7 ms of the 16.7 ms between frames, so a rare slow set (p99 17.6 ms) can still make it skip one. The 160 px model takes 14.9–15.0 ms (p99 16.2–16.3) and skipped nothing in either run.</li>
+    <li><b>The rule of thumb.</b> Live inference ran 1–1.7 ms above the benchmark at the median and 2–2.5 ms at p99. For 5 mice at 60 fps on the EVO-X2, pick a model whose benchmark p99 is about 14–14.5 ms or less.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>End to end on the Pro Max Slim, at 30 fps</h2>
+  <p class="col">The same live pipeline ran on the Pro Max Slim with three real FLIR cameras triggered at 30 fps by an Arduino, 3 mice in view, for 2 minutes. Models: the centroid model above and the 160 px-crop centered-instance model, fp16 and channels-last, with <code>campy-live</code> neither pinned to the performance cores nor at High priority, and without CUDA graphs.</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Pro Max Slim, 3 cameras at 30 fps</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td>Sets processed</td><td class="mono">3,595 of 3,600; 5 skipped, all in the first 0.3 s</td></tr>
+        <tr><td>Inference, median / p99</td><td class="mono">27.4 / 28.1 ms</td></tr>
+        <tr><td>Frame to 3D pose, median / p99</td><td class="mono">31 / 32 ms <span class="meta">(Windows' clock steps in 15.6 ms)</span></td></tr>
+        <tr><td>Recording</td><td class="mono">3,600 of 3,600 frames per camera, none dropped</td></tr>
+        <tr><td>Load</td><td class="mono">GPU about 71% busy, 1.3 GB; CPU 1–5%</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <ul class="plain col">
+    <li><b>It fits 30 fps, not 60.</b> Inference used 27.5 of the 33.3 ms per set. A fourth camera, or 40 fps, would not fit with this model pair as it runs now.</li>
+    <li><b>The first sets are still slow on CUDA.</b> Sets 1 and 4 took 125 and 110 ms, and the 5 sets that arrived meanwhile were skipped. The warm-up fix covers this on the EVO-X2 but not yet here.</li>
+    <li><b>Not tuned yet.</b> Pinning, High priority and CUDA graphs, which helped in the benchmark, aren't in <code>campy-live</code> yet, and this model pair wasn't benchmarked on this machine, so how much of the gap to the EVO-X2 they would close is not known.</li>
+    <li><b>Watching costs almost nothing.</b> With <code>campy-live-view</code> showing the tracking on the live frames, in 2D and 3D, inference was about 0.1 ms slower and no set was skipped. The view runs as its own program at low priority and needs 7–9 ms of one CPU core per picture.</li>
+  </ul>
+</section>
+
+<section class="col">
+  <h2>How this was measured, and what it doesn't cover</h2>
+  <ul class="plain">
+    <li>Benchmark: <code>bench/sleap_infer_bench.py</code> in the campy repo, timing sleap-nn 0.3.3's <code>TopDownLayer.predict</code> on 3 or 8 uint8 1280 × 1024 frames per set, with a device sync after every set.</li>
+    <li>Except in the end-to-end tests and the 5-mouse replay, models are untrained (random weights, built from sleap-nn configs). Run time doesn't depend on the weights; the centroid output is replaced with 5 peaks per frame so cropping always sees 5 animals.</li>
+    <li>Most tests used one real FLIR camera; the other "cameras" were ffmpeg encoding a looped FLIR clip in real time with campy's encoder settings, which load the encoder and CPU but not USB. Those recordings ran at 80 fps (3 cameras) and 60 fps (8 cameras on the EVO-X2). Each condition was measured once.</li>
+    <li>Both 3-camera rigs were then retested with three real FLIR Blackfly S cameras (BFS-U3-13Y3M), triggered at 60 fps by an Arduino running campy's trigger sketch, recording 35 minutes while the full sweep ran: the inference results matched the fake-camera runs. On the EVO-X2 this was done twice, plus once recording alone.</li>
+    <li>The 5-mouse replay decoded 60 s (3,600 frames per camera) of a recorded session into campy's live feed at 60 fps. The old-vs-current comparison uses a replay that creates the feed 3 s before the first frame, as campy does before the trigger. Runs that overlapped other GPU work were discarded and repeated; later runs on the EVO-X2 hold a lock that checks nothing else touches the GPU or the trigger.</li>
+    <li>The Pro Max Slim's live run used a separate software stack from its benchmark (torch 2.11.0+cu128, sleap-nn 0.3.3).</li>
+    <li>Windows machines run the GPUs under WDDM; no kernel-log equivalent of Linux's amdgpu messages was checked there.</li>
+    <li>Pinning and the Windows changes were measured on the four fastest model pairs in two 21-minute recordings, before and after the changes, with a backup service running in both; the second recording's last minutes fell into Modern Standby and were discarded. All 32 model sizes were then measured pinned, in a separate recording with the backup service stopped and the screen timeout set to Never.</li>
+    <li>CUDA graphs were measured idle at 3 cameras only. Not yet tested: graphs while recording and at 8 cameras, the RTX 4000 Ada with no monitor attached, and the live pipeline on the Precision 7875.</li>
+  </ul>
+</section>
+
+<footer>
+  <p>Measured 18–20 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
+  <p class="meta">Version 11 · updated 20 October 2026 · reflects campy changes through pull request 86 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+</footer>
+</div>
+
+<script>
+// Rows for the chart: [group, label, sublabel, p50, p99]
+const rows = [
+  ["3 CAMERAS", "Precision 7875 · RTX 6000 Ada", "idle, CUDA graphs", 5.2, 5.4],
+  [null, "Precision 7875 · RTX 6000 Ada", "idle", 7.2, 7.7],
+  [null, "Precision 7875 · RTX 6000 Ada", "3 fake cameras, one chiplet", 8.4, 11.5],
+  [null, "Precision 7875 · RTX 6000 Ada", "+ 172 GB/s memory traffic", 9.3, 12.1],
+  [null, "EVO-X2 · Radeon 8060S", "idle", 8.8, 9.0],
+  [null, "EVO-X2 · Radeon 8060S", "recording, 80 fps", 9.2, 9.6],
+  [null, "EVO-X2 · Radeon 8060S", "3 real cameras, 60 fps", 9.2, 9.6],
+  [null, "Precision 7875 · RTX 4000 Ada", "idle, drives the monitor", 10.8, 18.0],
+  [null, "Pro Max Slim · RTX 2000 Ada", "idle, CUDA graphs", 12.2, 16.2],
+  [null, "Pro Max Slim · RTX 2000 Ada", "idle", 12.5, 15.1],
+  [null, "Pro Max Slim · RTX 2000 Ada", "recording, 80 fps", 15.4, 22.8],
+  [null, "Pro Max Slim · RTX 2000 Ada", "recording, pinned, High priority", 11.4, 11.8],
+  [null, "Pro Max Slim · RTX 2000 Ada", "3 real cameras, 60 fps, pinned", 11.5, 11.7],
+  ["8 CAMERAS", "Precision 7875 · RTX 6000 Ada", "idle", 9.2, 9.5],
+  [null, "EVO-X2 · Radeon 8060S", "idle", 24.2, 24.4],
+  [null, "EVO-X2 · Radeon 8060S", "recording, 60 fps", 27.6, 28.9],
+];
+(function draw() {
+  const svg = document.getElementById("chart");
+  const ns = "http://www.w3.org/2000/svg";
+  const W = 900, left = 300, right = 70, top = 34, rowH = 40, groupGap = 30;
+  const maxMs = 30, scale = (W - left - right) / maxMs;
+  const el = (tag, attrs, text) => { const e = document.createElementNS(ns, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; svg.appendChild(e); return e; };
+  let y = top, groups = 0;
+  const ys = rows.map(r => { if (r[0]) { y += groups ? groupGap : 0; groups++; r.gy = y; y += 22; } const yy = y; y += rowH; return yy; });
+  const H = y + 30;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  for (let t = 0; t <= maxMs; t += 5) {
+    const x = left + t * scale;
+    el("line", { x1: x, x2: x, y1: top - 8, y2: H - 30, class: "grid" });
+    el("text", { x: x, y: H - 12, "text-anchor": "middle", class: "sub" }, t + " ms");
+  }
+  const bx = left + 16.7 * scale;
+  el("line", { x1: bx, x2: bx, y1: top - 14, y2: H - 30, class: "budget" });
+  el("text", { x: bx + 5, y: top - 18, class: "budgettxt" }, "16.7 ms · 60 fps");
+  rows.forEach((r, i) => {
+    if (r[0]) el("text", { x: 8, y: r.gy + 12, class: "grp" }, r[0]);
+    const yy = ys[i];
+    el("text", { x: 8, y: yy + 14, class: "lab" }, r[1]);
+    el("text", { x: 8, y: yy + 30, class: "sub" }, r[2]);
+    const [p50, p99] = [r[3], r[4]];
+    if (p50 == null) { el("text", { x: left + 4, y: yy + 22, class: "sub" }, "pending"); return; }
+    el("rect", { x: left, y: yy + 6, width: p50 * scale, height: 20, class: "p50" });
+    el("rect", { x: left + p50 * scale, y: yy + 6, width: Math.max(0, (p99 - p50) * scale), height: 20, class: "tail" });
+    el("line", { x1: left + p99 * scale, x2: left + p99 * scale, y1: yy + 2, y2: yy + 30, class: "p99" });
+    el("text", { x: left + p99 * scale + 7, y: yy + 21 }, p50.toFixed(1) + " / " + p99.toFixed(1));
+  });
+})();
+
+// Fit table: [machine, condition, fit60, fit30, of, worst]
+const fit = [
+  ["Precision 7875 · RTX 6000 Ada", "3 cameras, idle, CUDA graphs", 32, 32, 32, "33 ms"],
+  ["Precision 7875 · RTX 6000 Ada", "3 cameras, idle", 32, 32, 32, "16 ms"],
+  ["Precision 7875 · RTX 6000 Ada", "8 cameras, idle", 28, 32, 32, "70 ms"],
+  ["EVO-X2", "3 cameras, idle", 18, 32, 32, "26 ms"],
+  ["EVO-X2", "3 cameras, recording 80 fps", 13, 32, 32, "29 ms"],
+  ["EVO-X2", "3 real cameras, Arduino-triggered, recording 60 fps", 12, 32, 32, "29 ms"],
+  ["EVO-X2", "8 cameras, idle", 0, 8, 32, "74 ms"],
+  ["EVO-X2", "8 cameras, recording 60 fps (4 fastest only)", 0, 3, 4, "35 ms"],
+  ["Precision 7875 · RTX 4000 Ada", "3 cameras, idle (monitor attached)", 0, 32, 32, "57 ms"],
+  ["Pro Max Slim · RTX 2000 Ada", "3 cameras, idle, CUDA graphs", 6, 31, 32, "84 ms"],
+  ["Pro Max Slim · RTX 2000 Ada", "3 cameras, idle", 4, 32, 32, "64 ms"],
+  ["Pro Max Slim · RTX 2000 Ada", "3 cameras, recording 80 fps", 0, 28, 32, "122 ms"],
+  ["Pro Max Slim · RTX 2000 Ada", "3 cameras, recording 80 fps, pinned, High priority", 8, 32, 32, "56 ms"],
+  ["Pro Max Slim · RTX 2000 Ada", "3 real cameras, Arduino-triggered, recording 60 fps, pinned, High priority", 8, 32, 32, "65 ms"],
+];
+const tb = document.getElementById("fit");
+for (const [m, c, f60, f30, of, worst] of fit) {
+  const cls = n => n === of ? "ok" : n === 0 ? "miss" : "part";
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<td>${m}</td><td>${c}</td><td class="num"><span class="pill ${cls(f60)}">${f60} / ${of}</span></td><td class="num"><span class="pill ${cls(f30)}">${f30} / ${of}</span></td><td class="num">${worst}</td>`;
+  tb.appendChild(tr);
+}
+</script>
