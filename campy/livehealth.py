@@ -38,8 +38,12 @@ The tracking (Tracking)
 -----------------------
 For each identity, from campy-live's rows (with --calibration): its
 reprojection error (campy-live's reproj_px, mean over the nodes) and how many
-cameras it was triangulated from, over the last 10 s. An identity with an
-error above --bad-px is drawn dimmed, its label in red. Warnings: fewer
+cameras it was triangulated from, over the last 10 s. An identity whose
+error's median over the last half second (Dimmed) is above --bad-px is drawn
+dimmed, its label in red: one row's error alone flickers, a mouse's 3D
+crossing 20 px 100 to 180 times a minute on 2026-10-20's recordings (its runs
+above lasting a median of 1 to 3 frames), the median over 0.5 s 13 to 26
+times, dimmed as much of the time (within 3 points). Warnings: fewer
 identities than campy-live's --animals with good 3D (2 cameras or more,
 within --bad-px, for half of the last second), and one identity's error
 (median over the last 2 s) far above the others' (3 times their median, and
@@ -55,6 +59,7 @@ WINDOW_S = 10.0 # the warnings count this many seconds back, and the strip shows
 OFFSET_S = 2.0 # the host-time offsets: of the frames of the last this many seconds
 KEEP = 512 # each camera's newest frames kept (17 s at 30 fps)
 GOOD_PX, BAD_PX = 10.0, 20.0 # a reprojection error within GOOD_PX is good; above BAD_PX (--bad-px) bad
+DIM_S = 0.5 # an identity is drawn dimmed while its error's median over this many seconds is above --bad-px
 
 
 def Duration(seconds):
@@ -293,7 +298,8 @@ class Tracking:
 	"""
 	Each identity's 3D over the last WINDOW_S, from the rows the view takes
 	(Add; kept in numpy arrays, about 450 rows at 30 fps): .Arrays() for the
-	strip, .Alerts() for the warnings.
+	strip, .Alerts() for the warnings, .Dimmed() for the identities to draw
+	dimmed.
 	"""
 
 	def __init__(self, animals, frameRate=30.0, bad_px=BAD_PX):
@@ -305,6 +311,7 @@ class Tracking:
 		self.taken = 0 # rows added
 		self.since = 0 # the first of them still in WINDOW_S
 		self.said = (None, []) # (rows added, the warnings then)
+		self.dimmed = (None, None) # ((rows added, frame), the identities dimmed then)
 
 	def Add(self, row):
 		if "points3d" not in row.dtype.names:
@@ -338,6 +345,34 @@ class Tracking:
 		frames, err, views = got
 		keep = frames > frames[-1] - seconds * self.frameRate
 		return frames[keep], err[keep], views[keep]
+
+	def Dimmed(self, frame=None):
+		"""
+		The identities to draw dimmed at frame (default: the newest row's):
+		{identity: px} of those whose error's median over the rows of the last
+		DIM_S is above bad_px. None when no row taken is of that frame (then
+		the row alone tells).
+		"""
+		key = (self.taken, frame)
+		if self.dimmed[0] == key:
+			return self.dimmed[1]
+		got = self.Arrays()
+		out = None
+		if got is not None:
+			frames, err, _ = got
+			if frame is None:
+				frame = frames[-1]
+			at = np.nonzero(frames == frame)[0]
+			if len(at):
+				k = at[-1]
+				keep = (frames[:k + 1] > frame - DIM_S * self.frameRate)
+				with warnings.catch_warnings():
+					warnings.simplefilter("ignore", RuntimeWarning) # an identity with no 3D in the window: NaN
+					med = np.nanmedian(err[:k + 1][keep], 0)
+				with np.errstate(invalid="ignore"):
+					out = {int(a): float(med[a]) for a in np.nonzero(med > self.bad)[0]}
+		self.dimmed = (key, out)
+		return out
 
 	def Alerts(self):
 		"""What to warn of: sentences (worked out again once a row has come)."""

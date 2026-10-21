@@ -1119,6 +1119,39 @@ def test_an_identity_with_a_high_error_is_drawn_dimmed():
 	assert like(tile, liveview.Color(0)).sum() > 50 and like(tile, liveview.WARN).sum() > 50
 
 
+def test_the_view_dims_by_the_last_half_second_not_one_row():
+	# One bad row amid good ones is not dimmed, one good row amid bad ones stays dimmed: the dimming does not
+	# blink (2026-10-20's recordings crossed --bad-px 100-180 times a minute, row by row)
+	cams, truth, keypoints, scores, order = mice()
+	viewer, frames = three_cameras(cams, None)
+	viewer.tracking = liveview.livehealth.Tracking(3, 30.0, 20.0)
+	def shown(n, error):
+		row = row_for(n, cams, truth, keypoints, scores, order)
+		row["reproj_px"][2] = error
+		viewer.tracking.Add(row)
+		image = viewer.Compose(frames, row)
+		red = sum(like(tile_of(viewer, image, c), liveview.WARN).sum() for c in range(3))
+		return row, red
+	for n in range(1, 31):
+		shown(n, 5.0)
+	row, red = shown(31, 234.0)
+	assert liveview.Bad(row, 20) == {2: 234.0} # the row alone: bad
+	assert viewer.Dimmed(row) == {} and red == 0 # the last half second: good
+	for n in range(32, 61):
+		shown(n, 234.0)
+	row, red = shown(61, 5.0)
+	assert liveview.Bad(row, 20) == {}
+	assert viewer.Dimmed(row) == {2: 234.0} and red > 50 # dimmed still, its label "#2  bad 3D: 234 px" in red
+	assert "#2: from 3 cameras, reprojection 5.0 px; median over 0.5 s 234 px: above 20 px, drawn dimmed" in \
+		" ".join(text for text, _ in viewer.PanelText(row))
+	# A row the tracking did not take: the row alone; --bad-px 0: none
+	other = row_for(999, cams, truth, keypoints, scores, order)
+	other["reproj_px"][1] = 50
+	assert viewer.Dimmed(other) == {1: 50.0}
+	viewer.args.bad_px = 0
+	assert viewer.Dimmed(row) == {} and viewer.Dimmed(other) == {}
+
+
 def paced(writers, frames, fps, host_offset=None, skip=None, step=None):
 	# Frames 1..frames into each camera's ring at fps, as campy writes them (host_offset: {camera: ns};
 	# skip: (camera, frame) never written), calling step() after each

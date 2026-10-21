@@ -151,6 +151,39 @@ def test_tracking_alerts_when_too_few_identities_have_good_3d():
 	assert tracking.Alerts() == ["Good 3D for 2 of 3 animals: #1 not found in 3D"]
 
 
+def test_tracking_dims_by_the_median_over_the_last_half_second():
+	# One row's error crossed --bad-px 100-180 times a minute on 2026-10-20's recordings: the view dims an
+	# identity while its error's median over the last DIM_S (15 rows at 30 fps) is above it
+	tracking = livehealth.Tracking(3, 30.0, 20.0)
+	assert tracking.Dimmed() is None # no row yet
+	def take(errors, start):
+		dimmed = []
+		for k, row in enumerate(rows(n=len(errors)), start):
+			row["frame"] = k
+			row["reproj_px"] = np.asarray(errors[k - start], float)[:, None]
+			tracking.Add(row)
+			dimmed.append(tracking.Dimmed())
+		return dimmed
+	# #2 bad a row in 3 (runs of one frame): never dimmed, though a third of its rows are above 20 px
+	assert all(d == {} for d in take([(3.0, 4.0, 234.0 if k % 3 == 2 else 5.0) for k in range(60)], 1))
+	# Bad from frame 91 on: dimmed once 8 of the last 15 rows are (frame 98, a quarter of a second later), with
+	# the median's px for its label
+	take([(3.0, 4.0, 5.0)] * 30, 61)
+	dimmed = take([(3.0, 4.0, 234.0)] * 30, 91)
+	assert [k for k, d in enumerate(dimmed, 91) if d] == list(range(98, 121)) and dimmed[-1] == {2: 234.0}
+	# Good again from frame 121: one good row does not undim it; the 8th does
+	dimmed = take([(3.0, 4.0, 5.0)] * 30, 121)
+	assert [k for k, d in enumerate(dimmed, 121) if d] == list(range(121, 128))
+	# At an earlier frame, the half second before it; a frame it never took: None (the row alone tells)
+	assert tracking.Dimmed(100) == {2: 234.0} and tracking.Dimmed(130) == {} and tracking.Dimmed(999) is None
+	# No 3D in the window: not dimmed; --bad-px 0: none
+	take([(3.0, 4.0, np.nan)] * 20, 151)
+	assert tracking.Dimmed() == {}
+	tracking = livehealth.Tracking(3, 30.0, 0)
+	take([(3.0, 4.0, 234.0)] * 30, 1)
+	assert tracking.Dimmed() == {}
+
+
 def test_tracking_keeps_the_last_10_s():
 	tracking = livehealth.Tracking(3, 30.0, 20.0)
 	for row in rows(n=600):
