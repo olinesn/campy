@@ -119,7 +119,9 @@ campy-live-view's c key moves them back and forth while they run.
 replays it in one go (a CUDA graph), instead of launching its hundred or so
 GPU operations one by one, each costing the CPU some microseconds: the
 results are the same, and campy-live says how far from the same they were
-when it made the graphs (0 is the same).
+when it made the graphs (0 is the same). Each count of animals found is
+another shape, so another graph: a model's graphs share one pool of GPU
+memory (CUDAGraphed), and campy-live says how much they hold.
 
 With --results-feed on (the default), each row also goes into shared memory,
 campy-live-results (campy/liveresults.py), as it is logged: campy-live-view
@@ -387,9 +389,11 @@ class TopDown:
 		if not self.graphs:
 			return None
 		diff = max(g.max_abs_diff for g in self.graphs)
-		return "CUDA graphs: {} made; their output {} (largest difference {:g})".format(
-			sum(len(g.graphs) for g in self.graphs), "the same as without" if diff == 0 else "differs from without",
-			diff)
+		pooled = PoolBytes(set().union(*(g.Pools() for g in self.graphs)))
+		return "CUDA graphs: {} made{}; their output {} (largest difference {:g})".format(
+			sum(len(g.graphs) for g in self.graphs),
+			"" if pooled is None else ", holding {:.0f} MB of GPU memory".format(pooled / 1e6),
+			"the same as without" if diff == 0 else "differs from without", diff)
 
 
 class CUDAGraphed:
@@ -397,11 +401,28 @@ class CUDAGraphed:
 	A model's forward pass recorded as a CUDA graph for each shape of input,
 	and replayed (--cuda-graphs; bench/sleap_infer_bench.py's): one launch
 	instead of the hundred or so of its operations. With fp16, the autocast
-	is inside the graph, with its weight cache off, as recording needs. The
-	output it returns is the graph's own, valid until its next call (the
-	layers are done with it by then). max_abs_diff: the largest difference
-	from the forward pass run without a graph, on the inputs recorded.
+	is inside the graph, with its weight cache off, as recording needs.
+	max_abs_diff: the largest difference from the forward pass run without a
+	graph, on the inputs recorded.
+
+	Memory: a graph keeps the GPU memory its operations used while it was
+	recorded, for replays to use again. The instance model gets a graph for
+	each count of animals found, up to cameras x --max-instances (15 at 3
+	cameras, 40 at 8), and in the benchmark 28 graphs with a pool each held
+	8.1 GB of an RTX 6000 Ada's memory. So all of a model's graphs record into
+	one pool (SHARE_POOL), as the benchmark's do (1.4 GB): the graphs run one
+	at a time, on one stream, so their working memory can be the same.
+
+	The output: each graph writes its output into a tensor of its own, made
+	before the recording and so outside the shared pool, and returns it,
+	valid until that graph's next call. In the pool, a graph recorded later
+	could have been given, for its output, memory that an earlier graph works
+	in, and that graph's next replay would overwrite it, even though only the
+	count that came next was replayed. Writing the output is the cast to
+	float32 the layers want, done anyway with fp16, so it adds no work there.
 	"""
+
+	SHARE_POOL = True # False: a pool per graph, as before (to measure)
 
 	def __new__(cls, inner, fp16):
 		import torch
@@ -412,11 +433,19 @@ class CUDAGraphed:
 				self.inner = inner
 				self.fp16 = fp16
 				self.graphs = {} # (shape, dtype, strides) -> (graph, input, output)
+				self.pool = torch.cuda.graph_pool_handle() if cls.SHARE_POOL else None
 				self.max_abs_diff = 0.0
 
-			def Eager(self, x):
+			def Raw(self, x):
 				with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.fp16, cache_enabled=False):
-					return self.inner(x).float()
+					return self.inner(x)
+
+			def Eager(self, x):
+				return self.Raw(x).float()
+
+			def Pools(self):
+				# the memory pools the graphs recorded into
+				return {self.pool} if self.pool is not None else {g.pool() for g, _, _ in self.graphs.values()}
 
 			def Capture(self, x):
 				static_in = x.clone()
@@ -424,13 +453,16 @@ class CUDAGraphed:
 				side.wait_stream(torch.cuda.current_stream())
 				with torch.cuda.stream(side):
 					for _ in range(3): # cuDNN's and cuBLAS's first calls, outside the recording
-						self.Eager(static_in)
+						warm = self.Eager(static_in)
 				torch.cuda.current_stream().wait_stream(side)
+				static_out = torch.empty_like(warm) # outside the pool (see the class's doc)
+				del warm
 				graph = torch.cuda.CUDAGraph()
 				# thread_local: the GPU clock's threads (GpuClock) may launch
 				# meanwhile, on streams of their own (FixedStream)
-				with torch.cuda.graph(graph, stream=FixedStream("capture"), capture_error_mode="thread_local"):
-					static_out = self.Eager(static_in)
+				with torch.cuda.graph(graph, pool=self.pool, stream=FixedStream("capture"),
+						capture_error_mode="thread_local"):
+					static_out.copy_(self.Raw(static_in))
 				graph.replay()
 				diff = (static_out - self.Eager(static_in)).abs().max().item() if static_out.numel() else 0.0
 				self.max_abs_diff = max(self.max_abs_diff, diff)
@@ -446,6 +478,19 @@ class CUDAGraphed:
 				return static_out
 
 		return Graphed()
+
+
+def PoolBytes(pools):
+	"""
+	The GPU memory torch holds in these graph memory pools, in bytes (from
+	torch.cuda.memory_snapshot()); None if it can't say.
+	"""
+	import torch
+	pools = {tuple(p) for p in pools}
+	try:
+		return sum(s["total_size"] for s in torch.cuda.memory_snapshot() if tuple(s["segment_pool_id"]) in pools)
+	except (KeyError, TypeError, RuntimeError):
+		return None
 
 
 _STREAMS, _STREAMS_LOCK = {}, threading.Lock()
