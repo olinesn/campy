@@ -45,8 +45,11 @@ What is measured
   launches cost one launch. sleap-nn's peak finding and cropping stay as they
   are: they make data-dependent decisions (nonzero, .item()) that a graph
   cannot record. A graph only replays the shapes it was captured with; a new
-  shape (another crop count) is captured again. fp16 then runs under the
-  wrapper's own autocast with its weight cache off, as graph capture requires.
+  shape (another crop count) is captured again, into one memory pool shared
+  by all of that model's graphs (without it, 28 crop counts at 8 cameras held
+  8.1 GB instead of 1.4 GB). bench/cuda_graph_crop_check.py checks graphs
+  against the eager forward when the count changes every set. fp16 then
+  runs under the wrapper's own autocast with its weight cache off, as graph capture requires.
   Each row records the largest difference between the graph's output and the
   eager forward on the capture input. torch.compile's reduce-overhead mode does
   the same automatically but needs Triton, which Windows lacks.
@@ -390,6 +393,7 @@ class CUDAGraphed(torch.nn.Module):
         self.inner = inner
         self.fp16 = fp16
         self.graphs = {}  # (shape, dtype) -> (graph, static_in, static_out)
+        self.pool = None  # memory pool shared by all of this model's graphs
         self.max_abs_diff = 0.0
 
     def _eager(self, x):
@@ -406,9 +410,13 @@ class CUDAGraphed(torch.nn.Module):
                 self._eager(static_in)
         torch.cuda.current_stream().wait_stream(side)
         graph = torch.cuda.CUDAGraph()
+        # One pool for every shape: the graphs never run at the same time, so
+        # their intermediates can share memory (each output stays allocated).
         # thread_local: --hold-clock's thread may launch its spin meanwhile
-        with torch.cuda.graph(graph, capture_error_mode="thread_local"):
+        with torch.cuda.graph(graph, pool=self.pool, capture_error_mode="thread_local"):
             static_out = self._eager(static_in)
+        if self.pool is None:
+            self.pool = graph.pool()
         graph.replay()
         diff = (static_out - self._eager(static_in)).abs().max().item()
         self.max_abs_diff = max(self.max_abs_diff, diff)
