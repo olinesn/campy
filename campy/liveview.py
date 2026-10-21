@@ -27,10 +27,8 @@ What it draws on each camera's frame
 ------------------------------------
 - 3D (campy-live with --calibration): each animal's 3D pose, projected into
   the camera through the calibration (lens distortion included): filled dots
-  and thick lines, one colour per identity. Its label: the identity, how many
-  cameras it was triangulated from, and how far, in this camera, its
-  projection is from the 2D it was made from (px, mean over the nodes),
-  above the animal, or a line up or down where another's label (or the
+  and thick lines, one colour per identity. Its label: the identity, and how
+  many cameras it was triangulated from when not all, above the animal, or a line up or down where another's label (or the
   tile's name line, or its frames a second) is there: none covers another.
 - 2D: what the model found in this camera: open circles and thin lines, in
   the colour of the identity campy-live matched them to, white when it
@@ -524,8 +522,6 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 				continue
 			p = p[ok]
 			label = "#{}".format(a)
-			if np.isfinite(offsets[a]):
-				label += "  {:.0f} px".format(offsets[a])
 			views = int(row["n_views"][a])
 			if views < len(row["members"][a]): # not every camera
 				label += "  ({} cam{})".format(views, "" if views == 1 else "s")

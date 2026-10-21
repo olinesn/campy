@@ -239,9 +239,9 @@ def test_2d_only_results_are_drawn_unmatched():
 
 def test_a_label_goes_a_line_up_or_down_where_another_is():
 	labels = liveview.Labels(130)
-	asked = [("#0  10 px", (50, 100)), ("#2  21 px", (60, 100)), ("#1", (55, 100)), ("#3", (56, 98))]
+	asked = [("#0  (2 cams)", (50, 100)), ("#2  (2 cams)", (60, 100)), ("#1", (55, 100)), ("#3", (56, 98))]
 	placed = [labels.Place(text, at, 0.45) for text, at in asked]
-	(w, h), base = liveview.TextSize("#0  10 px", 0.45)
+	(w, h), base = liveview.TextSize("#0  (2 cams)", 0.45)
 	line = h + base + 5 # a box's height, and the pixel between
 	assert placed[:3] == [(50, 100), (60, 100 - line), (55, 100 + line)] # where asked; then up first, then down
 	assert placed[3] == (56, 100 - 2 * line) # the nearest place free: 2 lines up (4 px nearer than down)
@@ -251,8 +251,8 @@ def test_a_label_goes_a_line_up_or_down_where_another_is():
 	assert not any(liveview.Over(a, b) for k, a in enumerate(boxes) for b in boxes[:k])
 	# Not over what is taken (the tile's name line), nor above the tile
 	name = liveview.TextBox("1  Camera0  frame 9,149  0:05:04.93  found 3", (liveview.PAD, liveview.PAD + 12), 0.5)
-	at = liveview.Labels(100, taken=[name]).Place("#0  10 px", (20, 15), 0.45)
-	box = liveview.TextBox("#0  10 px", at, 0.45)
+	at = liveview.Labels(100, taken=[name]).Place("#0  (2 cams)", (20, 15), 0.45)
+	box = liveview.TextBox("#0  (2 cams)", at, 0.45)
 	assert at[0] == 20 and box[1] > name[3]
 	# Nowhere free: where it was asked
 	assert liveview.Labels(10, taken=[(0, 0, 640, 10)]).Place("#0", (20, 8), 0.45) == (20, 8)
