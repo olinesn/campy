@@ -53,25 +53,47 @@ The calibration's world is often its first camera's, and knows nothing of the
 floor: up is at first away from where the cameras look, then the plane the
 animals' middles move in (--up x,y,z sets it), and the floor is under their
 lowest well triangulated nodes. It draws in about 1 ms (the grid and cameras
-are drawn again only when the view of them moves). Its own drawing with
-numpy and cv2, in this window, rather than matplotlib or a browser: no other
-package or program, the same row as the cameras' tiles by construction, and
-cheap enough to draw at 30 a second.
+are drawn again only when the view of them moves).
+
+On its floor, each identity's trail: where its middle went over the last
+--trail-seconds (60), in its colour, fading with age, broken where it was
+not seen for a second (t, or the panel's button, shows or hides them). And
+the occupancy (o, or --occupancy at first): the floor's cells (a quarter of
+a grid square) where the animals' middles have been, the more often the
+lighter, since campy-live's results began or over the last --heat-minutes.
+Both count only well triangulated animals (as the floor's levelling: 2
+cameras or more, reprojected within 10 px), so false 3D from a detection
+outside the cage in one camera does not paint them. The occupancy is drawn
+into the grid's picture, again once a second; the trails each view (about
+1.5 ms for 3 mice over 60 s).
+
+The 3D view is its own drawing with numpy and cv2, in this window, rather
+than matplotlib or a browser: no other package or program, the same row as
+the cameras' tiles by construction, and cheap enough to draw at 30 a second.
 
 The panel lists each identity's cameras and reprojection error (campy-live's:
 mean over nodes and cameras, undistorted px), and how late the results and
 the view are.
 
 Buttons in the panel turn the predictions (the 2D), the reprojections (the
-3D) and the lines on or off, as do the keys d, p and l, and the 3D view, as
-does \\ (--no-3d: off at first).
+3D) and the lines on or off, as do the keys d, p and l, the 3D view, as
+does \\ (--no-3d: off at first), and its trails and occupancy, as do t and o.
 
 Every camera (the grid) or one alone (single view), with LUC3D's keys: v one
 camera alone, the one last picked (clicked, or the last shown alone; an
 outline marks it in the grid), with the 3D beside it unless \\ closed it; g
 the grid; the arrows the previous or next camera (wrapping; in the grid,
 which one v shows); a double click on a camera's tile shows it alone, or the
-grid again. Also 1-9 that camera alone, 0 or a the grid.
+grid again. Also 1-9 that camera alone, a the grid.
+
+Zoom, as LUC3D's: the wheel over a camera's tile zooms its picture about
+the mouse (a drag on it then moves the picture; a click without one still
+picks the camera); + or = and - or _ zoom every camera shown (1.2 times a
+press, about each one's middle); 0 shows every camera's whole frame again;
+shift 0 one frame pixel for one screen pixel (again: the whole frames). The
+drawing goes with the zoom: it is drawn on the part of the frame shown, cut
+out before it is scaled, so a zoomed tile costs no more than a whole one.
+Each camera keeps its zoom from the grid to the single view and back.
 
 Other keys, in its window: z the window to the view's size (no black
 margins); space pause (the keys, buttons and the 3D view's mouse still work
@@ -79,8 +101,11 @@ on the paused view); s save the view as a PNG (into --png, or the current
 folder); q or Esc quit.
 
 Qt's window (campy/liveviewqt.py; PyQt5, as campy's preview windows) shows
-the same view beside a panel of Qt's own checkboxes, buttons and text;
-OpenCV's draws the panel into the view. Both take the same keys and mouse.
+the same view beside a panel of Qt's own checkboxes, buttons and text, and
+draws the tiles' text (names, frames, labels) over the view in Qt's fonts,
+sharp at any size, where OpenCV's would be: the Viewer hands it over (Words)
+instead of drawing it. OpenCV's window draws the panel and the text into
+the view. Both take the same keys and mouse.
 
 The window opens at --size, or what the screen allows of it, and comes to
 the front when it opens and when a recording's frames come (also from
@@ -111,8 +136,9 @@ DIM = (150, 150, 150)
 BOX = (25, 25, 25)
 BUTTON_ON = (90, 70, 20) # a button that is on (BGR: dark blue)
 PICKED = (255, 200, 80) # the outline of the camera picked, in the grid (light blue)
-KEYS = ("Keys: v one camera, g all (grid), arrows the previous or next camera, 1-{} that camera; d predictions, "
-	"p reprojections, l lines{}; z window to the view; space pause, s save, q quit")
+KEYS = ("Keys: v one camera, g all (grid), arrows the previous or next camera, 1-{} that camera; wheel or + and - "
+	"zoom a camera (drag: move it), 0 the whole frame, shift 0 one pixel for one; d predictions, p reprojections, "
+	"l lines{}; z window to the view; space pause, s save, q quit")
 SHIFT = 4 # cv2's subpixel bits
 RADIUS_2D, RADIUS_3D = 4, 2 # px: a detection's open circles, a 3D node's dot
 FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -142,9 +168,10 @@ def Project(camera, X):
 	return px
 
 
-def Points(px, scale):
-	# Pixels of the frame (N, 2) -> which are drawable, and where in the tile, with SHIFT subpixel bits
-	px = np.asarray(px, float) * scale
+def Points(px, scale, origin=(0, 0)):
+	# Pixels of the frame (N, 2) -> which are drawable, and where in the tile (the frame's origin at its
+	# top left, at scale), with SHIFT subpixel bits
+	px = (np.asarray(px, float) - origin) * scale
 	ok = np.isfinite(px).all(-1) & (np.abs(px) < 1e5).all(-1)
 	q = np.zeros(px.shape, np.int64)
 	q[ok] = np.round(px[ok] * (1 << SHIFT))
@@ -158,9 +185,9 @@ def Centre(px):
 	return px[ok].mean(0) if ok.any() else None
 
 
-def DrawSkeleton(img, px, scale, edges, color, radius, thickness, filled):
-	"""An animal's nodes (N, 2, pixels of the frame) and edges, on img (a tile of the frame at scale)."""
-	ok, pts = Points(px, scale)
+def DrawSkeleton(img, px, scale, edges, color, radius, thickness, filled, origin=(0, 0)):
+	"""An animal's nodes (N, 2, pixels of the frame) and edges, on img (a tile of the frame at scale, from origin)."""
+	ok, pts = Points(px, scale, origin)
 	lines = [(a, b) for a, b in (edges or ()) if a < len(ok) and b < len(ok) and ok[a] and ok[b]]
 	nodes = np.nonzero(ok)[0]
 	for col, extra in ((OUTLINE, 2), (color, 0)): # the outline under the colour
@@ -173,9 +200,13 @@ def DrawSkeleton(img, px, scale, edges, color, radius, thickness, filled):
 				cv2.circle(img, pts[i], radius << SHIFT, col, thickness + extra, cv2.LINE_AA, SHIFT)
 
 
-def Text(img, text, at, color=TEXT, size=0.5, box=True):
+def Text(img, text, at, color=TEXT, size=0.5, box=True, words=None):
 	# Text at (x, y) of its baseline's left end, on a dark box (an outline drawn thicker than the
-	# text comes out wider than it in OpenCV 5's font, and off to one side)
+	# text comes out wider than it in OpenCV 5's font, and off to one side). With words (a tile's
+	# Pen), not drawn: handed to the window, to draw over the image in its own fonts
+	if words is not None:
+		words.Add(text, at, color, size, box)
+		return
 	x, y = int(at[0]), int(at[1])
 	if box:
 		(w, h), base = cv2.getTextSize(text, FONT, size, 1)
@@ -196,19 +227,58 @@ def Wrap(text, width, size):
 	return lines + [line]
 
 
+class Words:
+	"""
+	The view's text, for a window that draws it over the image in its own
+	fonts (Qt's) rather than have it drawn into the image with OpenCV's.
+	Items: (text, x, y, colour (BGR), size (OpenCV's font scale), box, clip):
+	x, y the left end of the baseline in the view's image, as Text's (x None:
+	10 px after the item before), box whether on a dark box, clip the tile's
+	(x, y, width, height), which the text is cut to. Tile gives the Pen a
+	tile's text goes to; drawing the tile again replaces its items.
+	"""
+
+	def __init__(self):
+		self.parts = {}
+
+	def Tile(self, name, y, x, h, w):
+		self.parts[name] = []
+		return Pen(self.parts[name], x, y, (x, y, w, h))
+
+	def Items(self):
+		return [item for part in self.parts.values() for item in part]
+
+
+class Pen:
+	# Where a tile's text goes: its items, at the tile's place in the view's image
+	def __init__(self, items, x, y, clip):
+		self.items, self.x, self.y, self.clip = items, x, y, clip
+
+	def Add(self, text, at, color, size, box):
+		x = None if at[0] is None else int(at[0]) + self.x
+		self.items.append((text, x, int(at[1]) + self.y, tuple(int(v) for v in color), size, box, self.clip))
+
+
 def Has3D(row):
 	return row is not None and "points3d" in row.dtype.names
 
 
-def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=True, lines=True):
+def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=True, lines=True, origin=(0, 0),
+		frame=None, words=None):
 	"""
 	Camera c's part of a results row on img, its frame at scale (a number, or
-	x and y): its 2D detections, and with camera (its pose3d.Camera) each
-	animal's 3D projected into it. Returns {identity: mean px, in this
-	camera, between its projected 3D and the detection it was made from
-	(NaN: no detection here)} for the identities with 3D.
+	x and y) from origin (the frame's pixel at the tile's top left: zoomed,
+	the part of the frame shown): its 2D detections, and with camera (its
+	pose3d.Camera) each animal's 3D projected into it. frame, the frame's
+	width and height (default: what the tile shows): the 3D off it is listed
+	at the tile's foot. words: a Pen for the text (Text). Returns {identity:
+	mean px, in this camera, between its projected 3D and the detection it
+	was made from (NaN: no detection here)} for the identities with 3D.
 	"""
 	scale = np.broadcast_to(np.asarray(scale, float), (2,))
+	origin = np.asarray(origin, float)
+	if frame is None:
+		frame = origin + np.array(img.shape[1::-1]) / scale
 	kp = np.asarray(row["keypoints"][c], float) # (instances, nodes, 2)
 	found = [i for i in range(len(kp)) if np.isfinite(kp[i]).all(-1).any()]
 	members = np.asarray(row["members"][:, c]) if Has3D(row) else np.zeros(0, int)
@@ -221,7 +291,7 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 	if show2d: # under the 3D
 		for i in found:
 			DrawSkeleton(img, kp[i], scale, edges, Color(owner[i]) if i in owner else UNMATCHED, radius=RADIUS_2D,
-				thickness=1, filled=False)
+				thickness=1, filled=False, origin=origin)
 	offsets = {}
 	for a, px in projected.items():
 		i = int(members[a])
@@ -230,20 +300,23 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 		if lines and show2d and show3d and 0 <= i < len(kp):
 			a2, a3 = Centre(kp[i]), Centre(px)
 			if a2 is not None and a3 is not None:
-				ok, (p2, p3) = Points(np.stack([a2, a3]), scale)
+				ok, (p2, p3) = Points(np.stack([a2, a3]), scale, origin)
 				if ok.all():
 					cv2.line(img, p2, p3, OUTLINE, 3, cv2.LINE_AA, SHIFT)
 					cv2.line(img, p2, p3, Color(a), 1, cv2.LINE_AA, SHIFT)
 	if show3d:
 		for a, px in projected.items():
-			DrawSkeleton(img, px, scale, edges, Color(a), radius=RADIUS_3D, thickness=2, filled=True)
-		away = [] # 3D that lands nowhere on this image (or behind the camera)
+			DrawSkeleton(img, px, scale, edges, Color(a), radius=RADIUS_3D, thickness=2, filled=True, origin=origin)
+		away = [] # 3D that lands nowhere on the frame (or behind the camera)
 		for a, px in projected.items():
-			p = np.asarray(px, float) * scale
+			px = np.asarray(px, float)
 			with np.errstate(invalid="ignore"):
-				ok = np.isfinite(p).all(-1) & (p >= 0).all(-1) & (p[:, 0] < img.shape[1]) & (p[:, 1] < img.shape[0])
-			if not ok.any():
+				onFrame = np.isfinite(px).all(-1) & (px >= 0).all(-1) & (px < frame).all(-1)
+				p = (px - origin) * scale
+				ok = onFrame & (p >= 0).all(-1) & (p[:, 0] < img.shape[1]) & (p[:, 1] < img.shape[0])
+			if not onFrame.any():
 				away.append(a)
+			if not ok.any(): # off the frame, or off the part of it shown
 				continue
 			p = p[ok]
 			label = "#{}".format(a)
@@ -252,11 +325,12 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 			views = int(row["n_views"][a])
 			if views < len(row["members"][a]): # not every camera
 				label += "  ({} cam{})".format(views, "" if views == 1 else "s")
-			Text(img, label, (p[:, 0].min(), p[:, 1].min() - 8), Color(a), 0.45)
+			Text(img, label, (p[:, 0].min(), p[:, 1].min() - 8), Color(a), 0.45, words=words)
 		x = PAD
 		for k, a in enumerate(away):
 			text = "{}#{}".format("3D off this image: " if k == 0 else "", a)
-			Text(img, text, (x, img.shape[0] - PAD), Color(a), 0.45)
+			# The window's fonts are not OpenCV's: there, each after the one before
+			Text(img, text, (x if k == 0 or words is None else None, img.shape[0] - PAD), Color(a), 0.45, words=words)
 			x += cv2.getTextSize(text, FONT, 0.45, 1)[0][0] + 10
 	return offsets
 
@@ -299,18 +373,118 @@ class Layout:
 		return (k // self.cols) * self.tile[0], (k % self.cols) * self.tile[1]
 
 
-def Gray(img, shape):
-	# A frame (height x width x channels, mono or RGB), scaled to shape (height, width), as BGR. Halved
-	# by averaging while it is twice the size or more, then interpolated: averaging at a ratio
-	# that is not a whole number took 8 ms for a 1280x1024 frame, this 0.07 ms.
+def Gray(img, shape, scale=None, origin=(0, 0)):
+	"""
+	A frame (height x width x channels, mono or RGB) on a tile of shape
+	(height, width), as BGR: its pixel (x, y) at ((x, y) - origin) * scale
+	on the tile, as Points puts the drawing (scale default: the whole frame
+	in the tile). Only the part of the frame the tile shows is scaled, so a
+	zoomed tile costs no more than a whole frame: halved by averaging while it
+	is twice the tile's size or more, then interpolated (averaging at a ratio
+	that is not a whole number took 8 ms for a 1280x1024 frame, this 0.07 ms).
+	"""
 	h, w = shape
-	while img.shape[0] >= 2 * h and img.shape[1] >= 2 * w:
+	H, W = img.shape[:2]
+	sx, sy = (w / W, h / H) if scale is None else np.broadcast_to(np.asarray(scale, float), (2,))
+	x0, y0 = origin
+	# The pixels shown, and one more each side for the interpolation
+	a, c = max(0, int(np.floor(x0)) - 1), max(0, int(np.floor(y0)) - 1)
+	b, d = min(W, int(np.ceil(x0 + w / sx)) + 2), min(H, int(np.ceil(y0 + h / sy)) + 2)
+	img = img[c:d, a:b]
+	if img.ndim == 3 and img.shape[2] == 1:
+		img = img[:, :, 0]
+	# x of the frame = a + bx + kx * x of img (likewise y), as img is halved
+	kx = ky = 1.0
+	bx = by = 0.0
+	while sx * kx <= 0.5 and sy * ky <= 0.5 and min(img.shape[:2]) >= 4:
+		img = img[:img.shape[0] // 2 * 2, :img.shape[1] // 2 * 2] # even: each pixel the mean of 2 x 2
 		img = cv2.resize(img, (img.shape[1] // 2, img.shape[0] // 2), interpolation=cv2.INTER_AREA)
-	if img.shape[:2] != (h, w):
-		img = cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
-	if img.ndim == 2 or img.shape[2] == 1:
-		return cv2.cvtColor(img.reshape(shape), cv2.COLOR_GRAY2BGR)
+		bx, by = bx + 0.5 * kx, by + 0.5 * ky # pixel 0 of the half is the middle of 0 and 1
+		kx, ky = 2 * kx, 2 * ky
+	M = np.array([[sx * kx, 0, sx * (a + bx - x0)], [0, sy * ky, sy * (c + by - y0)]])
+	if M[0, 0] == 1 and M[1, 1] == 1 and (M[:, 2] == np.round(M[:, 2])).all() and (M[:, 2] <= 0).all() and \
+			img.shape[0] >= h - M[1, 2] and img.shape[1] >= w - M[0, 2]:
+		img = img[int(-M[1, 2]):int(-M[1, 2]) + h, int(-M[0, 2]):int(-M[0, 2]) + w] # one for one: as it is
+	else:
+		img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+	if img.ndim == 2:
+		return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 	return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+
+ZOOM_KEY, ZOOM_WHEEL = 1.2, 1.1 # LUC3D's: each + or - press, each click of the wheel
+ZOOM_MOST = 8 # screen px per frame px, at most
+
+
+class Zoom:
+	"""
+	A camera's zoom, as LUC3D's: how many times the fit (the whole frame in
+	its tile) it is shown, about which pixel of the frame (None: its middle),
+	or native, one frame pixel for one screen pixel (held through resizes).
+	It is of the frame, not the tile: kept from the grid to the single view
+	and back. Window gives where the tile is on the frame.
+	"""
+
+	def __init__(self):
+		self.times, self.centre, self.native = 1.0, None, False
+
+	def Window(self, frame, tile, fit):
+		"""
+		The tile's scale (x, y) and origin (the frame's pixel at its top
+		left), for a frame (height, width) on a tile (height, width) that the
+		whole frame fits at fit (x, y).
+		"""
+		H, W = frame[:2]
+		h, w = tile[:2]
+		if self.native:
+			scale = np.array([1.0, 1.0]) if fit[0] < 1 else np.asarray(fit, float) # a window as large as the frames: the fit
+		else:
+			scale = np.asarray(fit, float) * max(1.0, self.times)
+		seen = np.array([w, h]) / scale
+		centre = np.array([W, H]) / 2.0 if self.centre is None else np.asarray(self.centre, float)
+		origin = np.clip(centre - seen / 2, 0, np.maximum(0, np.array([W, H]) - seen))
+		if self.native:
+			origin = np.round(origin) # on the screen's pixels: none resampled
+		return scale, origin
+
+	def Times(self, fit):
+		return 1.0 / fit[0] if self.native else self.times
+
+	def About(self, factor, at, frame, tile, fit):
+		# factor times nearer (< 1: farther), the tile's pixel at (x, y) staying where it is
+		scale, origin = self.Window(frame, tile, fit)
+		under = origin + np.asarray(at, float) / scale # the frame's pixel there
+		self.times = float(np.clip(self.Times(fit) * factor, 1.0, max(1.0, ZOOM_MOST / fit[0])))
+		self.native = False
+		scale = np.asarray(fit, float) * self.times
+		self.centre = under - np.asarray(at, float) / scale + np.array(tile[1::-1]) / scale / 2
+		self.Clamp(frame, tile, fit)
+
+	def Pan(self, dx, dy, frame, tile, fit):
+		# Dragged dx, dy tile px: the frame with the mouse
+		scale, origin = self.Window(frame, tile, fit)
+		self.centre = origin + np.array(tile[1::-1]) / scale / 2 - np.array([dx, dy]) / scale
+		self.Clamp(frame, tile, fit)
+
+	def Clamp(self, frame, tile, fit):
+		# The centre where the tile's window puts it: no further than the frame's edge
+		scale, origin = self.Window(frame, tile, fit)
+		self.centre = origin + np.array(tile[1::-1]) / scale / 2
+
+	def Native(self, on, frame=None, tile=None, fit=None):
+		# 1:1 about what it shows now, or off: the whole frame again (as LUC3D)
+		if on:
+			if frame is not None:
+				self.Clamp(frame, tile, fit)
+			self.native = True
+		else:
+			self.Reset()
+
+	def Reset(self):
+		self.times, self.centre, self.native = 1.0, None, False
+
+	def Zoomed(self):
+		return self.native or self.times > 1.0
 
 
 # ---------------------------------------------------------------- the 3D view
@@ -318,6 +492,95 @@ def Gray(img, shape):
 BACKDROP, GRID, GRID_MID, FRUSTUM = (34, 28, 24), (66, 62, 58), (110, 104, 98), (200, 200, 200)
 FOV = 35 # degrees: the virtual camera's view across the tile (a long lens: little perspective)
 GOOD_PX = 10 # a 3D node reprojected within this (px) tells where the floor is
+TRAIL_BANDS = 8 # a trail's ages, each drawn in one shade, from its identity's colour to near the backdrop
+TRAIL_GAP_S = 1.0 # an animal not well triangulated for this long: its trail breaks
+HEAT = (225, 225, 225) # the occupancy's most visited cells (BGR); the least, near BACKDROP
+HEAT_EVERY_S = 1.0 # the occupancy drawn again this often (in the background, drawn once for each)
+
+
+class Trail:
+	"""An animal's middles, (time, 3D), oldest first, in arrays (drawn whole, at 30 a second)."""
+
+	def __init__(self, capacity):
+		self.T, self.X, self.n = np.empty(capacity), np.empty((capacity, 3)), 0
+
+	def Add(self, t, X, since):
+		if self.n == len(self.T): # full: what is older than since goes, or the oldest quarter
+			k = max(len(self.T) // 4, int(np.searchsorted(self.T[:self.n], since)))
+			self.T[:self.n - k], self.X[:self.n - k] = self.T[k:self.n].copy(), self.X[k:self.n].copy()
+			self.n -= k
+		self.T[self.n], self.X[self.n] = t, X
+		self.n += 1
+
+	def Since(self, t):
+		i = int(np.searchsorted(self.T[:self.n], t))
+		return self.T[i:self.n], self.X[i:self.n]
+
+
+class Occupancy:
+	"""
+	Where the animals' middles have been on the floor: counts in square
+	cells, cell wide, n each way from o (a point of the floor) along the
+	floor's directions (basis: o, e1, e2). Since it began (minutes 0), or
+	over the last minutes (to within a tenth of them).
+	"""
+
+	def __init__(self, basis, cell, n, minutes=0):
+		self.basis, self.cell, self.n = basis, cell, n
+		self.window = 60.0 * minutes
+		self.total = np.zeros((2 * n, 2 * n)) # [i along e1, j along e2]
+		self.bins = deque() # with a window: (start, counts) of each tenth of it
+
+	def Cells(self, X):
+		# Points (N, 3) -> their cells' i, j, and which are on the grid
+		o, e1, e2 = self.basis
+		d = np.asarray(X, float).reshape(-1, 3) - o
+		i = np.floor(d @ e1 / self.cell).astype(np.int64) + self.n
+		j = np.floor(d @ e2 / self.cell).astype(np.int64) + self.n
+		ok = (i >= 0) & (i < 2 * self.n) & (j >= 0) & (j < 2 * self.n)
+		return i[ok], j[ok]
+
+	def Add(self, X, t):
+		i, j = self.Cells(X)
+		if not len(i):
+			return
+		if self.window:
+			if not self.bins or t - self.bins[-1][0] >= self.window / 10:
+				self.bins.append((t, np.zeros_like(self.total)))
+			np.add.at(self.bins[-1][1], (i, j), 1)
+		np.add.at(self.total, (i, j), 1)
+
+	def Expire(self, t):
+		# The tenths wholly older than the window, gone
+		while self.window and self.bins and self.bins[0][0] + self.window / 10 <= t - self.window:
+			self.total -= self.bins.popleft()[1]
+		if self.window and not self.bins:
+			self.total[:] = 0 # not a sum's rounding left
+
+	def Rebase(self, basis):
+		# The floor levelled again. Along up only: the same cells. Turned: each cell's count to the new
+		# floor's cells about its middle (shared between the 4 nearest, as bilinear interpolation does: none left empty)
+		o, e1, e2 = self.basis
+		self.basis = basis
+		if np.allclose(e1, basis[1]) and np.allclose(e2, basis[2]) and \
+				abs((basis[0] - o) @ e1) < 1e-6 * self.cell and abs((basis[0] - o) @ e2) < 1e-6 * self.cell:
+			return
+		k = (np.arange(2 * self.n) + 0.5 - self.n) * self.cell
+		d = (o + k[:, None, None] * e1 + k[None, :, None] * e2).reshape(-1, 3) - basis[0]
+		u = d @ basis[1] / self.cell + self.n - 0.5 # the new cells', in which cell i's middle is at i
+		v = d @ basis[2] / self.cell + self.n - 0.5
+		i0, j0 = np.floor(u).astype(np.int64), np.floor(v).astype(np.int64)
+		fu, fv = u - i0, v - j0
+		def Moved(counts):
+			moved = np.zeros_like(counts)
+			counts = counts.reshape(-1)
+			for di, dj, w in ((0, 0, (1 - fu) * (1 - fv)), (1, 0, fu * (1 - fv)), (0, 1, (1 - fu) * fv), (1, 1, fu * fv)):
+				i, j = i0 + di, j0 + dj
+				ok = (i >= 0) & (i < 2 * self.n) & (j >= 0) & (j < 2 * self.n) & (counts > 0)
+				np.add.at(moved, (i[ok], j[ok]), counts[ok] * w[ok])
+			return moved
+		self.total = Moved(self.total)
+		self.bins = deque((start, Moved(counts)) for start, counts in self.bins)
 
 
 def Unit(v):
@@ -374,12 +637,20 @@ class Scene:
 	lowest nodes, and the cage is where their middles went; only well
 	triangulated ones count (2 cameras or more, reprojected within GOOD_PX).
 
-	Draw(img, row) draws a row on img, its tile: the grid and cameras drawn
-	once for each view of them (Background), then the animals, farthest
-	first. Project gives where a world point lands on a tile.
+	Learn also keeps each identity's trail (its middle over the last
+	trail_seconds) and the occupancy (Occupancy: where the middles have been
+	on the floor, since it began or over the last heat_minutes), of the same
+	well triangulated animals: false 3D, from detections outside the cage in
+	one camera, is not counted.
+
+	Draw(img, row) draws a row on img, its tile: the grid and cameras (and
+	the occupancy, under the grid) drawn once for each view of them
+	(Background), then the trails on the floor, fading with age, then the
+	animals, farthest first. Project gives where a world point lands on a
+	tile.
 	"""
 
-	def __init__(self, cameras, names=None, up=None):
+	def __init__(self, cameras, names=None, up=None, trail_seconds=60.0, heat_minutes=0.0):
 		self.cameras = list(cameras)
 		self.names = list(names or [c.name for c in self.cameras])
 		self.fixedUp = up is not None
@@ -397,9 +668,20 @@ class Scene:
 		self.nodes = deque(maxlen=3000) # well triangulated nodes
 		self.middles = deque(maxlen=1000) # well triangulated animals' middles
 		self.taken = 0
-		self.cache = (None, None)
+		self.cache = (None, None, None)
 		self.Level(self.camerasUp)
 		self.Reset()
+		self.trailSeconds = float(trail_seconds)
+		self.trails = {} # identity: its Trail
+		self.now = None # the time of the last row taken (Learn): the trails' ages are from it
+		n = 4 * int(np.ceil(1.2 * self.reach / self.spacing)) # cells a quarter of the grid's, past it
+		self.occupancy = Occupancy(self.FloorBasis(), self.spacing / 4, n, heat_minutes)
+		self.heatStamp, self.heatAt = 0, None # the occupancy drawn: changed when it is drawn again
+
+	def FloorBasis(self):
+		# The occupancy's: the floor under what the cameras look at, which moves only with up (the cage's
+		# middle, Ground, moves as the animals go about)
+		return self.target + self.floor * self.up, self.e1, self.e2
 
 	def Basis(self, up):
 		# The floor's directions under up: e1 toward the cameras' side, e2 = up x e1 (e1, e2, up:
@@ -481,17 +763,32 @@ class Scene:
 		px[~(p[..., 2] > self.near)] = np.nan
 		return px
 
-	def Learn(self, row):
-		# A row's well triangulated nodes and animals; every 15 rows, the floor levelled with them
+	def Learn(self, row, t=None):
+		"""
+		A row's well triangulated nodes and animals (at t, s: default now),
+		to the trails and the occupancy; every 15 rows, the floor levelled with
+		them.
+		"""
 		if not Has3D(row):
 			return
+		t = time.monotonic() if t is None else float(t)
+		self.now = t
 		X = np.asarray(row["points3d"], float)
 		good = np.isfinite(X).all(-1) & (np.asarray(row["n_views"])[:, None] >= 2) & \
 			(np.asarray(row["reproj_px"], float) < GOOD_PX)
 		self.nodes.extend(X[good])
+		self.occupancy.Expire(t)
 		for a in range(len(X)):
 			if good[a].sum() >= max(3, good.shape[1] // 2):
-				self.middles.append(X[a][good[a]].mean(0))
+				middle = X[a][good[a]].mean(0)
+				self.middles.append(middle)
+				if self.trailSeconds > 0:
+					if a not in self.trails: # 30 a second, and room to spare
+						self.trails[a] = Trail(int(self.trailSeconds * 45) + 64)
+					self.trails[a].Add(t, middle, t - self.trailSeconds)
+				self.occupancy.Add(middle, t)
+		if self.heatAt is None or t - self.heatAt >= HEAT_EVERY_S:
+			self.heatStamp, self.heatAt = self.heatStamp + 1, t
 		self.taken += 1
 		if self.taken % 15 != 1 or len(self.nodes) < 100:
 			return
@@ -527,6 +824,8 @@ class Scene:
 			self.Reset()
 		else:
 			self.centre = self.centre + self.Ground() - before # the view moves with the floor
+		self.occupancy.Rebase(self.FloorBasis())
+		self.heatStamp += 1
 
 	def Lines(self, img, view, segments, color, thickness=1):
 		# World segments (N, 2, 3) on img: cut where they go behind the virtual camera, then at its edges
@@ -546,14 +845,34 @@ class Scene:
 			if inside:
 				cv2.line(img, p, q, color, thickness, cv2.LINE_AA)
 
-	def Background(self, shape):
-		"""The grid and the cameras, for this view of them, on a tile of shape (drawn again only when they move)."""
-		key = (tuple(shape[:2]), self.azimuth, self.elevation, self.distance, tuple(self.centre), self.floor)
-		if self.cache[0] == key:
-			return self.cache[1]
+	def Background(self, shape, heat=False, words=None):
+		"""
+		The grid and the cameras, for this view of them, on a tile of shape
+		(drawn again only when they move), over the occupancy with heat (then
+		also every HEAT_EVERY_S). With words (a Pen), their text is handed to
+		it instead of drawn.
+		"""
+		key = (tuple(shape[:2]), self.azimuth, self.elevation, self.distance, tuple(self.centre), self.floor,
+			bool(heat) and self.heatStamp, words is not None)
+		if self.cache[0] != key:
+			self.cache = (key,) + self.DrawBackground(shape, heat, words is not None)
+		for args in self.cache[2]:
+			Text(None, *args, words=words)
+		return self.cache[1]
+
+	def DrawBackground(self, shape, heat, apart):
+		# The background, and its text (Text's arguments) when apart, else drawn in it
 		img = np.empty(tuple(shape[:2]) + (3,), np.uint8)
 		img[:] = BACKDROP
 		view = self.View(shape)
+		texts = []
+		def Say(*args):
+			if apart:
+				texts.append(args)
+			else:
+				Text(img, *args)
+		if heat:
+			self.DrawOccupancy(img, view)
 		s, n = self.spacing, int(np.ceil(0.9 * self.reach / self.spacing))
 		o = self.Ground()
 		for k in range(-n, n + 1):
@@ -573,18 +892,86 @@ class Scene:
 			self.Lines(img, view, segments, FRUSTUM)
 			at = self.Project(apex, shape)
 			if np.isfinite(at).all() and (0 <= at).all() and at[0] < shape[1] and at[1] < shape[0]:
-				Text(img, "{} {}".format(k + 1, self.names[k] if k < len(self.names) else cam.name),
+				Say("{} {}".format(k + 1, self.names[k] if k < len(self.names) else cam.name),
 					(at[0] + 6, at[1] - 6), FRUSTUM, 0.4)
-		Text(img, "grid squares {:g}".format(s), (PAD, shape[0] - PAD), DIM, 0.4)
-		self.cache = (key, img)
-		return img
+		Say("grid squares {:g}".format(s), (PAD, shape[0] - PAD), DIM, 0.4)
+		return img, texts
 
-	def Draw(self, img, row, edges=None):
-		"""A row's animals on img (a tile), over the grid and the cameras; nearer over farther."""
-		img[:] = self.Background(img.shape)
+	def DrawOccupancy(self, img, view):
+		# The occupancy's cells on the floor (img: the backdrop), the more visited the lighter: a picture
+		# of the cells, put on the tile by the floor's homography, where the floor is in front of the eye
+		counts = self.occupancy.total
+		if not counts.any():
+			return
+		R, eye, f, c = view
+		h, w = img.shape[:2]
+		o, e1, e2 = self.occupancy.basis
+		cell, n = self.occupancy.cell, self.occupancy.n
+		v = np.log1p(counts.T) / np.log1p(counts.max()) # [j, i]: the picture's rows along e2
+		weight = np.where(counts.T > 0, 0.15 + 0.85 * v, 0)[..., None]
+		cells = np.empty(v.shape + (4,), np.uint8)
+		cells[..., :3] = np.round(np.asarray(BACKDROP, float) + (np.asarray(HEAT, float) - BACKDROP) * weight)
+		cells[..., 3] = np.where(counts.T > 0, 255, 0)
+		# The picture's (i, j) -> the floor's point o + (i + 0.5 - n) cell e1 + ... -> the tile
+		K = np.array([[f, 0, c[0]], [0, f, c[1]], [0, 0, 1.0]])
+		corner = o + (0.5 - n) * cell * (e1 + e2)
+		H = K @ R @ np.column_stack([cell * e1, cell * e2, corner - eye])
+		warped = cv2.warpPerspective(cells, H, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT,
+			borderValue=0)
+		shown = warped[..., 3] > 0
+		corners = o + n * cell * np.array([[-1, -1], [-1, 1], [1, -1], [1, 1]]) @ np.stack([e1, e2])
+		if not (((corners - eye) @ R[2]) > self.near).all():
+			# Some of the cells behind the eye: only where a ray from the eye meets the floor in front of it (not
+			# above the horizon, where the homography puts the floor behind)
+			r = R @ self.up
+			down = r[0] * ((np.arange(w) - c[0]) / f)[None, :] + r[1] * ((np.arange(h) - c[1]) / f)[:, None] + r[2]
+			shown &= down * ((eye - o) @ self.up) < 0
+		np.copyto(img, warped[..., :3], where=shown[..., None])
+
+	def DrawTrails(self, img, view):
+		# Each identity's trail on the floor, under its middle, in its colour, fading with age: in
+		# TRAIL_BANDS shades, a polyline each
+		if self.now is None or self.trailSeconds <= 0:
+			return
+		R, eye, f, c = view
+		floor = self.Ground()
+		backdrop = np.asarray(BACKDROP, float)
+		for a, trail in self.trails.items():
+			T, X = trail.Since(self.now - self.trailSeconds)
+			if len(T) < 2:
+				continue
+			X = X - ((X - floor) @ self.up)[:, None] * self.up
+			p = (X - eye) @ R.T
+			with np.errstate(invalid="ignore", divide="ignore"):
+				px = f * p[:, :2] / p[:, 2:3] + c
+			ok = (p[:, 2] > self.near) & np.isfinite(px).all(1) & (np.abs(px) < 1e5).all(1)
+			q = np.zeros(px.shape, np.int32)
+			q[ok] = np.round(px[ok] * (1 << SHIFT))
+			# Segment k, from point k to k + 1: in the band of its newer end, unless a gap breaks it
+			band = np.clip(((self.now - T[1:]) / self.trailSeconds * TRAIL_BANDS).astype(int), 0, TRAIL_BANDS - 1)
+			drawn = ok[:-1] & ok[1:] & (np.diff(T) <= TRAIL_GAP_S)
+			for b in range(TRAIL_BANDS - 1, -1, -1): # oldest first: the newer over it
+				edges = np.flatnonzero(np.diff(np.concatenate([[0], (drawn & (band == b)).astype(np.int8), [0]])))
+				if not len(edges):
+					continue
+				lines = [q[s0:s1 + 1] for s0, s1 in zip(edges[::2], edges[1::2])]
+				k = 1.0 - 0.8 * b / max(1, TRAIL_BANDS - 1)
+				color = tuple(int(round(v)) for v in backdrop + (np.asarray(Color(a), float) - backdrop) * k)
+				# The newest band 2 px wide, the others 1 (anti-aliased, 2 px took 20 times as long: 1.4 ms for 1800 points)
+				cv2.polylines(img, lines, False, color, 2 if b == 0 else 1, cv2.LINE_AA, SHIFT)
+
+	def Draw(self, img, row, edges=None, words=None, trails=True, heat=False):
+		"""
+		A row's animals on img (a tile), over the grid and the cameras (and,
+		with heat, the occupancy) and the trails; nearer over farther. words: a
+		Pen for its text (Text).
+		"""
+		img[:] = self.Background(img.shape, heat, words)
+		view = self.View(img.shape)
+		if trails:
+			self.DrawTrails(img, view)
 		if row is None or not Has3D(row):
 			return
-		view = self.View(img.shape)
 		R, eye, f, c = view
 		radius = self.reach / 100 # a node's, in the world
 		items, labels = [], [] # (depth, edge or node, identity, which); (identity, where)
@@ -621,7 +1008,7 @@ class Scene:
 				cv2.line(img, q0, q1, OUTLINE, 4, cv2.LINE_AA, SHIFT)
 				cv2.line(img, q0, q1, Color(a), 2, cv2.LINE_AA, SHIFT)
 		for a, at in labels:
-			Text(img, "#{}".format(a), (at[0] + 6, at[1] - 10), Color(a), 0.45)
+			Text(img, "#{}".format(a), (at[0] + 6, at[1] - 10), Color(a), 0.45, words=words)
 
 
 # ---------------------------------------------------------------- the view
@@ -650,8 +1037,16 @@ class Viewer:
 		self.origin = (0, 0) # where the view is in its window's image (centred), y, x
 		self.count = 0 # results shown
 		self.show2d = self.show3d = self.lines = True
+		self.zooms = {} # each camera's Zoom, by feed index
+		self.frameShape = None # the frames' (height, width), as last drawn
+		self.panned = False # a camera's zoom changed since it was drawn
+		self.textOver = False # the window draws the text over the view (Qt's fonts): handed to it in words
+		self.words = None # the last view's text (Words), when textOver
+		self.render = None # the window's: the view with its text drawn over it, for the PNGs
 		self.scene = None # the 3D tile's Scene (with a calibration)
 		self.showScene = not args.no_3d
+		self.trails = args.trail_seconds > 0 # the 3D view's trails shown
+		self.occupancy = args.occupancy # and the occupancy
 		self.sceneCell = None # where the 3D tile is in the view: y, x, height, width
 		self.drag = None # the mouse button dragging in the 3D tile, and where it was
 		self.mouseAt = (-1, -1)
@@ -666,6 +1061,7 @@ class Viewer:
 		self.rate = [] # (monotonic, rows written): each new count of the last second
 		self.drawMs, self.shownMs, self.resultMs = deque(maxlen=KEPT), deque(maxlen=KEPT), deque(maxlen=KEPT)
 		self.sceneMs = deque(maxlen=KEPT) # of drawMs: the 3D tile's
+		self.wordsMs = deque(maxlen=KEPT) # the window's drawing of the text over the view (Qt's), not in drawMs
 		self.lastSeen = self.lastShown = None # ms after the row's frames: it reached the view, the last view was shown
 
 	# -- the shared memory
@@ -735,7 +1131,8 @@ class Viewer:
 			except Exception as e:
 				Say("Could not read the calibration {}: {}. Showing the 2D only.".format(path, e))
 			else:
-				self.scene = Scene(self.calibration, d.get("cameras") or names, self.args.up)
+				self.scene = Scene(self.calibration, d.get("cameras") or names, self.args.up, self.args.trail_seconds,
+					self.args.heat_minutes)
 		Say("campy-live's results: {} cameras, {} nodes, {}.".format(len(rings), len(d.get("nodes") or []) or "?",
 			"3D of {} animals".format(d.get("animals")) if self.calibration else "2D only"))
 
@@ -799,7 +1196,7 @@ class Viewer:
 						self.gone += 1 # its frames already replaced in the feed
 						return None
 					if self.scene is not None:
-						self.scene.Learn(row)
+						self.scene.Learn(row, now)
 					self.lastRow = now
 					return self.Compose(frames, row), int(row["frame"]), row
 		if now - self.lastRow > STALE_S and now - self.lastRaw >= 1.0 / max(1e-3, self.args.fps):
@@ -844,8 +1241,15 @@ class Viewer:
 			return 0
 		return 9 + (int(self.description.get("animals") or 0) + 2 if self.calibration else 0)
 
+	def ZoomOf(self, c):
+		if c not in self.zooms:
+			self.zooms[c] = Zoom()
+		return self.zooms[c]
+
 	def Compose(self, frames, row):
 		start = time.perf_counter()
+		self.words = Words() if self.textOver else None
+		self.frameShape = frames[0].image.shape[:2]
 		shown = self.Shown()
 		layout = self.Layout(frames[0].image.shape)
 		# The view in the middle of the window's image: where things are (cells, sceneCell) is in the
@@ -859,10 +1263,15 @@ class Viewer:
 		calibNames = self.description.get("calibration_names") or cameraNames
 		self.cells = []
 		for k, (c, frame) in enumerate(zip(shown, frames)):
-			tile = Gray(frame.image, layout.tile)
+			y, x = layout.Cell(k)
+			words = self.words.Tile(("camera", k), y + oy, x + ox, *layout.tile) if self.words is not None else None
+			# Zoomed: the part of the frame shown, cut out before it is scaled, and the drawing on it
+			zoom = self.ZoomOf(c)
+			scale, origin = zoom.Window(frame.image.shape, layout.tile, layout.scale)
+			tile = Gray(frame.image, layout.tile, scale, origin)
 			if row is not None:
-				DrawCamera(tile, layout.scale, row, c, self.calibration[c] if self.calibration else None, edges,
-					self.show2d, self.show3d, self.lines)
+				DrawCamera(tile, scale, row, c, self.calibration[c] if self.calibration else None, edges,
+					self.show2d, self.show3d, self.lines, origin, frame.image.shape[1::-1], words)
 			name = cameraNames[c] if c < len(cameraNames) else str(c)
 			if c < len(calibNames) and calibNames[c] != name:
 				name += " ({})".format(calibNames[c])
@@ -871,10 +1280,11 @@ class Viewer:
 				text += "  found {}".format(int(row["found"][c]))
 			if self.selected is not None: # single view: which of how many (as LUC3D)
 				text += "  ({}/{})".format(c + 1, len(self.readers) if self.readers else len(self.ringNames))
-			Text(tile, text, (PAD, PAD + 12))
+			if zoom.Zoomed():
+				text += "  1:1" if zoom.native else "  zoom {:.1f}x".format(zoom.times)
+			Text(tile, text, (PAD, PAD + 12), words=words)
 			if len(shown) > 1 and c == self.current: # the grid: the camera v shows alone
 				cv2.rectangle(tile, (1, 1), (tile.shape[1] - 2, tile.shape[0] - 2), PICKED, 2)
-			y, x = layout.Cell(k)
 			canvas[y:y + layout.tile[0], x:x + layout.tile[1]] = tile
 			self.cells.append((c, y + oy, x + ox) + layout.tile)
 		self.sceneCell = None
@@ -886,6 +1296,7 @@ class Viewer:
 			self.Panel(canvas, layout, frames, row)
 		self.last = (frames, row) # drawn again when a button is clicked while paused
 		self.lastCameras = shown
+		self.panned = False
 		self.drawMs.append((time.perf_counter() - start) * 1e3)
 		return full
 
@@ -910,9 +1321,16 @@ class Viewer:
 		y, x, h, w = self.sceneCell
 		tile = canvas[y:y + h, x:x + w]
 		start = time.perf_counter()
-		self.scene.Draw(tile, row, self.description.get("edges"))
-		Text(tile, "3D  frame {}".format(frame) + ("" if row is not None else "  (no results)"), (PAD, PAD + 12))
-		Text(tile, "drag: turn  right-drag: move  wheel: zoom  r: reset", (PAD, PAD + 34), DIM, 0.4)
+		words = self.words.Tile("3d", y, x, h, w) if self.words is not None else None
+		self.scene.Draw(tile, row, self.description.get("edges"), words, self.trails, self.occupancy)
+		header = "3D  frame {}".format(frame) + ("" if row is not None else "  (no results)")
+		if self.trails and self.scene.trailSeconds > 0:
+			header += "  trails {:g} s".format(self.scene.trailSeconds)
+		if self.occupancy:
+			minutes = self.scene.occupancy.window / 60
+			header += "  occupancy " + ("since the start" if not minutes else "{:g} min".format(minutes))
+		Text(tile, header, (PAD, PAD + 12), words=words)
+		Text(tile, "drag: turn  right-drag: move  wheel: zoom  r: reset", (PAD, PAD + 34), DIM, 0.4, words=words)
 		self.moved = False
 		self.sceneMs.append((time.perf_counter() - start) * 1e3)
 
@@ -924,17 +1342,55 @@ class Viewer:
 
 	def CameraAt(self, x, y):
 		# The camera whose tile is at (x, y) of the view, or None
-		for c, y0, x0, h, w in self.cells:
+		cell = self.CellAt(x, y)
+		return None if cell is None else cell[0]
+
+	def CellAt(self, x, y):
+		# The camera's tile at (x, y) of the view: (camera, y, x, height, width), or None
+		for cell in self.cells:
+			c, y0, x0, h, w = cell
 			if x0 <= x < x0 + w and y0 <= y < y0 + h:
-				return c
+				return cell
 		return None
+
+	def ZoomCamera(self, c, factor, at=None):
+		# Camera c's tile zoomed factor times (< 1: out), about its pixel at (x, y) (default: its middle)
+		if self.layout is None or self.frameShape is None:
+			return
+		h, w = self.layout.tile
+		self.ZoomOf(c).About(factor, (w / 2, h / 2) if at is None else at, self.frameShape, self.layout.tile,
+			self.layout.scale)
+		self.panned = True
+
+	def ZoomKey(self, key):
+		# As LUC3D's, for every camera shown: + or = nearer, - or _ farther, 0 the whole frame again (every
+		# camera), ) (shift 0) native resolution on or off. True if it was one of these keys
+		if key in (ord("+"), ord("=")):
+			for c in self.Shown():
+				self.ZoomCamera(c, ZOOM_KEY)
+		elif key in (ord("-"), ord("_")):
+			for c in self.Shown():
+				self.ZoomCamera(c, 1 / ZOOM_KEY)
+		elif key == ord("0"):
+			for zoom in self.zooms.values():
+				zoom.Reset()
+		elif key == ord(")"):
+			on = not all(self.ZoomOf(c).native for c in self.Shown())
+			for c in self.Shown():
+				self.ZoomOf(c).Native(on, *((self.frameShape, self.layout.tile, self.layout.scale)
+					if self.layout is not None and self.frameShape is not None else ()))
+		else:
+			return False
+		self.panned = True
+		return True
 
 	def Press(self, x, y, button="left"):
 		"""
 		A mouse button pressed at (x, y) of the view: the key of a button
 		there (the panel drawn in the view), or None. Left on a camera's tile
-		picks it (v shows it alone); in the 3D tile, left drags turn it, right
-		or middle drags move it.
+		picks it (v shows it alone), and a drag from there moves its picture
+		(zoomed); in the 3D tile, left drags turn it, right or middle drags
+		move it.
 		"""
 		if button == "left":
 			key = self.Click(x, y)
@@ -943,6 +1399,7 @@ class Viewer:
 			camera = self.CameraAt(x, y)
 			if camera is not None:
 				self.current = camera
+				self.drag = ("pan", (x, y), camera)
 			elif self.In3D(x, y):
 				self.drag = ("turn", (x, y))
 		elif button in ("right", "middle") and self.In3D(x, y):
@@ -954,7 +1411,17 @@ class Viewer:
 		self.mouseAt = (x, y)
 		if self.sceneCell is None: # hidden while dragged
 			self.drag = None
-		if self.drag is not None:
+		if self.drag is not None and self.drag[0] == "pan":
+			# A camera's picture, zoomed, with the mouse (while its tile is shown)
+			button, (x0, y0), camera = self.drag
+			zoom = self.ZoomOf(camera)
+			if camera not in [cell[0] for cell in self.cells] or self.layout is None:
+				self.drag = None
+			elif (x, y) != (x0, y0) and zoom.Zoomed():
+				zoom.Pan(x - x0, y - y0, self.frameShape, self.layout.tile, self.layout.scale)
+				self.drag = (button, (x, y), camera)
+				self.panned = True
+		elif self.drag is not None:
 			button, (x0, y0) = self.drag
 			if button == "turn":
 				self.scene.Orbit(x - x0, y - y0)
@@ -967,10 +1434,19 @@ class Viewer:
 		self.drag = None
 
 	def Wheel(self, steps, x=None, y=None):
-		# The wheel turned steps clicks (> 0: away from you) at (x, y), or where the mouse last moved: over the 3D, zoom
-		if self.In3D(*((x, y) if x is not None else self.mouseAt)) and steps:
+		# The wheel turned steps clicks (> 0: away from you) at (x, y), or where the mouse last moved: over the
+		# 3D, it zooms; over a camera's tile, that camera's picture, about the mouse
+		x, y = (x, y) if x is not None else self.mouseAt
+		if not steps:
+			return
+		if self.In3D(x, y):
 			self.scene.Zoom(steps)
 			self.moved = True
+			return
+		cell = self.CellAt(x, y)
+		if cell is not None:
+			c, y0, x0, h, w = cell
+			self.ZoomCamera(c, ZOOM_WHEEL ** steps, (x - x0, y - y0))
 
 	def DoubleClick(self, x, y):
 		# On the 3D tile: turned back. On a camera's: that camera alone, or back to the grid (as v and g)
@@ -1008,6 +1484,7 @@ class Viewer:
 			("Lines (l)", ord("l"), self.lines)]
 		if self.scene is not None:
 			buttons.append(("3D view (\\)", ord("\\"), self.showScene))
+			buttons += [("Trails (t)", ord("t"), self.trails), ("Occupancy (o)", ord("o"), self.occupancy)]
 		for label, key, on in buttons:
 			(tw, th), _ = cv2.getTextSize(label, FONT, 0.5, 1)
 			if x > x0 + PAD and x + tw + 34 > x0 + width - PAD: # the next row
@@ -1073,15 +1550,18 @@ class Viewer:
 		if row is not None:
 			lines.append(("Reprojections (dots): the 3D, projected. Predictions (open circles): this camera's 2D "
 				"(white: matched to no animal). Line: from the 2D to the 3D. Label: #identity, and px between them.", DIM))
-		lines.append((KEYS.format(len(self.ringNames), "; \\ 3D view, r turn it back" if self.scene is not None else ""),
+		lines.append((KEYS.format(len(self.ringNames), "; \\ 3D view, r turn it back, t trails, o occupancy" if self.scene is not None else ""),
 			DIM))
 		return lines
 
 	def Waiting(self):
 		canvas = self.Canvas(self.Size()[::-1]) # the view's size: OpenCV sizes a new window to its first image
-		Text(canvas, "Waiting for the live feed: {}".format(", ".join(self.ringNames)), (PAD, 40))
-		Text(canvas, "(campy-acquire with liveFeed True)", (PAD, 70), DIM)
-		Text(canvas, "campy-live's results: {}".format("there" if self.results else "not yet"), (PAD, 100), DIM)
+		self.words = Words() if self.textOver else None
+		words = self.words.Tile("waiting", 0, 0, *canvas.shape[:2]) if self.words is not None else None
+		Text(canvas, "Waiting for the live feed: {}".format(", ".join(self.ringNames)), (PAD, 40), words=words)
+		Text(canvas, "(campy-acquire with liveFeed True)", (PAD, 70), DIM, words=words)
+		Text(canvas, "campy-live's results: {}".format("there" if self.results else "not yet"), (PAD, 100), DIM,
+			words=words)
 		return canvas
 
 	def Key(self, key):
@@ -1102,9 +1582,11 @@ class Viewer:
 				self.selected = self.current
 		elif isinstance(key, str):
 			pass
+		elif self.ZoomKey(key):
+			pass
 		elif ord("1") <= key <= ord("9") and key - ord("1") < n:
 			self.selected = self.current = key - ord("1")
-		elif key in (ord("0"), ord("a"), ord("g")):
+		elif key in (ord("a"), ord("g")):
 			self.selected = None
 		elif key == ord("v"):
 			if self.selected is None:
@@ -1117,6 +1599,12 @@ class Viewer:
 			self.lines = not self.lines
 		elif key == ord("\\"):
 			self.showScene = not self.showScene
+		elif key == ord("t"):
+			self.trails = not self.trails
+			self.moved = True
+		elif key == ord("o"):
+			self.occupancy = not self.occupancy
+			self.moved = True
 		elif key == ord("r") and self.scene is not None:
 			self.scene.Reset()
 			self.moved = True
@@ -1130,12 +1618,16 @@ class Viewer:
 		self.shownMs.append(self.lastShown)
 		self.count += 1
 		if self.args.png and self.count % self.args.png_every == 0:
-			cv2.imwrite(os.path.join(self.args.png, "view_{:08d}.png".format(frame)), image)
+			cv2.imwrite(os.path.join(self.args.png, "view_{:08d}.png".format(frame)), self.Rendered(image))
+
+	def Rendered(self, image):
+		# The view as its window shows it: with the text it draws over it (Qt's), when it does
+		return self.render(image) if self.render is not None and self.words is not None else image
 
 	def Save(self, image):
 		# s: the view as a PNG, into --png or the current folder
 		path = os.path.join(self.args.png or ".", "view_{}.png".format(datetime.now().strftime("%H-%M-%S")))
-		cv2.imwrite(path, image)
+		cv2.imwrite(path, self.Rendered(image))
 		Say("Saved {}.".format(path))
 
 	def Summary(self, seconds):
@@ -1146,6 +1638,7 @@ class Viewer:
 			"results_gone": self.gone, "results_passed_over": self.passed, "frames_alone": self.raw,
 			"draw_ms": {"p50": P(self.drawMs, 50), "p99": P(self.drawMs, 99)},
 			"draw_3d_ms": {"p50": P(self.sceneMs, 50), "p99": P(self.sceneMs, 99)},
+			"text_over_ms": {"p50": P(self.wordsMs, 50), "p99": P(self.wordsMs, 99)},
 			"results_here_after_frame_ms": {"p50": P(self.resultMs, 50), "p99": P(self.resultMs, 99)},
 			"shown_after_frame_ms": {"p50": P(self.shownMs, 50), "p99": P(self.shownMs, 99)}}
 
@@ -1294,6 +1787,11 @@ def RunOpenCV(args, window):
 						if again is not None:
 							image = again
 							cv2.imshow(TITLE, image)
+				if viewer.panned and paused and image is not None:
+					again = viewer.Again() # a camera's zoom, on the same row
+					if again is not None:
+						image = again
+						cv2.imshow(TITLE, image)
 				if viewer.moved and image is not None and viewer.sceneCell is not None and getattr(viewer, "last", None):
 					# Turned: the 3D tile again, of the row the cameras' tiles show
 					viewer.Draw3D(image, viewer.last[1], viewer.last[0][0].frameNumber)
@@ -1367,6 +1865,11 @@ def ParseArgs(argv=None):
 	p.add_argument("--no-3d", action="store_true", help="Start without the 3D view (\\ shows it).")
 	p.add_argument("--gui", default="auto", choices=["auto", "qt", "opencv"], help="The window: Qt's (PyQt5), or "
 		"OpenCV's; auto: Qt's when PyQt5 is there.")
+	p.add_argument("--trail-seconds", type=float, default=60, help="The 3D view's trails: each identity's path over "
+		"the last this many seconds (0: none; t shows or hides them).")
+	p.add_argument("--occupancy", action="store_true", help="Start with the 3D view's occupancy shown (o).")
+	p.add_argument("--heat-minutes", type=float, default=0, help="The occupancy: where the animals went over the last "
+		"this many minutes (0: since campy-live's results began).")
 	p.add_argument("--up", type=Direction, default=None, help="The world's up in the calibration, as x,y,z "
 		"(default: away from where the cameras look, when they look down).")
 	p.add_argument("--fps", type=float, default=30, help="Frames alone (no results) shown per second.")
