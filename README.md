@@ -532,6 +532,15 @@ GitHub Actions runs them on every push to master or dev and every pull request, 
 
 The tests run `trigger.ino` as plain C++ against a simulated Arduino. A second workflow (`.github/workflows/sketch.yml`) compiles it for real boards (an Arduino Uno, a Teensy 4.0 and a Teensy 3.2) whenever the sketch changes.
 
+### Timing tests on a shared machine (bench/rig.py)
+When several people (or several Claude sessions) run recordings, campy-live, replays and benchmarks on one Linux machine, two at once spoil each other's numbers. `bench/rig.py` is a lock they all take: `run` waits until nobody else holds it and nothing else is on the GPU (`/dev/kfd`), the video encoder (`/dev/dri/renderD*`), the FLIR cameras (their USB devices, or PySpin loaded) or the trigger (`/dev/ttyACM*`), and the CPU and disk are quiet; then it runs the command, and every 2 s logs anything outside it that touches those to `<tag>.rig.log`, which ends `RIG_CLEAN` or `RIG_CONTAMINATED`.
+```
+python3 bench/rig.py status
+python3 bench/rig.py run <your name> <tag> -- bash my_test.sh <tag> ...
+python3 bench/rig.py hold <your name> <tag> <pid>     # for a job already running
+```
+A script takes the lock by itself when its first command is `. <folder of rig.py>/rig_guard.sh "$@"` (`RIG_OWNER` names who runs it). On the lab's EVO-X2 they live in `~/sleap-bench` (`RIG_ROOT`), where `rig.sh` runs `rig.py`. It needs only Python's standard library.
+
 ### Development and releases
 Everything lands on `dev` first. `master` is the released campy, and changes only when `dev` is promoted to it.
 
