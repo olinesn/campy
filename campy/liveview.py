@@ -27,9 +27,9 @@ What it draws on each camera's frame
 ------------------------------------
 - 3D (campy-live with --calibration): each animal's 3D pose, projected into
   the camera through the calibration (lens distortion included): filled dots
-  and thick lines, one colour per identity. Its label: the identity, how many
-  cameras it was triangulated from, and how far, in this camera, its
-  projection is from the 2D it was made from (px, mean over the nodes).
+  and thick lines, one colour per identity. Its label: the identity, and how
+  many cameras it was triangulated from when not all, above the animal, or a line up or down where another's label (or the
+  tile's name line, or its frames a second) is there: none covers another.
 - 2D: what the model found in this camera: open circles and thin lines, in
   the colour of the identity campy-live matched them to, white when it
   matched them to none.
@@ -46,9 +46,10 @@ With a calibration, a tile beside the cameras' shows the same row in 3D
 (Scene): each animal's 3D pose in its identity's colour (the nearer drawn
 over the farther, a thin line down to the floor under its middle), the
 calibrated cameras as frustums (a triangle on each one's top edge), and a
-floor grid. It starts from the cameras' side, 50 degrees up, the cage filling
-it; drag in it to turn it, right-drag (or middle) to move it, wheel to zoom
-(out, to see the cameras above the cage), double click or r to put it back.
+floor grid. It starts from the cameras' side, 50 degrees up, as near as shows
+the cage (where the animals' poses are) and every camera; drag in it to turn
+it, right-drag (or middle) to move it, wheel to zoom, double click to put it
+back (as LUC3D, r is the reprojections).
 The calibration's world is often its first camera's, and knows nothing of the
 floor: up is at first away from where the cameras look, then the plane the
 animals' middles move in (--up x,y,z sets it), and the floor is under their
@@ -66,6 +67,14 @@ cameras or more, reprojected within 10 px), so false 3D from a detection
 outside the cage in one camera does not paint them. The occupancy is drawn
 into the grid's picture, again once a second (about 3 ms); the trails each
 view (about 1.3 ms for 3 mice over 60 s on the ChronicRecord PC).
+
+With the trails on (t), the cameras' tiles have trails too, as LUC3D's node
+trails: each node's path over the last quarter second (--camera-trail-seconds;
+LUC3D's lengths: a quarter, half, 1 or 2 s), one segment from each result to
+the one before, the older thinner, more transparent and darker, in its
+identity's hue (--trail-shade: dark, its colour times 0.6, by default; very
+dark to very light), under the skeletons: the predictions' (d) and the
+reprojections' (r). The Qt panel picks the length and the shade.
 
 The 3D view is its own drawing with numpy and cv2, in this window, rather
 than matplotlib or a browser: no other package or program, the same row as
@@ -86,7 +95,8 @@ told):
   late (LATE n), in the last 10 s, and a camera whose host times are a frame
   or more off the others' for the same frame number (1 FRAME AHEAD: as a
   camera left grabbing after a double Ctrl+C was on 2026-10-20, and campy-live
-  called every set misaligned). The view reads this from the cameras' rings
+  called every set misaligned), under the name line where the tile is too
+  narrow for both. The view reads this from the cameras' rings
   (their frames' numbers and times, not the frames) 20 times a second.
 - The panel starts with what is wrong, in red, then: each identity's strip
   of the last 10 s (its height the cameras it was triangulated from, its
@@ -108,7 +118,7 @@ told):
   time); reading the rings' slots 0.4 ms, 20 times a second.
 
 Buttons in the panel turn the predictions (the 2D), the reprojections (the
-3D) and the lines on or off, as do the keys d, p and l, the 3D view, as
+3D) and the lines on or off, as do the keys d, r (LUC3D's) and l, the 3D view, as
 does \\ (--no-3d: off at first), and its trails and occupancy, as do t and o.
 
 Every camera (the grid) or one alone (single view), with LUC3D's keys: v one
@@ -189,7 +199,7 @@ FINE = (90, 200, 90) # green
 FAIR = (0, 200, 230) # yellow
 NO_3D = (75, 75, 75)
 KEYS = ("Keys: v one camera, g all (grid), arrows the previous or next camera, 1-{} that camera; wheel or + and - "
-	"zoom a camera (drag: move it), 0 the whole frame, shift 0 one pixel for one; d predictions, p reprojections, "
+	"zoom a camera (drag: move it), 0 the whole frame, shift 0 one pixel for one; d predictions, r reprojections (as LUC3D), "
 	"l lines{}; c campy-live on the fast CPUs or not; z window to the view; m bookmark (Shift+1-9: event 1-9); space pause, s save, q quit")
 SHIFT = 4 # cv2's subpixel bits
 RADIUS_2D, RADIUS_3D = 4, 2 # px: a detection's open circles, a 3D node's dot
@@ -318,16 +328,81 @@ def DrawSkeleton(img, px, scale, edges, color, radius, thickness, filled, dashed
 
 def Text(img, text, at, color=TEXT, size=0.5, box=True, words=None):
 	# Text at (x, y) of its baseline's left end, on a dark box (an outline drawn thicker than the
-	# text comes out wider than it in OpenCV 5's font, and off to one side). With words (a tile's
-	# Pen), not drawn: handed to the window, to draw over the image in its own fonts
+	# text comes out wider than it in OpenCV 5's font, and off to one side), or on a box of that
+	# colour (BGR), or on none (False). With words (a tile's Pen), not drawn: handed to the window,
+	# to draw over the image in its own fonts
+	box = BOX if box is True else (tuple(int(v) for v in box) if box else None)
 	if words is not None:
 		words.Add(text, at, color, size, box)
 		return
 	x, y = int(at[0]), int(at[1])
 	if box:
-		(w, h), base = cv2.getTextSize(text, FONT, size, 1)
-		cv2.rectangle(img, (x - 3, y - h - 3), (x + w + 3, y + base + 1), BOX, -1)
+		x0, y0, x1, y1 = TextBox(text, (x, y), size)
+		cv2.rectangle(img, (x0, y0), (x1, y1), box, -1)
 	cv2.putText(img, text, (x, y), FONT, size, color, 1, cv2.LINE_AA)
+
+
+def TextSize(text, size, words=None):
+	# ((width, height), baseline) of text at size in the font it is drawn in: OpenCV's, or with
+	# words (a Pen) the window's
+	if words is not None and words.measure is not None:
+		return words.measure(text, size)
+	return cv2.getTextSize(text, FONT, size, 1)
+
+
+def TextBox(text, at, size, words=None):
+	# The box Text puts text on, at (x, y) of its baseline's left end: (x0, y0, x1, y1)
+	(w, h), base = TextSize(text, size, words)
+	x, y = int(at[0]), int(at[1])
+	return (x - 3, y - h - 3, x + w + 3, y + base + 1)
+
+
+def Over(a, b):
+	# Whether boxes (x0, y0, x1, y1) a and b overlap
+	return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+class Labels:
+	"""
+	Where a tile's labels go, none over another: each where it is asked
+	(the left end of its baseline), or, if a label placed before or a box
+	taken (the tile's name line, its badge) is there, the nearest free place
+	straight above or below (up first), inside the tile (h px high), or
+	where it was asked if there is none. Measured in the font the text is
+	drawn in (words, a Pen: the window's).
+	"""
+
+	def __init__(self, h, words=None, taken=()):
+		self.h, self.words, self.taken = h, words, list(taken)
+
+	def Place(self, text, at, size):
+		x, y = int(at[0]), int(at[1])
+		box = TextBox(text, (x, y), size, self.words)
+		# Where it was asked, or just above or below a box (the nearest free place is one of them)
+		moves = [0] + [dy for t in self.taken if t[0] < box[2] and box[0] < t[2] for dy in
+			(t[1] - box[3] - 1, t[3] - box[1] + 1)]
+		dy = 0
+		for move in sorted(moves, key=lambda dy: (abs(dy), dy > 0)):
+			moved = (box[0], box[1] + move, box[2], box[3] + move)
+			if move and (moved[1] < 0 or moved[3] > self.h):
+				continue
+			if not any(Over(moved, other) for other in self.taken):
+				dy = move
+				break
+		self.taken.append((box[0], box[1] + dy, box[2], box[3] + dy))
+		return x, y + dy
+
+
+@functools.lru_cache(maxsize=1024)
+def Clock(seconds):
+	# A time into the recording, h:mm:ss.ss
+	s = max(0.0, float(seconds))
+	return "{}:{:02d}:{:05.2f}".format(int(s // 3600), int(s // 60 % 60), s % 60)
+
+
+def FrameText(n, seconds=None):
+	# "frame 9,149  0:05:04.93": its number, with thousands separators, and its time when known
+	return "frame {:,}".format(int(n)) + ("" if seconds is None else "  " + Clock(seconds))
 
 
 @functools.lru_cache(maxsize=1024)
@@ -350,17 +425,20 @@ class Words:
 	fonts (Qt's) rather than have it drawn into the image with OpenCV's.
 	Items: (text, x, y, colour (BGR), size (OpenCV's font scale), box, clip):
 	x, y the left end of the baseline in the view's image, as Text's (x None:
-	10 px after the item before), box whether on a dark box, clip the tile's
-	(x, y, width, height), which the text is cut to. Tile gives the Pen a
-	tile's text goes to; drawing the tile again replaces its items.
+	10 px after the item before), box the colour (BGR) of the box it is on
+	(None: none), clip the tile's (x, y, width, height), which the text is
+	cut to. Tile gives the Pen a tile's text goes to; drawing the tile again
+	replaces its items. measure: the window's TextSize, (text, size) ->
+	((width, height), baseline), for the text to be placed as it is drawn.
 	"""
 
-	def __init__(self):
+	def __init__(self, measure=None):
 		self.parts = {}
+		self.measure = measure
 
 	def Tile(self, name, y, x, h, w):
 		self.parts[name] = []
-		return Pen(self.parts[name], x, y, (x, y, w, h))
+		return Pen(self.parts[name], x, y, (x, y, w, h), self.measure)
 
 	def Items(self):
 		return [item for part in self.parts.values() for item in part]
@@ -368,8 +446,8 @@ class Words:
 
 class Pen:
 	# Where a tile's text goes: its items, at the tile's place in the view's image
-	def __init__(self, items, x, y, clip):
-		self.items, self.x, self.y, self.clip = items, x, y, clip
+	def __init__(self, items, x, y, clip, measure=None):
+		self.items, self.x, self.y, self.clip, self.measure = items, x, y, clip, measure
 
 	def Add(self, text, at, color, size, box):
 		x = None if at[0] is None else int(at[0]) + self.x
@@ -381,7 +459,7 @@ def Has3D(row):
 
 
 def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=True, lines=True, origin=(0, 0),
-		frame=None, words=None, bad_px=livehealth.BAD_PX, bad=None):
+		frame=None, words=None, bad_px=livehealth.BAD_PX, bad=None, taken=()):
 	"""
 	Camera c's part of a results row on img, its frame at scale (a number, or
 	x and y) from origin (the frame's pixel at the tile's top left: zoomed,
@@ -390,7 +468,8 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 	({identity: px}; default: those whose reprojection error in row is above
 	bad_px) dimmed and dashed, their labels red. frame, the frame's
 	width and height (default: what the tile shows): the 3D off it is listed
-	at the tile's foot. words: a Pen for the text (Text). Returns {identity:
+	at the tile's foot. words: a Pen for the text (Text). The labels go
+	where none covers another, nor the boxes taken (Labels). Returns {identity:
 	mean px, in this camera, between its projected 3D and the detection it
 	was made from (NaN: no detection here)} for the identities with 3D.
 	"""
@@ -430,6 +509,7 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 			DrawSkeleton(img, px, scale, edges, Dimmed(Color(a)) if a in bad else Color(a), radius=RADIUS_3D,
 				thickness=2, filled=True, dashed=a in bad, origin=origin)
 		away = [] # 3D that lands nowhere on the frame (or behind the camera)
+		labels = Labels(img.shape[0], words, taken)
 		for a, px in projected.items():
 			px = np.asarray(px, float)
 			with np.errstate(invalid="ignore"):
@@ -442,14 +522,13 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 				continue
 			p = p[ok]
 			label = "#{}".format(a)
-			if np.isfinite(offsets[a]):
-				label += "  {:.0f} px".format(offsets[a])
 			views = int(row["n_views"][a])
 			if views < len(row["members"][a]): # not every camera
 				label += "  ({} cam{})".format(views, "" if views == 1 else "s")
 			if a in bad: # not to trust: campy-live's error, over every camera
 				label = "#{}  bad 3D: {:.0f} px".format(a, bad[a])
-			Text(img, label, (p[:, 0].min(), p[:, 1].min() - 8), WARN if a in bad else Color(a), 0.45, words=words)
+			at = labels.Place(label, (p[:, 0].min(), p[:, 1].min() - 8), 0.45)
+			Text(img, label, at, WARN if a in bad else Color(a), 0.45, words=words)
 		x = PAD
 		for k, a in enumerate(away):
 			text = "{}#{}".format("3D off this image: " if k == 0 else "", a)
@@ -719,6 +798,179 @@ class Occupancy:
 		self.bins = deque((start, Moved(counts)) for start, counts in self.bins)
 
 
+# The cameras' node trails, as LUC3D's (talmolab/luc3d ui/overlays.js drawNodeTrails, after SLEAP's
+# TrackTrailOverlay): its lengths, shades and ramp
+CAMERA_TRAILS = ((0.0, "Off"), (0.25, "¼ s"), (0.5, "½ s"), (1.0, "1 s"), (2.0, "2 s")) # seconds
+TRAIL_SHADES = {"very-dark": -0.65, "dark": -0.4, "normal": 0.0, "light": 0.4, "very-light": 0.7}
+TRAIL_AGE_SHIFT = 0.45 # the oldest segment shaded this much further than the newest
+MAX_TRAIL_FRAMES = 500
+# At most this many segments, from the newest row to the oldest: a longer trail skips rows (2 s at 30 fps: every
+# other), to keep the live view at 30 a second. For live viewing only: never in LUC3D, whose trails draw every frame
+# (a switch of identities for a single frame shows in them, which skipping rows could hide).
+TRAIL_SEGMENTS = 32
+TRAIL_STEPS = 8 # the steps of age a camera's trail is drawn in (LUC3D's, one a frame, at a quarter second at 30 fps)
+
+
+def TrailFrames(seconds, fps):
+	# Frames in a trail seconds long at fps (30 while none is known): at least 1 when on, at most 500
+	if seconds <= 0:
+		return 0
+	return int(min(MAX_TRAIL_FRAMES, max(1, round(seconds * (fps if fps and fps > 0 else 30)))))
+
+
+def TrailColor(color, amount, age):
+	# An identity's colour (BGR) in a trail of shade amount (< 0 darker: its channels times 1 + amount; > 0
+	# lighter: toward white), age (0 the newest segment, toward 1 the oldest) moving it further the same way
+	color = np.asarray(color, float)
+	if amount > 0:
+		f = amount + (1 - amount) * TRAIL_AGE_SHIFT * age
+		color = color + (255 - color) * f
+	else:
+		color = color * (1 + amount) * (1 - TRAIL_AGE_SHIFT * age)
+	return tuple(int(round(v)) for v in np.clip(color, 0, 255))
+
+
+class CameraTrails:
+	"""
+	Each identity's node trails on the cameras' tiles, as LUC3D draws them:
+	each node's path over the last rows taken (the last --camera-trail-seconds
+	of frames, and the one shown), one segment from each row to the one before,
+	the older thinner, more transparent and further shaded from the identity's
+	colour (--trail-shade: dark, its channels times 0.6, by default). Two sets:
+	the predictions' (each identity's detection in this camera, 1 px as they
+	are drawn) and the reprojections' (its 3D projected, 2 px), each with its
+	layer (d, p). A node missing in a row breaks its path there.
+	"""
+
+	def __init__(self, seconds=0.25, shade="dark"):
+		self.seconds, self.shade = float(seconds), shade
+		self.rows = deque() # (frame, row, {camera: (2D, 3D) per identity}), the newest last
+		self.fps = None
+
+	def Frames(self):
+		return TrailFrames(self.seconds, self.fps)
+
+	def Add(self, row):
+		frames = self.Frames()
+		if not frames:
+			self.rows.clear()
+			return
+		n = int(row["frame"])
+		if self.rows and n <= self.rows[-1][0]:
+			self.rows.clear() # a new recording, or campy-live again
+		self.rows.append((n, row, {}))
+		while len(self.rows) > frames + 1:
+			self.rows.popleft()
+
+	def Clear(self):
+		self.rows.clear()
+
+	def Points(self, entry, c, camera):
+		# One row's nodes in camera c: 2D (identities, nodes, 2) from its detections, 3D projected (or None)
+		n, row, cache = entry
+		if c not in cache:
+			members = np.asarray(row["members"][:, c])
+			kp = np.asarray(row["keypoints"][c], float)
+			twoD = np.full((len(members),) + kp.shape[1:], np.nan)
+			for a, i in enumerate(members):
+				if 0 <= i < len(kp):
+					twoD[a] = kp[i]
+			threeD = None
+			if camera is not None:
+				X = np.asarray(row["points3d"], float)
+				threeD = Project(camera, X.reshape(-1, 3)).reshape(X.shape[:-1] + (2,))
+			cache[c] = (twoD, threeD)
+		return cache[c]
+
+	def Draw(self, img, c, camera, scale, origin=(0, 0), show2d=True, show3d=True, bad=()):
+		"""
+		The trails on img, camera c's tile at scale from origin (as DrawCamera),
+		up to the row shown, the newest taken. bad: the identities drawn dimmed
+		(their trails in Dimmed colours). LUC3D's ramp, from each row's segment
+		to the next (k = 1, the newest, to W - 1): opacity max(0.1, 0.9 t),
+		width times (W - k) / (W - 1) (at least 1 px), shade further by age 1 - t,
+		where t = 1 - k / (W + 1); in at most TRAIL_STEPS steps of age (the
+		segments in one step drawn alike, in one cv2 call for each identity), so
+		that 2 s cost no more than a quarter. Each pixel takes the newest segment
+		over it, the predictions over the reprojections, then is blended once.
+		"""
+		rows = [entry for entry in self.rows if Has3D(entry[1])][::-1] # k = 0: the newest
+		if len(rows) - 1 > TRAIL_SEGMENTS: # a long trail: every other row (or every third, ...), the newest kept
+			rows = rows[::-(-(len(rows) - 1) // TRAIL_SEGMENTS)]
+		W = len(rows)
+		if W < 2 or not (show2d or show3d):
+			return
+		k = np.arange(1, W)
+		t = 1 - k / (W + 1)
+		steps = min(TRAIL_STEPS, W - 1)
+		step = (k - 1) * steps // (W - 1) # each segment's step, 0 the newest: k from first[s] to first[s + 1]
+		first = np.searchsorted(step, np.arange(steps + 1))
+		def Mean(v):
+			return np.bincount(step, v, steps) / np.bincount(step, None, steps)
+		alpha, taper, age = Mean(np.maximum(0.1, 0.9 * t)), Mean((W - k) / (W - 1)), Mean(1 - t)
+		layers = []
+		if show3d and camera is not None:
+			layers.append((1, 2)) # the reprojections first (under), as LUC3D; their lines 2 px, as drawn
+		if show2d:
+			layers.append((0, 1))
+		h, w = img.shape[:2]
+		scale = np.broadcast_to(np.asarray(scale, float), (2,))
+		origin = np.asarray(origin, float)
+		index = None # each pixel's segment kind (layer, step, identity), + 1; 0: none
+		box = [w, h, 0, 0]
+		A = None
+		for layer, (which, width) in enumerate(layers):
+			Q = Place(np.stack([self.Points(entry, c, camera)[which] for entry in rows]), scale, origin)
+			A = Q.shape[1]
+			with np.errstate(invalid="ignore"):
+				ok = np.isfinite(Q).all(-1) & (Q[..., 0] > -w) & (Q[..., 0] < 2 * w) & (Q[..., 1] > -h) & \
+					(Q[..., 1] < 2 * h)
+			seg = ok[:-1] & ok[1:] # (W - 1, identities, nodes): from row k - 1 to row k
+			if not seg.any():
+				continue
+			q = np.zeros(Q.shape, np.int32)
+			q[ok] = np.round(Q[ok] * (1 << SHIFT))
+			ends = np.stack([q[:-1], q[1:]], -2) # (W - 1, identities, nodes, 2 ends, 2)
+			if index is None:
+				index = np.zeros((h, w), np.uint16)
+			thick = np.maximum(1, np.round(np.maximum(min(0.8, width), width * taper))).astype(int)
+			for s in range(steps - 1, -1, -1): # the oldest first: the newer over it
+				k0, k1 = first[s], first[s + 1]
+				for a in range(A):
+					lines = ends[k0:k1, a][seg[k0:k1, a]]
+					if len(lines):
+						cv2.polylines(index, lines, False, 1 + (layer * steps + s) * A + a, int(thick[s]), cv2.LINE_8,
+							SHIFT)
+			pts = Q[ok]
+			box = [min(box[0], pts[:, 0].min()), min(box[1], pts[:, 1].min()), max(box[2], pts[:, 0].max()),
+				max(box[3], pts[:, 1].max())]
+		if index is None:
+			return
+		x0, y0 = max(0, int(box[0]) - 4), max(0, int(box[1]) - 4)
+		x1, y1 = min(w, int(box[2]) + 5), min(h, int(box[3]) + 5)
+		if x1 <= x0 or y1 <= y0:
+			return
+		ys, xs = np.nonzero(index[y0:y1, x0:x1])
+		if not len(ys):
+			return
+		ys += y0
+		xs += x0
+		code = index[ys, xs].astype(np.int64) - 1
+		# Each kind's colour and opacity: its identity's colour (dimmed if bad), shaded as LUC3D's for its age
+		amount = TRAIL_SHADES.get(self.shade, TRAIL_SHADES["dark"])
+		base = np.array([Dimmed(Color(a)) if a in bad else Color(a) for a in range(A)], np.float32) # (A, 3)
+		f = (amount + (1 - amount) * TRAIL_AGE_SHIFT * age) if amount > 0 else (1 + amount) * (1 - TRAIL_AGE_SHIFT * age)
+		if amount > 0:
+			colors = base[None] + (255 - base[None]) * f[:, None, None] # (steps, A, 3)
+		else:
+			colors = base[None] * f[:, None, None]
+		colors = np.tile(np.clip(colors, 0, 255).reshape(-1, 3), (len(layers), 1)) # by code
+		opacity = np.repeat(np.tile(alpha, len(layers)), A).astype(np.float32)
+		pix = img[ys, xs].astype(np.float32)
+		o = opacity[code][:, None]
+		img[ys, xs] = (pix + (colors[code] - pix) * o + 0.5).astype(np.uint8)
+
+
 def Unit(v):
 	v = np.asarray(v, float)
 	n = np.linalg.norm(v)
@@ -763,8 +1015,8 @@ class Scene:
 	a floor grid, as a virtual camera sees them. It orbits the middle of the
 	cage, about the world's up: Orbit turns it (by pixels dragged), Pan moves
 	what it looks at, Zoom moves it nearer, Reset puts it back (from the
-	cameras' side, 50 degrees up, the cage filling the tile; the cameras,
-	above it, come into view zoomed out).
+	cameras' side, 50 degrees up, as near as shows the cage and every
+	camera's frustum, in the middle of the tile below its text).
 
 	Up is at first away from where the cameras look (Up), or --up, and the
 	cage's middle is what they look at (Aim). Learn (each row taken) then
@@ -834,23 +1086,40 @@ class Scene:
 		self.e1, self.e2 = self.Basis(self.up)
 
 	def Reset(self):
+		# From the cameras' side, 50 degrees up, everything in view: the cage (extent around its middle, 0.15
+		# reach high: where the animals' poses are) and the cameras' frustums, filling a tile of the frames'
+		# shape below its two lines of text, in its middle
 		self.azimuth, self.elevation = 0.0, np.radians(50)
 		ground = self.Ground()
 		self.centre = ground + 0.05 * self.reach * self.up
-		# Near enough for the cage (extent around its middle, 0.15 reach high) to fill a tile of the frames' shape
 		shape = (1024, 1280)
 		see = np.array([ground + self.extent * (i * self.e1 + j * self.e2) + k * 0.15 * self.reach * self.up
-			for i in (-1, 1) for j in (-1, 1) for k in (0, 1)])
-		lo, hi = 0.2 * self.reach, 50 * self.reach
-		for _ in range(30):
-			self.distance = np.sqrt(lo * hi)
+			for i in (-1, 1) for j in (-1, 1) for k in (0, 1)] + [X for cam in self.cameras for X in self.Frustum(cam)])
+		lo, hi = np.array([0.04, 0.12]) * shape[::-1], np.array([0.96, 0.95]) * shape[::-1] # the room for it, px
+		for _ in range(4): # as near as fits, then moved to the room's middle; again, as that changes the perspective
+			near, far = 0.2 * self.reach, 50 * self.reach
+			for _ in range(30):
+				self.distance = np.sqrt(near * far)
+				px = self.Project(see, shape)
+				if np.isfinite(px).all() and (px >= lo).all() and (px <= hi).all():
+					far = self.distance
+				else:
+					near = self.distance
+			self.distance = far
 			px = self.Project(see, shape)
-			if np.isfinite(px).all() and (np.abs(px - [640, 512]) <= [0.48 * 1280, 0.46 * 1024]).all():
-				hi = self.distance
-			else:
-				lo = self.distance
-		self.distance = hi
+			off = (px.min(0) + px.max(0)) / 2 - (lo + hi) / 2
+			R, _ = self.Eye()
+			self.centre = self.centre + (R[0] * off[0] + R[1] * off[1]) * self.distance / self.Focal(shape[1])
+		self.distance = far
 		self.touched = False # by the mouse, since
+
+	def Frustum(self, cam):
+		# A camera as the 3D view draws it: its centre, its image's corners depth in front of it, and a triangle
+		# on its top edge
+		w, h = cam.size if cam.size is not None else 2 * cam.c
+		uv = np.array([[0, 0], [w, 0], [w, h], [0, h], [0.35 * w, 0], [0.65 * w, 0], [0.5 * w, -0.18 * h]], float)
+		rays = np.column_stack([(uv - cam.c) / cam.f, np.ones(len(uv))]) * 0.12 * self.reach
+		return np.vstack([cam.center, cam.center + rays @ cam.R])
 
 	def Ground(self):
 		# The floor under the cage's middle
@@ -1016,14 +1285,9 @@ class Scene:
 			color = GRID_MID if k == 0 else GRID
 			self.Lines(img, view, [[o + k * s * self.e1 - n * s * self.e2, o + k * s * self.e1 + n * s * self.e2],
 				[o + k * s * self.e2 - n * s * self.e1, o + k * s * self.e2 + n * s * self.e1]], color)
-		depth = 0.12 * self.reach
 		for k, cam in enumerate(self.cameras):
-			w, h = cam.size if cam.size is not None else 2 * cam.c
-			# The image's corners, depth in front of the camera, and a triangle on its top edge
-			uv = np.array([[0, 0], [w, 0], [w, h], [0, h], [0.35 * w, 0], [0.65 * w, 0], [0.5 * w, -0.18 * h]], float)
-			rays = np.column_stack([(uv - cam.c) / cam.f, np.ones(len(uv))]) * depth
-			X = cam.center + rays @ cam.R
-			apex = cam.center
+			F = self.Frustum(cam)
+			apex, X = F[0], F[1:]
 			segments = [[apex, X[i]] for i in range(4)] + [[X[i], X[(i + 1) % 4]] for i in range(4)] + \
 				[[X[4], X[6]], [X[6], X[5]]]
 			self.Lines(img, view, segments, FRUSTUM)
@@ -1160,12 +1424,11 @@ class Scene:
 			else:
 				cv2.line(img, q0, q1, OUTLINE, 4, cv2.LINE_AA, SHIFT)
 				cv2.line(img, q0, q1, color, 2, cv2.LINE_AA, SHIFT)
+		placed = Labels(img.shape[0], words)
 		for a, at in labels:
-			if a in bad:
-				Text(img, "#{}  bad 3D: {:.0f} px".format(a, bad[a]), (at[0] + 6, at[1] - 10), WARN, 0.45,
-					words=words)
-			else:
-				Text(img, "#{}".format(a), (at[0] + 6, at[1] - 10), Color(a), 0.45, words=words)
+			text = "#{}  bad 3D: {:.0f} px".format(a, bad[a]) if a in bad else "#{}".format(a)
+			Text(img, text, placed.Place(text, (at[0] + 6, at[1] - 10), 0.45), WARN if a in bad else Color(a), 0.45,
+				words=words)
 
 
 # ---------------------------------------------------------------- the view
@@ -1207,9 +1470,9 @@ def RecordingFolder(readers):
 
 
 def MarkText(mark):
-	# A bookmark, in a line: 3 at 17:03:12, frame 1203, event 2: rears
+	# A bookmark, in a line: 3 at 17:03:12, frame 1,203, event 2: rears
 	text = "{} at {}, frame {}".format(mark["number"], mark["time"][11:19],
-		"-" if mark["frame"] is None else mark["frame"])
+		"-" if mark["frame"] is None else "{:,}".format(int(mark["frame"])))
 	if mark["event"] != "mark":
 		text += ", event " + mark["event"]
 	return text + (": " + mark["note"] if mark["note"] else "")
@@ -1345,10 +1608,13 @@ class Viewer:
 		self.panned = False # a camera's zoom changed since it was drawn
 		self.textOver = False # the window draws the text over the view (Qt's fonts): handed to it in words
 		self.words = None # the last view's text (Words), when textOver
+		self.measure = None # the window's TextSize, in its fonts (Words), when textOver
 		self.render = None # the window's: the view with its text drawn over it, for the PNGs
 		self.scene = None # the 3D tile's Scene (with a calibration)
 		self.showScene = not args.no_3d
-		self.trails = args.trail_seconds > 0 # the 3D view's trails shown
+		self.trails = args.trail_seconds > 0 # the 3D view's trails shown, and the cameras' (cameraTrails)
+		self.cameraTrails = CameraTrails(args.camera_trail_seconds, args.trail_shade)
+		self.cameraTrailMs = deque(maxlen=KEPT) # of drawMs: the cameras' trails
 		self.occupancy = args.occupancy # and the occupancy
 		self.sceneCell = None # where the 3D tile is in the view: y, x, height, width
 		self.drag = None # the mouse button dragging in the 3D tile, and where it was
@@ -1388,6 +1654,7 @@ class Viewer:
 		if self.results is not None and self.results.Ended():
 			self.results.Close()
 			self.results = None
+			self.rate = [] # its results a second: none now
 		if self.readers is not None and any(r.Ended() or r.Replaced() for r in self.readers):
 			for r in self.readers:
 				r.Close()
@@ -1421,6 +1688,7 @@ class Viewer:
 				self.readers = readers
 				self.buffers = [np.empty(r.shape, r.dtype) for r in readers]
 				self.ended = False
+				self.cameraTrails.fps = self.cameraTrails.fps or readers[0].Info("frameRate")
 				self.rig = livehealth.Rig([r.cameraName or r.name for r in readers], readers[0].Info("frameRate"),
 					readers[0].slots)
 				self.rigAt = 0.0
@@ -1455,6 +1723,8 @@ class Viewer:
 					self.args.heat_minutes)
 		self.tracking = livehealth.Tracking(d.get("animals"), d.get("frame_rate"), self.args.bad_px) \
 			if self.calibration else None
+		self.cameraTrails.Clear() # another campy-live's rows
+		self.cameraTrails.fps = d.get("frame_rate") or self.cameraTrails.fps
 		Say("campy-live's results: {} cameras, {} nodes, {}.".format(len(rings), len(d.get("nodes") or []) or "?",
 			"3D of {} animals".format(d.get("animals")) if self.calibration else "2D only"))
 
@@ -1531,6 +1801,7 @@ class Viewer:
 						return None
 					if self.scene is not None:
 						self.scene.Learn(row, now)
+					self.cameraTrails.Add(row)
 					self.lastRow = now
 					return self.Compose(frames, row), int(row["frame"]), row
 		if now - self.lastRow > STALE_S and now - self.lastRaw >= 1.0 / max(1e-3, self.args.fps):
@@ -1594,7 +1865,7 @@ class Viewer:
 
 	def Compose(self, frames, row):
 		start = time.perf_counter()
-		self.words = Words() if self.textOver else None
+		self.words = Words(self.measure) if self.textOver else None
 		self.frameShape = frames[0].image.shape[:2]
 		shown = self.Shown()
 		layout = self.Layout(frames[0].image.shape)
@@ -1612,6 +1883,7 @@ class Viewer:
 		healthS = time.perf_counter() - health
 		self.cells = []
 		bad = self.Dimmed(row)
+		trailS = 0.0
 		for k, (c, frame) in enumerate(zip(shown, frames)):
 			y, x = layout.Cell(k)
 			words = self.words.Tile(("camera", k), y + oy, x + ox, *layout.tile) if self.words is not None else None
@@ -1619,32 +1891,35 @@ class Viewer:
 			zoom = self.ZoomOf(c)
 			scale, origin = zoom.Window(frame.image.shape, layout.tile, layout.scale)
 			tile = Gray(frame.image, layout.tile, scale, origin)
+			text = self.Header(c, frame, row, cameraNames, calibNames, zoom, rig)
+			header = TextBox(text, (PAD, PAD + 12), 0.5, words)
+			health = time.perf_counter()
+			badge = self.Badge(c, rig, tile.shape[1], header, words)
+			healthS += time.perf_counter() - health
+			taken = [header] + ([badge[-1]] if badge is not None else [])
 			if row is not None:
+				if self.trails and self.cameraTrails.seconds > 0: # under the skeletons
+					trailStart = time.perf_counter()
+					self.cameraTrails.Draw(tile, c, self.calibration[c] if self.calibration else None, scale, origin,
+						self.show2d, self.show3d, bad)
+					trailS += time.perf_counter() - trailStart
 				DrawCamera(tile, scale, row, c, self.calibration[c] if self.calibration else None, edges,
-					self.show2d, self.show3d, self.lines, origin, frame.image.shape[1::-1], words, bad=bad)
-			name = cameraNames[c] if c < len(cameraNames) else str(c)
-			if c < len(calibNames) and calibNames[c] != name:
-				name += " ({})".format(calibNames[c])
-			text = "{}  {}  frame {}".format(c + 1, name, frame.frameNumber)
-			if row is not None:
-				text += "  found {}".format(int(row["found"][c]))
-			if self.selected is not None: # single view: which of how many (as LUC3D)
-				text += "  ({}/{})".format(c + 1, len(self.readers) if self.readers else len(self.ringNames))
-			if zoom.Zoomed():
-				text += "  1:1" if zoom.native else "  zoom {:.1f}x".format(zoom.times)
+					self.show2d, self.show3d, self.lines, origin, frame.image.shape[1::-1], words, bad=bad, taken=taken)
 			Text(tile, text, (PAD, PAD + 12), words=words)
 			if len(shown) > 1 and c == self.current: # the grid: the camera v shows alone
 				cv2.rectangle(tile, (1, 1), (tile.shape[1] - 2, tile.shape[0] - 2), PICKED, 2)
-			health = time.perf_counter()
-			self.Badge(tile, c, rig)
-			healthS += time.perf_counter() - health
+			if badge is not None:
+				text, at, color, box, wrong, _ = badge
+				if wrong: # a red frame round the tile
+					cv2.rectangle(tile, (1, 1), (tile.shape[1] - 2, tile.shape[0] - 2), WARN, 3)
+				Text(tile, text, at, color, 0.45, box, words=words)
 			canvas[y:y + layout.tile[0], x:x + layout.tile[1]] = tile
 			self.cells.append((c, y + oy, x + ox) + layout.tile)
 		self.sceneCell = None
 		if self.Showing3D():
 			y, x = layout.Cell(len(shown))
 			self.sceneCell = (y + oy, x + ox) + layout.tile
-			self.Draw3D(full, row, frames[0].frameNumber)
+			self.Draw3D(full, row, frames[0], shown[0])
 		if self.panel:
 			healthS += self.Panel(canvas, layout, frames, row)
 		self.flashDrawn = time.monotonic() < self.flashUntil
@@ -1655,28 +1930,59 @@ class Viewer:
 		self.panned = False
 		self.drawMs.append((time.perf_counter() - start) * 1e3)
 		self.healthMs.append(healthS * 1e3)
+		if row is not None and self.trails and self.cameraTrails.seconds > 0:
+			self.cameraTrailMs.append(trailS * 1e3)
 		return full
 
-	def Badge(self, tile, c, rig):
-		# Camera c's health on its tile, at its top right: its frames a second (green), or what is wrong, in
-		# red, with a red frame round the tile
+	def FrameTime(self, c, frame, status=None):
+		# Camera c's frame's time into the recording (s), as the panel's "Recording" counts it (livehealth.Rig:
+		# from the first frame's host time); before the rig has seen camera c's, from its number at the frame
+		# rate; None without a feed
+		if self.rig is None:
+			return None
+		t = self.rig.FrameTime(c, frame.frameNumber, frame.hostTime, None if status is None else status.period)
+		if t is None and self.rig.frameRate > 0:
+			t = (frame.frameNumber - 1) / self.rig.frameRate
+		return t
+
+	def Header(self, c, frame, row, cameraNames, calibNames, zoom, rig=None):
+		# Camera c's name line, at its tile's top left (rig: the rig's Status)
+		name = cameraNames[c] if c < len(cameraNames) else str(c)
+		if c < len(calibNames) and calibNames[c] != name:
+			name += " ({})".format(calibNames[c])
+		text = "{}  {}  {}".format(c + 1, name, FrameText(frame.frameNumber, self.FrameTime(c, frame, rig)))
+		if row is not None:
+			text += "  found {}".format(int(row["found"][c]))
+		if self.selected is not None: # single view: which of how many (as LUC3D)
+			text += "  ({}/{})".format(c + 1, len(self.readers) if self.readers else len(self.ringNames))
+		if zoom.Zoomed():
+			text += "  1:1" if zoom.native else "  zoom {:.1f}x".format(zoom.times)
+		return text
+
+	def Badge(self, c, rig, width, header, words=None):
+		"""
+		Camera c's health, at the top right of its tile (width px): its frames
+		a second (green, on a dark box), or what is wrong (white on red, and a
+		red frame round the tile). Level with the name line, or under it where
+		that would cover its box (header). In the font the text is drawn in
+		(words: a Pen). (text, at, colour, box colour, wrong, its box), or None.
+		"""
 		if rig is None or c >= len(rig.cameras):
-			return
+			return None
 		s = rig.cameras[c]
 		if s.problems:
-			text = "  ".join(tag for tag, _ in s.problems)
-			cv2.rectangle(tile, (1, 1), (tile.shape[1] - 2, tile.shape[0] - 2), WARN, 3)
+			text, color, box = "  ".join(tag for tag, _ in s.problems), (255, 255, 255), WARN
 		elif s.fps is not None:
-			text = "{:.1f} fps".format(s.fps)
+			text, color, box = "{:.1f} fps".format(s.fps), FINE, BOX
 		else:
-			return
-		(w, h), base = cv2.getTextSize(text, FONT, 0.45, 1)
-		x, y = tile.shape[1] - w - PAD - 4, PAD + 12
-		if s.problems:
-			cv2.rectangle(tile, (x - 4, y - h - 4), (x + w + 4, y + base + 2), WARN, -1)
-			Text(tile, text, (x, y), (255, 255, 255), 0.45, box=False)
-		else:
-			Text(tile, text, (x, y), FINE, 0.45)
+			return None
+		(w, h), base = TextSize(text, 0.45, words)
+		at = (width - w - PAD - 4, PAD + 12)
+		where = TextBox(text, at, 0.45, words)
+		if where[0] < header[2] + 6: # under the name line
+			at = (at[0], header[3] + 2 + h + 3)
+			where = TextBox(text, at, 0.45, words)
+		return text, at, color, box, bool(s.problems), where
 
 	def Again(self):
 		"""
@@ -1694,22 +2000,25 @@ class Viewer:
 				return None
 		return self.Compose(frames, row)
 
-	def Draw3D(self, canvas, row, frame):
-		# The 3D tile, in its cell of canvas: row's animals (the row the cameras' tiles show)
+	def Draw3D(self, canvas, row, frame, c=0):
+		# The 3D tile, in its cell of canvas: row's animals (the row the cameras' tiles show), and the frame's
+		# number and time (camera c's frame)
+		seconds = self.FrameTime(c, frame)
+		frame = frame.frameNumber
 		y, x, h, w = self.sceneCell
 		tile = canvas[y:y + h, x:x + w]
 		start = time.perf_counter()
 		words = self.words.Tile("3d", y, x, h, w) if self.words is not None else None
 		self.scene.Draw(tile, row, self.description.get("edges"), words, self.trails, self.occupancy,
 			self.args.bad_px, self.Dimmed(row))
-		header = "3D  frame {}".format(frame) + ("" if row is not None else "  (no results)")
+		header = "3D  " + FrameText(frame, seconds) + ("" if row is not None else "  (no results)")
 		if self.trails and self.scene.trailSeconds > 0:
 			header += "  trails {:g} s".format(self.scene.trailSeconds)
 		if self.occupancy:
 			minutes = self.scene.occupancy.window / 60
 			header += "  occupancy " + ("since the start" if not minutes else "{:g} min".format(minutes))
 		Text(tile, header, (PAD, PAD + 12), words=words)
-		Text(tile, "drag: turn  right-drag: move  wheel: zoom  r: reset", (PAD, PAD + 34), DIM, 0.4, words=words)
+		Text(tile, "drag: turn  right-drag: move  wheel: zoom  double click: reset", (PAD, PAD + 34), DIM, 0.4, words=words)
 		self.moved = False
 		self.sceneMs.append((time.perf_counter() - start) * 1e3)
 
@@ -1859,7 +2168,7 @@ class Viewer:
 		# Click; returns the height they take
 		self.buttons = []
 		x, y = x0 + PAD, y0 + PAD
-		buttons = [("Predictions (d)", ord("d"), self.show2d), ("Reprojections (p)", ord("p"), self.show3d),
+		buttons = [("Predictions (d)", ord("d"), self.show2d), ("Reprojections (r)", ord("r"), self.show3d),
 			("Lines (l)", ord("l"), self.lines)]
 		if self.scene is not None:
 			buttons.append(("3D view (\\)", ord("\\"), self.showScene))
@@ -1935,9 +2244,10 @@ class Viewer:
 		newest row), then a strip, the newest at its right: its height the
 		cameras it was triangulated from, its colour its reprojection error
 		(green within 10 px, yellow within --bad-px, red above; gray: no 3D;
-		dark: no row from campy-live).
+		dark: no row from campy-live). None too once the recording's feed has
+		ended (its last 10 s are not now's).
 		"""
-		if self.tracking is None:
+		if self.tracking is None or self.ended:
 			return None
 		got = self.tracking.Arrays()
 		animals = self.tracking.animals or (got[1].shape[1] if got is not None else 0)
@@ -2016,7 +2326,7 @@ class Viewer:
 		if rig is not None:
 			lines.append(rig)
 		if row is not None:
-			lines.append(("Frame {}: its results here {:.1f} ms after the frame{}".format(int(row["frame"]),
+			lines.append(("Frame {:,}: its results here {:.1f} ms after the frame{}".format(int(row["frame"]),
 				self.lastSeen, "; the last view shown {:.1f} ms after its frame".format(self.lastShown)
 				if self.lastShown is not None else ""), TEXT))
 			if Has3D(row) and self.calibration:
@@ -2063,7 +2373,7 @@ class Viewer:
 		if self.panel and self.bookmarks.recent: # the Qt window lists them in its own panel
 			lines.append(("Bookmark {} ({} made)".format(MarkText(self.bookmarks.recent[-1]), self.bookmarks.count),
 				MARKED))
-		lines.append((KEYS.format(len(self.ringNames), "; \\ 3D view, r turn it back, t trails, o occupancy"
+		lines.append((KEYS.format(len(self.ringNames), "; \\ 3D view (double click: turn it back), t trails, o occupancy"
 			if self.scene is not None else ""),
 			DIM))
 		return lines
@@ -2105,7 +2415,7 @@ class Viewer:
 
 	def Waiting(self):
 		canvas = self.Canvas(self.Size()[::-1]) # the view's size: OpenCV sizes a new window to its first image
-		self.words = Words() if self.textOver else None
+		self.words = Words(self.measure) if self.textOver else None
 		words = self.words.Tile("waiting", 0, 0, *canvas.shape[:2]) if self.words is not None else None
 		Text(canvas, "Waiting for the live feed: {}".format(", ".join(self.ringNames)), (PAD, 40), words=words)
 		Text(canvas, "(campy-acquire with liveFeed True)", (PAD, 70), DIM, words=words)
@@ -2144,7 +2454,7 @@ class Viewer:
 				self.selected = min(self.current, n - 1)
 		elif key == ord("d"):
 			self.show2d = not self.show2d
-		elif key == ord("p"):
+		elif key == ord("r"): # LUC3D's
 			self.show3d = not self.show3d
 		elif key == ord("l"):
 			self.lines = not self.lines
@@ -2155,9 +2465,6 @@ class Viewer:
 			self.moved = True
 		elif key == ord("o"):
 			self.occupancy = not self.occupancy
-			self.moved = True
-		elif key == ord("r") and self.scene is not None:
-			self.scene.Reset()
 			self.moved = True
 		elif key == ord("c"):
 			self.ToggleCpus()
@@ -2244,6 +2551,7 @@ class Viewer:
 			"draw_ms": {"p50": P(self.drawMs, 50), "p99": P(self.drawMs, 99)},
 			"draw_3d_ms": {"p50": P(self.sceneMs, 50), "p99": P(self.sceneMs, 99)},
 			"draw_health_ms": {"p50": P(self.healthMs, 50), "p99": P(self.healthMs, 99)},
+			"camera_trails_ms": {"p50": P(self.cameraTrailMs, 50), "p99": P(self.cameraTrailMs, 99)},
 			"rig_read_ms": {"p50": P(self.rigMs, 50), "p99": P(self.rigMs, 99)},
 			**({"qt_panel_ms": {"p50": P(self.panelMs, 50), "p99": P(self.panelMs, 99)}} if self.panelMs else {}),
 			**self.HealthSummary(),
@@ -2406,7 +2714,7 @@ def RunOpenCV(args, window):
 						cv2.imshow(TITLE, image)
 				if viewer.moved and image is not None and viewer.sceneCell is not None and getattr(viewer, "last", None):
 					# Turned: the 3D tile again, of the row the cameras' tiles show
-					viewer.Draw3D(image, viewer.last[1], viewer.last[0][0].frameNumber)
+					viewer.Draw3D(image, viewer.last[1], viewer.last[0][0], viewer.lastCameras[0])
 					cv2.imshow(TITLE, image)
 				if cv2.getWindowProperty(TITLE, cv2.WND_PROP_VISIBLE) < 1:
 					break # its window closed
@@ -2481,6 +2789,11 @@ def ParseArgs(argv=None):
 		"OpenCV's; auto: Qt's when PyQt5 is there.")
 	p.add_argument("--trail-seconds", type=float, default=60, help="The 3D view's trails: each identity's path over "
 		"the last this many seconds (0: none; t shows or hides them).")
+	p.add_argument("--camera-trail-seconds", type=float, default=0.25, help="The cameras' tiles' trails (LUC3D's node "
+		"trails, shown with the 3D view's: t): each node's path over the last this many seconds of frames (LUC3D's "
+		"lengths: 0.25, 0.5, 1, 2; 0: none).")
+	p.add_argument("--trail-shade", default="dark", choices=list(TRAIL_SHADES), help="The cameras' trails' colour, "
+		"from the identity's (LUC3D's shades): dark, its channels times 0.6, and darker with age.")
 	p.add_argument("--occupancy", action="store_true", help="Start with the 3D view's occupancy shown (o).")
 	p.add_argument("--heat-minutes", type=float, default=0, help="The occupancy: where the animals went over the last "
 		"this many minutes (0: since campy-live's results began).")

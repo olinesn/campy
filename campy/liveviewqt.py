@@ -20,9 +20,10 @@ campy/livehealth.py), then the rest.
 The keys are the OpenCV window's (liveview.Viewer.Key), as LUC3D's: v one
 camera alone, g every camera, the arrows the previous or next camera, \\ the
 3D view on or off; the wheel, + and - zoom a camera, 0 the whole frame
-again, shift 0 one frame pixel for one screen pixel; d, p, l what is drawn,
-t the trails, o the occupancy; z the window to the view; space pause; s
-save the view as a PNG (with its text); q or Esc quit.
+again, shift 0 one frame pixel for one screen pixel; d, r (LUC3D's: the
+reprojections) and l what is drawn, t the trails, o the occupancy; z the
+window to the view; space pause; s save the view as a PNG (with its text);
+q or Esc quit.
 
 Bookmarks (liveview.Bookmarks): m, the panel's Bookmark button, or Enter in
 its note, marks the moment, with the note typed; Shift+1-9, or the panel's
@@ -63,9 +64,15 @@ def Font(size):
 	return _fonts[size]
 
 
+def Measure(text, size):
+	# liveview.TextSize in Qt's font: ((width, capitals' height), descent), the box PaintWords puts it on
+	metrics = QtGui.QFontMetrics(Font(size))
+	return (metrics.horizontalAdvance(text), metrics.capHeight()), metrics.descent()
+
+
 def PaintWords(painter, items):
 	# The view's text items (liveview.Words), on painter, in the image's pixels: each at the left end of
-	# its baseline, on a dark box as liveview.Text draws it, cut to its tile
+	# its baseline, on its box as liveview.Text draws it, cut to its tile
 	right = 0
 	for text, x, y, color, size, box, clip in items:
 		font = Font(size)
@@ -75,7 +82,7 @@ def PaintWords(painter, items):
 		painter.setClipRect(QtCore.QRect(*clip))
 		if box:
 			painter.fillRect(QtCore.QRect(x - 3, y - metrics.capHeight() - 3, width + 6,
-				metrics.capHeight() + metrics.descent() + 4), QtGui.QColor(*liveview.BOX[::-1]))
+				metrics.capHeight() + metrics.descent() + 4), QtGui.QColor(*box[::-1]))
 		painter.setFont(font)
 		painter.setPen(QtGui.QColor(*color[::-1]))
 		painter.drawText(QtCore.QPoint(x, y), text)
@@ -198,6 +205,7 @@ class Window(QtWidgets.QWidget):
 		super().__init__()
 		self.viewer, self.args = viewer, args
 		viewer.textOver = True # the view's text, drawn over it in Qt's fonts
+		viewer.measure = Measure # and placed as wide as they draw it
 		viewer.render = lambda image: Rendered(image, viewer.words.Items())
 		self.setWindowTitle(liveview.TITLE)
 		self.paused = False
@@ -214,15 +222,42 @@ class Window(QtWidgets.QWidget):
 			"QPushButton:checked { background: #14466e; border-color: #e6e6e6; } "
 			"QLineEdit { background: #2a2a2a; border: 1px solid #555; padding: 3px; }")
 		column = QtWidgets.QVBoxLayout(panel)
+		# The checkboxes in two columns, each pair a row (a row whose boxes are hidden takes no room), the long
+		# one across both
 		self.checks = {}
-		for label, key in (("Predictions (d)", "d"), ("Reprojections (p)", "p"), ("Lines (l)", "l"),
+		checks = QtWidgets.QGridLayout()
+		checks.setHorizontalSpacing(8)
+		checks.setVerticalSpacing(4)
+		for k, (label, key) in enumerate((("Predictions (d)", "d"), ("Reprojections (r)", "r"), ("Lines (l)", "l"),
 				("3D view (\\)", "\\"), ("Trails (t)", "t"), ("Occupancy (o)", "o"),
-				("Fast CPUs (c): campy-live on the performance cores", "c")):
+				("Fast CPUs (c): campy-live on the performance cores", "c"))):
 			box = QtWidgets.QCheckBox(label)
 			box.setFocusPolicy(Qt.NoFocus) # space and the arrows stay the view's
 			box.clicked.connect(lambda checked, key=key: self.Key(ord(key)))
-			column.addWidget(box)
+			if key == "c":
+				checks.addWidget(box, k // 2, 0, 1, 2)
+			else:
+				checks.addWidget(box, k // 2, k % 2)
 			self.checks[key] = box
+		column.addLayout(checks)
+		# The cameras' trails (with t): LUC3D's lengths and shades
+		trails = QtWidgets.QHBoxLayout()
+		trails.setSpacing(4)
+		self.trailsLabel = QtWidgets.QLabel("Camera trails")
+		self.trailLength, self.trailShade = QtWidgets.QComboBox(), QtWidgets.QComboBox()
+		for seconds, name in liveview.CAMERA_TRAILS:
+			self.trailLength.addItem(name, seconds)
+		for shade in liveview.TRAIL_SHADES:
+			self.trailShade.addItem(shade.replace("-", " ").capitalize(), shade)
+		self.trailLength.setToolTip("How long the cameras' node trails are (as LUC3D's); t shows or hides them")
+		self.trailShade.setToolTip("Their colour, from the identity's (as LUC3D's)")
+		for box in (self.trailLength, self.trailShade):
+			box.setFocusPolicy(Qt.NoFocus)
+			box.activated.connect(lambda index: self.Trails())
+		trails.addWidget(self.trailsLabel)
+		trails.addWidget(self.trailLength, 1)
+		trails.addWidget(self.trailShade, 1)
+		column.addLayout(trails)
 		views = QtWidgets.QHBoxLayout()
 		self.grid = QtWidgets.QPushButton("Grid (g)")
 		self.single = QtWidgets.QPushButton("Single (v)")
@@ -335,7 +370,7 @@ class Window(QtWidgets.QWidget):
 		elif viewer.moved and self.picture.image is not None and viewer.sceneCell is not None \
 				and getattr(viewer, "last", None):
 			# Turned: the 3D tile again, of the row the cameras' tiles show
-			viewer.Draw3D(self.picture.image, viewer.last[1], viewer.last[0][0].frameNumber)
+			viewer.Draw3D(self.picture.image, viewer.last[1], viewer.last[0][0], viewer.lastCameras[0])
 			self.picture.words = viewer.words.Items() if viewer.words is not None else []
 			self.picture.update()
 
@@ -381,7 +416,7 @@ class Window(QtWidgets.QWidget):
 	def Sync(self):
 		# The panel's buttons as the viewer is
 		viewer = self.viewer
-		for key, on in (("d", viewer.show2d), ("p", viewer.show3d), ("l", viewer.lines), ("\\", viewer.showScene),
+		for key, on in (("d", viewer.show2d), ("r", viewer.show3d), ("l", viewer.lines), ("\\", viewer.showScene),
 				("t", viewer.trails), ("o", viewer.occupancy)):
 			self.checks[key].setChecked(on)
 		for key in "\\to":
@@ -389,8 +424,21 @@ class Window(QtWidgets.QWidget):
 		fast = viewer.CpusOn() # campy-live on the performance cores (None: nothing to move)
 		self.checks["c"].setChecked(bool(fast))
 		self.checks["c"].setVisible(fast is not None)
+		trails = viewer.cameraTrails
+		if self.trailLength.findData(trails.seconds) < 0: # --camera-trail-seconds, not one of LUC3D's
+			self.trailLength.addItem("{:g} s".format(trails.seconds), trails.seconds)
+		self.trailLength.setCurrentIndex(self.trailLength.findData(trails.seconds))
+		self.trailShade.setCurrentIndex(max(0, self.trailShade.findData(trails.shade)))
+		for widget in (self.trailsLabel, self.trailLength, self.trailShade):
+			widget.setVisible(viewer.scene is not None)
 		self.grid.setChecked(viewer.selected is None)
 		self.single.setChecked(viewer.selected is not None)
+
+	def Trails(self):
+		# The cameras' trails' length or shade, picked
+		trails = self.viewer.cameraTrails
+		trails.seconds, trails.shade = float(self.trailLength.currentData()), self.trailShade.currentData()
+		self.Changed()
 
 	def Changed(self):
 		# What is drawn changed (a key, a button, a click)
@@ -453,12 +501,41 @@ class Window(QtWidgets.QWidget):
 		self.Key(key)
 
 	def Fit(self):
-		# z: the window to the view, without the black margins
+		# z: the window to the view, without the black margins; smaller, the view's shape kept, when that
+		# would not fit on the screen
 		fit = self.viewer.Fit()
 		if fit:
 			ratio = self.picture.devicePixelRatioF()
-			w, h = int(round(fit[0] / ratio)), int(round(fit[1] / ratio))
-			self.resize(self.width() + w - self.picture.width(), self.height() + h - self.picture.height())
+			w, h = fit[0] / ratio, fit[1] / ratio
+			edge = self.width() - self.picture.width(), self.height() - self.picture.height() # the panel's
+			room = self.Room()
+			if room is not None:
+				shrink = min(1.0, (room[0] - edge[0]) / w, (room[1] - edge[1]) / h)
+				w, h = w * shrink, h * shrink
+			self.OnScreen(edge[0] + int(w), edge[1] + int(h))
+
+	def Room(self):
+		# The largest window, width x height, whose title bar and borders are inside its screen's free part
+		# (not under the taskbar), and that part (a QRect); None without a screen
+		screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+		if screen is None:
+			return None
+		free, frame, inside = screen.availableGeometry(), self.frameGeometry(), self.geometry()
+		return free.width() - (frame.width() - inside.width()), free.height() - (frame.height() - inside.height()), free
+
+	def OnScreen(self, w, h):
+		# The window at w x h, or smaller, so that it is inside its screen's free part, and moved there if it
+		# is not (the size asked for, not the window's: a resize may not have happened yet when it returns)
+		room = self.Room()
+		if room is not None:
+			w, h = min(w, room[0]), min(h, room[1])
+		self.resize(w, h)
+		if room is not None:
+			free, frame = room[2], self.frameGeometry()
+			x = max(free.left(), min(frame.x(), free.x() + room[0] - w))
+			y = max(free.top(), min(frame.y(), free.y() + room[1] - h))
+			if (x, y) != (frame.x(), frame.y()):
+				self.move(x, y)
 
 	def Raise(self):
 		# Back from minimized, and in front: a program started from a script may not take the focus on
@@ -497,8 +574,10 @@ def Run(args):
 	viewer.panel = False # the window's panel says it
 	window = Window(viewer, args)
 	width, height = args.size
-	window.resize(max(400, width - PANEL_WIDTH) + PANEL_WIDTH, height)
+	size = max(400, width - PANEL_WIDTH) + PANEL_WIDTH, height
+	window.resize(*size)
 	window.show()
+	window.OnScreen(*size) # its title bar and borders are known once it is shown
 	# Ctrl+C: Python takes it when it next runs, at the next tick; Qt would not stop for it
 	previous = signal.signal(signal.SIGINT, lambda *a: window.close())
 	Say("Showing {}; results from {} (Qt's window).".format(", ".join(viewer.ringNames), viewer.resultsName))

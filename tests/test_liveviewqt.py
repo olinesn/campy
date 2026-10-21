@@ -88,7 +88,8 @@ def window(qt, rings, tmp_path):
 		publisher.Write(row)
 		win.Step()
 		qt.app.processEvents()
-	yield types.SimpleNamespace(win=win, viewer=viewer, Result=Result, truth=truth, recording=recording)
+	yield types.SimpleNamespace(win=win, viewer=viewer, Result=Result, truth=truth, recording=recording,
+		writers=writers, publisher=publisher)
 	win.close()
 	viewer.Close()
 	publisher.Close()
@@ -122,17 +123,48 @@ def test_each_result_is_shown_at_the_windows_own_size(qt, window):
 	window.Result(11)
 	w, h = win.picture.Pixels()
 	assert win.picture.image.shape == (h, w, 3) and viewer.layout.tile[1] > tile[1]
-	# z: the window to the view
+	# z: the window to the view. The view of a 1500 x 900 window is wider than the screen (Qt's offscreen one:
+	# 800 x 600), so the window is as large as fits, the view's shape kept: within a pixel or two of the view
+	# drawn at that size, then, z again, to it
 	win.Key(ord("z"))
 	qt.app.processEvents()
 	window.Result(12)
+	assert OnScreen(qt, win)
+	assert np.abs(np.subtract(win.picture.Pixels(), viewer.Fit())).max() <= 3
+	win.Key(ord("z"))
+	qt.app.processEvents()
+	window.Result(13)
 	assert win.picture.Pixels() == viewer.Fit()
+
+
+def OnScreen(qt, win):
+	# The window, its title bar and borders too, inside the screen's free part (not under the taskbar)
+	return win.screen().availableGeometry().contains(win.frameGeometry())
+
+
+def test_the_window_opens_inside_the_screen(qt, window):
+	# --size (1800 x 960 by default) is more than the screen has (on the rig's RDP session: 1512 x 900 free;
+	# Qt's offscreen screen: 800 x 600): the window opens as large as fits, not under the taskbar
+	win = window.win
+	win.move(300, 200)
+	win.OnScreen(1800, 960)
+	qt.app.processEvents()
+	free = win.screen().availableGeometry()
+	assert OnScreen(qt, win) and win.frameGeometry().size() == free.size()
+	win.OnScreen(700, 400) # it fits: as asked
+	qt.app.processEvents()
+	assert (win.width(), win.height()) == (700, 400) and OnScreen(qt, win)
 
 
 def test_the_keys_are_luc3ds(qt, window):
 	Qt, QTest = qt.Qt, qt.QtTest.QTest
 	win, viewer = window.win, window.viewer
 	window.Result(9)
+	# The panel's checkboxes, in two columns: d and r a row, l and \\ the next, t and o the next
+	at = {key: box.geometry() for key, box in win.checks.items()}
+	for left, right in (("d", "r"), ("l", "\\"), ("t", "o")):
+		assert at[left].y() == at[right].y() and at[left].right() < at[right].x()
+	assert at["d"].bottom() < at["l"].y() < at["t"].y() and at["d"].x() == at["l"].x() == at["t"].x()
 	def press(key):
 		QTest.keyClick(win.picture, key)
 		qt.app.processEvents()
@@ -268,6 +300,13 @@ def test_the_panel_warns_in_red_and_shows_the_tracking_strip(qt, window):
 		for y in range(2 * (liveview.STRIP_H + 6) + 4, 2 * (liveview.STRIP_H + 6) + liveview.STRIP_H)])
 	assert like(strip[..., ::-1], liveview.WARN).all() # RGB as BGR
 	assert viewer.panelMs and viewer.Summary(1.0)["qt_panel_ms"]["p50"] < 50
+	# The recording over (its feed and campy-live ended): no strip, and no results a second, while it waits
+	window.publisher.Close()
+	for w in window.writers:
+		w.Close()
+	viewer.Check()
+	win.Redraw()
+	assert viewer.readers is None and win.strips.isHidden() and "campy-live: 0.0 results/s" in win.status.text()
 
 
 def test_without_qt_the_window_is_opencvs(qt, monkeypatch, capsys):
@@ -340,6 +379,47 @@ def test_the_labels_are_qts_text_over_the_view(qt, window):
 	assert [item for item in win.picture.words if item[6] == (x, y, w, h)] != scene # its labels moved
 
 
+def test_the_health_badge_and_labels_are_qts_text_apart(qt, window):
+	# On small tiles (2026-10-21, the ChronicRecord PC over RDP), the tile's badge (camera 1 a frame ahead:
+	# white on red) is Qt's text too, under the name line where Qt's font has no room for both at its
+	# height; nothing covers another, measured in Qt's font
+	win, viewer = window.win, window.viewer
+	status = viewer.rig.Status
+	def Ahead(now=None):
+		s = status(now)
+		s.cameras[1].problems = [("1 FRAME AHEAD", "Camera1: 1 frame ahead of the other cameras")]
+		for k in (0, 2): # the others fine (the test's feed is still: on a slow machine, NO FRAMES)
+			s.cameras[k].problems, s.cameras[k].fps = [], 30.0
+		return s
+	viewer.rig.Status = Ahead
+	win.resize(760, 420)
+	qt.app.processEvents()
+	window.Result(9)
+	items, image = win.picture.words, win.picture.image
+	qtFont = types.SimpleNamespace(measure=qt.liveviewqt.Measure)
+	c, y, x, h, w = viewer.cells[1]
+	badge = next(item for item in items if item[0] == "1 FRAME AHEAD")
+	text, X, Y, color, size, box, clip = badge
+	assert (color, box, clip) == ((255, 255, 255), liveview.WARN, (x, y, w, h))
+	x0, y0, x1, y1 = liveview.TextBox(text, (X, Y), size, qtFont)
+	assert x1 == x + w - liveview.PAD - 1 # at the tile's top right
+	assert not like(image[y0:y1, x0:x1], liveview.WARN).any() # not drawn into the image
+	assert like(image[y:y + h, x:x + w], liveview.WARN).sum() > 200 # the red frame round the tile is
+	for c, y, x, h, w in viewer.cells:
+		mine = [item for item in items if item[6] == (x, y, w, h)]
+		boxes = [liveview.TextBox(text, (X, Y), size, qtFont) for text, X, Y, color, size, box, clip in mine]
+		assert any(item[0].startswith("#") for item in mine) and any(item[0].endswith("fps") or item is badge
+			for item in mine)
+		assert not any(liveview.Over(a, b) for k, a in enumerate(boxes) for b in boxes[:k])
+	# (Qt's offscreen platform on Windows has no fonts, and draws no text: there, the window's own platform does)
+	if qt.QtGui.QFontDatabase().families():
+		header = next(item for item in items if item[0].startswith("2  Camera1  frame 9"))
+		if liveview.TextBox(header[0], header[1:3], header[4], qtFont)[2] + 6 > x0:
+			assert y0 > liveview.TextBox(header[0], header[1:3], header[4], qtFont)[3] # under it
+		rendered = qt.liveviewqt.Rendered(image, items)
+		assert like(rendered[y0:y1, x0:x1], liveview.WARN).sum() > 100 and (rendered[y0:y1, x0:x1].min(-1) > 200).any()
+
+
 def test_the_wheel_and_keys_zoom_a_camera(qt, window):
 	Qt, QTest, QtCore, QtGui = qt.Qt, qt.QtTest.QTest, qt.QtCore, qt.QtGui
 	win, viewer = window.win, window.viewer
@@ -378,3 +458,27 @@ def test_the_wheel_and_keys_zoom_a_camera(qt, window):
 	assert viewer.occupancy and win.checks["o"].isChecked()
 	win.checks["t"].click()
 	assert not viewer.trails and not win.checks["t"].isChecked()
+
+
+def test_the_cameras_trails_length_and_shade_from_the_panel(qt, window):
+	# LUC3D's: Off, a quarter, half, 1 or 2 seconds (a quarter at first), and its shades (dark at first)
+	win, viewer = window.win, window.viewer
+	window.Result(9)
+	win.Sync()
+	length, shade = win.trailLength, win.trailShade
+	assert [length.itemText(k) for k in range(length.count())] == ["Off", "¼ s", "½ s", "1 s", "2 s"]
+	assert length.currentText() == "¼ s" and shade.currentText() == "Dark" and length.isVisible()
+	def pick(box, text):
+		box.setCurrentIndex(box.findText(text))
+		box.activated.emit(box.currentIndex())
+		qt.app.processEvents()
+	pick(length, "1 s")
+	pick(shade, "Very light")
+	assert (viewer.cameraTrails.seconds, viewer.cameraTrails.shade) == (1.0, "very-light")
+	assert viewer.cameraTrails.Frames() == 30 # at the feed's 30 fps
+	pick(length, "Off")
+	assert viewer.cameraTrails.seconds == 0
+	# Another length from the command line: listed too
+	viewer.cameraTrails.seconds = 0.3
+	win.Sync()
+	assert length.currentText() == "0.3 s"

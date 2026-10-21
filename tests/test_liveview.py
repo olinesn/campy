@@ -237,6 +237,91 @@ def test_2d_only_results_are_drawn_unmatched():
 	assert near(img, keypoints[0, 0, 0] + [liveview.RADIUS_2D, 0], liveview.UNMATCHED, 1)
 
 
+def test_a_label_goes_a_line_up_or_down_where_another_is():
+	labels = liveview.Labels(130)
+	asked = [("#0  (2 cams)", (50, 100)), ("#2  (2 cams)", (60, 100)), ("#1", (55, 100)), ("#3", (56, 98))]
+	placed = [labels.Place(text, at, 0.45) for text, at in asked]
+	boxes = [liveview.TextBox(text, at, 0.45) for (text, _), at in zip(asked, placed)]
+	assert [at[0] for at in placed] == [at[0] for _, at in asked] # straight up or down
+	assert placed[0] == (50, 100) # the first where it was asked
+	# Then each just past the box in its way (a pixel between; the boxes' heights are the font's: OpenCV's
+	# differ by a pixel from one version to another): up first, then down, then the nearest place free (2
+	# lines up, 4 px nearer than 2 down)
+	assert boxes[1][3] == boxes[0][1] - 1 and boxes[2][1] == boxes[0][3] + 1 and boxes[3][3] == boxes[1][1] - 1
+	assert not any(liveview.Over(a, b) for k, a in enumerate(boxes) for b in boxes[:k])
+	# At the tile's foot (130 px): up, though down is nearer
+	at = labels.Place("#4", (57, placed[2][1] + 2), 0.45)
+	assert at[0] == 57 and liveview.TextBox("#4", at, 0.45)[3] == boxes[3][1] - 1
+	# Not over what is taken (the tile's name line), nor above the tile
+	name = liveview.TextBox("1  Camera0  frame 9,149  0:05:04.93  found 3", (liveview.PAD, liveview.PAD + 12), 0.5)
+	at = liveview.Labels(100, taken=[name]).Place("#0  (2 cams)", (20, 15), 0.45)
+	box = liveview.TextBox("#0  (2 cams)", at, 0.45)
+	assert at[0] == 20 and box[1] > name[3]
+	# Nowhere free: where it was asked
+	assert liveview.Labels(10, taken=[(0, 0, 640, 10)]).Place("#0", (20, 8), 0.45) == (20, 8)
+
+
+def test_the_labels_of_mice_side_by_side_do_not_cover_each_other():
+	# Mice 0 and 1 a centimetre apart (2026-10-21: "#2 21 px" ran into "#0 10 px"): every camera's labels
+	# apart, measured in the font they are drawn in: OpenCV's, or the window's (wider)
+	cams = scene3d.rig()
+	truth = scene3d.scene(1, n=3)[0]
+	truth[1] = truth[0] + [10, 0, 0]
+	keypoints, scores, order = scene3d.observe(cams, truth, np.random.default_rng(0), noise=0.0, drop_node=0.0,
+		instances=3)
+	row = row_for(1, cams, truth, keypoints, scores, order)
+	for measure in (None, lambda text, size: ((14 * len(text), 16), 5)):
+		for c, cam in enumerate(cams):
+			pen = liveview.Words(measure).Tile(("camera", c), 0, 0, 512, 640)
+			liveview.DrawCamera(np.zeros((512, 640, 3), np.uint8), 0.5, row, c, cam, EDGES, words=pen)
+			labels = [item for item in pen.items if item[0].startswith("#")]
+			boxes = [liveview.TextBox(text, (x, y), size, pen) for text, x, y, color, size, box, clip in labels]
+			assert len(boxes) == 3
+			assert boxes[0][0] < boxes[1][2] and boxes[1][0] < boxes[0][2] # side by side: one above the other
+			assert not any(liveview.Over(a, b) for k, a in enumerate(boxes) for b in boxes[:k])
+	# OpenCV's window draws them where they are handed over
+	img = np.zeros((512, 640, 3), np.uint8)
+	pen = liveview.Words().Tile("camera", 0, 0, 512, 640)
+	liveview.DrawCamera(img, 0.5, row, 0, cams[0], EDGES, words=pen)
+	drawn = np.zeros_like(img)
+	liveview.DrawCamera(drawn, 0.5, row, 0, cams[0], EDGES)
+	for text, x, y, color, size, box, clip in pen.items:
+		if text.startswith("#"):
+			x0, y0, x1, y1 = liveview.TextBox(text, (x, y), size)
+			assert like(drawn[y0:y1, x0:x1], color).sum() > 20
+
+
+def test_the_health_badge_goes_under_the_name_line_where_both_do_not_fit():
+	# The badge at a tile's top right: level with its name line, or under it on a narrow tile, in the
+	# font it is drawn in; what is wrong white on a red box
+	PAD = liveview.PAD
+	ahead = types.SimpleNamespace(cameras=[types.SimpleNamespace(problems=[("1 FRAME AHEAD", "")], fps=30.0)])
+	fine = types.SimpleNamespace(cameras=[types.SimpleNamespace(problems=[], fps=30.0)])
+	name = "1  Camera0  frame 9,149  0:05:04.93  found 3  zoom 1.6x" # the ChronicRecord PC's, 2026-10-21
+	header = liveview.TextBox(name, (PAD, PAD + 12), 0.5)
+	text, at, color, box, wrong, where = liveview.Viewer.Badge(None, 0, ahead, 800, header)
+	assert text == "1 FRAME AHEAD" and at[1] == PAD + 12 and (color, box, wrong) == ((255, 255, 255), liveview.WARN, True)
+	assert where[2] == 800 - PAD - 4 + 3 and not liveview.Over(where, header)
+	text, at, color, box, wrong, where = liveview.Viewer.Badge(None, 0, fine, 400, header)
+	assert (text, color, box, wrong) == ("30.0 fps", liveview.FINE, liveview.BOX, False)
+	assert where[1] > header[3] and where[2] == 400 - PAD - 4 + 3 # under the name line
+	assert liveview.Viewer.Badge(None, 1, fine, 400, header) is None
+	# In a wider font, under it on a tile that has room for both in OpenCV's
+	pen = liveview.Words(lambda text, size: ((14 * len(text), 16), 5)).Tile("camera", 0, 0, 256, 600)
+	assert liveview.Viewer.Badge(None, 0, fine, 600, header)[1][1] == PAD + 12
+	header = liveview.TextBox(name, (PAD, PAD + 12), 0.5, pen)
+	where = liveview.Viewer.Badge(None, 0, fine, 600, header, pen)[-1]
+	assert where[1] > header[3] and not liveview.Over(where, header)
+	# Drawn: OpenCV's box red, the window's handed over with its box's colour
+	img = np.zeros((40, 200, 3), np.uint8)
+	liveview.Text(img, "1 FRAME AHEAD", (10, 25), (255, 255, 255), 0.45, liveview.WARN)
+	assert like(img, liveview.WARN).sum() > 500 and (img.min(-1) > 200).sum() > 20 # white on it
+	liveview.Text(None, "1 FRAME AHEAD", (10, 25), (255, 255, 255), 0.45, liveview.WARN, words=pen)
+	liveview.Text(None, "30.0 fps", (10, 25), liveview.FINE, 0.45, words=pen)
+	liveview.Text(None, "now", (10, 25), liveview.DIM, 0.45, box=False, words=pen)
+	assert [item[5] for item in pen.items] == [liveview.WARN, liveview.BOX, None]
+
+
 def test_layout_fits_the_grid_and_the_panel():
 	three = liveview.Layout(3, (1024, 1280), size=(1800, 960))
 	assert (three.cols, three.rows, three.inGrid) == (2, 2, True)
@@ -327,7 +412,7 @@ def test_keys_pick_the_cameras_and_what_is_drawn():
 	assert viewer.Key(ord("a")) and viewer.Shown() == [0, 1, 2]
 	assert viewer.Key(ord("2")) and viewer.Key(ord("g")) and viewer.Shown() == [0, 1, 2]
 	assert viewer.Key(ord("d")) and not viewer.show2d
-	assert viewer.Key(ord("p")) and not viewer.show3d
+	assert viewer.Key(ord("r")) and not viewer.show3d # LUC3D's r
 	assert viewer.Key(ord("l")) and not viewer.lines
 	assert not viewer.Key(ord("q")) and not viewer.Key(27)
 
@@ -485,12 +570,12 @@ def test_buttons_turn_the_predictions_and_reprojections_on_and_off():
 	viewer.lastSeen = 30.0
 	image = viewer.Compose(frames, row)
 	keys = [b[4] for b in viewer.buttons]
-	assert keys == [ord("d"), ord("p"), ord("l")]
+	assert keys == [ord("d"), ord("r"), ord("l")]
 	def Centre(key):
 		x0, y0, x1, y1, _ = next(b for b in viewer.buttons if b[4] == key)
 		return (x0 + x1) // 2, (y0 + y1) // 2
 	on = image[Centre(ord("d"))[1], Centre(ord("d"))[0] + 60].copy()
-	assert viewer.Click(*Centre(ord("d"))) == ord("d") and viewer.Click(*Centre(ord("p"))) == ord("p")
+	assert viewer.Click(*Centre(ord("d"))) == ord("d") and viewer.Click(*Centre(ord("r"))) == ord("r")
 	assert viewer.Click(5, 5) is None # a camera's tile
 	def tiles(image): # the identities' colours on the cameras' frames, not in the panel
 		y, x, h, w = viewer.layout.panel
@@ -498,16 +583,16 @@ def test_buttons_turn_the_predictions_and_reprojections_on_and_off():
 		image[y:y + h, x:x + w] = 0
 		return sum(like(image, liveview.Color(a)).sum() for a in range(3))
 	both = tiles(image)
-	viewer.Key(viewer.Click(*Centre(ord("p"))))
+	viewer.Key(viewer.Click(*Centre(ord("r"))))
 	assert not viewer.show3d and viewer.show2d
 	image = viewer.Compose(frames, row)
-	off = image[Centre(ord("p"))[1], Centre(ord("p"))[0] + 60]
+	off = image[Centre(ord("r"))[1], Centre(ord("r"))[0] + 60]
 	assert tuple(on) != tuple(off) # drawn as off
 	predictions = tiles(image)
 	viewer.Key(viewer.Click(*Centre(ord("d"))))
 	image = viewer.Compose(frames, row)
 	assert 0 < predictions < both and tiles(image) == 0 # neither: nothing of the animals drawn
-	viewer.Key(viewer.Click(*Centre(ord("p"))))
+	viewer.Key(viewer.Click(*Centre(ord("r"))))
 	assert 0 < tiles(viewer.Compose(frames, row)) < both # the reprojections alone
 
 
@@ -679,7 +764,7 @@ def test_the_3d_tile_shows_the_row_the_cameras_show():
 	assert (tile[50:] == drawn(other)).all() and (tile[50:] != drawn(row)).any()
 	# \\ (or its button) hides it: the cameras alone, and no 3D drawn
 	keys = [b[4] for b in viewer.buttons]
-	assert keys == [ord("d"), ord("p"), ord("l"), ord("\\"), ord("t"), ord("o")]
+	assert keys == [ord("d"), ord("r"), ord("l"), ord("\\"), ord("t"), ord("o")]
 	x0, y0, x1, y1, _ = viewer.buttons[3]
 	viewer.Key(viewer.Mouse(liveview.cv2.EVENT_LBUTTONDOWN, (x0 + x1) // 2, (y0 + y1) // 2, 0))
 	assert not viewer.showScene
@@ -718,7 +803,7 @@ def test_dragging_in_the_3d_tile_turns_it():
 	assert viewer.drag is None and scene.azimuth == pytest.approx(turn - 60 * 0.008)
 	# Drawn again as Run does: the 3D tile changes, the cameras' do not
 	before = image.copy()
-	viewer.Draw3D(image, viewer.last[1], 5)
+	viewer.Draw3D(image, viewer.last[1], viewer.last[0][0], viewer.lastCameras[0])
 	assert not viewer.moved
 	assert (image[y:y + h, x:x + w] != before[y:y + h, x:x + w]).any()
 	th, tw = viewer.layout.tile
@@ -743,8 +828,10 @@ def test_dragging_in_the_3d_tile_turns_it():
 	viewer.Mouse(cv2_.EVENT_LBUTTONDBLCLK, *at, 0)
 	assert scene.azimuth == 0 and scene.centre == pytest.approx(centre)
 	scene.Orbit(30, 0)
+	viewer.Key(ord("r")) # LUC3D's: the reprojections, not the 3D view put back
+	assert scene.azimuth != 0 and not viewer.show3d
 	viewer.Key(ord("r"))
-	assert scene.azimuth == 0
+	scene.Reset()
 	# Hidden (\\) while dragged: the drag ends
 	viewer.Mouse(cv2_.EVENT_LBUTTONDOWN, *at, 0)
 	viewer.Key(ord("\\"))
@@ -1238,6 +1325,9 @@ def test_the_tracking_strip_shows_each_identitys_last_10_s():
 	y, x, h, w = viewer.layout.panel
 	assert like(image[y:y + h, x:x + w], liveview.WARN).sum() > 500
 	assert "above 20 px, drawn dimmed" in " ".join(text for text, _ in viewer.PanelText(row))
+	# The recording over: no strip (its last 10 s are not now's), until the next recording's feed
+	viewer.ended = True
+	assert viewer.Strips(600) is None
 
 
 def test_campy_live_publishes_every_row_it_logs(tmp_path, monkeypatch):
@@ -1415,3 +1505,120 @@ def test_the_c_key_moves_campy_live_on_and_off_the_performance_cores(monkeypatch
 	assert "inference p50 12.0" in text
 	Placement.on = True
 	assert "on the performance cores (0-1) at high priority" in viewer.CpusText()[0]
+
+
+def test_a_trails_colour_is_luc3ds_shade_of_its_identitys():
+	orange = liveview.Color(0)
+	assert liveview.TrailColor(orange, liveview.TRAIL_SHADES["normal"], 0) == orange
+	assert liveview.TrailColor(orange, liveview.TRAIL_SHADES["dark"], 0) == tuple(round(0.6 * v) for v in orange)
+	assert liveview.TrailColor(orange, liveview.TRAIL_SHADES["dark"], 1) == tuple(round(0.6 * 0.55 * v) for v in orange)
+	light = liveview.TrailColor(orange, liveview.TRAIL_SHADES["light"], 0)
+	assert all(v >= o for v, o in zip(light, orange)) and light[0] > orange[0] # toward white
+	assert [liveview.TrailFrames(s, 30) for s, _ in liveview.CAMERA_TRAILS] == [0, 8, 15, 30, 60]
+	assert liveview.TrailFrames(0.25, None) == 8 and liveview.TrailFrames(2, 300) == 500
+
+
+def test_the_cameras_tiles_have_luc3ds_node_trails():
+	# The mice walking along x: on each camera's tile, each node's path over the last quarter second (8 rows at
+	# 30 fps, and the one shown), in its identity's hue, darker (LUC3D's dark shade), under the skeletons
+	cams, truth, keypoints, scores, order = mice()
+	viewer, frames = three_cameras(cams, None)
+	viewer.cameraTrails.fps = 30.0
+	viewer.show2d = False # the reprojections' trails (the 2D stands still here)
+	step = np.array([20.0, 0, 0]) # mm a row: 15 rows ago, well behind a mouse (about 100 mm long) and its trail
+	rows = [row_for(n, cams, truth + n * step, keypoints, scores, order) for n in range(1, 21)]
+	for row in rows:
+		viewer.cameraTrails.Add(row)
+	assert len(viewer.cameraTrails.rows) == 9
+	viewer.trails = False
+	plain = viewer.Compose(frames, rows[-1]).astype(int)
+	viewer.trails = True
+	image = viewer.Compose(frames, rows[-1]).astype(int)
+	assert viewer.cameraTrailMs and viewer.Summary(1.0)["camera_trails_ms"]["p50"] < 20
+	for c in range(3):
+		tile, before = tile_of(viewer, image, c), tile_of(viewer, plain, c)
+		moved = np.abs(tile - before).sum(-1) > 0
+		assert moved.sum() > 100
+		pixels = tile[moved].astype(float)
+		assert pixels.max() <= 0.6 * 255 + 1 # dark: at most 0.6 of the identity's colour
+		_, y0, x0, h, w = [cell for cell in viewer.cells if cell[0] == c][0]
+		scale, origin = viewer.ZoomOf(c).Window(frames[c].image.shape, viewer.layout.tile, viewer.layout.scale)
+		for a in range(3):
+			# Along its path: where its nodes were 4 rows ago; not where they were 19 rows ago (too old)
+			def At(n):
+				p = liveview.Place(liveview.Project(cams[c], (truth + n * step)[a]), scale, origin)
+				return [(int(round(x)), int(round(y))) for x, y in p if 0 <= x < w and 0 <= y < h]
+			hue = np.asarray(liveview.Color(a), float)
+			def Hued(points):
+				near = [tile[max(0, y - 2):y + 3, max(0, x - 2):x + 3][moved[max(0, y - 2):y + 3, max(0, x - 2):x + 3]]
+					for x, y in points]
+				near = np.concatenate([n for n in near if len(n)] or [np.zeros((0, 3))]).astype(float)
+				cos = near @ hue / (np.linalg.norm(near, axis=1) * np.linalg.norm(hue) + 1e-9)
+				return int((cos > 0.97).sum())
+			assert Hued(At(16)) > 5
+			assert Hued(At(1)) == 0
+	# The predictions' trails, with d (here without the reprojections: p off): each identity's detections
+	viewer.show2d, viewer.show3d = True, False
+	viewer.cameraTrails.Clear()
+	walked = [row_for(n, cams, truth, keypoints + n * np.array([15.0, 0]), scores, order) for n in range(1, 21)]
+	for row in walked:
+		viewer.cameraTrails.Add(row)
+	viewer.trails = False
+	still = viewer.Compose(frames, walked[-1]).astype(int)
+	viewer.trails = True
+	walking = viewer.Compose(frames, walked[-1]).astype(int)
+	for c in range(3):
+		moved = np.abs(tile_of(viewer, walking, c) - tile_of(viewer, still, c)).sum(-1) > 0
+		assert moved.sum() > 100 and tile_of(viewer, walking, c)[moved].max() <= 0.6 * 255 + 1
+	viewer.show2d, viewer.show3d = False, True
+	viewer.cameraTrails.Clear()
+	for row in rows:
+		viewer.cameraTrails.Add(row)
+	# Off with t (the 3D view's trails), or at 0 s: the cameras' tiles as without
+	def Tiles(image):
+		return [tile_of(viewer, image, c) for c in range(3)]
+	viewer.trails = False
+	assert all((a == b).all() for a, b in zip(Tiles(viewer.Compose(frames, rows[-1]).astype(int)), Tiles(plain)))
+	viewer.trails, viewer.cameraTrails.seconds = True, 0
+	assert all((a == b).all() for a, b in zip(Tiles(viewer.Compose(frames, rows[-1]).astype(int)), Tiles(plain)))
+
+
+def test_the_3d_view_starts_with_the_cage_and_every_camera_in_it():
+	# Reset (and the view at first): from the cameras' side, as near as shows the cage (where the poses are) and
+	# every camera's frustum, below the tile's two lines of text, its middle in the room's
+	cams, truth, keypoints, scores, order = mice()
+	scene = liveview.Scene(cams)
+	for points in [truth + [k, 0, 0] for k in range(200)]: # walked about: the floor levelled, the view again
+		scene.Learn(posed(points))
+	h, w = TILE
+	for _ in range(2):
+		frustums = scene.Project(np.vstack([scene.Frustum(cam) for cam in cams]), TILE)
+		poses = scene.Project(truth.reshape(-1, 3), TILE)
+		for px in (frustums, poses):
+			assert np.isfinite(px).all()
+			assert (px[:, 0] >= 0.04 * w - 1).all() and (px[:, 0] <= 0.96 * w + 1).all()
+			assert (px[:, 1] >= 0.12 * h - 1).all() and (px[:, 1] <= 0.95 * h + 1).all()
+		# As near as that: nearer, something would be out of the room
+		scene.Zoom(1)
+		px = scene.Project(np.vstack([scene.Frustum(cam) for cam in cams] + [truth.reshape(-1, 3)]), TILE)
+		assert ((px < [0.04 * w, 0.12 * h]) | (px > [0.96 * w, 0.95 * h])).any()
+		scene.Orbit(150, -40)
+		scene.Reset() # back to it
+
+
+def test_frame_numbers_have_thousands_separators_and_their_time():
+	# "frame 9,149  0:05:04.93": the time into the recording, as the panel's "Recording" counts it (from the first
+	# frame's host time), or from the frame number at the frame rate until the rig has seen the camera's frames
+	assert liveview.FrameText(9149) == "frame 9,149"
+	assert liveview.FrameText(9149, 304.93) == "frame 9,149  0:05:04.93"
+	assert liveview.Clock(3725.5) == "1:02:05.50"
+	rig = liveview.livehealth.Rig(["Camera0", "Camera1"], 30.0)
+	viewer = types.SimpleNamespace(rig=rig)
+	frame = types.SimpleNamespace(frameNumber=9149, hostTime=0)
+	assert liveview.Viewer.FrameTime(viewer, 0, frame) == pytest.approx(9148 / 30) # no frames seen yet
+	rig.feeds[1].first = (11, 5_000_000_000) # its first frame seen: frame 11, at host 5 s
+	frame = types.SimpleNamespace(frameNumber=9149, hostTime=5_000_000_000 + 304_600_000_000)
+	assert liveview.Viewer.FrameTime(viewer, 1, frame) == pytest.approx(304.6 + 10 / 30)
+	assert liveview.Viewer.FrameTime(types.SimpleNamespace(rig=None), 0, frame) is None
+	assert liveview.MarkText({"number": 3, "time": "2026-10-21 16:46:27.532", "frame": 12444, "event": "mark",
+		"note": ""}).startswith("3 at 16:46:27, frame 12,444")

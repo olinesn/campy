@@ -121,6 +121,15 @@ class Rig:
 			if fps is not None:
 				rates.append(fps)
 
+	def FrameTime(self, c, frameNumber, hostTime, period=None):
+		# Camera c's frame's time into the recording (s), as recording_s counts it: from its first frame's host
+		# time, that frame (n0) counted as (n0 - 1) periods in. None before a frame of it has been seen
+		feed = self.feeds[c] if 0 <= c < len(self.feeds) else None
+		if feed is None or feed.first is None:
+			return None
+		n0, h0 = feed.first
+		return (hostTime - h0) / 1e9 + (n0 - 1) * (self.Period() if period is None else period)
+
 	def Period(self):
 		# Seconds from one frame to the next: the median of the written times' steps, or frameRate's
 		steps = [s for f in self.feeds for s in f.writtenSteps]
