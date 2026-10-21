@@ -67,7 +67,12 @@ What is measured
   they would live, instead of back to back. A set that runs over its slot
   starts the next one at once, as live inference reads the newest set; the
   row counts those overruns. Between paced sets the GPU has nothing to do,
-  which is when an NVIDIA GPU lowers its clock most.
+  which is when a GPU lowers its clock most: paced at 60 sets/s with 3
+  cameras, the RTX 6000 Ada ran the light pairs at ~825 MHz of its 2730
+  (back to back it stayed at 2505), and the EVO-X2's Radeon 8060S at
+  2100-2500 of its 2900. Heavier pairs kept the GPU busier and got higher
+  clocks, so without --hold-clock the sizes' order is scrambled. To compare
+  sizes for live use, run --pace <fps> --hold-clock on, as campy-live runs.
 * With --stages, each stage alone as well: CentroidLayer.predict on the
   uploaded frames, and CenteredInstanceLayer.predict on a (N*K, 1, crop, crop)
   uint8 crop batch already on the device.

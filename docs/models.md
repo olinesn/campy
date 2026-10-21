@@ -40,9 +40,11 @@ Accuracy on the same 293 validation mice (11 body parts, median / 90th / 99th pe
 1. **Benchmark the sizes first**, untrained, on the machine that will run them. Run time doesn't depend on the weights:
    ```
    python bench/sleap_infer_bench.py --precision fp16 --crops-per-frame 5 \
-       --centroid-output-stride 2 --crop 160 --instance-filters 24 --instance-max-stride 32
+       --centroid-output-stride 2 --crop 160 --instance-filters 24 --instance-max-stride 32 \
+       --pace 60 --hold-clock on
    ```
    `--crop` is the size the centered-instance model sees, `--crops-per-frame` is the number of animals, and `--frames` is the number of cameras (3 by default). `--sweep` runs a preset grid of 32 sizes.
+   `--pace 60` starts the sets 60 times a second, as the cameras deliver them, and `--hold-clock on` keeps the GPU's clock up as `campy-live` does. Without them the numbers mislead: a GPU lowers its clock between paced sets, and a heavier model, which keeps it busier, can then look as fast as a light one. Each row records the clock the GPU ran at.
 2. **Leave about 2 ms.** The live pipeline ran 1–1.7 ms slower than the benchmark at the median and 2–2.5 ms at p99, because it also copies frames in, reads results back and logs them. At 60 fps, pick a model whose benchmark p99 is about 14–14.5 ms or less. At 30 fps there is far more room.
 3. **Check it live**: the summary's skipped sets should be zero ([Live tracking](live-tracking.md)).
 
