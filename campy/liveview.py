@@ -673,6 +673,7 @@ class Scene:
 		self.Reset()
 		self.trailSeconds = float(trail_seconds)
 		self.trails = {} # identity: its Trail
+		self.shades = {} # identity: its trail's colour in each band
 		self.now = None # the time of the last row taken (Learn): the trails' ages are from it
 		n = 4 * int(np.ceil(1.2 * self.reach / self.spacing)) # cells a quarter of the grid's, past it
 		self.occupancy = Occupancy(self.FloorBasis(), self.spacing / 4, n, heat_minutes)
@@ -936,6 +937,7 @@ class Scene:
 		R, eye, f, c = view
 		floor = self.Ground()
 		backdrop = np.asarray(BACKDROP, float)
+		shades = self.shades
 		for a, trail in self.trails.items():
 			T, X = trail.Since(self.now - self.trailSeconds)
 			if len(T) < 2:
@@ -947,18 +949,21 @@ class Scene:
 			ok = (p[:, 2] > self.near) & np.isfinite(px).all(1) & (np.abs(px) < 1e5).all(1)
 			q = np.zeros(px.shape, np.int32)
 			q[ok] = np.round(px[ok] * (1 << SHIFT))
-			# Segment k, from point k to k + 1: in the band of its newer end, unless a gap breaks it
+			# Segment k, from point k to k + 1: in the band of its newer end (-1: a gap breaks it, or not drawable),
+			# in runs of one band, each a polyline
 			band = np.clip(((self.now - T[1:]) / self.trailSeconds * TRAIL_BANDS).astype(int), 0, TRAIL_BANDS - 1)
-			drawn = ok[:-1] & ok[1:] & (np.diff(T) <= TRAIL_GAP_S)
-			for b in range(TRAIL_BANDS - 1, -1, -1): # oldest first: the newer over it
-				edges = np.flatnonzero(np.diff(np.concatenate([[0], (drawn & (band == b)).astype(np.int8), [0]])))
-				if not len(edges):
-					continue
-				lines = [q[s0:s1 + 1] for s0, s1 in zip(edges[::2], edges[1::2])]
-				k = 1.0 - 0.8 * b / max(1, TRAIL_BANDS - 1)
-				color = tuple(int(round(v)) for v in backdrop + (np.asarray(Color(a), float) - backdrop) * k)
-				# The newest band 2 px wide, the others 1 (anti-aliased, 2 px took 20 times as long: 1.4 ms for 1800 points)
-				cv2.polylines(img, lines, False, color, 2 if b == 0 else 1, cv2.LINE_AA, SHIFT)
+			band[~(ok[:-1] & ok[1:] & (np.diff(T) <= TRAIL_GAP_S))] = -1
+			cuts = (np.flatnonzero(np.diff(band)) + 1).tolist()
+			lines = {}
+			for s0, s1 in zip([0] + cuts, cuts + [len(band)]):
+				if band[s0] >= 0:
+					lines.setdefault(int(band[s0]), []).append(q[s0:s1 + 1])
+			if a not in shades:
+				shades[a] = [tuple(int(round(v)) for v in backdrop + (np.asarray(Color(a), float) - backdrop) *
+					(1.0 - 0.8 * b / max(1, TRAIL_BANDS - 1))) for b in range(TRAIL_BANDS)]
+			for b in sorted(lines, reverse=True): # oldest first: the newer over it
+				# The newest band 2 px wide, the others 1 (anti-aliased, 2 px takes 10-20 times as long a point)
+				cv2.polylines(img, lines[b], False, shades[a][b], 2 if b == 0 else 1, cv2.LINE_AA, SHIFT)
 
 	def Draw(self, img, row, edges=None, words=None, trails=True, heat=False):
 		"""
