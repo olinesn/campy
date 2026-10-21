@@ -1263,8 +1263,7 @@ def test_campy_live_without_the_results_feed(tmp_path, monkeypatch):
 	publisher = liveresults.Publisher.__init__
 	monkeypatch.setattr(liveresults.Publisher, "__init__", lambda *a, **k: made.append(1) or publisher(*a, **k))
 	out = str(tmp_path / "live3d")
-	# 1 s of frames: campy-live looks for the feed every 0.2 s, and could miss a shorter recording
-	assert run_live(prefix, out, args + ["--results-feed", "off"], frames=200) == 0
+	assert run_live(prefix, out, args + ["--results-feed", "off"]) == 0
 	assert made == [] and json.load(open(out + ".json"))["results_feed"] is None
 
 
