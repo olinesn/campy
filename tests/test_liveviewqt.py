@@ -278,16 +278,17 @@ def test_the_labels_are_qts_text_over_the_view(qt, window):
 	c, y, x, h, w = viewer.cells[0]
 	region = (slice(y + 4, y + PAD + 16), slice(x + PAD, x + PAD + 120))
 	assert (win.picture.image[region] == 60).all()
-	grab = win.picture.grab().toImage().convertToFormat(qt.QtGui.QImage.Format_RGB32)
-	bits = grab.constBits()
-	bits.setsize(grab.bytesPerLine() * grab.height())
-	shown = np.frombuffer(bits, np.uint8).reshape(grab.height(), grab.bytesPerLine() // 4, 4)[..., :3]
-	ratio = win.picture.devicePixelRatioF()
-	if ratio == 1:
-		assert like(shown[region], liveview.TEXT).sum() > 20 and (shown[region] == liveview.BOX).all(-1).sum() > 100
-	# The saved views have it too
-	rendered = qt.liveviewqt.Rendered(win.picture.image, items)
-	assert like(rendered[region], liveview.TEXT).sum() > 20
+	# (Qt's offscreen platform on Windows has no fonts, and draws no text: there, the window's own platform does)
+	if qt.QtGui.QFontDatabase().families():
+		grab = win.picture.grab().toImage().convertToFormat(qt.QtGui.QImage.Format_RGB32)
+		bits = grab.constBits()
+		bits.setsize(grab.bytesPerLine() * grab.height())
+		shown = np.frombuffer(bits, np.uint8).reshape(grab.height(), grab.bytesPerLine() // 4, 4)[..., :3]
+		if win.picture.devicePixelRatioF() == 1:
+			assert like(shown[region], liveview.TEXT).sum() > 20 and (shown[region] == liveview.BOX).all(-1).sum() > 100
+		# The saved views have it too
+		rendered = qt.liveviewqt.Rendered(win.picture.image, items)
+		assert like(rendered[region], liveview.TEXT).sum() > 20
 	# OpenCV's window draws its own into the image, at the same place
 	viewer.textOver = False
 	opencv = viewer.Again()
