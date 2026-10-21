@@ -733,6 +733,11 @@ CAMERA_TRAILS = ((0.0, "Off"), (0.25, "¼ s"), (0.5, "½ s"), (1.0, "1 s"), (2.0
 TRAIL_SHADES = {"very-dark": -0.65, "dark": -0.4, "normal": 0.0, "light": 0.4, "very-light": 0.7}
 TRAIL_AGE_SHIFT = 0.45 # the oldest segment shaded this much further than the newest
 MAX_TRAIL_FRAMES = 500
+# At most this many segments, from the newest row to the oldest: a longer trail skips rows (2 s at 30 fps: every
+# other), to keep the live view at 30 a second. For live viewing only: never in LUC3D, whose trails draw every frame
+# (a switch of identities for a single frame shows in them, which skipping rows could hide).
+TRAIL_SEGMENTS = 32
+TRAIL_STEPS = 8 # the steps of age a camera's trail is drawn in (LUC3D's, one a frame, at a quarter second at 30 fps)
 
 
 def TrailFrames(seconds, fps):
@@ -810,62 +815,89 @@ class CameraTrails:
 		"""
 		The trails on img, camera c's tile at scale from origin (as DrawCamera),
 		up to the row shown, the newest taken. bad: the identities drawn dimmed
-		(their trails in Dimmed colours).
+		(their trails in Dimmed colours). LUC3D's ramp, from each row's segment
+		to the next (k = 1, the newest, to W - 1): opacity max(0.1, 0.9 t),
+		width times (W - k) / (W - 1) (at least 1 px), shade further by age 1 - t,
+		where t = 1 - k / (W + 1); in at most TRAIL_STEPS steps of age (the
+		segments in one step drawn alike, in one cv2 call for each identity), so
+		that 2 s cost no more than a quarter. Each pixel takes the newest segment
+		over it, the predictions over the reprojections, then is blended once.
 		"""
-		rows = [entry for entry in self.rows if Has3D(entry[1])]
+		rows = [entry for entry in self.rows if Has3D(entry[1])][::-1] # k = 0: the newest
+		if len(rows) - 1 > TRAIL_SEGMENTS: # a long trail: every other row (or every third, ...), the newest kept
+			rows = rows[::-(-(len(rows) - 1) // TRAIL_SEGMENTS)]
 		W = len(rows)
 		if W < 2 or not (show2d or show3d):
 			return
-		rows = rows[::-1] # k = 0: the newest
-		k = np.arange(W)
+		k = np.arange(1, W)
 		t = 1 - k / (W + 1)
-		alpha = np.maximum(0.1, 0.9 * t)
-		taper = (W - k) / (W - 1)
-		age = 1 - t
-		amount = TRAIL_SHADES.get(self.shade, TRAIL_SHADES["dark"])
+		steps = min(TRAIL_STEPS, W - 1)
+		step = (k - 1) * steps // (W - 1) # each segment's step, 0 the newest: k from first[s] to first[s + 1]
+		first = np.searchsorted(step, np.arange(steps + 1))
+		def Mean(v):
+			return np.bincount(step, v, steps) / np.bincount(step, None, steps)
+		alpha, taper, age = Mean(np.maximum(0.1, 0.9 * t)), Mean((W - k) / (W - 1)), Mean(1 - t)
 		layers = []
 		if show3d and camera is not None:
-			layers.append((1, 2)) # the reprojections first (under), as LUC3D
+			layers.append((1, 2)) # the reprojections first (under), as LUC3D; their lines 2 px, as drawn
 		if show2d:
 			layers.append((0, 1))
 		h, w = img.shape[:2]
-		overlay = mask = None
+		scale = np.broadcast_to(np.asarray(scale, float), (2,))
+		origin = np.asarray(origin, float)
+		index = None # each pixel's segment kind (layer, step, identity), + 1; 0: none
 		box = [w, h, 0, 0]
-		for which, width in layers:
-			P = np.stack([self.Points(entry, c, camera)[which] for entry in rows]) # (W, identities, nodes, 2)
-			Q = Place(P, np.broadcast_to(np.asarray(scale, float), (2,)), np.asarray(origin, float))
-			ok = np.isfinite(Q).all(-1) & (np.abs(Q) < 1e5).all(-1)
-			ok &= (Q[..., 0] > -w) & (Q[..., 0] < 2 * w) & (Q[..., 1] > -h) & (Q[..., 1] < 2 * h)
-			q = np.zeros(Q.shape, np.int32)
-			q[ok] = np.round(Q[ok] * (1 << SHIFT))
-			seg = ok[:-1] & ok[1:] # (W - 1, identities, nodes): the segment from row k - 1 to row k
+		A = None
+		for layer, (which, width) in enumerate(layers):
+			Q = Place(np.stack([self.Points(entry, c, camera)[which] for entry in rows]), scale, origin)
+			A = Q.shape[1]
+			with np.errstate(invalid="ignore"):
+				ok = np.isfinite(Q).all(-1) & (Q[..., 0] > -w) & (Q[..., 0] < 2 * w) & (Q[..., 1] > -h) & \
+					(Q[..., 1] < 2 * h)
+			seg = ok[:-1] & ok[1:] # (W - 1, identities, nodes): from row k - 1 to row k
 			if not seg.any():
 				continue
-			if overlay is None:
-				overlay, mask = np.zeros_like(img), np.zeros(img.shape[:2], np.uint8)
-			for k2 in range(W - 1, 0, -1): # the oldest first: the newer over it
-				thick = max(1, int(round(max(min(0.8, width), width * taper[k2]))))
-				for a in range(P.shape[1]):
-					s = seg[k2 - 1, a]
-					if not s.any():
-						continue
-					base = Dimmed(Color(a)) if a in bad else Color(a)
-					lines = np.stack([q[k2 - 1, a][s], q[k2, a][s]], 1) # (segments, 2, 2)
-					cv2.polylines(overlay, lines, False, TrailColor(base, amount, age[k2]), thick + 1, cv2.LINE_8, SHIFT)
-					cv2.polylines(mask, lines, False, int(round(255 * alpha[k2])), thick, cv2.LINE_AA, SHIFT)
+			q = np.zeros(Q.shape, np.int32)
+			q[ok] = np.round(Q[ok] * (1 << SHIFT))
+			ends = np.stack([q[:-1], q[1:]], -2) # (W - 1, identities, nodes, 2 ends, 2)
+			if index is None:
+				index = np.zeros((h, w), np.uint16)
+			thick = np.maximum(1, np.round(np.maximum(min(0.8, width), width * taper))).astype(int)
+			for s in range(steps - 1, -1, -1): # the oldest first: the newer over it
+				k0, k1 = first[s], first[s + 1]
+				for a in range(A):
+					lines = ends[k0:k1, a][seg[k0:k1, a]]
+					if len(lines):
+						cv2.polylines(index, lines, False, 1 + (layer * steps + s) * A + a, int(thick[s]), cv2.LINE_8,
+							SHIFT)
 			pts = Q[ok]
 			box = [min(box[0], pts[:, 0].min()), min(box[1], pts[:, 1].min()), max(box[2], pts[:, 0].max()),
 				max(box[3], pts[:, 1].max())]
-		if overlay is None:
+		if index is None:
 			return
-		# One blend, over where the trails are
 		x0, y0 = max(0, int(box[0]) - 4), max(0, int(box[1]) - 4)
 		x1, y1 = min(w, int(box[2]) + 5), min(h, int(box[3]) + 5)
 		if x1 <= x0 or y1 <= y0:
 			return
-		a = mask[y0:y1, x0:x1, None].astype(np.float32) * (1 / 255)
-		part = img[y0:y1, x0:x1]
-		part[:] = (part * (1 - a) + overlay[y0:y1, x0:x1] * a + 0.5).astype(np.uint8)
+		ys, xs = np.nonzero(index[y0:y1, x0:x1])
+		if not len(ys):
+			return
+		ys += y0
+		xs += x0
+		code = index[ys, xs].astype(np.int64) - 1
+		# Each kind's colour and opacity: its identity's colour (dimmed if bad), shaded as LUC3D's for its age
+		amount = TRAIL_SHADES.get(self.shade, TRAIL_SHADES["dark"])
+		base = np.array([Dimmed(Color(a)) if a in bad else Color(a) for a in range(A)], np.float32) # (A, 3)
+		f = (amount + (1 - amount) * TRAIL_AGE_SHIFT * age) if amount > 0 else (1 + amount) * (1 - TRAIL_AGE_SHIFT * age)
+		if amount > 0:
+			colors = base[None] + (255 - base[None]) * f[:, None, None] # (steps, A, 3)
+		else:
+			colors = base[None] * f[:, None, None]
+		colors = np.tile(np.clip(colors, 0, 255).reshape(-1, 3), (len(layers), 1)) # by code
+		opacity = np.repeat(np.tile(alpha, len(layers)), A).astype(np.float32)
+		pix = img[ys, xs].astype(np.float32)
+		o = opacity[code][:, None]
+		img[ys, xs] = (pix + (colors[code] - pix) * o + 0.5).astype(np.uint8)
 
 
 def Unit(v):
