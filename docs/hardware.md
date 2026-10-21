@@ -25,3 +25,5 @@ This list leaves the numbers to the guide, so it can't fall out of date with it.
 ## Measuring a new machine
 
 `bench/sleap_infer_bench.py` times the models alone, untrained, so you can test a machine before any labelling. Its docstring explains the options; `--sweep` runs the 32 model sizes the guide reports. Then run the whole pipeline on real cameras ([Live tracking](live-tracking.md)), because that is what has to keep up. Feeding recorded video into the live feed tests the same thing with real animals, but the scripts used for that aren't in campy yet.
+
+When the machine is shared, run every timing test through `bench/rig.py` (on Linux or Windows): it runs one test at a time, says whether anything else used the GPU, the cameras, the encoder, the trigger, the CPU or the disk during it (`RIG_CLEAN` or `RIG_CONTAMINATED`), and logs the GPU's clock. Compare only clean runs, at the same GPU clock: on the Dell Pro Max Slim FCS1250, overlapping runs took a model pair from 27.6 to 42.7 ms per set, and the GPU's clock alone made a factor of two (above). The [README](../README.md#timing-tests-on-a-shared-machine-benchrigpy) explains it.
