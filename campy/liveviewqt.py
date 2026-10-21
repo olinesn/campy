@@ -17,6 +17,11 @@ camera alone, g every camera, the arrows the previous or next camera, \\ the
 3D view on or off; d, p, l what is drawn; z the window to the view; space
 pause; s save the view as a PNG; q or Esc quit.
 
+Bookmarks (liveview.Bookmarks): m, the panel's Bookmark button, or Enter in
+its note, marks the moment, with the note typed; Shift+1-9, or the panel's
+1-9, marks it as that event. Below them, the panel lists the last few, and
+the file they go into.
+
 campy-live-view uses this window when PyQt5 is there (--gui auto, the
 default), or with --gui qt.
 """
@@ -100,6 +105,21 @@ class Picture(QtWidgets.QWidget):
 		self.window_.viewer.Wheel(event.angleDelta().y() / 120, *self.At(event))
 
 
+class Note(QtWidgets.QLineEdit):
+	"""The note for the next bookmark: Esc leaves it (cleared), rather than quitting."""
+
+	def __init__(self, window):
+		super().__init__()
+		self.window_ = window
+
+	def keyPressEvent(self, event):
+		if event.key() == Qt.Key_Escape:
+			self.clear()
+			self.window_.picture.setFocus()
+			return
+		super().keyPressEvent(event)
+
+
 class Window(QtWidgets.QWidget):
 	"""
 	The view (Picture) and its panel. Tick, every --poll-ms, makes the next
@@ -122,7 +142,8 @@ class Window(QtWidgets.QWidget):
 		panel.setFixedWidth(PANEL_WIDTH)
 		panel.setStyleSheet("QWidget { background: #181818; color: #e6e6e6; font-size: 12px; } "
 			"QPushButton { background: #2a2a2a; border: 1px solid #555; padding: 4px 8px; } "
-			"QPushButton:checked { background: #14466e; border-color: #e6e6e6; }")
+			"QPushButton:checked { background: #14466e; border-color: #e6e6e6; } "
+			"QLineEdit { background: #2a2a2a; border: 1px solid #555; padding: 3px; }")
 		column = QtWidgets.QVBoxLayout(panel)
 		self.checks = {}
 		for label, key in (("Predictions (d)", "d"), ("Reprojections (p)", "p"), ("Lines (l)", "l"),
@@ -154,11 +175,38 @@ class Window(QtWidgets.QWidget):
 		self.strips = QtWidgets.QLabel() # the tracking strip (Viewer.Strips), drawn as the OpenCV panel's
 		self.strips.hide()
 		column.addWidget(self.strips)
+		# Bookmarks: the note for the next one, the buttons, and the last ones
+		self.note = Note(self)
+		self.note.setPlaceholderText("Note for the next bookmark (Enter: bookmark)")
+		self.note.setFocusPolicy(Qt.ClickFocus) # the keys stay the view's until it is clicked
+		self.note.returnPressed.connect(lambda: self.Mark("mark"))
+		column.addWidget(self.note)
+		self.mark = QtWidgets.QPushButton("Bookmark (m)")
+		self.mark.setFocusPolicy(Qt.NoFocus)
+		self.mark.clicked.connect(lambda checked: self.Mark("mark"))
+		column.addWidget(self.mark)
+		events = QtWidgets.QHBoxLayout()
+		events.setSpacing(3)
+		self.events = []
+		for k in range(1, 10):
+			button = QtWidgets.QPushButton(str(k))
+			button.setToolTip("A bookmark of event {0} (Shift+{0})".format(k))
+			button.setStyleSheet("padding: 4px 0")
+			button.setFocusPolicy(Qt.NoFocus)
+			button.clicked.connect(lambda checked, k=k: self.Mark(str(k)))
+			events.addWidget(button)
+			self.events.append(button)
+		column.addLayout(events)
+		self.marks = QtWidgets.QLabel()
+		self.marks.setWordWrap(True)
+		self.marks.setTextFormat(Qt.RichText)
+		self.shownWhere = None # the file the panel says the bookmarks go into
 		self.status = QtWidgets.QLabel()
 		self.status.setWordWrap(True)
 		self.status.setTextFormat(Qt.RichText)
 		self.status.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 		column.addWidget(self.status, 1)
+		column.addWidget(self.marks)
 		row = QtWidgets.QHBoxLayout(self)
 		row.setContentsMargins(0, 0, 0, 0)
 		row.setSpacing(0)
@@ -192,6 +240,8 @@ class Window(QtWidgets.QWidget):
 			if self.paused or viewer.readers is None:
 				self.Redraw() # drawn again at the new size
 		got = None if self.paused else viewer.Step()
+		if self.paused and viewer.FlashOver():
+			self.Redraw() # a bookmark's outline, gone
 		if got is not None:
 			image, frame, row = got
 			self.picture.Show(image)
@@ -243,6 +293,8 @@ class Window(QtWidgets.QWidget):
 		if self.paused:
 			lines.insert(0, ("Paused: space goes on", liveview.TEXT))
 		self.status.setText(Html(lines))
+		if self.viewer.bookmarks.Where(self.viewer.recording) != self.shownWhere:
+			self.ShowMarks() # a recording's folder, said by its feed
 		self.viewer.panelMs.append((time.perf_counter() - start) * 1e3)
 
 	def Sync(self):
@@ -260,9 +312,33 @@ class Window(QtWidgets.QWidget):
 		if self.paused:
 			self.Redraw()
 
+	# -- bookmarks
+
+	def Mark(self, event):
+		# A bookmark (m, Shift+1-9, the buttons, Enter in the note), with the note typed
+		if self.viewer.Mark(event, self.note.text()) is not None:
+			self.note.clear()
+		self.picture.setFocus()
+		self.ShowMarks()
+		self.Changed() # paused: drawn again, outlined
+
+	def ShowMarks(self):
+		# The last bookmarks, the newest first, and where they go
+		bookmarks = self.viewer.bookmarks
+		where = self.shownWhere = bookmarks.Where(self.viewer.recording)
+		lines = [("Bookmark " + liveview.MarkText(mark), liveview.MARKED) for mark in reversed(bookmarks.recent)]
+		short = os.path.join(os.path.basename(os.path.dirname(where)), os.path.basename(where))
+		lines.append(("Bookmarks: {} made, into ...{}{}".format(bookmarks.count, os.sep, short), liveview.DIM))
+		self.marks.setText(Html(lines))
+		self.marks.setToolTip(where)
+
 	# -- keys
 
 	def Key(self, key):
+		event = liveview.BookmarkKind(key)
+		if event:
+			self.Mark(event)
+			return
 		if key == ord(" "):
 			self.paused = not self.paused
 		elif key == ord("z"):
@@ -276,6 +352,10 @@ class Window(QtWidgets.QWidget):
 		self.Changed()
 
 	def keyPressEvent(self, event):
+		shift = bool(event.modifiers() & Qt.ShiftModifier)
+		if shift and os.name == "nt" and 0x31 <= event.nativeVirtualKey() <= 0x39:
+			self.Mark(str(event.nativeVirtualKey() - 0x30)) # Shift and a digit (VK_1-VK_9), on any keyboard
+			return
 		key = KEYS.get(event.key())
 		if key is None:
 			text = event.text()

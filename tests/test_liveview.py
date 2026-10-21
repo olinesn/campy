@@ -6,7 +6,7 @@ colour, and the camera's own 2D beside it. No window is opened: the views are
 drawn into arrays (and PNGs) and their pixels checked.
 """
 
-import itertools, json, os, threading, time, types
+import csv, itertools, json, os, threading, time, types
 
 import numpy as np
 import pytest
@@ -328,6 +328,147 @@ def test_keys_pick_the_cameras_and_what_is_drawn():
 	assert viewer.Key(ord("p")) and not viewer.show3d
 	assert viewer.Key(ord("l")) and not viewer.lines
 	assert not viewer.Key(ord("q")) and not viewer.Key(27)
+
+
+# -------------------------------------------------------------- bookmarks
+
+def bookmarks(path):
+	# The bookmarks' file, as rows of its columns
+	with open(path, newline="") as f:
+		return list(csv.DictReader(f))
+
+
+def camera_feeds(rings, recording=None, frames=12, prefix=None):
+	# 3 cameras' feeds (frames 1 to frames; camera c's host times 1000 n + c), saying their folders in the
+	# recording as campy-acquire's do, or nothing (a campy from before)
+	prefix = prefix or name()
+	writers = []
+	for c in range(3):
+		description = json.dumps({"kind": livefeed.CAMERA_KIND, "folder": str(recording / "Camera{}".format(c))}) \
+			if recording else ""
+		writers.append(rings(livefeed.RingName(prefix, c), (64, 80), np.uint8, slots=8,
+			cameraName="Camera{}".format(c), description=description))
+	def Write(n):
+		for c, w in enumerate(writers):
+			w.Write(np.full((64, 80), 10 * n, np.uint8), n, 1000 * n + c)
+	for n in range(1, frames + 1):
+		Write(n)
+	return prefix, Write
+
+
+def test_a_campy_cameras_feed_says_its_folder_in_the_recording(tmp_path):
+	prefix = name()
+	recording = tmp_path / "2026-10-20_16-54-14"
+	feed = livefeed.Feed({"liveFeed": True, "liveFeedName": prefix, "n_cam": 1, "cameraName": "Camera1",
+		"videoFolder": str(recording), "frameRate": 30}, say=lambda text: None)
+	try:
+		feed.Write(np.zeros((16, 20), np.uint8), 1, 1000, 0.0)
+		reader = livefeed.RingReader(livefeed.RingName(prefix, 1))
+		try:
+			assert json.loads(reader.Description()) == {"kind": "campy camera",
+				"folder": os.path.abspath(str(recording / "Camera1"))}
+			assert liveview.RecordingFolder([reader]) == os.path.abspath(str(recording))
+			assert reader.HostTime(1) == 1000 and reader.HostTime(2) is None
+		finally:
+			reader.Close()
+	finally:
+		feed.Close()
+
+
+def test_the_bookmark_keys_are_no_others():
+	for key in "vgdplzrsqa \\0123456789":
+		assert liveview.BookmarkKind(ord(key)) is None
+	for key in ("left", "right", "up", "down", 27):
+		assert liveview.BookmarkKind(key) is None
+	assert liveview.BookmarkKind(ord("m")) == "mark"
+	assert [liveview.BookmarkKind(ord(k)) for k in "!@#$%^&*("] == [str(k) for k in range(1, 10)]
+
+
+def test_a_key_writes_a_bookmark_beside_the_recording_at_once(rings, tmp_path):
+	cams, truth, keypoints, scores, order = mice()
+	recording = tmp_path / "2026-10-20_16-54-14"
+	recording.mkdir()
+	prefix, Write = camera_feeds(rings, recording)
+	publisher = liveresults.Publisher(liveresults.RingName(prefix), live.RowType(3, 3, truth.shape[1], 3),
+		cameras=["Camera0", "Camera1", "Camera2"], rings=[livefeed.RingName(prefix, c) for c in range(3)],
+		edges=EDGES, animals=3)
+	elsewhere = tmp_path / "elsewhere.csv"
+	args = view_args(prefix, "--bookmarks", str(elsewhere))
+	viewer = liveview.Viewer(args)
+	try:
+		viewer.Check()
+		assert viewer.recording == str(recording)
+		publisher.Write(row_for(9, cams, truth, keypoints / 16, scores, order))
+		assert viewer.Step()[1] == 9 # the view shows frame 9
+		Write(13)
+		Write(14) # the cameras are at frame 14
+		assert viewer.Key(ord("m"))
+		# In the file at once, while the view goes on: the frame shown, each camera's newest frame
+		path = recording / "bookmarks.csv"
+		marks = bookmarks(path)
+		assert len(marks) == 1
+		mark = marks[0]
+		assert list(mark) == liveview.Bookmarks.Columns(3)
+		assert (mark["number"], mark["event"], mark["note"], mark["frame"]) == ("1", "mark", "", "9")
+		assert [(mark["frame_{}".format(c)], mark["host_ns_{}".format(c)]) for c in range(3)] == \
+			[("14", "14000"), ("14", "14001"), ("14", "14002")]
+		assert mark["recording"] == str(recording) and int(mark["host_ns"]) > 0
+		assert mark["time"][:10] == time.strftime("%Y-%m-%d")
+		# Shift+3 (# on a US keyboard): event 3, and not camera 3 alone
+		assert viewer.Key(ord("#")) and viewer.Shown() == [0, 1, 2]
+		marks = bookmarks(path)
+		assert [(m["number"], m["event"], m["frame"]) for m in marks] == [("1", "mark", "9"), ("2", "3", "9")]
+		assert not elsewhere.exists()
+		# The view is outlined for a moment (drawn again, as when paused), then not
+		image = viewer.Again()
+		assert like(image[:, 3], liveview.MARKED).mean() > 0.9
+		assert "Bookmark 2 at" in " ".join(text for text, color in viewer.PanelText(viewer.last[1]))
+		assert not viewer.FlashOver()
+		viewer.flashUntil = 0
+		assert viewer.FlashOver()
+		image = viewer.Again()
+		assert not like(image[:, 3], liveview.MARKED).any()
+		assert viewer.Summary(1)["bookmarks"] == 2 and viewer.Summary(1)["bookmark_files"] == [str(path)]
+	finally:
+		viewer.Close()
+	# Started again: its bookmarks go on in the same file
+	viewer = liveview.Viewer(args)
+	try:
+		viewer.Check()
+		viewer.Mark("mark", "  rears\nup ")
+		assert [(m["number"], m["note"]) for m in bookmarks(path)][-1] == ("3", "rears up")
+	finally:
+		viewer.Close()
+		publisher.Close()
+
+
+def test_without_the_recordings_folder_bookmarks_go_to_the_bookmarks_file(rings, tmp_path):
+	path = tmp_path / "marks" / "b.csv"
+	prefix = name()
+	viewer = liveview.Viewer(view_args(prefix, "--bookmarks", str(path)))
+	try:
+		assert viewer.Key(ord("m")) # before the feed: the time only
+		_, Write = camera_feeds(rings, frames=12, prefix=prefix) # a campy from before: its feeds say no folder
+		viewer.Check()
+		assert viewer.recording is None
+		viewer.lastRow = time.monotonic() - 1 # no results: the frames alone
+		assert viewer.Step()[1] == 12
+		assert viewer.Key(ord("("))
+		marks = bookmarks(path)
+		assert [(m["number"], m["event"], m["frame"], m["frame_1"], m["host_ns_1"], m["recording"]) for m in marks] \
+			== [("1", "mark", "", "", "", ""), ("2", "9", "12", "12", "12001", "")]
+	finally:
+		viewer.Close()
+	# A file of other columns is left as it is
+	other = tmp_path / "other.csv"
+	other.write_text("a,b\n1,2\n")
+	viewer = liveview.Viewer(view_args(prefix, "--bookmarks", str(other)))
+	try:
+		viewer.Check()
+		assert viewer.Mark("mark")["path"] == str(tmp_path / "other_2.csv")
+		assert other.read_text() == "a,b\n1,2\n" and len(bookmarks(tmp_path / "other_2.csv")) == 1
+	finally:
+		viewer.Close()
 
 
 def test_buttons_turn_the_predictions_and_reprojections_on_and_off():
