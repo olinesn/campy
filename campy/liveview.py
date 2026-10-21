@@ -168,10 +168,20 @@ def Project(camera, X):
 	return px
 
 
+def Place(px, scale, origin=(0, 0)):
+	"""
+	Pixels of the frame (..., 2) -> where they are on a tile showing the
+	frame at scale from origin (the frame's point at the tile's top left
+	corner), as cv2.resize puts them: a pixel spans 1 px about its middle, at
+	whole numbers, so the frame's [0, width] is the tile's [0, width * scale]
+	(and a pixel x of the frame lands at (x + 0.5 - origin) * scale - 0.5).
+	"""
+	return (np.asarray(px, float) + 0.5 - origin) * scale - 0.5
+
+
 def Points(px, scale, origin=(0, 0)):
-	# Pixels of the frame (N, 2) -> which are drawable, and where in the tile (the frame's origin at its
-	# top left, at scale), with SHIFT subpixel bits
-	px = (np.asarray(px, float) - origin) * scale
+	# Pixels of the frame (N, 2) -> which are drawable, and where in the tile (Place), with SHIFT subpixel bits
+	px = Place(px, scale, origin)
 	ok = np.isfinite(px).all(-1) & (np.abs(px) < 1e5).all(-1)
 	q = np.zeros(px.shape, np.int64)
 	q[ok] = np.round(px[ok] * (1 << SHIFT))
@@ -312,7 +322,7 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 			px = np.asarray(px, float)
 			with np.errstate(invalid="ignore"):
 				onFrame = np.isfinite(px).all(-1) & (px >= 0).all(-1) & (px < frame).all(-1)
-				p = (px - origin) * scale
+				p = Place(px, scale, origin)
 				ok = onFrame & (p >= 0).all(-1) & (p[:, 0] < img.shape[1]) & (p[:, 1] < img.shape[0])
 			if not onFrame.any():
 				away.append(a)
@@ -376,37 +386,47 @@ class Layout:
 def Gray(img, shape, scale=None, origin=(0, 0)):
 	"""
 	A frame (height x width x channels, mono or RGB) on a tile of shape
-	(height, width), as BGR: its pixel (x, y) at ((x, y) - origin) * scale
-	on the tile, as Points puts the drawing (scale default: the whole frame
-	in the tile). Only the part of the frame the tile shows is scaled, so a
-	zoomed tile costs no more than a whole frame: halved by averaging while it
-	is twice the tile's size or more, then interpolated (averaging at a ratio
-	that is not a whole number took 8 ms for a 1280x1024 frame, this 0.07 ms).
+	(height, width), as BGR, at scale from origin as Place puts the drawing
+	(default: the whole frame in the tile). Halved by averaging while it is
+	twice the tile's size or more, then interpolated (averaging at a ratio
+	that is not a whole number took 8 ms for a 1280x1024 frame, this 0.07
+	ms). Zoomed, only the part of the frame the tile shows is halved and
+	interpolated (cv2.warpAffine, which places it exactly: 0.4 ms for a tile
+	of 600 x 480 against cv2.resize's 0.1), so it costs no more than the
+	whole frame.
 	"""
 	h, w = shape
 	H, W = img.shape[:2]
 	sx, sy = (w / W, h / H) if scale is None else np.broadcast_to(np.asarray(scale, float), (2,))
 	x0, y0 = origin
-	# The pixels shown, and one more each side for the interpolation
-	a, c = max(0, int(np.floor(x0)) - 1), max(0, int(np.floor(y0)) - 1)
-	b, d = min(W, int(np.ceil(x0 + w / sx)) + 2), min(H, int(np.ceil(y0 + h / sy)) + 2)
-	img = img[c:d, a:b]
 	if img.ndim == 3 and img.shape[2] == 1:
 		img = img[:, :, 0]
-	# x of the frame = a + bx + kx * x of img (likewise y), as img is halved
-	kx = ky = 1.0
-	bx = by = 0.0
-	while sx * kx <= 0.5 and sy * ky <= 0.5 and min(img.shape[:2]) >= 4:
-		img = img[:img.shape[0] // 2 * 2, :img.shape[1] // 2 * 2] # even: each pixel the mean of 2 x 2
-		img = cv2.resize(img, (img.shape[1] // 2, img.shape[0] // 2), interpolation=cv2.INTER_AREA)
-		bx, by = bx + 0.5 * kx, by + 0.5 * ky # pixel 0 of the half is the middle of 0 and 1
-		kx, ky = 2 * kx, 2 * ky
-	M = np.array([[sx * kx, 0, sx * (a + bx - x0)], [0, sy * ky, sy * (c + by - y0)]])
-	if M[0, 0] == 1 and M[1, 1] == 1 and (M[:, 2] == np.round(M[:, 2])).all() and (M[:, 2] <= 0).all() and \
-			img.shape[0] >= h - M[1, 2] and img.shape[1] >= w - M[0, 2]:
-		img = img[int(-M[1, 2]):int(-M[1, 2]) + h, int(-M[0, 2]):int(-M[0, 2]) + w] # one for one: as it is
+	if x0 == 0 and y0 == 0 and abs(sx * W - w) < 1e-6 and abs(sy * H - h) < 1e-6:
+		# The whole frame: as cv2.resize puts it
+		while img.shape[0] >= 2 * h and img.shape[1] >= 2 * w:
+			img = cv2.resize(img, (img.shape[1] // 2, img.shape[0] // 2), interpolation=cv2.INTER_AREA)
+		if img.shape[:2] != (h, w):
+			img = cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
 	else:
-		img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+		# The pixels shown, and one more each side for the interpolation
+		a, c = max(0, int(np.floor(x0)) - 1), max(0, int(np.floor(y0)) - 1)
+		b, d = min(W, int(np.ceil(x0 + w / sx)) + 2), min(H, int(np.ceil(y0 + h / sy)) + 2)
+		img = img[c:d, a:b]
+		# A pixel x of img is x * kx + bx of the frame (likewise y), as img is halved
+		kx = ky = 1.0
+		bx = by = 0.0
+		while sx * kx <= 0.5 and sy * ky <= 0.5 and min(img.shape[:2]) >= 4:
+			img = img[:img.shape[0] // 2 * 2, :img.shape[1] // 2 * 2] # even: each pixel the mean of 2 x 2
+			img = cv2.resize(img, (img.shape[1] // 2, img.shape[0] // 2), interpolation=cv2.INTER_AREA)
+			bx, by = bx + 0.5 * kx, by + 0.5 * ky # pixel 0 of the half is the middle of 0 and 1
+			kx, ky = 2 * kx, 2 * ky
+		# The tile's pixel u shows img's pixel x where u = Place(a + bx + kx x)
+		M = np.array([[sx * kx, 0, sx * (a + bx + 0.5 - x0) - 0.5], [0, sy * ky, sy * (c + by + 0.5 - y0) - 0.5]])
+		if M[0, 0] == 1 and M[1, 1] == 1 and (M[:, 2] == np.round(M[:, 2])).all() and (M[:, 2] <= 0).all() and \
+				img.shape[0] >= h - M[1, 2] and img.shape[1] >= w - M[0, 2]:
+			img = img[int(-M[1, 2]):int(-M[1, 2]) + h, int(-M[0, 2]):int(-M[0, 2]) + w] # one for one: as it is
+		else:
+			img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 	if img.ndim == 2:
 		return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 	return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
@@ -422,7 +442,9 @@ class Zoom:
 	its tile) it is shown, about which pixel of the frame (None: its middle),
 	or native, one frame pixel for one screen pixel (held through resizes).
 	It is of the frame, not the tile: kept from the grid to the single view
-	and back. Window gives where the tile is on the frame.
+	and back. Window gives where the tile is on the frame. Its points are
+	from the frame's and the tile's top left edges, as Place's origin (the
+	frame is [0, width] wide).
 	"""
 
 	def __init__(self):
@@ -1363,8 +1385,8 @@ class Viewer:
 		if self.layout is None or self.frameShape is None:
 			return
 		h, w = self.layout.tile
-		self.ZoomOf(c).About(factor, (w / 2, h / 2) if at is None else at, self.frameShape, self.layout.tile,
-			self.layout.scale)
+		self.ZoomOf(c).About(factor, (w / 2, h / 2) if at is None else np.asarray(at) + 0.5, self.frameShape,
+			self.layout.tile, self.layout.scale) # (the mouse's pixel, from the tile's edge)
 		self.panned = True
 
 	def ZoomKey(self, key):

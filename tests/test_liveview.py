@@ -732,17 +732,21 @@ def test_a_zoomed_camera_shows_its_frame_and_drawing_where_the_zoom_puts_them():
 	c, y, x, h, w = viewer.cells[0]
 	fit = np.array(viewer.layout.scale)
 	r = liveview.RADIUS_2D
-	assert centroid(image[y:y + h, x:x + w], at * fit) == pytest.approx(at * fit, abs=0.3)
+	# The frame's pixel x at (x + 0.5) * scale - 0.5 (as cv2.resize puts it), and the drawing with it
+	assert centroid(image[y:y + h, x:x + w], at * fit) == pytest.approx((at + 0.5) * fit - 0.5, abs=0.1)
 	whole = image[y:y + h, x:x + w].copy()
-	# Twice as near, the wheel over the first node: it stays under the mouse, the rest twice as far from it
+	# Twice as near, the wheel over the first node: what is under the mouse stays there
 	M = np.round(F[0] * fit).astype(int)
+	under = (M + 0.5) / fit - 0.5 # the frame's point under the mouse's pixel
 	viewer.Wheel(np.log(2) / np.log(liveview.ZOOM_WHEEL), x + M[0], y + M[1])
 	assert viewer.ZoomOf(0).times == pytest.approx(2)
 	image = viewer.Compose(frames, row)
 	tile = image[y:y + h, x:x + w]
-	def where(p): # where frame px p land, zoomed 2x about the frame px under M
-		return M + 2 * (np.asarray(p) * fit - M)
-	assert centroid(tile, where(at)) == pytest.approx(where(at), abs=0.3)
+	scale, origin = viewer.ZoomOf(0).Window((1024, 1280), viewer.layout.tile, viewer.layout.scale)
+	assert scale == pytest.approx(2 * fit) and liveview.Place(under, scale, origin) == pytest.approx(M)
+	def where(p): # where the zoom puts frame px p
+		return liveview.Place(p, scale, origin)
+	assert centroid(tile, where(at)) == pytest.approx(where(at), abs=0.1)
 	nodes = [p for p in F if (0 <= where(p)).all() and (where(p) < [w - r - 2, h]).all()]
 	assert len(nodes) > 5 and share(near(tile, where(p) + [r, 0], liveview.Color(mouse), 1) for p in nodes) > 0.8
 	# The other cameras: as they were
@@ -809,7 +813,8 @@ def test_a_zoomed_camera_shows_its_frame_and_drawing_where_the_zoom_puts_them():
 
 
 def test_zoomed_the_frame_is_cut_before_it_is_scaled(monkeypatch):
-	# A camera zoomed 4x scales a quarter of its frame's width and height: no more work than the whole frame
+	# A camera zoomed 4x scales a quarter of its frame's width and height: no more work than the whole frame,
+	# and the same place for the same pixel
 	seen = []
 	warp = liveview.cv2.warpAffine
 	monkeypatch.setattr(liveview.cv2, "warpAffine", lambda img, *a, **k: seen.append(img.shape) or warp(img, *a, **k))
@@ -817,12 +822,13 @@ def test_zoomed_the_frame_is_cut_before_it_is_scaled(monkeypatch):
 	zoom = liveview.Zoom()
 	tile, fit = (384, 480), (480 / 1280, 384 / 1024)
 	whole = liveview.Gray(frame, tile, *zoom.Window(frame.shape, tile, fit))
+	assert not seen # the whole frame: cv2.resize, 4 times as fast
 	zoom.About(4, (240, 192), frame.shape, tile, fit)
 	scale, origin = zoom.Window(frame.shape, tile, fit)
 	near_ = liveview.Gray(frame, tile, scale, origin)
-	assert seen[0][1] <= 1280 / 2 and seen[1][1] <= 1280 / 4 + 4 and seen[1][0] <= 1024 / 4 + 4
-	assert centroid(near_) == pytest.approx((np.array([640, 512]) - origin) * scale, abs=0.3)
-	assert centroid(whole) == pytest.approx(np.array([640, 512]) * fit, abs=0.3)
+	assert seen[0][1] <= 1280 / 4 + 4 and seen[0][0] <= 1024 / 4 + 4
+	assert centroid(near_) == pytest.approx(liveview.Place([640, 512], scale, origin), abs=0.1)
+	assert centroid(whole) == pytest.approx(liveview.Place([640, 512], fit), abs=0.1)
 
 
 # -------------------------------------------------------------- trails and occupancy
