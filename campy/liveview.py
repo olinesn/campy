@@ -64,8 +64,8 @@ lighter, since campy-live's results began or over the last --heat-minutes.
 Both count only well triangulated animals (as the floor's levelling: 2
 cameras or more, reprojected within 10 px), so false 3D from a detection
 outside the cage in one camera does not paint them. The occupancy is drawn
-into the grid's picture, again once a second; the trails each view (about
-1.5 ms for 3 mice over 60 s).
+into the grid's picture, again once a second (about 3 ms); the trails each
+view (about 1.3 ms for 3 mice over 60 s on the ChronicRecord PC).
 
 The 3D view is its own drawing with numpy and cv2, in this window, rather
 than matplotlib or a browser: no other package or program, the same row as
