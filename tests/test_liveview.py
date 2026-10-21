@@ -412,6 +412,8 @@ def test_keys_pick_the_cameras_and_what_is_drawn():
 	assert viewer.Key(ord("a")) and viewer.Shown() == [0, 1, 2]
 	assert viewer.Key(ord("2")) and viewer.Key(ord("g")) and viewer.Shown() == [0, 1, 2]
 	assert viewer.Key(ord("d")) and not viewer.show2d
+	assert viewer.Key(ord("p")) and viewer.show2d # LUC3D's p, as d
+	viewer.Key(ord("d"))
 	assert viewer.Key(ord("r")) and not viewer.show3d # LUC3D's r
 	assert viewer.Key(ord("l")) and not viewer.lines
 	assert not viewer.Key(ord("q")) and not viewer.Key(27)
@@ -570,12 +572,12 @@ def test_buttons_turn_the_predictions_and_reprojections_on_and_off():
 	viewer.lastSeen = 30.0
 	image = viewer.Compose(frames, row)
 	keys = [b[4] for b in viewer.buttons]
-	assert keys == [ord("d"), ord("r"), ord("l")]
+	assert keys == [ord("p"), ord("r"), ord("l")]
 	def Centre(key):
 		x0, y0, x1, y1, _ = next(b for b in viewer.buttons if b[4] == key)
 		return (x0 + x1) // 2, (y0 + y1) // 2
-	on = image[Centre(ord("d"))[1], Centre(ord("d"))[0] + 60].copy()
-	assert viewer.Click(*Centre(ord("d"))) == ord("d") and viewer.Click(*Centre(ord("r"))) == ord("r")
+	on = image[Centre(ord("p"))[1], Centre(ord("p"))[0] + 60].copy()
+	assert viewer.Click(*Centre(ord("p"))) == ord("p") and viewer.Click(*Centre(ord("r"))) == ord("r")
 	assert viewer.Click(5, 5) is None # a camera's tile
 	def tiles(image): # the identities' colours on the cameras' frames, not in the panel
 		y, x, h, w = viewer.layout.panel
@@ -589,7 +591,7 @@ def test_buttons_turn_the_predictions_and_reprojections_on_and_off():
 	off = image[Centre(ord("r"))[1], Centre(ord("r"))[0] + 60]
 	assert tuple(on) != tuple(off) # drawn as off
 	predictions = tiles(image)
-	viewer.Key(viewer.Click(*Centre(ord("d"))))
+	viewer.Key(viewer.Click(*Centre(ord("p"))))
 	image = viewer.Compose(frames, row)
 	assert 0 < predictions < both and tiles(image) == 0 # neither: nothing of the animals drawn
 	viewer.Key(viewer.Click(*Centre(ord("r"))))
@@ -764,7 +766,7 @@ def test_the_3d_tile_shows_the_row_the_cameras_show():
 	assert (tile[50:] == drawn(other)).all() and (tile[50:] != drawn(row)).any()
 	# \\ (or its button) hides it: the cameras alone, and no 3D drawn
 	keys = [b[4] for b in viewer.buttons]
-	assert keys == [ord("d"), ord("r"), ord("l"), ord("\\"), ord("t"), ord("o")]
+	assert keys == [ord("p"), ord("r"), ord("l"), ord("\\"), ord("t"), ord("o")]
 	x0, y0, x1, y1, _ = viewer.buttons[3]
 	viewer.Key(viewer.Mouse(liveview.cv2.EVENT_LBUTTONDOWN, (x0 + x1) // 2, (y0 + y1) // 2, 0))
 	assert not viewer.showScene

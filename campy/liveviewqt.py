@@ -20,8 +20,8 @@ campy/livehealth.py), then the rest.
 The keys are the OpenCV window's (liveview.Viewer.Key), as LUC3D's: v one
 camera alone, g every camera, the arrows the previous or next camera, \\ the
 3D view on or off; the wheel, + and - zoom a camera, 0 the whole frame
-again, shift 0 one frame pixel for one screen pixel; d, r (LUC3D's: the
-reprojections) and l what is drawn, t the trails, o the occupancy; z the
+again, shift 0 one frame pixel for one screen pixel; p (or d) and r
+(LUC3D's: the predictions and the reprojections) and l what is drawn, t the trails, o the occupancy; z the
 window to the view; space pause; s save the view as a PNG (with its text);
 q or Esc quit.
 
@@ -228,7 +228,7 @@ class Window(QtWidgets.QWidget):
 		checks = QtWidgets.QGridLayout()
 		checks.setHorizontalSpacing(8)
 		checks.setVerticalSpacing(4)
-		for k, (label, key) in enumerate((("Predictions (d)", "d"), ("Reprojections (r)", "r"), ("Lines (l)", "l"),
+		for k, (label, key) in enumerate((("Predictions (p)", "p"), ("Reprojections (r)", "r"), ("Lines (l)", "l"),
 				("3D view (\\)", "\\"), ("Trails (t)", "t"), ("Occupancy (o)", "o"),
 				("Fast CPUs (c): campy-live on the performance cores", "c"))):
 			box = QtWidgets.QCheckBox(label)
@@ -416,7 +416,7 @@ class Window(QtWidgets.QWidget):
 	def Sync(self):
 		# The panel's buttons as the viewer is
 		viewer = self.viewer
-		for key, on in (("d", viewer.show2d), ("r", viewer.show3d), ("l", viewer.lines), ("\\", viewer.showScene),
+		for key, on in (("p", viewer.show2d), ("r", viewer.show3d), ("l", viewer.lines), ("\\", viewer.showScene),
 				("t", viewer.trails), ("o", viewer.occupancy)):
 			self.checks[key].setChecked(on)
 		for key in "\\to":
