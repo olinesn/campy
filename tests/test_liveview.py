@@ -245,6 +245,10 @@ def test_layout_fits_the_grid_and_the_panel():
 	one = liveview.Layout(1, (1024, 1280), size=(1800, 960), panel_lines=9)
 	assert not one.inGrid and one.panel[0] == one.tile[0] and one.size[0] <= 960
 	assert liveview.Layout(1, (1024, 1280), scale=0.25).tile == (256, 320)
+	# 3 cameras and the 3D: 3 columns, the tiles as large as 3 cameras', the panel in the grid
+	four = liveview.Layout(4, (1024, 1280), size=(1800, 960), panel_lines=14)
+	assert (four.cols, four.rows, four.inGrid) == (3, 2, True) and four.tile == three.tile
+	assert four.panel == (four.tile[0], four.tile[1], four.tile[0], 2 * four.tile[1]) # the 5th and 6th cells
 
 
 # -------------------------------------------------------------- the view
@@ -363,6 +367,244 @@ def test_buttons_turn_the_predictions_and_reprojections_on_and_off():
 	viewer.Key(viewer.Click(*Centre(ord("p"))))
 	assert 0 < tiles(viewer.Compose(frames, row)) < both # the reprojections alone
 
+
+# -------------------------------------------------------------- the 3D view
+
+TILE = (480, 600) # height, width
+
+
+def posed(points, animals=None):
+	# A row whose animals' 3D is points (animals, nodes, 3), from 3 cameras each
+	points = np.asarray(points, float)
+	n, N = points.shape[:2]
+	row = np.zeros((), live.RowType(3, n, N, n))
+	row["points3d"] = points
+	row["n_views"] = 3
+	row["reproj_px"] = 0.5
+	row["members"] = -1
+	return row
+
+
+def bright(img, xy, r=3):
+	# Whether a light gray (the cameras' frustums) is among the pixels within r of xy
+	x, y = int(round(xy[0])), int(round(xy[1]))
+	patch = img[max(0, y - r):y + r + 1, max(0, x - r):x + r + 1].astype(int)
+	return bool(((patch.min(-1) > 150) & (patch.max(-1) - patch.min(-1) < 20)).any())
+
+
+def test_up_is_away_from_where_the_cameras_look_then_level_with_the_animals():
+	# The test rig's floor is z = 0. The cameras alone give about up; the
+	# animals going about on the floor, up and the floor themselves
+	cams = scene3d.rig()
+	scene = liveview.Scene(cams)
+	assert np.degrees(np.arccos(scene.up @ [0, 0, 1])) < 30
+	assert np.cross(scene.e1, scene.e2) @ scene.up == pytest.approx(1) # right-handed
+	truth = scene3d.scene(900, n=3)
+	for points in truth:
+		scene.Learn(posed(points))
+	assert np.degrees(np.arccos(scene.up @ [0, 0, 1])) < 1
+	assert 0 <= scene.Ground()[2] <= 10 # the lowest nodes are 5 mm up
+	assert np.linalg.norm(scene.Ground()[:2]) < 120 # the arena's middle
+	# Badly triangulated nodes (from 1 camera, or far off in the cameras) do not count
+	lone = liveview.Scene(cams)
+	for points in truth[:300]:
+		row = posed(points - [0, 0, 400])
+		row["reproj_px"] = 50
+		lone.Learn(row)
+	assert lone.floor == 0 and lone.up @ liveview.Up(cams) == pytest.approx(1)
+	# Told up: it stays
+	told = liveview.Scene(cams, up=(0, 0.2, 1))
+	for points in truth[:300]:
+		told.Learn(posed(points))
+	assert told.up == pytest.approx(liveview.Unit((0, 0.2, 1)))
+
+
+def test_a_3d_point_lands_where_the_virtual_camera_puts_it():
+	# Seen level (elevation 0): what it orbits in the tile's middle, a point
+	# beside it (e2) to the right, one above it (up) higher, each f * 50 /
+	# distance px off, f from the field of view
+	scene = liveview.Scene(scene3d.rig())
+	scene.elevation = 0.0
+	c, d = scene.centre, scene.distance
+	f = 0.5 * TILE[1] / np.tan(np.radians(liveview.FOV) / 2)
+	points = [[c], [c + 50 * scene.e2], [c + 50 * scene.up]]
+	img = np.zeros(TILE + (3,), np.uint8)
+	scene.Draw(img, posed(points))
+	where = [(300, 240), (300 + f * 50 / d, 240), (300, 240 - f * 50 / d)]
+	for a, xy in enumerate(where):
+		assert scene.Project(points[a][0], TILE) == pytest.approx(xy)
+		assert near(img, xy, liveview.Color(a), 1)
+	assert where[1][0] - 300 > 20 # apart enough to tell
+	# Behind the virtual camera: not drawn
+	_, eye = scene.Eye()
+	behind = eye + (eye - c)
+	assert np.isnan(scene.Project(behind, TILE)).all()
+	img[:] = 0
+	scene.Draw(img, posed([[behind]]))
+	assert not like(img, liveview.Color(0)).any()
+
+
+def test_nearer_is_drawn_over_farther():
+	scene = liveview.Scene(scene3d.rig())
+	R, eye = scene.Eye()
+	near_, far_ = eye + R[2] * scene.distance * 0.5, eye + R[2] * scene.distance * 1.5 # on its axis
+	for first, second in ((near_, far_), (far_, near_)):
+		img = np.zeros(TILE + (3,), np.uint8)
+		scene.Draw(img, posed([[first], [second]]))
+		nearer = 0 if first is near_ else 1
+		assert like(img[240:241, 300:301], liveview.Color(nearer)).all()
+
+
+def test_orbiting_and_zooming_change_the_view():
+	cams, truth, keypoints, scores, order = mice()
+	scene = liveview.Scene(cams)
+	row = posed(truth)
+	def view():
+		img = np.zeros(TILE + (3,), np.uint8)
+		scene.Draw(img, row, EDGES)
+		return img
+	before, where = view(), scene.Project(truth, TILE)
+	scene.Orbit(100, 0) # dragged 100 px right
+	turned = view()
+	assert (turned != before).any()
+	moved = np.linalg.norm(scene.Project(truth, TILE) - where, axis=-1)
+	assert np.median(moved) > 20
+	for a in range(3): # still there, where it now lands
+		assert share(near(turned, p, liveview.Color(a), 1) for p in scene.Project(truth[a], TILE)) > 0.8
+	scene.Orbit(-100, 0)
+	assert (view() == before).all() # back
+	# Nearer: everything farther from the middle of the tile, by 1 / 0.85
+	off = scene.Project(truth, TILE) - [300, 240]
+	scene.Zoom(1)
+	assert np.linalg.norm(scene.Project(truth, TILE) - [300, 240], axis=-1).mean() > \
+		1.1 * np.linalg.norm(off, axis=-1).mean()
+	# Not over the top
+	scene.Orbit(0, 1e5)
+	assert scene.elevation == pytest.approx(np.radians(85))
+	scene.Reset()
+	assert (view() == before).all()
+
+
+def test_the_cameras_are_drawn_where_they_are():
+	cams = scene3d.rig()
+	scene = liveview.Scene(cams)
+	scene.Zoom(-6) # out, to see them above the cage
+	img = scene.Background(TILE)
+	for cam in cams:
+		at = scene.Project(cam.center, TILE)
+		assert 0 <= at[0] < TILE[1] and 0 <= at[1] < TILE[0] and bright(img, at, 2)
+		# Its frustum points where it looks: its image's corners, in front of it
+		w, h = 2 * cam.c
+		for u, v in ((0, 0), (w, 0), (w, h), (0, h)):
+			ray = np.array([(u - cam.c[0]) / cam.f[0], (v - cam.c[1]) / cam.f[1], 1.0]) * 0.12 * scene.reach
+			assert bright(img, scene.Project(cam.center + cam.R.T @ ray, TILE), 2)
+	assert scene.Background(TILE) is img # drawn once for each view of them
+	scene.Orbit(10, 0)
+	assert scene.Background(TILE) is not img
+
+
+def three_cameras(cams, row):
+	viewer = liveview.Viewer(view_args(name()))
+	viewer.description = {"cameras": ["Camera0", "Camera1", "Camera2"], "edges": EDGES, "animals": 3}
+	viewer.calibration = cams
+	viewer.scene = liveview.Scene(cams)
+	viewer.lastSeen = 30.0
+	frames = [types.SimpleNamespace(image=np.zeros((1024, 1280, 1), np.uint8), frameNumber=5, hostTime=0)
+		for _ in range(3)]
+	return viewer, frames
+
+
+def test_the_3d_tile_shows_the_row_the_cameras_show():
+	cams, truth, keypoints, scores, order = mice()
+	row = row_for(5, cams, truth, keypoints, scores, order)
+	viewer, frames = three_cameras(cams, row)
+	image = viewer.Compose(frames, row)
+	# Beside the 3 cameras, as large as without it, the panel in the grid
+	assert (viewer.layout.cols, viewer.layout.rows, viewer.layout.inGrid) == (3, 2, True)
+	assert viewer.layout.tile == liveview.Layout(3, (1024, 1280), (1800, 960)).tile
+	y, x, h, w = viewer.sceneCell
+	assert (y, x) == viewer.layout.Cell(3) and (h, w) == viewer.layout.tile
+	def drawn(row): # the scene's drawing of row, below the tile's header
+		img = np.zeros((h, w, 3), np.uint8)
+		viewer.scene.Draw(img, row, EDGES)
+		return img[50:]
+	tile = image[y:y + h, x:x + w]
+	assert (tile[50:] == drawn(row)).all() and sum(like(tile, liveview.Color(a)).sum() > 50 for a in range(3)) == 3
+	# Another row: its animals, not the last ones
+	other = row_for(6, cams, truth + [0, 0, 60], keypoints, scores, order)
+	tile = viewer.Compose(frames, other)[y:y + h, x:x + w]
+	assert (tile[50:] == drawn(other)).all() and (tile[50:] != drawn(row)).any()
+	# v (or its button) hides it: the cameras alone, and no 3D drawn
+	keys = [b[4] for b in viewer.buttons]
+	assert keys == [ord("d"), ord("p"), ord("l"), ord("v")]
+	x0, y0, x1, y1, _ = viewer.buttons[3]
+	viewer.Key(viewer.Mouse(liveview.cv2.EVENT_LBUTTONDOWN, (x0 + x1) // 2, (y0 + y1) // 2, 0))
+	assert not viewer.showScene
+	image = viewer.Compose(frames, row)
+	assert viewer.sceneCell is None and viewer.layout.cols == 2
+	assert viewer.Key(ord("v")) and viewer.showScene
+	# Without a calibration (2D only): no 3D, no button
+	plain = liveview.Viewer(view_args(name()))
+	plain.description = {"cameras": ["Camera0", "Camera1", "Camera2"], "edges": EDGES}
+	plain.lastSeen = 30.0
+	plain.Compose(frames, np.zeros((), live.RowType(3, 3, truth.shape[1])))
+	assert plain.sceneCell is None and len(plain.buttons) == 3
+
+
+def test_dragging_in_the_3d_tile_turns_it():
+	cv2_ = liveview.cv2
+	cams, truth, keypoints, scores, order = mice()
+	row = row_for(5, cams, truth, keypoints, scores, order)
+	viewer, frames = three_cameras(cams, row)
+	image = viewer.Compose(frames, row)
+	y, x, h, w = viewer.sceneCell
+	at = (x + w // 2, y + h // 2)
+	scene = viewer.scene
+	# On a camera's tile: nothing turns
+	assert viewer.Mouse(cv2_.EVENT_LBUTTONDOWN, 10, 10, 0) is None and viewer.drag is None
+	# Dragged 60 px to the right in the 3D tile
+	assert viewer.Mouse(cv2_.EVENT_LBUTTONDOWN, *at, 0) is None
+	turn = scene.azimuth
+	viewer.Mouse(cv2_.EVENT_MOUSEMOVE, at[0] + 60, at[1], cv2_.EVENT_FLAG_LBUTTON)
+	assert scene.azimuth == pytest.approx(turn - 60 * 0.008) and viewer.moved
+	viewer.Mouse(cv2_.EVENT_LBUTTONUP, at[0] + 60, at[1], 0)
+	viewer.Mouse(cv2_.EVENT_MOUSEMOVE, at[0] + 200, at[1], 0)
+	assert viewer.drag is None and scene.azimuth == pytest.approx(turn - 60 * 0.008)
+	# Drawn again as Run does: the 3D tile changes, the cameras' do not
+	before = image.copy()
+	viewer.Draw3D(image, viewer.last[1], 5)
+	assert not viewer.moved
+	assert (image[y:y + h, x:x + w] != before[y:y + h, x:x + w]).any()
+	th, tw = viewer.layout.tile
+	assert (image[:th, :3 * tw][:, :x] == before[:th, :3 * tw][:, :x]).all()
+	# The wheel, with the mouse over the 3D tile (its x, y are the screen's on Windows): nearer
+	distance = scene.distance
+	viewer.Mouse(cv2_.EVENT_MOUSEMOVE, *at, 0)
+	viewer.Mouse(cv2_.EVENT_MOUSEWHEEL, 5000, 5000, 120 << 16)
+	assert scene.distance == pytest.approx(distance * 0.85)
+	viewer.Mouse(cv2_.EVENT_MOUSEMOVE, 10, 10, 0) # over a camera: not
+	viewer.Mouse(cv2_.EVENT_MOUSEWHEEL, 5000, 5000, 120 << 16)
+	assert scene.distance == pytest.approx(distance * 0.85)
+	viewer.Mouse(cv2_.EVENT_MOUSEMOVE, *at, 0) # the wheel the other way, with ctrl held: farther
+	viewer.Mouse(cv2_.EVENT_MOUSEWHEEL, 5000, 5000, (-120 << 16) | cv2_.EVENT_FLAG_CTRLKEY)
+	assert scene.distance == pytest.approx(distance)
+	# The right button moves it; a double click (or r) puts it back
+	centre = scene.centre.copy()
+	viewer.Mouse(cv2_.EVENT_RBUTTONDOWN, *at, 0)
+	viewer.Mouse(cv2_.EVENT_MOUSEMOVE, at[0], at[1] + 40, cv2_.EVENT_FLAG_RBUTTON)
+	viewer.Mouse(cv2_.EVENT_RBUTTONUP, at[0], at[1] + 40, 0)
+	assert np.linalg.norm(scene.centre - centre) > 1
+	viewer.Mouse(cv2_.EVENT_LBUTTONDBLCLK, *at, 0)
+	assert scene.azimuth == 0 and scene.centre == pytest.approx(centre)
+	scene.Orbit(30, 0)
+	viewer.Key(ord("r"))
+	assert scene.azimuth == 0
+	# Hidden (v) while dragged: the drag ends
+	viewer.Mouse(cv2_.EVENT_LBUTTONDOWN, *at, 0)
+	viewer.Key(ord("v"))
+	viewer.Compose(frames, row)
+	viewer.Mouse(cv2_.EVENT_MOUSEMOVE, at[0] + 30, at[1], cv2_.EVENT_FLAG_LBUTTON)
+	assert viewer.drag is None and scene.azimuth == 0
 
 # -------------------------------------------------------------- with campy-live
 
@@ -493,6 +735,7 @@ def test_the_view_of_campy_live_as_it_runs(tmp_path, monkeypatch):
 	assert codes == [0]
 	summary = json.load(open(tmp_path / "view.json"))
 	assert summary["results_drawn"] > 20 and summary["results_gone"] == 0
+	assert summary["draw_3d_ms"]["p50"] > 0 # with the 3D tile
 	saved = sorted(os.listdir(png))
 	assert saved and all(f.startswith("view_") and f.endswith(".png") for f in saved)
 	image = cv2.imread(str(png / saved[-1]))
