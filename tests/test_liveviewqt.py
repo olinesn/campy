@@ -388,8 +388,8 @@ def test_the_health_badge_and_labels_are_qts_text_apart(qt, window):
 	def Ahead(now=None):
 		s = status(now)
 		s.cameras[1].problems = [("1 FRAME AHEAD", "Camera1: 1 frame ahead of the other cameras")]
-		for k in (0, 2): # (the feed's frame rate: none yet on a slow machine)
-			s.cameras[k].fps = 30.0
+		for k in (0, 2): # the others fine (the test's feed is still: on a slow machine, NO FRAMES)
+			s.cameras[k].problems, s.cameras[k].fps = [], 30.0
 		return s
 	viewer.rig.Status = Ahead
 	win.resize(760, 420)
