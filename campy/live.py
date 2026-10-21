@@ -10,8 +10,8 @@ again. Sets that came while it was busy are skipped, and counted, never
 queued, so it is never further behind than one set.
 
 It runs in its own Python environment, the one with torch and sleap-nn: it
-imports only numpy and this package's livefeed, liveresults and frametimes,
-which need nothing else, so campy's camera drivers need not be installed there. In that
+imports only numpy and this package's livefeed, liveresults, frametimes and
+children, which need nothing else, so campy's camera drivers need not be installed there. In that
 environment, either install campy without its dependencies
 
     pip install --no-deps -e <campy folder>
@@ -139,7 +139,7 @@ its first.
 import argparse, json, math, os, queue, signal, sys, threading, time
 from datetime import datetime
 import numpy as np
-from campy import cpus, livefeed, liveresults
+from campy import children, cpus, livefeed, liveresults
 from campy.frametimes import GrowingNpy, Writer
 
 # The random models: what bench/sleap_infer_bench.py's default pair is
@@ -758,8 +758,9 @@ class SmiClock(ClockReader):
 		else:
 			raise RuntimeError("nvidia-smi gave no clock")
 		self.last = None
-		self.proc = subprocess.Popen(query + ["-lms", str(self.PERIOD_MS)], stdout=subprocess.PIPE,
-			stderr=subprocess.DEVNULL, text=True, creationflags=0x08000000 if os.name == "nt" else 0) # no console window
+		# Dies with campy-live, even when it is killed (campy/children.py)
+		self.proc = children.Child(query + ["-lms", str(self.PERIOD_MS)], stdout=subprocess.PIPE,
+			stderr=subprocess.DEVNULL, text=True)
 		self.thread = threading.Thread(target=self.Follow, daemon=True, name="campy-live nvidia-smi")
 		self.thread.start()
 		deadline = time.monotonic() + 5
@@ -783,11 +784,7 @@ class SmiClock(ClockReader):
 		return self.last
 
 	def Close(self):
-		self.proc.terminate()
-		try:
-			self.proc.wait(timeout=5)
-		except Exception:
-			self.proc.kill()
+		self.proc.Close()
 
 
 class SysfsClock(ClockReader):

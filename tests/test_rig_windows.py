@@ -215,6 +215,7 @@ def test_run_waits_for_a_python_on_the_gpu(monkeypatch, root, capsys):
 		return procs
 	monkeypatch.setattr(rig, "scan", scan)
 	monkeypatch.setattr(rig, "disk_bytes", lambda: 0)  # not the runner's own disks, whatever they're doing
+	monkeypatch.setattr(rig, "cmdline", lambda p: p.cmd)  # nor its own pid 500's command line
 	class Args:
 		cpu, io, no_wait = 2.0, 50.0, False
 	rig.wait_quiet(rig.Watch(), Args)
