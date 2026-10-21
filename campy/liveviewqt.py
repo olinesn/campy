@@ -12,7 +12,10 @@ it with OpenCV's font: the Viewer hands it over (liveview.Words), and Qt
 draws it over the image in its own fonts, sharp at any size, where OpenCV's
 would be (the left end of each baseline), each item cut to its tile. The
 panel says what the OpenCV window's drawn panel says, in Qt's fonts, a few
-times a second.
+times a second: what is wrong (a camera behind, losing frames or a frame
+off the others; too few animals with good 3D, or one far off), in red at
+its top, then the tracking strip (each identity's last 10 s;
+campy/livehealth.py), then the rest.
 
 The keys are the OpenCV window's (liveview.Viewer.Key), as LUC3D's: v one
 camera alone, g every camera, the arrows the previous or next camera, \\ the
@@ -232,6 +235,15 @@ class Window(QtWidgets.QWidget):
 		self.grid.setCheckable(True)
 		self.single.setCheckable(True)
 		column.addLayout(views)
+		self.alerts = QtWidgets.QLabel() # what is wrong, in red; hidden when nothing is
+		self.alerts.setWordWrap(True)
+		self.alerts.setTextFormat(Qt.RichText)
+		self.alerts.setStyleSheet("QLabel { background: #3a1212; border: 1px solid #ff2828; padding: 4px; }")
+		self.alerts.hide()
+		column.addWidget(self.alerts)
+		self.strips = QtWidgets.QLabel() # the tracking strip (Viewer.Strips), drawn as the OpenCV panel's
+		self.strips.hide()
+		column.addWidget(self.strips)
 		# Bookmarks: the note for the next one, the buttons, and the last ones
 		self.note = Note(self)
 		self.note.setPlaceholderText("Note for the next bookmark (Enter: bookmark)")
@@ -268,7 +280,17 @@ class Window(QtWidgets.QWidget):
 		row.setContentsMargins(0, 0, 0, 0)
 		row.setSpacing(0)
 		row.addWidget(self.picture, 1)
-		row.addWidget(panel)
+		# The panel scrolls when the window is shorter than it (its warnings, strip, bookmarks and text): the
+		# window can still be the view's height (z)
+		scroll = QtWidgets.QScrollArea()
+		scroll.setWidget(panel)
+		scroll.setWidgetResizable(True)
+		scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+		scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+		scroll.setFocusPolicy(Qt.NoFocus) # the keys (space, the arrows) stay the view's
+		scroll.setStyleSheet("QScrollArea { background: #181818; }")
+		scroll.setFixedWidth(PANEL_WIDTH + self.style().pixelMetric(QtWidgets.QStyle.PM_ScrollBarExtent))
+		row.addWidget(scroll)
 		self.Sync()
 		self.timer = QtCore.QTimer(self)
 		self.timer.setTimerType(Qt.PreciseTimer) # Windows' coarse timers tick every 15.6 ms
@@ -329,14 +351,31 @@ class Window(QtWidgets.QWidget):
 				self.Say(viewer.last[1])
 
 	def Say(self, row):
+		start = time.perf_counter()
 		self.saidAt, self.saidRow = time.monotonic(), row is not None
 		self.Sync() # the 3D view's box, once campy-live has said its calibration
+		alerts = self.viewer.Alerts()
+		self.alerts.setText(Html(alerts))
+		self.alerts.setVisible(bool(alerts))
+		ratio = self.devicePixelRatioF()
+		image = self.viewer.Strips(int(round((PANEL_WIDTH - 24) * ratio)))
+		if image is None:
+			self.strips.hide()
+		else:
+			self.stripsImage = np.ascontiguousarray(image)
+			h, w = image.shape[:2]
+			pixmap = QtGui.QPixmap.fromImage(QtGui.QImage(self.stripsImage.data, w, h, self.stripsImage.strides[0],
+				QtGui.QImage.Format_BGR888))
+			pixmap.setDevicePixelRatio(ratio)
+			self.strips.setPixmap(pixmap)
+			self.strips.show()
 		lines = self.viewer.PanelText(row)
 		if self.paused:
 			lines.insert(0, ("Paused: space goes on", liveview.TEXT))
 		self.status.setText(Html(lines))
 		if self.viewer.bookmarks.Where(self.viewer.recording) != self.shownWhere:
 			self.ShowMarks() # a recording's folder, said by its feed
+		self.viewer.panelMs.append((time.perf_counter() - start) * 1e3)
 
 	def Sync(self):
 		# The panel's buttons as the viewer is

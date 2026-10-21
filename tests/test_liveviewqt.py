@@ -80,9 +80,12 @@ def window(qt, rings, tmp_path):
 	viewer.Check()
 	small = [scaled(c, S) for c in cams]
 	viewer.calibration, viewer.scene = small, liveview.Scene(small)
-	def Result(frame, lift=0.0):
-		# campy-live's row for frame (its 3D lifted by lift mm), shown in the window
-		publisher.Write(row_for(frame, cams, truth + [0, 0, lift], keypoints * S, scores, order))
+	def Result(frame, lift=0.0, bad=None):
+		# campy-live's row for frame (its 3D lifted by lift mm; identity bad's 234 px off), shown in the window
+		row = row_for(frame, cams, truth + [0, 0, lift], keypoints * S, scores, order)
+		if bad is not None:
+			row["reproj_px"][bad] = 234
+		publisher.Write(row)
 		win.Step()
 		qt.app.processEvents()
 	yield types.SimpleNamespace(win=win, viewer=viewer, Result=Result, truth=truth, recording=recording)
@@ -241,6 +244,30 @@ def test_the_mouse_turns_and_zooms_the_3d(qt, window):
 	QTest.mouseDClick(win.picture, Qt.LeftButton, Qt.NoModifier, QtCore.QPoint(int((x + w / 2) / ratio),
 		int((y + h / 2) / ratio)))
 	assert viewer.current == 1 and viewer.Shown() == [1]
+
+
+def test_the_panel_warns_in_red_and_shows_the_tracking_strip(qt, window):
+	win, viewer = window.win, window.viewer
+	viewer.tracking = liveview.livehealth.Tracking(3, 30.0, 20.0)
+	window.Result(9)
+	win.Say(viewer.last[1])
+	# (the fixture's frames were all written at once: the rig may say they stopped; its own tests are elsewhere)
+	assert "far above" not in win.alerts.text() and not win.strips.isHidden()
+	for frame in range(10, 20):
+		window.Result(frame, bad=2)
+	win.Say(viewer.last[1])
+	assert not win.alerts.isHidden()
+	text = win.alerts.text()
+	assert "#2's error, 234 px, is far above the others'" in text and "#ff2828" in text # in red
+	assert "Good 3D for 2 of 3 animals" in text
+	assert "above 20 px, drawn dimmed" in win.status.text()
+	# The strip: #2's newest columns red
+	image = win.strips.pixmap().toImage()
+	h, w = image.height(), image.width()
+	strip = np.array([[image.pixelColor(x, y).getRgb()[:3] for x in range(w - 6, w - 1)]
+		for y in range(2 * (liveview.STRIP_H + 6) + 4, 2 * (liveview.STRIP_H + 6) + liveview.STRIP_H)])
+	assert like(strip[..., ::-1], liveview.WARN).all() # RGB as BGR
+	assert viewer.panelMs and viewer.Summary(1.0)["qt_panel_ms"]["p50"] < 50
 
 
 def test_without_qt_the_window_is_opencvs(qt, monkeypatch, capsys):

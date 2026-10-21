@@ -75,6 +75,34 @@ The panel lists each identity's cameras and reprojection error (campy-live's:
 mean over nodes and cameras, undistorted px), and how late the results and
 the view are.
 
+Is the rig all right, and the tracking?
+---------------------------------------
+So that a problem shows at a glance (campy/livehealth.py says how each is
+told):
+- Each camera's tile says its frames a second at its top right, in green, or
+  in red what is wrong, with a red frame round the tile: behind the other
+  cameras or no frames (12.0 FPS, NO FRAMES), frames the camera lost (LOST
+  n), frame numbers missing from its feed (GAP n) or frames that came a frame
+  late (LATE n), in the last 10 s, and a camera whose host times are a frame
+  or more off the others' for the same frame number (1 FRAME AHEAD: as a
+  camera left grabbing after a double Ctrl+C was on 2026-10-20, and campy-live
+  called every set misaligned). The view reads this from the cameras' rings
+  (their frames' numbers and times, not the frames) 20 times a second.
+- The panel starts with what is wrong, in red, then: each identity's strip
+  of the last 10 s (its height the cameras it was triangulated from, its
+  colour its reprojection error: green within 10 px, yellow within --bad-px,
+  red above, gray no 3D), with a warning when fewer identities than
+  campy-live's --animals have good 3D, or when one's error is far above the
+  others'; how long the recording has been going, each camera's frames a
+  second, and how far apart their host times are.
+- An identity whose reprojection error is above --bad-px (20 px) is drawn
+  dimmed and dashed, on the cameras' tiles and in 3D, its label red ("#2
+  bad 3D: 234 px"): a detection on equipment outside the cage, say, or a
+  wrong match. On the ChronicRecord PC this all took 1.4 ms of each view's
+  drawing (10.5 ms, from 9.1): 1.1 ms the warnings, the tiles' labels and
+  the strip, the rest the dashes (2 of the 3 mice above 20 px most of the
+  time); reading the rings' slots 0.4 ms, 20 times a second.
+
 Buttons in the panel turn the predictions (the 2D), the reprojections (the
 3D) and the lines on or off, as do the keys d, p and l, the 3D view, as
 does \\ (--no-3d: off at first), and its trails and occupancy, as do t and o.
@@ -130,14 +158,14 @@ resized, it is laid out again (the frames in their ratio, at most their own
 size, in the middle of the window), never stretched.
 """
 
-import argparse, csv, json, os, sys, time
+import argparse, csv, functools, json, os, sys, time
 from collections import deque
 from datetime import datetime
 
 import numpy as np
 import cv2
 
-from campy import livefeed, liveresults
+from campy import livefeed, livehealth, liveresults
 
 TITLE = "campy-live view"
 
@@ -152,6 +180,10 @@ DIM = (150, 150, 150)
 BOX = (25, 25, 25)
 BUTTON_ON = (90, 70, 20) # a button that is on (BGR: dark blue)
 PICKED = (255, 200, 80) # the outline of the camera picked, in the grid (light blue)
+WARN = (40, 40, 255) # what is wrong: red
+FINE = (90, 200, 90) # green
+FAIR = (0, 200, 230) # yellow
+NO_3D = (75, 75, 75)
 KEYS = ("Keys: v one camera, g all (grid), arrows the previous or next camera, 1-{} that camera; wheel or + and - "
 	"zoom a camera (drag: move it), 0 the whole frame, shift 0 one pixel for one; d predictions, p reprojections, "
 	"l lines{}; z window to the view; m bookmark (Shift+1-9: event 1-9); space pause, s save, q quit")
@@ -161,6 +193,10 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 LINE = 20 # px between the panel's lines
 PAD = 8
 STALE_S = 0.5 # no row for this long: the frames alone
+STRIP_H, STRIP_LABEL = 14, 110 # px: each identity's strip, its label before it
+# The strip's colours, as a cv2.LUT: between identities, no row from campy-live, no 3D, good, fair, bad
+STRIP_COLORS = np.zeros((1, 256, 3), np.uint8)
+STRIP_COLORS[0, :6] = [BOX, (12, 12, 12), NO_3D, FINE, FAIR, WARN]
 KEPT = 36000 # the timings kept for the summary: the last 20 minutes at 30 a second
 
 
@@ -170,6 +206,48 @@ def Say(text):
 
 def Color(identity):
 	return COLORS[int(identity) % len(COLORS)]
+
+
+def Dimmed(color):
+	# An identity's colour, for 3D not to trust: toward a dark gray
+	return tuple(int(0.4 * v + 45) for v in color)
+
+
+def Bad(row, bad_px):
+	# The identities whose 3D, in row, is off by more than bad_px (mean reprojection error over the nodes)
+	if not Has3D(row) or not bad_px:
+		return set()
+	with np.errstate(invalid="ignore"):
+		return set(np.nonzero(livehealth.Errors(row) > bad_px)[0].tolist())
+
+
+def Dashes(p, q, dash=6 << SHIFT):
+	"""
+	The dashes of dashed lines from p to q (points (N, 2), with SHIFT
+	bits): (dashes, 2, 2) int32, for one cv2.polylines. About 6 px each, and
+	at most 12 a line: a line 234 px off is still a few calls.
+	"""
+	p, q = np.asarray(p, float).reshape(-1, 2), np.asarray(q, float).reshape(-1, 2)
+	if not len(p):
+		return np.zeros((0, 2, 2), np.int32)
+	n = np.clip(np.linalg.norm(q - p, axis=1) // dash, 1, 24).astype(int) # pieces: dash, gap, dash, ...
+	count = (n + 1) // 2 # dashes a line
+	i = np.repeat(np.arange(len(p)), count)
+	k = 2 * (np.arange(count.sum()) - np.repeat(np.cumsum(count) - count, count)) # each dash's first piece
+	m = n[i]
+	a = p[i] + (q[i] - p[i]) * (k / m)[:, None]
+	b = p[i] + (q[i] - p[i]) * (np.minimum(k + 1, m) / m)[:, None]
+	return np.stack([a, b], 1).astype(np.int32)
+
+
+def Dashed(img, p, q, passes):
+	# Dashed lines from p to q (points (N, 2), with SHIFT bits), in one call for each of passes, (colour,
+	# thickness): an outline, then the colour. Not antialiased: a third of the time, and less than the
+	# solid antialiased lines they stand for
+	dashes = list(Dashes(p, q))
+	if dashes:
+		for color, thickness in passes:
+			cv2.polylines(img, dashes, False, color, thickness, cv2.LINE_8, SHIFT)
 
 
 # ---------------------------------------------------------------- drawing
@@ -211,13 +289,19 @@ def Centre(px):
 	return px[ok].mean(0) if ok.any() else None
 
 
-def DrawSkeleton(img, px, scale, edges, color, radius, thickness, filled, origin=(0, 0)):
-	"""An animal's nodes (N, 2, pixels of the frame) and edges, on img (a tile of the frame at scale, from origin)."""
+def DrawSkeleton(img, px, scale, edges, color, radius, thickness, filled, dashed=False, origin=(0, 0)):
+	"""
+	An animal's nodes (N, 2, pixels of the frame) and edges (dashed: not to trust), on img (a tile of the frame
+	at scale, from origin).
+	"""
 	ok, pts = Points(px, scale, origin)
 	lines = [(a, b) for a, b in (edges or ()) if a < len(ok) and b < len(ok) and ok[a] and ok[b]]
 	nodes = np.nonzero(ok)[0]
+	if dashed and lines:
+		Dashed(img, [pts[a] for a, _ in lines], [pts[b] for _, b in lines], ((OUTLINE, thickness + 2),
+			(color, thickness)))
 	for col, extra in ((OUTLINE, 2), (color, 0)): # the outline under the colour
-		for a, b in lines:
+		for a, b in (() if dashed else lines):
 			cv2.line(img, pts[a], pts[b], col, thickness + extra, cv2.LINE_AA, SHIFT)
 		for i in nodes:
 			if filled:
@@ -240,8 +324,9 @@ def Text(img, text, at, color=TEXT, size=0.5, box=True, words=None):
 	cv2.putText(img, text, (x, y), FONT, size, color, 1, cv2.LINE_AA)
 
 
+@functools.lru_cache(maxsize=1024)
 def Wrap(text, width, size):
-	# text in lines no wider than width px
+	# text in lines no wider than width px (kept: the panel says much the same from one view to the next)
 	lines, line = [], ""
 	for word in text.split(" "):
 		trial = (line + " " + word) if line else word
@@ -250,7 +335,7 @@ def Wrap(text, width, size):
 			line = word
 		else:
 			line = trial
-	return lines + [line]
+	return tuple(lines + [line])
 
 
 class Words:
@@ -290,12 +375,14 @@ def Has3D(row):
 
 
 def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=True, lines=True, origin=(0, 0),
-		frame=None, words=None):
+		frame=None, words=None, bad_px=livehealth.BAD_PX):
 	"""
 	Camera c's part of a results row on img, its frame at scale (a number, or
 	x and y) from origin (the frame's pixel at the tile's top left: zoomed,
 	the part of the frame shown): its 2D detections, and with camera (its
-	pose3d.Camera) each animal's 3D projected into it. frame, the frame's
+	pose3d.Camera) each animal's 3D projected into it; an identity whose
+	reprojection error is above bad_px dimmed and dashed, its label red.
+	frame, the frame's
 	width and height (default: what the tile shows): the 3D off it is listed
 	at the tile's foot. words: a Pen for the text (Text). Returns {identity:
 	mean px, in this camera, between its projected 3D and the detection it
@@ -305,6 +392,7 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 	origin = np.asarray(origin, float)
 	if frame is None:
 		frame = origin + np.array(img.shape[1::-1]) / scale
+	bad = Bad(row, bad_px)
 	kp = np.asarray(row["keypoints"][c], float) # (instances, nodes, 2)
 	found = [i for i in range(len(kp)) if np.isfinite(kp[i]).all(-1).any()]
 	members = np.asarray(row["members"][:, c]) if Has3D(row) else np.zeros(0, int)
@@ -329,10 +417,12 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 				ok, (p2, p3) = Points(np.stack([a2, a3]), scale, origin)
 				if ok.all():
 					cv2.line(img, p2, p3, OUTLINE, 3, cv2.LINE_AA, SHIFT)
-					cv2.line(img, p2, p3, Color(a), 1, cv2.LINE_AA, SHIFT)
+					cv2.line(img, p2, p3, Dimmed(Color(a)) if a in bad else Color(a), 1, cv2.LINE_AA, SHIFT)
 	if show3d:
 		for a, px in projected.items():
-			DrawSkeleton(img, px, scale, edges, Color(a), radius=RADIUS_3D, thickness=2, filled=True, origin=origin)
+			DrawSkeleton(img, px, scale, edges, Dimmed(Color(a)) if a in bad else Color(a), radius=RADIUS_3D,
+				thickness=2, filled=True, dashed=a in bad, origin=origin)
+		errors = livehealth.Errors(row) if bad else None
 		away = [] # 3D that lands nowhere on the frame (or behind the camera)
 		for a, px in projected.items():
 			px = np.asarray(px, float)
@@ -351,7 +441,9 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 			views = int(row["n_views"][a])
 			if views < len(row["members"][a]): # not every camera
 				label += "  ({} cam{})".format(views, "" if views == 1 else "s")
-			Text(img, label, (p[:, 0].min(), p[:, 1].min() - 8), Color(a), 0.45, words=words)
+			if a in bad: # not to trust: campy-live's error, over every camera
+				label = "#{}  bad 3D: {:.0f} px".format(a, errors[a])
+			Text(img, label, (p[:, 0].min(), p[:, 1].min() - 8), WARN if a in bad else Color(a), 0.45, words=words)
 		x = PAD
 		for k, a in enumerate(away):
 			text = "{}#{}".format("3D off this image: " if k == 0 else "", a)
@@ -1003,11 +1095,12 @@ class Scene:
 				# The newest band 2 px wide, the others 1 (anti-aliased, 2 px takes 10-20 times as long a point)
 				cv2.polylines(img, lines[b], False, shades[a][b], 2 if b == 0 else 1, cv2.LINE_AA, SHIFT)
 
-	def Draw(self, img, row, edges=None, words=None, trails=True, heat=False):
+	def Draw(self, img, row, edges=None, words=None, trails=True, heat=False, bad_px=livehealth.BAD_PX):
 		"""
 		A row's animals on img (a tile), over the grid and the cameras (and,
-		with heat, the occupancy) and the trails; nearer over farther. words: a
-		Pen for its text (Text).
+		with heat, the occupancy) and the trails; nearer over farther; those
+		whose reprojection error is above bad_px dimmed and dashed, their
+		labels red, under the others. words: a Pen for its text (Text).
 		"""
 		img[:] = self.Background(img.shape, heat, words)
 		view = self.View(img.shape)
@@ -1015,6 +1108,8 @@ class Scene:
 			self.DrawTrails(img, view)
 		if row is None or not Has3D(row):
 			return
+		bad = Bad(row, bad_px)
+		errors = livehealth.Errors(row) if bad else None
 		R, eye, f, c = view
 		radius = self.reach / 100 # a node's, in the world
 		items, labels = [], [] # (depth, edge or node, identity, which); (identity, where)
@@ -1032,7 +1127,7 @@ class Scene:
 			# A thin line down to the floor, under its middle, to see where it is
 			mid = X[ok].mean(0)
 			self.Lines(img, view, [[mid, mid - ((mid - floor) @ self.up) * self.up]],
-				tuple(int(v * 0.6) for v in Color(a)))
+				tuple(int(v * 0.6) for v in (Dimmed(Color(a)) if a in bad else Color(a))))
 			drawable, q = Points(np.where(front[:, None], px, np.nan), 1.0) # with SHIFT bits, once for the animal
 			depth = p[:, 2].tolist()
 			for i in np.nonzero(drawable)[0].tolist():
@@ -1042,16 +1137,28 @@ class Scene:
 					items.append(((depth[u] + depth[v]) / 2, 0, a, (q[u], q[v])))
 			top = px[front][np.argmin(px[front][:, 1])]
 			labels.append((a, top))
-		items.sort(key=lambda t: (-t[0], t[1])) # farthest first
+		# The bad first, under the others (not to trust), each one's dashes at once; then the others, farthest first
+		for a in sorted(bad):
+			lines = [q for _, node, b, q in items if b == a and not node]
+			if lines:
+				Dashed(img, [p for p, _ in lines], [q for _, q in lines], ((OUTLINE, 4), (Dimmed(Color(a)), 2)))
+		items.sort(key=lambda t: (t[2] not in bad, -t[0], t[1]))
 		for _, node, a, (q0, q1) in items:
+			color = Dimmed(Color(a)) if a in bad else Color(a)
 			if node: # q0 the node, q1 its radius
 				cv2.circle(img, q0, q1 + (1 << SHIFT), OUTLINE, -1, cv2.LINE_AA, SHIFT)
-				cv2.circle(img, q0, q1, Color(a), -1, cv2.LINE_AA, SHIFT)
+				cv2.circle(img, q0, q1, color, -1, cv2.LINE_AA, SHIFT)
+			elif a in bad:
+				pass # dashed, above
 			else:
 				cv2.line(img, q0, q1, OUTLINE, 4, cv2.LINE_AA, SHIFT)
-				cv2.line(img, q0, q1, Color(a), 2, cv2.LINE_AA, SHIFT)
+				cv2.line(img, q0, q1, color, 2, cv2.LINE_AA, SHIFT)
 		for a, at in labels:
-			Text(img, "#{}".format(a), (at[0] + 6, at[1] - 10), Color(a), 0.45, words=words)
+			if a in bad:
+				Text(img, "#{}  bad 3D: {:.0f} px".format(a, errors[a]), (at[0] + 6, at[1] - 10), WARN, 0.45,
+					words=words)
+			else:
+				Text(img, "#{}".format(a), (at[0] + 6, at[1] - 10), Color(a), 0.45, words=words)
 
 
 # ---------------------------------------------------------------- the view
@@ -1250,6 +1357,12 @@ class Viewer:
 		self.rate = [] # (monotonic, rows written): each new count of the last second
 		self.drawMs, self.shownMs, self.resultMs = deque(maxlen=KEPT), deque(maxlen=KEPT), deque(maxlen=KEPT)
 		self.sceneMs = deque(maxlen=KEPT) # of drawMs: the 3D tile's
+		self.rig = None # livehealth.Rig: how each camera keeps up, from its ring's slots
+		self.tracking = None # livehealth.Tracking: each identity's 3D over the last 10 s
+		self.rigAt = 0.0 # when the slots were last read
+		self.rigMs = deque(maxlen=KEPT) # reading them
+		self.healthMs = deque(maxlen=KEPT) # of drawMs: the warnings, the tiles' marks and the strip
+		self.panelMs = deque(maxlen=KEPT) # Qt's panel, said again (liveviewqt.Window.Say)
 		self.wordsMs = deque(maxlen=KEPT) # the window's drawing of the text over the view (Qt's), not in drawMs
 		self.lastSeen = self.lastShown = None # ms after the row's frames: it reached the view, the last view was shown
 		# Bookmarks (m, Shift+1-9)
@@ -1299,6 +1412,9 @@ class Viewer:
 				self.readers = readers
 				self.buffers = [np.empty(r.shape, r.dtype) for r in readers]
 				self.ended = False
+				self.rig = livehealth.Rig([r.cameraName or r.name for r in readers], readers[0].Info("frameRate"),
+					readers[0].slots)
+				self.rigAt = 0.0
 				self.recording = RecordingFolder(readers)
 				Say("Live feed: {}. Bookmarks (m) go to {}.".format(", ".join("{} {}x{}".format(r.cameraName or r.name,
 					r.shape[1], r.shape[0]) for r in readers), self.bookmarks.Where(self.recording)))
@@ -1328,6 +1444,8 @@ class Viewer:
 			else:
 				self.scene = Scene(self.calibration, d.get("cameras") or names, self.args.up, self.args.trail_seconds,
 					self.args.heat_minutes)
+		self.tracking = livehealth.Tracking(d.get("animals"), d.get("frame_rate"), self.args.bad_px) \
+			if self.calibration else None
 		Say("campy-live's results: {} cameras, {} nodes, {}.".format(len(rings), len(d.get("nodes") or []) or "?",
 			"3D of {} animals".format(d.get("animals")) if self.calibration else "2D only"))
 
@@ -1370,6 +1488,12 @@ class Viewer:
 				return None
 			self.lastRaw = now
 			return self.Waiting(), None, None
+		if now - self.rigAt >= self.rig.Every():
+			# Each camera's newest frames' numbers and times (not the frames): how it keeps up
+			self.rigAt = now
+			start = time.perf_counter()
+			self.rig.Sample(self.readers)
+			self.rigMs.append((time.perf_counter() - start) * 1e3)
 		if self.results is not None:
 			latest = self.results.Latest()
 			if not self.rate or latest != self.rate[-1][1]:
@@ -1382,6 +1506,8 @@ class Viewer:
 				self.after = n
 				if row is not None:
 					self.rows += 1
+					if self.tracking is not None:
+						self.tracking.Add(row)
 					# perf_counter is one clock in every process, the frames' written times' too, and
 					# precise on Windows (monotonic, host_ns's, moves in 15.6 ms steps there)
 					self.lastSeen = (seen - int(np.max(row["written_ns"]))) / 1e6
@@ -1434,7 +1560,10 @@ class Viewer:
 		# Lines in the strip below the frames, when it is one (the panel's lines wrap), the buttons' two
 		if not self.panel:
 			return 0
-		return 9 + (int(self.description.get("animals") or 0) + 2 if self.calibration else 0) + bool(self.bookmarks.recent)
+		animals = int(self.description.get("animals") or 0) if self.calibration else 0
+		# The rig's line and a warning or two; with 3D, each identity's line and its strip, the strip's legend;
+		# the last bookmark
+		return 12 + (2 * animals + 4 if self.calibration else 0) + bool(self.bookmarks.recent)
 
 	def ZoomOf(self, c):
 		if c not in self.zooms:
@@ -1456,6 +1585,9 @@ class Viewer:
 		edges = self.description.get("edges")
 		cameraNames = self.description.get("cameras") or [r.cameraName for r in self.readers]
 		calibNames = self.description.get("calibration_names") or cameraNames
+		health = time.perf_counter()
+		rig = self.rig.Status() if self.rig is not None else None
+		healthS = time.perf_counter() - health
 		self.cells = []
 		for k, (c, frame) in enumerate(zip(shown, frames)):
 			y, x = layout.Cell(k)
@@ -1466,7 +1598,7 @@ class Viewer:
 			tile = Gray(frame.image, layout.tile, scale, origin)
 			if row is not None:
 				DrawCamera(tile, scale, row, c, self.calibration[c] if self.calibration else None, edges,
-					self.show2d, self.show3d, self.lines, origin, frame.image.shape[1::-1], words)
+					self.show2d, self.show3d, self.lines, origin, frame.image.shape[1::-1], words, self.args.bad_px)
 			name = cameraNames[c] if c < len(cameraNames) else str(c)
 			if c < len(calibNames) and calibNames[c] != name:
 				name += " ({})".format(calibNames[c])
@@ -1480,6 +1612,9 @@ class Viewer:
 			Text(tile, text, (PAD, PAD + 12), words=words)
 			if len(shown) > 1 and c == self.current: # the grid: the camera v shows alone
 				cv2.rectangle(tile, (1, 1), (tile.shape[1] - 2, tile.shape[0] - 2), PICKED, 2)
+			health = time.perf_counter()
+			self.Badge(tile, c, rig)
+			healthS += time.perf_counter() - health
 			canvas[y:y + layout.tile[0], x:x + layout.tile[1]] = tile
 			self.cells.append((c, y + oy, x + ox) + layout.tile)
 		self.sceneCell = None
@@ -1488,7 +1623,7 @@ class Viewer:
 			self.sceneCell = (y + oy, x + ox) + layout.tile
 			self.Draw3D(full, row, frames[0].frameNumber)
 		if self.panel:
-			self.Panel(canvas, layout, frames, row)
+			healthS += self.Panel(canvas, layout, frames, row)
 		self.flashDrawn = time.monotonic() < self.flashUntil
 		if self.flashDrawn:
 			self.Flash(canvas, self.words.Tile("flash", oy, ox, *layout.size) if self.words is not None else None)
@@ -1496,7 +1631,29 @@ class Viewer:
 		self.lastCameras = shown
 		self.panned = False
 		self.drawMs.append((time.perf_counter() - start) * 1e3)
+		self.healthMs.append(healthS * 1e3)
 		return full
+
+	def Badge(self, tile, c, rig):
+		# Camera c's health on its tile, at its top right: its frames a second (green), or what is wrong, in
+		# red, with a red frame round the tile
+		if rig is None or c >= len(rig.cameras):
+			return
+		s = rig.cameras[c]
+		if s.problems:
+			text = "  ".join(tag for tag, _ in s.problems)
+			cv2.rectangle(tile, (1, 1), (tile.shape[1] - 2, tile.shape[0] - 2), WARN, 3)
+		elif s.fps is not None:
+			text = "{:.1f} fps".format(s.fps)
+		else:
+			return
+		(w, h), base = cv2.getTextSize(text, FONT, 0.45, 1)
+		x, y = tile.shape[1] - w - PAD - 4, PAD + 12
+		if s.problems:
+			cv2.rectangle(tile, (x - 4, y - h - 4), (x + w + 4, y + base + 2), WARN, -1)
+			Text(tile, text, (x, y), (255, 255, 255), 0.45, box=False)
+		else:
+			Text(tile, text, (x, y), FINE, 0.45)
 
 	def Again(self):
 		"""
@@ -1520,7 +1677,8 @@ class Viewer:
 		tile = canvas[y:y + h, x:x + w]
 		start = time.perf_counter()
 		words = self.words.Tile("3d", y, x, h, w) if self.words is not None else None
-		self.scene.Draw(tile, row, self.description.get("edges"), words, self.trails, self.occupancy)
+		self.scene.Draw(tile, row, self.description.get("edges"), words, self.trails, self.occupancy,
+			self.args.bad_px)
 		header = "3D  frame {}".format(frame) + ("" if row is not None else "  (no results)")
 		if self.trails and self.scene.trailSeconds > 0:
 			header += "  trails {:g} s".format(self.scene.trailSeconds)
@@ -1706,21 +1864,131 @@ class Viewer:
 		return None
 
 	def Panel(self, canvas, layout, frames, row):
+		# The panel drawn in the view: its buttons, what is wrong (red), the tracking strip, then the rest.
+		# Returns the seconds the warnings and the strip took
 		y0, x0, h, w = layout.panel
 		top = self.Buttons(canvas, y0, x0, w)
 		y0, h = y0 + top, h - top
 		panel = canvas[y0:y0 + h, x0:x0 + w]
-		y = PAD + 14
-		for text, color in self.PanelText(row):
+		start = time.perf_counter()
+		y = self.Lines(panel, self.Alerts(), PAD + 14)
+		strips = self.Strips(w - 2 * PAD)
+		if strips is not None and y - 14 + strips.shape[0] <= h:
+			panel[y - 14:y - 14 + strips.shape[0], PAD:PAD + strips.shape[1]] = strips
+			y += strips.shape[0] + 4
+		took = time.perf_counter() - start
+		self.Lines(panel, self.PanelText(row), y)
+		return took
+
+	def Lines(self, panel, lines, y):
+		# lines, (text, colour), on panel from baseline y, wrapped; where the next would go
+		w, h = panel.shape[1], panel.shape[0]
+		for text, color in lines:
 			for part in Wrap(text, w - 2 * PAD, 0.45):
 				if y > h - 4:
-					return
+					return y
 				Text(panel, part, (PAD, y), color, 0.45, box=False)
 				y += LINE
+		return y
+
+	def Alerts(self):
+		"""What is wrong now, (text, red), for the top of the panel: each camera's feed, then the tracking."""
+		lines = []
+		if self.rig is not None and self.readers is not None:
+			for s in self.rig.Status().cameras:
+				lines += [(text, WARN) for _, text in s.problems]
+		if self.tracking is not None and self.results is not None and self.lastRow \
+				and time.monotonic() - self.lastRow < 2 * STALE_S:
+			lines += [(text, WARN) for text in self.tracking.Alerts()]
+		return lines
+
+	def Strips(self, width):
+		"""
+		The tracking strip: each identity's last 10 s, an image width px wide
+		(BGR), or None without 3D. Each identity's label (its error in the
+		newest row), then a strip, the newest at its right: its height the
+		cameras it was triangulated from, its colour its reprojection error
+		(green within 10 px, yellow within --bad-px, red above; gray: no 3D;
+		dark: no row from campy-live).
+		"""
+		if self.tracking is None:
+			return None
+		got = self.tracking.Arrays()
+		animals = self.tracking.animals or (got[1].shape[1] if got is not None else 0)
+		sw = width - STRIP_LABEL
+		if not animals or sw < 20:
+			return None
+		step = STRIP_H + 6
+		img = np.empty((animals * step + 14, width, 3), np.uint8)
+		img.fill(BOX[0]) # a gray: 100 times quicker than img[:] = BOX
+		fps = self.tracking.frameRate
+		span = livehealth.WINDOW_S * fps
+		newest = int(got[0][-1]) if got is not None else 0
+		if self.readers is not None:
+			newest = max(newest, min(r.Latest() for r in self.readers)) # campy-live behind: dark at the right
+		# Drawn a column a frame (n), then widened to sw: a tenth of the work at 30 fps
+		n = int(max(10, min(sw, round(span))))
+		cols = newest - (n - 1 - np.arange(n)) * span / n # each column's frame number
+		cameras = max(1, len(self.ringNames))
+		# Each pixel's colour, as its index in STRIP_COLORS: the gaps between strips, a strip with no row, ...
+		index = np.zeros((animals * step, n), np.uint8)
+		levels = (STRIP_H - np.arange(STRIP_H))[:, None] # each pixel row's height, from the strip's foot
+		bad = self.args.bad_px or np.inf
+		if got is not None:
+			frames, err, views = got
+			idx = np.searchsorted(frames, cols, "right") - 1
+			ok = (idx >= 0) & (cols - frames[np.maximum(idx, 0)] <= max(fps / 4, 1.5 * span / n))
+			idx = np.maximum(idx, 0)
+			e, v = err[idx], views[idx] # (n, animals)
+			found = np.isfinite(e)
+			with np.errstate(invalid="ignore"):
+				kind = np.where(~found, 2, np.where(e <= livehealth.GOOD_PX, 3, np.where(e <= bad, 4, 5)))
+			height = np.where(found, np.maximum(3, np.round(STRIP_H * np.minimum(v, cameras) / cameras)), 3)
+		for a in range(animals):
+			y = a * step + 2
+			if got is None or a >= err.shape[1]:
+				index[y:y + STRIP_H] = 1
+			else:
+				index[y:y + STRIP_H] = np.where((levels <= height[None, :, a]) & ok[None, :], kind[None, :, a], 1)
+		colors = cv2.LUT(cv2.cvtColor(index, cv2.COLOR_GRAY2BGR), STRIP_COLORS)
+		img[:animals * step, STRIP_LABEL:] = cv2.resize(colors, (sw, animals * step), interpolation=cv2.INTER_NEAREST)
+		for a in range(animals):
+			y = a * step + 2 + STRIP_H - 2
+			now = float(got[1][-1, a]) if got is not None and a < got[1].shape[1] else float("nan")
+			Text(img, "#{}".format(a), (2, y), Color(a), 0.45, box=False)
+			if np.isfinite(now):
+				Text(img, "{:.0f} px".format(now), (34, y), WARN if now > bad else TEXT, 0.45, box=False)
+			else:
+				Text(img, "no 3D", (34, y), DIM, 0.45, box=False)
+		y = animals * step + 10
+		Text(img, "-{:.0f} s".format(livehealth.WINDOW_S), (STRIP_LABEL, y), DIM, 0.35, box=False)
+		Text(img, "now", (width - 24, y), DIM, 0.35, box=False)
+		return img
+
+	def RigText(self):
+		# The rig's line for the panel: how long the recording has gone, each camera's frames a second, how far
+		# apart their host times are, and what they lost since the view began
+		if self.rig is None or self.readers is None:
+			return None
+		status = self.rig.Status()
+		text = "Recording {}".format(livehealth.Duration(status.recording_s)) if status.recording_s is not None \
+			else "Recording"
+		text += "; frames/s: {}".format(", ".join("{} {}".format(s.name, "-" if s.fps is None else "{:.1f}".format(s.fps))
+			for s in status.cameras))
+		offsets = [s.offset_ms for s in status.cameras if s.offset_ms is not None]
+		if len(offsets) > 1:
+			text += "; host times within {:.0f} ms".format(max(offsets) - min(offsets))
+		totals = {k: sum(s.totals[k] for s in status.cameras) for k in ("lost", "gaps", "late")}
+		text += "; since the view began: {} lost, {} gaps, {} late".format(totals["lost"], totals["gaps"],
+			totals["late"])
+		return text, (WARN if any(s.problems for s in status.cameras) else TEXT)
 
 	def PanelText(self, row):
-		# The panel's lines, (text, colour): about the row drawn, campy-live, and the keys
+		# The panel's lines, (text, colour): the rig, the row drawn, campy-live, and the keys
 		lines = []
+		rig = self.RigText()
+		if rig is not None:
+			lines.append(rig)
 		if row is not None:
 			lines.append(("Frame {}: its results here {:.1f} ms after the frame{}".format(int(row["frame"]),
 				self.lastSeen, "; the last view shown {:.1f} ms after its frame".format(self.lastShown)
@@ -1729,11 +1997,16 @@ class Viewer:
 				for a in range(len(row["n_views"])):
 					views = int(row["n_views"][a])
 					err = np.asarray(row["reproj_px"][a], float)
+					color = Color(a)
 					if views >= 2 and np.isfinite(err).any():
-						text = "#{}: from {} cameras, reprojection {:.1f} px".format(a, views, float(np.nanmean(err)))
+						mean = float(np.nanmean(err))
+						text = "#{}: from {} cameras, reprojection {:.1f} px".format(a, views, mean)
+						if self.args.bad_px and mean > self.args.bad_px:
+							text += ": above {:g} px, drawn dimmed, not to trust".format(self.args.bad_px)
+							color = WARN
 					else:
 						text = "#{}: no 3D ({} camera{})".format(a, views, "" if views == 1 else "s")
-					lines.append((text, Color(a)))
+					lines.append((text, color))
 		elif self.results is None:
 			lines.append(("No results: campy-live not running, or with --results-feed off", TEXT))
 		elif not self.lastRow:
@@ -1748,6 +2021,10 @@ class Viewer:
 		if row is not None:
 			lines.append(("Reprojections (dots): the 3D, projected. Predictions (open circles): this camera's 2D "
 				"(white: matched to no animal). Line: from the 2D to the 3D. Label: #identity, and px between them.", DIM))
+		if self.tracking is not None:
+			lines.append(("Strip: each identity's last {:.0f} s. Height: the cameras it was triangulated from; green: "
+				"within {:g} px, yellow: within {:g} px, red: above (dimmed and dashed); gray: no 3D.".format(
+				livehealth.WINDOW_S, livehealth.GOOD_PX, self.args.bad_px or float("inf")), DIM))
 		if self.panel and self.bookmarks.recent: # the Qt window lists them in its own panel
 			lines.append(("Bookmark {} ({} made)".format(MarkText(self.bookmarks.recent[-1]), self.bookmarks.count),
 				MARKED))
@@ -1871,6 +2148,21 @@ class Viewer:
 		cv2.imwrite(path, self.Rendered(image))
 		Say("Saved {}.".format(path))
 
+	def HealthSummary(self):
+		# The rig (the last recording's) and the tracking, for the summary
+		out = {}
+		if self.rig is not None:
+			status = self.rig.Status()
+			out["recording_s"] = status.recording_s
+			def Rates(rates, q):
+				return float(np.percentile(rates, q)) if len(rates) else None
+			out["rig"] = [{"camera": s.name, "fps_p50": Rates(rates, 50), "fps_p1": Rates(rates, 1), "fps_last": s.fps,
+				"offset_ms": s.offset_ms, "frames_off": s.frames_off, **s.totals,
+				"warnings": [text for _, text in s.problems]} for s, rates in zip(status.cameras, self.rig.rates)]
+		if self.tracking is not None:
+			out["tracking"] = self.tracking.Summary()
+		return out
+
 	def Summary(self, seconds):
 		def P(values, q):
 			return float(np.percentile(values, q)) if len(values) else float("nan")
@@ -1879,6 +2171,10 @@ class Viewer:
 			"results_gone": self.gone, "results_passed_over": self.passed, "frames_alone": self.raw,
 			"draw_ms": {"p50": P(self.drawMs, 50), "p99": P(self.drawMs, 99)},
 			"draw_3d_ms": {"p50": P(self.sceneMs, 50), "p99": P(self.sceneMs, 99)},
+			"draw_health_ms": {"p50": P(self.healthMs, 50), "p99": P(self.healthMs, 99)},
+			"rig_read_ms": {"p50": P(self.rigMs, 50), "p99": P(self.rigMs, 99)},
+			**({"qt_panel_ms": {"p50": P(self.panelMs, 50), "p99": P(self.panelMs, 99)}} if self.panelMs else {}),
+			**self.HealthSummary(),
 			"text_over_ms": {"p50": P(self.wordsMs, 50), "p99": P(self.wordsMs, 99)},
 			"results_here_after_frame_ms": {"p50": P(self.resultMs, 50), "p99": P(self.resultMs, 99)},
 			"shown_after_frame_ms": {"p50": P(self.shownMs, 50), "p99": P(self.shownMs, 99)},
@@ -2118,6 +2414,8 @@ def ParseArgs(argv=None):
 		"this many minutes (0: since campy-live's results began).")
 	p.add_argument("--up", type=Direction, default=None, help="The world's up in the calibration, as x,y,z "
 		"(default: away from where the cameras look, when they look down).")
+	p.add_argument("--bad-px", type=float, default=livehealth.BAD_PX, help="An identity whose reprojection error "
+		"(campy-live's, mean over the nodes) is above this is drawn dimmed and dashed, its label red (0: never).")
 	p.add_argument("--fps", type=float, default=30, help="Frames alone (no results) shown per second.")
 	p.add_argument("--no-window", action="store_true", help="No window (e.g. over SSH): with --png, saves the "
 		"views; ends with the recording.")

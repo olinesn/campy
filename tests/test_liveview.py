@@ -1083,6 +1083,130 @@ def test_the_occupancy_stays_where_it_was_when_the_floor_is_levelled_again():
 
 # -------------------------------------------------------------- with campy-live
 
+# -------------------------------------------------------------- rig health and tracking quality
+
+def test_an_identity_with_a_high_error_is_drawn_dimmed():
+	# Its 3D (from a false detection outside the cage, say) is not to trust: dimmed and dashed, its label red
+	cams, truth, keypoints, scores, order = mice()
+	row = row_for(1, cams, truth, keypoints, scores, order)
+	row["reproj_px"][2] = 234
+	c, cam = 0, cams[0]
+	img = np.zeros((1024, 1280, 3), np.uint8)
+	liveview.DrawCamera(img, 1.0, row, c, cam, EDGES, show2d=False, lines=False, bad_px=20)
+	for a in range(3):
+		px = cam.Project(truth[a])
+		bright = share(near(img, p, liveview.Color(a), 1) for p in px)
+		dim = share(near(img, p, liveview.Dimmed(liveview.Color(a)), 1) for p in px)
+		if a == 2:
+			assert bright < 0.1 and dim > 0.9
+		else:
+			assert bright > 0.9
+	assert like(img, liveview.WARN).sum() > 50 # its label: "#2  bad 3D: 234 px"
+	# Dashed: along an edge, gaps between the dashes
+	u, v = (cam.Project(truth[2][i]) for i in EDGES[0])
+	along = [near(img, u + (v - u) * k / 40, liveview.Dimmed(liveview.Color(2)), 0) for k in range(8, 33)]
+	assert 0.2 < share(along) < 0.95
+	# With --bad-px 0, none is dimmed
+	img[:] = 0
+	liveview.DrawCamera(img, 1.0, row, c, cam, EDGES, show2d=False, lines=False, bad_px=0)
+	assert share(near(img, p, liveview.Color(2), 1) for p in cam.Project(truth[2])) > 0.9
+	assert not like(img, liveview.WARN).any()
+	# In the 3D tile too
+	scene = liveview.Scene(cams)
+	tile = np.zeros(TILE + (3,), np.uint8)
+	scene.Draw(tile, row, EDGES, bad_px=20)
+	assert like(tile, liveview.Color(2)).sum() < 5 < like(tile, liveview.Dimmed(liveview.Color(2))).sum()
+	assert like(tile, liveview.Color(0)).sum() > 50 and like(tile, liveview.WARN).sum() > 50
+
+
+def paced(writers, frames, fps, host_offset=None, skip=None, step=None):
+	# Frames 1..frames into each camera's ring at fps, as campy writes them (host_offset: {camera: ns};
+	# skip: (camera, frame) never written), calling step() after each
+	period = 1.0 / fps
+	start = time.perf_counter()
+	for n in range(1, frames + 1):
+		while time.perf_counter() < start + n * period:
+			time.sleep(0.0005)
+		host = time.monotonic_ns()
+		for c, w in enumerate(writers):
+			if skip != (c, n):
+				w.Write(np.full(w.ring.shape[:2], 60, np.uint8), n, host + (host_offset or {}).get(c, 0), n * period)
+		if step:
+			step()
+
+
+def tile_of(viewer, image, c):
+	_, y, x, h, w = [cell for cell in viewer.cells if cell[0] == c][0]
+	return image[y:y + h, x:x + w]
+
+
+@pytest.mark.parametrize("problem", ["ahead", "gap"])
+def test_a_camera_one_frame_off_or_with_a_gap_is_warned_of_on_its_tile(rings, problem):
+	# Real rings, written at 100 fps: camera 2 a frame ahead (its host times 10 ms early, as a camera
+	# left grabbing after a double Ctrl+C was on 2026-10-20), or camera 1's frame 30 never in its feed
+	prefix = name()
+	writers = [rings(livefeed.RingName(prefix, c), (64, 80), np.uint8, slots=8, frameRate=100.0,
+		cameraName="Camera{}".format(c)) for c in range(3)]
+	viewer = liveview.Viewer(view_args(prefix))
+	try:
+		viewer.Check()
+		viewer.lastRow = time.monotonic() - 1 # no results: the frames alone
+		paced(writers, 60, 100.0, host_offset={2: -10_000_000} if problem == "ahead" else None,
+			skip=(1, 30) if problem == "gap" else None, step=viewer.Step)
+		viewer.rig.Sample(viewer.readers)
+		image = viewer.Compose(viewer.Read(60), None)
+		warned = 2 if problem == "ahead" else 1
+		for c in range(3):
+			red = like(tile_of(viewer, image, c), liveview.WARN).sum()
+			assert (red > 200) if c == warned else (red == 0) # its mark, and a red frame round it
+		alerts = [text for text, color in viewer.Alerts()]
+		assert len(alerts) == 1 and all(color == liveview.WARN for _, color in viewer.Alerts())
+		if problem == "ahead":
+			assert alerts[0].startswith("Camera2: 1 frame ahead of the other cameras")
+			assert viewer.rig.Status().cameras[2].frames_off == 1
+		else:
+			assert alerts[0] == "Camera1: 1 frame number missing from its feed in the last 10 s"
+		status = viewer.rig.Status()
+		assert all(abs(s.fps - 100) < 10 for s in status.cameras)
+		summary = viewer.Summary(1.0)
+		assert [r["camera"] for r in summary["rig"]] == ["Camera0", "Camera1", "Camera2"]
+		assert summary["rig"][1]["gaps"] == (1 if problem == "gap" else 0)
+		assert summary["rig_read_ms"]["p50"] < 1
+	finally:
+		viewer.Close()
+
+
+def test_the_tracking_strip_shows_each_identitys_last_10_s():
+	cams, truth, keypoints, scores, order = mice()
+	viewer, frames = three_cameras(cams, None)
+	viewer.tracking = liveview.livehealth.Tracking(3, 30.0, 20.0)
+	viewer.results, viewer.lastRow = object(), time.monotonic()
+	for n in range(1, 301):
+		row = row_for(n, cams, truth, keypoints, scores, order)
+		row["reproj_px"][1] = 15 # fair
+		if n > 150:
+			row["reproj_px"][2] = 234 # bad, the last 5 s
+		if n <= 150:
+			row["n_views"][0] = 2 # from 2 of the 3 cameras, the first 5 s
+		viewer.tracking.Add(row)
+	strips = viewer.Strips(600)
+	step = liveview.STRIP_H + 6
+	sw = 600 - liveview.STRIP_LABEL
+	def strip(a):
+		return strips[a * step + 2:a * step + 2 + liveview.STRIP_H, liveview.STRIP_LABEL:]
+	assert like(strip(0), liveview.FINE).all(0)[sw // 2:].all() # all its height: 3 cameras
+	assert not like(strip(0)[:3], liveview.FINE)[:, :sw // 2 - 5].any() # lower: 2 cameras
+	assert like(strip(1), liveview.FAIR).all()
+	assert like(strip(2)[:, sw // 2 + 5:], liveview.WARN).all() and like(strip(2)[:, :sw // 2 - 5], liveview.FINE).all()
+	# The warnings, at the top of the panel, in red
+	alerts = viewer.Alerts()
+	assert [text.split(":")[0] for text, _ in alerts] == ["Good 3D for 2 of 3 animals", "#2's error, 234 px, is far above the others' (8 px)"] # the median of 0.5 and 15
+	image = viewer.Compose(frames, row)
+	y, x, h, w = viewer.layout.panel
+	assert like(image[y:y + h, x:x + w], liveview.WARN).sum() > 500
+	assert "above 20 px, drawn dimmed" in " ".join(text for text, _ in viewer.PanelText(row))
+
+
 def test_campy_live_publishes_every_row_it_logs(tmp_path, monkeypatch):
 	# Read as campy-live makes them, the rows in shared memory are the rows of
 	# its log, with what the view needs to draw them
