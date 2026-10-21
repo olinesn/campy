@@ -9,7 +9,8 @@ them, as campy records.
 Start it before or after campy-acquire (liveFeed True) and campy-live: it
 waits for them, and stays open from one recording to the next (with
 --no-window it ends with the recording). It runs in campy-live's Python
-environment (numpy, scipy and OpenCV), as a program of its own, at a lower
+environment (numpy, scipy and OpenCV; PyQt5 for Qt's window, else OpenCV's,
+--gui), as a program of its own, at a lower
 priority (--priority): it reads campy-acquire's frames (campy-live-0, ...;
 campy/livefeed.py) and campy-live's results (campy-live-results;
 campy/liveresults.py) from shared memory, and neither of them waits for it.
@@ -61,19 +62,31 @@ The panel lists each identity's cameras and reprojection error (campy-live's:
 mean over nodes and cameras, undistorted px), and how late the results and
 the view are.
 
-Buttons at the top of the panel turn the predictions (the 2D), the
-reprojections (the 3D) and the lines on or off, as do the keys d, p and l,
-and the 3D view, as does v (--no-3d: off at first). Other keys, in its
-window: 1-9 that camera alone; 0 or a every camera; z the window to the
-view's size (no black margins); space pause (the buttons and the 3D view's
-mouse still work on the paused view); s save the view as a PNG (into --png,
-or the current folder); q or Esc quit.
+Buttons in the panel turn the predictions (the 2D), the reprojections (the
+3D) and the lines on or off, as do the keys d, p and l, and the 3D view, as
+does \\ (--no-3d: off at first).
+
+Every camera (the grid) or one alone (single view), with LUC3D's keys: v one
+camera alone, the one last picked (clicked, or the last shown alone; an
+outline marks it in the grid), with the 3D beside it unless \\ closed it; g
+the grid; the arrows the previous or next camera (wrapping; in the grid,
+which one v shows); a double click on a camera's tile shows it alone, or the
+grid again. Also 1-9 that camera alone, 0 or a the grid.
+
+Other keys, in its window: z the window to the view's size (no black
+margins); space pause (the keys, buttons and the 3D view's mouse still work
+on the paused view); s save the view as a PNG (into --png, or the current
+folder); q or Esc quit.
+
+Qt's window (campy/liveviewqt.py; PyQt5, as campy's preview windows) shows
+the same view beside a panel of Qt's own checkboxes, buttons and text;
+OpenCV's draws the panel into the view. Both take the same keys and mouse.
 
 The window opens at --size, or what the screen allows of it, and comes to
 the front when it opens and when a recording's frames come (also from
 minimized). The view is drawn at the window's own size, one pixel for one:
 resized, it is laid out again (the frames in their ratio, at most their own
-size), never stretched.
+size, in the middle of the window), never stretched.
 """
 
 import argparse, json, os, sys, time
@@ -97,6 +110,9 @@ TEXT = (230, 230, 230)
 DIM = (150, 150, 150)
 BOX = (25, 25, 25)
 BUTTON_ON = (90, 70, 20) # a button that is on (BGR: dark blue)
+PICKED = (255, 200, 80) # the outline of the camera picked, in the grid (light blue)
+KEYS = ("Keys: v one camera, g all (grid), arrows the previous or next camera, 1-{} that camera; d predictions, "
+	"p reprojections, l lines{}; z window to the view; space pause, s save, q quit")
 SHIFT = 4 # cv2's subpixel bits
 RADIUS_2D, RADIUS_3D = 4, 2 # px: a detection's open circles, a 3D node's dot
 FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -253,11 +269,12 @@ class Layout:
 	"""
 
 	def __init__(self, n, frame_shape, size=(1800, 960), scale=None, panel_lines=8):
+		# panel_lines 0: no panel (the Qt window has its own, beside the view)
 		h, w = frame_shape[:2]
 		def Fit(cols):
 			rows = -(-n // cols)
 			inGrid = n < rows * cols
-			strip = 0 if inGrid else LINE * panel_lines + 2 * PAD
+			strip = 0 if inGrid or not panel_lines else LINE * panel_lines + 2 * PAD
 			return min(size[0] / (cols * w), max(1, size[1] - strip) / (rows * h), 1.0), rows, inGrid, strip
 		# The columns that fit the tiles largest; when two fit them as large, 2 columns up to 4 tiles,
 		# then 3 (3 cameras and the 3D: 3 columns, which leave the panel a cell, at 1800 x 960)
@@ -269,7 +286,9 @@ class Layout:
 		th, tw = max(1, int(h * scale + 1e-9)), max(1, int(w * scale + 1e-9)) # down: within the size
 		self.tile = (th, tw)
 		self.scale = (tw / w, th / h)
-		if self.inGrid:
+		if not panel_lines:
+			self.panel = None
+		elif self.inGrid:
 			x = (n % self.cols) * tw
 			self.panel = ((self.rows - 1) * th, x, th, self.cols * tw - x) # y, x, height, width
 		else:
@@ -624,7 +643,12 @@ class Viewer:
 		self.description = {}
 		self.calibration = None # each feed camera's pose3d.Camera, or None (2D only)
 		self.buffers = None
-		self.selected = args.camera # None: every camera
+		self.selected = args.camera # None: every camera (the grid); a camera's index: that one (single view)
+		self.current = args.camera or 0 # the camera last picked: single view starts with it
+		self.panel = True # the panel drawn in the view (the Qt window shows its own)
+		self.cells = [] # where each camera's tile is: (camera, y, x, height, width)
+		self.origin = (0, 0) # where the view is in its window's image (centred), y, x
+		self.count = 0 # results shown
 		self.show2d = self.show3d = self.lines = True
 		self.scene = None # the 3D tile's Scene (with a calibration)
 		self.showScene = not args.no_3d
@@ -816,16 +840,24 @@ class Viewer:
 
 	def PanelLines(self):
 		# Lines in the strip below the frames, when it is one (the panel's lines wrap), the buttons' two
+		if not self.panel:
+			return 0
 		return 9 + (int(self.description.get("animals") or 0) + 2 if self.calibration else 0)
 
 	def Compose(self, frames, row):
 		start = time.perf_counter()
 		shown = self.Shown()
 		layout = self.Layout(frames[0].image.shape)
-		canvas = self.Canvas(layout.size)
+		# The view in the middle of the window's image: where things are (cells, sceneCell) is in the
+		# window's image, the layout's cells in the view
+		full = self.Canvas(layout.size)
+		oy, ox = (full.shape[0] - layout.size[0]) // 2, (full.shape[1] - layout.size[1]) // 2
+		self.origin = (oy, ox)
+		canvas = full[oy:oy + layout.size[0], ox:ox + layout.size[1]]
 		edges = self.description.get("edges")
 		cameraNames = self.description.get("cameras") or [r.cameraName for r in self.readers]
 		calibNames = self.description.get("calibration_names") or cameraNames
+		self.cells = []
 		for k, (c, frame) in enumerate(zip(shown, frames)):
 			tile = Gray(frame.image, layout.tile)
 			if row is not None:
@@ -837,18 +869,41 @@ class Viewer:
 			text = "{}  {}  frame {}".format(c + 1, name, frame.frameNumber)
 			if row is not None:
 				text += "  found {}".format(int(row["found"][c]))
+			if self.selected is not None: # single view: which of how many (as LUC3D)
+				text += "  ({}/{})".format(c + 1, len(self.readers) if self.readers else len(self.ringNames))
 			Text(tile, text, (PAD, PAD + 12))
+			if len(shown) > 1 and c == self.current: # the grid: the camera v shows alone
+				cv2.rectangle(tile, (1, 1), (tile.shape[1] - 2, tile.shape[0] - 2), PICKED, 2)
 			y, x = layout.Cell(k)
 			canvas[y:y + layout.tile[0], x:x + layout.tile[1]] = tile
+			self.cells.append((c, y + oy, x + ox) + layout.tile)
 		self.sceneCell = None
 		if self.Showing3D():
 			y, x = layout.Cell(len(shown))
-			self.sceneCell = (y, x) + layout.tile
-			self.Draw3D(canvas, row, frames[0].frameNumber)
-		self.Panel(canvas, layout, frames, row)
+			self.sceneCell = (y + oy, x + ox) + layout.tile
+			self.Draw3D(full, row, frames[0].frameNumber)
+		if self.panel:
+			self.Panel(canvas, layout, frames, row)
 		self.last = (frames, row) # drawn again when a button is clicked while paused
+		self.lastCameras = shown
 		self.drawMs.append((time.perf_counter() - start) * 1e3)
-		return canvas
+		return full
+
+	def Again(self):
+		"""
+		The last view drawn again, with what changed since (a key, a click, the
+		window's size): its row, on its frames, read again from the feed for
+		the cameras shown now if they are others. None if there is none, or
+		those frames are gone from the feed.
+		"""
+		if not getattr(self, "last", None):
+			return None
+		frames, row = self.last
+		if self.Shown() != self.lastCameras:
+			frames = self.Read(frames[0].frameNumber) if self.readers is not None else None
+			if frames is None:
+				return None
+		return self.Compose(frames, row)
 
 	def Draw3D(self, canvas, row, frame):
 		# The 3D tile, in its cell of canvas: row's animals (the row the cameras' tiles show)
@@ -861,51 +916,87 @@ class Viewer:
 		self.moved = False
 		self.sceneMs.append((time.perf_counter() - start) * 1e3)
 
+	def In3D(self, x, y):
+		if self.sceneCell is None:
+			return False
+		y0, x0, h, w = self.sceneCell
+		return x0 <= x < x0 + w and y0 <= y < y0 + h
+
+	def CameraAt(self, x, y):
+		# The camera whose tile is at (x, y) of the view, or None
+		for c, y0, x0, h, w in self.cells:
+			if x0 <= x < x0 + w and y0 <= y < y0 + h:
+				return c
+		return None
+
+	def Press(self, x, y, button="left"):
+		"""
+		A mouse button pressed at (x, y) of the view: the key of a button
+		there (the panel drawn in the view), or None. Left on a camera's tile
+		picks it (v shows it alone); in the 3D tile, left drags turn it, right
+		or middle drags move it.
+		"""
+		if button == "left":
+			key = self.Click(x, y)
+			if key is not None:
+				return key
+			camera = self.CameraAt(x, y)
+			if camera is not None:
+				self.current = camera
+			elif self.In3D(x, y):
+				self.drag = ("turn", (x, y))
+		elif button in ("right", "middle") and self.In3D(x, y):
+			self.drag = ("move", (x, y))
+		return None
+
+	def Move(self, x, y):
+		# The mouse at (x, y): a drag in the 3D tile turns or moves it (then moved is True, to draw it again)
+		self.mouseAt = (x, y)
+		if self.sceneCell is None: # hidden while dragged
+			self.drag = None
+		if self.drag is not None:
+			button, (x0, y0) = self.drag
+			if button == "turn":
+				self.scene.Orbit(x - x0, y - y0)
+			else:
+				self.scene.Pan(x - x0, y - y0, self.sceneCell[3])
+			self.drag = (button, (x, y))
+			self.moved = True
+
+	def Release(self):
+		self.drag = None
+
+	def Wheel(self, steps, x=None, y=None):
+		# The wheel turned steps clicks (> 0: away from you) at (x, y), or where the mouse last moved: over the 3D, zoom
+		if self.In3D(*((x, y) if x is not None else self.mouseAt)) and steps:
+			self.scene.Zoom(steps)
+			self.moved = True
+
+	def DoubleClick(self, x, y):
+		# On the 3D tile: turned back. On a camera's: that camera alone, or back to the grid (as v and g)
+		if self.In3D(x, y):
+			self.scene.Reset()
+			self.moved = True
+		else:
+			camera = self.CameraAt(x, y)
+			if camera is not None:
+				self.current = camera
+				self.Key(ord("g") if self.selected is not None else ord("v"))
+
 	def Mouse(self, event, x, y, flags):
-		"""
-		A mouse event in the view, at (x, y): the key of a button clicked, or
-		None. A drag in the 3D tile turns it (left button) or moves it (right
-		or middle), the wheel zooms it, a double click resets it; then moved
-		is True, for the view to draw it again.
-		"""
-		def In3D(x, y):
-			if self.sceneCell is None:
-				return False
-			y0, x0, h, w = self.sceneCell
-			return x0 <= x < x0 + w and y0 <= y < y0 + h
+		"""OpenCV's mouse events, to Press, Move, Release, Wheel and DoubleClick: the key of a button clicked, or None."""
 		if event == cv2.EVENT_MOUSEWHEEL:
 			# Its x, y are the screen's on Windows: where the mouse last moved says where it is. Its
 			# delta is flags' top 16 bits (OpenCV 5's Python has no getMouseWheelDelta)
-			if In3D(*self.mouseAt) and flags >> 16:
-				self.scene.Zoom(1 if flags >> 16 > 0 else -1)
-				self.moved = True
-			return None
-		if event == cv2.EVENT_MOUSEMOVE:
-			self.mouseAt = (x, y)
-			if self.sceneCell is None: # hidden while dragged
-				self.drag = None
-			if self.drag is not None:
-				button, (x0, y0) = self.drag
-				if button == "turn":
-					self.scene.Orbit(x - x0, y - y0)
-				else:
-					self.scene.Pan(x - x0, y - y0, self.sceneCell[3])
-				self.drag = (button, (x, y))
-				self.moved = True
-			return None
-		if event in (cv2.EVENT_LBUTTONUP, cv2.EVENT_RBUTTONUP, cv2.EVENT_MBUTTONUP):
-			self.drag = None
-			return None
-		if event == cv2.EVENT_LBUTTONDOWN:
-			key = self.Click(x, y)
-			if key is None and In3D(x, y):
-				self.drag = ("turn", (x, y))
-			return key
-		if event in (cv2.EVENT_RBUTTONDOWN, cv2.EVENT_MBUTTONDOWN) and In3D(x, y):
-			self.drag = ("move", (x, y))
-		elif event == cv2.EVENT_LBUTTONDBLCLK and In3D(x, y):
-			self.scene.Reset()
-			self.moved = True
+			self.Wheel(1 if flags >> 16 > 0 else -1 if flags >> 16 < 0 else 0)
+		elif event == cv2.EVENT_MOUSEMOVE:
+			self.Move(x, y)
+		elif event in (cv2.EVENT_LBUTTONUP, cv2.EVENT_RBUTTONUP, cv2.EVENT_MBUTTONUP):
+			self.Release()
+		elif event in (cv2.EVENT_LBUTTONDOWN, cv2.EVENT_RBUTTONDOWN, cv2.EVENT_MBUTTONDOWN):
+			return self.Press(x, y, {cv2.EVENT_LBUTTONDOWN: "left", cv2.EVENT_RBUTTONDOWN: "right"}.get(event, "middle"))
+		elif event == cv2.EVENT_LBUTTONDBLCLK:
+			self.DoubleClick(x, y)
 		return None
 
 	def Buttons(self, canvas, y0, x0, width):
@@ -916,7 +1007,7 @@ class Viewer:
 		buttons = [("Predictions (d)", ord("d"), self.show2d), ("Reprojections (p)", ord("p"), self.show3d),
 			("Lines (l)", ord("l"), self.lines)]
 		if self.scene is not None:
-			buttons.append(("3D view (v)", ord("v"), self.showScene))
+			buttons.append(("3D view (\\)", ord("\\"), self.showScene))
 		for label, key, on in buttons:
 			(tw, th), _ = cv2.getTextSize(label, FONT, 0.5, 1)
 			if x > x0 + PAD and x + tw + 34 > x0 + width - PAD: # the next row
@@ -932,7 +1023,8 @@ class Viewer:
 		return y - y0 + 26 + PAD
 
 	def Click(self, x, y):
-		# A click at (x, y) of the view: the key of the button there, or None
+		# A click at (x, y) of the window's image: the key of the button there, or None
+		x, y = x - self.origin[1], y - self.origin[0] # the buttons are where they are in the view
 		for x0, y0, x1, y1, key in getattr(self, "buttons", ()):
 			if x0 <= x <= x1 and y0 <= y <= y1:
 				return key
@@ -943,7 +1035,17 @@ class Viewer:
 		top = self.Buttons(canvas, y0, x0, w)
 		y0, h = y0 + top, h - top
 		panel = canvas[y0:y0 + h, x0:x0 + w]
-		lines = [] # (text, colour)
+		y = PAD + 14
+		for text, color in self.PanelText(row):
+			for part in Wrap(text, w - 2 * PAD, 0.45):
+				if y > h - 4:
+					return
+				Text(panel, part, (PAD, y), color, 0.45, box=False)
+				y += LINE
+
+	def PanelText(self, row):
+		# The panel's lines, (text, colour): about the row drawn, campy-live, and the keys
+		lines = []
 		if row is not None:
 			lines.append(("Frame {}: its results here {:.1f} ms after the frame{}".format(int(row["frame"]),
 				self.lastSeen, "; the last view shown {:.1f} ms after its frame".format(self.lastShown)
@@ -971,16 +1073,9 @@ class Viewer:
 		if row is not None:
 			lines.append(("Reprojections (dots): the 3D, projected. Predictions (open circles): this camera's 2D "
 				"(white: matched to no animal). Line: from the 2D to the 3D. Label: #identity, and px between them.", DIM))
-		lines.append(("Keys: 1-{} one camera, 0 all; d predictions, p reprojections, l lines{}; z window to the view; "
-			"space pause, s save, q quit".format(len(self.ringNames), "; v 3D view, r turn it back" if self.scene is not None else ""),
+		lines.append((KEYS.format(len(self.ringNames), "; \\ 3D view, r turn it back" if self.scene is not None else ""),
 			DIM))
-		y = PAD + 14
-		for text, color in lines:
-			for part in Wrap(text, w - 2 * PAD, 0.45):
-				if y > h - 4:
-					return
-				Text(panel, part, (PAD, y), color, 0.45, box=False)
-				y += LINE
+		return lines
 
 	def Waiting(self):
 		canvas = self.Canvas(self.Size()[::-1]) # the view's size: OpenCV sizes a new window to its first image
@@ -990,25 +1085,58 @@ class Viewer:
 		return canvas
 
 	def Key(self, key):
-		# A key pressed in the window; False to quit
+		"""
+		A key pressed in the window: its character's code, or "left",
+		"right", "up", "down" for the arrows. False to quit. As LUC3D: v one
+		camera alone (single view; the one last picked), g every camera (the
+		grid), the arrows the previous or next camera (in the grid: which one
+		v shows), \\ the 3D view on or off (it stays beside a single view).
+		"""
+		n = len(self.readers) if self.readers else len(self.ringNames)
 		if key in (ord("q"), 27):
 			return False
-		if ord("1") <= key <= ord("9") and key - ord("1") < len(self.ringNames):
-			self.selected = key - ord("1")
-		elif key in (ord("0"), ord("a")):
+		if key in ("left", "right", "up", "down"):
+			step = 1 if key in ("right", "down") else -1
+			self.current = ((self.selected if self.selected is not None else self.current) + step) % max(1, n)
+			if self.selected is not None:
+				self.selected = self.current
+		elif isinstance(key, str):
+			pass
+		elif ord("1") <= key <= ord("9") and key - ord("1") < n:
+			self.selected = self.current = key - ord("1")
+		elif key in (ord("0"), ord("a"), ord("g")):
 			self.selected = None
+		elif key == ord("v"):
+			if self.selected is None:
+				self.selected = min(self.current, n - 1)
 		elif key == ord("d"):
 			self.show2d = not self.show2d
 		elif key == ord("p"):
 			self.show3d = not self.show3d
 		elif key == ord("l"):
 			self.lines = not self.lines
-		elif key == ord("v"):
+		elif key == ord("\\"):
 			self.showScene = not self.showScene
 		elif key == ord("r") and self.scene is not None:
 			self.scene.Reset()
 			self.moved = True
 		return True
+
+	def Delivered(self, image, frame, row):
+		# A view shown: how late, and saved (every --png-every-th result)
+		if row is None:
+			return
+		self.lastShown = (time.perf_counter_ns() - int(np.max(row["written_ns"]))) / 1e6
+		self.shownMs.append(self.lastShown)
+		self.count += 1
+		if self.args.png and self.count % self.args.png_every == 0:
+			cv2.imwrite(os.path.join(self.args.png, "view_{:08d}.png".format(frame)), image)
+
+	def Save(self, image):
+		# s: the view as a PNG, into --png or the current folder
+		path = os.path.join(self.args.png or ".", "view_{}.png".format(datetime.now().strftime("%H-%M-%S")))
+		cv2.imwrite(path, image)
+		Say("Saved {}.".format(path))
 
 	def Summary(self, seconds):
 		def P(values, q):
@@ -1073,6 +1201,11 @@ def LowerPriority():
 		Say("Could not lower this program's priority: {}".format(e))
 
 
+# OpenCV's codes of the arrow keys (pollKey, waitKeyEx): Windows, GTK, macOS
+ARROWS = {0x250000: "left", 0x260000: "up", 0x270000: "right", 0x280000: "down",
+	65361: "left", 65362: "up", 65363: "right", 65364: "down", 63234: "left", 63232: "up", 63235: "right", 63233: "down"}
+
+
 def Run(args):
 	cv2.setNumThreads(1) # a few small images: not worth taking every core from campy
 	if args.priority == "low":
@@ -1080,6 +1213,20 @@ def Run(args):
 	if args.png:
 		os.makedirs(args.png, exist_ok=True)
 	window = not args.no_window
+	if window and args.gui != "opencv":
+		try:
+			from campy import liveviewqt
+		except ImportError as e:
+			if args.gui == "qt":
+				Say("--gui qt, but Qt cannot be loaded here: {}.".format(e))
+				return 1
+			Say("No Qt here ({}): the window is OpenCV's (pip install PyQt5 for Qt's).".format(e))
+		else:
+			return liveviewqt.Run(args)
+	return RunOpenCV(args, window)
+
+
+def RunOpenCV(args, window):
 	if window:
 		try:
 			# Drawn at the window's own size (Windows' OpenCV stretches an image to its window, keeping no ratio)
@@ -1091,7 +1238,7 @@ def Run(args):
 			return 1
 	viewer = Viewer(args)
 	start = time.monotonic()
-	paused, image, count = False, None, 0
+	paused, image = False, None
 	raised = None # whether there was a feed when it was last put in front
 	clicks = [] # the keys of the buttons clicked
 	if window:
@@ -1110,9 +1257,10 @@ def Run(args):
 				if size != viewer.windowSize:
 					viewer.windowSize = size
 					if size and image is not None and (paused or viewer.readers is None): # drawn again at the new size
-						image = viewer.Compose(*viewer.last) if paused and getattr(viewer, "last", None) else \
-							viewer.Waiting() if viewer.readers is None else image
-						cv2.imshow(TITLE, image)
+						again = viewer.Waiting() if viewer.readers is None else viewer.Again()
+						if again is not None:
+							image = again
+							cv2.imshow(TITLE, image)
 			got = None if paused else viewer.Step()
 			if got is not None:
 				image, frame, row = got
@@ -1125,32 +1273,27 @@ def Run(args):
 						if Raise() or raised is None:
 							cv2.resizeWindow(TITLE, *args.size)
 					raised = feed
-				if row is not None:
-					viewer.lastShown = (time.perf_counter_ns() - int(np.max(row["written_ns"]))) / 1e6
-					viewer.shownMs.append(viewer.lastShown)
-					count += 1
-					if args.png and count % args.png_every == 0:
-						cv2.imwrite(os.path.join(args.png, "view_{:08d}.png".format(frame)), image)
+				viewer.Delivered(image, frame, row)
 			if window:
 				# The window's events, without waiting: waitKey(1) waits a whole clock tick on Windows (15.6 ms)
 				key = cv2.pollKey() if hasattr(cv2, "pollKey") else cv2.waitKey(1)
 				if key < 0 and clicks:
 					key = clicks.pop(0) or -1
 				if key >= 0:
-					key &= 0xFF
+					key = ARROWS.get(key, key & 0xFF)
 					if key == ord(" "):
 						paused = not paused
 					elif key == ord("z") and viewer.Fit():
 						cv2.resizeWindow(TITLE, *viewer.Fit())
 					elif key == ord("s") and image is not None:
-						path = os.path.join(args.png or ".", "view_{}.png".format(datetime.now().strftime("%H-%M-%S")))
-						cv2.imwrite(path, image)
-						Say("Saved {}.".format(path))
+						viewer.Save(image)
 					elif not viewer.Key(key):
 						break
-					elif paused and image is not None and getattr(viewer, "last", None):
-						image = viewer.Compose(*viewer.last) # the same frames, with the change
-						cv2.imshow(TITLE, image)
+					elif paused and image is not None:
+						again = viewer.Again() # the same row, with the change
+						if again is not None:
+							image = again
+							cv2.imshow(TITLE, image)
 				if viewer.moved and image is not None and viewer.sceneCell is not None and getattr(viewer, "last", None):
 					# Turned: the 3D tile again, of the row the cameras' tiles show
 					viewer.Draw3D(image, viewer.last[1], viewer.last[0][0].frameNumber)
@@ -1169,7 +1312,12 @@ def Run(args):
 		viewer.Close()
 		if window:
 			cv2.destroyAllWindows()
-	summary = viewer.Summary(time.monotonic() - start)
+	return Finish(viewer, time.monotonic() - start, args)
+
+
+def Finish(viewer, seconds, args):
+	# What it did, said and in --summary
+	summary = viewer.Summary(seconds)
 	Say("Done: {results_drawn} results drawn ({results_gone} whose frames were gone, {results_passed_over} passed "
 		"over for a newer one), {frames_alone} views of "
 		"frames alone; drawing p50 {d[p50]:.1f} p99 {d[p99]:.1f} ms; shown p50 {s[p50]:.1f} p99 {s[p99]:.1f} ms after "
@@ -1216,7 +1364,9 @@ def ParseArgs(argv=None):
 		"comma-separated, in feed order.")
 	p.add_argument("--size", type=Size, default=(1800, 960), help="The view's largest width x height, px.")
 	p.add_argument("--scale", type=float, default=0, help="Each frame's scale in the view (0: to fit --size).")
-	p.add_argument("--no-3d", action="store_true", help="Start without the 3D view (v shows it).")
+	p.add_argument("--no-3d", action="store_true", help="Start without the 3D view (\\ shows it).")
+	p.add_argument("--gui", default="auto", choices=["auto", "qt", "opencv"], help="The window: Qt's (PyQt5), or "
+		"OpenCV's; auto: Qt's when PyQt5 is there.")
 	p.add_argument("--up", type=Direction, default=None, help="The world's up in the calibration, as x,y,z "
 		"(default: away from where the cameras look, when they look down).")
 	p.add_argument("--fps", type=float, default=30, help="Frames alone (no results) shown per second.")

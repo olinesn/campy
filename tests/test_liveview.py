@@ -281,7 +281,7 @@ def test_each_result_is_drawn_on_the_frames_it_was_made_from(rings):
 		assert frame == 9 and row["frame"] == 9
 		# Frame 9's pixels (90), not the newest frame's (120), under camera 0's tile
 		th, tw = viewer.layout.tile
-		corner = image[th - 3, 2] # bottom left of camera 0's tile, clear of the drawing
+		corner = image[th - 6, 6] # bottom left of camera 0's tile, clear of the drawing (and its outline)
 		assert tuple(corner) == (90, 90, 90)
 		assert viewer.Step() is None # nothing newer
 		# A row whose frames are no longer in the feed: counted, not drawn
@@ -534,15 +534,15 @@ def test_the_3d_tile_shows_the_row_the_cameras_show():
 	other = row_for(6, cams, truth + [0, 0, 60], keypoints, scores, order)
 	tile = viewer.Compose(frames, other)[y:y + h, x:x + w]
 	assert (tile[50:] == drawn(other)).all() and (tile[50:] != drawn(row)).any()
-	# v (or its button) hides it: the cameras alone, and no 3D drawn
+	# \\ (or its button) hides it: the cameras alone, and no 3D drawn
 	keys = [b[4] for b in viewer.buttons]
-	assert keys == [ord("d"), ord("p"), ord("l"), ord("v")]
+	assert keys == [ord("d"), ord("p"), ord("l"), ord("\\")]
 	x0, y0, x1, y1, _ = viewer.buttons[3]
 	viewer.Key(viewer.Mouse(liveview.cv2.EVENT_LBUTTONDOWN, (x0 + x1) // 2, (y0 + y1) // 2, 0))
 	assert not viewer.showScene
 	image = viewer.Compose(frames, row)
 	assert viewer.sceneCell is None and viewer.layout.cols == 2
-	assert viewer.Key(ord("v")) and viewer.showScene
+	assert viewer.Key(ord("\\")) and viewer.showScene
 	# Without a calibration (2D only): no 3D, no button
 	plain = liveview.Viewer(view_args(name()))
 	plain.description = {"cameras": ["Camera0", "Camera1", "Camera2"], "edges": EDGES}
@@ -599,12 +599,57 @@ def test_dragging_in_the_3d_tile_turns_it():
 	scene.Orbit(30, 0)
 	viewer.Key(ord("r"))
 	assert scene.azimuth == 0
-	# Hidden (v) while dragged: the drag ends
+	# Hidden (\\) while dragged: the drag ends
 	viewer.Mouse(cv2_.EVENT_LBUTTONDOWN, *at, 0)
-	viewer.Key(ord("v"))
+	viewer.Key(ord("\\"))
 	viewer.Compose(frames, row)
 	viewer.Mouse(cv2_.EVENT_MOUSEMOVE, at[0] + 30, at[1], cv2_.EVENT_FLAG_LBUTTON)
 	assert viewer.drag is None and scene.azimuth == 0
+
+def test_luc3d_keys_switch_between_the_grid_and_one_camera():
+	# As LUC3D: v one camera alone (the one last picked), g the grid, the
+	# arrows the previous or next camera (wrapping), \\ the 3D on or off; the
+	# 3D stays beside a single camera
+	cams, truth, keypoints, scores, order = mice()
+	row = row_for(5, cams, truth, keypoints, scores, order)
+	viewer, frames = three_cameras(cams, row)
+	def view():
+		shown = viewer.Shown()
+		return viewer.Compose([frames[c] for c in shown], row)
+	def picked(image): # the camera whose tile has the outline
+		return [c for c, y, x, h, w in viewer.cells if like(image[y + 1:y + 3, x + 20:x + w - 20], liveview.PICKED).all()]
+	image = view()
+	assert viewer.Shown() == [0, 1, 2] and picked(image) == [0]
+	assert viewer.Key("down") and viewer.Shown() == [0, 1, 2] and picked(view()) == [1] # in the grid: which v shows
+	assert viewer.Key(ord("v")) and viewer.Shown() == [1]
+	view()
+	assert (viewer.layout.cols, viewer.layout.rows) == (2, 1) and len(viewer.cells) == 1 # it and the 3D, side by side
+	assert viewer.sceneCell is not None # the 3D stays up
+	steps = []
+	for key in ("down", "down", "up", "left", "right", "right"):
+		viewer.Key(key)
+		steps.append(viewer.Shown()[0])
+	assert steps == [2, 0, 2, 1, 2, 0] # wrapping
+	assert viewer.Key(ord("v")) and viewer.Shown() == [0] # already alone: stays
+	assert viewer.Key(ord("\\")) and viewer.Shown() == [0]
+	view()
+	assert viewer.sceneCell is None # closed with \\
+	viewer.Key(ord("\\"))
+	viewer.Key("right")
+	assert viewer.Key(ord("g")) and viewer.Shown() == [0, 1, 2]
+	assert picked(view()) == [1] # the one last shown alone
+	# Clicks: on a camera's tile picks it; a double click shows it alone, another the grid again
+	c, y, x, h, w = viewer.cells[2]
+	viewer.Press(x + w // 2, y + h // 2)
+	assert viewer.current == 2 and viewer.Shown() == [0, 1, 2]
+	c, y, x, h, w = viewer.cells[0]
+	viewer.DoubleClick(x + w // 2, y + h // 2)
+	assert viewer.Shown() == [0]
+	view()
+	c, y, x, h, w = viewer.cells[0]
+	viewer.DoubleClick(x + w // 2, y + h // 2)
+	assert viewer.Shown() == [0, 1, 2]
+	assert any("v one camera" in text for text, color in viewer.PanelText(row))
 
 def test_the_view_is_drawn_at_its_windows_size():
 	# Windows' OpenCV stretches an image to its window: the view is drawn at
@@ -621,9 +666,15 @@ def test_the_view_is_drawn_at_its_windows_size():
 		th, tw = viewer.layout.tile
 		assert abs(th / tw - 1024 / 1280) < 0.01 and viewer.layout.size[0] <= size[1] and viewer.layout.size[1] <= size[0]
 		sizes[size] = tw
-		# Black beyond the view
+		# The view in the middle, black around it
 		h, w = viewer.layout.size
-		assert not image[h:].any() and not image[:, w:].any()
+		oy, ox = viewer.origin
+		assert (oy, ox) == ((size[1] - h) // 2, (size[0] - w) // 2)
+		inside = np.zeros(image.shape[:2], bool)
+		inside[oy:oy + h, ox:ox + w] = True
+		assert not image[~inside].any() and image[inside].any()
+		c, y, x, th_, tw_ = viewer.cells[0] # where the tiles are: in the window's image
+		assert (y, x) == (oy, ox)
 	assert sizes[(1028, 749)] < sizes[(1800, 960)] < sizes[(2400, 1300)]
 	viewer.windowSize = (9000, 6000) # frames never drawn larger than they are
 	viewer.Compose(frames, row)
