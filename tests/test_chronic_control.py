@@ -193,6 +193,7 @@ def test_stop_now_ends_on_a_whole_pulse(tmp_path, board):
 		assert p[pin][-1][1] == 0
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal")
 def test_no_board_no_session(tmp_path):
 	master, slave = pty() # nothing answers
 	try:
