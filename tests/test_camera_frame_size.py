@@ -6,6 +6,7 @@ does not open.
 """
 
 import importlib
+import json
 import logging
 import os
 import queue
@@ -18,7 +19,7 @@ from collections import deque
 import numpy as np
 import pytest
 
-from campy import configurator, writer
+from campy import configurator, livefeed, writer
 from campy.cameras import unicam
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -204,6 +205,21 @@ def test_a_basler_with_the_configs_size_says_nothing(basler, monkeypatch, tmp_pa
 	assert opened == (1152, 1024) and set(sent) == {(1152, 1024)}
 	assert "changed to" not in capsys.readouterr().out
 
+
+
+def test_a_cameras_live_feed_says_its_folder_in_the_recording(basler, monkeypatch, tmp_path):
+	# campy-live-view puts its bookmarks beside the recording: it finds the recording from the cameras' feeds
+	descriptions = []
+	RingWriter = livefeed.RingWriter
+	def Writer(*args, **kwargs):
+		descriptions.append(args[7] if len(args) > 7 else kwargs.get("description", ""))
+		return RingWriter(*args, **kwargs)
+	monkeypatch.setattr(livefeed, "RingWriter", Writer)
+	opened, sent = record(monkeypatch, tmp_path, "basler", FakeBasler(),
+		cameraSettings=os.path.join(REPO, "configs", "mono8.pfs"), liveFeed=True,
+		liveFeedName="cf{}".format(os.getpid() % 100000))
+	assert sent and descriptions
+	assert json.loads(descriptions[0]) == {"kind": "campy camera", "folder": os.path.abspath(str(tmp_path / "Camera0"))}
 
 def test_without_the_wait_a_basler_video_was_scrambled(basler, monkeypatch, tmp_path):
 	# The writer opened its video at the config's 1152x1024 while the camera
