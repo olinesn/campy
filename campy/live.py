@@ -412,15 +412,16 @@ class CUDAGraphed:
 
 			def Capture(self, x):
 				static_in = x.clone()
-				side = torch.cuda.Stream()
+				side = FixedStream("capture warm-up")
 				side.wait_stream(torch.cuda.current_stream())
 				with torch.cuda.stream(side):
 					for _ in range(3): # cuDNN's and cuBLAS's first calls, outside the recording
 						self.Eager(static_in)
 				torch.cuda.current_stream().wait_stream(side)
 				graph = torch.cuda.CUDAGraph()
-				# thread_local: the GPU clock's thread (GpuClock) may launch meanwhile
-				with torch.cuda.graph(graph, capture_error_mode="thread_local"):
+				# thread_local: the GPU clock's threads (GpuClock) may launch
+				# meanwhile, on streams of their own (FixedStream)
+				with torch.cuda.graph(graph, stream=FixedStream("capture"), capture_error_mode="thread_local"):
 					static_out = self.Eager(static_in)
 				graph.replay()
 				diff = (static_out - self.Eager(static_in)).abs().max().item() if static_out.numel() else 0.0
@@ -439,6 +440,32 @@ class CUDAGraphed:
 		return Graphed()
 
 
+_STREAMS, _STREAMS_LOCK = {}, threading.Lock()
+
+
+def FixedStream(name, priority=0):
+	"""
+	One CUDA stream per name (and device), made the first time and kept:
+	never torch.cuda.Stream() per use. torch hands out its pool of 32 streams
+	per priority in turn, so streams made per graph and per GpuClock.Start
+	came round to the same one: a clock spinner's stream was the stream a
+	graph was being recorded on, its event sync failed
+	(CUDA_ERROR_CAPTURED_EVENT) and the recording with it. The streams kept
+	here are also made distinct from each other.
+	"""
+	import torch
+	key = (name, priority, torch.cuda.current_device())
+	with _STREAMS_LOCK:
+		if key not in _STREAMS:
+			taken = {s.cuda_stream for s in _STREAMS.values()}
+			for _ in range(64): # a pool's worth, twice
+				stream = torch.cuda.Stream(priority=priority)
+				if stream.cuda_stream not in taken:
+					break
+			_STREAMS[key] = stream
+		return _STREAMS[key]
+
+
 class GpuClock:
 	"""
 	--hold-gpu-clock (see the module's doc): blocks of the GPU spinning, on
@@ -448,7 +475,8 @@ class GpuClock:
 	RTX 2000 Ada still judged itself idle and fell to 1000 MHz, and the first
 	second's sets took 20 ms instead of 13. While sets come (Busy), one
 	spins: more cost the model about 1 ms a set. Each spinner's thread waits
-	on an event that lets it sleep, so they cost no CPU core.
+	on an event that lets it sleep, so they cost no CPU core. Each spins on
+	a stream of its own, the same at every Start (FixedStream).
 	"""
 
 	CYCLES = 5000000 # one spin: 2 ms at 2.5 GHz, 24 ms at the idle clock
@@ -468,15 +496,16 @@ class GpuClock:
 	def Start(self):
 		if not self.threads:
 			self.stop.clear()
-			self.threads = [threading.Thread(target=self.Run, args=(i,), daemon=True,
+			with self.torch.cuda.device(self.device):
+				streams = [FixedStream("gpu clock {}".format(i)) for i in range(self.WAITING_BLOCKS)] # 0: the lowest priority
+			self.threads = [threading.Thread(target=self.Run, args=(i, streams[i]), daemon=True,
 				name="campy-live GPU clock {}".format(i)) for i in range(self.WAITING_BLOCKS)]
 			for thread in self.threads:
 				thread.start()
 
-	def Run(self, i):
+	def Run(self, i, stream):
 		torch = self.torch
 		with torch.cuda.device(self.device):
-			stream = torch.cuda.Stream(priority=0) # 0: the lowest
 			done = torch.cuda.Event(blocking=True)
 			while not self.stop.is_set():
 				if i and time.monotonic() - self.lastSet < self.WAITING_S:
