@@ -385,7 +385,14 @@ class CUDAGraphed(torch.nn.Module):
     Runs the inner forward under fp16 autocast when asked (with autocast's
     weight cache off, which graph capture needs) and returns fp32 outputs, as
     TorchBackend does. The returned tensor is the graph's static output, valid
-    until the next call: the layers read it before then.
+    until that graph's next call: the layers read it before then.
+
+    Each graph writes its output into a tensor of its own, made before the
+    capture and so outside the pool the graphs share. In the pool, a graph
+    captured later could be given, for its output, memory an earlier graph
+    uses as scratch, and replaying the earlier graph would then overwrite it
+    (campy/live.py's CUDAGraphed does the same). With fp16 the copy is the
+    cast to fp32 done anyway, so it adds no work there.
     """
 
     def __init__(self, inner, fp16):
@@ -396,10 +403,13 @@ class CUDAGraphed(torch.nn.Module):
         self.pool = None  # memory pool shared by all of this model's graphs
         self.max_abs_diff = 0.0
 
-    def _eager(self, x):
+    def _raw(self, x):
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.fp16,
                             cache_enabled=False):
-            return self.inner(x).float()
+            return self.inner(x)
+
+    def _eager(self, x):
+        return self._raw(x).float()
 
     def _capture(self, x):
         static_in = x.clone()
@@ -407,16 +417,18 @@ class CUDAGraphed(torch.nn.Module):
         side.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(side):
             for _ in range(3):  # warm up cuDNN/cuBLAS outside the capture
-                self._eager(static_in)
+                warm = self._eager(static_in)
         torch.cuda.current_stream().wait_stream(side)
+        static_out = torch.empty_like(warm)  # outside the pool (see the class's doc)
+        del warm
         graph = torch.cuda.CUDAGraph()
         # One pool for every shape: the graphs never run at the same time, so
-        # their intermediates can share memory (each output stays allocated).
+        # their intermediates can share memory (each output is kept apart).
         # thread_local: --hold-clock's threads may launch their spins
         # meanwhile, on streams of their own (fixed_stream)
         with torch.cuda.graph(graph, pool=self.pool, stream=fixed_stream("capture"),
                               capture_error_mode="thread_local"):
-            static_out = self._eager(static_in)
+            static_out.copy_(self._raw(static_in))
         if self.pool is None:
             self.pool = graph.pool()
         graph.replay()
