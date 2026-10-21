@@ -1494,3 +1494,26 @@ def test_the_cameras_tiles_have_luc3ds_node_trails():
 	assert all((a == b).all() for a, b in zip(Tiles(viewer.Compose(frames, rows[-1]).astype(int)), Tiles(plain)))
 	viewer.trails, viewer.cameraTrails.seconds = True, 0
 	assert all((a == b).all() for a, b in zip(Tiles(viewer.Compose(frames, rows[-1]).astype(int)), Tiles(plain)))
+
+
+def test_the_3d_view_starts_with_the_cage_and_every_camera_in_it():
+	# Reset (and the view at first): from the cameras' side, as near as shows the cage (where the poses are) and
+	# every camera's frustum, below the tile's two lines of text, its middle in the room's
+	cams, truth, keypoints, scores, order = mice()
+	scene = liveview.Scene(cams)
+	for points in [truth + [k, 0, 0] for k in range(200)]: # walked about: the floor levelled, the view again
+		scene.Learn(posed(points))
+	h, w = TILE
+	for _ in range(2):
+		frustums = scene.Project(np.vstack([scene.Frustum(cam) for cam in cams]), TILE)
+		poses = scene.Project(truth.reshape(-1, 3), TILE)
+		for px in (frustums, poses):
+			assert np.isfinite(px).all()
+			assert (px[:, 0] >= 0.04 * w - 1).all() and (px[:, 0] <= 0.96 * w + 1).all()
+			assert (px[:, 1] >= 0.12 * h - 1).all() and (px[:, 1] <= 0.95 * h + 1).all()
+		# As near as that: nearer, something would be out of the room
+		scene.Zoom(1)
+		px = scene.Project(np.vstack([scene.Frustum(cam) for cam in cams] + [truth.reshape(-1, 3)]), TILE)
+		assert ((px < [0.04 * w, 0.12 * h]) | (px > [0.96 * w, 0.95 * h])).any()
+		scene.Orbit(150, -40)
+		scene.Reset() # back to it

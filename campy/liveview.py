@@ -46,9 +46,10 @@ With a calibration, a tile beside the cameras' shows the same row in 3D
 (Scene): each animal's 3D pose in its identity's colour (the nearer drawn
 over the farther, a thin line down to the floor under its middle), the
 calibrated cameras as frustums (a triangle on each one's top edge), and a
-floor grid. It starts from the cameras' side, 50 degrees up, the cage filling
-it; drag in it to turn it, right-drag (or middle) to move it, wheel to zoom
-(out, to see the cameras above the cage), double click or r to put it back.
+floor grid. It starts from the cameras' side, 50 degrees up, as near as shows
+the cage (where the animals' poses are) and every camera; drag in it to turn
+it, right-drag (or middle) to move it, wheel to zoom, double click or r to put
+it back.
 The calibration's world is often its first camera's, and knows nothing of the
 floor: up is at first away from where the cameras look, then the plane the
 animals' middles move in (--up x,y,z sets it), and the floor is under their
@@ -944,8 +945,8 @@ class Scene:
 	a floor grid, as a virtual camera sees them. It orbits the middle of the
 	cage, about the world's up: Orbit turns it (by pixels dragged), Pan moves
 	what it looks at, Zoom moves it nearer, Reset puts it back (from the
-	cameras' side, 50 degrees up, the cage filling the tile; the cameras,
-	above it, come into view zoomed out).
+	cameras' side, 50 degrees up, as near as shows the cage and every
+	camera's frustum, in the middle of the tile below its text).
 
 	Up is at first away from where the cameras look (Up), or --up, and the
 	cage's middle is what they look at (Aim). Learn (each row taken) then
@@ -1015,23 +1016,40 @@ class Scene:
 		self.e1, self.e2 = self.Basis(self.up)
 
 	def Reset(self):
+		# From the cameras' side, 50 degrees up, everything in view: the cage (extent around its middle, 0.15
+		# reach high: where the animals' poses are) and the cameras' frustums, filling a tile of the frames'
+		# shape below its two lines of text, in its middle
 		self.azimuth, self.elevation = 0.0, np.radians(50)
 		ground = self.Ground()
 		self.centre = ground + 0.05 * self.reach * self.up
-		# Near enough for the cage (extent around its middle, 0.15 reach high) to fill a tile of the frames' shape
 		shape = (1024, 1280)
 		see = np.array([ground + self.extent * (i * self.e1 + j * self.e2) + k * 0.15 * self.reach * self.up
-			for i in (-1, 1) for j in (-1, 1) for k in (0, 1)])
-		lo, hi = 0.2 * self.reach, 50 * self.reach
-		for _ in range(30):
-			self.distance = np.sqrt(lo * hi)
+			for i in (-1, 1) for j in (-1, 1) for k in (0, 1)] + [X for cam in self.cameras for X in self.Frustum(cam)])
+		lo, hi = np.array([0.04, 0.12]) * shape[::-1], np.array([0.96, 0.95]) * shape[::-1] # the room for it, px
+		for _ in range(4): # as near as fits, then moved to the room's middle; again, as that changes the perspective
+			near, far = 0.2 * self.reach, 50 * self.reach
+			for _ in range(30):
+				self.distance = np.sqrt(near * far)
+				px = self.Project(see, shape)
+				if np.isfinite(px).all() and (px >= lo).all() and (px <= hi).all():
+					far = self.distance
+				else:
+					near = self.distance
+			self.distance = far
 			px = self.Project(see, shape)
-			if np.isfinite(px).all() and (np.abs(px - [640, 512]) <= [0.48 * 1280, 0.46 * 1024]).all():
-				hi = self.distance
-			else:
-				lo = self.distance
-		self.distance = hi
+			off = (px.min(0) + px.max(0)) / 2 - (lo + hi) / 2
+			R, _ = self.Eye()
+			self.centre = self.centre + (R[0] * off[0] + R[1] * off[1]) * self.distance / self.Focal(shape[1])
+		self.distance = far
 		self.touched = False # by the mouse, since
+
+	def Frustum(self, cam):
+		# A camera as the 3D view draws it: its centre, its image's corners depth in front of it, and a triangle
+		# on its top edge
+		w, h = cam.size if cam.size is not None else 2 * cam.c
+		uv = np.array([[0, 0], [w, 0], [w, h], [0, h], [0.35 * w, 0], [0.65 * w, 0], [0.5 * w, -0.18 * h]], float)
+		rays = np.column_stack([(uv - cam.c) / cam.f, np.ones(len(uv))]) * 0.12 * self.reach
+		return np.vstack([cam.center, cam.center + rays @ cam.R])
 
 	def Ground(self):
 		# The floor under the cage's middle
@@ -1197,14 +1215,9 @@ class Scene:
 			color = GRID_MID if k == 0 else GRID
 			self.Lines(img, view, [[o + k * s * self.e1 - n * s * self.e2, o + k * s * self.e1 + n * s * self.e2],
 				[o + k * s * self.e2 - n * s * self.e1, o + k * s * self.e2 + n * s * self.e1]], color)
-		depth = 0.12 * self.reach
 		for k, cam in enumerate(self.cameras):
-			w, h = cam.size if cam.size is not None else 2 * cam.c
-			# The image's corners, depth in front of the camera, and a triangle on its top edge
-			uv = np.array([[0, 0], [w, 0], [w, h], [0, h], [0.35 * w, 0], [0.65 * w, 0], [0.5 * w, -0.18 * h]], float)
-			rays = np.column_stack([(uv - cam.c) / cam.f, np.ones(len(uv))]) * depth
-			X = cam.center + rays @ cam.R
-			apex = cam.center
+			F = self.Frustum(cam)
+			apex, X = F[0], F[1:]
 			segments = [[apex, X[i]] for i in range(4)] + [[X[i], X[(i + 1) % 4]] for i in range(4)] + \
 				[[X[4], X[6]], [X[6], X[5]]]
 			self.Lines(img, view, segments, FRUSTUM)
