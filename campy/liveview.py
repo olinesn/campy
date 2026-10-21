@@ -186,19 +186,21 @@ def Dashes(p, q, dash=6 << SHIFT):
 	if not len(p):
 		return np.zeros((0, 2, 2), np.int32)
 	n = np.clip(np.linalg.norm(q - p, axis=1) // dash, 1, 24).astype(int) # pieces: dash, gap, dash, ...
-	k = np.concatenate([np.arange(0, m, 2) for m in n])
-	m = np.repeat(n, (n + 1) // 2)
-	i = np.repeat(np.arange(len(p)), (n + 1) // 2)
+	count = (n + 1) // 2 # dashes a line
+	i = np.repeat(np.arange(len(p)), count)
+	k = 2 * (np.arange(count.sum()) - np.repeat(np.cumsum(count) - count, count)) # each dash's first piece
+	m = n[i]
 	a = p[i] + (q[i] - p[i]) * (k / m)[:, None]
 	b = p[i] + (q[i] - p[i]) * (np.minimum(k + 1, m) / m)[:, None]
 	return np.stack([a, b], 1).astype(np.int32)
 
 
 def Dashed(img, p, q, color, thickness):
-	# Dashed lines from p to q (points (N, 2), or one point each, with SHIFT bits), in one call
+	# Dashed lines from p to q (points (N, 2), or one point each, with SHIFT bits), in one call. Not
+	# antialiased: a third of the time, and less than the solid antialiased lines they stand for
 	dashes = Dashes(p, q)
 	if len(dashes):
-		cv2.polylines(img, list(dashes), False, color, thickness, cv2.LINE_AA, SHIFT)
+		cv2.polylines(img, list(dashes), False, color, thickness, cv2.LINE_8, SHIFT)
 
 
 # ---------------------------------------------------------------- drawing
