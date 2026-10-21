@@ -351,6 +351,30 @@ def test_tracker_is_not_thrown_by_misplaced_nodes(seed):
 	assert run() == (0, 0)
 
 
+def test_tracker_drops_a_misplaced_node_by_default():
+	# One camera puts a node 80 px off: the 3D keeps the other two cameras' answer
+	cams = rig()
+	X = scene(30, n=2, seed=10)
+	rng = np.random.default_rng(11)
+	off = pose3d.Tracker(cams, n_animals=2, reproj_threshold=0)
+	gated = pose3d.Tracker(cams, n_animals=2)
+	assert gated.reproj_threshold == 50
+	for f in range(len(X)):
+		kp, sc, order = observe(cams, X[f], rng, noise=0.3, drop_node=0)
+		slot = order[2].index(0)
+		# Off the epipolar lines of both other cameras' node (along either one, two
+		# cameras would still agree and could not tell which one is wrong)
+		n = [gated.E[c, 2] @ np.append(cams[c].Normalize(kp[c, order[c].index(0), 6]), 1) for c in (0, 1)]
+		n = [v[:2] / np.linalg.norm(v[:2]) for v in n]
+		d = max((n[0] + n[1], n[0] - n[1]), key=lambda v: min(abs(v @ n[0]), abs(v @ n[1])) / np.linalg.norm(v))
+		kp[2, slot, 6] += 80 * d / np.linalg.norm(d)
+		a, b = off.Update(kp, sc, frame=f), gated.Update(kp, sc, frame=f)
+	ia = identities(order, b.members)[0]
+	assert np.linalg.norm(a.points3d[ia, 6] - X[-1, 0, 6]) > 5
+	assert np.linalg.norm(b.points3d[ia, 6] - X[-1, 0, 6]) < 2
+	assert b.reproj_px[ia, 6] < 2 and a.reproj_px[ia, 6] > 20
+
+
 def test_tracker_input_checks():
 	tracker = pose3d.Tracker(rig(), n_animals=2)
 	with pytest.raises(ValueError):

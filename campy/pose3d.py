@@ -57,9 +57,10 @@ settings, so the live identities and 3D are what LUC3D would make offline:
 
 Then each animal seen in at least 2 cameras this set is triangulated from this
 set's detections only (DLT on undistorted points, in LUC3D's camera-centred
-frame, optionally weighted by node score); with reproj_threshold, a node whose
-reprojection error is over it loses its worst view (down to 2) or, with 2 views,
-is dropped.
+frame, optionally weighted by node score). A node whose reprojection error is
+over reproj_threshold (50 px) loses the view that disagrees (down to 2) or, with
+2 views, is dropped, so one camera's misplaced node does not pull the animal's
+3D off (LUC3D keeps every view: reproj_threshold=0).
 
 Interface
 ---------
@@ -366,7 +367,8 @@ class Tracker:
 	min_nodes           a detection needs this many nodes to be matched (LUC3D: 0, any)
 	min_score           nodes scored below this are treated as missing (0: none)
 	weighted            weight each view's DLT rows by its node score (scores needed)
-	reproj_threshold    px: a node over it loses its worst view (down to 2), then is dropped (0: off)
+	reproj_threshold    px: in this set's 3D, a node over it loses its worst view (down to 2), then is dropped
+	                    (0: off, as LUC3D; 50 here)
 	birth_threshold     px: new targets only from detection pairs within this median epipolar distance (0: any, as LUC3D)
 	max_penalty         a node's 3D term is never below -max_penalty x corr3d (None: no floor, as LUC3D; 4 here:
 	                    see the module docstring)
@@ -377,7 +379,7 @@ class Tracker:
 
 	def __init__(self, cameras, n_animals, corr2d=1.0, corr3d=6.0, velocity_threshold=10.0,
 			distance_threshold=25.0, time_penalty=0.1, stale=60, node_weights=None, min_nodes=0,
-			min_score=0.0, weighted=False, reproj_threshold=0.0, birth_threshold=0.0,
+			min_score=0.0, weighted=False, reproj_threshold=50.0, birth_threshold=0.0,
 			max_penalty=4.0, match_reproj=20.0):
 		self.cameras = list(cameras)
 		self.n_animals = int(n_animals)
