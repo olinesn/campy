@@ -46,8 +46,11 @@ All numbers little-endian. One ring holds a header and `slots` slots:
   256     text        description, UTF-8, written before the state; at most
                       3840 bytes. A camera's ring: JSON, {"kind": "campy
                       camera", "folder": the camera's folder in the
-                      recording} (campy-live-view writes its bookmarks
-                      beside it), or empty (from campy before it said so).
+                      recording (campy-live-view writes its bookmarks
+                      beside it), "pid": the camera process's id,
+                      "parent_pid": campy-acquire's}, or empty (from
+                      campy before it said so; the pids from campy after
+                      October 2026).
                       Other rings: what the ring holds (campy/liveresults.py)
 
 Slot i starts at header bytes + i * slot bytes, and holds frame number n in
@@ -494,6 +497,22 @@ CHANNELS = {"gray": 1, "bayer_bggr8": 1, "bayer_rggb8": 1, "bayer_gbrg8": 1, "ba
 	"rgb24": 3, "bgr24": 3}
 
 
+def Processes(readers):
+	"""
+	campy-acquire's processes, as its cameras' feeds say them (their
+	descriptions' pid and parent_pid): each camera process, and the main one.
+	Empty from a campy from before they said them.
+	"""
+	pids = set()
+	for reader in readers:
+		try:
+			d = json.loads(reader.Description() or "{}")
+			pids.update(int(d[k]) for k in ("pid", "parent_pid") if d.get(k))
+		except (ValueError, TypeError, AttributeError):
+			continue
+	return sorted(pids)
+
+
 class Feed:
 	"""
 	A camera process's live feed (liveFeed): its ring, made as the camera
@@ -512,10 +531,7 @@ class Feed:
 		self.camera = int(cam_params.get("n_cam", 0))
 		# The camera's folder in the recording, said in the ring's description: where the recording is
 		folder = cam_params.get("videoFolder")
-		self.description = json.dumps({"kind": CAMERA_KIND, "folder": os.path.abspath(os.path.join(str(folder),
-			str(self.cameraName)))}) if folder else ""
-		if len(self.description.encode("utf-8")) > DESCRIPTION_BYTES:
-			self.description = "" # a path of over 3 kB: said nowhere rather than cut
+		self.folder = os.path.abspath(os.path.join(str(folder), str(self.cameraName))) if folder else None
 		self.say = say
 		self.writer = None
 
@@ -527,10 +543,18 @@ class Feed:
 		self._Do(lambda: self._Make((int(cam_params["frameHeight"]), int(cam_params["frameWidth"]), channels),
 			np.uint8), "as it started")
 
+	def Description(self):
+		# The ring's: the camera's folder, and the processes that record it (this camera process, and campy-acquire's
+		# main one, its parent), for campy-live and campy-live-view to put on the efficiency cores (campy/cpus.py)
+		description = {"kind": CAMERA_KIND, "pid": os.getpid(), "parent_pid": os.getppid()}
+		if self.folder and len(self.folder.encode("utf-8")) < DESCRIPTION_BYTES - 200:
+			description["folder"] = self.folder # a path of over 3 kB: said nowhere rather than cut
+		return json.dumps(description)
+
 	def _Make(self, shape, dtype):
 		self.Close()
 		self.writer = RingWriter(self.name, shape, dtype, self.slots, self.frameRate, self.camera, self.cameraName,
-			self.description)
+			self.Description())
 		self.say("{}: live feed in shared memory {} ({} slots of {}x{}x{} {}).".format(
 			self.cameraName, self.name, self.slots, *(tuple(shape) + (np.dtype(dtype),))))
 

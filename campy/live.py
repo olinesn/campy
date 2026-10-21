@@ -65,6 +65,7 @@ also while campy-live runs), and <out>.json, the summary. Fields of each row:
   stamp          per camera: the camera's timestamp, seconds
   read_ns        when campy-live had copied the set (time.monotonic_ns)
   done_ns        when its keypoints were back on the host (time.monotonic_ns)
+  inference_ns   upload, model and results back, timed with time.perf_counter_ns
   skipped        sets skipped just before this one
   found          per camera: animals found
   centroids      per camera, per animal: x, y in the frame (NaN: none)
@@ -82,6 +83,36 @@ and with --calibration:
   n_views        per animal: how many cameras saw it
   reproj_px      per animal, per node: mean reprojection error, pixels
 
+Speed
+-----
+GPU clock (--hold-gpu-clock): an NVIDIA GPU sets its own clock by how busy
+it looks, and campy-live's work, a burst every frame, didn't look busy
+enough. Waiting for the feed, an RTX 2000 Ada dropped to its idle clock (210
+MHz), so the first sets of a recording took 110-130 ms and the next ones
+were skipped; then it settled at 780 MHz of its 2500, and each set took 27
+ms where 13 would do. So from the feed's coming to the end, campy-live keeps
+a few of the GPU's blocks spinning (torch.cuda._sleep), on streams of the
+lowest priority: 4 while it waits for frames, 1 while they come. The GPU
+then looks busy and stays at its full clock, for about 20 W while waiting
+(against 2.5 W idle). The model's work is not slowed: it takes the GPU's
+other blocks first. auto: on with NVIDIA's CUDA; off with ROCm (AMD's GPUs
+kept their speed), MPS and the CPU.
+
+CPUs (--cpus, --priority, --campy-cpus): on a CPU with performance cores
+(P-cores) and efficiency cores (E-cores), as Intel's Core Ultra, campy-live
+puts itself on the performance cores at high priority, and campy-acquire
+(its camera processes and their encoders, which its feed says) on the
+efficiency cores, once its feed comes: the CPU work of launching the model
+then never waits for campy's. python -m campy.cpus says which cores are
+which; --cpus none --campy-cpus none leaves both as they were started, and
+campy-live-view's c key moves them back and forth while they run.
+
+--cuda-graphs records each model's GPU work once per input shape and then
+replays it in one go (a CUDA graph), instead of launching its hundred or so
+GPU operations one by one, each costing the CPU some microseconds: the
+results are the same, and campy-live says how far from the same they were
+when it made the graphs (0 is the same).
+
 With --results-feed on (the default), each row also goes into shared memory,
 campy-live-results (campy/liveresults.py), as it is logged: campy-live-view
 (campy/liveview.py) shows them on the cameras' frames.
@@ -98,7 +129,7 @@ its first.
 import argparse, json, math, os, queue, signal, sys, threading, time
 from datetime import datetime
 import numpy as np
-from campy import livefeed, liveresults
+from campy import cpus, livefeed, liveresults
 from campy.frametimes import GrowingNpy, Writer
 
 # The random models: what bench/sleap_infer_bench.py's default pair is
@@ -297,6 +328,14 @@ class TopDown:
 			self.memoryFormat = "channels_last" if nvidia else "nchw"
 		self.nodes, self.nodeNames, self.edges = None, None, None
 		self.layer, self.text = self.Build(args)
+		self.graphs = []
+		if args.cuda_graphs:
+			if not self.device.startswith("cuda"):
+				raise SystemExit("--cuda-graphs: CUDA (or ROCm) only, not {}".format(self.device))
+			for backend in (self.layer.centroid_layer.backend, self.layer.centered_instance_layer.backend):
+				graphed = CUDAGraphed(backend.model, backend.use_fp16)
+				backend.model, backend.use_fp16 = graphed, False # fp16 now inside the graph
+				self.graphs.append(graphed)
 
 	def Fp16(self, backends):
 		# fp16 autocast inside sleap-nn's TorchBackend (cuda and ROCm only)
@@ -335,6 +374,135 @@ class TopDown:
 			with FakeCentroids(self.layer.centroid_layer, counts):
 				self.Predict(frames)
 		Synchronize(self.device)
+
+	def DescribeGraphs(self):
+		if not self.graphs:
+			return None
+		diff = max(g.max_abs_diff for g in self.graphs)
+		return "CUDA graphs: {} made; their output {} (largest difference {:g})".format(
+			sum(len(g.graphs) for g in self.graphs), "the same as without" if diff == 0 else "differs from without",
+			diff)
+
+
+class CUDAGraphed:
+	"""
+	A model's forward pass recorded as a CUDA graph for each shape of input,
+	and replayed (--cuda-graphs; bench/sleap_infer_bench.py's): one launch
+	instead of the hundred or so of its operations. With fp16, the autocast
+	is inside the graph, with its weight cache off, as recording needs. The
+	output it returns is the graph's own, valid until its next call (the
+	layers are done with it by then). max_abs_diff: the largest difference
+	from the forward pass run without a graph, on the inputs recorded.
+	"""
+
+	def __new__(cls, inner, fp16):
+		import torch
+
+		class Graphed(torch.nn.Module):
+			def __init__(self):
+				super().__init__()
+				self.inner = inner
+				self.fp16 = fp16
+				self.graphs = {} # (shape, dtype, strides) -> (graph, input, output)
+				self.max_abs_diff = 0.0
+
+			def Eager(self, x):
+				with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.fp16, cache_enabled=False):
+					return self.inner(x).float()
+
+			def Capture(self, x):
+				static_in = x.clone()
+				side = torch.cuda.Stream()
+				side.wait_stream(torch.cuda.current_stream())
+				with torch.cuda.stream(side):
+					for _ in range(3): # cuDNN's and cuBLAS's first calls, outside the recording
+						self.Eager(static_in)
+				torch.cuda.current_stream().wait_stream(side)
+				graph = torch.cuda.CUDAGraph()
+				# thread_local: the GPU clock's thread (GpuClock) may launch meanwhile
+				with torch.cuda.graph(graph, capture_error_mode="thread_local"):
+					static_out = self.Eager(static_in)
+				graph.replay()
+				diff = (static_out - self.Eager(static_in)).abs().max().item() if static_out.numel() else 0.0
+				self.max_abs_diff = max(self.max_abs_diff, diff)
+				return graph, static_in, static_out
+
+			def forward(self, x):
+				key = (tuple(x.shape), x.dtype, x.stride())
+				if key not in self.graphs:
+					self.graphs[key] = self.Capture(x)
+				graph, static_in, static_out = self.graphs[key]
+				static_in.copy_(x)
+				graph.replay()
+				return static_out
+
+		return Graphed()
+
+
+class GpuClock:
+	"""
+	--hold-gpu-clock (see the module's doc): blocks of the GPU spinning, on
+	streams of the lowest priority, from Start to Stop, so that an NVIDIA
+	GPU keeps its full clock. While no set has come for WAITING_S (before
+	the recording's first frames), WAITING_BLOCKS spin: with one alone, an
+	RTX 2000 Ada still judged itself idle and fell to 1000 MHz, and the first
+	second's sets took 20 ms instead of 13. While sets come (Busy), one
+	spins: more cost the model about 1 ms a set. Each spinner's thread waits
+	on an event that lets it sleep, so they cost no CPU core.
+	"""
+
+	CYCLES = 5000000 # one spin: 2 ms at 2.5 GHz, 24 ms at the idle clock
+	WAITING_BLOCKS, WAITING_S = 4, 0.5
+
+	def __init__(self, device):
+		import torch
+		self.torch, self.device = torch, device
+		self.stop = threading.Event()
+		self.threads = []
+		self.spins = 0
+		self.lastSet = 0.0 # time.monotonic() of the last set (Busy)
+
+	def Busy(self):
+		self.lastSet = time.monotonic()
+
+	def Start(self):
+		if not self.threads:
+			self.stop.clear()
+			self.threads = [threading.Thread(target=self.Run, args=(i,), daemon=True,
+				name="campy-live GPU clock {}".format(i)) for i in range(self.WAITING_BLOCKS)]
+			for thread in self.threads:
+				thread.start()
+
+	def Run(self, i):
+		torch = self.torch
+		with torch.cuda.device(self.device):
+			stream = torch.cuda.Stream(priority=0) # 0: the lowest
+			done = torch.cuda.Event(blocking=True)
+			while not self.stop.is_set():
+				if i and time.monotonic() - self.lastSet < self.WAITING_S:
+					self.stop.wait(0.05) # sets come: the first spinner alone
+					continue
+				with torch.cuda.stream(stream):
+					torch.cuda._sleep(self.CYCLES)
+				done.record(stream)
+				done.synchronize()
+				self.spins += 1
+
+	def Stop(self):
+		if self.threads:
+			self.stop.set()
+			for thread in self.threads:
+				thread.join()
+			self.threads = []
+
+
+def HoldsClock(args, model):
+	# --hold-gpu-clock: auto is on with NVIDIA's CUDA
+	device = getattr(model, "device", "cpu")
+	if args.hold_gpu_clock == "off" or not device.startswith("cuda"):
+		return False
+	import torch
+	return args.hold_gpu_clock == "on" or not getattr(torch.version, "hip", None)
 
 
 def WarmCounts(n_frames, most, crops):
@@ -616,7 +784,7 @@ def RowType(n_cameras, instances, nodes, animals3d=0):
 	c, i, n = n_cameras, max(1, instances), max(1, nodes)
 	fields = [
 		("frame", "<i8"), ("host_ns", "<i8", (c,)), ("written_ns", "<i8", (c,)), ("stamp", "<f8", (c,)),
-		("read_ns", "<i8"), ("done_ns", "<i8"), ("skipped", "<i4"), ("found", "<i2", (c,)),
+		("read_ns", "<i8"), ("done_ns", "<i8"), ("inference_ns", "<i8"), ("skipped", "<i4"), ("found", "<i2", (c,)),
 		("centroids", "<f4", (c, i, 2)), ("centroid_vals", "<f4", (c, i)),
 		("keypoints", "<f4", (c, i, n, 2)), ("peak_vals", "<f4", (c, i, n))]
 	if animals3d:
@@ -662,7 +830,7 @@ class Log:
 		self.first = self.lastFrame = None
 		self.started = None # when the first set was read
 
-	def Row(self, frames, skipped, read_ns, done_ns, result):
+	def Row(self, frames, skipped, read_ns, done_ns, result, inference_ns=0):
 		# One set's row: its frames, and the model's results
 		row = np.zeros((), self.rows_type)
 		host = [f.hostTime for f in frames]
@@ -671,6 +839,7 @@ class Log:
 		row["written_ns"] = [f.written for f in frames]
 		row["stamp"] = [f.timeStamp for f in frames]
 		row["read_ns"], row["done_ns"], row["skipped"] = read_ns, done_ns, skipped
+		row["inference_ns"] = inference_ns
 		for key in ("centroids", "centroid_vals", "keypoints", "peak_vals"):
 			row[key] = Fit(result.get(key), row[key].shape)
 		row["found"] = (~np.isnan(row["centroids"]).any(-1)).sum(-1)
@@ -763,6 +932,7 @@ def Run(args):
 	stopping = []
 	previous = signal.signal(signal.SIGINT, lambda *a: stopping.append(1))
 	stop = lambda: bool(stopping)
+	placed = PlaceSelf(args)
 	if args.nice:
 		try:
 			os.nice(args.nice)
@@ -770,7 +940,7 @@ def Run(args):
 			Say("Could not lower this program's priority (--nice): {}".format(e))
 
 	cameras = Cameras(names, poll=args.poll_ms / 1e3)
-	log = worker = None
+	log = worker = clock = None
 	# The progress lines, from a thread of their own: printed in the loop,
 	# into a log file on the disk the videos go to, one could wait as long as
 	# a log write
@@ -787,6 +957,11 @@ def Run(args):
 			Say("No live feed: stopped." if stop() else "No live feed after {:g} s.".format(args.wait_sec))
 			return 1
 		Say("Live feed: {}.".format(cameras.Describe()))
+		if HoldsClock(args, model):
+			clock = GpuClock(model.device)
+			clock.Start()
+		if placed:
+			PlaceCampy(args, cameras.readers)
 		shape, dtype = cameras.readers[0].shape, cameras.readers[0].dtype
 		frameRate = cameras.readers[0].Info("frameRate")
 		if (shape, dtype) != expected:
@@ -813,10 +988,12 @@ def Run(args):
 			if got is None:
 				break
 			frames, skipped = got
+			if clock is not None:
+				clock.Busy()
 			read_ns, read_pc = time.monotonic_ns(), time.perf_counter_ns()
 			result = model.Predict(model.Upload(host.tensor)) # ends with the results on the host
 			done_ns, done_pc = time.monotonic_ns(), time.perf_counter_ns()
-			row = log.Row(frames, skipped, read_ns, done_ns, result)
+			row = log.Row(frames, skipped, read_ns, done_ns, result, done_pc - read_pc)
 			if worker is None:
 				log.Add(row, frames, durations=(done_pc - read_pc, None))
 			else:
@@ -826,13 +1003,17 @@ def Run(args):
 				reported, since = time.monotonic(), len(log.latency_last)
 		if worker is not None:
 			worker.Close()
+		if clock is not None:
+			clock.Stop()
 		log.Close()
 		printer.Close()
 		summary = log.Summary()
 		summary.update(model=model.Describe(), nodes=getattr(model, "nodeNames", None),
 			pose3d=tracker.Describe() if tracker else None, cameras=[r.cameraName for r in cameras.readers],
-			rings=names, frame_shape=list(shape), frame_rate=frameRate, log=out + ".npy",
+			rings=names, frame_shape=list(shape), frame_rate=frameRate, log=out + ".npy", cpus=placed,
+			cuda_graphs=model.DescribeGraphs() if hasattr(model, "DescribeGraphs") else None,
 			results_feed=log.results.name if log.results else None,
+			gpu_clock_held=clock is not None,
 			ended="stopped (Ctrl-C)" if stop() else "the recording ended")
 		with open(out + ".json", "x") as f:
 			json.dump(summary, f, indent=2)
@@ -842,6 +1023,8 @@ def Run(args):
 	finally:
 		# Stopped by an error too: the rows and lines still queued are written
 		try:
+			if clock is not None:
+				clock.Stop()
 			if worker is not None:
 				worker.Stop()
 			if log is not None:
@@ -859,10 +1042,84 @@ def Publish(args, log, names, cameras, model, tracker, frameRate):
 		rings=names, nodes=getattr(model, "nodeNames", None), edges=getattr(model, "edges", None),
 		calibration=os.path.abspath(args.calibration) if tracker else None,
 		calibration_names=tracker.names if tracker else None, animals=tracker.animals if tracker else 0,
-		frame_rate=frameRate)
+		frame_rate=frameRate, pid=os.getpid())
 	if results.writer is not None:
 		Say("Results in shared memory {} too, for campy-live-view.".format(name))
 	return results
+
+
+def PlaceSelf(args):
+	"""
+	campy-live onto --cpus at --priority. auto: on a CPU with performance and
+	efficiency cores, the performance ones, at high priority; elsewhere as it
+	is. Returns what it did, as text, or None.
+	"""
+	choice, priority = args.cpus.strip().lower(), args.priority
+	if choice == "none":
+		chosen = None
+	elif choice == "auto":
+		cores = cpus.Hybrid()
+		chosen = cores["performance"] if cores else None
+	else:
+		try:
+			chosen = cpus.Resolve(args.cpus)
+		except ValueError as e:
+			raise SystemExit("--cpus {}: {}".format(args.cpus, e))
+	if priority == "auto":
+		priority = "high" if chosen is not None and choice != "none" else "normal"
+	done = []
+	if chosen is not None:
+		try:
+			cpus.Pin(chosen)
+			done.append("CPUs {}".format(cpus.Text(chosen)) + (" (the performance cores)" if choice == "auto" else ""))
+		except OSError as e:
+			Say("Could not pin campy-live to CPUs {} (--cpus): {}".format(cpus.Text(chosen), e))
+	if priority != "normal":
+		try:
+			cpus.SetPriority(priority)
+			done.append("{} priority".format(priority.replace("_", " ")))
+		except OSError as e:
+			Say("Could not give campy-live {} priority (--priority): {}".format(priority, e))
+	if not done:
+		return None
+	Say("campy-live on {}.".format(" at ".join(done)))
+	return " at ".join(done)
+
+
+def PlaceCampy(args, readers):
+	# campy-acquire onto --campy-cpus (auto: the efficiency cores, when campy-live is on the performance ones):
+	# its main process and camera processes, as their feeds say them, and the encoders they started
+	choice = args.campy_cpus.strip().lower()
+	if choice == "none" or (choice == "auto" and (args.cpus.strip().lower() != "auto" or cpus.Hybrid() is None)):
+		return
+	try:
+		chosen = cpus.Resolve("efficiency" if choice == "auto" else args.campy_cpus)
+	except ValueError as e:
+		Say("--campy-cpus {}: {}".format(args.campy_cpus, e))
+		return
+	pids = livefeed.Processes(readers)
+	if not pids:
+		Say("campy-acquire's feed doesn't say its processes (a campy from before October 2026): to put it on CPUs "
+			"{} start it so (python -m campy.cpus says how).".format(cpus.Text(chosen)))
+		return
+	moved, failed = 0, []
+	try:
+		tree = cpus.Tree(pids)
+	except OSError as e:
+		tree, failed = [], [str(e)]
+	for pid in tree:
+		if pid == os.getpid():
+			continue
+		try:
+			cpus.Pin(chosen, pid)
+			moved += 1
+		except OSError as e:
+			failed.append("process {}: {}".format(pid, e))
+	if moved:
+		Say("campy-acquire ({} processes: camera processes and encoders) on CPUs {}{}.".format(moved,
+			cpus.Text(chosen), " (the efficiency cores)" if choice == "auto" else ""))
+	if failed:
+		Say("Could not move campy-acquire onto CPUs {} (--campy-cpus): {}".format(cpus.Text(chosen), "; ".join(failed)))
 
 
 def Prepare(args, n_frames, shape, dtype):
@@ -874,6 +1131,9 @@ def Prepare(args, n_frames, shape, dtype):
 		t = time.perf_counter()
 		model.Warm(host.tensor, crops=range(1, n_frames * args.max_instances + 1) if args.model == "sleap" else ())
 		Say("Model: {}. Warmed up in {:.1f} s.".format(model.Describe(), time.perf_counter() - t))
+		graphs = model.DescribeGraphs() if hasattr(model, "DescribeGraphs") else None
+		if graphs:
+			Say(graphs + ".")
 	else:
 		Say("Model: {}.".format(model.Describe()))
 	return model, host
@@ -972,6 +1232,19 @@ def ParseArgs(argv=None):
 	p.add_argument("--poll-ms", type=float, default=0.5, help="How often to look for a new set.")
 	p.add_argument("--report-sec", type=float, default=10, help="Say how it goes this often; 0: only at the end.")
 	p.add_argument("--nice", type=int, default=0, help="Lower this program's CPU priority by this much (POSIX).")
+	p.add_argument("--cpus", default="auto", help="The CPUs campy-live runs on: auto (on a CPU with performance and \
+		efficiency cores, the performance cores; elsewhere all), performance, efficiency, all, none (as it is \
+		started), or a list such as 0,1,10-13. python -m campy.cpus says which are which.")
+	p.add_argument("--priority", default="auto", choices=("auto",) + cpus.PRIORITIES, help="campy-live's priority: \
+		auto is high when --cpus auto put it on the performance cores, else normal. Above normal needs root on Linux.")
+	p.add_argument("--campy-cpus", default="auto", help="The CPUs campy-acquire (its camera processes and \
+		encoders) is moved onto when its feed comes: auto (the efficiency cores, when --cpus auto put campy-live on \
+		the performance ones), efficiency, all, none, or a list.")
+	p.add_argument("--cuda-graphs", action="store_true", help="Record each model's GPU work as a CUDA graph per \
+		input shape and replay it (CUDA and ROCm): the same results, with less CPU time to launch it.")
+	p.add_argument("--hold-gpu-clock", default="auto", choices=["auto", "on", "off"], help="Keep one block of the \
+		GPU spinning at the lowest priority from the feed's coming to the end, so an NVIDIA GPU keeps its full clock \
+		(see campy-live's help). auto: on with NVIDIA's CUDA.")
 	return p.parse_args(argv)
 
 

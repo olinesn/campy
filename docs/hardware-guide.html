@@ -114,7 +114,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
   <ol class="recs">
     <li>
       <h3>Buy a discrete NVIDIA GPU for inference, and plug no monitor into it.</h3>
-      <p>The RTX 6000 Ada met 60 fps at p99 in every one of 32 model-size combinations at 3 cameras and in 28 of 32 at 8 cameras. The RTX 2000 Ada met it in at most 6 of 32 when idle, and while recording in none unpinned and 8 of 32 with its CPU threads pinned (below).</p>
+      <p>The RTX 6000 Ada met 60 fps at p99 in every one of 32 model-size combinations at 3 cameras and in 28 of 32 at 8 cameras. The RTX 2000 Ada met it in at most 6 of 32 when idle, and while recording in none unpinned and 8 of 32 with its CPU threads pinned (below). With its clock held up, the live pipeline's trained pair now runs in 13 ms on it, 60 fps included (below).</p>
       <p class="why">The RTX 4000 Ada in the same workstation showed a steady 18 ms p99 floor in every configuration. It is the card the monitor is plugged into, and Windows' desktop work on that GPU is the likely cause, so its own capability is still untested.</p>
     </li>
     <li>
@@ -125,7 +125,12 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     <li>
       <h3>On an Intel hybrid CPU, pin inference to the performance cores and raise its priority.</h3>
       <p>While recording, Windows ran the Pro Max Slim's inference partly on its efficiency cores. Pinning inference to the 8 performance cores, moving campy and its encoders to the 16 efficiency cores and running inference at High priority took the four fastest model pairs from 17.6 ms median and 23.5 ms p99 to 11.8 and 12.3 ms. Across all 32 model sizes, 8 then fit 60 fps while recording 3 cameras at 80 fps (none did unpinned), all 32 fit 30 fps, and p99 sat about 0.3 ms above the median. The recording kept 80 fps throughout. With three real FLIR cameras triggered at 60 fps by an Arduino, the same 8 fit, and each camera kept all 126,000 frames of a 35-minute recording.</p>
-      <p class="why">A High Performance power plan, browsers and editors moved to the Intel iGPU, and nobody signed in brought the unpinned case to 13.4 / 16.2 ms, but added nothing once inference was pinned. The live program, <code>campy-live</code>, doesn't pin itself yet: the Pro Max Slim's live run below was unpinned.</p>
+      <p class="why">A High Performance power plan, browsers and editors moved to the Intel iGPU, and nobody signed in brought the unpinned case to 13.4 / 16.2 ms, but added nothing once inference was pinned. <code>campy-live</code> now does this itself by default: it moves itself onto the performance cores at High priority, and campy's camera processes and encoders onto the efficiency cores once their live feed appears. In a live 3-camera recording, turning that off for 40 s from <code>campy-live-view</code> (its <code>c</code> key) raised the median from 9.3 to 11.2 ms per set.</p>
+    </li>
+    <li>
+      <h3>With an NVIDIA GPU, keep its clock at full speed.</h3>
+      <p>An NVIDIA GPU picks its own clock speed from how busy it looks, and live tracking's short burst of work per frame didn't look busy. While <code>campy-live</code> tracked 3 mice at 30 fps, the Pro Max Slim's RTX 2000 Ada sat at 780 MHz of its 2,500, and while it waited for a recording to start it fell to its idle clock of 210 MHz. That was most of the gap to the other machines. <code>campy-live</code> now keeps a tiny part of the GPU busy, at the lowest priority, from the moment the cameras' feed appears: 4 of its blocks while it waits, 1 while it tracks. The GPU then stays at about 2,500 MHz. On a replay of the same 3 mice, the time per set fell from 27.6 to 13.2 ms (p99 28.2 to 14.3), and 60 fps fit with nothing skipped.</p>
+      <p class="why">The cost is about 20 W while waiting, against 2.5 W idle, and the GPU drew about 46 W while tracking. The models' own work isn't slowed: it gets the GPU's other blocks first. It's on by default with NVIDIA GPUs (<code>--hold-gpu-clock</code>). The EVO-X2's AMD GPU didn't show this slowdown: its first sets were as fast as the rest. The benchmark sweeps on Windows didn't log GPU clocks, so some of their RTX 2000 Ada numbers may also have run below full clock.</p>
     </li>
     <li>
       <h3>Keep Windows awake during recordings.</h3>
@@ -135,7 +140,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     <li>
       <h3>On a fast GPU, run the models as CUDA graphs.</h3>
       <p>Replaying each model's forward pass as a recorded CUDA graph (<code>--cuda-graphs</code> in the benchmark) made the RTX 6000 Ada's pipeline 20% faster at the median and 25% at p99: 5.2–7.8 ms across all 32 combinations, every one with p99 under 8.3 ms, half the 60 fps budget. The output was identical to running without graphs.</p>
-      <p class="why">On the RTX 2000 Ada graphs helped only 2–4%, because that card is limited by its own compute. sleap-nn doesn't use graphs on Windows by itself: <code>torch.compile</code>, which would, needs Triton, so the live pipeline has to capture them the way the benchmark does. <code>campy-live</code> doesn't do this yet.</p>
+      <p class="why">On the RTX 2000 Ada graphs helped only 2–4%, because that card is limited by its own compute. sleap-nn doesn't use graphs on Windows by itself: <code>torch.compile</code>, which would, needs Triton, so the live pipeline captures them the way the benchmark does. <code>campy-live --cuda-graphs</code> now does: on the Pro Max Slim it took the 3-mouse replay from 13.2 to 12.4 ms per set (p99 14.3 to 13.0), and on 300 recorded sets its keypoints were identical to running without graphs.</p>
     </li>
     <li>
       <h3>Choose a model with about 2 ms to spare in the benchmark.</h3>
@@ -282,6 +287,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
         <li><b>Convolutions differ.</b> These models are 16-filter networks of small 3 × 3 convolutions and memory-bound steps. On a 64-channel 3 × 3 convolution, AMD's MIOpen reached 27 TFLOPS and Nvidia's cuDNN 12: cuDNN's tensor-core kernels suit wide layers. That is one shape, so read the ratio as a direction.</li>
         <li><b>Layout conversions.</b> cuDNN converts each activation to channels-last and back. Channels-last models cut the forward passes from 2.15 to 1.67 ms and from 7.34 to 5.52 ms, against the EVO-X2's 1.40 and 5.07.</li>
         <li><b>A small card.</b> The RTX 2000 Ada is a 70 W low-profile card, the smallest of Nvidia's Ada workstation line. On the RTX 6000 Ada the GPU part of the gap disappears.</li>
+        <li><b>Its clock.</b> In the live pipeline the RTX 2000 Ada chose 780 MHz of its 2,500, because each frame's work comes as a short burst, and that doubled the time per set. <code>campy-live</code> now holds the clock up (recommendations above). The profiling here ran sets back to back, which keeps a GPU busier; its clocks weren't logged.</li>
         <li><b>Hybrid CPU.</b> The Core Ultra 9 285 has 8 performance and 16 efficiency cores; the EVO-X2 has 16 identical Zen 5 cores. While recording, the Pro Max Slim's inference slowed 21–23% (p50) against 3–7% on the EVO-X2, even though its encoders run on a separate Intel iGPU. The CPU-bound work around the models competes with campy and the encoders, and Windows moved the inference thread onto efficiency cores. Pinning it to the performance cores at High priority removed the slowdown (table below).</li>
         <li><b>Memory</b> is not a factor (see above).</li>
       </ul>
@@ -306,7 +312,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
         <tr><td>3 real cameras, Arduino-triggered at 60 fps, default pair</td><td class="mono">9.2 / 9.6 ms</td><td class="mono">11.5 / 11.7 ms pinned, High priority</td></tr>
         <tr><td>Model sizes fitting 60 fps while recording</td><td><span class="pill part">13 / 32</span></td><td><span class="pill miss">0 / 32</span> unpinned; <span class="pill part">8 / 32</span> pinned, High priority</td></tr>
         <tr><td>Model sizes fitting 30 fps while recording</td><td><span class="pill ok">32 / 32</span></td><td><span class="pill part">28 / 32</span> unpinned; <span class="pill ok">32 / 32</span> pinned</td></tr>
-        <tr><td>Full live pipeline, trained models, 3 real cameras</td><td class="mono">60 fps, ~9 detections per set: 11.6 / 12.7 ms inference, 0 skipped; 5 mice replayed: 15.0 / 16.3 ms, 0 skipped</td><td class="mono">30 fps, 3 mice: 27.4 / 28.1 ms inference, unpinned</td></tr>
+        <tr><td>Full live pipeline, trained models, 3 real cameras</td><td class="mono">60 fps, ~9 detections per set: 11.6 / 12.7 ms inference, 0 skipped; 5 mice replayed: 15.0 / 16.3 ms, 0 skipped</td><td class="mono">Before: 30 fps, 3 mice: 27.4 / 28.1 ms inference, unpinned. Now, GPU clock held and pinned: 3 mice replayed at 60 fps, 13.3 / 14.0 ms, 0 skipped; 3 real cameras at 60 fps (1 animal in view), 9.2 / 10.3 ms, 0 skipped</td></tr>
         <tr><td>8 cameras</td><td>about 35–40 fps at best</td><td>not tested; GPU-bound, so likely slower</td></tr>
       </tbody>
     </table>
@@ -330,7 +336,9 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     <h3>What could close the gap on the Pro Max Slim, cheapest first</h3>
     <ol class="plain">
       <li>Always run the models channels-last: free, and the fastest setting on Nvidia. <code>campy-live</code> does this by default on Nvidia GPUs.</li>
-      <li>Pin inference to the performance cores at High priority, with the recording on the efficiency cores: measured in the benchmark, and the biggest single gain (table above), but not yet built into <code>campy-live</code>. A High Performance power plan and keeping desktop apps off the inference GPU help when inference isn't pinned. Still untested: Nvidia's TCC driver mode for the inference card (needs administrator rights, no display on that card and a reboot; support on the RTX 2000 Ada not checked).</li>
+      <li>Hold the GPU's clock up, so it doesn't settle at 780 MHz under live tracking's bursts: the biggest single gain, about half the time per set. <code>campy-live</code> does this by default with NVIDIA GPUs.</li>
+      <li>Pin inference to the performance cores at High priority, with the recording on the efficiency cores: the biggest gain in the benchmark (table above), and now <code>campy-live</code>'s default. A High Performance power plan and keeping desktop apps off the inference GPU help when inference isn't pinned. Still untested: Nvidia's TCC driver mode for the inference card (needs administrator rights, no display on that card and a reboot; support on the RTX 2000 Ada not checked).</li>
+      <li>CUDA graphs (<code>campy-live --cuda-graphs</code>): about 6% on the RTX 2000 Ada, with identical keypoints.</li>
       <li>A faster GPU: once the GPU is fast enough, CUDA graphs bring Windows down to a 5–8 ms floor (RTX 6000 Ada). The monitor-free RTX 4000 Ada test will show whether a mid-range card gets there.</li>
       <li>Linux on the same hardware, which would also settle the OS question.</li>
       <li>Software: fewer GPU waits in sleap-nn's post-processing, such as batched peak finding without per-frame <code>.item()</code> calls. This would help Windows most, on any hardware.</li>
@@ -399,7 +407,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 </section>
 
 <section>
-  <h2>End to end on the Pro Max Slim, at 30 fps</h2>
+  <h2>End to end on the Pro Max Slim</h2>
   <p class="col">The same live pipeline ran on the Pro Max Slim with three real FLIR cameras triggered at 30 fps by an Arduino, 3 mice in view, for 2 minutes. Models: the centroid model above and the 160 px-crop centered-instance model, fp16 and channels-last, with <code>campy-live</code> neither pinned to the performance cores nor at High priority, and without CUDA graphs.</p>
   <div class="tablewrap">
     <table>
@@ -414,9 +422,28 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     </table>
   </div>
   <ul class="plain col">
-    <li><b>It fits 30 fps, not 60.</b> Inference used 27.5 of the 33.3 ms per set. A fourth camera, or 40 fps, would not fit with this model pair as it runs now.</li>
-    <li><b>The first sets are still slow on CUDA.</b> Sets 1 and 4 took 125 and 110 ms, and the 5 sets that arrived meanwhile were skipped. The warm-up fix covers this on the EVO-X2 but not yet here.</li>
-    <li><b>Not tuned yet.</b> Pinning, High priority and CUDA graphs, which helped in the benchmark, aren't in <code>campy-live</code> yet, and this model pair wasn't benchmarked on this machine, so how much of the gap to the EVO-X2 they would close is not known.</li>
+    <li><b>It fit 30 fps, not 60.</b> Inference used 27.5 of the 33.3 ms per set.</li>
+    <li><b>The first sets were slow.</b> Sets 1 and 4 took 125 and 110 ms, and the 5 sets that arrived meanwhile were skipped.</li>
+    <li><b>Both came from the GPU's clock</b> (recommendations above): 780 MHz while tracking, and 210 MHz at the start, after waiting for the recording.</li>
+  </ul>
+  <p class="col">With the clock held, <code>campy-live</code> on the performance cores and campy on the efficiency cores (the defaults since pull request 96), the same models ran as below on 21 October. The replays fed the 3-mouse recording above into the live feed after 15 s of waiting, as campy does before the trigger. The live runs used the three real cameras with the Arduino trigger, starting with the GPU idle, but the cage had only one animal in view, so each set held 1 crop instead of 9.</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Pro Max Slim, 3 cameras</th><th>Sets</th><th>Inference, median / p99</th><th>First set</th></tr></thead>
+      <tbody>
+        <tr><td>3 mice replayed, 30 fps, before (dev)</td><td class="mono">895 of 900, 5 skipped</td><td class="mono">27.6 / 28.2 ms</td><td class="mono">125 ms</td></tr>
+        <tr><td>3 mice replayed, 30 fps, now</td><td class="mono">900 of 900</td><td class="mono"><b>13.2 / 14.3 ms</b></td><td class="mono">14 ms</td></tr>
+        <tr><td>3 mice replayed, 60 fps, now</td><td class="mono">1,800 of 1,800</td><td class="mono"><b>13.3 / 14.0 ms</b></td><td class="mono">14 ms</td></tr>
+        <tr><td>3 mice replayed, 60 fps, now, CUDA graphs</td><td class="mono">1,800 of 1,800</td><td class="mono">12.5 / 13.5 ms</td><td class="mono">13 ms</td></tr>
+        <tr><td>Live, 1 animal, 30 fps, before (dev)</td><td class="mono">3,597 of 3,600, 3 skipped</td><td class="mono">17.1 / 18.1 ms</td><td class="mono">about 78 ms</td></tr>
+        <tr><td>Live, 1 animal, 30 fps, now</td><td class="mono">3,600 of 3,600</td><td class="mono">9.5 / 11.9 ms</td><td class="mono">9.5 ms</td></tr>
+        <tr><td>Live, 1 animal, 60 fps, now</td><td class="mono">7,200 of 7,200</td><td class="mono">9.2 / 10.3 ms</td><td class="mono">10 ms</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <ul class="plain col">
+    <li><b>60 fps fits now.</b> 13 ms of the 16.7 ms per set with 3 mice, and frame to 3D pose in 16 ms at the median (Windows' clock steps in 15.6 ms).</li>
+    <li><b>Every camera saved all its frames</b> in each live run: 3,600 at 30 fps, 7,200 at 60 fps. In the 60 fps run, 5 sets had cameras' frames arriving more than half a frame apart (campy-live counts them as misaligned); none did at 30 fps.</li>
     <li><b>Watching costs almost nothing.</b> With <code>campy-live-view</code> showing the tracking on the live frames, in 2D and 3D, inference was about 0.1 ms slower and no set was skipped. The view runs as its own program at low priority and needs 7–9 ms of one CPU core per picture.</li>
   </ul>
 </section>
@@ -432,13 +459,14 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     <li>The Pro Max Slim's live run used a separate software stack from its benchmark (torch 2.11.0+cu128, sleap-nn 0.3.3).</li>
     <li>Windows machines run the GPUs under WDDM; no kernel-log equivalent of Linux's amdgpu messages was checked there.</li>
     <li>Pinning and the Windows changes were measured on the four fastest model pairs in two 21-minute recordings, before and after the changes, with a backup service running in both; the second recording's last minutes fell into Modern Standby and were discarded. All 32 model sizes were then measured pinned, in a separate recording with the backup service stopped and the screen timeout set to Never.</li>
-    <li>CUDA graphs were measured idle at 3 cameras only. Not yet tested: graphs while recording and at 8 cameras, the RTX 4000 Ada with no monitor attached, and the live pipeline on the Precision 7875.</li>
+    <li>The 21 October runs on the Pro Max Slim logged the GPU's clock every 50 ms, and held a lock so that no other program used the GPU meanwhile; runs that overlapped another session's were discarded and repeated. The live runs' 1 animal per set makes them lighter than the 3-mouse replays.</li>
+    <li>CUDA graphs were measured idle at 3 cameras only in the benchmark, and in the live pipeline on the Pro Max Slim (above). Not yet tested: graphs while recording and at 8 cameras, the RTX 4000 Ada with no monitor attached, and the live pipeline on the Precision 7875.</li>
   </ul>
 </section>
 
 <footer>
-  <p>Measured 18–20 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
-  <p class="meta">Version 11 · updated 20 October 2026 · reflects campy changes through pull request 86 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p>Measured 18–21 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
+  <p class="meta">Version 12 · updated 21 October 2026 · reflects campy changes through pull request 96 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 
