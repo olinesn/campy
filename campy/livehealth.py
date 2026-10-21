@@ -122,10 +122,17 @@ class Rig:
 		# This camera's usual timestamp step (in its own units), or None
 		return float(np.median(feed.stampSteps)) if len(feed.stampSteps) >= 5 else None
 
+	def Every(self):
+		# How often to read the rings' slots: often enough to see every frame (a frame stays in its ring for
+		# slots frames), at most 20 times a second
+		rate = 1.0 / self.Period()
+		return min(0.05, 0.4 * self.slots / rate)
+
 	def Add(self, c, frames, hosts, stamps, written, latest=None):
 		"""Camera c's frames as its ring holds them (numbers, oldest first), and its newest frame number."""
 		feed = self.feeds[c]
 		period = self.Period()
+		usual = self.StampStep(feed)
 		for n, h, s, w in zip(np.asarray(frames).tolist(), np.asarray(hosts).tolist(), np.asarray(stamps).tolist(),
 				np.asarray(written).tolist()):
 			if n in feed.frames:
@@ -141,7 +148,6 @@ class Rig:
 			ds = s - before[1]
 			if dw > 0:
 				feed.writtenSteps.append(dw)
-			usual = self.StampStep(feed)
 			if np.isfinite(ds) and ds > 0 and usual:
 				pulses = ds / usual
 				if pulses > 1.5: # the camera skipped frames
@@ -157,10 +163,10 @@ class Rig:
 		while len(feed.order) > KEEP:
 			del feed.frames[feed.order.popleft()]
 		if latest is not None and latest > 0:
-			# Numbers the ring should hold whole that it never did: gaps. One slot may be being written, and
-			# the writer may have gone on a frame as it was read: the newest slots - 2
+			# Numbers the ring should hold whole that it never did: gaps. The slot of latest + 1 (latest -
+			# slots + 1's) may be being written: the newest slots - 1
 			if feed.checked is not None and latest > feed.checked:
-				low = max(feed.checked + 1, latest - self.slots + 3)
+				low = max(feed.checked + 1, latest - self.slots + 2)
 				feed.unchecked += max(0, low - feed.checked - 1)
 				missing = sum(1 for n in range(low, latest + 1) if n not in feed.frames)
 				if missing:

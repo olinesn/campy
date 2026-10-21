@@ -148,7 +148,6 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 LINE = 20 # px between the panel's lines
 PAD = 8
 STALE_S = 0.5 # no row for this long: the frames alone
-RIG_EVERY_S = 0.05 # the rings' slots read this often (Rig): every frame, at 30 fps and 8 slots
 STRIP_H, STRIP_LABEL = 14, 110 # px: each identity's strip, its label before it
 # The strip's colours, as a cv2.LUT: between identities, no row from campy-live, no 3D, good, fair, bad
 STRIP_COLORS = np.zeros((1, 256, 3), np.uint8)
@@ -868,7 +867,7 @@ class Viewer:
 				return None
 			self.lastRaw = now
 			return self.Waiting(), None, None
-		if now - self.rigAt >= RIG_EVERY_S:
+		if now - self.rigAt >= self.rig.Every():
 			# Each camera's newest frames' numbers and times (not the frames): how it keeps up
 			self.rigAt = now
 			start = time.perf_counter()
@@ -978,7 +977,7 @@ class Viewer:
 			if len(shown) > 1 and c == self.current: # the grid: the camera v shows alone
 				cv2.rectangle(tile, (1, 1), (tile.shape[1] - 2, tile.shape[0] - 2), PICKED, 2)
 			health = time.perf_counter()
-			self.Mark(tile, c, rig)
+			self.Badge(tile, c, rig)
 			healthS += time.perf_counter() - health
 			y, x = layout.Cell(k)
 			canvas[y:y + layout.tile[0], x:x + layout.tile[1]] = tile
@@ -996,7 +995,7 @@ class Viewer:
 		self.healthMs.append(healthS * 1e3)
 		return full
 
-	def Mark(self, tile, c, rig):
+	def Badge(self, tile, c, rig):
 		# Camera c's health on its tile, at its top right: its frames a second (green), or what is wrong, in
 		# red, with a red frame round the tile
 		if rig is None or c >= len(rig.cameras):
