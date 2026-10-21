@@ -327,7 +327,7 @@ def test_keys_pick_the_cameras_and_what_is_drawn():
 	assert viewer.Key(ord("a")) and viewer.Shown() == [0, 1, 2]
 	assert viewer.Key(ord("2")) and viewer.Key(ord("g")) and viewer.Shown() == [0, 1, 2]
 	assert viewer.Key(ord("d")) and not viewer.show2d
-	assert viewer.Key(ord("p")) and not viewer.show3d
+	assert viewer.Key(ord("r")) and not viewer.show3d # LUC3D's r
 	assert viewer.Key(ord("l")) and not viewer.lines
 	assert not viewer.Key(ord("q")) and not viewer.Key(27)
 
@@ -485,12 +485,12 @@ def test_buttons_turn_the_predictions_and_reprojections_on_and_off():
 	viewer.lastSeen = 30.0
 	image = viewer.Compose(frames, row)
 	keys = [b[4] for b in viewer.buttons]
-	assert keys == [ord("d"), ord("p"), ord("l")]
+	assert keys == [ord("d"), ord("r"), ord("l")]
 	def Centre(key):
 		x0, y0, x1, y1, _ = next(b for b in viewer.buttons if b[4] == key)
 		return (x0 + x1) // 2, (y0 + y1) // 2
 	on = image[Centre(ord("d"))[1], Centre(ord("d"))[0] + 60].copy()
-	assert viewer.Click(*Centre(ord("d"))) == ord("d") and viewer.Click(*Centre(ord("p"))) == ord("p")
+	assert viewer.Click(*Centre(ord("d"))) == ord("d") and viewer.Click(*Centre(ord("r"))) == ord("r")
 	assert viewer.Click(5, 5) is None # a camera's tile
 	def tiles(image): # the identities' colours on the cameras' frames, not in the panel
 		y, x, h, w = viewer.layout.panel
@@ -498,16 +498,16 @@ def test_buttons_turn_the_predictions_and_reprojections_on_and_off():
 		image[y:y + h, x:x + w] = 0
 		return sum(like(image, liveview.Color(a)).sum() for a in range(3))
 	both = tiles(image)
-	viewer.Key(viewer.Click(*Centre(ord("p"))))
+	viewer.Key(viewer.Click(*Centre(ord("r"))))
 	assert not viewer.show3d and viewer.show2d
 	image = viewer.Compose(frames, row)
-	off = image[Centre(ord("p"))[1], Centre(ord("p"))[0] + 60]
+	off = image[Centre(ord("r"))[1], Centre(ord("r"))[0] + 60]
 	assert tuple(on) != tuple(off) # drawn as off
 	predictions = tiles(image)
 	viewer.Key(viewer.Click(*Centre(ord("d"))))
 	image = viewer.Compose(frames, row)
 	assert 0 < predictions < both and tiles(image) == 0 # neither: nothing of the animals drawn
-	viewer.Key(viewer.Click(*Centre(ord("p"))))
+	viewer.Key(viewer.Click(*Centre(ord("r"))))
 	assert 0 < tiles(viewer.Compose(frames, row)) < both # the reprojections alone
 
 
@@ -679,7 +679,7 @@ def test_the_3d_tile_shows_the_row_the_cameras_show():
 	assert (tile[50:] == drawn(other)).all() and (tile[50:] != drawn(row)).any()
 	# \\ (or its button) hides it: the cameras alone, and no 3D drawn
 	keys = [b[4] for b in viewer.buttons]
-	assert keys == [ord("d"), ord("p"), ord("l"), ord("\\"), ord("t"), ord("o")]
+	assert keys == [ord("d"), ord("r"), ord("l"), ord("\\"), ord("t"), ord("o")]
 	x0, y0, x1, y1, _ = viewer.buttons[3]
 	viewer.Key(viewer.Mouse(liveview.cv2.EVENT_LBUTTONDOWN, (x0 + x1) // 2, (y0 + y1) // 2, 0))
 	assert not viewer.showScene
@@ -718,7 +718,7 @@ def test_dragging_in_the_3d_tile_turns_it():
 	assert viewer.drag is None and scene.azimuth == pytest.approx(turn - 60 * 0.008)
 	# Drawn again as Run does: the 3D tile changes, the cameras' do not
 	before = image.copy()
-	viewer.Draw3D(image, viewer.last[1], 5)
+	viewer.Draw3D(image, viewer.last[1], viewer.last[0][0], viewer.lastCameras[0])
 	assert not viewer.moved
 	assert (image[y:y + h, x:x + w] != before[y:y + h, x:x + w]).any()
 	th, tw = viewer.layout.tile
@@ -743,8 +743,10 @@ def test_dragging_in_the_3d_tile_turns_it():
 	viewer.Mouse(cv2_.EVENT_LBUTTONDBLCLK, *at, 0)
 	assert scene.azimuth == 0 and scene.centre == pytest.approx(centre)
 	scene.Orbit(30, 0)
+	viewer.Key(ord("r")) # LUC3D's: the reprojections, not the 3D view put back
+	assert scene.azimuth != 0 and not viewer.show3d
 	viewer.Key(ord("r"))
-	assert scene.azimuth == 0
+	scene.Reset()
 	# Hidden (\\) while dragged: the drag ends
 	viewer.Mouse(cv2_.EVENT_LBUTTONDOWN, *at, 0)
 	viewer.Key(ord("\\"))
@@ -1517,3 +1519,21 @@ def test_the_3d_view_starts_with_the_cage_and_every_camera_in_it():
 		assert ((px < [0.04 * w, 0.12 * h]) | (px > [0.96 * w, 0.95 * h])).any()
 		scene.Orbit(150, -40)
 		scene.Reset() # back to it
+
+
+def test_frame_numbers_have_thousands_separators_and_their_time():
+	# "frame 9,149  0:05:04.93": the time into the recording, as the panel's "Recording" counts it (from the first
+	# frame's host time), or from the frame number at the frame rate until the rig has seen the camera's frames
+	assert liveview.FrameText(9149) == "frame 9,149"
+	assert liveview.FrameText(9149, 304.93) == "frame 9,149  0:05:04.93"
+	assert liveview.Clock(3725.5) == "1:02:05.50"
+	rig = liveview.livehealth.Rig(["Camera0", "Camera1"], 30.0)
+	viewer = types.SimpleNamespace(rig=rig)
+	frame = types.SimpleNamespace(frameNumber=9149, hostTime=0)
+	assert liveview.Viewer.FrameTime(viewer, 0, frame) == pytest.approx(9148 / 30) # no frames seen yet
+	rig.feeds[1].first = (11, 5_000_000_000) # its first frame seen: frame 11, at host 5 s
+	frame = types.SimpleNamespace(frameNumber=9149, hostTime=5_000_000_000 + 304_600_000_000)
+	assert liveview.Viewer.FrameTime(viewer, 1, frame) == pytest.approx(304.6 + 10 / 30)
+	assert liveview.Viewer.FrameTime(types.SimpleNamespace(rig=None), 0, frame) is None
+	assert liveview.MarkText({"number": 3, "time": "2026-10-21 16:46:27.532", "frame": 12444, "event": "mark",
+		"note": ""}).startswith("3 at 16:46:27, frame 12,444")
