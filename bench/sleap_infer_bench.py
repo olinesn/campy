@@ -50,6 +50,24 @@ What is measured
   Each row records the largest difference between the graph's output and the
   eager forward on the capture input. torch.compile's reduce-overhead mode does
   the same automatically but needs Triton, which Windows lacks.
+* The GPU's clock. An NVIDIA GPU chooses its clock from how busy it looks,
+  and short bursts of work with gaps between them (a set, a sync, the next
+  set) can look idle to it: on Windows an RTX 2000 Ada ran the light pairs at
+  870-960 MHz of its 3105 (throttle reason "GPU idle"), and the same pairs
+  took 1.8x as long as on a day it boosted. So every row logs the clock it
+  ran at: nvidia-smi sampled every 200 ms through the timed sets (SM clock,
+  power, P-state, throttle reasons), or on ROCm the GPU's sysfs clock
+  (pp_dpm_sclk) and busy percent; --no-clock-log turns it off.
+  --hold-clock on keeps one block of the GPU spinning (torch.cuda._sleep) on
+  a stream of the lowest priority while a row runs, as campy-live's
+  --hold-gpu-clock does (campy/live.py, GpuClock): the GPU then looks busy
+  and keeps its full clock, and the model's own work goes first.
+  --hold-clock off,on times both.
+* With --pace FPS, sets start on a frame cadence (one every 1/FPS s), as
+  they would live, instead of back to back. A set that runs over its slot
+  starts the next one at once, as live inference reads the newest set; the
+  row counts those overruns. Between paced sets the GPU has nothing to do,
+  which is when an NVIDIA GPU lowers its clock most.
 * With --stages, each stage alone as well: CentroidLayer.predict on the
   uploaded frames, and CenteredInstanceLayer.predict on a (N*K, 1, crop, crop)
   uint8 crop batch already on the device.
@@ -156,12 +174,16 @@ HIP_*, ROCR_*, AMD_*, PYTORCH_*), so the two files say which run was which.
 """
 
 import argparse
+import glob
 import itertools
 import json
 import math
 import os
 import platform
+import shutil
+import subprocess
 import sys
+import threading
 import time
 import warnings
 from datetime import datetime
@@ -303,7 +325,9 @@ def resolve_device(name):
 
 def synchronize(device):
     if device.startswith("cuda"):
-        torch.cuda.synchronize()
+        # This stream only, as live inference waits for its results: a device-wide
+        # sync would also wait for --hold-clock's spin on its own stream
+        torch.cuda.current_stream().synchronize()
     elif device == "mps":
         torch.mps.synchronize()
 
@@ -374,7 +398,8 @@ class CUDAGraphed(torch.nn.Module):
                 self._eager(static_in)
         torch.cuda.current_stream().wait_stream(side)
         graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph):
+        # thread_local: --hold-clock's thread may launch its spin meanwhile
+        with torch.cuda.graph(graph, capture_error_mode="thread_local"):
             static_out = self._eager(static_in)
         graph.replay()
         diff = (static_out - self._eager(static_in)).abs().max().item()
@@ -392,14 +417,213 @@ class CUDAGraphed(torch.nn.Module):
 
 
 # --------------------------------------------------------------------------
+# The GPU's clock
+# --------------------------------------------------------------------------
+
+THROTTLE_NAMES = ((0x1, "idle"), (0x2, "app clocks"), (0x4, "SW power cap"), (0x8, "HW slowdown"),
+                  (0x10, "sync boost"), (0x20, "SW thermal"), (0x40, "HW thermal"),
+                  (0x80, "HW power brake"), (0x100, "display clock"))
+
+
+class ClockKeeper:
+    """--hold-clock on: one block of the GPU spinning on a lowest-priority stream.
+
+    The same method as campy-live's --hold-gpu-clock (campy/live.py,
+    GpuClock, while sets come): torch.cuda._sleep spins one block for about
+    2 ms at 2.5 GHz, its thread waits on a blocking event (no CPU core
+    spinning), and spins again until stopped.
+    """
+
+    CYCLES = 5000000
+
+    def __init__(self):
+        self.stop = threading.Event()
+        self.thread = None
+        self.spins = 0
+
+    def start(self):
+        self.stop.clear()
+        self.spins = 0
+        self.thread = threading.Thread(target=self._run, daemon=True, name="hold-clock")
+        self.thread.start()
+
+    def _run(self):
+        stream = torch.cuda.Stream(priority=0)  # 0: the lowest priority
+        done = torch.cuda.Event(blocking=True)
+        while not self.stop.is_set():
+            with torch.cuda.stream(stream):
+                torch.cuda._sleep(self.CYCLES)
+            done.record(stream)
+            done.synchronize()
+            self.spins += 1
+
+    def end(self):
+        self.stop.set()
+        self.thread.join()
+        return self.spins
+
+
+class NvidiaClockLog:
+    """nvidia-smi -lms through the timed sets: SM clock, power, P-state, throttle reasons."""
+
+    FIELDS = ["clocks.sm", "power.draw", "pstate", "utilization.gpu", "temperature.gpu"]
+    REASONS = ["clocks_event_reasons.active", "clocks_throttle_reasons.active"]
+
+    def __init__(self, gpu, period_ms=200):
+        self.gpu, self.period_ms = gpu, period_ms
+        self.smi = shutil.which("nvidia-smi")
+        self.fields = None
+        if self.smi:
+            for reason in self.REASONS:  # older drivers name it throttle, newer event
+                fields = self.FIELDS + [reason]
+                try:
+                    out = subprocess.run([self.smi, "-i", gpu, "--query-gpu=" + ",".join(fields),
+                                          "--format=csv,noheader,nounits"], capture_output=True,
+                                         text=True, timeout=20)
+                except (OSError, subprocess.TimeoutExpired):
+                    break
+                if out.returncode == 0 and "Field" not in out.stdout:
+                    self.fields = fields
+                    break
+        self.proc = None
+        self.lines = []
+
+    def ok(self):
+        return self.fields is not None
+
+    def start(self):
+        self.lines = []
+        self.proc = subprocess.Popen(
+            [self.smi, "-i", self.gpu, "--query-gpu=" + ",".join(self.fields),
+             "--format=csv,noheader,nounits", "-lms", str(self.period_ms)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            creationflags=0x08000000 if os.name == "nt" else 0)  # no console window
+        self.reader = threading.Thread(target=lambda: self.lines.extend(self.proc.stdout), daemon=True)
+        self.reader.start()
+
+    def end(self):
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+        self.reader.join(timeout=5)
+        mhz, watts, util, temp, pstates, masks = [], [], [], [], {}, []
+        for line in self.lines:
+            cells = [c.strip() for c in line.split(",")]
+            if len(cells) != len(self.fields):
+                continue
+            try:
+                mhz.append(float(cells[0]))
+                watts.append(float(cells[1]))
+                util.append(float(cells[3]))
+                temp.append(float(cells[4]))
+                masks.append(int(cells[5], 16))
+            except ValueError:
+                continue
+            pstates[cells[2]] = pstates.get(cells[2], 0) + 1
+        if not mhz:
+            return None
+        reasons = {}
+        for bit, name in THROTTLE_NAMES:
+            n = sum(1 for m in masks if m & bit)
+            if n:
+                reasons[name] = round(n / len(masks), 3)
+        return {"source": "nvidia-smi", "samples": len(mhz),
+                "sm_mhz_p50": float(np.median(mhz)), "sm_mhz_min": min(mhz), "sm_mhz_max": max(mhz),
+                "power_w_p50": float(np.median(watts)), "util_pct_p50": float(np.median(util)),
+                "temp_c_max": max(temp), "pstates": pstates, "throttle_fraction": reasons}
+
+
+class SysfsClockLog:
+    """ROCm (amdgpu): the GPU clock from pp_dpm_sclk (the line marked *) and gpu_busy_percent."""
+
+    def __init__(self, period_s=0.2):
+        self.period_s = period_s
+        self.dev = None
+        for path in sorted(glob.glob("/sys/class/drm/card*/device/pp_dpm_sclk")):
+            self.dev = os.path.dirname(path)
+            break
+        self.stop = threading.Event()
+
+    def ok(self):
+        return self.dev is not None
+
+    def _read(self):
+        mhz = busy = None
+        with open(os.path.join(self.dev, "pp_dpm_sclk")) as f:
+            for line in f:
+                if line.rstrip().endswith("*"):
+                    mhz = float(line.split()[1].lower().rstrip("mhz"))
+        try:
+            with open(os.path.join(self.dev, "gpu_busy_percent")) as f:
+                busy = float(f.read())
+        except OSError:
+            pass
+        return mhz, busy
+
+    def start(self):
+        self.samples = []
+        self.stop.clear()
+
+        def run():
+            while not self.stop.wait(self.period_s):
+                try:
+                    self.samples.append(self._read())
+                except (OSError, ValueError, IndexError):
+                    pass
+        self.thread = threading.Thread(target=run, daemon=True, name="clock-log")
+        self.thread.start()
+
+    def end(self):
+        self.stop.set()
+        self.thread.join()
+        mhz = [m for m, _ in self.samples if m is not None]
+        busy = [b for _, b in self.samples if b is not None]
+        if not mhz:
+            return None
+        return {"source": "sysfs pp_dpm_sclk", "samples": len(mhz), "sm_mhz_p50": float(np.median(mhz)),
+                "sm_mhz_min": min(mhz), "sm_mhz_max": max(mhz),
+                "util_pct_p50": float(np.median(busy)) if busy else None}
+
+
+def make_clock_log(device):
+    """The clock log for this device, or None (no nvidia-smi / sysfs, or not a GPU)."""
+    if not device.startswith("cuda"):
+        return None
+    if torch.version.hip:
+        log = SysfsClockLog()
+    else:
+        # nvidia-smi's numbering can differ from CUDA's: name the GPU by its UUID
+        props = torch.cuda.get_device_properties(torch.cuda.current_device())
+        uuid = str(getattr(props, "uuid", "") or "")
+        gpu = (uuid if uuid.startswith("GPU-") else "GPU-" + uuid) if uuid else "0"
+        log = NvidiaClockLog(gpu)
+    return log if log.ok() else None
+
+
+def wait_until(t):
+    """Sleep until time.perf_counter() reaches t: sleep to 2 ms before, then spin."""
+    while True:
+        left = t - time.perf_counter()
+        if left <= 0:
+            return
+        if left > 0.002:
+            time.sleep(left - 0.002)
+
+
+# --------------------------------------------------------------------------
 # Timing
 # --------------------------------------------------------------------------
 
-def time_calls(fn, device, iters, warmup):
+def time_calls(fn, device, iters, warmup, pace=0.0, clock_log=None):
     """Time fn() with a device sync after each call.
 
-    Returns first/second call times (new-shape cost) and the latency list of
-    `iters` calls made after `warmup` further untimed calls.
+    Returns first/second call times (new-shape cost), the latency list of
+    `iters` calls made after `warmup` further untimed calls, the output, the
+    number of timed calls that overran their slot (with pace, sets per
+    second, the warmup and timed calls start one every 1/pace s) and
+    clock_log's summary of the timed calls.
     """
     t0 = time.perf_counter()
     fn()
@@ -411,17 +635,39 @@ def time_calls(fn, device, iters, warmup):
     synchronize(device)
     second = time.perf_counter() - t0
 
+    period = 1.0 / pace if pace else 0.0
+    slot = time.perf_counter()
+
+    def paced():
+        nonlocal slot
+        if period:
+            wait_until(slot)
+        t0 = time.perf_counter()
+        result = fn()
+        synchronize(device)
+        t1 = time.perf_counter()
+        # Next slot; a set that ran over starts the next one at once
+        slot = max(slot + period, t1)
+        return t0, t1, result
+
     for _ in range(warmup):
-        fn()
+        paced() if period else fn()
     synchronize(device)
 
     lat = np.empty(iters)
-    for i in range(iters):
-        t0 = time.perf_counter()
-        out = fn()
-        synchronize(device)
-        lat[i] = time.perf_counter() - t0
-    return first, second, lat, out
+    overruns = 0
+    if clock_log is not None:
+        clock_log.start()
+    slot = time.perf_counter()
+    try:
+        for i in range(iters):
+            t0, t1, out = paced()
+            lat[i] = t1 - t0
+            if period and lat[i] > period:
+                overruns += 1
+    finally:
+        clock = clock_log.end() if clock_log is not None else None
+    return first, second, lat, out, overruns, clock
 
 
 def summarize(first, second, lat):
@@ -509,7 +755,8 @@ def make_layers(c, ci, args, device, precision, k, memory_format="nchw"):
     return topdown, centroid_layer, instance_layer, centroid_module, instance_module
 
 
-def run_one(c, ci, args, device, precision, k, frames_host, what, memory_format="nchw"):
+def run_one(c, ci, args, device, precision, k, frames_host, what, memory_format="nchw",
+            hold_clock=False, clock_log=None):
     """what: 'pipeline', 'centroid' or 'instance'. Returns a result dict."""
     topdown, centroid_layer, instance_layer, centroid_module, instance_module = make_layers(
         c, ci, args, device, precision, k, memory_format
@@ -528,10 +775,24 @@ def run_one(c, ci, args, device, precision, k, frames_host, what, memory_format=
             x = frames_host.to(device, non_blocking=True)  # (N, H, W, 1) uint8
             return layer.predict(x)
 
-    first, second, lat, out = time_calls(fn, device, args.iters, args.warmup)
+    keeper = ClockKeeper() if hold_clock else None
+    if keeper is not None:
+        keeper.start()
+    try:
+        first, second, lat, out, overruns, clock = time_calls(
+            fn, device, args.iters, args.warmup, args.pace, clock_log)
+    finally:
+        spins = keeper.end() if keeper is not None else None
     result = {"stage": what, "precision": precision, "memory_format": memory_format,
-              "cuda_graphs": False, "crops_per_frame": k}
+              "cuda_graphs": False, "crops_per_frame": k, "hold_clock": hold_clock,
+              "pace_fps": args.pace or None}
     result.update(summarize(first, second, lat))
+    if args.pace:
+        result["overruns"] = overruns
+    if clock is not None:
+        result["gpu_clock"] = clock
+    if keeper is not None:
+        result["hold_clock_spins"] = spins
     graphed = [m for m in (centroid_layer.backend.model, instance_layer.backend.model)
                if isinstance(m, CUDAGraphed) and m.graphs]
     if graphed:
@@ -600,6 +861,13 @@ def parse_args():
                         "of nchw, channels_last (model weights and activations)")
     p.add_argument("--cuda-graphs", action="store_true",
                    help="cuda: replay each model's forward pass as a CUDA graph")
+    p.add_argument("--hold-clock", default="off",
+                   help="off, on, or off,on: keep one GPU block spinning at the lowest priority "
+                        "so an NVIDIA GPU keeps its full clock (campy-live's --hold-gpu-clock)")
+    p.add_argument("--pace", type=float, default=0.0,
+                   help="sets per second: start sets on this cadence, as live (0: back to back)")
+    p.add_argument("--no-clock-log", action="store_true",
+                   help="don't log the GPU's clock (nvidia-smi / sysfs) through each row")
     p.add_argument("--compile", action="store_true",
                    help="experimental: TorchBackend(use_compile=True, compile_mode='reduce-overhead')")
     p.add_argument("--iters", type=int, default=2000, help="timed sets per measurement")
@@ -659,6 +927,17 @@ def main():
         skipped.append("--cuda-graphs ignored: cuda only")
     if args.compile and device == "mps":
         skipped.append("--compile ignored on mps (sleap-nn's TorchBackend disables it)")
+    holds = []
+    for h in (s.strip() for s in args.hold_clock.split(",") if s.strip()):
+        if h not in ("off", "on"):
+            sys.exit(f"--hold-clock: unknown {h!r} (use off and/or on)")
+        holds.append(h == "on")
+    if True in holds and not (device.startswith("cuda") and hasattr(torch.cuda, "_sleep")):
+        holds = [False]
+        skipped.append("--hold-clock ignored: cuda only")
+    clock_log = None if args.no_clock_log else make_clock_log(device)
+    if clock_log is None and not args.no_clock_log and device.startswith("cuda"):
+        skipped.append("GPU clock not logged: no nvidia-smi / pp_dpm_sclk found")
     ks = [int(s) for s in args.crops_per_frame.split(",")]
     if max(ks) > args.max_instances:
         sys.exit("--crops-per-frame cannot exceed --max-instances")
@@ -704,7 +983,10 @@ def main():
     print(f"{args.frames} frames {FRAME_W}x{FRAME_H} uint8 per set, {args.nodes} nodes, "
           f"iters {args.iters}, warmup {args.warmup}, compile {args.compile}, "
           f"CUDA graphs {args.cuda_graphs and device.startswith('cuda')}, "
-          f"memory format {','.join(memory_formats)}")
+          f"memory format {','.join(memory_formats)}, "
+          f"hold clock {','.join('on' if h else 'off' for h in holds)}, "
+          f"pace {f'{args.pace:g} sets/s' if args.pace else 'back to back'}, "
+          f"clock log {clock_log.__class__.__name__ if clock_log else 'off'}")
     print("timing: sleap-nn TopDownLayer.predict; centroid confmaps -> K synthetic peaks/frame "
           "(model still runs) so crops are fixed")
 
@@ -735,12 +1017,13 @@ def main():
                 )
             for prec in precisions:
                 for mf in memory_formats:
-                    r = run_one(c, ci, args, device, prec, k, frames_host, kind, mf)
-                    r["centroid"] = dict(c) if kind != "instance" else None
-                    r["instance"] = dict(ci) if kind != "centroid" else None
-                    r.update(stats_cache[key])
-                    results.append(r)
-                    print_row(r, header_needed=len(results) == 1)
+                    for hold in holds:
+                        r = run_one(c, ci, args, device, prec, k, frames_host, kind, mf, hold, clock_log)
+                        r["centroid"] = dict(c) if kind != "instance" else None
+                        r["instance"] = dict(ci) if kind != "centroid" else None
+                        r.update(stats_cache[key])
+                        results.append(r)
+                        print_row(r, header_needed=len(results) == 1)
 
     print(f"\ndone in {time.perf_counter() - t_start:.1f} s")
     print_table(results)
@@ -752,12 +1035,14 @@ def main():
 
 
 COLUMNS = [
-    ("stage", 8), ("centroid", 20), ("instance", 21), ("prec", 4), ("mem", 4), ("cg", 2), ("K", 2), ("GFLOP", 6),
-    ("1st ms", 8), ("2nd ms", 7), ("p50", 7), ("p95", 7), ("p99", 7), ("max", 7), ("sets/s", 7),
+    ("stage", 8), ("centroid", 20), ("instance", 21), ("prec", 4), ("mem", 4), ("cg", 2), ("hc", 2), ("K", 2),
+    ("GFLOP", 6), ("1st ms", 8), ("2nd ms", 7), ("p50", 7), ("p95", 7), ("p99", 7), ("max", 7), ("sets/s", 7),
+    ("MHz", 5), ("W", 4), ("over", 4),
 ]
 
 
 def row_cells(r):
+    clock = r.get("gpu_clock")
     gflop = r.get("centroid_gflop_per_set", 0.0) * (r["stage"] != "instance") + \
         r.get("instance_gflop_per_set", 0.0) * (r["stage"] != "centroid")
     return [
@@ -766,10 +1051,14 @@ def row_cells(r):
         instance_label(r["instance"]) if r["instance"] else "-",
         r["precision"], "cl" if r.get("memory_format") == "channels_last" else "nchw",
         "y" if r.get("cuda_graphs") else "-",
+        "y" if r.get("hold_clock") else "-",
         str(r["crops_per_frame"]), f"{gflop:.1f}",
         f"{r['first_call_ms']:.0f}", f"{r['second_call_ms']:.1f}",
         f"{r['p50_ms']:.2f}", f"{r['p95_ms']:.2f}", f"{r['p99_ms']:.2f}", f"{r['max_ms']:.2f}",
         f"{r['sets_per_s']:.1f}",
+        f"{clock['sm_mhz_p50']:.0f}" if clock else "-",
+        f"{clock['power_w_p50']:.0f}" if clock and clock.get("power_w_p50") is not None else "-",
+        str(r["overruns"]) if "overruns" in r else "-",
     ]
 
 
@@ -787,8 +1076,9 @@ def print_row(r, header_needed):
 
 def print_table(results):
     print("\nSummary (latency per set in ms; GFLOP per set; mem = memory format, cl = "
-          "channels_last; cg = CUDA graphs; K = crops per frame; 1st/2nd = first calls of "
-          "the shape):")
+          "channels_last; cg = CUDA graphs; hc = --hold-clock; K = crops per frame; 1st/2nd = "
+          "first calls of the shape; MHz / W = median GPU clock and power over the timed sets; "
+          "over = paced sets that ran over their slot):")
     print(format_row([name for name, _ in COLUMNS]))
     print("-" * (sum(w for _, w in COLUMNS) + 2 * (len(COLUMNS) - 1)))
     order = {"centroid": 0, "instance": 1, "pipeline": 2}
