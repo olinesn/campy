@@ -403,7 +403,7 @@ class CUDAGraphed(torch.nn.Module):
 
     def _capture(self, x):
         static_in = x.clone()
-        side = torch.cuda.Stream()
+        side = fixed_stream("capture warm-up")
         side.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(side):
             for _ in range(3):  # warm up cuDNN/cuBLAS outside the capture
@@ -412,8 +412,10 @@ class CUDAGraphed(torch.nn.Module):
         graph = torch.cuda.CUDAGraph()
         # One pool for every shape: the graphs never run at the same time, so
         # their intermediates can share memory (each output stays allocated).
-        # thread_local: --hold-clock's thread may launch its spin meanwhile
-        with torch.cuda.graph(graph, pool=self.pool, capture_error_mode="thread_local"):
+        # thread_local: --hold-clock's threads may launch their spins
+        # meanwhile, on streams of their own (fixed_stream)
+        with torch.cuda.graph(graph, pool=self.pool, stream=fixed_stream("capture"),
+                              capture_error_mode="thread_local"):
             static_out = self._eager(static_in)
         if self.pool is None:
             self.pool = graph.pool()
@@ -432,6 +434,29 @@ class CUDAGraphed(torch.nn.Module):
         return static_out
 
 
+_STREAMS = {}
+
+
+def fixed_stream(name, priority=0):
+    """One CUDA stream per name for the whole run, distinct from the others.
+
+    torch.cuda.Stream() hands out the pool's 32 streams per priority in turn,
+    so streams made on demand (one per capture, one per --hold-clock block
+    and row) came round to the same one: once the capture stream was a
+    spinner's, the spinner's event sync failed (CUDA_ERROR_CAPTURED_EVENT)
+    and the capture was invalidated (cudaErrorStreamCaptureInvalidated).
+    """
+    key = (name, priority, torch.cuda.current_device())
+    if key not in _STREAMS:
+        taken = {s.cuda_stream for s in _STREAMS.values()}
+        for _ in range(64):  # a pool's worth, twice
+            stream = torch.cuda.Stream(priority=priority)
+            if stream.cuda_stream not in taken:
+                break
+        _STREAMS[key] = stream
+    return _STREAMS[key]
+
+
 # --------------------------------------------------------------------------
 # The GPU's clock
 # --------------------------------------------------------------------------
@@ -448,7 +473,8 @@ class ClockKeeper:
     GpuClock, while sets come): torch.cuda._sleep spins one block for about
     2 ms at 2.5 GHz, its thread waits on a blocking event (no CPU core
     spinning), and spins again until stopped. --hold-clock-blocks spins
-    that many at once, each from its own thread and stream.
+    that many at once, each from its own thread and stream, the same
+    streams for every row (fixed_stream).
     """
 
     CYCLES = 5000000
@@ -462,13 +488,13 @@ class ClockKeeper:
     def start(self):
         self.stop.clear()
         self.spins = 0
-        self.threads = [threading.Thread(target=self._run, daemon=True, name=f"hold-clock {i}")
-                        for i in range(self.blocks)]
+        streams = [fixed_stream(f"hold-clock {i}") for i in range(self.blocks)]  # 0: the lowest priority
+        self.threads = [threading.Thread(target=self._run, args=(stream,), daemon=True,
+                                         name=f"hold-clock {i}") for i, stream in enumerate(streams)]
         for thread in self.threads:
             thread.start()
 
-    def _run(self):
-        stream = torch.cuda.Stream(priority=0)  # 0: the lowest priority
+    def _run(self, stream):
         done = torch.cuda.Event(blocking=True)
         while not self.stop.is_set():
             with torch.cuda.stream(stream):
