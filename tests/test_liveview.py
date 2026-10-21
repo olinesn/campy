@@ -1238,6 +1238,9 @@ def test_the_tracking_strip_shows_each_identitys_last_10_s():
 	y, x, h, w = viewer.layout.panel
 	assert like(image[y:y + h, x:x + w], liveview.WARN).sum() > 500
 	assert "above 20 px, drawn dimmed" in " ".join(text for text, _ in viewer.PanelText(row))
+	# The recording over: no strip (its last 10 s are not now's), until the next recording's feed
+	viewer.ended = True
+	assert viewer.Strips(600) is None
 
 
 def test_campy_live_publishes_every_row_it_logs(tmp_path, monkeypatch):

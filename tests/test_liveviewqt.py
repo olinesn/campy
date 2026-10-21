@@ -88,7 +88,8 @@ def window(qt, rings, tmp_path):
 		publisher.Write(row)
 		win.Step()
 		qt.app.processEvents()
-	yield types.SimpleNamespace(win=win, viewer=viewer, Result=Result, truth=truth, recording=recording)
+	yield types.SimpleNamespace(win=win, viewer=viewer, Result=Result, truth=truth, recording=recording,
+		writers=writers, publisher=publisher)
 	win.close()
 	viewer.Close()
 	publisher.Close()
@@ -122,11 +123,37 @@ def test_each_result_is_shown_at_the_windows_own_size(qt, window):
 	window.Result(11)
 	w, h = win.picture.Pixels()
 	assert win.picture.image.shape == (h, w, 3) and viewer.layout.tile[1] > tile[1]
-	# z: the window to the view
+	# z: the window to the view. The view of a 1500 x 900 window is wider than the screen (Qt's offscreen one:
+	# 800 x 600), so the window is as large as fits, the view's shape kept: within a pixel or two of the view
+	# drawn at that size, then, z again, to it
 	win.Key(ord("z"))
 	qt.app.processEvents()
 	window.Result(12)
+	assert OnScreen(qt, win)
+	assert np.abs(np.subtract(win.picture.Pixels(), viewer.Fit())).max() <= 3
+	win.Key(ord("z"))
+	qt.app.processEvents()
+	window.Result(13)
 	assert win.picture.Pixels() == viewer.Fit()
+
+
+def OnScreen(qt, win):
+	# The window, its title bar and borders too, inside the screen's free part (not under the taskbar)
+	return win.screen().availableGeometry().contains(win.frameGeometry())
+
+
+def test_the_window_opens_inside_the_screen(qt, window):
+	# --size (1800 x 960 by default) is more than the screen has (on the rig's RDP session: 1512 x 900 free;
+	# Qt's offscreen screen: 800 x 600): the window opens as large as fits, not under the taskbar
+	win = window.win
+	win.move(300, 200)
+	win.OnScreen(1800, 960)
+	qt.app.processEvents()
+	free = win.screen().availableGeometry()
+	assert OnScreen(qt, win) and win.frameGeometry().size() == free.size()
+	win.OnScreen(700, 400) # it fits: as asked
+	qt.app.processEvents()
+	assert (win.width(), win.height()) == (700, 400) and OnScreen(qt, win)
 
 
 def test_the_keys_are_luc3ds(qt, window):
@@ -268,6 +295,13 @@ def test_the_panel_warns_in_red_and_shows_the_tracking_strip(qt, window):
 		for y in range(2 * (liveview.STRIP_H + 6) + 4, 2 * (liveview.STRIP_H + 6) + liveview.STRIP_H)])
 	assert like(strip[..., ::-1], liveview.WARN).all() # RGB as BGR
 	assert viewer.panelMs and viewer.Summary(1.0)["qt_panel_ms"]["p50"] < 50
+	# The recording over (its feed and campy-live ended): no strip, and no results a second, while it waits
+	window.publisher.Close()
+	for w in window.writers:
+		w.Close()
+	viewer.Check()
+	win.Redraw()
+	assert viewer.readers is None and win.strips.isHidden() and "campy-live: 0.0 results/s" in win.status.text()
 
 
 def test_without_qt_the_window_is_opencvs(qt, monkeypatch, capsys):

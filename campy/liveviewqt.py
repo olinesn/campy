@@ -453,12 +453,41 @@ class Window(QtWidgets.QWidget):
 		self.Key(key)
 
 	def Fit(self):
-		# z: the window to the view, without the black margins
+		# z: the window to the view, without the black margins; smaller, the view's shape kept, when that
+		# would not fit on the screen
 		fit = self.viewer.Fit()
 		if fit:
 			ratio = self.picture.devicePixelRatioF()
-			w, h = int(round(fit[0] / ratio)), int(round(fit[1] / ratio))
-			self.resize(self.width() + w - self.picture.width(), self.height() + h - self.picture.height())
+			w, h = fit[0] / ratio, fit[1] / ratio
+			edge = self.width() - self.picture.width(), self.height() - self.picture.height() # the panel's
+			room = self.Room()
+			if room is not None:
+				shrink = min(1.0, (room[0] - edge[0]) / w, (room[1] - edge[1]) / h)
+				w, h = w * shrink, h * shrink
+			self.OnScreen(edge[0] + int(w), edge[1] + int(h))
+
+	def Room(self):
+		# The largest window, width x height, whose title bar and borders are inside its screen's free part
+		# (not under the taskbar), and that part (a QRect); None without a screen
+		screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+		if screen is None:
+			return None
+		free, frame, inside = screen.availableGeometry(), self.frameGeometry(), self.geometry()
+		return free.width() - (frame.width() - inside.width()), free.height() - (frame.height() - inside.height()), free
+
+	def OnScreen(self, w, h):
+		# The window at w x h, or smaller, so that it is inside its screen's free part, and moved there if it
+		# is not (the size asked for, not the window's: a resize may not have happened yet when it returns)
+		room = self.Room()
+		if room is not None:
+			w, h = min(w, room[0]), min(h, room[1])
+		self.resize(w, h)
+		if room is not None:
+			free, frame = room[2], self.frameGeometry()
+			x = max(free.left(), min(frame.x(), free.x() + room[0] - w))
+			y = max(free.top(), min(frame.y(), free.y() + room[1] - h))
+			if (x, y) != (frame.x(), frame.y()):
+				self.move(x, y)
 
 	def Raise(self):
 		# Back from minimized, and in front: a program started from a script may not take the focus on
@@ -497,8 +526,10 @@ def Run(args):
 	viewer.panel = False # the window's panel says it
 	window = Window(viewer, args)
 	width, height = args.size
-	window.resize(max(400, width - PANEL_WIDTH) + PANEL_WIDTH, height)
+	size = max(400, width - PANEL_WIDTH) + PANEL_WIDTH, height
+	window.resize(*size)
 	window.show()
+	window.OnScreen(*size) # its title bar and borders are known once it is shown
 	# Ctrl+C: Python takes it when it next runs, at the next tick; Qt would not stop for it
 	previous = signal.signal(signal.SIGINT, lambda *a: window.close())
 	Say("Showing {}; results from {} (Qt's window).".format(", ".join(viewer.ringNames), viewer.resultsName))

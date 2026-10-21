@@ -1388,6 +1388,7 @@ class Viewer:
 		if self.results is not None and self.results.Ended():
 			self.results.Close()
 			self.results = None
+			self.rate = [] # its results a second: none now
 		if self.readers is not None and any(r.Ended() or r.Replaced() for r in self.readers):
 			for r in self.readers:
 				r.Close()
@@ -1935,9 +1936,10 @@ class Viewer:
 		newest row), then a strip, the newest at its right: its height the
 		cameras it was triangulated from, its colour its reprojection error
 		(green within 10 px, yellow within --bad-px, red above; gray: no 3D;
-		dark: no row from campy-live).
+		dark: no row from campy-live). None too once the recording's feed has
+		ended (its last 10 s are not now's).
 		"""
-		if self.tracking is None:
+		if self.tracking is None or self.ended:
 			return None
 		got = self.tracking.Arrays()
 		animals = self.tracking.animals or (got[1].shape[1] if got is not None else 0)
