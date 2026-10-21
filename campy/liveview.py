@@ -114,7 +114,7 @@ resized, it is laid out again (the frames in their ratio, at most their own
 size, in the middle of the window), never stretched.
 """
 
-import argparse, json, os, sys, time
+import argparse, functools, json, os, sys, time
 from collections import deque
 from datetime import datetime
 
@@ -176,13 +176,29 @@ def Bad(row, bad_px):
 		return set(np.nonzero(livehealth.Errors(row) > bad_px)[0].tolist())
 
 
-def Dashed(img, p, q, color, thickness, dash=6 << 4):
-	# A dashed line from p to q (points with SHIFT bits): dash, gap, dash, ...
-	p, q = np.asarray(p, float), np.asarray(q, float)
-	n = max(1, int(np.linalg.norm(q - p) // dash))
-	for k in range(0, n, 2):
-		a, b = p + (q - p) * k / n, p + (q - p) * min(k + 1, n) / n
-		cv2.line(img, (int(a[0]), int(a[1])), (int(b[0]), int(b[1])), color, thickness, cv2.LINE_AA, SHIFT)
+def Dashes(p, q, dash=6 << SHIFT):
+	"""
+	The dashes of dashed lines from p to q (points (N, 2), with SHIFT
+	bits): (dashes, 2, 2) int32, for one cv2.polylines. About 6 px each, and
+	at most 12 a line: a line 234 px off is still a few calls.
+	"""
+	p, q = np.asarray(p, float).reshape(-1, 2), np.asarray(q, float).reshape(-1, 2)
+	if not len(p):
+		return np.zeros((0, 2, 2), np.int32)
+	n = np.clip(np.linalg.norm(q - p, axis=1) // dash, 1, 24).astype(int) # pieces: dash, gap, dash, ...
+	k = np.concatenate([np.arange(0, m, 2) for m in n])
+	m = np.repeat(n, (n + 1) // 2)
+	i = np.repeat(np.arange(len(p)), (n + 1) // 2)
+	a = p[i] + (q[i] - p[i]) * (k / m)[:, None]
+	b = p[i] + (q[i] - p[i]) * (np.minimum(k + 1, m) / m)[:, None]
+	return np.stack([a, b], 1).astype(np.int32)
+
+
+def Dashed(img, p, q, color, thickness):
+	# Dashed lines from p to q (points (N, 2), or one point each, with SHIFT bits), in one call
+	dashes = Dashes(p, q)
+	if len(dashes):
+		cv2.polylines(img, list(dashes), False, color, thickness, cv2.LINE_AA, SHIFT)
 
 
 # ---------------------------------------------------------------- drawing
@@ -219,11 +235,10 @@ def DrawSkeleton(img, px, scale, edges, color, radius, thickness, filled, dashed
 	lines = [(a, b) for a, b in (edges or ()) if a < len(ok) and b < len(ok) and ok[a] and ok[b]]
 	nodes = np.nonzero(ok)[0]
 	for col, extra in ((OUTLINE, 2), (color, 0)): # the outline under the colour
-		for a, b in lines:
-			if dashed:
-				Dashed(img, pts[a], pts[b], col, thickness + extra)
-			else:
-				cv2.line(img, pts[a], pts[b], col, thickness + extra, cv2.LINE_AA, SHIFT)
+		if dashed and lines:
+			Dashed(img, [pts[a] for a, _ in lines], [pts[b] for _, b in lines], col, thickness + extra)
+		for a, b in (() if dashed else lines):
+			cv2.line(img, pts[a], pts[b], col, thickness + extra, cv2.LINE_AA, SHIFT)
 		for i in nodes:
 			if filled:
 				cv2.circle(img, pts[i], (radius + extra // 2) << SHIFT, col, -1, cv2.LINE_AA, SHIFT)
@@ -241,8 +256,9 @@ def Text(img, text, at, color=TEXT, size=0.5, box=True):
 	cv2.putText(img, text, (x, y), FONT, size, color, 1, cv2.LINE_AA)
 
 
+@functools.lru_cache(maxsize=1024)
 def Wrap(text, width, size):
-	# text in lines no wider than width px
+	# text in lines no wider than width px (kept: the panel says much the same from one view to the next)
 	lines, line = [], ""
 	for word in text.split(" "):
 		trial = (line + " " + word) if line else word
@@ -251,7 +267,7 @@ def Wrap(text, width, size):
 			line = word
 		else:
 			line = trial
-	return lines + [line]
+	return tuple(lines + [line])
 
 
 def Has3D(row):
@@ -1390,8 +1406,11 @@ class Viewer:
 		if self.rig is not None:
 			status = self.rig.Status()
 			out["recording_s"] = status.recording_s
-			out["rig"] = [{"camera": s.name, "fps": s.fps, "offset_ms": s.offset_ms, "frames_off": s.frames_off,
-				**s.totals, "warnings": [text for _, text in s.problems]} for s in status.cameras]
+			def Rates(rates, q):
+				return float(np.percentile(rates, q)) if len(rates) else None
+			out["rig"] = [{"camera": s.name, "fps_p50": Rates(rates, 50), "fps_p1": Rates(rates, 1), "fps_last": s.fps,
+				"offset_ms": s.offset_ms, "frames_off": s.frames_off, **s.totals,
+				"warnings": [text for _, text in s.problems]} for s, rates in zip(status.cameras, self.rig.rates)]
 		if self.tracking is not None:
 			out["tracking"] = self.tracking.Summary()
 		return out

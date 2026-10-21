@@ -102,6 +102,7 @@ class Rig:
 		self.slots = int(slots)
 		self.samples = 0
 		self.sampledAt = None # time.perf_counter_ns() of the last Sample
+		self.rates = [collections.deque(maxlen=36000) for _ in names] # each camera's frames/s, at each Sample
 		self.cache = (None, None)
 
 	def Sample(self, readers):
@@ -110,6 +111,10 @@ class Rig:
 			self.Add(c, *reader.Slots(), latest=latest)
 		self.sampledAt = time.perf_counter_ns() # the frames' rates are as of then
 		self.samples += 1
+		for feed, rates in zip(self.feeds, self.rates):
+			fps, _ = self.Rate(feed, self.sampledAt)
+			if fps is not None:
+				rates.append(fps)
 
 	def Period(self):
 		# Seconds from one frame to the next: the median of the written times' steps, or frameRate's
@@ -247,9 +252,9 @@ class Rig:
 			if offset is not None and abs(offset) >= 0.5 * period * 1e3:
 				k = int(round(abs(offset) / (period * 1e3))) or 1
 				s.frames_off = k if offset < 0 else -k
-				way = "ahead" if offset < 0 else "behind"
-				s.problems.append(("{} FRAME{} {}".format(k, "S" if k > 1 else "", way.upper()),
-					"{}: {} {} of the other cameras ({:+.0f} ms for the same frame number): campy-live's sets mix "
+				way = "ahead of" if offset < 0 else "behind"
+				s.problems.append(("{} FRAME{} {}".format(k, "S" if k > 1 else "", way.split()[0].upper()),
+					"{}: {} {} the other cameras ({:+.0f} ms for the same frame number): campy-live's sets mix "
 					"frames of different pulses. Stop the recording and start it again.".format(feed.name,
 					Plural(k, "frame"), way, offset)))
 			if s.lost:
