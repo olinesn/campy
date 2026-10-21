@@ -195,12 +195,14 @@ def Dashes(p, q, dash=6 << SHIFT):
 	return np.stack([a, b], 1).astype(np.int32)
 
 
-def Dashed(img, p, q, color, thickness):
-	# Dashed lines from p to q (points (N, 2), or one point each, with SHIFT bits), in one call. Not
-	# antialiased: a third of the time, and less than the solid antialiased lines they stand for
-	dashes = Dashes(p, q)
-	if len(dashes):
-		cv2.polylines(img, list(dashes), False, color, thickness, cv2.LINE_8, SHIFT)
+def Dashed(img, p, q, passes):
+	# Dashed lines from p to q (points (N, 2), with SHIFT bits), in one call for each of passes, (colour,
+	# thickness): an outline, then the colour. Not antialiased: a third of the time, and less than the
+	# solid antialiased lines they stand for
+	dashes = list(Dashes(p, q))
+	if dashes:
+		for color, thickness in passes:
+			cv2.polylines(img, dashes, False, color, thickness, cv2.LINE_8, SHIFT)
 
 
 # ---------------------------------------------------------------- drawing
@@ -236,9 +238,10 @@ def DrawSkeleton(img, px, scale, edges, color, radius, thickness, filled, dashed
 	ok, pts = Points(px, scale)
 	lines = [(a, b) for a, b in (edges or ()) if a < len(ok) and b < len(ok) and ok[a] and ok[b]]
 	nodes = np.nonzero(ok)[0]
+	if dashed and lines:
+		Dashed(img, [pts[a] for a, _ in lines], [pts[b] for _, b in lines], ((OUTLINE, thickness + 2),
+			(color, thickness)))
 	for col, extra in ((OUTLINE, 2), (color, 0)): # the outline under the colour
-		if dashed and lines:
-			Dashed(img, [pts[a] for a, _ in lines], [pts[b] for _, b in lines], col, thickness + extra)
 		for a, b in (() if dashed else lines):
 			cv2.line(img, pts[a], pts[b], col, thickness + extra, cv2.LINE_AA, SHIFT)
 		for i in nodes:
@@ -666,7 +669,7 @@ class Scene:
 		"""
 		A row's animals on img (a tile), over the grid and the cameras; nearer
 		over farther; those whose reprojection error is above bad_px dimmed and
-		dashed, their labels red.
+		dashed, their labels red, under the others.
 		"""
 		img[:] = self.Background(img.shape)
 		if row is None or not Has3D(row):
@@ -701,15 +704,19 @@ class Scene:
 					items.append(((depth[u] + depth[v]) / 2, 0, a, (q[u], q[v])))
 			top = px[front][np.argmin(px[front][:, 1])]
 			labels.append((a, top))
-		items.sort(key=lambda t: (-t[0], t[1])) # farthest first
+		# The bad first, under the others (not to trust), each one's dashes at once; then the others, farthest first
+		for a in sorted(bad):
+			lines = [q for _, node, b, q in items if b == a and not node]
+			if lines:
+				Dashed(img, [p for p, _ in lines], [q for _, q in lines], ((OUTLINE, 4), (Dimmed(Color(a)), 2)))
+		items.sort(key=lambda t: (t[2] not in bad, -t[0], t[1]))
 		for _, node, a, (q0, q1) in items:
 			color = Dimmed(Color(a)) if a in bad else Color(a)
 			if node: # q0 the node, q1 its radius
 				cv2.circle(img, q0, q1 + (1 << SHIFT), OUTLINE, -1, cv2.LINE_AA, SHIFT)
 				cv2.circle(img, q0, q1, color, -1, cv2.LINE_AA, SHIFT)
 			elif a in bad:
-				Dashed(img, q0, q1, OUTLINE, 4)
-				Dashed(img, q0, q1, color, 2)
+				pass # dashed, above
 			else:
 				cv2.line(img, q0, q1, OUTLINE, 4, cv2.LINE_AA, SHIFT)
 				cv2.line(img, q0, q1, color, 2, cv2.LINE_AA, SHIFT)
