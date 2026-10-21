@@ -623,7 +623,8 @@ def run_live(prefix, out, args, frames=60, rate=200, delay=0.3):
 	try:
 		with pytest.MonkeyPatch.context() as m:
 			m.setattr(live.Cameras, "Attach", Attach)
-			return live.Run(live.ParseArgs(["--cameras", "3", "--name", prefix, "--out", out] + args))
+			# --cpus none: the tests' own process stays where it is, on any CPU
+			return live.Run(live.ParseArgs(["--cameras", "3", "--name", prefix, "--out", out, "--cpus", "none"] + args))
 	finally:
 		trigger.set()
 		t.join()
@@ -778,3 +779,92 @@ def test_fake_centroids_give_that_many_peaks():
 	assert isinstance(layer.backend, Backend)
 	peaks = (cm == torch.nn.functional.max_pool2d(cm, 3, 1, 1)) & (cm > 0.2)
 	assert peaks.sum((1, 2, 3)).tolist() == [2, 0, 6]
+
+
+# -------------------------------------------------------------- keeping the GPU warm, and the CPUs
+
+def test_the_gpu_clock_is_held_with_nvidias_cuda_only(monkeypatch):
+	# auto: on with CUDA (not ROCm, MPS or the CPU); on and off as asked
+	torch = types.SimpleNamespace(version=types.SimpleNamespace(hip=None))
+	monkeypatch.setitem(__import__("sys").modules, "torch", torch)
+	model = types.SimpleNamespace(device="cuda")
+	assert live.HoldsClock(live.ParseArgs([]), model)
+	assert not live.HoldsClock(live.ParseArgs(["--hold-gpu-clock", "off"]), model)
+	assert not live.HoldsClock(live.ParseArgs([]), types.SimpleNamespace(device="mps"))
+	assert not live.HoldsClock(live.ParseArgs(["--hold-gpu-clock", "on"]), types.SimpleNamespace(device="cpu"))
+	assert not live.HoldsClock(live.ParseArgs([]), live.NoModel)
+	torch.version.hip = "6.4"
+	assert not live.HoldsClock(live.ParseArgs([]), model)
+	assert live.HoldsClock(live.ParseArgs(["--hold-gpu-clock", "on"]), model)
+
+
+def test_the_gpu_clock_spins_until_stopped():
+	torch = pytest.importorskip("torch")
+	if not torch.cuda.is_available():
+		pytest.skip("no CUDA GPU here")
+	clock = live.GpuClock("cuda")
+	clock.CYCLES = 100000
+	clock.Start()
+	time.sleep(0.3)
+	assert len(clock.threads) == clock.WAITING_BLOCKS
+	clock.Stop()
+	spins = clock.spins
+	assert spins > 0 and clock.threads == []
+	time.sleep(0.1)
+	assert clock.spins == spins
+
+
+def test_each_row_has_its_inference_time(tmp_path):
+	out = str(tmp_path / "timed")
+	assert run_live(name(), out, ["--model", "none", "--report-sec", "0", "--wait-sec", "30"]) == 0
+	rows = np.load(out + ".npy")
+	assert (rows["inference_ns"] > 0).all()
+
+
+def test_campy_live_goes_on_the_performance_cores_by_default(monkeypatch, capsys):
+	# --cpus auto on a hybrid CPU: the performance cores, at high priority;
+	# campy-acquire's processes (its feeds say them) onto the efficiency cores
+	from campy import cpus
+	pinned, priority = [], []
+	monkeypatch.setattr(cpus, "Hybrid", lambda: {"performance": [0, 1, 10], "efficiency": [2, 3]})
+	monkeypatch.setattr(cpus, "Cores", lambda: {"performance": [0, 1, 10], "efficiency": [2, 3]})
+	monkeypatch.setattr(cpus, "Pin", lambda c, pid=None: pinned.append((pid, list(c))))
+	monkeypatch.setattr(cpus, "SetPriority", lambda name, pid=None: priority.append((pid, name)))
+	monkeypatch.setattr(cpus, "Tree", lambda pids: sorted(set(pids) | {99}))
+	args = live.ParseArgs([])
+	assert live.PlaceSelf(args) == "CPUs 0-1,10 (the performance cores) at high priority"
+	assert pinned == [(None, [0, 1, 10])] and priority == [(None, "high")]
+	readers = [types.SimpleNamespace(Description=lambda pid=pid: json.dumps({"kind": livefeed.CAMERA_KIND,
+		"pid": pid, "parent_pid": 7})) for pid in (11, 12)]
+	live.PlaceCampy(args, readers)
+	assert pinned[1:] == [(7, [2, 3]), (11, [2, 3]), (12, [2, 3]), (99, [2, 3])]
+	assert "campy-acquire (4 processes" in capsys.readouterr().out
+	# Asked not to: as it is
+	pinned.clear(), priority.clear()
+	args = live.ParseArgs(["--cpus", "none", "--campy-cpus", "none"])
+	assert live.PlaceSelf(args) is None
+	live.PlaceCampy(args, readers)
+	assert pinned == [] and priority == []
+	# A list, at the priority asked
+	args = live.ParseArgs(["--cpus", "4-5", "--priority", "above_normal"])
+	assert live.PlaceSelf(args) == "CPUs 4-5 at above normal priority"
+
+
+def test_a_cpu_of_one_kind_is_left_as_it_is(monkeypatch):
+	from campy import cpus
+	monkeypatch.setattr(cpus, "Hybrid", lambda: None)
+	monkeypatch.setattr(cpus, "Pin", lambda *a, **k: pytest.fail("pinned"))
+	monkeypatch.setattr(cpus, "SetPriority", lambda *a, **k: pytest.fail("priority changed"))
+	args = live.ParseArgs([])
+	assert live.PlaceSelf(args) is None
+	live.PlaceCampy(args, [])
+
+
+def test_a_cameras_feed_says_its_processes(tmp_path):
+	feed = livefeed.Feed({"liveFeed": True, "cameraName": "Camera0", "n_cam": 0, "liveFeedName": name(),
+		"videoFolder": str(tmp_path)})
+	d = json.loads(feed.Description())
+	assert d == {"kind": livefeed.CAMERA_KIND, "pid": os.getpid(), "parent_pid": os.getppid(),
+		"folder": os.path.join(str(tmp_path), "Camera0")}
+	readers = [types.SimpleNamespace(Description=feed.Description), types.SimpleNamespace(Description=lambda: "")]
+	assert livefeed.Processes(readers) == sorted({os.getpid(), os.getppid()})

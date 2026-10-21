@@ -10,16 +10,17 @@ The full guide, with every measurement, is [hardware-guide.html](hardware-guide.
 
 This list leaves the numbers to the guide, so it can't fall out of date with it.
 
-1. **The inference GPU decides most of it.** A large NVIDIA card with no monitor attached kept up with every model size tried. The small 70 W card didn't, unless its CPU threads were pinned.
-2. **Fast CPU cores matter more than many cores**, especially on Windows, where the work around each model costs more CPU time. Leave a core for `campy-live-view` if you'll watch the tracking.
-3. **On an Intel hybrid CPU, pin inference to the performance cores** at High priority and put the recording on the efficiency cores. `campy-live` doesn't do this by itself yet.
-4. **Keep Windows awake.** campy asks Windows to stay awake while it records (`keepAwake`), but a PC with nobody signed in still needs its screen timeout set to Never.
-5. **Leave about 2 ms of headroom.** The live pipeline runs a little slower than the inference-only benchmark, so pick a model whose benchmark p99 is about 2 ms under the frame interval ([Models](models.md)).
-6. **Dual-channel memory is enough.** Memory bandwidth didn't limit anything. 64 GB covers 3 cameras, including campy's buffer for disk stalls.
-7. **Record videos to a disk of their own.** Some SSDs stop completing writes for many seconds. campy's write buffer (`writeQueueMaxSec`) absorbs that, but a separate drive avoids it.
-8. **Linux gave the steadiest timing**: no set took twice the median. On Windows only the largest GPU, or pinned inference, came close.
-9. **The EVO-X2 handles 3 cameras at 60 fps with 5 mice, but not 8 cameras.**
-10. **3D tracking is cheap**, and it runs alongside inference, so it doesn't add to the time per set.
+1. **The inference GPU decides most of it.** A large NVIDIA card with no monitor attached kept up with every model size tried. The small 70 W card didn't, unless its CPU threads were pinned and its clock held up.
+2. **An NVIDIA GPU slows its own clock** when the work comes in short bursts, as live tracking's does. `campy-live` now keeps it at full speed by default (`--hold-gpu-clock`), which halved the time per set on the RTX 2000 Ada.
+3. **Fast CPU cores matter more than many cores**, especially on Windows, where the work around each model costs more CPU time. Leave a core for `campy-live-view` if you'll watch the tracking.
+4. **On an Intel hybrid CPU, run inference on the performance cores** at High priority, with the recording on the efficiency cores. `campy-live` does both by default.
+5. **Keep Windows awake.** campy asks Windows to stay awake while it records (`keepAwake`), but a PC with nobody signed in still needs its screen timeout set to Never.
+6. **Leave about 2 ms of headroom.** The live pipeline runs a little slower than the inference-only benchmark, so pick a model whose benchmark p99 is about 2 ms under the frame interval ([Models](models.md)).
+7. **Dual-channel memory is enough.** Memory bandwidth didn't limit anything. 64 GB covers 3 cameras, including campy's buffer for disk stalls.
+8. **Record videos to a disk of their own.** Some SSDs stop completing writes for many seconds. campy's write buffer (`writeQueueMaxSec`) absorbs that, but a separate drive avoids it.
+9. **Linux gave the steadiest timing**: no set took twice the median. On Windows only the largest GPU, or pinned inference with the GPU's clock held, came close.
+10. **The EVO-X2 handles 3 cameras at 60 fps with 5 mice, but not 8 cameras.** The Pro Max Slim now keeps up with 3 cameras at 60 fps on a replayed recording of 3 mice.
+11. **3D tracking is cheap**, and it runs alongside inference, so it doesn't add to the time per set.
 
 ## Measuring a new machine
 

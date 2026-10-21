@@ -216,7 +216,8 @@ class Window(QtWidgets.QWidget):
 		column = QtWidgets.QVBoxLayout(panel)
 		self.checks = {}
 		for label, key in (("Predictions (d)", "d"), ("Reprojections (p)", "p"), ("Lines (l)", "l"),
-				("3D view (\\)", "\\"), ("Trails (t)", "t"), ("Occupancy (o)", "o")):
+				("3D view (\\)", "\\"), ("Trails (t)", "t"), ("Occupancy (o)", "o"),
+				("Fast CPUs (c): campy-live on the performance cores", "c")):
 			box = QtWidgets.QCheckBox(label)
 			box.setFocusPolicy(Qt.NoFocus) # space and the arrows stay the view's
 			box.clicked.connect(lambda checked, key=key: self.Key(ord(key)))
@@ -385,6 +386,9 @@ class Window(QtWidgets.QWidget):
 			self.checks[key].setChecked(on)
 		for key in "\\to":
 			self.checks[key].setVisible(viewer.scene is not None)
+		fast = viewer.CpusOn() # campy-live on the performance cores (None: nothing to move)
+		self.checks["c"].setChecked(bool(fast))
+		self.checks["c"].setVisible(fast is not None)
 		self.grid.setChecked(viewer.selected is None)
 		self.single.setChecked(viewer.selected is not None)
 

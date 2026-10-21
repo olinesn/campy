@@ -169,7 +169,7 @@ from datetime import datetime
 import numpy as np
 import cv2
 
-from campy import livefeed, livehealth, liveresults
+from campy import cpus, livefeed, livehealth, liveresults
 
 TITLE = "campy-live view"
 
@@ -190,7 +190,7 @@ FAIR = (0, 200, 230) # yellow
 NO_3D = (75, 75, 75)
 KEYS = ("Keys: v one camera, g all (grid), arrows the previous or next camera, 1-{} that camera; wheel or + and - "
 	"zoom a camera (drag: move it), 0 the whole frame, shift 0 one pixel for one; d predictions, p reprojections, "
-	"l lines{}; z window to the view; m bookmark (Shift+1-9: event 1-9); space pause, s save, q quit")
+	"l lines{}; c campy-live on the fast CPUs or not; z window to the view; m bookmark (Shift+1-9: event 1-9); space pause, s save, q quit")
 SHIFT = 4 # cv2's subpixel bits
 RADIUS_2D, RADIUS_3D = 4, 2 # px: a detection's open circles, a 3D node's dot
 FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -1362,6 +1362,8 @@ class Viewer:
 		# For the panel and the summary
 		self.rows, self.gone, self.passed, self.raw = 0, 0, 0, 0 # rows taken, gone, passed over; views of frames alone
 		self.rate = [] # (monotonic, rows written): each new count of the last second
+		self.inference = deque() # (monotonic, ms): campy-live's inference time of the rows of the last 2 s
+		self.cpusSaid = None # what the c key last did
 		self.drawMs, self.shownMs, self.resultMs = deque(maxlen=KEPT), deque(maxlen=KEPT), deque(maxlen=KEPT)
 		self.sceneMs = deque(maxlen=KEPT) # of drawMs: the 3D tile's
 		self.rig = None # livehealth.Rig: how each camera keeps up, from its ring's slots
@@ -1513,6 +1515,10 @@ class Viewer:
 				self.after = n
 				if row is not None:
 					self.rows += 1
+					if "inference_ns" in row.dtype.names and row["inference_ns"] > 0:
+						self.inference.append((now, row["inference_ns"] / 1e6))
+					while self.inference and self.inference[0][0] < now - 2.0:
+						self.inference.popleft()
 					if self.tracking is not None:
 						self.tracking.Add(row)
 					# perf_counter is one clock in every process, the frames' written times' too, and
@@ -1858,6 +1864,9 @@ class Viewer:
 		if self.scene is not None:
 			buttons.append(("3D view (\\)", ord("\\"), self.showScene))
 			buttons += [("Trails (t)", ord("t"), self.trails), ("Occupancy (o)", ord("o"), self.occupancy)]
+		fast = self.CpusOn()
+		if fast is not None:
+			buttons.append(("Fast CPUs (c)", ord("c"), fast))
 		for label, key, on in buttons:
 			(tw, th), _ = cv2.getTextSize(label, FONT, 0.5, 1)
 			if x > x0 + PAD and x + tw + 34 > x0 + width - PAD: # the next row
@@ -2037,6 +2046,12 @@ class Viewer:
 			if len(self.rate) > 1 else 0.0
 		lines.append(("campy-live: {:.1f} results/s. Drawn: {}; their frames gone: {}".format(rate,
 			self.rows - self.gone, self.gone), DIM))
+		cpuLine = self.CpusText()
+		if cpuLine is not None:
+			lines.append(cpuLine)
+		if self.cpusSaid:
+			lines.append(("c: " + self.cpusSaid, WARN if "Could not" in self.cpusSaid or "No CPUs" in self.cpusSaid
+				else DIM))
 		if row is not None:
 			lines.append(("Reprojections (dots): the 3D, projected. Predictions (open circles): this camera's 2D "
 				"(white: matched to no animal). Line: from the 2D to the 3D. Label: #identity, and px between them.", DIM))
@@ -2052,6 +2067,41 @@ class Viewer:
 			if self.scene is not None else ""),
 			DIM))
 		return lines
+
+	# -- campy-live's and campy-acquire's CPUs (the c key)
+
+	def Placement(self):
+		# Who to move: campy-live (its results say its process) and campy-acquire (its feeds say its processes)
+		return cpus.Placement(live=self.description.get("pid") if self.results is not None else None,
+			campy=livefeed.Processes(self.readers or []))
+
+	def CpusOn(self):
+		# True: campy-live on the performance cores; False: not; None: can't be told or changed here
+		placement = self.Placement()
+		return placement.IsOn() if placement.Available() else None
+
+	def ToggleCpus(self):
+		placement = self.Placement()
+		if not placement.Available():
+			self.cpusSaid = "No CPUs to move: {}.".format("campy-live's results don't say its process (a campy-live "
+				"from before)" if placement.cores else "this CPU has no efficiency cores, or this system can't tell")
+		else:
+			self.cpusSaid = placement.Set(not placement.IsOn())
+		Say("CPUs: " + self.cpusSaid)
+
+	def CpusText(self):
+		# The panel's line: where campy-live runs, and its inference time over the last 2 s
+		times = np.array([ms for _, ms in self.inference])
+		speed = "campy-live's inference p50 {:.1f} p99 {:.1f} ms over the last 2 s".format(
+			np.percentile(times, 50), np.percentile(times, 99)) if len(times) else None
+		on = self.CpusOn()
+		if on is None:
+			return None if speed is None else (speed[0].upper() + speed[1:], DIM)
+		cores = cpus.Hybrid()
+		where = "campy-live on the performance cores ({}) at high priority, campy-acquire on the efficiency cores".format(
+			cpus.Text(cores["performance"])) if on else "campy-live and campy-acquire on any CPU, normal priority"
+		text = "CPUs (c): {}{}".format(where, "; " + speed if speed else "")
+		return text, TEXT
 
 	def Waiting(self):
 		canvas = self.Canvas(self.Size()[::-1]) # the view's size: OpenCV sizes a new window to its first image
@@ -2109,6 +2159,8 @@ class Viewer:
 		elif key == ord("r") and self.scene is not None:
 			self.scene.Reset()
 			self.moved = True
+		elif key == ord("c"):
+			self.ToggleCpus()
 		return True
 
 	def Mark(self, event, note=""):

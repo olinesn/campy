@@ -368,7 +368,7 @@ def test_a_campy_cameras_feed_says_its_folder_in_the_recording(tmp_path):
 		reader = livefeed.RingReader(livefeed.RingName(prefix, 1))
 		try:
 			assert json.loads(reader.Description()) == {"kind": "campy camera",
-				"folder": os.path.abspath(str(recording / "Camera1"))}
+				"folder": os.path.abspath(str(recording / "Camera1")), "pid": os.getpid(), "parent_pid": os.getppid()}
 			assert liveview.RecordingFolder([reader]) == os.path.abspath(str(recording))
 			assert reader.HostTime(1) == 1000 and reader.HostTime(2) is None
 		finally:
@@ -1372,3 +1372,46 @@ def test_the_view_of_campy_live_as_it_runs(tmp_path, monkeypatch):
 	image = cv2.imread(str(png / saved[-1]))
 	for a in range(3):
 		assert like(image, liveview.Color(a)).sum() > 100
+
+
+# -------------------------------------------------------------- the c key: campy-live's CPUs
+
+def test_the_c_key_moves_campy_live_on_and_off_the_performance_cores(monkeypatch):
+	from campy import cpus
+	viewer = liveview.Viewer(view_args(name()))
+	assert viewer.CpusOn() is None # no campy-live yet: nothing to move, no button
+	viewer.Key(ord("c"))
+	assert "No CPUs to move" in viewer.cpusSaid
+	moves = []
+
+	class Placement:
+		on = False
+
+		def __init__(self, live=None, campy=()):
+			self.live, self.campy, self.cores = live, campy, {"performance": [0, 1], "efficiency": [2, 3]}
+
+		def Available(self):
+			return self.live is not None
+
+		def IsOn(self):
+			return Placement.on
+
+		def Set(self, on):
+			Placement.on = on
+			moves.append((self.live, on))
+			return "moved"
+
+	monkeypatch.setattr(cpus, "Placement", Placement)
+	monkeypatch.setattr(cpus, "Hybrid", lambda: {"performance": [0, 1], "efficiency": [2, 3]})
+	viewer.results, viewer.description = object(), {"pid": 1234}
+	assert viewer.CpusOn() is False
+	assert viewer.Key(ord("c")) and moves == [(1234, True)] and viewer.CpusOn() is True
+	assert viewer.Key(ord("c")) and moves[-1] == (1234, False)
+	# The panel says where it runs, and how fast campy-live goes
+	now = time.monotonic()
+	viewer.inference.extend([(now, 11.0), (now, 13.0)])
+	text, color = viewer.CpusText()
+	assert text.startswith("CPUs (c): campy-live and campy-acquire on any CPU")
+	assert "inference p50 12.0" in text
+	Placement.on = True
+	assert "on the performance cores (0-1) at high priority" in viewer.CpusText()[0]
