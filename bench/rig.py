@@ -40,10 +40,12 @@ On Windows (rig_windows.py beside this file says how each is seen):
   encoder  ffmpeg*.exe
   camera   a Spinnaker DLL loaded (PySpin, SpinView)
   trigger  a COM port open
-  load     as on Linux, from each process's reads and writes (files, devices, network), but
-           never more than all disks read and wrote (PhysicalDisk(_Total)): some of a
-           program's I/O never reaches a disk. The kernel's (System's) isn't counted: the display
-           driver charges it with every frame a job copies to the GPU.
+  load     the CPU as on Linux. The disk: what all disks read and wrote (PhysicalDisk(_Total))
+           less what the job's processes read and wrote, or what processes outside the job
+           read and wrote if more, but never more than the disks moved (a program's reads and
+           writes also count pipes, devices, the network and the file cache). The kernel's
+           (System's) count no I/O of its own: the display driver charges it with every frame a
+           job copies to the GPU.
   desktop  programs that draw on the GPU (type G or C+G: dwm.exe, explorer.exe, Task
            Manager, ...). Noted, not waited for; the log says when one starts or
            ends, but that doesn't contaminate the run, since Windows starts and
@@ -215,8 +217,9 @@ def scan(own=()):
 def disk_bytes():
 	"""The bytes all physical disks have read and written (a running count), or None where the
 	processes' own counts are disk bytes already (Linux: /proc/<pid>/io's read_bytes, write_bytes).
-	On Windows a process's count is all its I/O, disk or not, so the load outside the job is taken
-	as no more than what the disks moved."""
+	On Windows a process's count is all its I/O, disk or not, and what Windows' file cache writes
+	out later is the kernel's, so the load outside the job comes from what the disks moved too
+	(Watch.sample)."""
 	return rig_windows.disk_bytes() if WINDOWS else None
 
 def proc_start(pid):
@@ -384,10 +387,11 @@ class Watch:
 		return False
 
 	def sample(self):
-		"""(foreign device users, foreign load) now: [(Proc, kinds)], (cores, MB/s, [(cores, MB/s, Proc)])."""
+		"""(foreign device users, foreign load) now: [(Proc, kinds)], (cores, MB/s, [(cores, MB/s, Proc)],
+		MB/s all disks moved or None)."""
 		t, procs = time.monotonic(), scan(self.own_pids)
 		disk = disk_bytes()
-		users, load, cpu, io = [], [], 0.0, 0.0
+		users, load, cpu, io, own_io = [], [], 0.0, 0.0, 0.0
 		self.desktops = {(p.pid, p.start): p for p in procs.values() if "desktop" in p.kinds}
 		self.ancestors, q = set(), procs.get(os.getpid())
 		while q and q.ppid in procs and procs[q.ppid].start <= q.start and q.ppid not in self.ancestors:
@@ -395,29 +399,34 @@ class Watch:
 			q = procs[q.ppid]
 		own = set()
 		for p in procs.values():
-			if self.own(p, procs):
-				own.add(p.pid)
-				continue
-			if p.kinds - {"desktop"}:
-				users.append(p)
-			key = (p.pid, p.start)
+			key, c, b = (p.pid, p.start), 0.0, 0.0
 			if self.prev_t is not None and key in self.prev:
 				dt = t - self.prev_t
 				pcpu, pio = self.prev[key]
 				c = (p.cpu - pcpu) / dt
 				b = (p.io - pio) / 1e6 / dt if p.io is not None and pio is not None else 0.0
-				cpu, io = cpu + c, io + b
-				if c > 0.05 or b > 1:
-					load.append((c, b, p))
+			if self.own(p, procs):
+				own.add(p.pid)
+				own_io += b
+				continue
+			if p.kinds - {"desktop"}:
+				users.append(p)
+			cpu, io = cpu + c, io + b
+			if c > 0.05 or b > 1:
+				load.append((c, b, p))
 		self.own_pids = own
 		self.prev = {(p.pid, p.start): (p.cpu, p.io) for p in procs.values()}
-		measured = self.prev_t is not None
+		measured, disks = self.prev_t is not None, None
 		if measured and disk is not None and self.prev_disk is not None:
-			io = min(io, max(0.0, (disk - self.prev_disk) / 1e6 / (t - self.prev_t)))
+			# What outside programs read and wrote, as far as it reached a disk; and at least what the
+			# disks moved beyond the job's own reads and writes, which catches writes that Windows'
+			# file cache took and the kernel wrote out later, after their program had gone
+			disks = max(0.0, (disk - self.prev_disk) / 1e6 / (t - self.prev_t))
+			io = max(min(io, disks), disks - own_io)
 		self.prev_disk = disk
 		self.prev_t = t
 		load.sort(key=lambda x: -(x[0] + x[1] / 50))
-		return users, (cpu, io, load) if measured else None
+		return users, (cpu, io, load, disks) if measured else None
 
 def describe(p, width=150):
 	return "%d %s %s" % (p.pid, ",".join(sorted(p.kinds)) or "-", cmdline(p)[:width])
@@ -431,8 +440,8 @@ def desktop_text(desktops, short=False):
 		", the login screen" if p.user == "gdm" else "") for p in desktops.values()))) or "none"
 
 def load_text(load, n=3):
-	cpu, io, top = load
-	return "cpu %.1f cores, disk %.0f MB/s; %s" % (cpu, io, "; ".join(
+	cpu, io, top, disks = load
+	return "cpu %.1f cores, disk %.0f MB/s%s; %s" % (cpu, io, "" if disks is None else " (all disks %.0f)" % disks, "; ".join(
 		"%d %.1f cores %.0f MB/s %s" % (p.pid, c, b, cmdline(p)[:80]) for c, b, p in top[:n]) or "nothing")
 
 def overloaded(load, args):
@@ -856,7 +865,8 @@ def cmd_status(args):
 				lock.clear()
 	m = re.search(r"\bjob=(\S+)", info) if state == "held" else None
 	job = m and m.group(1)
-	w = Watch()
+	m = re.search(r"\bpid=(\d+)", info) if state == "held" else None
+	w = Watch(job=job, root_pid=m and int(m.group(1)))  # the job's processes (on Windows, those it started)
 	w.sample()
 	time.sleep(1.0)
 	_, load = w.sample()
@@ -881,11 +891,10 @@ def cmd_status(args):
 	for row in gpu_clocks():
 		print(clock_text(row))
 	if load:
-		mine = [x for x in load[2] if not (job and x[2].job == job)]
-		print("load outside the job (1 s): cpu %.1f cores, disk %.0f MB/s%s" % (
-			sum(c for c, b, p in mine), sum(b for c, b, p in mine),
-			"   (run waits above %.1f cores or %.0f MB/s)" % (args.cpu, args.io)))
-		for c, b, p in mine[:5]:
+		cpu, io, top, disks = load
+		print("load outside the job (1 s): cpu %.1f cores, disk %.0f MB/s%s   (run waits above %.1f cores or %.0f MB/s)" % (
+			cpu, io, "" if disks is None else " (all disks %.0f)" % disks, args.cpu, args.io))
+		for c, b, p in top[:5]:
 			print("    %d %.1f cores %.0f MB/s %s" % (p.pid, c, b, cmdline(p)[:110]))
 
 def cmd_break(args):
