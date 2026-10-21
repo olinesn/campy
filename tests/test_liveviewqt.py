@@ -160,6 +160,11 @@ def test_the_keys_are_luc3ds(qt, window):
 	Qt, QTest = qt.Qt, qt.QtTest.QTest
 	win, viewer = window.win, window.viewer
 	window.Result(9)
+	# The panel's checkboxes, in two columns: d and p a row, l and \\ the next, t and o the next
+	at = {key: box.geometry() for key, box in win.checks.items()}
+	for left, right in (("d", "p"), ("l", "\\"), ("t", "o")):
+		assert at[left].y() == at[right].y() and at[left].right() < at[right].x()
+	assert at["d"].bottom() < at["l"].y() < at["t"].y() and at["d"].x() == at["l"].x() == at["t"].x()
 	def press(key):
 		QTest.keyClick(win.picture, key)
 		qt.app.processEvents()

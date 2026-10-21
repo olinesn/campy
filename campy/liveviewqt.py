@@ -214,15 +214,24 @@ class Window(QtWidgets.QWidget):
 			"QPushButton:checked { background: #14466e; border-color: #e6e6e6; } "
 			"QLineEdit { background: #2a2a2a; border: 1px solid #555; padding: 3px; }")
 		column = QtWidgets.QVBoxLayout(panel)
+		# The checkboxes in two columns, each pair a row (a row whose boxes are hidden takes no room), the long
+		# one across both
 		self.checks = {}
-		for label, key in (("Predictions (d)", "d"), ("Reprojections (p)", "p"), ("Lines (l)", "l"),
+		checks = QtWidgets.QGridLayout()
+		checks.setHorizontalSpacing(8)
+		checks.setVerticalSpacing(4)
+		for k, (label, key) in enumerate((("Predictions (d)", "d"), ("Reprojections (p)", "p"), ("Lines (l)", "l"),
 				("3D view (\\)", "\\"), ("Trails (t)", "t"), ("Occupancy (o)", "o"),
-				("Fast CPUs (c): campy-live on the performance cores", "c")):
+				("Fast CPUs (c): campy-live on the performance cores", "c"))):
 			box = QtWidgets.QCheckBox(label)
 			box.setFocusPolicy(Qt.NoFocus) # space and the arrows stay the view's
 			box.clicked.connect(lambda checked, key=key: self.Key(ord(key)))
-			column.addWidget(box)
+			if key == "c":
+				checks.addWidget(box, k // 2, 0, 1, 2)
+			else:
+				checks.addWidget(box, k // 2, k % 2)
 			self.checks[key] = box
+		column.addLayout(checks)
 		views = QtWidgets.QHBoxLayout()
 		self.grid = QtWidgets.QPushButton("Grid (g)")
 		self.single = QtWidgets.QPushButton("Single (v)")
