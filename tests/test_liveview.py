@@ -323,7 +323,9 @@ def test_keys_pick_the_cameras_and_what_is_drawn():
 	assert viewer.Shown() == [0, 1, 2]
 	assert viewer.Key(ord("2")) and viewer.Shown() == [1]
 	assert viewer.Key(ord("9")) and viewer.Shown() == [1] # no camera 9
-	assert viewer.Key(ord("0")) and viewer.Shown() == [0, 1, 2]
+	assert viewer.Key(ord("0")) and viewer.Shown() == [1] # 0 is LUC3D's: the whole frame again, not the grid
+	assert viewer.Key(ord("a")) and viewer.Shown() == [0, 1, 2]
+	assert viewer.Key(ord("2")) and viewer.Key(ord("g")) and viewer.Shown() == [0, 1, 2]
 	assert viewer.Key(ord("d")) and not viewer.show2d
 	assert viewer.Key(ord("p")) and not viewer.show3d
 	assert viewer.Key(ord("l")) and not viewer.lines
@@ -677,7 +679,7 @@ def test_the_3d_tile_shows_the_row_the_cameras_show():
 	assert (tile[50:] == drawn(other)).all() and (tile[50:] != drawn(row)).any()
 	# \\ (or its button) hides it: the cameras alone, and no 3D drawn
 	keys = [b[4] for b in viewer.buttons]
-	assert keys == [ord("d"), ord("p"), ord("l"), ord("\\")]
+	assert keys == [ord("d"), ord("p"), ord("l"), ord("\\"), ord("t"), ord("o")]
 	x0, y0, x1, y1, _ = viewer.buttons[3]
 	viewer.Key(viewer.Mouse(liveview.cv2.EVENT_LBUTTONDOWN, (x0 + x1) // 2, (y0 + y1) // 2, 0))
 	assert not viewer.showScene
@@ -701,8 +703,11 @@ def test_dragging_in_the_3d_tile_turns_it():
 	y, x, h, w = viewer.sceneCell
 	at = (x + w // 2, y + h // 2)
 	scene = viewer.scene
-	# On a camera's tile: nothing turns
-	assert viewer.Mouse(cv2_.EVENT_LBUTTONDOWN, 10, 10, 0) is None and viewer.drag is None
+	# On a camera's tile: nothing turns (a drag there moves the camera's picture)
+	assert viewer.Mouse(cv2_.EVENT_LBUTTONDOWN, 10, 10, 0) is None and viewer.drag[0] == "pan"
+	viewer.Mouse(cv2_.EVENT_MOUSEMOVE, 50, 10, cv2_.EVENT_FLAG_LBUTTON)
+	viewer.Mouse(cv2_.EVENT_LBUTTONUP, 50, 10, 0)
+	assert scene.azimuth == 0 and viewer.drag is None and not viewer.moved
 	# Dragged 60 px to the right in the 3D tile
 	assert viewer.Mouse(cv2_.EVENT_LBUTTONDOWN, *at, 0) is None
 	turn = scene.azimuth
@@ -831,6 +836,250 @@ def test_the_view_is_drawn_at_its_windows_size():
 	assert viewer.Waiting().shape == (500, 900, 3)
 	viewer.windowSize = None # no window: --size
 	assert viewer.Compose(frames, row).shape[:2] == viewer.layout.size
+
+# -------------------------------------------------------------- zoom
+
+def square(at, r=4, shape=(1024, 1280)):
+	# A frame (height x width x 1) of 40, with a white square 2r + 1 px wide about the pixel at (x, y)
+	img = np.full(tuple(shape) + (1,), 40, np.uint8)
+	x, y = at
+	img[y - r:y + r + 1, x - r:x + r + 1] = 255
+	return types.SimpleNamespace(image=img, frameNumber=5, hostTime=0)
+
+
+def centroid(tile, about=None, r=30):
+	# Where the white is in a tile, px (each pixel's middle at whole numbers); within r of about (x, y),
+	# clear of what else is drawn
+	m = np.clip(tile.min(-1).astype(float) - 40, 0, None) * (np.ptp(tile, -1) == 0) # gray, not the drawing's colours
+	ys, xs = np.mgrid[:m.shape[0], :m.shape[1]]
+	if about is not None:
+		m *= (np.abs(xs - about[0]) <= r) & (np.abs(ys - about[1]) <= r)
+	return np.array([(xs * m).sum(), (ys * m).sum()]) / m.sum()
+
+
+def test_a_zoomed_camera_shows_its_frame_and_drawing_where_the_zoom_puts_them():
+	# As LUC3D: the wheel zooms a camera's tile about the mouse; the frame and
+	# what is drawn on it (here the 2D: open circles) go where the zoom puts
+	# them, together
+	cams, truth, keypoints, scores, order = mice()
+	row = row_for(5, cams, truth, keypoints, scores, order)
+	viewer, frames = three_cameras(cams, row)
+	viewer.show3d = False
+	F = keypoints[0, 0] # camera 0's first detection, frame px
+	mouse = order[0][0]
+	at = np.round(F[0]).astype(int) + [60, 40] # a white square near it
+	frames[0] = square(at)
+	image = viewer.Compose(frames, row)
+	c, y, x, h, w = viewer.cells[0]
+	fit = np.array(viewer.layout.scale)
+	r = liveview.RADIUS_2D
+	# The frame's pixel x at (x + 0.5) * scale - 0.5 (as cv2.resize puts it), and the drawing with it
+	assert centroid(image[y:y + h, x:x + w], at * fit) == pytest.approx((at + 0.5) * fit - 0.5, abs=0.1)
+	whole = image[y:y + h, x:x + w].copy()
+	# Twice as near, the wheel over the first node: what is under the mouse stays there
+	M = np.round(F[0] * fit).astype(int)
+	under = (M + 0.5) / fit - 0.5 # the frame's point under the mouse's pixel
+	viewer.Wheel(np.log(2) / np.log(liveview.ZOOM_WHEEL), x + M[0], y + M[1])
+	assert viewer.ZoomOf(0).times == pytest.approx(2)
+	image = viewer.Compose(frames, row)
+	tile = image[y:y + h, x:x + w]
+	scale, origin = viewer.ZoomOf(0).Window((1024, 1280), viewer.layout.tile, viewer.layout.scale)
+	assert scale == pytest.approx(2 * fit) and liveview.Place(under, scale, origin) == pytest.approx(M)
+	def where(p): # where the zoom puts frame px p
+		return liveview.Place(p, scale, origin)
+	assert centroid(tile, where(at)) == pytest.approx(where(at), abs=0.1)
+	nodes = [p for p in F if (0 <= where(p)).all() and (where(p) < [w - r - 2, h]).all()]
+	assert len(nodes) > 5 and share(near(tile, where(p) + [r, 0], liveview.Color(mouse), 1) for p in nodes) > 0.8
+	# The other cameras: as they were
+	scale, origin = viewer.ZoomOf(1).Window((1024, 1280), viewer.layout.tile, viewer.layout.scale)
+	assert tuple(origin) == (0, 0) and scale == pytest.approx(fit)
+	# Dragged 40 px left: the frame with the mouse. A click without a drag moves nothing, and picks the camera
+	before = viewer.ZoomOf(0).Window((1024, 1280), viewer.layout.tile, viewer.layout.scale)[1]
+	cv2_ = liveview.cv2
+	viewer.Mouse(cv2_.EVENT_LBUTTONDOWN, x + 200, y + 150, 0)
+	viewer.Mouse(cv2_.EVENT_MOUSEMOVE, x + 160, y + 150, cv2_.EVENT_FLAG_LBUTTON)
+	viewer.Mouse(cv2_.EVENT_LBUTTONUP, x + 160, y + 150, 0)
+	moved = viewer.ZoomOf(0).Window((1024, 1280), viewer.layout.tile, viewer.layout.scale)[1]
+	assert moved - before == pytest.approx([40 / (2 * fit[0]), 0])
+	c1, y1, x1, h1, w1 = viewer.cells[1]
+	viewer.Press(x1 + 50, y1 + 50)
+	viewer.Move(x1 + 50, y1 + 50)
+	viewer.Release()
+	assert viewer.current == 1 and not viewer.ZoomOf(1).Zoomed()
+	viewer.Compose(frames, row)
+	# Kept from the grid to camera 0 alone and back: the same part of the frame, in a larger tile
+	viewer.current = 0
+	viewer.Key(ord("v"))
+	viewer.Compose([frames[0]], row)
+	scale, origin = viewer.ZoomOf(0).Window((1024, 1280), viewer.layout.tile, viewer.layout.scale)
+	assert viewer.layout.tile[1] > w and origin == pytest.approx(moved)
+	assert scale == pytest.approx(2 * np.array(viewer.layout.scale))
+	viewer.Key(ord("g"))
+	image = viewer.Compose(frames, row)
+	assert viewer.ZoomOf(0).Window((1024, 1280), viewer.layout.tile, viewer.layout.scale)[1] == pytest.approx(moved)
+	# + and - (and = and _), every camera shown, 1.2 times a press, about each one's middle
+	viewer.Key(ord("+"))
+	viewer.Key(ord("="))
+	assert viewer.ZoomOf(0).times == pytest.approx(2 * 1.44) and viewer.ZoomOf(2).times == pytest.approx(1.44)
+	viewer.Key(ord("-"))
+	viewer.Key(ord("_"))
+	assert viewer.ZoomOf(2).times == pytest.approx(1) and not viewer.ZoomOf(2).Zoomed()
+	for _ in range(5):
+		viewer.Key(ord("-")) # never farther than the whole frame
+	assert viewer.ZoomOf(0).times == 1.0
+	# Shift 0: one frame pixel for one screen pixel (the 9 px square, 9 px wide), about what each shows
+	viewer.Key(ord(")"))
+	image = viewer.Compose(frames, row)
+	assert all(viewer.ZoomOf(k).native for k in range(3))
+	scale, origin = viewer.ZoomOf(0).Window((1024, 1280), viewer.layout.tile, viewer.layout.scale)
+	assert tuple(scale) == (1, 1) and (origin == np.round(origin)).all()
+	tile = image[y:y + h, x:x + w]
+	X, Y = np.round(at - origin).astype(int)
+	assert (tile[Y - 10:Y + 11, X - 10:X + 11] == 255).all(-1).sum(axis=1).max() == 9
+	assert centroid(tile, at - origin) == pytest.approx(at - origin, abs=0.01)
+	viewer.Key(ord(")")) # and off: the whole frame again, as LUC3D
+	assert not any(viewer.ZoomOf(k).Zoomed() for k in range(3))
+	# 0: every camera's whole frame again, as it was drawn first
+	viewer.Wheel(3, x + 100, y + 100)
+	viewer.current = 1
+	viewer.Key(ord("v"))
+	viewer.Key(ord("+"))
+	viewer.Key(ord("g"))
+	assert viewer.ZoomOf(0).Zoomed() and viewer.ZoomOf(1).Zoomed()
+	assert viewer.Key(ord("0")) and viewer.Shown() == [0, 1, 2] # the grid stays
+	viewer.current = 0 # (outlined, as at first)
+	image = viewer.Compose(frames, row)
+	assert not any(z.Zoomed() for z in viewer.zooms.values())
+	assert (image[y:y + h, x:x + w] == whole).all()
+
+
+def test_zoomed_the_frame_is_cut_before_it_is_scaled(monkeypatch):
+	# A camera zoomed 4x scales a quarter of its frame's width and height: no more work than the whole frame,
+	# and the same place for the same pixel
+	seen = []
+	warp = liveview.cv2.warpAffine
+	monkeypatch.setattr(liveview.cv2, "warpAffine", lambda img, *a, **k: seen.append(img.shape) or warp(img, *a, **k))
+	frame = square((640, 512)).image
+	zoom = liveview.Zoom()
+	tile, fit = (384, 480), (480 / 1280, 384 / 1024)
+	whole = liveview.Gray(frame, tile, *zoom.Window(frame.shape, tile, fit))
+	assert not seen # the whole frame: cv2.resize, 4 times as fast
+	zoom.About(4, (240, 192), frame.shape, tile, fit)
+	scale, origin = zoom.Window(frame.shape, tile, fit)
+	near_ = liveview.Gray(frame, tile, scale, origin)
+	assert seen[0][1] <= 1280 / 4 + 4 and seen[0][0] <= 1024 / 4 + 4
+	assert centroid(near_) == pytest.approx(liveview.Place([640, 512], scale, origin), abs=0.1)
+	assert centroid(whole) == pytest.approx(liveview.Place([640, 512], fit), abs=0.1)
+
+
+# -------------------------------------------------------------- trails and occupancy
+
+def walked(scene, frames, start, end, seconds, bad=()):
+	# One mouse walking on the floor from start to end (x, y mm), learned at 30 a second; at the times
+	# in a bad (from, to) s, badly triangulated
+	for k in range(frames):
+		t = k * seconds / frames
+		centre = np.asarray(start, float) + (np.asarray(end, float) - start) * k / (frames - 1)
+		row = posed([scene3d.animal(np.append(centre, 0.0), 0.0)])
+		if bad and bad[0] <= t < bad[1]:
+			row["reproj_px"] = 50
+		scene.Learn(row, t)
+
+
+def test_trails_are_where_the_animals_were_and_fade():
+	cams = scene3d.rig()
+	scene = liveview.Scene(cams, trail_seconds=20)
+	walked(scene, 900, (-150, 0), (150, 0), 30.0, bad=(15, 17))
+	plain = np.zeros(TILE + (3,), np.uint8)
+	scene.Draw(plain, None, trails=False)
+	img = np.zeros(TILE + (3,), np.uint8)
+	scene.Draw(img, None, trails=True)
+	def at(t): # where the mouse's middle was at t s, on the floor, on the tile
+		x = -150 + 300 * t / 30
+		middle = scene3d.animal(np.array([x, 0, 0.0]), 0.0).mean(0)
+		return scene.Project(middle - ((middle - scene.Ground()) @ scene.up) * scene.up, TILE)
+	def red(t): # the trail's colour (identity 0: orange) about there: its red, over the backdrop's
+		x, y = np.round(at(t)).astype(int)
+		return int(img[y - 2:y + 3, x - 2:x + 3, 2].max()) - liveview.BACKDROP[2]
+	assert like(img[int(round(at(29.5)[1])) - 1:int(round(at(29.5)[1])) + 2,
+		int(round(at(29.5)[0])) - 1:int(round(at(29.5)[0])) + 2], liveview.Color(0)).any() # the newest: its colour
+	assert red(29) > red(22) > red(12) > 20 # fading with age
+	for t in (5, 16): # older than 20 s: gone; badly triangulated for 2 s: a gap, not a line across it
+		x, y = np.round(at(t)).astype(int)
+		assert (img[y - 2:y + 3, x - 2:x + 3] == plain[y - 2:y + 3, x - 2:x + 3]).all()
+	# Off (t): none
+	viewer = liveview.Viewer(view_args(name()))
+	assert viewer.trails and viewer.Key(ord("t")) and not viewer.trails and viewer.moved
+	assert not liveview.Viewer(view_args(name(), "--trail-seconds", "0")).trails
+
+
+def test_the_occupancy_counts_only_well_triangulated_animals():
+	# Two mice: one well triangulated, one far off in the cameras (as false 3D from a detection outside the
+	# cage): only the first one's cells are counted and lit
+	cams = scene3d.rig()
+	scene = liveview.Scene(cams)
+	A, B = np.array([-100.0, 60, 0]), np.array([130.0, -90, 0])
+	for k in range(300):
+		row = posed([scene3d.animal(A, 0.0), scene3d.animal(B, 1.0)])
+		row["reproj_px"][1] = 50
+		if k % 2:
+			row["n_views"][1], row["reproj_px"][1] = 1, 0.5 # or from one camera
+		scene.Learn(row, k / 30)
+	def cell(P):
+		i, j = scene.occupancy.Cells(scene3d.animal(P, 0.0).mean(0)[None])
+		return int(i[0]), int(j[0])
+	total = scene.occupancy.total
+	assert total[cell(A)] == 300 and total.sum() == 300 and total[cell(B)] == 0
+	plain = np.zeros(TILE + (3,), np.uint8)
+	scene.Draw(plain, None, trails=False)
+	img = np.zeros(TILE + (3,), np.uint8)
+	scene.Draw(img, None, trails=False, heat=True)
+	o, e1, e2 = scene.occupancy.basis
+	def middle(P): # its cell's middle, on the tile
+		i, j = cell(P)
+		k = (np.array([i, j]) + 0.5 - scene.occupancy.n) * scene.occupancy.cell
+		x, y = np.round(scene.Project(o + k[0] * e1 + k[1] * e2, TILE)).astype(int)
+		return slice(y - 1, y + 2), slice(x - 1, x + 2)
+	assert img[middle(A)].max() > 200 # the most visited: HEAT
+	assert (img[middle(B)] == plain[middle(B)]).all()
+	assert (img != plain).sum() < 0.05 * img.size # and little else
+	# Drawn into the background, once for each second of rows (or each view of it)
+	background = scene.Background(TILE, heat=True)
+	assert scene.Background(TILE, heat=True) is background
+	stamp = scene.heatStamp
+	for k in range(10):
+		scene.Learn(posed([scene3d.animal(A, 0.0)]), 12 + k / 30)
+	assert scene.heatStamp - stamp <= 2 # (once more if the floor was levelled again)
+	assert scene.Background(TILE, heat=True) is not background
+	# Over the last minute: the older cells' counts go
+	recent = liveview.Scene(cams, heat_minutes=1)
+	for k in range(30):
+		recent.Learn(posed([scene3d.animal(A, 0.0)]), k / 3) # 0-10 s
+	for k in range(30):
+		recent.Learn(posed([scene3d.animal(B, 0.0)]), 75 + k / 3) # 75-85 s
+	assert recent.occupancy.total[cell(A)] == 0 and recent.occupancy.total[cell(B)] == 30
+	# o, or the panel's button, shows it; --occupancy at first
+	viewer = liveview.Viewer(view_args(name()))
+	assert not viewer.occupancy and viewer.Key(ord("o")) and viewer.occupancy
+	assert liveview.Viewer(view_args(name(), "--occupancy")).occupancy
+
+
+def test_the_occupancy_stays_where_it_was_when_the_floor_is_levelled_again():
+	# up turns a little (the animals' plane): the counts go to the new floor's cells about where they were,
+	# none lost, none left as holes
+	cams = scene3d.rig()
+	scene = liveview.Scene(cams)
+	walked(scene, 600, (-150, -100), (150, 100), 20.0)
+	occupancy = scene.occupancy
+	before = occupancy.total.copy()
+	o, e1, e2 = occupancy.basis
+	turn = liveview.Unit(scene.up + [0.03, 0, 0])
+	new_e1 = liveview.Unit(e1 - (e1 @ turn) * turn)
+	occupancy.Rebase((o, new_e1, np.cross(turn, new_e1)))
+	assert occupancy.total.sum() == pytest.approx(before.sum())
+	visited = before > 0
+	assert (occupancy.total[visited] > 0).mean() > 0.9
+
 
 # -------------------------------------------------------------- with campy-live
 
