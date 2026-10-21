@@ -241,14 +241,17 @@ def test_a_label_goes_a_line_up_or_down_where_another_is():
 	labels = liveview.Labels(130)
 	asked = [("#0  (2 cams)", (50, 100)), ("#2  (2 cams)", (60, 100)), ("#1", (55, 100)), ("#3", (56, 98))]
 	placed = [labels.Place(text, at, 0.45) for text, at in asked]
-	(w, h), base = liveview.TextSize("#0  (2 cams)", 0.45)
-	line = h + base + 5 # a box's height, and the pixel between
-	assert placed[:3] == [(50, 100), (60, 100 - line), (55, 100 + line)] # where asked; then up first, then down
-	assert placed[3] == (56, 100 - 2 * line) # the nearest place free: 2 lines up (4 px nearer than down)
-	# At the tile's foot (130 px): up, though down is nearer
-	assert labels.Place("#4", (57, 100 + line + 2), 0.45) == (57, 100 - 3 * line)
 	boxes = [liveview.TextBox(text, at, 0.45) for (text, _), at in zip(asked, placed)]
+	assert [at[0] for at in placed] == [at[0] for _, at in asked] # straight up or down
+	assert placed[0] == (50, 100) # the first where it was asked
+	# Then each just past the box in its way (a pixel between; the boxes' heights are the font's: OpenCV's
+	# differ by a pixel from one version to another): up first, then down, then the nearest place free (2
+	# lines up, 4 px nearer than 2 down)
+	assert boxes[1][3] == boxes[0][1] - 1 and boxes[2][1] == boxes[0][3] + 1 and boxes[3][3] == boxes[1][1] - 1
 	assert not any(liveview.Over(a, b) for k, a in enumerate(boxes) for b in boxes[:k])
+	# At the tile's foot (130 px): up, though down is nearer
+	at = labels.Place("#4", (57, placed[2][1] + 2), 0.45)
+	assert at[0] == 57 and liveview.TextBox("#4", at, 0.45)[3] == boxes[3][1] - 1
 	# Not over what is taken (the tile's name line), nor above the tile
 	name = liveview.TextBox("1  Camera0  frame 9,149  0:05:04.93  found 3", (liveview.PAD, liveview.PAD + 12), 0.5)
 	at = liveview.Labels(100, taken=[name]).Place("#0  (2 cams)", (20, 15), 0.45)
