@@ -275,9 +275,16 @@ class Window(QtWidgets.QWidget):
 			try:
 				import ctypes
 				user32 = ctypes.windll.user32
+				user32.IsIconic.argtypes = [ctypes.c_void_p]
+				user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
 				user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [ctypes.c_int] * 4 + [ctypes.c_uint]
+				hwnd = int(self.winId())
+				if user32.IsIconic(hwnd):
+					# Minimized by Windows itself (a program started with -WindowStyle Minimized shows its first
+					# window so), which Qt does not know of
+					user32.ShowWindow(hwnd, 9) # SW_RESTORE
 				for after in (-1, -2): # HWND_TOPMOST, then HWND_NOTOPMOST; SWP_NOMOVE | SWP_NOSIZE
-					user32.SetWindowPos(int(self.winId()), after, 0, 0, 0, 0, 0x3)
+					user32.SetWindowPos(hwnd, after, 0, 0, 0, 0, 0x3)
 			except Exception:
 				pass
 
