@@ -389,7 +389,7 @@ class Watch:
 	def sample(self):
 		"""(foreign device users, foreign load) now: [(Proc, kinds)], (cores, MB/s, [(cores, MB/s, Proc)],
 		MB/s all disks moved or None)."""
-		t, procs = time.monotonic(), scan(self.own_pids)
+		t, procs = time.perf_counter(), scan(self.own_pids)  # Windows' monotonic() ticks every 15.6 ms
 		disk = disk_bytes()
 		users, load, cpu, io, own_io = [], [], 0.0, 0.0, 0.0
 		self.desktops = {(p.pid, p.start): p for p in procs.values() if "desktop" in p.kinds}
@@ -397,10 +397,10 @@ class Watch:
 		while q and q.ppid in procs and procs[q.ppid].start <= q.start and q.ppid not in self.ancestors:
 			self.ancestors.add(q.ppid)
 			q = procs[q.ppid]
-		own = set()
+		own, measured = set(), self.prev_t is not None and t > self.prev_t
 		for p in procs.values():
 			key, c, b = (p.pid, p.start), 0.0, 0.0
-			if self.prev_t is not None and key in self.prev:
+			if measured and key in self.prev:
 				dt = t - self.prev_t
 				pcpu, pio = self.prev[key]
 				c = (p.cpu - pcpu) / dt
@@ -416,7 +416,7 @@ class Watch:
 				load.append((c, b, p))
 		self.own_pids = own
 		self.prev = {(p.pid, p.start): (p.cpu, p.io) for p in procs.values()}
-		measured, disks = self.prev_t is not None, None
+		disks = None
 		if measured and disk is not None and self.prev_disk is not None:
 			# What outside programs read and wrote, as far as it reached a disk; and at least what the
 			# disks moved beyond the job's own reads and writes, which catches writes that Windows'

@@ -231,7 +231,7 @@ def test_outside_io_counts_what_reached_the_disks(monkeypatch):
 		return procs
 	clock = iter(range(100))
 	monkeypatch.setattr(rig, "scan", scan)
-	monkeypatch.setattr(rig.time, "monotonic", lambda: float(next(clock)))  # a look each second
+	monkeypatch.setattr(rig.time, "perf_counter", lambda: float(next(clock)))  # a look each second
 	monkeypatch.setattr(rig, "disk_bytes", lambda: state["disk"])
 	w = rig.Watch(job="t-1")
 	def look(outside=0, job=0, disk=0):  # MB in the last second
@@ -251,6 +251,16 @@ def test_outside_io_counts_what_reached_the_disks(monkeypatch):
 	monkeypatch.setattr(rig, "disk_bytes", lambda: None)  # Linux, or no disk counters
 	look()
 	assert look(outside=400, job=100) == (400, None)
+
+
+def test_two_looks_in_one_clock_tick_measure_nothing(monkeypatch):
+	# Windows' clocks can give two looks the same time; that is no rate, not a division by zero
+	monkeypatch.setattr(rig, "scan", lambda own=(): {os.getpid(): fake(os.getpid(), ppid=0, start=0), 600: fake(600)})
+	monkeypatch.setattr(rig, "disk_bytes", lambda: 0)
+	monkeypatch.setattr(rig.time, "perf_counter", lambda: 5.0)
+	w = rig.Watch()
+	w.sample()
+	assert w.sample()[1] is None
 
 
 def test_the_jobs_own_processes_and_reused_parent_pids(monkeypatch):
