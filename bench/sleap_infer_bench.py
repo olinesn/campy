@@ -71,8 +71,11 @@ What is measured
   cameras, the RTX 6000 Ada ran the light pairs at ~825 MHz of its 2730
   (back to back it stayed at 2505), and the EVO-X2's Radeon 8060S at
   2100-2500 of its 2900. Heavier pairs kept the GPU busier and got higher
-  clocks, so without --hold-clock the sizes' order is scrambled. To compare
-  sizes for live use, run --pace <fps> --hold-clock on, as campy-live runs.
+  clocks, so without --hold-clock the sizes' order is scrambled. (The RTX
+  2000 Ada, slow for two days, kept its full clock paced after a restart.)
+  To compare sizes for live use, run --pace <fps> --hold-clock on, as
+  campy-live runs. --hold-clock-blocks 2 held a slow RTX 2000 Ada better
+  than 1 (default pair 12.2 vs 14.1 ms); 8 starved the model.
 * With --stages, each stage alone as well: CentroidLayer.predict on the
   uploaded frames, and CenteredInstanceLayer.predict on a (N*K, 1, crop, crop)
   uint8 crop batch already on the device.
