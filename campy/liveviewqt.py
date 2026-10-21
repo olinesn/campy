@@ -6,16 +6,23 @@ and text.
 The view is what campy/liveview.py's Viewer draws (the cameras' tiles and the
 3D tile, from one row of campy-live's results), drawn at the size of the
 widget showing it, one pixel for one, and shown as it is: Qt only shows it,
-and passes the mouse and the keys to the Viewer. The panel says what the
-OpenCV window's drawn panel says, in Qt's fonts, a few times a second: what
-is wrong (a camera behind, losing frames or a frame off the others; too few
-animals with good 3D, or one far off), in red at its top, then the tracking
-strip (each identity's last 10 s; campy/livehealth.py), then the rest.
+and passes the mouse and the keys to the Viewer. Its text (the tiles' names
+and frames, the identities' labels, the 3D tile's header) is not drawn into
+it with OpenCV's font: the Viewer hands it over (liveview.Words), and Qt
+draws it over the image in its own fonts, sharp at any size, where OpenCV's
+would be (the left end of each baseline), each item cut to its tile. The
+panel says what the OpenCV window's drawn panel says, in Qt's fonts, a few
+times a second: what is wrong (a camera behind, losing frames or a frame
+off the others; too few animals with good 3D, or one far off), in red at
+its top, then the tracking strip (each identity's last 10 s;
+campy/livehealth.py), then the rest.
 
 The keys are the OpenCV window's (liveview.Viewer.Key), as LUC3D's: v one
 camera alone, g every camera, the arrows the previous or next camera, \\ the
-3D view on or off; d, p, l what is drawn; z the window to the view; space
-pause; s save the view as a PNG; q or Esc quit.
+3D view on or off; the wheel, + and - zoom a camera, 0 the whole frame
+again, shift 0 one frame pixel for one screen pixel; d, p, l what is drawn,
+t the trails, o the occupancy; z the window to the view; space pause; s
+save the view as a PNG (with its text); q or Esc quit.
 
 Bookmarks (liveview.Bookmarks): m, the panel's Bookmark button, or Enter in
 its note, marks the moment, with the note typed; Shift+1-9, or the panel's
@@ -41,6 +48,55 @@ KEYS = {Qt.Key_Left: "left", Qt.Key_Right: "right", Qt.Key_Up: "up", Qt.Key_Down
 BUTTONS = {Qt.LeftButton: "left", Qt.RightButton: "right", Qt.MiddleButton: "middle"}
 
 
+FONT_CAP = 24 # px: the capital letters' height in OpenCV's font at scale 1 (Hershey simplex); Qt's are drawn as tall
+_fonts = {}
+
+
+def Font(size):
+	# Qt's font whose capitals are as tall as OpenCV's at size (its font scale), in pixels
+	if size not in _fonts:
+		font = QtGui.QFont()
+		font.setPixelSize(100)
+		cap = QtGui.QFontMetricsF(font).capHeight() or 70
+		font.setPixelSize(max(6, int(round(100 * FONT_CAP * size / cap))))
+		_fonts[size] = font
+	return _fonts[size]
+
+
+def PaintWords(painter, items):
+	# The view's text items (liveview.Words), on painter, in the image's pixels: each at the left end of
+	# its baseline, on a dark box as liveview.Text draws it, cut to its tile
+	right = 0
+	for text, x, y, color, size, box, clip in items:
+		font = Font(size)
+		metrics = QtGui.QFontMetrics(font)
+		x = right + 10 if x is None else x
+		width = metrics.horizontalAdvance(text)
+		painter.setClipRect(QtCore.QRect(*clip))
+		if box:
+			painter.fillRect(QtCore.QRect(x - 3, y - metrics.capHeight() - 3, width + 6,
+				metrics.capHeight() + metrics.descent() + 4), QtGui.QColor(*liveview.BOX[::-1]))
+		painter.setFont(font)
+		painter.setPen(QtGui.QColor(*color[::-1]))
+		painter.drawText(QtCore.QPoint(x, y), text)
+		right = x + width
+	painter.setClipping(False)
+
+
+def Rendered(image, items):
+	# image (BGR) with the text items drawn over it, as the window shows it (for the PNGs)
+	h, w = image.shape[:2]
+	picture = QtGui.QImage(np.ascontiguousarray(image).data, w, h, image.strides[0],
+		QtGui.QImage.Format_BGR888).convertToFormat(QtGui.QImage.Format_RGB32)
+	painter = QtGui.QPainter(picture)
+	painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
+	PaintWords(painter, items)
+	painter.end()
+	bits = picture.constBits()
+	bits.setsize(picture.bytesPerLine() * h)
+	return np.frombuffer(bits, np.uint8).reshape(h, picture.bytesPerLine() // 4, 4)[:, :w, :3].copy() # B, G, R, x
+
+
 def Html(lines):
 	# The panel's (text, BGR colour) lines, as Qt's rich text
 	def Escape(text):
@@ -56,6 +112,7 @@ class Picture(QtWidgets.QWidget):
 		super().__init__()
 		self.window_ = window
 		self.image = self.qimage = None
+		self.words = [] # the image's text (liveview.Words' items), drawn over it
 		self.setAttribute(Qt.WA_OpaquePaintEvent) # paintEvent covers every pixel
 		self.setMouseTracking(True) # moves without a button too: where the wheel is
 		self.setFocusPolicy(Qt.StrongFocus)
@@ -66,7 +123,8 @@ class Picture(QtWidgets.QWidget):
 		ratio = self.devicePixelRatioF()
 		return max(1, int(round(self.width() * ratio))), max(1, int(round(self.height() * ratio)))
 
-	def Show(self, image):
+	def Show(self, image, words=None):
+		self.words = words.Items() if words is not None else []
 		self.image = np.ascontiguousarray(image)
 		h, w = self.image.shape[:2]
 		self.qimage = QtGui.QImage(self.image.data, w, h, self.image.strides[0], QtGui.QImage.Format_BGR888)
@@ -78,6 +136,12 @@ class Picture(QtWidgets.QWidget):
 		painter.fillRect(self.rect(), Qt.black)
 		if self.qimage is not None:
 			painter.drawImage(0, 0, self.qimage)
+			start = time.perf_counter()
+			ratio = self.devicePixelRatioF()
+			painter.scale(1 / ratio, 1 / ratio) # the image's pixels
+			painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
+			PaintWords(painter, self.words)
+			self.window_.viewer.wordsMs.append((time.perf_counter() - start) * 1e3)
 		painter.end()
 
 	def At(self, event):
@@ -92,6 +156,8 @@ class Picture(QtWidgets.QWidget):
 
 	def mouseMoveEvent(self, event):
 		self.window_.viewer.Move(*self.At(event))
+		if self.window_.viewer.panned and self.window_.paused:
+			self.window_.Redraw() # a camera's picture, moved
 
 	def mouseReleaseEvent(self, event):
 		self.window_.viewer.Release()
@@ -103,6 +169,7 @@ class Picture(QtWidgets.QWidget):
 
 	def wheelEvent(self, event):
 		self.window_.viewer.Wheel(event.angleDelta().y() / 120, *self.At(event))
+		self.window_.Changed()
 
 
 class Note(QtWidgets.QLineEdit):
@@ -130,6 +197,8 @@ class Window(QtWidgets.QWidget):
 	def __init__(self, viewer, args):
 		super().__init__()
 		self.viewer, self.args = viewer, args
+		viewer.textOver = True # the view's text, drawn over it in Qt's fonts
+		viewer.render = lambda image: Rendered(image, viewer.words.Items())
 		self.setWindowTitle(liveview.TITLE)
 		self.paused = False
 		self.raised = None # whether there was a feed when it was last put in front
@@ -147,7 +216,7 @@ class Window(QtWidgets.QWidget):
 		column = QtWidgets.QVBoxLayout(panel)
 		self.checks = {}
 		for label, key in (("Predictions (d)", "d"), ("Reprojections (p)", "p"), ("Lines (l)", "l"),
-				("3D view (\\)", "\\")):
+				("3D view (\\)", "\\"), ("Trails (t)", "t"), ("Occupancy (o)", "o")):
 			box = QtWidgets.QCheckBox(label)
 			box.setFocusPolicy(Qt.NoFocus) # space and the arrows stay the view's
 			box.clicked.connect(lambda checked, key=key: self.Key(ord(key)))
@@ -211,7 +280,17 @@ class Window(QtWidgets.QWidget):
 		row.setContentsMargins(0, 0, 0, 0)
 		row.setSpacing(0)
 		row.addWidget(self.picture, 1)
-		row.addWidget(panel)
+		# The panel scrolls when the window is shorter than it (its warnings, strip, bookmarks and text): the
+		# window can still be the view's height (z)
+		scroll = QtWidgets.QScrollArea()
+		scroll.setWidget(panel)
+		scroll.setWidgetResizable(True)
+		scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+		scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+		scroll.setFocusPolicy(Qt.NoFocus) # the keys (space, the arrows) stay the view's
+		scroll.setStyleSheet("QScrollArea { background: #181818; }")
+		scroll.setFixedWidth(PANEL_WIDTH + self.style().pixelMetric(QtWidgets.QStyle.PM_ScrollBarExtent))
+		row.addWidget(scroll)
 		self.Sync()
 		self.timer = QtCore.QTimer(self)
 		self.timer.setTimerType(Qt.PreciseTimer) # Windows' coarse timers tick every 15.6 ms
@@ -244,7 +323,7 @@ class Window(QtWidgets.QWidget):
 			self.Redraw() # a bookmark's outline, gone
 		if got is not None:
 			image, frame, row = got
-			self.picture.Show(image)
+			self.picture.Show(image, viewer.words)
 			feed = viewer.readers is not None
 			if self.raised is None or (feed and not self.raised):
 				self.Raise() # in front when it opens, and when a recording's frames come
@@ -256,18 +335,19 @@ class Window(QtWidgets.QWidget):
 				and getattr(viewer, "last", None):
 			# Turned: the 3D tile again, of the row the cameras' tiles show
 			viewer.Draw3D(self.picture.image, viewer.last[1], viewer.last[0][0].frameNumber)
+			self.picture.words = viewer.words.Items() if viewer.words is not None else []
 			self.picture.update()
 
 	def Redraw(self):
 		# The view again (the same frames and row): after a change, while paused or waiting
 		viewer = self.viewer
 		if viewer.readers is None:
-			self.picture.Show(viewer.Waiting())
+			self.picture.Show(viewer.Waiting(), viewer.words)
 			self.Say(None)
 		else:
 			image = viewer.Again()
 			if image is not None:
-				self.picture.Show(image)
+				self.picture.Show(image, viewer.words)
 				self.Say(viewer.last[1])
 
 	def Say(self, row):
@@ -300,9 +380,11 @@ class Window(QtWidgets.QWidget):
 	def Sync(self):
 		# The panel's buttons as the viewer is
 		viewer = self.viewer
-		for key, on in (("d", viewer.show2d), ("p", viewer.show3d), ("l", viewer.lines), ("\\", viewer.showScene)):
+		for key, on in (("d", viewer.show2d), ("p", viewer.show3d), ("l", viewer.lines), ("\\", viewer.showScene),
+				("t", viewer.trails), ("o", viewer.occupancy)):
 			self.checks[key].setChecked(on)
-		self.checks["\\"].setVisible(viewer.scene is not None)
+		for key in "\\to":
+			self.checks[key].setVisible(viewer.scene is not None)
 		self.grid.setChecked(viewer.selected is None)
 		self.single.setChecked(viewer.selected is not None)
 
@@ -357,6 +439,8 @@ class Window(QtWidgets.QWidget):
 			self.Mark(str(event.nativeVirtualKey() - 0x30)) # Shift and a digit (VK_1-VK_9), on any keyboard
 			return
 		key = KEYS.get(event.key())
+		if shift and event.nativeVirtualKey() == 0x30:
+			key = ord(")") # shift 0 on Windows, whatever the keyboard's layout makes of it
 		if key is None:
 			text = event.text()
 			if len(text) != 1:

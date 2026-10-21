@@ -281,3 +281,100 @@ def test_without_qt_the_window_is_opencvs(qt, monkeypatch, capsys):
 	assert code in (0, 1) # 1: this OpenCV has no window support
 	assert liveview.Run(liveview.ParseArgs(["--name", name(), "--priority", "normal", "--seconds", "0.2",
 		"--gui", "qt"])) == 1 and "Qt cannot be loaded" in capsys.readouterr().out
+
+
+def test_the_labels_are_qts_text_over_the_view(qt, window):
+	# The tiles' text is not drawn into the image with OpenCV's font: the
+	# Viewer hands it to the window, which draws it over the image in Qt's,
+	# where OpenCV's would be (the left end of each baseline), cut to its tile
+	win, viewer = window.win, window.viewer
+	PAD = liveview.PAD
+	window.Result(9)
+	def header(items, k):
+		return next(item for item in items if item[0].startswith("{}  Camera{}  frame 9".format(k + 1, k)))
+	items = win.picture.words
+	for k, (c, y, x, h, w) in enumerate(viewer.cells):
+		text, X, Y, color, size, box, clip = header(items, k)
+		assert (X, Y) == (x + PAD, y + PAD + 12) and clip == (x, y, w, h) and box and color == liveview.TEXT
+	labels = [item for item in items if item[0].startswith("#")]
+	assert {item[3] for item in labels} == {liveview.Color(a) for a in range(3)} # on the cameras and in 3D
+	y, x, h, w = viewer.sceneCell
+	assert any(item[0].startswith("3D  frame 9") and item[1:3] == (x + PAD, y + PAD + 12) for item in items)
+	assert any(item[0].startswith("grid squares") for item in items) # the 3D tile's background's text
+	# Not pixels of the image: camera 0's header is the frame's gray there; Qt's text is on the widget
+	c, y, x, h, w = viewer.cells[0]
+	region = (slice(y + 4, y + PAD + 16), slice(x + PAD, x + PAD + 120))
+	assert (win.picture.image[region] == 60).all()
+	# (Qt's offscreen platform on Windows has no fonts, and draws no text: there, the window's own platform does)
+	if qt.QtGui.QFontDatabase().families():
+		grab = win.picture.grab().toImage().convertToFormat(qt.QtGui.QImage.Format_RGB32)
+		bits = grab.constBits()
+		bits.setsize(grab.bytesPerLine() * grab.height())
+		shown = np.frombuffer(bits, np.uint8).reshape(grab.height(), grab.bytesPerLine() // 4, 4)[..., :3]
+		if win.picture.devicePixelRatioF() == 1:
+			assert like(shown[region], liveview.TEXT).sum() > 20 and (shown[region] == liveview.BOX).all(-1).sum() > 100
+		# The saved views have it too
+		rendered = qt.liveviewqt.Rendered(win.picture.image, items)
+		assert like(rendered[region], liveview.TEXT).sum() > 20
+	# OpenCV's window draws its own into the image, at the same place
+	viewer.textOver = False
+	opencv = viewer.Again()
+	assert viewer.words is None and like(opencv[region], liveview.TEXT).sum() > 20
+	viewer.textOver = True
+	# Smaller: the items follow the tiles
+	win.resize(760, 420)
+	qt.app.processEvents()
+	window.Result(10)
+	c, y, x, h, w = viewer.cells[1]
+	text, X, Y, color, size, box, clip = next(item for item in win.picture.words if item[0].startswith("2  Camera1  frame 10"))
+	assert (X, Y) == (x + PAD, y + PAD + 12) and clip == (x, y, w, h)
+	# Turned (the 3D tile drawn again alone): its items replaced, the cameras' kept
+	y, x, h, w = viewer.sceneCell
+	def cameras(): # the items cut to the cameras' tiles
+		return [item for item in win.picture.words if item[6] != (x, y, w, h)]
+	before, scene = cameras(), [item for item in win.picture.words if item[6] == (x, y, w, h)]
+	viewer.scene.Orbit(30, 0)
+	viewer.moved = True
+	win.Step()
+	assert cameras() == before and sum(item[0].startswith("3D  frame") for item in win.picture.words) == 1
+	assert [item for item in win.picture.words if item[6] == (x, y, w, h)] != scene # its labels moved
+
+
+def test_the_wheel_and_keys_zoom_a_camera(qt, window):
+	Qt, QTest, QtCore, QtGui = qt.Qt, qt.QtTest.QTest, qt.QtCore, qt.QtGui
+	win, viewer = window.win, window.viewer
+	window.Result(9)
+	ratio = win.picture.devicePixelRatioF()
+	c, y, x, h, w = viewer.cells[1]
+	at = QtCore.QPoint(int((x + w / 2) / ratio), int((y + h / 2) / ratio))
+	wheel = QtGui.QWheelEvent(QtCore.QPointF(at), QtCore.QPointF(win.picture.mapToGlobal(at)), QtCore.QPoint(0, 0),
+		QtCore.QPoint(0, 240), Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+	qt.app.sendEvent(win.picture, wheel)
+	assert viewer.ZoomOf(1).times == pytest.approx(liveview.ZOOM_WHEEL ** 2) and not viewer.ZoomOf(0).Zoomed()
+	window.Result(10)
+	assert any("zoom 1.2x" in item[0] for item in win.picture.words)
+	# Paused, a drag moves the picture at once
+	QTest.keyClick(win.picture, Qt.Key_Space)
+	before = win.picture.image.copy()
+	def mouse(kind, where, button, buttons):
+		qt.app.sendEvent(win.picture, QtGui.QMouseEvent(kind, QtCore.QPointF(where), button, buttons, Qt.NoModifier))
+	mouse(QtCore.QEvent.MouseButtonPress, at, Qt.LeftButton, Qt.LeftButton)
+	mouse(QtCore.QEvent.MouseMove, at + QtCore.QPoint(30, 0), Qt.NoButton, Qt.LeftButton)
+	mouse(QtCore.QEvent.MouseButtonRelease, at + QtCore.QPoint(30, 0), Qt.LeftButton, Qt.NoButton)
+	assert (win.picture.image[y:y + h, x:x + w] != before[y:y + h, x:x + w]).any()
+	assert int(viewer.last[1]["frame"]) == 10 # the same row
+	QTest.keyClick(win.picture, Qt.Key_Space)
+	# + and -, 0, shift 0 (as a US keyboard types it)
+	QTest.keyClick(win.picture, "+")
+	assert viewer.ZoomOf(0).times == pytest.approx(1.2)
+	QTest.keyClick(win.picture, "-")
+	assert viewer.ZoomOf(0).times == pytest.approx(1)
+	QTest.keyClick(win.picture, ")")
+	assert all(viewer.ZoomOf(k).native for k in range(3))
+	QTest.keyClick(win.picture, "0")
+	assert not any(z.Zoomed() for z in viewer.zooms.values()) and viewer.Shown() == [0, 1, 2]
+	# t and o: the trails and the occupancy, and their boxes
+	QTest.keyClick(win.picture, "o")
+	assert viewer.occupancy and win.checks["o"].isChecked()
+	win.checks["t"].click()
+	assert not viewer.trails and not win.checks["t"].isChecked()
