@@ -453,15 +453,26 @@ def test_campy_live_waits_for_a_ring_still_being_made(rings):
 		cams.Close()
 
 
-def _record(prefix, cameras, frames, rate, delay):
+def _record(prefix, cameras, frames, rate, delay, trigger=None):
+	# campy-acquire's rings, made after delay, and frames at rate from when
+	# trigger is set: campy makes its rings a few seconds before the trigger,
+	# and a campy-live already waiting attaches meanwhile. A recording of
+	# 0.3 s started at once could end between campy-live's looks for the
+	# feed (every 0.2 s), and it would wait for the next one.
 	time.sleep(delay)
 	writers = [livefeed.RingWriter(livefeed.RingName(prefix, c), (16, 20), np.uint8, slots=4, frameRate=rate,
 		camera=c, cameraName="Camera{}".format(c)) for c in range(cameras)]
 	try:
+		if trigger is not None:
+			trigger.wait(30)
 		start = time.perf_counter()
 		for n in range(1, frames + 1):
+			# Waited for asleep: this thread spinning would hold the GIL, and every
+			# sleep or system call of campy-live's would take 5 ms (Python's thread
+			# switch interval) to get it back, a few sets a second. campy-acquire
+			# is a process of its own.
 			while time.perf_counter() < start + n / rate:
-				pass
+				time.sleep(max(0, start + n / rate - time.perf_counter()))
 			# One host time for the set, as for cameras on one trigger: stamped
 			# one by one, a thread switch between them (Python's is every 5 ms)
 			# could put the set more than half a frame apart, misaligned
@@ -476,15 +487,9 @@ def _record(prefix, cameras, frames, rate, delay):
 def test_campy_live_reads_a_recording_to_its_end(tmp_path, capsys):
 	# Started before campy, it waits for the feed, logs every set it reads,
 	# and ends with the recording, with a summary
-	prefix = name()
-	t = threading.Thread(target=_record, args=(prefix, 3, 120, 200, 0.5))
-	t.start()
-	try:
-		out = str(tmp_path / "live")
-		code = live.Run(live.ParseArgs(["--model", "none", "--cameras", "3", "--name", prefix,
-			"--out", out, "--report-sec", "0", "--wait-sec", "30"]))
-	finally:
-		t.join()
+	out = str(tmp_path / "live")
+	code = run_live(name(), out, ["--model", "none", "--report-sec", "0", "--wait-sec", "30"], frames=120,
+		delay=0.5)
 	assert code == 0
 	rows = np.load(out + ".npy")
 	summary = json.load(open(out + ".json"))
@@ -556,16 +561,9 @@ def test_campy_live_stopped_by_an_error_keeps_its_rows(tmp_path, monkeypatch):
 			raise RuntimeError("the model failed")
 		add(log, *a, **k)
 	monkeypatch.setattr(live.Log, "Add", Add)
-	prefix = name()
-	t = threading.Thread(target=_record, args=(prefix, 3, 400, 200, 0.5))
-	t.start()
-	try:
-		out = str(tmp_path / "live")
-		with pytest.raises(RuntimeError, match="the model failed"):
-			live.Run(live.ParseArgs(["--model", "none", "--cameras", "3", "--name", prefix,
-				"--out", out, "--report-sec", "0", "--wait-sec", "30"]))
-	finally:
-		t.join()
+	out = str(tmp_path / "live")
+	with pytest.raises(RuntimeError, match="the model failed"):
+		run_live(name(), out, ["--model", "none", "--report-sec", "0", "--wait-sec", "30"], frames=400, delay=0.5)
 	assert len(np.load(out + ".npy")) == 50
 
 
@@ -609,12 +607,25 @@ def seeing(tmp_path, monkeypatch):
 
 
 def run_live(prefix, out, args, frames=60, rate=200, delay=0.3):
-	# campy-live on a recording of 3 cameras' frames, from a thread
-	t = threading.Thread(target=_record, args=(prefix, 3, frames, rate, delay))
+	# campy-live on a recording of 3 cameras' frames, from a thread: its rings
+	# made after delay, its frames from when campy-live has attached to them
+	trigger = threading.Event()
+	t = threading.Thread(target=_record, args=(prefix, 3, frames, rate, delay, trigger))
+	attach = live.Cameras.Attach
+
+	def Attach(cameras, *a, **k):
+		try:
+			return attach(cameras, *a, **k)
+		finally:
+			trigger.set()
+
 	t.start()
 	try:
-		return live.Run(live.ParseArgs(["--cameras", "3", "--name", prefix, "--out", out] + args))
+		with pytest.MonkeyPatch.context() as m:
+			m.setattr(live.Cameras, "Attach", Attach)
+			return live.Run(live.ParseArgs(["--cameras", "3", "--name", prefix, "--out", out] + args))
 	finally:
+		trigger.set()
 		t.join()
 
 
