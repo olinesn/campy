@@ -379,6 +379,45 @@ def test_the_labels_are_qts_text_over_the_view(qt, window):
 	assert [item for item in win.picture.words if item[6] == (x, y, w, h)] != scene # its labels moved
 
 
+def test_the_health_badge_and_labels_are_qts_text_apart(qt, window):
+	# On small tiles (2026-10-21, the ChronicRecord PC over RDP), the tile's badge (camera 1 a frame ahead:
+	# white on red) is Qt's text too, under the name line where Qt's font has no room for both at its
+	# height; nothing covers another, measured in Qt's font
+	win, viewer = window.win, window.viewer
+	status = viewer.rig.Status
+	def Ahead(now=None):
+		s = status(now)
+		s.cameras[1].problems = [("1 FRAME AHEAD", "Camera1: 1 frame ahead of the other cameras")]
+		return s
+	viewer.rig.Status = Ahead
+	win.resize(760, 420)
+	qt.app.processEvents()
+	window.Result(9)
+	items, image = win.picture.words, win.picture.image
+	qtFont = types.SimpleNamespace(measure=qt.liveviewqt.Measure)
+	c, y, x, h, w = viewer.cells[1]
+	badge = next(item for item in items if item[0] == "1 FRAME AHEAD")
+	text, X, Y, color, size, box, clip = badge
+	assert (color, box, clip) == ((255, 255, 255), liveview.WARN, (x, y, w, h))
+	x0, y0, x1, y1 = liveview.TextBox(text, (X, Y), size, qtFont)
+	assert x1 == x + w - liveview.PAD - 1 # at the tile's top right
+	assert not like(image[y0:y1, x0:x1], liveview.WARN).any() # not drawn into the image
+	assert like(image[y:y + h, x:x + w], liveview.WARN).sum() > 200 # the red frame round the tile is
+	for c, y, x, h, w in viewer.cells:
+		mine = [item for item in items if item[6] == (x, y, w, h)]
+		boxes = [liveview.TextBox(text, (X, Y), size, qtFont) for text, X, Y, color, size, box, clip in mine]
+		assert any(item[0].startswith("#") for item in mine) and any(item[0].endswith("fps") or item is badge
+			for item in mine)
+		assert not any(liveview.Over(a, b) for k, a in enumerate(boxes) for b in boxes[:k])
+	# (Qt's offscreen platform on Windows has no fonts, and draws no text: there, the window's own platform does)
+	if qt.QtGui.QFontDatabase().families():
+		header = next(item for item in items if item[0].startswith("2  Camera1  frame 9"))
+		if liveview.TextBox(header[0], header[1:3], header[4], qtFont)[2] + 6 > x0:
+			assert y0 > liveview.TextBox(header[0], header[1:3], header[4], qtFont)[3] # under it
+		rendered = qt.liveviewqt.Rendered(image, items)
+		assert like(rendered[y0:y1, x0:x1], liveview.WARN).sum() > 100 and (rendered[y0:y1, x0:x1].min(-1) > 200).any()
+
+
 def test_the_wheel_and_keys_zoom_a_camera(qt, window):
 	Qt, QTest, QtCore, QtGui = qt.Qt, qt.QtTest.QTest, qt.QtCore, qt.QtGui
 	win, viewer = window.win, window.viewer

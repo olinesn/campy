@@ -237,6 +237,88 @@ def test_2d_only_results_are_drawn_unmatched():
 	assert near(img, keypoints[0, 0, 0] + [liveview.RADIUS_2D, 0], liveview.UNMATCHED, 1)
 
 
+def test_a_label_goes_a_line_up_or_down_where_another_is():
+	labels = liveview.Labels(130)
+	asked = [("#0  10 px", (50, 100)), ("#2  21 px", (60, 100)), ("#1", (55, 100)), ("#3", (56, 98))]
+	placed = [labels.Place(text, at, 0.45) for text, at in asked]
+	(w, h), base = liveview.TextSize("#0  10 px", 0.45)
+	line = h + base + 5 # a box's height, and the pixel between
+	assert placed[:3] == [(50, 100), (60, 100 - line), (55, 100 + line)] # where asked; then up first, then down
+	assert placed[3] == (56, 100 - 2 * line) # the nearest place free: 2 lines up (4 px nearer than down)
+	# At the tile's foot (130 px): up, though down is nearer
+	assert labels.Place("#4", (57, 100 + line + 2), 0.45) == (57, 100 - 3 * line)
+	boxes = [liveview.TextBox(text, at, 0.45) for (text, _), at in zip(asked, placed)]
+	assert not any(liveview.Over(a, b) for k, a in enumerate(boxes) for b in boxes[:k])
+	# Not over what is taken (the tile's name line), nor above the tile
+	name = liveview.TextBox("1  Camera0  frame 9,149  0:05:04.93  found 3", (liveview.PAD, liveview.PAD + 12), 0.5)
+	at = liveview.Labels(100, taken=[name]).Place("#0  10 px", (20, 15), 0.45)
+	box = liveview.TextBox("#0  10 px", at, 0.45)
+	assert at[0] == 20 and box[1] > name[3]
+	# Nowhere free: where it was asked
+	assert liveview.Labels(10, taken=[(0, 0, 640, 10)]).Place("#0", (20, 8), 0.45) == (20, 8)
+
+
+def test_the_labels_of_mice_side_by_side_do_not_cover_each_other():
+	# Mice 0 and 1 a centimetre apart (2026-10-21: "#2 21 px" ran into "#0 10 px"): every camera's labels
+	# apart, measured in the font they are drawn in: OpenCV's, or the window's (wider)
+	cams = scene3d.rig()
+	truth = scene3d.scene(1, n=3)[0]
+	truth[1] = truth[0] + [10, 0, 0]
+	keypoints, scores, order = scene3d.observe(cams, truth, np.random.default_rng(0), noise=0.0, drop_node=0.0,
+		instances=3)
+	row = row_for(1, cams, truth, keypoints, scores, order)
+	for measure in (None, lambda text, size: ((14 * len(text), 16), 5)):
+		for c, cam in enumerate(cams):
+			pen = liveview.Words(measure).Tile(("camera", c), 0, 0, 512, 640)
+			liveview.DrawCamera(np.zeros((512, 640, 3), np.uint8), 0.5, row, c, cam, EDGES, words=pen)
+			labels = [item for item in pen.items if item[0].startswith("#")]
+			boxes = [liveview.TextBox(text, (x, y), size, pen) for text, x, y, color, size, box, clip in labels]
+			assert len(boxes) == 3
+			assert boxes[0][0] < boxes[1][2] and boxes[1][0] < boxes[0][2] # side by side: one above the other
+			assert not any(liveview.Over(a, b) for k, a in enumerate(boxes) for b in boxes[:k])
+	# OpenCV's window draws them where they are handed over
+	img = np.zeros((512, 640, 3), np.uint8)
+	pen = liveview.Words().Tile("camera", 0, 0, 512, 640)
+	liveview.DrawCamera(img, 0.5, row, 0, cams[0], EDGES, words=pen)
+	drawn = np.zeros_like(img)
+	liveview.DrawCamera(drawn, 0.5, row, 0, cams[0], EDGES)
+	for text, x, y, color, size, box, clip in pen.items:
+		if text.startswith("#"):
+			x0, y0, x1, y1 = liveview.TextBox(text, (x, y), size)
+			assert like(drawn[y0:y1, x0:x1], color).sum() > 20
+
+
+def test_the_health_badge_goes_under_the_name_line_where_both_do_not_fit():
+	# The badge at a tile's top right: level with its name line, or under it on a narrow tile, in the
+	# font it is drawn in; what is wrong white on a red box
+	PAD = liveview.PAD
+	ahead = types.SimpleNamespace(cameras=[types.SimpleNamespace(problems=[("1 FRAME AHEAD", "")], fps=30.0)])
+	fine = types.SimpleNamespace(cameras=[types.SimpleNamespace(problems=[], fps=30.0)])
+	name = "1  Camera0  frame 9,149  0:05:04.93  found 3  zoom 1.6x" # the ChronicRecord PC's, 2026-10-21
+	header = liveview.TextBox(name, (PAD, PAD + 12), 0.5)
+	text, at, color, box, wrong, where = liveview.Viewer.Badge(None, 0, ahead, 800, header)
+	assert text == "1 FRAME AHEAD" and at[1] == PAD + 12 and (color, box, wrong) == ((255, 255, 255), liveview.WARN, True)
+	assert where[2] == 800 - PAD - 4 + 3 and not liveview.Over(where, header)
+	text, at, color, box, wrong, where = liveview.Viewer.Badge(None, 0, fine, 400, header)
+	assert (text, color, box, wrong) == ("30.0 fps", liveview.FINE, liveview.BOX, False)
+	assert where[1] > header[3] and where[2] == 400 - PAD - 4 + 3 # under the name line
+	assert liveview.Viewer.Badge(None, 1, fine, 400, header) is None
+	# In a wider font, under it on a tile that has room for both in OpenCV's
+	pen = liveview.Words(lambda text, size: ((14 * len(text), 16), 5)).Tile("camera", 0, 0, 256, 600)
+	assert liveview.Viewer.Badge(None, 0, fine, 600, header)[1][1] == PAD + 12
+	header = liveview.TextBox(name, (PAD, PAD + 12), 0.5, pen)
+	where = liveview.Viewer.Badge(None, 0, fine, 600, header, pen)[-1]
+	assert where[1] > header[3] and not liveview.Over(where, header)
+	# Drawn: OpenCV's box red, the window's handed over with its box's colour
+	img = np.zeros((40, 200, 3), np.uint8)
+	liveview.Text(img, "1 FRAME AHEAD", (10, 25), (255, 255, 255), 0.45, liveview.WARN)
+	assert like(img, liveview.WARN).sum() > 500 and (img.min(-1) > 200).sum() > 20 # white on it
+	liveview.Text(None, "1 FRAME AHEAD", (10, 25), (255, 255, 255), 0.45, liveview.WARN, words=pen)
+	liveview.Text(None, "30.0 fps", (10, 25), liveview.FINE, 0.45, words=pen)
+	liveview.Text(None, "now", (10, 25), liveview.DIM, 0.45, box=False, words=pen)
+	assert [item[5] for item in pen.items] == [liveview.WARN, liveview.BOX, None]
+
+
 def test_layout_fits_the_grid_and_the_panel():
 	three = liveview.Layout(3, (1024, 1280), size=(1800, 960))
 	assert (three.cols, three.rows, three.inGrid) == (2, 2, True)

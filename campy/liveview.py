@@ -29,7 +29,9 @@ What it draws on each camera's frame
   the camera through the calibration (lens distortion included): filled dots
   and thick lines, one colour per identity. Its label: the identity, how many
   cameras it was triangulated from, and how far, in this camera, its
-  projection is from the 2D it was made from (px, mean over the nodes).
+  projection is from the 2D it was made from (px, mean over the nodes),
+  above the animal, or a line up or down where another's label (or the
+  tile's name line, or its frames a second) is there: none covers another.
 - 2D: what the model found in this camera: open circles and thin lines, in
   the colour of the identity campy-live matched them to, white when it
   matched them to none.
@@ -95,7 +97,8 @@ told):
   late (LATE n), in the last 10 s, and a camera whose host times are a frame
   or more off the others' for the same frame number (1 FRAME AHEAD: as a
   camera left grabbing after a double Ctrl+C was on 2026-10-20, and campy-live
-  called every set misaligned). The view reads this from the cameras' rings
+  called every set misaligned), under the name line where the tile is too
+  narrow for both. The view reads this from the cameras' rings
   (their frames' numbers and times, not the frames) 20 times a second.
 - The panel starts with what is wrong, in red, then: each identity's strip
   of the last 10 s (its height the cameras it was triangulated from, its
@@ -327,16 +330,69 @@ def DrawSkeleton(img, px, scale, edges, color, radius, thickness, filled, dashed
 
 def Text(img, text, at, color=TEXT, size=0.5, box=True, words=None):
 	# Text at (x, y) of its baseline's left end, on a dark box (an outline drawn thicker than the
-	# text comes out wider than it in OpenCV 5's font, and off to one side). With words (a tile's
-	# Pen), not drawn: handed to the window, to draw over the image in its own fonts
+	# text comes out wider than it in OpenCV 5's font, and off to one side), or on a box of that
+	# colour (BGR), or on none (False). With words (a tile's Pen), not drawn: handed to the window,
+	# to draw over the image in its own fonts
+	box = BOX if box is True else (tuple(int(v) for v in box) if box else None)
 	if words is not None:
 		words.Add(text, at, color, size, box)
 		return
 	x, y = int(at[0]), int(at[1])
 	if box:
-		(w, h), base = cv2.getTextSize(text, FONT, size, 1)
-		cv2.rectangle(img, (x - 3, y - h - 3), (x + w + 3, y + base + 1), BOX, -1)
+		x0, y0, x1, y1 = TextBox(text, (x, y), size)
+		cv2.rectangle(img, (x0, y0), (x1, y1), box, -1)
 	cv2.putText(img, text, (x, y), FONT, size, color, 1, cv2.LINE_AA)
+
+
+def TextSize(text, size, words=None):
+	# ((width, height), baseline) of text at size in the font it is drawn in: OpenCV's, or with
+	# words (a Pen) the window's
+	if words is not None and words.measure is not None:
+		return words.measure(text, size)
+	return cv2.getTextSize(text, FONT, size, 1)
+
+
+def TextBox(text, at, size, words=None):
+	# The box Text puts text on, at (x, y) of its baseline's left end: (x0, y0, x1, y1)
+	(w, h), base = TextSize(text, size, words)
+	x, y = int(at[0]), int(at[1])
+	return (x - 3, y - h - 3, x + w + 3, y + base + 1)
+
+
+def Over(a, b):
+	# Whether boxes (x0, y0, x1, y1) a and b overlap
+	return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+class Labels:
+	"""
+	Where a tile's labels go, none over another: each where it is asked
+	(the left end of its baseline), or, if a label placed before or a box
+	taken (the tile's name line, its badge) is there, the nearest free place
+	straight above or below (up first), inside the tile (h px high), or
+	where it was asked if there is none. Measured in the font the text is
+	drawn in (words, a Pen: the window's).
+	"""
+
+	def __init__(self, h, words=None, taken=()):
+		self.h, self.words, self.taken = h, words, list(taken)
+
+	def Place(self, text, at, size):
+		x, y = int(at[0]), int(at[1])
+		box = TextBox(text, (x, y), size, self.words)
+		# Where it was asked, or just above or below a box (the nearest free place is one of them)
+		moves = [0] + [dy for t in self.taken if t[0] < box[2] and box[0] < t[2] for dy in
+			(t[1] - box[3] - 1, t[3] - box[1] + 1)]
+		dy = 0
+		for move in sorted(moves, key=lambda dy: (abs(dy), dy > 0)):
+			moved = (box[0], box[1] + move, box[2], box[3] + move)
+			if move and (moved[1] < 0 or moved[3] > self.h):
+				continue
+			if not any(Over(moved, other) for other in self.taken):
+				dy = move
+				break
+		self.taken.append((box[0], box[1] + dy, box[2], box[3] + dy))
+		return x, y + dy
 
 
 @functools.lru_cache(maxsize=1024)
@@ -371,17 +427,20 @@ class Words:
 	fonts (Qt's) rather than have it drawn into the image with OpenCV's.
 	Items: (text, x, y, colour (BGR), size (OpenCV's font scale), box, clip):
 	x, y the left end of the baseline in the view's image, as Text's (x None:
-	10 px after the item before), box whether on a dark box, clip the tile's
-	(x, y, width, height), which the text is cut to. Tile gives the Pen a
-	tile's text goes to; drawing the tile again replaces its items.
+	10 px after the item before), box the colour (BGR) of the box it is on
+	(None: none), clip the tile's (x, y, width, height), which the text is
+	cut to. Tile gives the Pen a tile's text goes to; drawing the tile again
+	replaces its items. measure: the window's TextSize, (text, size) ->
+	((width, height), baseline), for the text to be placed as it is drawn.
 	"""
 
-	def __init__(self):
+	def __init__(self, measure=None):
 		self.parts = {}
+		self.measure = measure
 
 	def Tile(self, name, y, x, h, w):
 		self.parts[name] = []
-		return Pen(self.parts[name], x, y, (x, y, w, h))
+		return Pen(self.parts[name], x, y, (x, y, w, h), self.measure)
 
 	def Items(self):
 		return [item for part in self.parts.values() for item in part]
@@ -389,8 +448,8 @@ class Words:
 
 class Pen:
 	# Where a tile's text goes: its items, at the tile's place in the view's image
-	def __init__(self, items, x, y, clip):
-		self.items, self.x, self.y, self.clip = items, x, y, clip
+	def __init__(self, items, x, y, clip, measure=None):
+		self.items, self.x, self.y, self.clip, self.measure = items, x, y, clip, measure
 
 	def Add(self, text, at, color, size, box):
 		x = None if at[0] is None else int(at[0]) + self.x
@@ -402,7 +461,7 @@ def Has3D(row):
 
 
 def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=True, lines=True, origin=(0, 0),
-		frame=None, words=None, bad_px=livehealth.BAD_PX, bad=None):
+		frame=None, words=None, bad_px=livehealth.BAD_PX, bad=None, taken=()):
 	"""
 	Camera c's part of a results row on img, its frame at scale (a number, or
 	x and y) from origin (the frame's pixel at the tile's top left: zoomed,
@@ -411,7 +470,8 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 	({identity: px}; default: those whose reprojection error in row is above
 	bad_px) dimmed and dashed, their labels red. frame, the frame's
 	width and height (default: what the tile shows): the 3D off it is listed
-	at the tile's foot. words: a Pen for the text (Text). Returns {identity:
+	at the tile's foot. words: a Pen for the text (Text). The labels go
+	where none covers another, nor the boxes taken (Labels). Returns {identity:
 	mean px, in this camera, between its projected 3D and the detection it
 	was made from (NaN: no detection here)} for the identities with 3D.
 	"""
@@ -451,6 +511,7 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 			DrawSkeleton(img, px, scale, edges, Dimmed(Color(a)) if a in bad else Color(a), radius=RADIUS_3D,
 				thickness=2, filled=True, dashed=a in bad, origin=origin)
 		away = [] # 3D that lands nowhere on the frame (or behind the camera)
+		labels = Labels(img.shape[0], words, taken)
 		for a, px in projected.items():
 			px = np.asarray(px, float)
 			with np.errstate(invalid="ignore"):
@@ -470,7 +531,8 @@ def DrawCamera(img, scale, row, c, camera=None, edges=None, show2d=True, show3d=
 				label += "  ({} cam{})".format(views, "" if views == 1 else "s")
 			if a in bad: # not to trust: campy-live's error, over every camera
 				label = "#{}  bad 3D: {:.0f} px".format(a, bad[a])
-			Text(img, label, (p[:, 0].min(), p[:, 1].min() - 8), WARN if a in bad else Color(a), 0.45, words=words)
+			at = labels.Place(label, (p[:, 0].min(), p[:, 1].min() - 8), 0.45)
+			Text(img, label, at, WARN if a in bad else Color(a), 0.45, words=words)
 		x = PAD
 		for k, a in enumerate(away):
 			text = "{}#{}".format("3D off this image: " if k == 0 else "", a)
@@ -1366,12 +1428,11 @@ class Scene:
 			else:
 				cv2.line(img, q0, q1, OUTLINE, 4, cv2.LINE_AA, SHIFT)
 				cv2.line(img, q0, q1, color, 2, cv2.LINE_AA, SHIFT)
+		placed = Labels(img.shape[0], words)
 		for a, at in labels:
-			if a in bad:
-				Text(img, "#{}  bad 3D: {:.0f} px".format(a, bad[a]), (at[0] + 6, at[1] - 10), WARN, 0.45,
-					words=words)
-			else:
-				Text(img, "#{}".format(a), (at[0] + 6, at[1] - 10), Color(a), 0.45, words=words)
+			text = "#{}  bad 3D: {:.0f} px".format(a, bad[a]) if a in bad else "#{}".format(a)
+			Text(img, text, placed.Place(text, (at[0] + 6, at[1] - 10), 0.45), WARN if a in bad else Color(a), 0.45,
+				words=words)
 
 
 # ---------------------------------------------------------------- the view
@@ -1551,6 +1612,7 @@ class Viewer:
 		self.panned = False # a camera's zoom changed since it was drawn
 		self.textOver = False # the window draws the text over the view (Qt's fonts): handed to it in words
 		self.words = None # the last view's text (Words), when textOver
+		self.measure = None # the window's TextSize, in its fonts (Words), when textOver
 		self.render = None # the window's: the view with its text drawn over it, for the PNGs
 		self.scene = None # the 3D tile's Scene (with a calibration)
 		self.showScene = not args.no_3d
@@ -1807,7 +1869,7 @@ class Viewer:
 
 	def Compose(self, frames, row):
 		start = time.perf_counter()
-		self.words = Words() if self.textOver else None
+		self.words = Words(self.measure) if self.textOver else None
 		self.frameShape = frames[0].image.shape[:2]
 		shown = self.Shown()
 		layout = self.Layout(frames[0].image.shape)
@@ -1833,6 +1895,12 @@ class Viewer:
 			zoom = self.ZoomOf(c)
 			scale, origin = zoom.Window(frame.image.shape, layout.tile, layout.scale)
 			tile = Gray(frame.image, layout.tile, scale, origin)
+			text = self.Header(c, frame, row, cameraNames, calibNames, zoom, rig)
+			header = TextBox(text, (PAD, PAD + 12), 0.5, words)
+			health = time.perf_counter()
+			badge = self.Badge(c, rig, tile.shape[1], header, words)
+			healthS += time.perf_counter() - health
+			taken = [header] + ([badge[-1]] if badge is not None else [])
 			if row is not None:
 				if self.trails and self.cameraTrails.seconds > 0: # under the skeletons
 					trailStart = time.perf_counter()
@@ -1840,23 +1908,15 @@ class Viewer:
 						self.show2d, self.show3d, bad)
 					trailS += time.perf_counter() - trailStart
 				DrawCamera(tile, scale, row, c, self.calibration[c] if self.calibration else None, edges,
-					self.show2d, self.show3d, self.lines, origin, frame.image.shape[1::-1], words, bad=bad)
-			name = cameraNames[c] if c < len(cameraNames) else str(c)
-			if c < len(calibNames) and calibNames[c] != name:
-				name += " ({})".format(calibNames[c])
-			text = "{}  {}  {}".format(c + 1, name, FrameText(frame.frameNumber, self.FrameTime(c, frame, rig)))
-			if row is not None:
-				text += "  found {}".format(int(row["found"][c]))
-			if self.selected is not None: # single view: which of how many (as LUC3D)
-				text += "  ({}/{})".format(c + 1, len(self.readers) if self.readers else len(self.ringNames))
-			if zoom.Zoomed():
-				text += "  1:1" if zoom.native else "  zoom {:.1f}x".format(zoom.times)
+					self.show2d, self.show3d, self.lines, origin, frame.image.shape[1::-1], words, bad=bad, taken=taken)
 			Text(tile, text, (PAD, PAD + 12), words=words)
 			if len(shown) > 1 and c == self.current: # the grid: the camera v shows alone
 				cv2.rectangle(tile, (1, 1), (tile.shape[1] - 2, tile.shape[0] - 2), PICKED, 2)
-			health = time.perf_counter()
-			self.Badge(tile, c, rig)
-			healthS += time.perf_counter() - health
+			if badge is not None:
+				text, at, color, box, wrong, _ = badge
+				if wrong: # a red frame round the tile
+					cv2.rectangle(tile, (1, 1), (tile.shape[1] - 2, tile.shape[0] - 2), WARN, 3)
+				Text(tile, text, at, color, 0.45, box, words=words)
 			canvas[y:y + layout.tile[0], x:x + layout.tile[1]] = tile
 			self.cells.append((c, y + oy, x + ox) + layout.tile)
 		self.sceneCell = None
@@ -1889,26 +1949,44 @@ class Viewer:
 			t = (frame.frameNumber - 1) / self.rig.frameRate
 		return t
 
-	def Badge(self, tile, c, rig):
-		# Camera c's health on its tile, at its top right: its frames a second (green), or what is wrong, in
-		# red, with a red frame round the tile
+	def Header(self, c, frame, row, cameraNames, calibNames, zoom, rig=None):
+		# Camera c's name line, at its tile's top left (rig: the rig's Status)
+		name = cameraNames[c] if c < len(cameraNames) else str(c)
+		if c < len(calibNames) and calibNames[c] != name:
+			name += " ({})".format(calibNames[c])
+		text = "{}  {}  {}".format(c + 1, name, FrameText(frame.frameNumber, self.FrameTime(c, frame, rig)))
+		if row is not None:
+			text += "  found {}".format(int(row["found"][c]))
+		if self.selected is not None: # single view: which of how many (as LUC3D)
+			text += "  ({}/{})".format(c + 1, len(self.readers) if self.readers else len(self.ringNames))
+		if zoom.Zoomed():
+			text += "  1:1" if zoom.native else "  zoom {:.1f}x".format(zoom.times)
+		return text
+
+	def Badge(self, c, rig, width, header, words=None):
+		"""
+		Camera c's health, at the top right of its tile (width px): its frames
+		a second (green, on a dark box), or what is wrong (white on red, and a
+		red frame round the tile). Level with the name line, or under it where
+		that would cover its box (header). In the font the text is drawn in
+		(words: a Pen). (text, at, colour, box colour, wrong, its box), or None.
+		"""
 		if rig is None or c >= len(rig.cameras):
-			return
+			return None
 		s = rig.cameras[c]
 		if s.problems:
-			text = "  ".join(tag for tag, _ in s.problems)
-			cv2.rectangle(tile, (1, 1), (tile.shape[1] - 2, tile.shape[0] - 2), WARN, 3)
+			text, color, box = "  ".join(tag for tag, _ in s.problems), (255, 255, 255), WARN
 		elif s.fps is not None:
-			text = "{:.1f} fps".format(s.fps)
+			text, color, box = "{:.1f} fps".format(s.fps), FINE, BOX
 		else:
-			return
-		(w, h), base = cv2.getTextSize(text, FONT, 0.45, 1)
-		x, y = tile.shape[1] - w - PAD - 4, PAD + 12
-		if s.problems:
-			cv2.rectangle(tile, (x - 4, y - h - 4), (x + w + 4, y + base + 2), WARN, -1)
-			Text(tile, text, (x, y), (255, 255, 255), 0.45, box=False)
-		else:
-			Text(tile, text, (x, y), FINE, 0.45)
+			return None
+		(w, h), base = TextSize(text, 0.45, words)
+		at = (width - w - PAD - 4, PAD + 12)
+		where = TextBox(text, at, 0.45, words)
+		if where[0] < header[2] + 6: # under the name line
+			at = (at[0], header[3] + 2 + h + 3)
+			where = TextBox(text, at, 0.45, words)
+		return text, at, color, box, bool(s.problems), where
 
 	def Again(self):
 		"""
@@ -2341,7 +2419,7 @@ class Viewer:
 
 	def Waiting(self):
 		canvas = self.Canvas(self.Size()[::-1]) # the view's size: OpenCV sizes a new window to its first image
-		self.words = Words() if self.textOver else None
+		self.words = Words(self.measure) if self.textOver else None
 		words = self.words.Tile("waiting", 0, 0, *canvas.shape[:2]) if self.words is not None else None
 		Text(canvas, "Waiting for the live feed: {}".format(", ".join(self.ringNames)), (PAD, 40), words=words)
 		Text(canvas, "(campy-acquire with liveFeed True)", (PAD, 70), DIM, words=words)

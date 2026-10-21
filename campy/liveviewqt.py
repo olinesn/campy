@@ -64,9 +64,15 @@ def Font(size):
 	return _fonts[size]
 
 
+def Measure(text, size):
+	# liveview.TextSize in Qt's font: ((width, capitals' height), descent), the box PaintWords puts it on
+	metrics = QtGui.QFontMetrics(Font(size))
+	return (metrics.horizontalAdvance(text), metrics.capHeight()), metrics.descent()
+
+
 def PaintWords(painter, items):
 	# The view's text items (liveview.Words), on painter, in the image's pixels: each at the left end of
-	# its baseline, on a dark box as liveview.Text draws it, cut to its tile
+	# its baseline, on its box as liveview.Text draws it, cut to its tile
 	right = 0
 	for text, x, y, color, size, box, clip in items:
 		font = Font(size)
@@ -76,7 +82,7 @@ def PaintWords(painter, items):
 		painter.setClipRect(QtCore.QRect(*clip))
 		if box:
 			painter.fillRect(QtCore.QRect(x - 3, y - metrics.capHeight() - 3, width + 6,
-				metrics.capHeight() + metrics.descent() + 4), QtGui.QColor(*liveview.BOX[::-1]))
+				metrics.capHeight() + metrics.descent() + 4), QtGui.QColor(*box[::-1]))
 		painter.setFont(font)
 		painter.setPen(QtGui.QColor(*color[::-1]))
 		painter.drawText(QtCore.QPoint(x, y), text)
@@ -199,6 +205,7 @@ class Window(QtWidgets.QWidget):
 		super().__init__()
 		self.viewer, self.args = viewer, args
 		viewer.textOver = True # the view's text, drawn over it in Qt's fonts
+		viewer.measure = Measure # and placed as wide as they draw it
 		viewer.render = lambda image: Rendered(image, viewer.words.Items())
 		self.setWindowTitle(liveview.TITLE)
 		self.paused = False
