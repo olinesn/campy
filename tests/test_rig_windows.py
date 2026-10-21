@@ -456,5 +456,5 @@ def test_guard_ends_a_file_script_that_lacks_the_exit(run):
 	script.write_text('. "%s" @args\n"body $env:RIG_JOB"\nexit 5\n' % (run.root / "rig_guard.ps1"))
 	r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "t2"],
 		env=dict(run.env, RIG_OWNER="tester", RIG_PYTHON=sys.executable), capture_output=True, text=True, timeout=120)
-	assert r.returncode == 5 and [l for l in r.stdout.splitlines() if l.startswith("body")] == ["body t2-%s" % l.split("-")[-1]
-		for l in r.stdout.splitlines() if l.startswith("body")] and r.stdout.count("body ") == 1, r.stdout + r.stderr
+	body = [l for l in r.stdout.splitlines() if l.startswith("body")]
+	assert r.returncode == 5 and len(body) == 1 and body[0].startswith("body t2-"), r.stdout + r.stderr  # in the job, once
