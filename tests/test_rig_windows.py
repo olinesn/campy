@@ -57,6 +57,13 @@ def test_classify_names_dlls_ports_and_jobs(monkeypatch):
 	assert {r[0]: r[7] for r in recs}[17] == "t-1"
 
 
+def test_the_kernels_io_is_not_disk():
+	# Under WDDM the kernel (System, pid 4) is charged with every frame a job copies to the GPU
+	table = [(4, 0, "System", 1, 5.0, 10 ** 12), (20, 1, "robocopy.exe", 2, 1.0, 10 ** 9)]
+	io = {r[0]: r[4] for r in rig_windows.classify(table)}
+	assert io == {4: None, 20: 10 ** 9}
+
+
 def test_nvidia_smi_parsing():
 	pids = """
 ==============NVSMI LOG==============
@@ -214,6 +221,48 @@ def test_run_waits_for_a_python_on_the_gpu(monkeypatch, root, capsys):
 	assert "500 gpu python.exe" in capsys.readouterr().out
 
 
+def test_outside_io_counts_what_reached_the_disks(monkeypatch):
+	# pid 600 is outside the job, 700 is the job; each look adds their I/O, and the disks' bytes
+	state = {"outside": 0, "job": 0, "disk": 0}
+	def scan(own=()):
+		procs = {os.getpid(): fake(os.getpid(), ppid=0, start=0), 600: fake(600, name="copy.exe"),
+			700: fake(700, name="campy.exe", job="t-1")}
+		procs[600].io, procs[700].io = state["outside"], state["job"]
+		return procs
+	clock = iter(range(100))
+	monkeypatch.setattr(rig, "scan", scan)
+	monkeypatch.setattr(rig.time, "perf_counter", lambda: float(next(clock)))  # a look each second
+	monkeypatch.setattr(rig, "disk_bytes", lambda: state["disk"])
+	w = rig.Watch(job="t-1")
+	def look(outside=0, job=0, disk=0):  # MB in the last second
+		state["outside"] += outside * 10 ** 6
+		state["job"] += job * 10 ** 6
+		state["disk"] += disk * 10 ** 6
+		load = w.sample()[1]
+		return load and (round(load[1]), load[3])
+	look()
+	assert look() == (0, 0)
+	assert look(outside=400) == (0, 0)  # its I/O reached no disk (a pipe, the GPU, the cache)
+	assert look(outside=400, disk=300) == (300, 300)  # 300 MB of it did
+	assert look(job=200, disk=200) == (0, 200)  # the job's own
+	assert look(job=500, disk=50) == (0, 50)  # the job's, most of it not to a disk
+	assert look(disk=500) == (500, 500)  # Windows writing out what a program now gone wrote
+	assert look(outside=100, job=300, disk=350) == (100, 350)  # both
+	monkeypatch.setattr(rig, "disk_bytes", lambda: None)  # Linux, or no disk counters
+	look()
+	assert look(outside=400, job=100) == (400, None)
+
+
+def test_two_looks_in_one_clock_tick_measure_nothing(monkeypatch):
+	# Windows' clocks can give two looks the same time; that is no rate, not a division by zero
+	monkeypatch.setattr(rig, "scan", lambda own=(): {os.getpid(): fake(os.getpid(), ppid=0, start=0), 600: fake(600)})
+	monkeypatch.setattr(rig, "disk_bytes", lambda: 0)
+	monkeypatch.setattr(rig.time, "perf_counter", lambda: 5.0)
+	w = rig.Watch()
+	w.sample()
+	assert w.sample()[1] is None
+
+
 def test_the_jobs_own_processes_and_reused_parent_pids(monkeypatch):
 	w = rig.Watch(job="t-1", root_pid=200)
 	procs = {
@@ -366,6 +415,18 @@ def test_cpu_and_io_of_another_process(tmp_path):
 		assert b[5] - a[5] >= 40e6, (a, b)  # and wrote 40 MB
 	finally:
 		child.wait()
+
+
+@windows
+def test_disk_bytes_count_a_file_written_to_disk(tmp_path):
+	before = rig_windows.disk_bytes()
+	with open(tmp_path / "big", "wb") as f:
+		for i in range(40):
+			f.write(os.urandom(1000000))
+		f.flush()
+		os.fsync(f.fileno())
+	after = rig_windows.disk_bytes()
+	assert before is not None and after - before >= 40e6, (before, after)
 
 
 @windows
