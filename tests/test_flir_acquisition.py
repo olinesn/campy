@@ -27,6 +27,9 @@ class Device:
 	def __init__(self, stop="stop"):
 		self.stop = stop
 		self.acquiring, self.locked = False, 0
+		# Frames taken at trigger pulses that no process read: the camera's own
+		# transfer queue, which stopping the acquisition does not empty (2026-10-20)
+		self.held = 0
 		self.width, self.height, self.offset_x, self.offset_y = 1280, 1024, 0, 0
 		self.pixel_format = "Mono8"
 
@@ -113,6 +116,16 @@ class FakeCamera:
 		if self.started:
 			raise SpinError("Camera is already streaming")
 		self.device.locked, self.device.acquiring, self.started = 1, True, True
+
+	def GetNextImage(self, timeout_ms):
+		# A frame the camera holds comes at once; a pulse only from the trigger, which no test starts
+		self.calls.append("GetNextImage")
+		if not self.started or not self.device.held:
+			raise SpinError("Spinnaker: Failed waiting for EventData on NEW_BUFFER_DATA event. [-1011]")
+		self.device.held -= 1
+		image = types.SimpleNamespace(released=False, IsIncomplete=lambda: False)
+		image.Release = lambda: setattr(image, "released", True)
+		return image
 
 	def EndAcquisition(self):
 		self.calls.append("EndAcquisition")
@@ -312,3 +325,108 @@ def test_a_killed_triggered_run(flir, device, capsys):
 	flir.LoadSettings(new_process(device), params(cameraTrigger="Line3", pixelFormatInput="rgb24"))
 	assert STOPPED in capsys.readouterr().out
 	assert device.pixel_format == "RGB8Packed"
+
+
+# -------------------------------------------------------------- frames it still holds
+
+ARDUINO = dict(cameraTrigger="Line3", startArduino=True)
+DISCARDED = "Camera0: discarded 1 frame it still held from the run that did not close it."
+
+
+def killed_while_triggered(flir, held=1, **values):
+	# A triggered run killed while its trigger still pulsed: the camera took frames nobody read
+	device = Device()
+	killed_run(flir, device, **values)
+	device.held = held
+	return device
+
+
+def test_frames_a_killed_run_left_on_the_camera_are_discarded(flir, capsys):
+	device = killed_while_triggered(flir, **ARDUINO)
+	capsys.readouterr()
+	camera = new_process(device)
+	flir.LoadSettings(camera, params(**ARDUINO))
+	assert flir.StartGrabbing(camera)
+	out = capsys.readouterr().out
+	assert STOPPED in out and DISCARDED in out
+	assert device.held == 0
+	# The first frame campy now gets is the trigger's first pulse's, not the held one
+	with pytest.raises(SpinError):
+		flir.GrabFrame(camera, 1)
+	# and the next run has nothing to discard
+	flir.CloseCamera(params(**ARDUINO), camera)
+	camera = new_process(device)
+	flir.LoadSettings(camera, params(**ARDUINO))
+	assert flir.StartGrabbing(camera)
+	assert "discarded" not in capsys.readouterr().out and camera.calls.count("GetNextImage") == 0
+
+
+def test_without_it_the_held_frame_is_the_recording_s_first(flir):
+	# What campy did before: the held frame was taken as frame 1
+	device = killed_while_triggered(flir, **ARDUINO)
+	camera = new_process(device)
+	flir.LoadSettings(camera, params(**ARDUINO))
+	flir._leftovers.clear()
+	assert flir.StartGrabbing(camera)
+	assert flir.GrabFrame(camera, 1) is not None and device.held == 0
+
+
+def test_found_by_the_launch_check_and_discarded_by_the_camera_s_process(flir, capsys):
+	# The launch check opens the camera first, in campy-acquire's own process, and
+	# stops the acquisition there; the camera's process then finds it stopped,
+	# and still discards what the camera holds
+	device = killed_while_triggered(flir, held=3, **ARDUINO)
+	capsys.readouterr()
+	flir.FrameRateLimits(FakeCamera(device), params(**ARDUINO))
+	assert capsys.readouterr().out == STOPPED + "\n"
+	flir._leftovers.clear() # another process's memory
+	camera = new_process(device)
+	flir.LoadSettings(camera, params(**ARDUINO))
+	assert flir.StartGrabbing(camera)
+	assert "discarded 3 frames" in capsys.readouterr().out and device.held == 0
+
+
+def test_with_a_trigger_campy_does_not_start_it_only_warns(flir, capsys):
+	# An external trigger may already pulse: frames after BeginAcquisition could be the recording's
+	device = killed_while_triggered(flir, cameraTrigger="Line3", startArduino=False)
+	capsys.readouterr()
+	camera = new_process(device)
+	flir.LoadSettings(camera, params(cameraTrigger="Line3", startArduino=False))
+	assert flir.StartGrabbing(camera)
+	out = capsys.readouterr().out
+	assert "it may still hold frames from that run" in out and "discarded" not in out
+	assert device.held == 1 and camera.calls.count("GetNextImage") == 0
+
+
+def test_a_software_trigger_is_campy_s_own(flir, capsys):
+	device = killed_while_triggered(flir, cameraTrigger="Software")
+	capsys.readouterr()
+	camera = new_process(device)
+	flir.LoadSettings(camera, params(cameraTrigger="Software"))
+	assert flir.StartGrabbing(camera)
+	assert DISCARDED in capsys.readouterr().out and device.held == 0
+
+
+def test_a_free_running_camera_is_left_as_it_was(flir, capsys):
+	# Its frames are not numbered against a trigger's pulses, and they keep coming
+	device = killed_while_triggered(flir)
+	capsys.readouterr()
+	camera = new_process(device)
+	flir.LoadSettings(camera, params())
+	assert flir.StartGrabbing(camera)
+	out = capsys.readouterr().out
+	assert STOPPED in out and "hold frames" not in out and "discarded" not in out
+	assert camera.calls.count("GetNextImage") == 0
+
+
+def test_a_camera_closed_cleanly_is_not_waited_on(flir, capsys):
+	# No note, no wait: a clean run starts as fast as before
+	device = Device()
+	camera = FakeCamera(device)
+	cam = flir.LoadSettings(camera, params(**ARDUINO))
+	assert flir.StartGrabbing(camera)
+	flir.CloseCamera(cam, camera)
+	camera = new_process(device)
+	flir.LoadSettings(camera, params(**ARDUINO))
+	assert flir.StartGrabbing(camera)
+	assert camera.calls.count("GetNextImage") == 0
