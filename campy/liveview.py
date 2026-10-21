@@ -73,7 +73,7 @@ trails: each node's path over the last quarter second (--camera-trail-seconds;
 LUC3D's lengths: a quarter, half, 1 or 2 s), one segment from each result to
 the one before, the older thinner, more transparent and darker, in its
 identity's hue (--trail-shade: dark, its colour times 0.6, by default; very
-dark to very light), under the skeletons: the predictions' (d) and the
+dark to very light), under the skeletons: the predictions' (p) and the
 reprojections' (r). The Qt panel picks the length and the shade.
 
 The 3D view is its own drawing with numpy and cv2, in this window, rather
@@ -117,7 +117,7 @@ told):
   time); reading the rings' slots 0.4 ms, 20 times a second.
 
 Buttons in the panel turn the predictions (the 2D), the reprojections (the
-3D) and the lines on or off, as do the keys d, r (LUC3D's) and l, the 3D view, as
+3D) and the lines on or off, as do the keys p (or d), r (LUC3D's) and l, the 3D view, as
 does \\ (--no-3d: off at first), and its trails and occupancy, as do t and o.
 
 Every camera (the grid) or one alone (single view), with LUC3D's keys: v one
@@ -198,7 +198,7 @@ FINE = (90, 200, 90) # green
 FAIR = (0, 200, 230) # yellow
 NO_3D = (75, 75, 75)
 KEYS = ("Keys: v one camera, g all (grid), arrows the previous or next camera, 1-{} that camera; wheel or + and - "
-	"zoom a camera (drag: move it), 0 the whole frame, shift 0 one pixel for one; d predictions, r reprojections (as LUC3D), "
+	"zoom a camera (drag: move it), 0 the whole frame, shift 0 one pixel for one; p (or d) predictions, r reprojections (as LUC3D), "
 	"l lines{}; c campy-live on the fast CPUs or not; z window to the view; m bookmark (Shift+1-9: event 1-9); space pause, s save, q quit")
 SHIFT = 4 # cv2's subpixel bits
 RADIUS_2D, RADIUS_3D = 4, 2 # px: a detection's open circles, a 3D node's dot
@@ -2094,7 +2094,7 @@ class Viewer:
 		# Click; returns the height they take
 		self.buttons = []
 		x, y = x0 + PAD, y0 + PAD
-		buttons = [("Predictions (d)", ord("d"), self.show2d), ("Reprojections (r)", ord("r"), self.show3d),
+		buttons = [("Predictions (p)", ord("p"), self.show2d), ("Reprojections (r)", ord("r"), self.show3d),
 			("Lines (l)", ord("l"), self.lines)]
 		if self.scene is not None:
 			buttons.append(("3D view (\\)", ord("\\"), self.showScene))
@@ -2378,7 +2378,7 @@ class Viewer:
 		elif key == ord("v"):
 			if self.selected is None:
 				self.selected = min(self.current, n - 1)
-		elif key == ord("d"):
+		elif key in (ord("p"), ord("d")): # p LUC3D's
 			self.show2d = not self.show2d
 		elif key == ord("r"): # LUC3D's
 			self.show3d = not self.show3d

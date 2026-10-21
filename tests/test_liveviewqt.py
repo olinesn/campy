@@ -160,11 +160,11 @@ def test_the_keys_are_luc3ds(qt, window):
 	Qt, QTest = qt.Qt, qt.QtTest.QTest
 	win, viewer = window.win, window.viewer
 	window.Result(9)
-	# The panel's checkboxes, in two columns: d and r a row, l and \\ the next, t and o the next
+	# The panel's checkboxes, in two columns: p and r a row, l and \\ the next, t and o the next
 	at = {key: box.geometry() for key, box in win.checks.items()}
-	for left, right in (("d", "r"), ("l", "\\"), ("t", "o")):
+	for left, right in (("p", "r"), ("l", "\\"), ("t", "o")):
 		assert at[left].y() == at[right].y() and at[left].right() < at[right].x()
-	assert at["d"].bottom() < at["l"].y() < at["t"].y() and at["d"].x() == at["l"].x() == at["t"].x()
+	assert at["p"].bottom() < at["l"].y() < at["t"].y() and at["p"].x() == at["l"].x() == at["t"].x()
 	def press(key):
 		QTest.keyClick(win.picture, key)
 		qt.app.processEvents()
@@ -185,8 +185,12 @@ def test_the_keys_are_luc3ds(qt, window):
 	press(Qt.Key_G)
 	assert viewer.Shown() == [0, 1, 2] and win.grid.isChecked()
 	# The panel's buttons do what the keys do
-	win.checks["d"].click()
-	assert not viewer.show2d and not win.checks["d"].isChecked()
+	win.checks["p"].click()
+	assert not viewer.show2d and not win.checks["p"].isChecked()
+	press(Qt.Key_D) # d too
+	assert viewer.show2d and win.checks["p"].isChecked()
+	press(Qt.Key_P) # LUC3D's p
+	assert not viewer.show2d and not win.checks["p"].isChecked()
 	win.single.click()
 	assert viewer.Shown() == [2] # the camera last shown alone
 	win.grid.click()
