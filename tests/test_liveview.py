@@ -606,6 +606,40 @@ def test_dragging_in_the_3d_tile_turns_it():
 	viewer.Mouse(cv2_.EVENT_MOUSEMOVE, at[0] + 30, at[1], cv2_.EVENT_FLAG_LBUTTON)
 	assert viewer.drag is None and scene.azimuth == 0
 
+def test_the_view_is_drawn_at_its_windows_size():
+	# Windows' OpenCV stretches an image to its window: the view is drawn at
+	# the window's own size (what the screen let it have), its frames in
+	# their ratio, black around them; z sizes the window to the view
+	cams, truth, keypoints, scores, order = mice()
+	row = row_for(5, cams, truth, keypoints, scores, order)
+	viewer, frames = three_cameras(cams, row)
+	sizes = {}
+	for size in ((1028, 749), (1800, 960), (2400, 1300)):
+		viewer.windowSize = size
+		image = viewer.Compose(frames, row)
+		assert image.shape == (size[1], size[0], 3)
+		th, tw = viewer.layout.tile
+		assert abs(th / tw - 1024 / 1280) < 0.01 and viewer.layout.size[0] <= size[1] and viewer.layout.size[1] <= size[0]
+		sizes[size] = tw
+		# Black beyond the view
+		h, w = viewer.layout.size
+		assert not image[h:].any() and not image[:, w:].any()
+	assert sizes[(1028, 749)] < sizes[(1800, 960)] < sizes[(2400, 1300)]
+	viewer.windowSize = (9000, 6000) # frames never drawn larger than they are
+	viewer.Compose(frames, row)
+	assert viewer.layout.scale == (1.0, 1.0)
+	viewer.windowSize = (1800, 1000)
+	viewer.Compose(frames, row)
+	w, h = viewer.Fit()
+	assert (h, w) == viewer.layout.size and h < 1000
+	viewer.windowSize = (w, h)
+	assert viewer.Compose(frames, row).shape == (h, w, 3)
+	# Waiting for a feed: the window's size too
+	viewer.windowSize = (900, 500)
+	assert viewer.Waiting().shape == (500, 900, 3)
+	viewer.windowSize = None # no window: --size
+	assert viewer.Compose(frames, row).shape[:2] == viewer.layout.size
+
 # -------------------------------------------------------------- with campy-live
 
 def test_campy_live_publishes_every_row_it_logs(tmp_path, monkeypatch):

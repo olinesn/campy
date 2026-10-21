@@ -64,9 +64,16 @@ the view are.
 Buttons at the top of the panel turn the predictions (the 2D), the
 reprojections (the 3D) and the lines on or off, as do the keys d, p and l,
 and the 3D view, as does v (--no-3d: off at first). Other keys, in its
-window: 1-9 that camera alone; 0 or a every camera; space pause (the buttons
-and the 3D view's mouse still work on the paused view); s save the view as a
-PNG (into --png, or the current folder); q or Esc quit.
+window: 1-9 that camera alone; 0 or a every camera; z the window to the
+view's size (no black margins); space pause (the buttons and the 3D view's
+mouse still work on the paused view); s save the view as a PNG (into --png,
+or the current folder); q or Esc quit.
+
+The window opens at --size, or what the screen allows of it, and comes to
+the front when it opens and when a recording's frames come (also from
+minimized). The view is drawn at the window's own size, one pixel for one:
+resized, it is laid out again (the frames in their ratio, at most their own
+size), never stretched.
 """
 
 import argparse, json, os, sys, time
@@ -259,7 +266,7 @@ class Layout:
 		fit, self.rows, self.inGrid, strip = Fit(self.cols)
 		if not scale:
 			scale = fit
-		th, tw = max(1, int(round(h * scale))), max(1, int(round(w * scale)))
+		th, tw = max(1, int(h * scale + 1e-9)), max(1, int(w * scale + 1e-9)) # down: within the size
 		self.tile = (th, tw)
 		self.scale = (tw / w, th / h)
 		if self.inGrid:
@@ -625,6 +632,7 @@ class Viewer:
 		self.drag = None # the mouse button dragging in the 3D tile, and where it was
 		self.mouseAt = (-1, -1)
 		self.moved = False # the 3D turned since it was drawn
+		self.windowSize = None # its window's, width x height, when it has one
 		self.after = 0 # the last row taken
 		self.lastRow = self.lastRaw = self.checked = 0.0
 		self.ended = False # a recording's feed came and ended
@@ -784,12 +792,27 @@ class Viewer:
 	def Showing3D(self):
 		return self.scene is not None and self.showScene
 
+	def Size(self):
+		# The view's size, width x height: its window's (drawn at its own pixels: never stretched), or --size
+		return self.windowSize or self.args.size
+
 	def Layout(self, shape):
-		key = (len(self.Shown()) + self.Showing3D(), shape, self.args.size, self.args.scale, self.PanelLines())
+		key = (len(self.Shown()) + self.Showing3D(), shape, self.Size(), self.args.scale, self.PanelLines())
 		if key != self.layoutKey:
 			self.layoutKey = key
-			self.layout = Layout(key[0], shape, self.args.size, self.args.scale, key[4])
+			self.layout = Layout(key[0], shape, key[2], self.args.scale, key[4])
 		return self.layout
+
+	def Canvas(self, size):
+		# A black image of size (height, width), or of the window's size when it is larger
+		h, w = size
+		if self.windowSize:
+			w, h = max(w, self.windowSize[0]), max(h, self.windowSize[1])
+		return np.zeros((h, w, 3), np.uint8)
+
+	def Fit(self):
+		# The window's size (width, height) that shows the view without the black margins
+		return None if self.layout is None else (self.layout.size[1], self.layout.size[0])
 
 	def PanelLines(self):
 		# Lines in the strip below the frames, when it is one (the panel's lines wrap), the buttons' two
@@ -799,7 +822,7 @@ class Viewer:
 		start = time.perf_counter()
 		shown = self.Shown()
 		layout = self.Layout(frames[0].image.shape)
-		canvas = np.zeros(layout.size + (3,), np.uint8)
+		canvas = self.Canvas(layout.size)
 		edges = self.description.get("edges")
 		cameraNames = self.description.get("cameras") or [r.cameraName for r in self.readers]
 		calibNames = self.description.get("calibration_names") or cameraNames
@@ -948,8 +971,8 @@ class Viewer:
 		if row is not None:
 			lines.append(("Reprojections (dots): the 3D, projected. Predictions (open circles): this camera's 2D "
 				"(white: matched to no animal). Line: from the 2D to the 3D. Label: #identity, and px between them.", DIM))
-		lines.append(("Keys: 1-{} one camera, 0 all; d predictions, p reprojections, l lines{}; space pause, "
-			"s save, q quit".format(len(self.ringNames), "; v 3D view, r turn it back" if self.scene is not None else ""),
+		lines.append(("Keys: 1-{} one camera, 0 all; d predictions, p reprojections, l lines{}; z window to the view; "
+			"space pause, s save, q quit".format(len(self.ringNames), "; v 3D view, r turn it back" if self.scene is not None else ""),
 			DIM))
 		y = PAD + 14
 		for text, color in lines:
@@ -960,7 +983,7 @@ class Viewer:
 				y += LINE
 
 	def Waiting(self):
-		canvas = np.zeros((130, 760, 3), np.uint8)
+		canvas = self.Canvas(self.Size()[::-1]) # the view's size: OpenCV sizes a new window to its first image
 		Text(canvas, "Waiting for the live feed: {}".format(", ".join(self.ringNames)), (PAD, 40))
 		Text(canvas, "(campy-acquire with liveFeed True)", (PAD, 70), DIM)
 		Text(canvas, "campy-live's results: {}".format("there" if self.results else "not yet"), (PAD, 100), DIM)
@@ -1001,6 +1024,40 @@ class Viewer:
 
 # ---------------------------------------------------------------- the program
 
+def WindowSize():
+	# The view window's inside, (width, height), or None (minimized, or no window)
+	try:
+		_, _, w, h = cv2.getWindowImageRect(TITLE)
+	except (cv2.error, AttributeError):
+		return None
+	return (w, h) if w > 0 and h > 0 else None
+
+
+def Raise():
+	# The window back from minimized, and in front of the others: a program started from a script may not take
+	# the focus on Windows, but a window put on top, then not, stays in front. True if it was minimized
+	restored = False
+	if os.name == "nt":
+		try:
+			import ctypes
+			user32 = ctypes.windll.user32
+			user32.FindWindowW.restype = ctypes.c_void_p
+			user32.IsIconic.argtypes = [ctypes.c_void_p]
+			user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+			hwnd = user32.FindWindowW(None, TITLE)
+			if hwnd and user32.IsIconic(hwnd):
+				user32.ShowWindow(hwnd, 9) # SW_RESTORE
+				restored = True
+		except Exception:
+			pass
+	try:
+		cv2.setWindowProperty(TITLE, cv2.WND_PROP_TOPMOST, 1)
+		cv2.setWindowProperty(TITLE, cv2.WND_PROP_TOPMOST, 0)
+	except (cv2.error, AttributeError):
+		pass
+	return restored
+
+
 def LowerPriority():
 	# Below campy-acquire and campy-live, which must keep up
 	try:
@@ -1025,14 +1082,17 @@ def Run(args):
 	window = not args.no_window
 	if window:
 		try:
-			cv2.namedWindow(TITLE, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+			# Drawn at the window's own size (Windows' OpenCV stretches an image to its window, keeping no ratio)
+			cv2.namedWindow(TITLE, cv2.WINDOW_NORMAL)
+			cv2.resizeWindow(TITLE, *args.size) # what the screen allows of it
 		except cv2.error as e:
 			Say("Cannot open a window ({}): this OpenCV has no window support, or there is no desktop. "
 				"Use --no-window --png <folder>.".format(str(e).strip().splitlines()[-1]))
 			return 1
 	viewer = Viewer(args)
 	start = time.monotonic()
-	shownSize, paused, image, count = None, False, None, 0
+	paused, image, count = False, None, 0
+	raised = None # whether there was a feed when it was last put in front
 	clicks = [] # the keys of the buttons clicked
 	if window:
 		def Mouse(event, x, y, flags, param):
@@ -1045,14 +1105,26 @@ def Run(args):
 		while True:
 			if args.seconds and time.monotonic() - start >= args.seconds:
 				break
+			if window:
+				size = WindowSize()
+				if size != viewer.windowSize:
+					viewer.windowSize = size
+					if size and image is not None and (paused or viewer.readers is None): # drawn again at the new size
+						image = viewer.Compose(*viewer.last) if paused and getattr(viewer, "last", None) else \
+							viewer.Waiting() if viewer.readers is None else image
+						cv2.imshow(TITLE, image)
 			got = None if paused else viewer.Step()
 			if got is not None:
 				image, frame, row = got
 				if window:
-					if image.shape[:2] != shownSize:
-						shownSize = image.shape[:2]
-						cv2.resizeWindow(TITLE, shownSize[1], shownSize[0])
 					cv2.imshow(TITLE, image)
+					feed = viewer.readers is not None
+					if raised is None or (feed and not raised):
+						# In front when it opens, and when a recording's frames come; at --size when it opens,
+						# or comes back from minimized (started minimized, the first size never took)
+						if Raise() or raised is None:
+							cv2.resizeWindow(TITLE, *args.size)
+					raised = feed
 				if row is not None:
 					viewer.lastShown = (time.perf_counter_ns() - int(np.max(row["written_ns"]))) / 1e6
 					viewer.shownMs.append(viewer.lastShown)
@@ -1068,6 +1140,8 @@ def Run(args):
 					key &= 0xFF
 					if key == ord(" "):
 						paused = not paused
+					elif key == ord("z") and viewer.Fit():
+						cv2.resizeWindow(TITLE, *viewer.Fit())
 					elif key == ord("s") and image is not None:
 						path = os.path.join(args.png or ".", "view_{}.png".format(datetime.now().strftime("%H-%M-%S")))
 						cv2.imwrite(path, image)
