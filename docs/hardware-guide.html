@@ -460,13 +460,14 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     <li>Windows machines run the GPUs under WDDM; no kernel-log equivalent of Linux's amdgpu messages was checked there.</li>
     <li>Pinning and the Windows changes were measured on the four fastest model pairs in two 21-minute recordings, before and after the changes, with a backup service running in both; the second recording's last minutes fell into Modern Standby and were discarded. All 32 model sizes were then measured pinned, in a separate recording with the backup service stopped and the screen timeout set to Never.</li>
     <li>The 21 October runs on the Pro Max Slim logged the GPU's clock every 50 ms, and held a lock so that no other program used the GPU meanwhile; runs that overlapped another session's were discarded and repeated. The live runs' 1 animal per set makes them lighter than the 3-mouse replays.</li>
+    <li>That lock was agreed between sessions by hand. Since pull request 97, <code>bench/rig.py</code> does it on both Linux and Windows: it runs one test at a time, logs anything else that used the GPU, the cameras, the encoder, the trigger, the CPU or the disk meanwhile (each run's log ends <code>RIG_CLEAN</code> or <code>RIG_CONTAMINATED</code>), and logs the GPU's clock and what held it down. New measurements should be taken through it, and compared only between clean runs at similar clocks.</li>
     <li>CUDA graphs were measured idle at 3 cameras only in the benchmark, and in the live pipeline on the Pro Max Slim (above). Not yet tested: graphs while recording and at 8 cameras, the RTX 4000 Ada with no monitor attached, and the live pipeline on the Precision 7875.</li>
   </ul>
 </section>
 
 <footer>
   <p>Measured 18–21 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
-  <p class="meta">Version 12 · updated 21 October 2026 · reflects campy changes through pull request 96 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p class="meta">Version 13 · updated 21 October 2026 · reflects campy changes through pull request 97 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 
