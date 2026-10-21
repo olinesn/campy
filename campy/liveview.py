@@ -78,6 +78,22 @@ margins); space pause (the keys, buttons and the 3D view's mouse still work
 on the paused view); s save the view as a PNG (into --png, or the current
 folder); q or Esc quit.
 
+Bookmarks
+---------
+m (or the Qt panel's Bookmark button) marks the moment, for finding it later
+in the videos (and in LUC3D); Shift+1-9 (or the panel's 1-9) marks it as
+event 1-9, for kinds of event of your own. A bookmark is a line of a CSV
+file (Bookmarks says its columns): the frame number shown in the view
+(campy's, as in frametimes.npy), each camera's newest frame number and when
+it reached the computer, the time, and the note typed in the Qt panel. The
+line is written, and flushed to the disk, as the key is pressed: a crash
+loses none. The file is bookmarks.csv in the recording's folder, which the
+cameras' live feeds say (campy-acquire from this campy on), or else
+--bookmarks. Paused, a bookmark is of the frame shown. The view is outlined
+for a moment; the panel lists the last few (OpenCV's: the last). OpenCV's
+window reads Shift+1-9 as the characters they type on a US keyboard
+(!@#$%^&*(); Qt's reads the keys themselves on Windows.
+
 Qt's window (campy/liveviewqt.py; PyQt5, as campy's preview windows) shows
 the same view beside a panel of Qt's own checkboxes, buttons and text;
 OpenCV's draws the panel into the view. Both take the same keys and mouse.
@@ -89,7 +105,7 @@ resized, it is laid out again (the frames in their ratio, at most their own
 size, in the middle of the window), never stretched.
 """
 
-import argparse, json, os, sys, time
+import argparse, csv, json, os, sys, time
 from collections import deque
 from datetime import datetime
 
@@ -112,7 +128,7 @@ BOX = (25, 25, 25)
 BUTTON_ON = (90, 70, 20) # a button that is on (BGR: dark blue)
 PICKED = (255, 200, 80) # the outline of the camera picked, in the grid (light blue)
 KEYS = ("Keys: v one camera, g all (grid), arrows the previous or next camera, 1-{} that camera; d predictions, "
-	"p reprojections, l lines{}; z window to the view; space pause, s save, q quit")
+	"p reprojections, l lines{}; z window to the view; m bookmark (Shift+1-9: event 1-9); space pause, s save, q quit")
 SHIFT = 4 # cv2's subpixel bits
 RADIUS_2D, RADIUS_3D = 4, 2 # px: a detection's open circles, a 3D node's dot
 FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -626,6 +642,152 @@ class Scene:
 
 # ---------------------------------------------------------------- the view
 
+# ---------------------------------------------------------------- bookmarks
+
+BOOKMARKS = "bookmarks.csv" # in the recording's folder
+SHIFTED = "!@#$%^&*(" # Shift+1-9, on a US keyboard
+RECENT = 6 # the bookmarks the Qt panel lists
+FLASH_S = 0.6 # the view's outline, after a bookmark
+MARKED = (0, 215, 255) # its colour, and the bookmarks' in the panel (BGR: amber)
+
+
+def BookmarkKind(key):
+	"""The bookmark a key makes: "mark" (m), "1"-"9" (Shift+1-9), or None."""
+	if key == ord("m"):
+		return "mark"
+	if isinstance(key, int) and 32 < key < 127 and chr(key) in SHIFTED:
+		return str(SHIFTED.index(chr(key)) + 1)
+	return None
+
+
+def RecordingFolder(readers):
+	"""
+	The recording's folder: the one the cameras' folders are in, as their
+	feeds say (livefeed.Feed's description). None when one does not say (a
+	campy from before), or they say different ones.
+	"""
+	folders = set()
+	for reader in readers:
+		try:
+			folder = json.loads(reader.Description() or "{}").get("folder")
+		except (ValueError, AttributeError):
+			folder = None
+		if not folder:
+			return None
+		folders.add(os.path.dirname(os.path.normpath(folder)))
+	return folders.pop() if len(folders) == 1 else None
+
+
+def MarkText(mark):
+	# A bookmark, in a line: 3 at 17:03:12, frame 1203, event 2: rears
+	text = "{} at {}, frame {}".format(mark["number"], mark["time"][11:19],
+		"-" if mark["frame"] is None else mark["frame"])
+	if mark["event"] != "mark":
+		text += ", event " + mark["event"]
+	return text + (": " + mark["note"] if mark["note"] else "")
+
+
+def Existing(path, columns):
+	# The bookmarks in the file already, under these columns: 0 when it is new, None when its columns are others
+	try:
+		with open(path, newline="") as f:
+			rows = [r for r in csv.reader(f) if r]
+	except FileNotFoundError:
+		return 0
+	if not rows:
+		return 0
+	return len(rows) - 1 if rows[0] == columns else None
+
+
+class Bookmarks:
+	"""
+	The bookmarks made in the view. Each is a line of a CSV file, added as it
+	is made: the file opened, the line written, flushed and synced to the
+	disk, the file closed, so a crash (or the power going) loses none made
+	before it. The columns:
+
+	  number       1, 2, ... in the file (on from its last, after a restart)
+	  time         the computer's clock, local time, to the ms
+	  host_ns      time.monotonic_ns(): the clock of campy's hosttimes.npy
+	  event        mark (m), or 1-9 (Shift+1-9)
+	  note         the note typed in the Qt panel, or empty
+	  frame        the frame number shown in the view: campy's frame number,
+	               as in frametimes.npy's first row (empty: no frames shown)
+	  frame_<i>    camera i's (in feed order: campy's camera index) newest
+	               frame then; the frame shown is a frame or two older
+	  host_ns_<i>  when that frame reached the computer (hosttimes.npy's)
+	  recording    the recording's folder, or empty
+
+	The file is bookmarks.csv in the recording's folder, when the cameras'
+	feeds say where that is, else fallback (--bookmarks); there too when the
+	recording's cannot be written. A file there of other columns (as many
+	cameras) is left as it is: they go to <name>_2.csv (_3, ...) beside it.
+	"""
+
+	def __init__(self, fallback):
+		self.fallback = fallback
+		self.recent = deque(maxlen=RECENT) # the last ones, the newest last: their fields, and "path"
+		self.count = 0 # made, in all
+		self.files = {} # (file asked for, columns): [the file written, its last number]
+
+	@staticmethod
+	def Columns(cameras):
+		return ["number", "time", "host_ns", "event", "note", "frame"] + \
+			[f.format(c) for c in range(cameras) for f in ("frame_{}", "host_ns_{}")] + ["recording"]
+
+	def Where(self, recording):
+		# Where a bookmark goes first
+		return os.path.join(recording, BOOKMARKS) if recording else self.fallback
+
+	def Add(self, mark):
+		"""
+		Writes mark (a dict: time, host_ns, event, note, frame, cameras: a
+		(frame, host_ns) per camera, recording) into its file, numbering it.
+		Returns the file, or None when it could be written nowhere (said).
+		"""
+		columns = self.Columns(len(mark["cameras"]))
+		for base in dict.fromkeys([self.Where(mark["recording"]), self.fallback]):
+			try:
+				path = self.Write(base, columns, mark)
+			except OSError as e:
+				Say("Could not write the bookmark into {}: {}.".format(base, e))
+				continue
+			mark["path"] = path
+			self.count += 1
+			self.recent.append(mark)
+			return path
+		return None
+
+	def Write(self, base, columns, mark):
+		key = (base, tuple(columns))
+		if key not in self.files:
+			path, k = base, 1
+			number = Existing(path, columns)
+			while number is None:
+				k += 1
+				stem, ext = os.path.splitext(base)
+				path = "{}_{}{}".format(stem, k, ext)
+				number = Existing(path, columns)
+			self.files[key] = [path, number]
+		path, number = self.files[key]
+		mark["number"] = number + 1
+		def Blank(v):
+			return "" if v is None else v
+		line = [mark["number"], mark["time"], mark["host_ns"], mark["event"], mark["note"], Blank(mark["frame"])] + \
+			[Blank(v) for pair in mark["cameras"] for v in pair] + [mark["recording"] or ""]
+		os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+		new = not os.path.exists(path) or os.path.getsize(path) == 0
+		with open(path, "a", newline="") as f:
+			writer = csv.writer(f)
+			if new:
+				writer.writerow(columns)
+			writer.writerow(line)
+			f.flush()
+			os.fsync(f.fileno())
+		self.files[key][1] += 1
+		return path
+
+
 class Viewer:
 	"""
 	The feed and the results, and the view of them. Step makes the next
@@ -667,6 +829,11 @@ class Viewer:
 		self.drawMs, self.shownMs, self.resultMs = deque(maxlen=KEPT), deque(maxlen=KEPT), deque(maxlen=KEPT)
 		self.sceneMs = deque(maxlen=KEPT) # of drawMs: the 3D tile's
 		self.lastSeen = self.lastShown = None # ms after the row's frames: it reached the view, the last view was shown
+		# Bookmarks (m, Shift+1-9)
+		self.bookmarks = Bookmarks(os.path.abspath(args.bookmarks))
+		self.recording = None # the recording's folder, as the cameras' feeds say: kept once it ends
+		self.flashUntil = 0.0 # a bookmark's outline, drawn until then
+		self.flashDrawn = False # in the last view drawn
 
 	# -- the shared memory
 
@@ -709,8 +876,9 @@ class Viewer:
 				self.readers = readers
 				self.buffers = [np.empty(r.shape, r.dtype) for r in readers]
 				self.ended = False
-				Say("Live feed: {}.".format(", ".join("{} {}x{}".format(r.cameraName or r.name, r.shape[1], r.shape[0])
-					for r in readers)))
+				self.recording = RecordingFolder(readers)
+				Say("Live feed: {}. Bookmarks (m) go to {}.".format(", ".join("{} {}x{}".format(r.cameraName or r.name,
+					r.shape[1], r.shape[0]) for r in readers), self.bookmarks.Where(self.recording)))
 			else:
 				for r in readers:
 					r.Close()
@@ -842,7 +1010,7 @@ class Viewer:
 		# Lines in the strip below the frames, when it is one (the panel's lines wrap), the buttons' two
 		if not self.panel:
 			return 0
-		return 9 + (int(self.description.get("animals") or 0) + 2 if self.calibration else 0)
+		return 9 + (int(self.description.get("animals") or 0) + 2 if self.calibration else 0) + bool(self.bookmarks.recent)
 
 	def Compose(self, frames, row):
 		start = time.perf_counter()
@@ -884,6 +1052,9 @@ class Viewer:
 			self.Draw3D(full, row, frames[0].frameNumber)
 		if self.panel:
 			self.Panel(canvas, layout, frames, row)
+		self.flashDrawn = time.monotonic() < self.flashUntil
+		if self.flashDrawn:
+			self.Flash(canvas)
 		self.last = (frames, row) # drawn again when a button is clicked while paused
 		self.lastCameras = shown
 		self.drawMs.append((time.perf_counter() - start) * 1e3)
@@ -1073,6 +1244,9 @@ class Viewer:
 		if row is not None:
 			lines.append(("Reprojections (dots): the 3D, projected. Predictions (open circles): this camera's 2D "
 				"(white: matched to no animal). Line: from the 2D to the 3D. Label: #identity, and px between them.", DIM))
+		if self.panel and self.bookmarks.recent: # the Qt window lists them in its own panel
+			lines.append(("Bookmark {} ({} made)".format(MarkText(self.bookmarks.recent[-1]), self.bookmarks.count),
+				MARKED))
 		lines.append((KEYS.format(len(self.ringNames), "; \\ 3D view, r turn it back" if self.scene is not None else ""),
 			DIM))
 		return lines
@@ -1102,6 +1276,8 @@ class Viewer:
 				self.selected = self.current
 		elif isinstance(key, str):
 			pass
+		elif BookmarkKind(key):
+			self.Mark(BookmarkKind(key))
 		elif ord("1") <= key <= ord("9") and key - ord("1") < n:
 			self.selected = self.current = key - ord("1")
 		elif key in (ord("0"), ord("a"), ord("g")):
@@ -1121,6 +1297,43 @@ class Viewer:
 			self.scene.Reset()
 			self.moved = True
 		return True
+
+	def Mark(self, event, note=""):
+		"""
+		A bookmark of the moment (event: "mark", or "1"-"9"), with what the
+		view shows, written at once (Bookmarks). Returns it (a dict of its
+		fields), or None when it could be written nowhere.
+		"""
+		now, host = datetime.now(), time.monotonic_ns()
+		cameras = []
+		for c in range(len(self.readers) if self.readers else len(self.ringNames)):
+			n = self.readers[c].Latest() if self.readers else 0
+			cameras.append((n, self.readers[c].HostTime(n)) if n > 0 else (None, None))
+		shown = getattr(self, "last", None)
+		mark = {"time": now.isoformat(" ", "milliseconds"), "host_ns": host, "event": event,
+			"note": " ".join(str(note).split()), "frame": shown[0][0].frameNumber if shown and self.readers else None,
+			"cameras": cameras, "recording": self.recording}
+		if self.bookmarks.Add(mark) is None:
+			return None
+		self.flashUntil = time.monotonic() + FLASH_S
+		Say("Bookmark {}, in {}.".format(MarkText(mark), mark["path"]))
+		return mark
+
+	def Flash(self, canvas):
+		# A bookmark was just made: the view outlined, and which it was
+		h, w = canvas.shape[:2]
+		cv2.rectangle(canvas, (2, 2), (w - 3, h - 3), MARKED, 5)
+		if self.bookmarks.recent:
+			text = "Bookmark " + MarkText(self.bookmarks.recent[-1])
+			(tw, _), _ = cv2.getTextSize(text, FONT, 0.8, 1)
+			Text(canvas, text, (max(PAD, (w - tw) // 2), 44), MARKED, 0.8)
+
+	def FlashOver(self):
+		# The last view has a bookmark's outline that is over: to be drawn again without it, when paused
+		if self.flashDrawn and time.monotonic() >= self.flashUntil:
+			self.flashDrawn = False
+			return True
+		return False
 
 	def Delivered(self, image, frame, row):
 		# A view shown: how late, and saved (every --png-every-th result)
@@ -1147,7 +1360,9 @@ class Viewer:
 			"draw_ms": {"p50": P(self.drawMs, 50), "p99": P(self.drawMs, 99)},
 			"draw_3d_ms": {"p50": P(self.sceneMs, 50), "p99": P(self.sceneMs, 99)},
 			"results_here_after_frame_ms": {"p50": P(self.resultMs, 50), "p99": P(self.resultMs, 99)},
-			"shown_after_frame_ms": {"p50": P(self.shownMs, 50), "p99": P(self.shownMs, 99)}}
+			"shown_after_frame_ms": {"p50": P(self.shownMs, 50), "p99": P(self.shownMs, 99)},
+			"bookmarks": self.bookmarks.count,
+			"bookmark_files": sorted({path for path, number in self.bookmarks.files.values() if number})}
 
 
 # ---------------------------------------------------------------- the program
@@ -1294,6 +1509,11 @@ def RunOpenCV(args, window):
 						if again is not None:
 							image = again
 							cv2.imshow(TITLE, image)
+				if paused and viewer.FlashOver() and image is not None:
+					again = viewer.Again() # a bookmark's outline, gone
+					if again is not None:
+						image = again
+						cv2.imshow(TITLE, image)
 				if viewer.moved and image is not None and viewer.sceneCell is not None and getattr(viewer, "last", None):
 					# Turned: the 3D tile again, of the row the cameras' tiles show
 					viewer.Draw3D(image, viewer.last[1], viewer.last[0][0].frameNumber)
@@ -1323,6 +1543,8 @@ def Finish(viewer, seconds, args):
 		"frames alone; drawing p50 {d[p50]:.1f} p99 {d[p99]:.1f} ms; shown p50 {s[p50]:.1f} p99 {s[p99]:.1f} ms after "
 		"the frame (its results here p50 {r[p50]:.1f} p99 {r[p99]:.1f} ms).".format(d=summary["draw_ms"],
 		s=summary["shown_after_frame_ms"], r=summary["results_here_after_frame_ms"], **summary))
+	if summary["bookmarks"]:
+		Say("{} bookmarks, in {}.".format(summary["bookmarks"], ", ".join(summary["bookmark_files"])))
 	if args.summary:
 		with open(args.summary, "w") as f:
 			json.dump(summary, f, indent=2)
@@ -1379,6 +1601,9 @@ def ParseArgs(argv=None):
 	p.add_argument("--priority", default="low", choices=["low", "normal"], help="low: below campy-acquire and "
 		"campy-live.")
 	p.add_argument("--poll-ms", type=float, default=2, help="How often to look for a result.")
+	p.add_argument("--bookmarks", default="campy-live-view_bookmarks.csv", help="The bookmarks' file (m) when the "
+		"cameras' feeds do not say the recording's folder (campy-acquire from before this campy); else bookmarks.csv "
+		"there.")
 	return p.parse_args(argv)
 
 

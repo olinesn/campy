@@ -356,7 +356,7 @@ campy says how as it starts (`Keeping this computer awake while recording (keepA
 
 ### Live pose estimation (liveFeed, campy-live)
 
-With `liveFeed: True` (or `--liveFeed True`), each camera process also copies every frame it grabs into a ring of shared memory, named `campy-live-0`, `campy-live-1`, ... for cameras 0, 1, ... (`liveFeedName: "campy-live"`), holding the newest `liveFeedSlots` (8) frames, each with its frame number, its camera timestamp, and when it reached the computer (as in "hosttimes.npy"). It is one copy per frame (0.05 ms for a 1280x1024 frame on the EVO-X2), and campy never waits for whatever reads it: a reader that falls behind finds the frames it missed replaced by newer ones. If the feed fails, the camera says so once and records on without it. Off by default.
+With `liveFeed: True` (or `--liveFeed True`), each camera process also copies every frame it grabs into a ring of shared memory, named `campy-live-0`, `campy-live-1`, ... for cameras 0, 1, ... (`liveFeedName: "campy-live"`), holding the newest `liveFeedSlots` (8) frames, each with its frame number, its camera timestamp, and when it reached the computer (as in "hosttimes.npy"). It is one copy per frame (0.05 ms for a 1280x1024 frame on the EVO-X2), and campy never waits for whatever reads it: a reader that falls behind finds the frames it missed replaced by newer ones. Each ring also says which folder its camera records into, so `campy-live-view` can put its bookmarks beside the recording. If the feed fails, the camera says so once and records on without it. Off by default.
 
 `campy-live` reads the feed and runs a SLEAP top-down model (sleap-nn) on the cameras' frames as campy records. Each time, it takes the newest set of frames that every camera has (the same frame number on each), runs the model on the set as one batch, logs the keypoints, and goes straight back to the newest set. A set that came while it was busy is skipped and counted, never queued, so it is never more than one set behind. It runs in its own Python environment, the one with torch and sleap-nn: it imports only numpy and campy's `livefeed`, `liveresults` and `frametimes` modules, so the camera drivers are not needed there. In that environment:
 ```
@@ -396,6 +396,29 @@ The window is Qt's (PyQt5, as campy's preview windows) when PyQt5 is installed i
 - **What is drawn**: the predictions (2D), the reprojections (3D), the lines and the 3D view, on or off with the panel's checkboxes or the keys `d`, `p`, `l` and `\` (`--no-3d` starts with the 3D view off).
 - **One camera or all of them**, with LUC3D's keys: `v` shows one camera alone (the one you last clicked, outlined in the grid), with the 3D view beside it unless you closed it with `\`; `g` goes back to the grid; the arrow keys go to the previous or next camera. Double-clicking a camera shows it alone, and double-clicking again goes back to the grid. 1-9 also show that camera alone, and 0 the grid.
 - **Other keys**: `z` fits the window to the view (no black margins), space pauses, `s` saves the view as a PNG, `q` quits. The window comes to the front when it opens and when a recording starts. Resize it as you like: the view is drawn at the window's own size, one screen pixel per pixel, the frames in their proportions (never larger than they are), with black around them. Without a desktop (over SSH), `campy-live-view --no-window --png <folder>` saves every 30th view instead, and ends with the recording. `python -m pydoc campy.liveview` says more.
+- **Bookmarks**: press `m` (or the panel's **Bookmark** button) to mark a moment you want to find again later, in the videos or in LUC3D. Shift+1 to Shift+9 (or the panel's 1-9 buttons) mark it as event 1 to 9, for kinds of event you pick yourself (say 1 for a fight, 2 for rearing). In the Qt window you can type a short note in the box above the button first; it goes with the next bookmark (Enter in the box also makes one; Esc leaves the box). A bookmark is saved to disk the moment you make it, so a crash loses none. The view flashes a yellow outline, and the panel lists the last few (OpenCV's window: the last one). Paused, a bookmark marks the frame on the screen.
+
+Bookmarks go into `bookmarks.csv` in the recording's folder, beside `Camera0`, `Camera1`, ...: each camera's live feed says where that camera records, and the view reads it there. With a `campy-acquire` from before this version, whose feed does not say, they go to `--bookmarks` (default `campy-live-view_bookmarks.csv` in the folder the view was started from). A view started again adds to the same file. One line per bookmark:
+
+| Column | What it is |
+|---|---|
+| `number` | 1, 2, 3, ... in the file |
+| `time` | the computer's clock, local time, to the millisecond |
+| `host_ns` | the same moment on the clock of campy's `hosttimes.npy` (`time.monotonic_ns()`) |
+| `event` | `mark`, or 1 to 9 |
+| `note` | the note, or empty |
+| `frame` | the frame number on the screen: campy's frame number, as in each camera's `frametimes.npy` (empty if no frames were shown yet) |
+| `frame_0`, `host_ns_0`, `frame_1`, ... | each camera's newest frame when the key was pressed, and when it reached the computer (as in `hosttimes.npy`); in camera order (`Camera0` is 0). Usually a frame or two after `frame`: the view shows each result about 40 ms after its frames |
+| `recording` | the recording's folder, or empty |
+
+campy numbers frames from 1, and a camera's video holds the frames listed in its `frametimes.npy`, in order. So bookmark `frame` *n* is video frame *n* − 1 (counting from 0) when the camera dropped no frame, and in general:
+```
+import csv, numpy as np
+numbers = np.load("Camera0/frametimes.npy")[0]            # the frame numbers in Camera0's video
+for mark in csv.DictReader(open("bookmarks.csv")):
+    if mark["frame"]:
+        print(mark["number"], mark["event"], mark["note"], np.searchsorted(numbers, int(mark["frame"])))   # its video frame, from 0
+```
 
 Each result is drawn on the frames it was made from, never on newer ones. campy-live puts each set's row in shared memory as it logs it (`campy-live-results`, laid out in `campy/liveresults.py`; `--results-feed off` stops that), and the view reads that row's frame number back from the live feed, which holds each camera's newest 8 frames (0.27 s at 30 fps). A result whose frames are gone by then is counted and left out.
 

@@ -5,7 +5,7 @@ test_liveview.py checks what that draws); these check that the window shows
 it at its own size, and passes it the keys, the buttons and the mouse.
 """
 
-import os, subprocess, sys, types
+import json, os, subprocess, sys, types
 
 import numpy as np
 import pytest
@@ -16,7 +16,7 @@ pytest.importorskip("PyQt5")
 from campy import live, livefeed, liveresults, liveview
 
 import test_pose3d as scene3d
-from test_liveview import EDGES, like, mice, row_for, scaled, view_args
+from test_liveview import EDGES, bookmarks, like, mice, row_for, scaled, view_args
 from test_livefeed import name, rings # noqa: F401 (rings: a fixture)
 
 OFFSCREEN = dict(os.environ, QT_QPA_PLATFORM="offscreen")
@@ -54,19 +54,23 @@ S = 0.25 # the rig's cameras, at 320 x 256
 
 
 @pytest.fixture
-def window(qt, rings):
-	# The Qt window on a feed of 3 cameras (frames 1-12, gray) and campy-live's results ring
+def window(qt, rings, tmp_path):
+	# The Qt window on a feed of 3 cameras (frames 1-12, gray), whose recording is in tmp_path, and campy-live's
+	# results ring
 	cams, truth, keypoints, scores, order = mice()
 	prefix = name()
-	writers = [rings(livefeed.RingName(prefix, c), (256, 320), np.uint8, slots=8, cameraName="Camera{}".format(c))
+	recording = tmp_path / "2026-10-20_16-54-14"
+	recording.mkdir()
+	writers = [rings(livefeed.RingName(prefix, c), (256, 320), np.uint8, slots=8, cameraName="Camera{}".format(c),
+		description=json.dumps({"kind": livefeed.CAMERA_KIND, "folder": str(recording / "Camera{}".format(c))}))
 		for c in range(3)]
 	for n in range(1, 13):
-		for w in writers:
-			w.Write(np.full((256, 320), 60, np.uint8), n, 1000 * n)
+		for c, w in enumerate(writers):
+			w.Write(np.full((256, 320), 60, np.uint8), n, 1000 * n + c)
 	publisher = liveresults.Publisher(liveresults.RingName(prefix), live.RowType(3, 3, truth.shape[1], 3),
 		cameras=["Camera0", "Camera1", "Camera2"], rings=[livefeed.RingName(prefix, c) for c in range(3)],
 		edges=EDGES, animals=3)
-	args = view_args(prefix, "--gui", "qt")
+	args = view_args(prefix, "--gui", "qt", "--bookmarks", str(tmp_path / "elsewhere.csv"))
 	viewer = liveview.Viewer(args)
 	viewer.panel = False
 	win = qt.liveviewqt.Window(viewer, args)
@@ -81,7 +85,7 @@ def window(qt, rings):
 		publisher.Write(row_for(frame, cams, truth + [0, 0, lift], keypoints * S, scores, order))
 		win.Step()
 		qt.app.processEvents()
-	yield types.SimpleNamespace(win=win, viewer=viewer, Result=Result, truth=truth)
+	yield types.SimpleNamespace(win=win, viewer=viewer, Result=Result, truth=truth, recording=recording)
 	win.close()
 	viewer.Close()
 	publisher.Close()
@@ -161,6 +165,52 @@ def test_the_keys_are_luc3ds(qt, window):
 	press(Qt.Key_Space)
 	press(Qt.Key_Q)
 	assert not win.isVisible()
+
+
+def test_bookmarks_from_the_panel_and_the_keys(qt, window):
+	Qt, QTest = qt.Qt, qt.QtTest.QTest
+	win, viewer = window.win, window.viewer
+	window.Result(9)
+	path = window.recording / "bookmarks.csv"
+	assert viewer.recording == str(window.recording)
+	# A note typed in the panel: its keys are the note's, not the view's (m would bookmark, s save, q quit)
+	QTest.keyClicks(win.note, "mouse squeaks")
+	assert win.note.text() == "mouse squeaks" and not path.exists() and win.isVisible()
+	win.mark.click()
+	marks = bookmarks(path) # written at once, the window still open
+	assert [(m["number"], m["event"], m["note"], m["frame"]) for m in marks] == [("1", "mark", "mouse squeaks", "9")]
+	assert [(marks[0]["frame_{}".format(c)], marks[0]["host_ns_{}".format(c)]) for c in range(3)] == \
+		[("12", "12000"), ("12", "12001"), ("12", "12002")]
+	assert win.note.text() == "" # the note goes with its bookmark
+	assert "Bookmark 1 at" in win.marks.text() and "mouse squeaks" in win.marks.text()
+	# The keys: m, Shift+2 (@ on a US keyboard); the panel's event buttons; Enter in the note
+	QTest.keyClick(win.picture, Qt.Key_M)
+	QTest.keyClick(win.picture, "@", Qt.ShiftModifier)
+	assert viewer.Shown() == [0, 1, 2] # not camera 2 alone
+	win.events[4].click()
+	QTest.keyClicks(win.note, "rears")
+	QTest.keyClick(win.note, Qt.Key_Return)
+	marks = bookmarks(path)
+	assert [(m["number"], m["event"], m["note"]) for m in marks] == [("1", "mark", "mouse squeaks"),
+		("2", "mark", ""), ("3", "2", ""), ("4", "5", ""), ("5", "mark", "rears")]
+	text = win.marks.text()
+	assert text.index("Bookmark 5 at") < text.index("Bookmark 4 at") # the newest first
+	# Esc in the note leaves it, cleared, and does not quit
+	QTest.keyClicks(win.note, "oops")
+	QTest.keyClick(win.note, Qt.Key_Escape)
+	assert win.isVisible() and win.note.text() == "" and len(bookmarks(path)) == 5
+	# Paused: the view is outlined at once, and drawn again without it once it is over
+	window.Result(10)
+	QTest.keyClick(win.picture, Qt.Key_Space)
+	assert win.paused
+	QTest.keyClick(win.picture, Qt.Key_M)
+	oy, ox = viewer.origin
+	h, w = viewer.layout.size
+	assert like(win.picture.image[oy:oy + h, ox + 3], liveview.MARKED).mean() > 0.9
+	assert bookmarks(path)[-1]["frame"] == "10"
+	viewer.flashUntil = 0
+	win.Step()
+	assert not like(win.picture.image[oy:oy + h, ox + 3], liveview.MARKED).any()
 
 
 def test_the_mouse_turns_and_zooms_the_3d(qt, window):

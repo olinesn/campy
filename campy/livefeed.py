@@ -43,9 +43,12 @@ All numbers little-endian. One ring holds a header and `slots` slots:
   160     int64       frames written
   168     int64       frames not written (a frame of another size or type)
   176     uint32      description bytes (0: none)
-  256     text        description, UTF-8: what the ring holds, for rings that
-                      are not a camera's (campy/liveresults.py's), written
-                      before the state; at most 3840 bytes
+  256     text        description, UTF-8, written before the state; at most
+                      3840 bytes. A camera's ring: JSON, {"kind": "campy
+                      camera", "folder": the camera's folder in the
+                      recording} (campy-live-view writes its bookmarks
+                      beside it), or empty (from campy before it said so).
+                      Other rings: what the ring holds (campy/liveresults.py)
 
 Slot i starts at header bytes + i * slot bytes, and holds frame number n in
 slot n % slots:
@@ -83,7 +86,7 @@ before 3.13 see Attach for the resource tracker):
         .reshape(height, width, channels).copy()
 """
 
-import os, sys, time
+import json, os, sys, time
 import numpy as np
 from multiprocessing import shared_memory
 
@@ -111,6 +114,7 @@ DESCRIPTION_BYTES = HEADER_BYTES - _DESCRIPTION_AT
 
 # Slot fields, as int64 words (the camera timestamp is a float64 in word 4)
 BEGIN, END, FRAME, HOST, STAMP, WRITTEN = range(6)
+CAMERA_KIND = "campy camera" # a camera's ring's description says so
 
 
 def RingName(prefix, n_cam):
@@ -428,8 +432,17 @@ class RingReader:
 		return self.ring.Get(key)
 
 	def Description(self):
-		# What the ring's writer said it holds ("" for a camera's)
+		# What the ring's writer said it holds (a camera's: CAMERA_KIND, and its folder; "" from an older campy)
 		return self.ring.Description()
+
+	def HostTime(self, frameNumber):
+		# Frame frameNumber's host time, without copying the frame; None when the ring does not hold it
+		n = int(frameNumber)
+		fields = self.ring.slotFields[n % self.ring.slots]
+		if fields[END] != n:
+			return None
+		hostTime = int(fields[HOST])
+		return hostTime if fields[BEGIN] == n else None
 
 	def Read(self, frameNumber, out=None):
 		"""
@@ -480,6 +493,12 @@ class Feed:
 		self.slots = int(cam_params.get("liveFeedSlots", DEFAULT_SLOTS))
 		self.frameRate = float(cam_params.get("frameRate", 0) or 0)
 		self.camera = int(cam_params.get("n_cam", 0))
+		# The camera's folder in the recording, said in the ring's description: where the recording is
+		folder = cam_params.get("videoFolder")
+		self.description = json.dumps({"kind": CAMERA_KIND, "folder": os.path.abspath(os.path.join(str(folder),
+			str(self.cameraName)))}) if folder else ""
+		if len(self.description.encode("utf-8")) > DESCRIPTION_BYTES:
+			self.description = "" # a path of over 3 kB: said nowhere rather than cut
 		self.say = say
 		self.writer = None
 
@@ -493,7 +512,8 @@ class Feed:
 
 	def _Make(self, shape, dtype):
 		self.Close()
-		self.writer = RingWriter(self.name, shape, dtype, self.slots, self.frameRate, self.camera, self.cameraName)
+		self.writer = RingWriter(self.name, shape, dtype, self.slots, self.frameRate, self.camera, self.cameraName,
+			self.description)
 		self.say("{}: live feed in shared memory {} ({} slots of {}x{}x{} {}).".format(
 			self.cameraName, self.name, self.slots, *(tuple(shape) + (np.dtype(dtype),))))
 
