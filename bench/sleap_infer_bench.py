@@ -436,21 +436,25 @@ class ClockKeeper:
     The same method as campy-live's --hold-gpu-clock (campy/live.py,
     GpuClock, while sets come): torch.cuda._sleep spins one block for about
     2 ms at 2.5 GHz, its thread waits on a blocking event (no CPU core
-    spinning), and spins again until stopped.
+    spinning), and spins again until stopped. --hold-clock-blocks spins
+    that many at once, each from its own thread and stream.
     """
 
     CYCLES = 5000000
 
-    def __init__(self):
+    def __init__(self, blocks=1):
+        self.blocks = blocks
         self.stop = threading.Event()
-        self.thread = None
+        self.threads = []
         self.spins = 0
 
     def start(self):
         self.stop.clear()
         self.spins = 0
-        self.thread = threading.Thread(target=self._run, daemon=True, name="hold-clock")
-        self.thread.start()
+        self.threads = [threading.Thread(target=self._run, daemon=True, name=f"hold-clock {i}")
+                        for i in range(self.blocks)]
+        for thread in self.threads:
+            thread.start()
 
     def _run(self):
         stream = torch.cuda.Stream(priority=0)  # 0: the lowest priority
@@ -464,7 +468,8 @@ class ClockKeeper:
 
     def end(self):
         self.stop.set()
-        self.thread.join()
+        for thread in self.threads:
+            thread.join()
         return self.spins
 
 
@@ -780,7 +785,7 @@ def run_one(c, ci, args, device, precision, k, frames_host, what, memory_format=
             x = frames_host.to(device, non_blocking=True)  # (N, H, W, 1) uint8
             return layer.predict(x)
 
-    keeper = ClockKeeper() if hold_clock else None
+    keeper = ClockKeeper(args.hold_clock_blocks) if hold_clock else None
     if keeper is not None:
         keeper.start()
     try:
@@ -797,6 +802,7 @@ def run_one(c, ci, args, device, precision, k, frames_host, what, memory_format=
     if clock is not None:
         result["gpu_clock"] = clock
     if keeper is not None:
+        result["hold_clock_blocks"] = args.hold_clock_blocks
         result["hold_clock_spins"] = spins
     graphed = [m for m in (centroid_layer.backend.model, instance_layer.backend.model)
                if isinstance(m, CUDAGraphed) and m.graphs]
@@ -869,6 +875,8 @@ def parse_args():
     p.add_argument("--hold-clock", default="off",
                    help="off, on, or off,on: keep one GPU block spinning at the lowest priority "
                         "so an NVIDIA GPU keeps its full clock (campy-live's --hold-gpu-clock)")
+    p.add_argument("--hold-clock-blocks", type=int, default=1,
+                   help="GPU blocks --hold-clock keeps spinning (campy-live: 4 while waiting, 1 while sets come)")
     p.add_argument("--pace", type=float, default=0.0,
                    help="sets per second: start sets on this cadence, as live (0: back to back)")
     p.add_argument("--no-clock-log", action="store_true",
