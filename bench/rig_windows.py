@@ -3,7 +3,7 @@ The Windows half of bench/rig.py: which processes run, what each uses, and the C
 takes, read from Windows itself through ctypes (Python's standard library only; 64-bit Python).
 
 What a process counts as using:
-  gpu      listed by nvidia-smi --query-compute-apps (rig.py asks), or named python*.exe
+  gpu      a CUDA program, as nvidia-smi lists it (rig.py asks), or named python*.exe
            (RIG_GPU_NAMES, comma-separated patterns): on a test PC every Python process is one
            that may start CUDA at any moment (campy-live, sleap-nn, a benchmark), listed or not
   encoder  named ffmpeg*.exe (RIG_ENCODER_NAMES): campy's encoders
@@ -11,6 +11,7 @@ What a process counts as using:
   trigger  has a COM port open (any port in HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM), found in the
            system's handle table; RIG_EXTRA can add other devices by their NT name, e.g.
            RIG_EXTRA="trigger=\\Device\\Null"
+  desktop  a program nvidia-smi lists as drawing on the GPU (dwm.exe, explorer.exe, ...)
 Another rig.py (waiting, watching or showing status) is a Python process that uses nothing.
 
 Every process is seen, other users' too; only the ones this user can open show their DLLs, their
@@ -35,11 +36,13 @@ def matches(name, pats):
 	name = name.lower()
 	return any(fnmatch.fnmatchcase(name, p) for p in pats)
 
-def classify(table, gpu_pids=(), camera_pids=(), ports=None, jobs=None, cmdline=lambda pid, start: None):
+def classify(table, gpu_pids=(), camera_pids=(), ports=None, jobs=None, cmdline=lambda pid, start: None,
+		desktop_pids=()):
 	"""Records for rig.py, one per process: (pid, ppid, start, cpu s, io bytes, kinds, name, job).
 
-	table: (pid, ppid, image name, start, cpu s, io bytes) per process; gpu_pids: listed by nvidia-smi;
-	camera_pids: with Spinnaker loaded; ports: {pid: {kind}} from open devices; jobs: {job: pids}.
+	table: (pid, ppid, image name, start, cpu s, io bytes) per process; gpu_pids: CUDA programs;
+	camera_pids: with Spinnaker loaded; ports: {pid: {kind}} from open devices; jobs: {job: pids};
+	desktop_pids: programs that draw on the GPU.
 	"""
 	ports, jobs = ports or {}, jobs or {}
 	in_job = {pid: job for job, pids in jobs.items() for pid in pids}
@@ -55,6 +58,8 @@ def classify(table, gpu_pids=(), camera_pids=(), ports=None, jobs=None, cmdline=
 			kinds.add("camera")
 		if python and pid not in gpu_pids and kinds == {"gpu"} and RIG_PY.search(cmdline(pid, start) or ""):
 			kinds = set()  # another rig.py
+		if not kinds and pid in desktop_pids:
+			kinds.add("desktop")
 		out.append((pid, ppid, start, cpu, io, kinds, name, in_job.get(pid)))
 	return out
 
@@ -418,7 +423,7 @@ def resume(pid):
 		NtResumeProcess(h)
 		CloseHandle(h)
 
-def scan(jobs=None, gpu_pids=(), extra=None, own=()):
+def scan(jobs=None, gpu_pids=(), extra=None, own=(), desktop_pids=()):
 	"""Records (see classify) for every process. jobs: {job name: Job}; own: pids whose COM ports
 	needn't be looked at (rig.py's job and rig.py itself)."""
 	table = process_table()
@@ -426,4 +431,5 @@ def scan(jobs=None, gpu_pids=(), extra=None, own=()):
 	skip = set(own) | {os.getpid()}
 	for pids in members.values():
 		skip |= pids
-	return classify(table, set(gpu_pids), camera_pids(table), port_users(table, skip, extra), members, command_line)
+	return classify(table, set(gpu_pids), camera_pids(table), port_users(table, skip, extra), members, command_line,
+		set(desktop_pids))

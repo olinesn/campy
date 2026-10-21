@@ -50,16 +50,29 @@ def test_classify_names_dlls_ports_and_jobs(monkeypatch):
 	]
 	cmds = {11: r'C:\py\python.exe C:\campy_data\live\rig.py run s1 t1 -- python x.py', 10: "python campy-live"}
 	recs = rig_windows.classify(table, gpu_pids={15}, camera_pids={13}, ports={14: {"trigger"}},
-		jobs={"t-1": {17}}, cmdline=lambda pid, start: cmds.get(pid))
+		jobs={"t-1": {17}}, cmdline=lambda pid, start: cmds.get(pid), desktop_pids={16, 10})
 	kinds = {r[0]: r[5] for r in recs}
 	assert kinds == {10: {"gpu"}, 11: set(), 12: {"encoder"}, 13: {"camera"}, 14: {"trigger"}, 15: {"gpu"},
-		16: set(), 17: {"gpu"}}
+		16: {"desktop"}, 17: {"gpu"}}
 	assert {r[0]: r[7] for r in recs}[17] == "t-1"
 
 
 def test_nvidia_smi_parsing():
-	assert rig.parse_compute_apps("1234, C:\\x\\python.exe\n 77, [Insufficient Permissions]\nNo running processes found\n") == {1234, 77}
-	assert rig.parse_compute_apps(None) == set()
+	pids = """
+==============NVSMI LOG==============
+Attached GPUs                             : 1
+GPU 00000000:01:00.0
+    Processes
+        Process ID                        : 2100
+            Type                          : C+G
+            Name                          : C:\\Windows\\System32\\dwm.exe
+            Used GPU Memory               : Not available in WDDM driver model
+        Process ID                        : 23336
+            Type                          : C
+            Name                          : C:\\x\\python.exe
+"""
+	assert rig.parse_gpu_processes(pids) == {2100: "C+G", 23336: "C"}
+	assert rig.parse_gpu_processes(None) == {}
 	rows = rig.parse_clocks("0, 780, 0x0000000000000004, P2\n1, [N/A], 0x0000000000000001, P8\n")
 	assert rows == [(0, 780, 4, "P2"), (1, None, 1, "P8")]
 	assert rig.parse_clocks("0, 210, P8\n", reasons=False) == [(0, 210, None, "P8")]
@@ -411,17 +424,37 @@ def test_overlap_is_caught_on_windows(run):
 def test_guarded_powershell_script_takes_the_rig_once(run):
 	for f in ("rig.py", "rig_windows.py", "rig_guard.ps1"):
 		(run.root / f).write_text(open(os.path.join(BENCH, f)).read())
-	guard = run.root / "rig_guard.ps1"
+	first = '. "%s" @args; if ($null -ne $RigExit) { exit $RigExit }\n' % (run.root / "rig_guard.ps1")
 	inner = run.tmp / "inner.ps1"
-	inner.write_text('. "%s" @args\n"inner $env:RIG_JOB"\nexit 4\n' % guard)
+	inner.write_text(first + '"inner $env:RIG_JOB"\nexit 4\n')
 	outer = run.tmp / "outer.ps1"
-	outer.write_text('. "%s" @args\n"outer $env:RIG_JOB $($args -join \'+\')"\n& powershell -NoProfile -ExecutionPolicy Bypass -File "%s"\nexit $LASTEXITCODE\n' % (guard, inner))
-	r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(outer), "t1", "two words"],
+	outer.write_text(first + '"outer $env:RIG_JOB $($args -join \'+\')"\n'
+		'& powershell -NoProfile -ExecutionPolicy Bypass -File "%s"\nexit $LASTEXITCODE\n' % inner)
+	env = dict(run.env, RIG_OWNER="tester", RIG_PYTHON=sys.executable)
+	ps = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass"]
+	# Run as powershell -File, and from a command (the guard can't end that PowerShell itself)
+	for how, args in (("file", ["-File", str(outer), "t1", "two words"]),
+			("command", ["-Command", "& '%s' t1 'two words'; 'after ' + $LASTEXITCODE" % outer])):
+		r = subprocess.run(ps + args, env=env, capture_output=True, text=True, timeout=120)
+		lines = [l for l in r.stdout.splitlines() if l.startswith(("outer", "inner"))]
+		assert len(lines) == 2 and lines[0].split()[1] == lines[1].split()[1] != "", (how, r.stdout + r.stderr)
+		assert lines[0].endswith("t1+two words"), lines
+		if how == "file":
+			assert r.returncode == 4, r.stdout + r.stderr
+		else:
+			assert "after 4" in r.stdout, r.stdout + r.stderr
+		log = (run.tmp / "t1.rig.log").read_text()
+		assert log.count("rig held by tester for t1") == (1 if how == "file" else 2) and "job exit 4" in log, log
+		assert not run.lock.exists()
+
+
+@windows
+def test_guard_ends_a_file_script_that_lacks_the_exit(run):
+	for f in ("rig.py", "rig_windows.py", "rig_guard.ps1"):
+		(run.root / f).write_text(open(os.path.join(BENCH, f)).read())
+	script = run.tmp / "bare.ps1"
+	script.write_text('. "%s" @args\n"body $env:RIG_JOB"\nexit 5\n' % (run.root / "rig_guard.ps1"))
+	r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "t2"],
 		env=dict(run.env, RIG_OWNER="tester", RIG_PYTHON=sys.executable), capture_output=True, text=True, timeout=120)
-	lines = [l for l in r.stdout.splitlines() if l.startswith(("outer", "inner"))]
-	assert r.returncode == 4, r.stdout + r.stderr
-	assert len(lines) == 2 and lines[0].split()[1] == lines[1].split()[1] != "", r.stdout
-	assert lines[0].endswith("t1+two words"), lines
-	log = (run.tmp / "t1.rig.log").read_text()
-	assert "rig held by tester for t1" in log and "job exit 4" in log, log
-	assert not run.lock.exists()
+	assert r.returncode == 5 and [l for l in r.stdout.splitlines() if l.startswith("body")] == ["body t2-%s" % l.split("-")[-1]
+		for l in r.stdout.splitlines() if l.startswith("body")] and r.stdout.count("body ") == 1, r.stdout + r.stderr

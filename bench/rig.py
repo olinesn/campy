@@ -36,11 +36,15 @@ On Linux (every process the user can see; other users' processes show only their
            during the run contaminates it.
 
 On Windows (rig_windows.py beside this file says how each is seen):
-  gpu      listed by nvidia-smi --query-compute-apps, or any python*.exe
+  gpu      a CUDA program (type C in nvidia-smi -q -d PIDS), or any python*.exe
   encoder  ffmpeg*.exe
   camera   a Spinnaker DLL loaded (PySpin, SpinView)
   trigger  a COM port open
   load     as on Linux
+  desktop  programs that draw on the GPU (type G or C+G: dwm.exe, explorer.exe, Task
+           Manager, ...). Noted, not waited for; the log says when one starts or
+           ends, but that doesn't contaminate the run, since Windows starts and
+           ends some (WebView, search) by itself.
 
 A process belongs to the job when it carries the job's RIG_JOB in its
 environment (everything the job starts does, even with setsid or nohup), is in
@@ -188,8 +192,9 @@ def scan(own=()):
 	"""{pid: Proc} for every process. own: pids known to be the job's (Windows looks less at them)."""
 	if WINDOWS:
 		procs = {}
-		gpu = compute_pids()  # first, so nvidia-smi has ended before the processes are listed
-		for pid, ppid, start, cpu, io, kinds, name, job in rig_windows.scan(JOBS, gpu, EXTRA, own):
+		on_gpu = gpu_processes()  # first, so nvidia-smi has ended before the processes are listed
+		compute = {pid for pid, t in on_gpu.items() if "G" not in t}
+		for pid, ppid, start, cpu, io, kinds, name, job in rig_windows.scan(JOBS, compute, EXTRA, own, set(on_gpu) - compute):
 			p = Proc()
 			p.pid, p.ppid, p.sid, p.start, p.cpu, p.io = pid, ppid, None, start, cpu, io
 			p.kinds, p.cmd, p.job, p.user = kinds, name, job, None
@@ -251,12 +256,22 @@ def nvsmi(*args):
 		return None
 	return r.stdout if r.returncode == 0 else None
 
-def parse_compute_apps(text):
-	return {int(line.split(",")[0]) for line in (text or "").splitlines() if line.split(",")[0].strip().isdigit()}
+def parse_gpu_processes(text):
+	"""{pid: type} from nvidia-smi -q -d PIDS; type C (compute: CUDA), G (graphics) or C+G."""
+	out, pid = {}, None
+	for line in (text or "").splitlines():
+		k, _, v = line.partition(":")
+		k, v = k.strip(), v.strip()
+		if k == "Process ID" and v.isdigit():
+			pid = int(v)
+		elif k == "Type" and pid is not None:
+			out[pid], pid = v, None
+	return out
 
-def compute_pids():
-	"""The pids nvidia-smi lists as using an NVIDIA GPU for compute."""
-	return parse_compute_apps(nvsmi("--query-compute-apps=pid", "--format=csv,noheader"))
+def gpu_processes():
+	"""{pid: type} of every process on an NVIDIA GPU. Under Windows' display driver this lists every
+	program that draws (dwm.exe, explorer.exe, Task Manager: C+G) besides CUDA programs (C)."""
+	return parse_gpu_processes(nvsmi("-q", "-d", "PIDS"))
 
 def number(s, base=10):
 	try:
@@ -393,7 +408,11 @@ class Watch:
 def describe(p, width=150):
 	return "%d %s %s" % (p.pid, ",".join(sorted(p.kinds)) or "-", cmdline(p)[:width])
 
-def desktop_text(desktops):
+def desktop_text(desktops, short=False):
+	if WINDOWS:
+		names = sorted(set(p.cmd for p in desktops.values()), key=str.lower)
+		return "none" if not names else "%d processes" % len(desktops) if short else "%d processes: %s" % (
+			len(desktops), ", ".join(names))
 	return ", ".join(sorted(set("%s (%s%s)" % (p.cmd.split()[0].rsplit("/", 1)[-1], p.user or "?",
 		", the login screen" if p.user == "gdm" else "") for p in desktops.values()))) or "none"
 
@@ -644,13 +663,13 @@ def watch(w, alive, log, args, on_signal, lock):
 	clocks = Clocks(log)
 	w.sample()
 	before = dict(w.desktops)
-	if not WINDOWS:
-		log("desktop on the GPU: %s" % desktop_text(before))
+	log("desktop on the GPU: %s" % desktop_text(before))
 	while alive():
 		users, load = w.sample()
 		clocks.sample()
 		for key in set(before) ^ set(w.desktops):
-			counts["desktop"] += 1
+			if not WINDOWS:  # Windows starts and ends programs that draw (WebView, search) by itself
+				counts["desktop"] += 1
 			p = w.desktops.get(key) or before[key]
 			log("DESKTOP %s: %s" % ("started" if key in w.desktops else "ended", describe(p)))
 		before = dict(w.desktops)
@@ -667,7 +686,7 @@ def watch(w, alive, log, args, on_signal, lock):
 		if on_signal[0]:
 			break
 		time.sleep(PERIOD)
-	counts["desktops"] = desktop_text(w.desktops)
+	counts["desktops"] = desktop_text(w.desktops, short=True)
 	counts["clocks"] = clocks.summary()
 	return counts
 
@@ -843,9 +862,8 @@ def cmd_status(args):
 		print("%-48s %s" % (names[k] + ":", "free" if not users else ""))
 		for p in users:
 			print("    %s%s" % ("[job] " if job and p.job == job else "", describe(p, 120)))
-	if not WINDOWS:
-		print("%-48s %s" % ("desktop on the GPU (not waited for):", desktop_text(
-			{(p.pid, p.start): p for p in procs.values() if "desktop" in p.kinds})))
+	print("%-48s %s" % ("desktop on the GPU (not waited for):", desktop_text(
+		{(p.pid, p.start): p for p in procs.values() if "desktop" in p.kinds})))
 	for row in gpu_clocks():
 		print(clock_text(row))
 	if load:
