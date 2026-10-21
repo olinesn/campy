@@ -12,6 +12,9 @@ What a process counts as using:
            system's handle table; RIG_EXTRA can add other devices by their NT name, e.g.
            RIG_EXTRA="trigger=\\Device\\Null"
   desktop  a program nvidia-smi lists as drawing on the GPU (dwm.exe, explorer.exe, ...)
+and the disk each loads: the bytes it reads and writes, except the kernel's (see classify). rig.py
+counts no more of them than the physical disks moved (disk_bytes): a program's I/O can be a pipe,
+a device or the network, and a file it reads can come from memory.
 Another rig.py (waiting, watching or showing status) is a Python process that uses nothing.
 
 Every process is seen, other users' too; only the ones this user can open show their DLLs, their
@@ -30,7 +33,8 @@ GPU_NAMES = patterns("RIG_GPU_NAMES", "python*.exe")
 ENCODER_NAMES = patterns("RIG_ENCODER_NAMES", "ffmpeg*.exe")
 CAMERA_MODULES = patterns("RIG_CAMERA_MODULES", "spinnaker*.dll")
 RIG_PY = re.compile(r"rig\.py\W+(run|hold|status|break)\b", re.I)
-NOT_PROCESSES = (0, 4)  # the idle "process" (its CPU time is idle time) and the kernel
+KERNEL = 4
+NOT_PROCESSES = (0, KERNEL)  # the idle "process" (its CPU time is idle time) and the kernel
 
 def matches(name, pats):
 	name = name.lower()
@@ -60,7 +64,11 @@ def classify(table, gpu_pids=(), camera_pids=(), ports=None, jobs=None, cmdline=
 			kinds = set()  # another rig.py
 		if not kinds and pid in desktop_pids:
 			kinds.add("desktop")
-		out.append((pid, ppid, start, cpu, io, kinds, name, in_job.get(pid)))
+		# The kernel ("System") is charged with what the display driver copies between memory and
+		# the GPU (WDDM; every frame a job uploads): 400-800 MB/s on the Precision 7875 while
+		# its disks moved nothing. Its own disk work (paging, the cache writing out a file) is
+		# other processes' reads and writes, so it counts no I/O of its own.
+		out.append((pid, ppid, start, cpu, None if pid == KERNEL else io, kinds, name, in_job.get(pid)))
 	return out
 
 if os.name == "nt":
@@ -99,6 +107,18 @@ if os.name == "nt":
 	NtQueryObject = api(ntdll, "NtQueryObject", ctypes.c_long, H, ctypes.c_int, ctypes.c_void_p, ULONG,
 		ctypes.POINTER(ULONG))
 	NtResumeProcess = api(ntdll, "NtResumeProcess", ctypes.c_long, H)
+	pdh = ctypes.WinDLL("pdh")
+	PdhOpenQueryW = api(pdh, "PdhOpenQueryW", DWORD, wintypes.LPCWSTR, ctypes.c_size_t, ctypes.POINTER(H))
+	PdhAddEnglishCounterW = api(pdh, "PdhAddEnglishCounterW", DWORD, H, wintypes.LPCWSTR, ctypes.c_size_t,
+		ctypes.POINTER(H))
+	PdhCollectQueryData = api(pdh, "PdhCollectQueryData", DWORD, H)
+
+	class PDH_RAW_COUNTER(ctypes.Structure):
+		_fields_ = [("CStatus", DWORD), ("TimeStamp", wintypes.FILETIME), ("FirstValue", ctypes.c_longlong),
+			("SecondValue", ctypes.c_longlong), ("MultiCount", DWORD)]
+
+	PdhGetRawCounterValue = api(pdh, "PdhGetRawCounterValue", DWORD, H, ctypes.POINTER(DWORD),
+		ctypes.POINTER(PDH_RAW_COUNTER))
 
 	class MODULEENTRY32W(ctypes.Structure):
 		_fields_ = [("dwSize", DWORD), ("th32ModuleID", DWORD), ("th32ProcessID", DWORD),
@@ -150,6 +170,24 @@ def process_table():
 		if not step:
 			return out
 		off += step
+
+_disk = []  # [(query, counter)], or [None] if Windows has no disk counters
+
+def disk_bytes():
+	"""The bytes read and written on all physical disks since Windows started (the performance
+	counter \\PhysicalDisk(_Total)\\Disk Bytes/sec, raw), or None if Windows doesn't say."""
+	if not _disk:
+		q, c = H(), H()
+		ok = PdhOpenQueryW(None, 0, ctypes.byref(q)) == 0
+		ok = ok and PdhAddEnglishCounterW(q, "\\PhysicalDisk(_Total)\\Disk Bytes/sec", 0, ctypes.byref(c)) == 0
+		_disk.append((q, c) if ok else None)
+	if _disk[0] is None:
+		return None
+	q, c = _disk[0]
+	raw = PDH_RAW_COUNTER()
+	if PdhCollectQueryData(q) or PdhGetRawCounterValue(c, None, ctypes.byref(raw)) or raw.CStatus not in (0, 1):
+		return None  # 0, 1: PDH_CSTATUS_VALID_DATA, _NEW_DATA
+	return raw.FirstValue
 
 def process_start(pid):
 	"""pid's creation time if it runs, None if not, -1 if it runs but its times can't be read."""

@@ -57,6 +57,13 @@ def test_classify_names_dlls_ports_and_jobs(monkeypatch):
 	assert {r[0]: r[7] for r in recs}[17] == "t-1"
 
 
+def test_the_kernels_io_is_not_disk():
+	# Under WDDM the kernel (System, pid 4) is charged with every frame a job copies to the GPU
+	table = [(4, 0, "System", 1, 5.0, 10 ** 12), (20, 1, "robocopy.exe", 2, 1.0, 10 ** 9)]
+	io = {r[0]: r[4] for r in rig_windows.classify(table)}
+	assert io == {4: None, 20: 10 ** 9}
+
+
 def test_nvidia_smi_parsing():
 	pids = """
 ==============NVSMI LOG==============
@@ -214,6 +221,29 @@ def test_run_waits_for_a_python_on_the_gpu(monkeypatch, root, capsys):
 	assert "500 gpu python.exe" in capsys.readouterr().out
 
 
+def test_outside_io_counts_no_more_than_the_disks_moved(monkeypatch):
+	looks = {"n": 0, "disk": [0, 0]}
+	def scan(own=()):
+		looks["n"] += 1
+		procs = {os.getpid(): fake(os.getpid(), ppid=0, start=0)}
+		procs[600] = fake(600, name="copy.exe")
+		procs[600].io = looks["n"] * 400 * 10 ** 6  # 400 MB more at each look
+		return procs
+	clock = iter(range(100))
+	monkeypatch.setattr(rig, "scan", scan)
+	monkeypatch.setattr(rig.time, "monotonic", lambda: float(next(clock)))  # a look each second
+	monkeypatch.setattr(rig, "disk_bytes", lambda: looks["disk"][0])
+	w = rig.Watch()
+	w.sample()
+	looks["disk"][0] = 0  # its I/O reached no disk: no load
+	assert w.sample()[1][1] == 0
+	looks["disk"][0] = 300 * 10 ** 6  # 300 MB of it did
+	assert w.sample()[1][1] == pytest.approx(300)
+	monkeypatch.setattr(rig, "disk_bytes", lambda: None)  # Linux, or no disk counters
+	w.sample()
+	assert w.sample()[1][1] == pytest.approx(400)
+
+
 def test_the_jobs_own_processes_and_reused_parent_pids(monkeypatch):
 	w = rig.Watch(job="t-1", root_pid=200)
 	procs = {
@@ -366,6 +396,18 @@ def test_cpu_and_io_of_another_process(tmp_path):
 		assert b[5] - a[5] >= 40e6, (a, b)  # and wrote 40 MB
 	finally:
 		child.wait()
+
+
+@windows
+def test_disk_bytes_count_a_file_written_to_disk(tmp_path):
+	before = rig_windows.disk_bytes()
+	with open(tmp_path / "big", "wb") as f:
+		for i in range(40):
+			f.write(os.urandom(1000000))
+		f.flush()
+		os.fsync(f.fileno())
+	after = rig_windows.disk_bytes()
+	assert before is not None and after - before >= 40e6, (before, after)
 
 
 @windows

@@ -40,7 +40,10 @@ On Windows (rig_windows.py beside this file says how each is seen):
   encoder  ffmpeg*.exe
   camera   a Spinnaker DLL loaded (PySpin, SpinView)
   trigger  a COM port open
-  load     as on Linux
+  load     as on Linux, from each process's reads and writes (files, devices, network), but
+           never more than all disks read and wrote (PhysicalDisk(_Total)): some of a
+           program's I/O never reaches a disk. The kernel's (System's) isn't counted: the display
+           driver charges it with every frame a job copies to the GPU.
   desktop  programs that draw on the GPU (type G or C+G: dwm.exe, explorer.exe, Task
            Manager, ...). Noted, not waited for; the log says when one starts or
            ends, but that doesn't contaminate the run, since Windows starts and
@@ -209,6 +212,13 @@ def scan(own=()):
 				procs[p.pid] = p
 	return procs
 
+def disk_bytes():
+	"""The bytes all physical disks have read and written (a running count), or None where the
+	processes' own counts are disk bytes already (Linux: /proc/<pid>/io's read_bytes, write_bytes).
+	On Windows a process's count is all its I/O, disk or not, so the load outside the job is taken
+	as no more than what the disks moved."""
+	return rig_windows.disk_bytes() if WINDOWS else None
+
 def proc_start(pid):
 	"""When pid started (an opaque number), None if it isn't running; -1 or 0 if it runs but that is unknown."""
 	if WINDOWS:
@@ -353,7 +363,7 @@ class Watch:
 	def __init__(self, job=None, sid=None, root_pid=None):
 		self.job, self.sid, self.root_pid = job, sid, root_pid
 		self.me = {os.getpid()}
-		self.prev, self.prev_t = {}, None
+		self.prev, self.prev_t, self.prev_disk = {}, None, None
 		self.desktops = {}  # (pid, start): Proc, every desktop up at the last sample
 		self.ancestors = set()
 		self.own_pids = set()
@@ -376,6 +386,7 @@ class Watch:
 	def sample(self):
 		"""(foreign device users, foreign load) now: [(Proc, kinds)], (cores, MB/s, [(cores, MB/s, Proc)])."""
 		t, procs = time.monotonic(), scan(self.own_pids)
+		disk = disk_bytes()
 		users, load, cpu, io = [], [], 0.0, 0.0
 		self.desktops = {(p.pid, p.start): p for p in procs.values() if "desktop" in p.kinds}
 		self.ancestors, q = set(), procs.get(os.getpid())
@@ -401,6 +412,9 @@ class Watch:
 		self.own_pids = own
 		self.prev = {(p.pid, p.start): (p.cpu, p.io) for p in procs.values()}
 		measured = self.prev_t is not None
+		if measured and disk is not None and self.prev_disk is not None:
+			io = min(io, max(0.0, (disk - self.prev_disk) / 1e6 / (t - self.prev_t)))
+		self.prev_disk = disk
 		self.prev_t = t
 		load.sort(key=lambda x: -(x[0] + x[1] / 50))
 		return users, (cpu, io, load) if measured else None
