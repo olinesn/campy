@@ -426,7 +426,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     <li><b>The first sets were slow.</b> Sets 1 and 4 took 125 and 110 ms, and the 5 sets that arrived meanwhile were skipped.</li>
     <li><b>Both came from the GPU's clock</b> (recommendations above): 780 MHz while tracking, and 210 MHz at the start, after waiting for the recording.</li>
   </ul>
-  <p class="col">With the clock held, <code>campy-live</code> on the performance cores and campy on the efficiency cores (the defaults since pull request PRNUM), the same models ran as below on 21 October. The replays fed the 3-mouse recording above into the live feed after 15 s of waiting, as campy does before the trigger. The live runs used the three real cameras with the Arduino trigger, starting with the GPU idle, but the cage had only one animal in view, so each set held 1 crop instead of 9.</p>
+  <p class="col">With the clock held, <code>campy-live</code> on the performance cores and campy on the efficiency cores (the defaults since pull request 96), the same models ran as below on 21 October. The replays fed the 3-mouse recording above into the live feed after 15 s of waiting, as campy does before the trigger. The live runs used the three real cameras with the Arduino trigger, starting with the GPU idle, but the cage had only one animal in view, so each set held 1 crop instead of 9.</p>
   <div class="tablewrap">
     <table>
       <thead><tr><th>Pro Max Slim, 3 cameras</th><th>Sets</th><th>Inference, median / p99</th><th>First set</th></tr></thead>
@@ -466,7 +466,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 
 <footer>
   <p>Measured 18–21 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
-  <p class="meta">Version 12 · updated 21 October 2026 · reflects campy changes through pull request PRNUM · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p class="meta">Version 12 · updated 21 October 2026 · reflects campy changes through pull request 96 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 
