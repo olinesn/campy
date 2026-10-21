@@ -783,8 +783,8 @@ def test_fake_centroids_give_that_many_peaks():
 
 # -------------------------------------------------------------- keeping the GPU warm, and the CPUs
 
-def test_the_gpu_clock_is_held_with_nvidias_cuda_only(monkeypatch):
-	# auto: on with CUDA (not ROCm, MPS or the CPU); on and off as asked
+def test_the_gpu_clock_is_held_with_a_gpu(monkeypatch):
+	# auto: on with CUDA and ROCm (not MPS or the CPU); on and off as asked
 	torch = types.SimpleNamespace(version=types.SimpleNamespace(hip=None))
 	monkeypatch.setitem(__import__("sys").modules, "torch", torch)
 	model = types.SimpleNamespace(device="cuda")
@@ -794,8 +794,101 @@ def test_the_gpu_clock_is_held_with_nvidias_cuda_only(monkeypatch):
 	assert not live.HoldsClock(live.ParseArgs(["--hold-gpu-clock", "on"]), types.SimpleNamespace(device="cpu"))
 	assert not live.HoldsClock(live.ParseArgs([]), live.NoModel)
 	torch.version.hip = "6.4"
-	assert not live.HoldsClock(live.ParseArgs([]), model)
-	assert live.HoldsClock(live.ParseArgs(["--hold-gpu-clock", "on"]), model)
+	assert live.HoldsClock(live.ParseArgs([]), model)
+	assert not live.HoldsClock(live.ParseArgs(["--hold-gpu-clock", "off"]), model)
+	assert live.ParseArgs([]).hold_gpu_clock_blocks == "auto"
+	assert live.ParseArgs(["--hold-gpu-clock-blocks", "2"]).hold_gpu_clock_blocks == "2"
+	with pytest.raises(SystemExit):
+		live.ParseArgs(["--hold-gpu-clock-blocks", "many"])
+
+
+def auto_clock(monkeypatch):
+	# A GpuClock on auto, with its clock read from a list (no GPU)
+	monkeypatch.setitem(__import__("sys").modules, "torch", types.SimpleNamespace())
+	clock = live.GpuClock("cuda", "auto", reader=types.SimpleNamespace(name="fake"))
+	clock.fastest = 2500.0
+	return clock
+
+
+class Looks:
+	# Adjust on one look every LOOK_S, its state kept from call to call:
+	# the blocks spinning after each look
+	def __init__(self, clock):
+		self.clock, self.state, self.t = clock, (0, 0.0, None), 0.0
+
+	def __call__(self, mhzs, limited=False):
+		blocks = []
+		for mhz in mhzs:
+			self.t += self.clock.LOOK_S
+			self.state = self.clock.Adjust(mhz, limited, *self.state, self.t)
+			blocks.append(self.clock.busy)
+		return blocks
+
+
+def test_auto_spins_a_block_more_while_the_clock_is_slow(monkeypatch):
+	# LOW_LOOKS slow looks in a row: one block more, up to MOST_BUSY; a
+	# single slow look is not enough
+	clock = auto_clock(monkeypatch)
+	looks = Looks(clock)
+	assert clock.busy == clock.FIRST_BUSY == 1 and clock.MOST_BUSY == 2 and clock.LOW_LOOKS == 2
+	assert looks([900, 2500, 900, 2490]) == [1, 1, 1, 1]
+	assert looks([1635, 1635]) == [1, 2]
+	assert looks([1635] * 6) == [2] * 6
+	assert clock.changes == 1
+
+
+def test_auto_does_not_fight_a_power_or_heat_limit(monkeypatch):
+	clock = auto_clock(monkeypatch)
+	assert Looks(clock)([1800] * 6, limited=True) == [1] * 6
+
+
+def test_auto_spins_a_block_fewer_at_full_clock_and_waits_longer_when_that_was_too_few(monkeypatch):
+	clock = auto_clock(monkeypatch)
+	looks = Looks(clock)
+	calm = int(clock.CALM_S / clock.LOOK_S)
+	# At full clock for CALM_S: one fewer
+	assert looks([2475] * calm) == [1] * (calm - 1) + [0]
+	# 0 was too few (the clock fell at once): one back, and the next try
+	# at 0 waits twice as long
+	assert looks([1000, 1000]) == [0, 1] and clock.calm == 2 * clock.CALM_S
+	assert looks([2475] * 2 * calm) == [1] * (2 * calm - 1) + [0]
+	# Too few again: four times as long, ... up to MOST_CALM_S
+	looks([1000, 1000])
+	assert clock.calm == 4 * clock.CALM_S
+	for _ in range(8):
+		looks([2475] * int(clock.calm / clock.LOOK_S) + [1000, 1000])
+	assert clock.calm == clock.MOST_CALM_S and clock.busy == 1
+	# 0 that holds the clock: stays 0, and the wait does not grow
+	assert looks([2475] * int(clock.calm / clock.LOOK_S))[-1] == 0
+	assert looks([2475] * 3 * calm) == [0] * 3 * calm
+
+
+def test_auto_says_how_it_went(monkeypatch):
+	clock = auto_clock(monkeypatch)
+	clock.time, clock.clocks, clock.changes, clock.mhz = {1: 1.0, 0: 3.0}, [2400.0, 2475.0, 2475.0], 1, 2475.0
+	assert clock.Describe() == {"blocks_while_sets_come": "auto", "clock_read_by": "fake",
+		"blocks_share": {"0": 0.75, "1": 0.25}, "block_changes": 1, "clock_mhz_p50": 2475.0,
+		"clock_mhz_min": 2400.0, "fastest_mhz": 2500.0}
+	assert clock.Now() == "; GPU clock 2475 MHz, 1 block spinning"
+	fixed = live.GpuClock("cuda", "2")
+	assert fixed.busy == 2 and fixed.reader is None and fixed.Describe() == {"blocks_while_sets_come": 2}
+	assert fixed.Now() == ""
+
+
+def test_the_clock_readers_parse_what_the_drivers_give(tmp_path):
+	sclk = tmp_path / "pp_dpm_sclk"
+	sclk.write_text("0: 600Mhz \n1: 2117Mhz *\n2: 2900Mhz \n")
+	reader = live.SysfsClock(None, "cuda", paths=[str(sclk)])
+	assert reader.Read() == (2117.0, False)
+	sclk.write_text("0: 600Mhz \n1: 1100Mhz \n2: 2900Mhz *\n")
+	assert reader.Read() == (2900.0, False)
+	sclk.write_text("")
+	assert reader.Read() is None
+	parse = live.SmiClock.Parse
+	assert parse(live.SmiClock, "2475, 0x0000000000000000") == (2475.0, False)
+	assert parse(live.SmiClock, "900, 0x0000000000000001") == (900.0, False) # idle: more blocks help
+	assert parse(live.SmiClock, "1900, 0x0000000000000004") == (1900.0, True) # SW power cap
+	assert parse(live.SmiClock, "[N/A], [N/A]") is None
 
 
 def test_the_gpu_clock_spins_until_stopped():

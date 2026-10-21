@@ -913,7 +913,7 @@ def parse_args():
                    help="off, on, or off,on: keep one GPU block spinning at the lowest priority "
                         "so an NVIDIA GPU keeps its full clock (campy-live's --hold-gpu-clock)")
     p.add_argument("--hold-clock-blocks", type=int, default=1,
-                   help="GPU blocks --hold-clock keeps spinning (campy-live: 4 while waiting, 1 while sets come)")
+                   help="GPU blocks --hold-clock keeps spinning (campy-live: 4 while waiting; while sets come, 0-2 as the clock needs)")
     p.add_argument("--pace", type=float, default=0.0,
                    help="sets per second: start sets on this cadence, as live (0: back to back)")
     p.add_argument("--no-clock-log", action="store_true",
