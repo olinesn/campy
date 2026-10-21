@@ -139,8 +139,8 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     </li>
     <li>
       <h3>On a fast GPU, run the models as CUDA graphs.</h3>
-      <p>Replaying each model's forward pass as a recorded CUDA graph (<code>--cuda-graphs</code> in the benchmark) made the RTX 6000 Ada's pipeline 20% faster at the median and 25% at p99: 5.2–7.8 ms across all 32 combinations, every one with p99 under 8.3 ms, half the 60 fps budget. The output was identical to running without graphs.</p>
-      <p class="why">On the RTX 2000 Ada graphs helped only 2–4%, because that card is limited by its own compute. sleap-nn doesn't use graphs on Windows by itself: <code>torch.compile</code>, which would, needs Triton, so the live pipeline captures them the way the benchmark does. <code>campy-live --cuda-graphs</code> now does: on the Pro Max Slim it took the 3-mouse replay from 13.2 to 12.4 ms per set (p99 14.3 to 13.0), and on 300 recorded sets its keypoints were identical to running without graphs.</p>
+      <p>Replaying each model's forward pass as a recorded CUDA graph (<code>--cuda-graphs</code> in the benchmark) made the RTX 6000 Ada's pipeline 20% faster at the median and 25% at p99: 5.2–7.8 ms across all 32 combinations, every one with p99 under 8.3 ms, half the 60 fps budget. The output was identical to running without graphs. The gain held while recording: with 3 fake cameras encoding at 60 fps the default pair went from 7.7 / 9.3 to 5.3 / 6.4 ms. At 8 cameras the RTX 6000 Ada is busy with the models themselves, so graphs gained only about 5% idle, but while recording 8 fake cameras they raised the model sizes fitting 60 fps from 14 to 21 of 32, because they remove the launch delays that the recording's CPU load adds.</p>
+      <p class="why">On the RTX 2000 Ada graphs helped only 2–4%, because that card is limited by its own compute. sleap-nn doesn't use graphs on Windows by itself: <code>torch.compile</code>, which would, needs Triton, so the live pipeline captures them the way the benchmark does. <code>campy-live --cuda-graphs</code> now does: on the Pro Max Slim it took the 3-mouse replay from 13.2 to 12.4 ms per set (p99 14.3 to 13.0), and on 300 recorded sets its keypoints were identical to running without graphs. Each number of animals found gives the model a differently sized batch, and each size gets its own graph: up to 15 at 3 cameras with up to 5 animals each, and up to 40 at 8 cameras. The first set with a new count costs 22–73 ms more; <code>campy-live</code>'s warm-up runs every count before the recording starts. Kept apart, 28 such graphs in the benchmark held 8.1 GB of the RTX 6000 Ada's memory; sharing one memory pool per model brought that to 1.4 GB with the same timing. That change is in review for the benchmark, and <code>campy-live</code> doesn't share a pool yet, so budget a few GB of GPU memory for graphs at 8 cameras.</p>
     </li>
     <li>
       <h3>Choose a model with about 2 ms to spare in the benchmark.</h3>
@@ -297,7 +297,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
       <ul class="plain">
         <li><b>Many small steps.</b> Around the models, sleap-nn runs about 450 tiny GPU kernels per set across the pipeline and waits for the GPU about 20 times (9 <code>.item()</code> and 11 <code>nonzero</code> calls), because each step depends on how many peaks were found.</li>
         <li><b>Launch cost.</b> About 11 µs of CPU time per kernel on Windows/CUDA against 5 µs on Linux/ROCm: 5.1 against 2.1 ms of CPU time per set. With frequent waits the CPU can't queue work ahead, so this lands in the latency.</li>
-        <li><b>What graphs fix.</b> CUDA graphs remove the launches inside the models, not around them. The RTX 6000 Ada's models were launch-bound (graphs: −20–25%); the RTX 2000 Ada's were GPU-bound (graphs: −2–4%).</li>
+        <li><b>What graphs fix.</b> CUDA graphs remove the launches inside the models, not around them. The RTX 6000 Ada's models were launch-bound (graphs: −20–25%); the RTX 2000 Ada's were GPU-bound (graphs: −2–4%), and so was the RTX 6000 Ada at 8 cameras (−5%).</li>
         <li><b>Tails.</b> In every EVO-X2 run no set took twice the median and p99 stayed 0.4–1.0 ms above it. The Pro Max Slim's p99 sat 3–7 ms above its median, with occasional sets of 84–122 ms. Typical Windows sources: the WDDM GPU driver model, deferred interrupt handling, background services such as backup software, and power management, including Modern Standby (see the recommendations).</li>
         <li><b>Not separated yet.</b> OS and GPU vendor change together between these two machines. Booting the Pro Max Slim from an Ubuntu USB stick and rerunning on the same RTX 2000 Ada would separate them.</li>
       </ul>
@@ -313,7 +313,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
         <tr><td>Model sizes fitting 60 fps while recording</td><td><span class="pill part">13 / 32</span></td><td><span class="pill miss">0 / 32</span> unpinned; <span class="pill part">8 / 32</span> pinned, High priority</td></tr>
         <tr><td>Model sizes fitting 30 fps while recording</td><td><span class="pill ok">32 / 32</span></td><td><span class="pill part">28 / 32</span> unpinned; <span class="pill ok">32 / 32</span> pinned</td></tr>
         <tr><td>Full live pipeline, trained models, 3 real cameras</td><td class="mono">60 fps, ~9 detections per set: 11.6 / 12.7 ms inference, 0 skipped; 5 mice replayed: 15.0 / 16.3 ms, 0 skipped</td><td class="mono">Before: 30 fps, 3 mice: 27.4 / 28.1 ms inference, unpinned. Now, GPU clock held and pinned: 3 mice replayed at 60 fps, 13.3 / 14.0 ms, 0 skipped; 3 real cameras at 60 fps (1 animal in view), 9.2 / 10.3 ms, 0 skipped</td></tr>
-        <tr><td>8 cameras</td><td>about 35–40 fps at best</td><td>not tested; GPU-bound, so likely slower</td></tr>
+        <tr><td>8 cameras</td><td>about 35–40 fps at best</td><td>45.5 / 45.9 ms per set idle, default pair, before <code>campy-live</code> held the clock (the GPU ran at about 1,000 MHz): none of 32 sizes fit 30 fps. Not yet measured at full clock.</td></tr>
       </tbody>
     </table>
   </div>
@@ -461,13 +461,15 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     <li>Pinning and the Windows changes were measured on the four fastest model pairs in two 21-minute recordings, before and after the changes, with a backup service running in both; the second recording's last minutes fell into Modern Standby and were discarded. All 32 model sizes were then measured pinned, in a separate recording with the backup service stopped and the screen timeout set to Never.</li>
     <li>The 21 October runs on the Pro Max Slim logged the GPU's clock every 50 ms, and held a lock so that no other program used the GPU meanwhile; runs that overlapped another session's were discarded and repeated. The live runs' 1 animal per set makes them lighter than the 3-mouse replays.</li>
     <li>That lock was agreed between sessions by hand. Since pull request 97, <code>bench/rig.py</code> does it on both Linux and Windows: it runs one test at a time, logs anything else that used the GPU, the cameras, the encoder, the trigger, the CPU or the disk meanwhile (each run's log ends <code>RIG_CLEAN</code> or <code>RIG_CONTAMINATED</code>), and logs the GPU's clock and what held it down. New measurements should be taken through it, and compared only between clean runs at similar clocks.</li>
-    <li>CUDA graphs were measured idle at 3 cameras only in the benchmark, and in the live pipeline on the Pro Max Slim (above). Not yet tested: graphs while recording and at 8 cameras, the RTX 4000 Ada with no monitor attached, and the live pipeline on the Precision 7875.</li>
+    <li>CUDA graphs were measured in the benchmark idle and while recording, at 3 and 8 cameras, on the Precision 7875 (fake cameras encoding with NVENC on the RTX 4000 Ada, none of their frames dropped) and on the Pro Max Slim (3 real FLIR cameras at 60 fps, all 252,000 frames per camera kept), and in the live pipeline on the Pro Max Slim (above). Graphs' output was identical to running without them in every run, including 300–400 sets with a random 0–5 animals per frame.</li>
+    <li>The Pro Max Slim's benchmark runs of 20–21 October ran with the RTX 2000 Ada at about 900–1,000 MHz on the light model sizes, because the benchmark doesn't hold the clock as <code>campy-live</code> now does. They were about 1.8 times slower than the same runs on 19 October (default pair 19.7 against 11.5 ms), so they compare graphs on and off at that low clock (1–8% faster with graphs) and don't show the card's capability; this guide's other Pro Max Slim benchmark numbers come from 19 October. The Precision 7875's RTX 6000 Ada didn't slow down this way: its default pair took 7.3 ms idle on both days.</li>
+    <li>Not yet tested: the RTX 4000 Ada with no monitor attached, the live pipeline on the Precision 7875, and the Pro Max Slim at 8 cameras with its clock held.</li>
   </ul>
 </section>
 
 <footer>
   <p>Measured 18–21 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
-  <p class="meta">Version 13 · updated 21 October 2026 · reflects campy changes through pull request 97 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p class="meta">Version 14 · updated 21 October 2026 · reflects campy changes through pull request 98 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 
@@ -476,6 +478,8 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 const rows = [
   ["3 CAMERAS", "Precision 7875 · RTX 6000 Ada", "idle, CUDA graphs", 5.2, 5.4],
   [null, "Precision 7875 · RTX 6000 Ada", "idle", 7.2, 7.7],
+  [null, "Precision 7875 · RTX 6000 Ada", "3 fake cameras recording, CUDA graphs", 5.3, 6.4],
+  [null, "Precision 7875 · RTX 6000 Ada", "3 fake cameras recording", 7.7, 9.3],
   [null, "Precision 7875 · RTX 6000 Ada", "3 fake cameras, one chiplet", 8.4, 11.5],
   [null, "Precision 7875 · RTX 6000 Ada", "+ 172 GB/s memory traffic", 9.3, 12.1],
   [null, "EVO-X2 · Radeon 8060S", "idle", 8.8, 9.0],
@@ -487,7 +491,10 @@ const rows = [
   [null, "Pro Max Slim · RTX 2000 Ada", "recording, 80 fps", 15.4, 22.8],
   [null, "Pro Max Slim · RTX 2000 Ada", "recording, pinned, High priority", 11.4, 11.8],
   [null, "Pro Max Slim · RTX 2000 Ada", "3 real cameras, 60 fps, pinned", 11.5, 11.7],
-  ["8 CAMERAS", "Precision 7875 · RTX 6000 Ada", "idle", 9.2, 9.5],
+  ["8 CAMERAS", "Precision 7875 · RTX 6000 Ada", "idle, CUDA graphs", 8.5, 9.5],
+  [null, "Precision 7875 · RTX 6000 Ada", "idle", 9.2, 9.5],
+  [null, "Precision 7875 · RTX 6000 Ada", "8 fake cameras recording, CUDA graphs", 9.1, 11.4],
+  [null, "Precision 7875 · RTX 6000 Ada", "8 fake cameras recording", 10.3, 13.0],
   [null, "EVO-X2 · Radeon 8060S", "idle", 24.2, 24.4],
   [null, "EVO-X2 · Radeon 8060S", "recording, 60 fps", 27.6, 28.9],
 ];
@@ -527,7 +534,12 @@ const rows = [
 const fit = [
   ["Precision 7875 · RTX 6000 Ada", "3 cameras, idle, CUDA graphs", 32, 32, 32, "33 ms"],
   ["Precision 7875 · RTX 6000 Ada", "3 cameras, idle", 32, 32, 32, "16 ms"],
+  ["Precision 7875 · RTX 6000 Ada", "3 cameras, recording 3 fake cameras at 60 fps, CUDA graphs", 32, 32, 32, null],
+  ["Precision 7875 · RTX 6000 Ada", "3 cameras, recording 3 fake cameras at 60 fps", 32, 32, 32, null],
+  ["Precision 7875 · RTX 6000 Ada", "8 cameras, idle, CUDA graphs", 29, null, 32, null],
   ["Precision 7875 · RTX 6000 Ada", "8 cameras, idle", 28, 32, 32, "70 ms"],
+  ["Precision 7875 · RTX 6000 Ada", "8 cameras, recording 8 fake cameras at 60 fps, CUDA graphs", 21, null, 32, null],
+  ["Precision 7875 · RTX 6000 Ada", "8 cameras, recording 8 fake cameras at 60 fps", 14, null, 32, null],
   ["EVO-X2", "3 cameras, idle", 18, 32, 32, "26 ms"],
   ["EVO-X2", "3 cameras, recording 80 fps", 13, 32, 32, "29 ms"],
   ["EVO-X2", "3 real cameras, Arduino-triggered, recording 60 fps", 12, 32, 32, "29 ms"],
@@ -539,12 +551,16 @@ const fit = [
   ["Pro Max Slim · RTX 2000 Ada", "3 cameras, recording 80 fps", 0, 28, 32, "122 ms"],
   ["Pro Max Slim · RTX 2000 Ada", "3 cameras, recording 80 fps, pinned, High priority", 8, 32, 32, "56 ms"],
   ["Pro Max Slim · RTX 2000 Ada", "3 real cameras, Arduino-triggered, recording 60 fps, pinned, High priority", 8, 32, 32, "65 ms"],
+  ["Pro Max Slim · RTX 2000 Ada", "same, 21 October, GPU clock low (about 900 MHz)", 0, 18, 32, "94 ms"],
+  ["Pro Max Slim · RTX 2000 Ada", "same, 21 October, GPU clock low, CUDA graphs", 0, 20, 32, "81 ms"],
+  ["Pro Max Slim · RTX 2000 Ada", "8 cameras, idle, GPU clock low (about 1,000 MHz on light sizes)", 0, 0, 32, "144 ms"],
 ];
 const tb = document.getElementById("fit");
 for (const [m, c, f60, f30, of, worst] of fit) {
   const cls = n => n === of ? "ok" : n === 0 ? "miss" : "part";
   const tr = document.createElement("tr");
-  tr.innerHTML = `<td>${m}</td><td>${c}</td><td class="num"><span class="pill ${cls(f60)}">${f60} / ${of}</span></td><td class="num"><span class="pill ${cls(f30)}">${f30} / ${of}</span></td><td class="num">${worst}</td>`;
+  const pill = n => n == null ? `<span class="meta">not counted</span>` : `<span class="pill ${cls(n)}">${n} / ${of}</span>`;
+  tr.innerHTML = `<td>${m}</td><td>${c}</td><td class="num">${pill(f60)}</td><td class="num">${pill(f30)}</td><td class="num">${worst ?? "–"}</td>`;
   tb.appendChild(tr);
 }
 </script>
