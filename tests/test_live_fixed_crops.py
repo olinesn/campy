@@ -252,5 +252,5 @@ def test_tied_centroid_tops(strict):
 	frames = model.Upload(host.tensor)
 	a, b = model.Predict(frames), Reference(model, frames)
 	assert list(Found(a)) == list(Found(b)) == [0 if strict else 1] * FRAMES
-	if not strict:
-		Compare(a, b, [1] * FRAMES)
+	for key in ("centroids", "centroid_vals"): # the same peak, refined the same (keypoints: test_matches_sleap)
+		assert np.array_equal(a[key], b[key], equal_nan=True), key
