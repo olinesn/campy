@@ -134,8 +134,9 @@ def test_use_tied_peaks_patches_find_local_peaks(sleap):
 
 
 @pytest.mark.parametrize("strict", [False, True])
-def test_campy_live_uses_tied_peaks_unless_strict(sleap, strict):
+def test_campy_live_uses_tied_peaks_unless_strict(sleap, strict, monkeypatch):
 	from campy import live
+	monkeypatch.setattr(live, "ExactCropSize", lambda layer: None) # the stub has no layer to crop with
 
 	class Stub(live.TopDown):
 		def Build(self, args):
