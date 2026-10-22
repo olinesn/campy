@@ -50,10 +50,14 @@ class Sharp(torch.nn.Module):
 		return torch.exp(-((xx - cx[..., None, None]) ** 2 + (yy - cy[..., None, None]) ** 2) / 4)
 
 
+def Mode(value):
+	return value if isinstance(value, str) else "on" if value else "off"
+
+
 def Model(device, fixed=True, graphs=False, precision="fp32"):
 	args = live.ParseArgs(["--model", "random", "--device", device, "--frame-shape", SHAPE, "--precision", precision,
-		"--max-instances", str(MOST), "--animals", str(MOST), "--nodes", "6"] + (["--fixed-crops"] if fixed else []) +
-		(["--cuda-graphs"] if graphs else []))
+		"--max-instances", str(MOST), "--animals", str(MOST), "--nodes", "6", "--fixed-crops", Mode(fixed),
+		"--cuda-graphs", Mode(graphs)])
 	model = live.MODELS["random"](args, FRAMES, live.FrameShape(SHAPE))
 	backend = model.layer.centered_instance_layer.backend
 	backend.model = Sharp(6, model.layer.centered_instance_layer.output_stride).to(device)
@@ -219,8 +223,36 @@ def test_results_come_back_in_one_copy():
 
 
 def test_options():
-	args = live.ParseArgs(["--fixed-crops"])
-	assert args.fixed_crops and not args.cuda_graphs
-	assert not live.ParseArgs([]).fixed_crops
+	# auto by default (on with a GPU); the bare option is on
+	args = live.ParseArgs([])
+	assert args.fixed_crops == "auto" and args.cuda_graphs == "auto"
+	args = live.ParseArgs(["--fixed-crops", "--cuda-graphs", "off"])
+	assert args.fixed_crops == "on" and args.cuda_graphs == "off"
+	assert live.OnOff(True) == "on" and live.OnOff(False) == "off"
+	with pytest.raises(SystemExit):
+		live.ParseArgs(["--fixed-crops", "sometimes"])
+	# auto on the CPU: neither, and no error
+	model, _ = Model("cpu", fixed="auto", graphs="auto")
+	assert model.fixed is None and not model.graphs and model.DescribeGraphs() is None
 	with pytest.raises(SystemExit):
 		Model("cpu", graphs=True)
+
+
+@needs_gpu
+def test_auto_is_one_graph_with_a_gpu():
+	model, _ = Model("cuda", fixed="auto", graphs="auto")
+	assert model.fixed is not None and model.fixed.graph is None and not model.graphs # one graph, recorded at the first set
+
+
+@needs_gpu
+def test_auto_falls_back_when_the_model_cant(monkeypatch):
+	# a model FixedCrops refuses: sleap-nn's own layer, graphed per count, and why
+	def Refuse(*a, **k):
+		raise SystemExit("--fixed-crops: integral refinement or none, not local")
+	monkeypatch.setattr(live, "FixedCrops", Refuse)
+	model, _ = Model("cuda", fixed="auto", graphs="auto")
+	assert model.fixed is None and len(model.graphs) == 2
+	assert "not local; so sleap-nn's own top-down layer" in model.DescribeGraphs()
+	assert "not local" in model.fixedNote
+	with pytest.raises(SystemExit):
+		Model("cuda", fixed="on", graphs="auto")

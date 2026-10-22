@@ -46,7 +46,7 @@ thread_errors = []
 threading.excepthook = lambda e: thread_errors.append("{}: {}: {}".format(
     e.thread.name if e.thread else "?", e.exc_type.__name__, e.exc_value))
 
-args = live.ParseArgs(["--model", "random", "--cuda-graphs", "--frame-shape", a.frame_shape,
+args = live.ParseArgs(["--model", "random", "--cuda-graphs", "--fixed-crops", "off", "--frame-shape", a.frame_shape,
     "--max-instances", str(a.max_instances), "--animals", str(a.max_instances)])
 shape = live.FrameShape(a.frame_shape)
 host = live.HostBuffer(True, (a.frames,) + tuple(shape), live.np.uint8)
