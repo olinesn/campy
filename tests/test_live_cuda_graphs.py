@@ -113,7 +113,7 @@ def test_topdown_counts_match_eager():
 	# (FakeCentroids), graphs against the same modules run eagerly
 	pytest.importorskip("sleap_nn")
 	frames, most = 2, 3
-	args = live.ParseArgs(["--model", "random", "--cuda-graphs", "--frame-shape", "256x320x1",
+	args = live.ParseArgs(["--model", "random", "--cuda-graphs", "--fixed-crops", "off", "--frame-shape", "256x320x1",
 		"--max-instances", str(most), "--animals", str(most)])
 	shape = live.FrameShape("256x320x1")
 	model = live.MODELS["random"](args, frames, shape)

@@ -42,8 +42,8 @@ if not torch.cuda.is_available():
 
 live.CUDAGraphed.SHARE_POOL = a.pools == "shared"
 argv = ["--model", "random", "--frame-shape", a.frame_shape, "--max-instances", str(a.max_instances),
-    "--animals", str(a.max_instances)]
-args = live.ParseArgs(argv + (["--cuda-graphs"] if a.pools != "eager" else []))
+    "--animals", str(a.max_instances), "--fixed-crops", "off"]
+args = live.ParseArgs(argv + ["--cuda-graphs", "off" if a.pools == "eager" else "on"])
 shape = live.FrameShape(a.frame_shape)
 host = live.HostBuffer(True, (a.frames,) + tuple(shape), np.uint8)
 host.array[:] = np.random.default_rng(0).integers(0, 256, host.array.shape, np.uint8)
