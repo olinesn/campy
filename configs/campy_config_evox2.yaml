@@ -27,6 +27,11 @@ frameHeight: 1024
 pixelFormatInput: "gray"              # Mono8
 cameraTrigger: "Line3"
 cameraExposureTimeInUs: 1500
+# Gamma off, as these cameras recorded until October 2026 (campy's old default) and
+# as the videos the live-tracking models were trained on were recorded. 0.6 (campy's
+# default now) brightens the frames: on one of these cameras at 1500 us, the mean
+# gray level went from 177 to 195 and the darkest 5% of pixels from 13 to 42.
+cameraGamma: "Off"
 
 # Compression parameters
 gpuID: 0
