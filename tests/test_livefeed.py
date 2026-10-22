@@ -11,7 +11,7 @@ from collections import deque
 import numpy as np
 import pytest
 
-from campy import configurator, frametimes, livefeed, live
+from campy import clock, configurator, frametimes, livefeed, live
 from campy.cameras import unicam
 
 _count = itertools.count()
@@ -476,7 +476,7 @@ def _record(prefix, cameras, frames, rate, delay, trigger=None):
 			# One host time for the set, as for cameras on one trigger: stamped
 			# one by one, a thread switch between them (Python's is every 5 ms)
 			# could put the set more than half a frame apart, misaligned
-			host = time.monotonic_ns()
+			host = clock.HostNs()
 			for w in writers:
 				w.Write(frame(n), n, host, n / rate)
 	finally:

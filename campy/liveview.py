@@ -179,7 +179,7 @@ from datetime import datetime
 import numpy as np
 import cv2
 
-from campy import cpus, livefeed, livehealth, liveresults
+from campy import clock, cpus, livefeed, livehealth, liveresults
 
 TITLE = "campy-live view"
 
@@ -1499,7 +1499,7 @@ class Bookmarks:
 
 	  number       1, 2, ... in the file (on from its last, after a restart)
 	  time         the computer's clock, local time, to the ms
-	  host_ns      time.monotonic_ns(): the clock of campy's hosttimes.npy
+	  host_ns      now on the clock of campy's hosttimes.npy (campy/clock.py)
 	  event        mark (m), or 1-9 (Shift+1-9)
 	  note         the note typed in the Qt panel, or empty
 	  frame        the frame number shown in the view: campy's frame number,
@@ -1791,8 +1791,8 @@ class Viewer:
 						self.inference.popleft()
 					if self.tracking is not None:
 						self.tracking.Add(row)
-					# perf_counter is one clock in every process, the frames' written times' too, and
-					# precise on Windows (monotonic, host_ns's, moves in 15.6 ms steps there)
+					# perf_counter is one clock in every process, the frames' written times' too (host
+					# times are on campy/clock.py's clock, not always this one: not compared with it)
 					self.lastSeen = (seen - int(np.max(row["written_ns"]))) / 1e6
 					self.resultMs.append(self.lastSeen)
 					frames = self.Read(int(row["frame"]))
@@ -2476,7 +2476,7 @@ class Viewer:
 		view shows, written at once (Bookmarks). Returns it (a dict of its
 		fields), or None when it could be written nowhere.
 		"""
-		now, host = datetime.now(), time.monotonic_ns()
+		now, host = datetime.now(), clock.HostNs()
 		cameras = []
 		for c in range(len(self.readers) if self.readers else len(self.ringNames)):
 			n = self.readers[c].Latest() if self.readers else 0

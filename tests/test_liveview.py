@@ -13,7 +13,7 @@ import pytest
 
 cv2 = pytest.importorskip("cv2")
 
-from campy import live, livefeed, liveresults, liveview, pose3d
+from campy import clock, live, livefeed, liveresults, liveview, pose3d
 
 import test_pose3d as scene3d
 from test_livefeed import name, rings, run_live, seeing # noqa: F401 (rings: a fixture)
@@ -1249,7 +1249,7 @@ def paced(writers, frames, fps, host_offset=None, skip=None, step=None):
 	for n in range(1, frames + 1):
 		while time.perf_counter() < start + n * period:
 			time.sleep(0.0005)
-		host = time.monotonic_ns()
+		host = clock.HostNs()
 		for c, w in enumerate(writers):
 			if skip != (c, n):
 				w.Write(np.full(w.ring.shape[:2], 60, np.uint8), n, host + (host_offset or {}).get(c, 0), n * period)
@@ -1430,7 +1430,7 @@ def record(prefix, frames, rate, delay, shape=(256, 320)):
 			while time.perf_counter() < start + n / rate:
 				time.sleep(0.0002)
 			for w in writers:
-				w.Write(np.full(shape, 60, np.uint8), n, time.monotonic_ns(), n / rate)
+				w.Write(np.full(shape, 60, np.uint8), n, clock.HostNs(), n / rate)
 	finally:
 		for w in writers:
 			w.Close()

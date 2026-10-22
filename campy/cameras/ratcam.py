@@ -26,6 +26,7 @@ Besides campy's frametimes and metadata, each RatCam folder gets:
 	ratcam_frames.csv  every frame grabbed: campy's frame number, the camera's
 	                   frame counter (a gap = a frame lost before campy saw it),
 	                   its timestamp in us, and the computer's arrival time in ns
+	                   (on hosttimes.npy's clock, campy/clock.py)
 	ratcam_sync.csv    every SYNC input pulse: its counter, its timestamp in us,
 	                   and the computer's arrival time in ns, in order of time
 Both are written while the recording runs: opened when the camera starts
@@ -35,7 +36,7 @@ memory does not grow with the recording, and one that stops without closing
 """
 
 import csv, os, queue, time
-from campy import newfiles
+from campy import clock, newfiles
 from campy.cameras import unicam
 from campy.utils.utils import Say
 
@@ -108,7 +109,7 @@ class Logs:
 		self.lost = 0       # frames it skipped: lost before they reached campy
 		self.pulse_us = None # the last pulse's time
 		self.in_order = True # every pulse so far after the one before
-		self.written_ns = time.monotonic_ns()
+		self.written_ns = clock.HostNs()
 
 	def Frame(self, counter, t_us, host_ns):
 		# Each grabbed frame, in campy's order: frame is campy's frame number
@@ -129,10 +130,10 @@ class Logs:
 		os.makedirs(self.folder, exist_ok=True)
 		self.frames.Open()
 		self.sync.Open()
-		self.written_ns = time.monotonic_ns()
+		self.written_ns = clock.HostNs()
 
 	def WriteIfDue(self):
-		now = time.monotonic_ns()
+		now = clock.HostNs()
 		if now - self.written_ns >= WRITE_EVERY_NS:
 			self.written_ns = now
 			self.frames.Write()
@@ -317,8 +318,20 @@ def Configure(camera, cam_params):
 	return cam_params
 
 
+def StampOnHostClock():
+	# nireyecam stamps each packet as it arrives with time.monotonic_ns, which on
+	# Windows up to Python 3.12 moves in 15.6 ms steps and is not campy's host
+	# clock there (campy/clock.py): its stamps (host_ns in ratcam_*.csv, which
+	# campy-align compares with the other cameras' hosttimes.npy) are made on
+	# campy's clock instead
+	from nireyecam import device
+	if clock.HostNs is not time.monotonic_ns and not isinstance(device.time, clock.TimeOnHostClock):
+		device.time = clock.TimeOnHostClock()
+
+
 def OpenCamera(cam_params):
 	from nireyecam.device import open_camera
+	StampOnHostClock()
 	device = cam_params["device"]
 	camera = RatCam(open_camera(device["port"], cam_params["cameraName"]),
 		os.path.join(cam_params["videoFolder"], cam_params["cameraName"]))
