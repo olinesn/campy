@@ -17,7 +17,11 @@ have cut them short are counted (ShortCrops).
         Camera1.mp4 Camera3.mp4 Camera4.mp4 [--sets 3600] [--out check.json]
 
 The videos are decoded with ffmpeg, in gray, frame k of each making set k,
-as campy's cameras would give them. Run it on the rig through its lock.
+as campy's cameras would give them. --engine compile (or tensorrt) runs the
+--fixed-crops graph's networks as compiled engines: then the graph is
+compared with the default, and with --fixed-crops in torch without a graph
+(graph_vs_eager_fixed_max_abs_diff_px: the engines' own difference).
+Run it on the rig through its lock.
 """
 import argparse, json, subprocess, sys, time
 import numpy as np
@@ -74,6 +78,41 @@ def Compare(g, d):
 	return False, float(np.abs(kg - kd)[both].max(initial=0)), int(np.count_nonzero(np.isnan(kg) != np.isnan(kd)))
 
 
+class Keypoints:
+	"""
+	One way's keypoints against the reference's, keypoint by keypoint, in
+	the sets where both found the same animals per camera: how far each
+	moved (the distance, px), and the sets where the animals found differ.
+	"""
+
+	def __init__(self):
+		self.moved, self.found_differs, self.sets = [], 0, 0
+
+	def Add(self, a, ref):
+		self.sets += 1
+		if (Found(a) != Found(ref)).any():
+			self.found_differs += 1
+			return
+		if not Found(ref).sum(): # no animals: sleap-nn guesses the node count
+			return
+		d = np.linalg.norm(a["keypoints"] - ref["keypoints"], axis=-1)
+		self.moved.append(d[np.isfinite(d)])
+
+	def Summary(self):
+		d = np.concatenate(self.moved) if self.moved else np.zeros(0)
+		return {"sets": self.sets, "sets_where_found_differs": self.found_differs, "keypoints_compared": int(d.size),
+			"moved_px_p50": float(np.percentile(d, 50)) if d.size else 0.0,
+			"moved_px_p99": float(np.percentile(d, 99)) if d.size else 0.0,
+			"moved_px_max": float(d.max()) if d.size else 0.0,
+			"moved_over_0.1px": float(np.mean(d > 0.1)) if d.size else 0.0,
+			"moved_over_1px": float(np.mean(d > 1)) if d.size else 0.0,
+			"moved_over_5px": float(np.mean(d > 5)) if d.size else 0.0}
+
+
+def Found(r):
+	return (~np.isnan(r["centroids"]).any(-1)).sum(-1)
+
+
 def Ms(values):
 	v = np.asarray(values, np.float64) / 1e6
 	return {"p50": float(np.percentile(v, 50)), "p99": float(np.percentile(v, 99)), "max": float(v.max()),
@@ -89,29 +128,48 @@ def Main(argv=None):
 	p.add_argument("--max-instances", type=int, default=5)
 	p.add_argument("--precision", default="fp16")
 	p.add_argument("--sets", type=int, default=0, help="0: every set of the videos")
+	p.add_argument("--engine", default="eager", help="the --fixed-crops graph's networks: campy-live --engine (eager, "
+		"compile, tensorrt, auto); the --fixed-crops run without a graph stays in torch, as a reference")
+	p.add_argument("--engine-cache", default="")
+	p.add_argument("--reference", default="same", choices=["same", "fp32"], help="the default (sleap-nn's layer) it "
+		"is compared with: at --precision, or in fp32, the most exact (then keypoint_moved also says how far fp16 "
+		"itself moves them, with --fixed-crops in torch without a graph)")
 	p.add_argument("--out", default="")
 	a = p.parse_args(argv)
 	h, w = [int(x) for x in a.frame_shape.split("x")][:2]
 	n = len(a.videos)
 	args = live.ParseArgs(["--model", "sleap", "--centroid", a.centroid, "--instance", a.instance, "--fixed-crops",
 		"--cuda-graphs", "--max-instances", str(a.max_instances), "--precision", a.precision,
-		"--frame-shape", "{}x{}x1".format(h, w)])
+		"--frame-shape", "{}x{}x1".format(h, w), "--engine", a.engine, "--engine-cache", a.engine_cache])
 	model = live.TrainedTopDown(args, n, (h, w, 1))
 	host = live.HostBuffer(True, (n, h, w, 1), np.uint8)
 	graphed = model.fixed
 	eager = live.FixedCrops(model.layer, n, model.device, a.max_instances, graph=False)
 
+	backends = [model.layer.centroid_layer.backend, model.layer.centered_instance_layer.backend]
+	fp16 = [b.use_fp16 for b in backends]
+
 	def Default(frames):
 		model.fixed = None
+		if a.reference == "fp32":
+			for b in backends:
+				b.use_fp16 = False
 		try:
 			return model.Predict(frames)
 		finally:
 			model.fixed = graphed
+			for b, f in zip(backends, fp16):
+				b.use_fp16 = f
 
 	t = time.perf_counter()
 	model.Warm(host.tensor) # records the graph
 	model.fixed = None
+	if a.reference == "fp32":
+		for b in backends:
+			b.use_fp16 = False
 	model.Warm(host.tensor, crops=range(1, n * a.max_instances + 1)) # the default's shapes
+	for b, f in zip(backends, fp16):
+		b.use_fp16 = f
 	model.fixed = graphed
 	for _ in range(3):
 		eager.Predict(eager.Upload(host.tensor))
@@ -123,6 +181,7 @@ def Main(argv=None):
 	diffs, diff_found = [], [] # each set's keypoint max diff, and the animals found in it
 	found_diff = missing = 0
 	cen_diff, eager_diff, found_total = [], [], []
+	moved = {"fixed_graph": Keypoints(), "fixed_eager_torch": Keypoints()} # vs the default (crops at their real size)
 	sets = 0
 	for frames in Frames(a.videos, (h, w)):
 		host.array[:] = frames
@@ -134,6 +193,8 @@ def Main(argv=None):
 		on_gpu = host.tensor.to(model.device, non_blocking=True)
 		d = Default(on_gpu)
 		t3 = time.perf_counter_ns()
+		moved["fixed_graph"].Add(g, d)
+		moved["fixed_eager_torch"].Add(e, d)
 		times["fixed_graph"].append(t1 - t0)
 		times["fixed_eager"].append(t2 - t1)
 		times["default"].append(t3 - t2)
@@ -172,6 +233,8 @@ def Main(argv=None):
 
 	summary = {
 		"sets": sets, "videos": a.videos, "centroid": a.centroid, "instance": a.instance, "precision": a.precision,
+		"engine": a.engine, "reference": a.reference if a.reference == "fp32" else a.precision,
+		"keypoint_moved_vs_reference_exact_crop_size": {k: v.Summary() for k, v in moved.items()},
 		"graph": model.DescribeGraphs(),
 		"found_per_set_mean": float(np.mean(found_total)) if found_total else 0.0,
 		"centroid_max_abs_diff_px": max(cen_diff, default=0.0),
