@@ -140,7 +140,8 @@ and its first.
 import argparse, json, math, os, queue, signal, sys, threading, time
 from datetime import datetime
 import numpy as np
-from campy import children, clock, cpus, livefeed, liveresults
+from campy import children, cpus, livefeed, liveresults
+from campy import clock as hostclock # not clock: Run's clock is the GPU's
 from campy.frametimes import GrowingNpy, Writer
 
 # The random models: what bench/sleap_infer_bench.py's default pair is
@@ -1070,7 +1071,7 @@ class Pose3DThread:
 				# Which animal is which across the cameras, and its 3D pose
 				start = time.perf_counter_ns()
 				poses = self.tracker.Update(row["keypoints"], row["peak_vals"], int(row["frame"]))
-				pose3d_ns, pose3d_pc = clock.HostNs(), time.perf_counter_ns()
+				pose3d_ns, pose3d_pc = hostclock.HostNs(), time.perf_counter_ns()
 				self.log.Add(row, frames, poses, pose3d_ns, durations=(inference, pose3d_pc - start))
 			except BaseException as e:
 				self.error = e
@@ -1299,9 +1300,9 @@ def Run(args):
 			frames, skipped = got
 			if clock is not None:
 				clock.Busy()
-			read_ns, read_pc = clock.HostNs(), time.perf_counter_ns()
+			read_ns, read_pc = hostclock.HostNs(), time.perf_counter_ns()
 			result = model.Predict(model.Upload(host.tensor)) # ends with the results on the host
-			done_ns, done_pc = clock.HostNs(), time.perf_counter_ns()
+			done_ns, done_pc = hostclock.HostNs(), time.perf_counter_ns()
 			row = log.Row(frames, skipped, read_ns, done_ns, result, done_pc - read_pc)
 			if worker is None:
 				log.Add(row, frames, durations=(done_pc - read_pc, None))

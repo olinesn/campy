@@ -114,3 +114,18 @@ def test_ratcam_stamps_on_the_host_clock(tmp_path, monkeypatch):
 	assert len(stamped) == len(hosts) > 0 and np.all(stamped >= offset)
 	# Each frame reached nireyecam's reader thread before campy took it from the queue
 	assert np.all(stamped <= hosts) and np.all(hosts - stamped < 1e9)
+
+
+def test_campy_live_times_are_on_the_host_clock(tmp_path, monkeypatch):
+	# campy-live's read and done times are on the camera processes' clock: on
+	# another, its latencies (done_ns - host_ns) would be meaningless
+	import test_livefeed
+	offset = 7 * 10**15
+	monkeypatch.setattr(clock, "HostNs", lambda: time.perf_counter_ns() + offset)
+	out = str(tmp_path / "live")
+	assert test_livefeed.run_live(test_livefeed.name(), out, ["--model", "none", "--report-sec", "0",
+		"--wait-sec", "30"], frames=60) == 0
+	rows = np.load(out + ".npy")
+	assert len(rows) > 0 and np.all(rows["host_ns"] >= offset)
+	latency = rows["done_ns"] - rows["host_ns"].max(1)
+	assert np.all(rows["read_ns"] >= rows["host_ns"].max(1)) and np.all((latency >= 0) & (latency < 1e9))
