@@ -970,14 +970,34 @@ class FixedEngine:
 		if kind == "compile":
 			self.Compile(backend.model)
 		else:
-			self.TensorRT(backend.model, cache)
+			self.TensorRT(backend.model, cache, x)
 		self.text = "{} {} {} {}".format(name, {"compile": "torch.compile", "tensorrt": "TensorRT"}[kind],
 			"fp16" if fp16 else "fp32", "x".join(str(v) for v in self.shape[:1] + self.shape[2:]))
 		self.seconds = time.perf_counter() - t
 
+	@staticmethod
+	def PlainConfigs(model):
+		# sleap-nn's Model.forward reads backbone_config.in_channels from an
+		# OmegaConf config, which dynamo can't trace (typed configs, as the
+		# random model's, fail in OmegaConf's own type handling): a plain
+		# copy of the same values instead
+		import types
+		try:
+			from omegaconf import DictConfig, OmegaConf
+		except ImportError:
+			return
+
+		def Plain(v):
+			return types.SimpleNamespace(**{k: Plain(x) for k, x in v.items()}) if isinstance(v, dict) else v
+		for module in model.modules():
+			cfg = getattr(module, "backbone_config", None)
+			if isinstance(cfg, DictConfig):
+				module.backbone_config = Plain(OmegaConf.to_container(cfg, resolve=True))
+
 	def Compile(self, model):
 		torch = self.torch
 		fp16 = self.fp16
+		self.PlainConfigs(model)
 
 		def run(x):
 			with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=fp16, cache_enabled=False):
@@ -987,7 +1007,7 @@ class FixedEngine:
 			return out.float()
 		self.fn = torch.compile(run, dynamic=False, fullgraph=True)
 
-	def TensorRT(self, lightning, cache):
+	def TensorRT(self, lightning, cache, x):
 		import copy, hashlib, warnings
 		import tensorrt as trt
 		torch = self.torch
@@ -996,7 +1016,7 @@ class FixedEngine:
 			raise SystemExit("--engine tensorrt: a trained sleap-nn model only (--model sleap), not {}".format(
 				type(lightning).__name__))
 		n, _, c, h, w = self.shape
-		device = next(body.parameters()).device
+		device = x.device
 		with torch.inference_mode(False), torch.no_grad():
 			probe = body(torch.zeros((1, c, h, w), device=device))
 			heads = [k for k in probe if k in self.HEADS] if isinstance(probe, dict) else []
