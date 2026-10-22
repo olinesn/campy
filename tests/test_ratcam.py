@@ -272,12 +272,25 @@ def test_a_camera_closed_before_it_grabbed_still_has_its_logs(tmp_path):
 
 def test_a_recording_that_dies_keeps_its_rows_up_to_the_last_second(tmp_path):
 	# campy's camera process, ended by os._exit 50 frames (2.5 s) in: no
-	# CloseCamera, no Python cleanup, as a crash would end it
+	# CloseCamera, no Python cleanup, as a crash would end it. It ends once
+	# frametimes.npy has its second batch (frames 21-40): its writer thread
+	# writes on its own, and on a slow disk (a Windows runner) had not
+	# written it 0.5 s after it was handed over.
 	script = textwrap.dedent("""
-		import os, sys
+		import os, sys, time
+		import numpy as np
 		from collections import deque
 		from campy import configurator
 		from campy.cameras import ratcam, unicam
+		def Written(path, frames, timeout=30):
+			deadline = time.monotonic() + timeout
+			while time.monotonic() < deadline:
+				try:
+					if np.load(path, mmap_mode="r").shape[1] >= frames:
+						return
+				except Exception:
+					pass # not there yet, or its header being rewritten
+				time.sleep(0.02)
 		p = configurator.DefaultParams()
 		p.update(numCams=1, cameraMake="ratcam", ratcamPorts=["sim"], videoFolder=sys.argv[1],
 			frameWidth=160, frameHeight=120, frameRate=20, cameraExposureTimeInUs=2000,
@@ -287,6 +300,7 @@ def test_a_recording_that_dies_keeps_its_rows_up_to_the_last_second(tmp_path):
 		grab = ratcam.GrabFrame
 		def GrabFrame(camera, n):
 			if n >= 50:
+				Written(os.path.join(sys.argv[1], "Camera0", "frametimes.npy"), 40)
 				print(camera.logs.frames.count, camera.logs.sync.count, flush=True)
 				os._exit(3)
 			return grab(camera, n)
