@@ -235,7 +235,7 @@ def Near(a, b, counts, tol=ENGINE_TOL):
 	# keypoints and centroids within tol
 	assert list(Found(a)) == [min(k, MOST) for k in counts]
 	assert list(Found(b)) == list(Found(a))
-	for key in ("centroids", "keypoints"):
+	for key in ("centroids", "keypoints") if Found(b).sum() else ("centroids",): # none: sleap-nn guesses the nodes
 		assert a[key].shape == b[key].shape, key
 		assert np.array_equal(np.isnan(a[key]), np.isnan(b[key])), (counts, key)
 		if np.isfinite(a[key]).any():
