@@ -50,6 +50,37 @@ Accuracy on the same 293 validation mice (11 body parts, median / 90th / 99th pe
 
 On the EVO-X2 with 5 mice and 3 cameras, the benchmark p99s were 14.0 ms for the 160 px model, 15.3 ms for the 24-filter 192 px model and 10.6 ms for the 16-filter one. In the full live pipeline the 160 px model skipped nothing. The 24-filter 192 px model, with less room, still skipped a set now and then, and the 16-filter one kept up easily but was less accurate. On the Pro Max Slim (RTX 2000 Ada) the 160 px model took 16.5 ms per set with 5 mice, which is too close to the 16.7 ms between frames: it skipped 4–6% of the sets. Use the 16-filter 192 px model there, or 30 fps. The [hardware guide](hardware.md) has the live measurements.
 
+## Where a set's time goes
+
+`bench/live_stage_timing.py run` runs `campy-live` itself with a timer around each stage of each set. Before and after each stage it waits for the GPU to finish, so each stage counts only its own work. Its docstring lists the stages. `bench/live_stage_timing.py kernels` profiles the two models layer by layer: GPU time per layer, against the bytes each layer moves and the arithmetic it does.
+
+On the EVO-X2, with the settings above, 3 cameras replaying 5 mice at 60 fps (3,592 sets, 15 crops in most). Times are per set, in ms:
+
+| Stage | p50 | p99 |
+|---|---|---|
+| Copy the set out of shared memory | 0.64 | 1.31 |
+| Upload to the GPU | 0.21 | 0.67 |
+| Centroid preprocessing (shrink 1024×1280 to 256×320) | 0.53 | 1.05 |
+| **Centroid model** | **2.14** | 2.94 |
+| Centroid peak finding (the CPU waits for the GPU here) | 1.03 | 1.58 |
+| Cutting out the crops | 0.75 | 0.84 |
+| Crop preprocessing (320 to 160 px), uint8 to float for both models | 0.25 | 0.44 |
+| **Centered-instance model** | **9.11** | 9.33 |
+| Instance peak finding | 0.77 | 1.57 |
+| sleap-nn's other steps between and after the models | 0.64 | 1.07 |
+| Results back to the CPU (4 downloads) | 0.12 | 0.33 |
+| **Upload to results back, timed per stage** | **15.7** | **17.5** |
+| The same, untimed (as `campy-live` logs it) | 15.3 | 17.7 |
+| The same, untimed, `--cuda-graphs` | 15.1 | 16.7 |
+| 3D (on its own thread, alongside the next set) | 1.2 | 2.4 |
+
+- **The models are 72% of the time, and the centered-instance model alone is 58%.** Moving data in and out (copy, upload, downloads) is about 1 ms. Making those steps faster can save a few tenths of a millisecond at most.
+- **The steps hardly overlap.** Timed one at a time, the stages add up to almost the same time as the untimed run (15.7 against 15.3 ms).
+- **CUDA graphs save about 0.2 ms here.** The GPU is busy computing, not waiting for work to be sent to it.
+- **Memory bandwidth isn't the limit, even on the high-resolution layers.** The GPU copies 213 GB/s in this test. The largest layers (the first convolutions, at 160×160 and 256×320) reached 66–172 GB/s, and most convolutions run at 12–39 TFLOP/s, close to the GPU's 34 TFLOP/s fp16 matrix speed. Activations this size mostly stay in the chip's cache.
+- **The biggest waste is the upsampling.** The models' bilinear upsampling layers took 3.7 ms of GPU time per set, a third of both models, and the casts between fp16 and fp32 around them took another 1.5 ms. Under fp16 autocast, PyTorch runs bilinear upsampling in fp32, with a kernel that handles each output pixel in a single thread and loops over all the crops and channels. On the smallest layers (5×5 and 10×10 pixels, 384–768 channels) that leaves the GPU almost idle: 1.45 and 0.98 ms, at 2–6 GB/s. Run in channels-last layout, those two layers gave identical keypoints, and the whole top-down step went from 13.8 to 12.4–12.6 ms per set. In the larger layers channels-last was slower, so it helps only the small ones.
+- **Shrinking the frames converts them to float first.** On the GPU, torchvision turns all three 1024×1280 frames from uint8 into float32, shrinks them with antialiasing, and rounds them back to uint8. The model then divides by 255 at 256×320. That costs 0.5 ms per set.
+
 ## Running the models faster: compiled engines (measured, not in campy-live yet)
 
 `campy-live` runs both models in plain PyTorch, in fp16. In PyTorch every layer of a network is its own small GPU program: a convolution writes its result to memory, and the step after it (adding the bias, the activation, the upsampling) reads it back. A *compiled engine* fuses those steps into one program and picks the fastest one for the exact image size, so far less goes to and from memory. CUDA graphs (`campy-live --cuda-graphs`) only cut the cost of *starting* each program; fusing is the other half.
@@ -64,7 +95,7 @@ On the EVO-X2 with 5 mice and 3 cameras, the benchmark p99s were 14.0 ms for the
 | RTX 2000 Ada (Pro Max Slim) | 10.9 / 11.2 ms | 10.2 / 10.2 ms | 7.4 / 7.9 ms | **4.5 / 4.7 ms** | – |
 
 - **On the EVO-X2, `torch.compile` makes the networks 2.6 times faster** (11.1 to 4.3 ms per set), with the same accuracy as fp16 PyTorch. Most of the gain is the upsampling step, which PyTorch runs slowly on this GPU (3.4 of 11.8 ms in fp32) and the compiler fuses into its neighbours. AMD's own engine, MIGraphX, gained nothing on this GPU.
-- **On NVIDIA, TensorRT is fastest**, then `torch.compile` (max-autotune mode), then CUDA graphs. On the Pro Max Slim's RTX 2000 Ada it saves 6.4 ms per set (10.9 to 4.5 ms), enough to bring the 5-mouse live pipeline (16.5 ms per set, too close to 60 fps) well under the frame time. On the RTX 6000 Ada the networks are already fast, so the gain in milliseconds is small.
+- **On NVIDIA, TensorRT is fastest**, then `torch.compile` (max-autotune mode), then CUDA graphs. On the Pro Max Slim's RTX 2000 Ada it saves 6.4 ms per set (10.9 to 4.5 ms), enough to bring the 5-mouse live pipeline (16.5 ms per set by default, too close to 60 fps) well under the frame time. `campy-live --fixed-crops --cuda-graphs` alone already brings it to 12.6 ms, with nothing skipped (live-tracking.md, "Fixed crops"). On the RTX 6000 Ada the networks are already fast, so the gain in milliseconds is small.
 - **int8 isn't worth it.** On the NVIDIA cards TensorRT int8 was at most 0.3 ms faster than fp16 and moved 15.6% of keypoints by more than 1 pixel (p99 4.4 px). MIGraphX's int8 gave exactly its fp16 output, so this GPU doesn't run it in int8 at all.
 - The timings don't depend on the weights: random weights of the same shapes gave the same times with CUDA graphs and the compiled engines (within 0.05 ms).
 

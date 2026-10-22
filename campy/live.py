@@ -357,6 +357,7 @@ class TopDown:
 			self.memoryFormat = "channels_last" if nvidia else "nchw"
 		self.nodes, self.nodeNames, self.edges = None, None, None
 		self.layer, self.text = self.Build(args)
+		ExactCropSize(self.layer)
 		self.graphs = []
 		self.fixed = None
 		if args.cuda_graphs and not self.device.startswith("cuda"):
@@ -426,6 +427,49 @@ class TopDown:
 			sum(len(g.graphs) for g in self.graphs),
 			"" if pooled is None else ", holding {:.0f} MB of GPU memory".format(pooled / 1e6),
 			"the same as without" if diff == 0 else "differs from without", diff)
+
+
+_exactCrop = threading.local() # the crop size, while one of campy-live's layers crops
+
+
+def ExactCropSize(layer):
+	"""
+	Has this sleap-nn TopDownLayer cut its crops at its crop size. sleap-nn
+	0.3.3's crop_bboxes takes the size from the first box's corners,
+	int(abs(right - left)) + 1, in float32: for some centroids (x 221.547989
+	with 192 px crops) right - left comes out 190.99998, not 191, and every
+	crop of the set is cut a pixel short (191, or 319 of 320), moving
+	keypoints by up to tens of pixels. So while this layer crops, the first
+	box's far corners are put half a pixel past the crop size's, a copy of
+	the boxes, and the size rounds right; the top-lefts, which place the
+	crops and the keypoints, are untouched. sleap-nn's other layers, and
+	its files, are left as they are.
+	"""
+	import torch
+	from sleap_nn.inference.layers import topdown
+	if not getattr(topdown.crop_bboxes, "campyExact", False):
+		original = topdown.crop_bboxes
+
+		def crop_bboxes(images, bboxes, sample_inds):
+			size = getattr(_exactCrop, "size", None)
+			if size is not None and len(bboxes):
+				bboxes = bboxes.clone()
+				bboxes[0, 3, 1] = bboxes[0, 0, 1] + (size[0] - 0.5)
+				bboxes[0, 1, 0] = bboxes[0, 0, 0] + (size[1] - 0.5)
+			return original(images, bboxes, sample_inds)
+
+		crop_bboxes.campyExact = True
+		topdown.crop_bboxes = crop_bboxes
+	stage2 = layer._run_stage_2
+
+	def RunStage2(*args, **kwargs):
+		_exactCrop.size = tuple(layer.crop_size)
+		try:
+			return stage2(*args, **kwargs)
+		finally:
+			_exactCrop.size = None
+
+	layer._run_stage_2 = RunStage2
 
 
 class CUDAGraphed:

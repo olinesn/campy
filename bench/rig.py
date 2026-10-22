@@ -57,7 +57,8 @@ the job's session, or descends from the job; on Windows, when it is in the
 job's Windows job object (everything the job starts is). A script can take
 the rig itself by sourcing rig_guard.sh (bash) or rig_guard.ps1 (PowerShell)
 first, which re-runs it under rig.py unless it is already part of the rig's
-current job.
+current job. Likewise rig.py run, inside the rig's current job, runs its command
+at once, in that job, instead of waiting for the rig its own job holds.
 
 The lock. On Linux, a flock on RIG_ROOT/.rig.lock (~/sleap-bench), which the
 kernel releases if rig.py dies, and RIG_BUSY saying who holds it. On Windows,
@@ -491,10 +492,11 @@ class Flock:
 			fcntl.flock(self.fd, fcntl.LOCK_EX)
 
 	def record(self, job, pid, note=""):
+		"""pid None: the job is about to start (its name is known before its pid)."""
 		tmp = INFO + ".tmp"
 		with open(tmp, "w") as f:
-			f.write("%s %s since %s rigpid=%d job=%s pid=%d%s\n" % (
-				self.owner, self.tag, time.strftime("%F %T"), os.getpid(), job, pid, note))
+			f.write("%s %s since %s rigpid=%d job=%s %s%s\n" % (self.owner, self.tag, time.strftime("%F %T"),
+				os.getpid(), job, "starting" if pid is None else "pid=%d" % pid, note))
 		os.replace(tmp, INFO)
 
 	def ours(self):
@@ -625,8 +627,8 @@ class FileLock:
 
 	def record(self, job=None, pid=None, note=""):
 		line = "%s %s since %s rigpid=%d rigstart=%d" % (self.owner, self.tag, self.since, os.getpid(), proc_start(os.getpid()) or 0)
-		if job:
-			line += " job=%s pid=%d pidstart=%d" % (job, pid, proc_start(pid) or 0)
+		if job:  # pid None: the job is about to start
+			line += " job=%s %s" % (job, "starting" if pid is None else "pid=%d pidstart=%d" % (pid, proc_start(pid) or 0))
 		def write():
 			with open(self.path, "w", encoding="utf-8") as f:
 				f.write(line + note + "\n")
@@ -787,10 +789,23 @@ def stop_job(proc, sig):
 		os.killpg(proc.pid, signal.SIGKILL)
 		proc.wait()
 
+def in_current_job(lock):
+	"""Whether this rig.py runs inside the job that holds the rig (its RIG_JOB is the lock's job)."""
+	job = os.environ.get("RIG_JOB")
+	if not job:
+		return False
+	state, text = lock.state()
+	return state == "held" and ("job=%s " % job) in (text + " ")
+
 def cmd_run(args):
 	if not args.cmd:
 		sys.exit("rig.py run: no command (rig.py run <owner> <tag> -- cmd ...)")
 	lock = make_lock()
+	if in_current_job(lock):
+		# The job holding the rig asked for it again: waiting would wait on itself forever
+		print("rig.py run: already inside the rig's job %s; running %s in it" % (os.environ["RIG_JOB"], args.tag), flush=True)
+		code = subprocess.call(args.cmd)
+		sys.exit(code if code >= 0 else 128 - code)
 	lock.acquire(args.owner, args.tag, args.no_wait)
 	try:
 		wait_quiet(Watch(), args)
@@ -798,6 +813,10 @@ def cmd_run(args):
 		log = logger(log_path(args, args.tag))
 		got = catch_signals()
 		env = dict(os.environ, RIG_JOB=job, RIG_OWNER=args.owner, RIG_TAG=args.tag)
+		# The lock names the job before the job starts: a guarded script (rig_guard.sh, .ps1) checks
+		# at once whether it runs in the rig's job, and if it looked before the lock named its job, it
+		# would re-run itself under rig.py and wait forever on the rig its own rig.py holds
+		lock.record(job, None)
 		proc = start_job(args.cmd, env, log)
 		lock.record(job, proc.pid)
 		log("rig held by %s for %s (job %s, pid %d): %s" % (args.owner, args.tag, job, proc.pid, " ".join(shlex.join(args.cmd).split())))

@@ -64,7 +64,7 @@ Normally `campy-live` runs the centroid model, waits for the GPU to say how many
 
 The animals found and the keypoints are sleap-nn's own. On the 5-mouse replay (3 cameras, 3,600 sets, the trained models below), `campy-live --fixed-crops` found the same animals as the default in every set, with identical centroids. In fp32 the keypoints were identical in every set too. In fp16 (the default precision), they were identical in every set where all 15 crops were real animals. In sets with fewer animals the instance model runs on a different number of crops, so fp16 rounds a little differently (99% of those sets within 3.3 px; a handful of keypoints jumped to a second, nearly equally bright spot).
 
-sleap-nn 0.3.3 itself sometimes cuts every crop of a set one pixel too narrow or too short (it works out the crop size from a rounded subtraction): in 1,065 of the 3,600 sets of that replay. That changed some keypoints by up to tens of pixels. `--fixed-crops` always cuts crops at their real size. So its keypoints differ from the default's in those sets, and the comparison above is against sleap-nn with only that size corrected. `bench/fixed_crops_check.py` runs this comparison on any recorded videos.
+sleap-nn 0.3.3 itself sometimes cuts every crop of a set one pixel too narrow or too short (it works out the crop size from a rounded subtraction): in 1,065 of the 3,600 sets of that replay. That changed some keypoints by up to tens of pixels. `--fixed-crops` always cuts crops at their real size, so the comparison above is against sleap-nn with only that size corrected. Since pull request 131 the default cuts them at their real size too (next section). `bench/fixed_crops_check.py` runs this comparison on any recorded videos.
 
 On the EVO-X2, 5 mice, 3 cameras, 60 fps, trained models (centroid at 0.25 scale with output stride 2, instance on 320-px crops at 0.5 scale), three replays of each:
 
@@ -87,7 +87,24 @@ On the Precision 7875's RTX 6000 Ada (Windows), the same models and mice, one 30
 
 Run alone, a set took 8.9 ms by default and 2.6 ms as one graph. On Windows, each wait for the GPU and each operation launched cost the CPU far more than the fast GPU needs to compute, so a set that runs as one graph with one wait is most of the gain. There, missing animals cost nothing measurable: 2.6 ms with 11 to 15 of 15. In fp16 the keypoints differed from sleap-nn's (crop size corrected) in only 5 of 3,600 sets. On the EVO-X2's AMD GPU the gain comes from removing the wait, not from the graph: run alone, a set took 14.3 ms by default, 12.8 ms with `--fixed-crops` and no graph, and 12.9 ms with the graph. `--fixed-crops` without `--cuda-graphs` skipped more sets live (8), because launching every operation without a pause kept the 3D thread waiting. Use the two together.
 
+On the Pro Max Slim's RTX 2000 Ada (Windows), the same models and mice, three 30 s replays of each (about 1,790 sets in each), GPU clock held as `campy-live` does by default:
+
+| | inference per set, p50 / p99 | frame to keypoints, p50 / p99 | frame to 3D, p50 / p99 | sets skipped | graph memory |
+|---|---|---|---|---|---|
+| default | 16.7–16.9 / 17.9–18.1 ms | 27.2–27.6 / 35.4–35.7 ms | 28.4–28.8 / 36.8–37.0 ms | 97–109 (5.4–6.1%) | – |
+| `--cuda-graphs` | 16.2–16.3 / 17.0–17.2 ms | 26.3–26.8 / 34.8–34.9 ms | 27.4–27.9 / 36.0–36.3 ms | 42–49 | 531 MB (16 graphs) |
+| `--fixed-crops` | 13.8–13.9 / 15.0–15.2 ms | 15.9–16.0 / 18.2–20.0 ms | 16.9 / 19.3–21.5 ms | 0–1 | – |
+| `--fixed-crops --cuda-graphs` | 12.6 / 12.8 ms | 14.8 / 15.2–15.3 ms | 15.7 / 16.4 ms | 0 | 214 MB (1 graph) |
+
+So 5 mice at 60 fps now fit on the Pro Max Slim with these models, with 4 ms to spare. By default each set took a little longer than the 16.7 ms between frames, so about one set in 17 was skipped and each 3D pose came a whole frame late. As one graph, a set takes 12.6 ms, nothing is skipped, and each 3D pose is ready 15.7 ms after its frames (p99 16.4 ms), a little sooner than on the EVO-X2. Run alone (`bench/fixed_crops_check.py`, 3,600 sets), a set took 18.2 ms by default, 14.4 ms with `--fixed-crops` and no graph, and 12.6 ms as one graph. Unlike on the EVO-X2, fewer animals didn't make the default faster: with 11 to 15 of 15 animals in view, the graph took 12.6 ms every time and the default 15.3–18.2 ms. The animals found and the centroids were the same as the default's in every set. With the crop size corrected, the fp16 keypoints were identical in every set with 14 or 15 animals and differed (by up to 3.3 px) in 24 sets with 11 or 13.
+
 The catch, on a GPU that is itself the limit, like the EVO-X2's: every missing animal still costs a crop's worth of instance model. With 14 of 15 animals in view a set took 12.9 ms against the default's 13.7, about the same with 13, and with 12 the default was faster (12.2 against 12.9 ms). The benchmark puts 15 crops at 13.2 ms against 9.6 ms for 9, so with only 3 animals per frame the default would be about 3.5 ms faster. Set `--max-instances` to the number of animals you really have; then `--fixed-crops` pays.
+
+## Crops cut at their real size (a sleap-nn bug, worked around)
+
+The top-down model finds each animal's center, cuts a square crop around it (192 px for the default untrained model, 320 px for the trained 5-mouse model), and finds the body parts in that crop. sleap-nn 0.3.3 works out how big to cut the crops from the first animal's box, with a small rounding error: for some positions of that animal it cuts every crop of the set one pixel too narrow or too short, 319 px instead of 320. The model then sees each animal slightly shifted, and some body parts move by a few pixels, now and then by much more. In the 5-mouse replay above, almost a third of the sets were affected.
+
+`campy-live` now corrects this for its own models, without changing sleap-nn's installed files (`ExactCropSize` in `campy/live.py`): the crops are always cut at the model's crop size, in the same place as before. On the EVO-X2, replaying 60 s of 5 mice from 3 cameras with the trained models (3 runs each, alternating), 1,059 of the 3,588 sets came out different from before. In those sets, compared with offline SLEAP, the median body-part error went from 3.92 to 3.79 px and the share within 5 px from 62.9% to 64.1%; over all sets the 3D median went from 4.3 to 4.2 mm, and identities were kept as before. The time per set didn't change (inference p50 14.9–15.2 ms before, 15.1–15.2 ms after). `--fixed-crops` cuts its crops at the real size too. Once a sleap-nn version fixes the bug, the first test in `tests/test_live_exact_crops.py` fails, as a reminder that the workaround can go.
 
 ## Opening a tracked recording in LUC3D
 

@@ -3,7 +3,7 @@
 A temporary file stands in for the GPU (RIG_EXTRA), so no device is needed; Linux only (/proc).
 """
 
-import os, re, shutil, subprocess, sys, time
+import os, re, shlex, shutil, subprocess, sys, time
 
 import pytest
 
@@ -157,3 +157,69 @@ def test_a_desktop_is_noted_not_waited_for_and_one_starting_mid_run_is_caught(ri
 	assert run.wait(30) == 0
 	log = rig.log("desk2")
 	assert "DESKTOP started: %d" % late.pid in log and "RIG_CONTAMINATED" in last(log), log
+
+
+# rig.py, slowed down between starting the job and going on: as when the machine is busy and
+# rig.py gets its next time slice only after the job has run its first lines
+SLOW_START = """import sys, time
+sys.path.insert(0, sys.argv.pop(1))
+import rig
+start_job = rig.start_job
+def slow_start_job(*args):
+	proc = start_job(*args)
+	time.sleep(1.0)
+	return proc
+rig.start_job = slow_start_job
+rig.main()
+"""
+
+
+def test_queued_guarded_jobs_each_start_when_rig_py_is_slow(rig, tmp_path):
+	# Several guarded scripts wait for the rig while another job holds it. Each, once it has the
+	# rig, must run, even when it checks the lock before its rig.py has gone on past starting it:
+	# the lock has to name its job already, or the script re-runs itself under rig.py and waits
+	# forever on the rig its own rig.py holds
+	root = rig.root
+	for f in ("rig.py", "rig_guard.sh"):
+		(root / f).write_text(open(os.path.join(BENCH, f)).read())
+	slow = tmp_path / "slow_rig.py"
+	slow.write_text(SLOW_START)
+	job = tmp_path / "job.sh"
+	job.write_text('. "$RIG_ROOT/rig_guard.sh" "$@"\necho "ran $1 $RIG_JOB"\n')
+	holder = rig.popen(RIG, "run", "holder", "first", "--", "sleep", "2")
+	time.sleep(1.0)
+	waiters = []
+	try:
+		for i in range(3):
+			waiters.append(subprocess.Popen([sys.executable, str(slow), str(root), "run", "waiter", "w%d" % i,
+				"--", "bash", str(job), "w%d" % i], env=rig.env, cwd=str(tmp_path),
+				stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
+			time.sleep(0.2)
+		assert holder.wait(30) == 0
+		for i, w in enumerate(waiters):
+			try:
+				out = w.communicate(timeout=30)[0]
+			except subprocess.TimeoutExpired:
+				pytest.fail("w%d never ran its job: %s" % (i, (root / "RIG_BUSY").read_text()))
+			assert w.returncode == 0 and "ran w%d w%d-%d" % (i, i, w.pid) in out, out
+			assert "waiting" not in out.split("rig held by", 1)[1], out
+			assert last(rig.log("w%d" % i)).startswith("RIG_CLEAN"), rig.log("w%d" % i)
+	finally:
+		for w in waiters:
+			if w.poll() is None:
+				w.terminate()
+				w.communicate(timeout=60)
+		holder.wait(30)
+	assert (root / "RIG_BUSY").read_text() == ""
+
+
+def test_run_inside_the_rigs_job_runs_at_once(rig):
+	# rig.py run called by the job that holds the rig runs its command in that job, without waiting
+	inner = "%s %s run tester inner -- %s -c \"import os; print('inner', os.environ['RIG_JOB'])\"" % (
+		shlex.quote(sys.executable), shlex.quote(RIG), shlex.quote(sys.executable))
+	r = rig("run", "tester", "outer", "--", "bash", "-c", 'echo "outer $RIG_JOB"; ' + inner)
+	assert r.returncode == 0, r.stdout + r.stderr
+	jobs = [l.split()[1] for l in r.stdout.splitlines() if l.startswith(("outer ", "inner "))]
+	assert len(jobs) == 2 and jobs[0] == jobs[1] != "", r.stdout
+	assert "already inside the rig's job" in r.stdout, r.stdout
+	assert last(rig.log("outer")).startswith("RIG_CLEAN"), rig.log("outer")
