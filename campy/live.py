@@ -123,6 +123,19 @@ when it made the graphs (0 is the same). Each count of animals found is
 another shape, so another graph: a model's graphs share one pool of GPU
 memory (CUDAGraphed), and campy-live says how much they hold.
 
+--fixed-crops (FixedCrops) crops --max-instances animals in every frame,
+the missing ones padded and their keypoints dropped, and finds the peaks
+with shapes that never depend on the frames. So the CPU launches a whole
+set without waiting for the GPU to say how many animals it found, the
+results come back in one copy, and with --cuda-graphs the whole set, both
+models and everything around them, is one graph. The animals found and the
+keypoints are sleap-nn's own (to the last bit in fp32, as long as sleap-nn
+cuts its crops at their size: sleap-nn 0.3.3 cuts some sets' crops a pixel
+short, FixedCrops never does; in fp16 the instance model rounds differently
+with another batch size, so sets with fewer animals than --max-instances can
+differ). It pays when every frame has about --max-instances animals: each
+missing one still costs a crop's worth of instance model.
+
 With --results-feed on (the default), each row also goes into shared memory,
 campy-live-results (campy/liveresults.py), as it is logged: campy-live-view
 (campy/liveview.py) shows them on the cameras' frames.
