@@ -122,7 +122,9 @@ class CameraProcesses:
 	name and exit code, while the other cameras go on recording.
 	"""
 
-	def __init__(self, ctx, target, params, readyQueue, log=Say):
+	def __init__(self, ctx, target, params, readyQueue, log=Say, start=None):
+		# start: given to each target too, after connection (campy.RunCamera:
+		# the emulated cameras' shared start, cameras/emu.py)
 		self.names = [params["cameraNames"][n] for n in range(params["numCams"])]
 		self.log = log
 		self.readyQueue = readyQueue # kept while they start: they unpickle it as they do
@@ -138,7 +140,8 @@ class CameraProcesses:
 			receive, send = ctx.Pipe(duplex=False)
 			# Daemon, as the pool's workers were: if campy's main process stops
 			# with an error, they stop with it, rather than keep it waiting
-			process = ctx.Process(target=target, args=(n, readyQueue, send), name=self.names[n], daemon=True)
+			args = (n, readyQueue, send) + (() if start is None else (start,))
+			process = ctx.Process(target=target, args=args, name=self.names[n], daemon=True)
 			process.start()
 			send.close() # the camera process has its own copy
 			self.processes.append(process)
