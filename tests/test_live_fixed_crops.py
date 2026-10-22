@@ -38,7 +38,10 @@ class Sharp(torch.nn.Module):
 		self.nodes, self.stride = nodes, stride
 
 	def forward(self, img):
-		img = img.squeeze(1).float() / 255
+		return self.Maps(img.squeeze(1).float() / 255)
+
+	def Maps(self, img):
+		# the confidence maps of a normalized (N, C, H, W) batch
 		n, _, height, width = img.shape
 		h, w = height // self.stride, width // self.stride
 		m = img.mean(dim=(1, 2, 3))[:, None] - 0.5
@@ -54,10 +57,10 @@ def Mode(value):
 	return value if isinstance(value, str) else "on" if value else "off"
 
 
-def Model(device, fixed=True, graphs=False, precision="fp32", strict=False):
+def Model(device, fixed=True, graphs=False, precision="fp32", strict=False, engine="eager"):
 	args = live.ParseArgs(["--model", "random", "--device", device, "--frame-shape", SHAPE, "--precision", precision,
-		"--max-instances", str(MOST), "--animals", str(MOST), "--nodes", "6", "--fixed-crops", Mode(fixed),
-		"--cuda-graphs", Mode(graphs)] + (["--strict-peaks"] if strict else []))
+		"--max-instances", str(MOST), "--animals", str(MOST), "--nodes", "6", "--engine", engine,
+		"--fixed-crops", Mode(fixed), "--cuda-graphs", Mode(graphs)] + (["--strict-peaks"] if strict else []))
 	model = live.MODELS["random"](args, FRAMES, live.FrameShape(SHAPE))
 	backend = model.layer.centered_instance_layer.backend
 	backend.model = Sharp(6, model.layer.centered_instance_layer.output_stride).to(device)
@@ -85,39 +88,10 @@ def SetCounts(model, counts):
 	blobs.copy_(new.to(blobs.device))
 
 
-def ExactCropSize(original):
-	"""
-	sleap-nn's crop_bboxes, with its crop size made exact. It takes the size
-	from the first box's corners, int(abs(bottom - top)) + 1, in float32: for
-	some centroids (x 221.547989 with 192 px crops) right - left comes out
-	190.99998, not 191, and every crop of the set is cut a pixel short
-	(test_sleap_crop_size_rounding). --fixed-crops always cuts the crop size.
-	Here the first box's far corners are moved half a pixel further, so the
-	size rounds right; the top-lefts, which place the crops, are untouched.
-	"""
-	def crop_bboxes(images, bboxes, sample_inds):
-		if len(bboxes):
-			bboxes = bboxes.clone()
-			bboxes[0, 3, 1] = bboxes[0, 0, 1] + (torch.round(bboxes[0, 3, 1] - bboxes[0, 0, 1]) + 0.5)
-			bboxes[0, 1, 0] = bboxes[0, 0, 0] + (torch.round(bboxes[0, 1, 0] - bboxes[0, 0, 0]) + 0.5)
-		return original(images, bboxes, sample_inds)
-	return crop_bboxes
-
-
-def test_sleap_crop_size_rounding():
-	# Why the reference needs ExactCropSize: sleap-nn's own crop size, for a
-	# centroid --fixed-crops crops at the right size
-	from sleap_nn.inference.ops.crops import crop_bboxes, make_centered_bboxes
-	image = torch.zeros(1, 1, 256, 320, dtype=torch.uint8)
-	boxes = make_centered_bboxes(torch.tensor([[221.54798889160156, 77.36744689941406]]), 192, 192)
-	assert tuple(crop_bboxes(image, boxes, torch.tensor([0])).shape[-2:]) == (192, 191)
-	assert tuple(ExactCropSize(crop_bboxes)(image, boxes, torch.tensor([0])).shape[-2:]) == (192, 192)
-
-
 def Reference(model, frames):
-	# sleap-nn's TopDownLayer, as campy-live runs it without --fixed-crops: with
-	# its crops cut at their size since pull request 131 (live.ExactCropSize), so
-	# no correction here (a second one, on top, cut 321 px crops)
+	# sleap-nn's TopDownLayer, as campy-live runs it without --fixed-crops
+	# (its crops cut at their real size by live.ExactCropSize, as
+	# --fixed-crops cuts them; tests/test_live_exact_crops.py checks that)
 	fixed, model.fixed = model.fixed, None
 	try:
 		return model.Predict(frames)
@@ -216,6 +190,119 @@ def test_results_come_back_in_one_copy():
 	assert names.count("aten::copy_") == 1, names
 	assert not {"aten::item", "aten::_local_scalar_dense", "aten::nonzero"} & set(names), names
 	assert model.fixed.host.is_pinned()
+
+
+import importlib.util
+needs_compile = pytest.mark.skipif(not GPU or not importlib.util.find_spec("triton"),
+	reason="needs a GPU and Triton (torch.compile)")
+needs_tensorrt = pytest.mark.skipif(not GPU or bool(getattr(torch.version, "hip", None)) or
+	not importlib.util.find_spec("tensorrt") or not importlib.util.find_spec("onnx"),
+	reason="needs an NVIDIA GPU, tensorrt and onnx")
+ENGINE_TOL = 1e-3 # px: a compiled engine rounds the networks' sums its own way
+
+
+def Near(a, b, counts, tol=ENGINE_TOL):
+	# a: --fixed-crops with a compiled engine, b: sleap-nn's. The same animals,
+	# keypoints and centroids within tol
+	assert list(Found(a)) == [min(k, MOST) for k in counts]
+	assert list(Found(b)) == list(Found(a))
+	for key in ("centroids", "keypoints") if Found(b).sum() else ("centroids",): # none: sleap-nn guesses the nodes
+		assert a[key].shape == b[key].shape, key
+		assert np.array_equal(np.isnan(a[key]), np.isnan(b[key])), (counts, key)
+		if np.isfinite(a[key]).any():
+			assert float(np.nanmax(np.abs(a[key] - b[key]))) <= tol, (counts, key)
+
+
+@needs_compile
+def test_compiled_engine_in_the_graph():
+	# --engine compile: both networks compiled, recorded in the set's one
+	# graph; replays equal the same steps run eagerly, and match sleap-nn's layer
+	model, host = Model("cuda", graphs=True, engine="compile")
+	model.Warm(host.tensor)
+	fixed = model.fixed
+	assert fixed.graph and fixed.max_abs_diff == 0
+	assert sorted(e.kind for e in fixed.engines.values()) == ["compile", "compile"]
+	frames = model.Upload(host.tensor)
+	for counts in SETS:
+		SetCounts(model, counts) # the centroid model's buffer, read by the compiled kernels each run
+		graphed = fixed.Run(frames).clone()
+		with torch.inference_mode():
+			eager = fixed.Pipeline(frames)
+		assert live.MaxAbsDiff(graphed, eager) == 0, counts
+		Near(model.Predict(frames), Reference(model, model.Upload(host.tensor)), counts)
+	assert "torch.compile" in model.DescribeGraphs()
+
+
+class Heads(torch.nn.Module):
+	# sleap-nn's Model: a normalized batch in, a dict of heads out
+	def __init__(self, name, maps):
+		super().__init__()
+		self.name, self.maps = name, maps
+
+	def forward(self, x):
+		return {self.name: self.maps(x)}
+
+
+class Lightning(torch.nn.Module):
+	# sleap-nn's Lightning module: .model, and a forward that normalizes first
+	def __init__(self, name, maps):
+		super().__init__()
+		self.name, self.model = name, Heads(name, maps)
+
+	def forward(self, img):
+		return self.model(img.squeeze(1).float() / 255)[self.name]
+
+
+class MapsOf(torch.nn.Module):
+	# Sharp's confidence maps of a normalized batch
+	def __init__(self, sharp):
+		super().__init__()
+		self.sharp = sharp
+
+	def forward(self, x):
+		return self.sharp.Maps(x)
+
+
+class Blobs(torch.nn.Module):
+	# a centroid network whose output is fixed peaks (plus a trace of its input)
+	def __init__(self, blobs):
+		super().__init__()
+		self.register_buffer("blobs", blobs)
+
+	def forward(self, x):
+		return self.blobs + 1e-6 * x.mean()
+
+
+@needs_tensorrt
+@pytest.mark.parametrize("graphs", [False, True])
+def test_tensorrt_engine(graphs, tmp_path):
+	# --engine tensorrt on sleap-nn-shaped models: built, cached, and the
+	# same animals and keypoints as sleap-nn's layer
+	counts = [2, 3]
+	model, host = Model("cuda", graphs=graphs, engine="tensorrt")
+	model.fixed.cache = str(tmp_path)
+	SetCounts(model, counts)
+	c, ci = model.layer.centroid_layer.backend, model.layer.centered_instance_layer.backend
+	c.model = Lightning("CentroidConfmapsHead", Blobs(c.model.blobs.clone())).cuda()
+	ci.model = Lightning("CenteredInstanceConfmapsHead", MapsOf(ci.model)).cuda()
+	model.Warm(host.tensor)
+	assert sorted(e.kind for e in model.fixed.engines.values()) == ["tensorrt", "tensorrt"]
+	assert len(list(tmp_path.glob("*.plan"))) == 2
+	frames = model.Upload(host.tensor)
+	Near(model.Predict(frames), Reference(model, model.Upload(host.tensor)), counts)
+	assert "TensorRT" in model.DescribeGraphs()
+
+
+def test_engine_options():
+	assert live.ParseArgs([]).engine == "eager"
+	with pytest.raises(SystemExit):
+		Model("cpu", engine="compile") # CUDA or ROCm only
+	with pytest.raises(SystemExit):
+		Model("cpu", fixed=False, engine="auto") # --fixed-crops only
+	if GPU and getattr(torch.version, "hip", None):
+		with pytest.raises(SystemExit):
+			live.FixedEngine.Choose("tensorrt", "cuda")
+		assert live.FixedEngine.Choose("auto", "cuda") == "compile"
 
 
 def test_options():
