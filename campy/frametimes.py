@@ -3,7 +3,8 @@ Frame times, written to disk while the recording runs.
 
 Each camera's folder gets frametimes.npy (2 x frames: campy's frame number,
 and the camera's timestamp in seconds from its first frame) and hosttimes.npy
-(when each frame reached the computer, time.monotonic_ns). They used to be
+(when each frame reached the computer, in ns on campy's host clock,
+campy/clock.py: one clock in every process). They used to be
 kept in Python lists and saved when the recording ended: about 110 bytes of
 memory per frame (780 MB per camera per day at 80 fps), and nothing at all if
 campy stopped without closing the camera. Now each file grows as frames

@@ -10,8 +10,8 @@ again. Sets that came while it was busy are skipped, and counted, never
 queued, so it is never further behind than one set.
 
 It runs in its own Python environment, the one with torch and sleap-nn: it
-imports only numpy and this package's livefeed, liveresults, frametimes and
-children, which need nothing else, so campy's camera drivers need not be installed there. In that
+imports only numpy and this package's livefeed, liveresults, frametimes, clock
+and children, which need nothing else, so campy's camera drivers need not be installed there. In that
 environment, either install campy without its dependencies
 
     pip install --no-deps -e <campy folder>
@@ -59,12 +59,12 @@ Output
 also while campy-live runs), and <out>.json, the summary. Fields of each row:
 
   frame          the set's frame number
-  host_ns        per camera: when campy got the frame (time.monotonic_ns,
-                 as hosttimes.npy)
+  host_ns        per camera: when campy got the frame (as hosttimes.npy, on
+                 campy's host clock, campy/clock.py)
   written_ns     per camera: when it was in shared memory (time.perf_counter_ns)
   stamp          per camera: the camera's timestamp, seconds
-  read_ns        when campy-live had copied the set (time.monotonic_ns)
-  done_ns        when its keypoints were back on the host (time.monotonic_ns)
+  read_ns        when campy-live had copied the set (host clock)
+  done_ns        when its keypoints were back on the host (host clock)
   inference_ns   upload, model and results back, timed with time.perf_counter_ns
   skipped        sets skipped just before this one
   found          per camera: animals found
@@ -75,7 +75,7 @@ also while campy-live runs), and <out>.json, the summary. Fields of each row:
 
 and with --calibration:
 
-  pose3d_ns      when the 3D poses were made (time.monotonic_ns)
+  pose3d_ns      when the 3D poses were made (host clock)
   points3d       per animal (identity), per node: x, y, z in the calibration's
                  units (mm); NaN when fewer than 2 cameras saw it
   members        per animal, per camera: which of that camera's animals it
@@ -128,18 +128,20 @@ campy-live-results (campy/liveresults.py), as it is logged: campy-live-view
 (campy/liveview.py) shows them on the cameras' frames.
 
 Latency, from a frame reaching the computer to its keypoints, is done_ns
-minus host_ns (on Linux and macOS, one clock in every process). On Windows
-before Python 3.13 that clock moves in steps of 15.6 ms, so latencies from
-host times are that coarse there; the summary's inference and 3D times are
-timed with time.perf_counter_ns, precise everywhere. The summary
-gives it from the set's last frame (the earliest the set could be read) and
-its first.
+minus host_ns, both on campy's host clock (campy/clock.py), one clock in
+every process. That is time.monotonic_ns, except on Windows before Python
+3.13, where time.monotonic moves in steps of 15.6 ms and the host clock is
+time.perf_counter_ns instead: precise there too. The summary's inference and
+3D times are durations, timed with time.perf_counter_ns. The summary
+gives latency from the set's last frame (the earliest the set could be read)
+and its first.
 """
 
 import argparse, json, math, os, queue, signal, sys, threading, time
 from datetime import datetime
 import numpy as np
 from campy import children, cpus, livefeed, liveresults
+from campy import clock as hostclock # not clock: Run's clock is the GPU's
 from campy.frametimes import GrowingNpy, Writer
 
 # The random models: what bench/sleap_infer_bench.py's default pair is
@@ -1069,7 +1071,7 @@ class Pose3DThread:
 				# Which animal is which across the cameras, and its 3D pose
 				start = time.perf_counter_ns()
 				poses = self.tracker.Update(row["keypoints"], row["peak_vals"], int(row["frame"]))
-				pose3d_ns, pose3d_pc = time.monotonic_ns(), time.perf_counter_ns()
+				pose3d_ns, pose3d_pc = hostclock.HostNs(), time.perf_counter_ns()
 				self.log.Add(row, frames, poses, pose3d_ns, durations=(inference, pose3d_pc - start))
 			except BaseException as e:
 				self.error = e
@@ -1155,8 +1157,8 @@ class Log:
 
 	def Add(self, row, frames, poses=None, pose3d_ns=None, durations=None):
 		# The row, with its 3D poses (pose3d.Poses) when they were made.
-		# durations: (inference, 3D) in ns, timed with time.perf_counter_ns:
-		# on Windows before Python 3.13, time.monotonic_ns moves in 15.6 ms steps
+		# durations: (inference, 3D) in ns, timed with time.perf_counter_ns;
+		# the row's *_ns times are on the host clock (campy/clock.py)
 		if poses is not None:
 			row["pose3d_ns"] = pose3d_ns
 			row["points3d"] = poses.points3d
@@ -1298,9 +1300,9 @@ def Run(args):
 			frames, skipped = got
 			if clock is not None:
 				clock.Busy()
-			read_ns, read_pc = time.monotonic_ns(), time.perf_counter_ns()
+			read_ns, read_pc = hostclock.HostNs(), time.perf_counter_ns()
 			result = model.Predict(model.Upload(host.tensor)) # ends with the results on the host
-			done_ns, done_pc = time.monotonic_ns(), time.perf_counter_ns()
+			done_ns, done_pc = hostclock.HostNs(), time.perf_counter_ns()
 			row = log.Row(frames, skipped, read_ns, done_ns, result, done_pc - read_pc)
 			if worker is None:
 				log.Add(row, frames, durations=(done_pc - read_pc, None))

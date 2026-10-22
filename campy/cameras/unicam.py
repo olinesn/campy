@@ -8,7 +8,7 @@ import multiprocessing.connection
 import numpy as np
 from collections import deque
 from scipy import io as sio
-from campy import frametimes, newfiles, livefeed
+from campy import clock, frametimes, newfiles, livefeed
 from campy.utils.utils import Say, ExitCodeText, ErrorText
 
 
@@ -554,7 +554,7 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 				time.sleep(0.001)
 				continue
 
-			hostTime = time.monotonic_ns()
+			hostTime = clock.HostNs() # hosttimes.npy's clock, the same in every process
 			watch.Frame(frameNumber + 1)
 			try:
 				img = cam.GetImageArray(grabResult)

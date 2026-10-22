@@ -205,7 +205,7 @@ def test_pulses_in_order_are_not_rewritten(tmp_path, monkeypatch):
 def test_memory_holds_about_a_second_of_rows(tmp_path, monkeypatch):
 	# Ten minutes at 120 fps, with a pulse every 1/60 s, on a made-up clock
 	now = [0]
-	monkeypatch.setattr(ratcam, "time", types.SimpleNamespace(monotonic_ns=lambda: now[0]))
+	monkeypatch.setattr(ratcam.clock, "HostNs", lambda: now[0])
 	logs = ratcam.Logs(str(tmp_path))
 	logs.Open()
 	tracemalloc.start()
