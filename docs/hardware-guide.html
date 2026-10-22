@@ -519,7 +519,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     <li><b>On NVIDIA, TensorRT is fastest, then <code>torch.compile</code> (max-autotune mode), then CUDA graphs.</b> <code>torch.compile</code> on Windows needs triton-windows. TensorRT needs one engine per crop count, built in 9–25 s each.</li>
     <li><b>int8 isn't worth it.</b> TensorRT int8, calibrated on 100 sets of real frames, was no faster than its fp16 on the RTX 6000 Ada and only slightly faster on the RTX 4000 Ada (the networks are too small for int8 to pay much), and it moved 15.6% of keypoints by more than 1 pixel, with p99 4.4 px. On the RTX 2000 Ada TensorRT couldn't build the int8 centered-instance engine (a CUDA driver memory error, every time).</li>
     <li><b>Accuracy, fp16 engines.</b> Against full-precision PyTorch on 500 sets (89,000 keypoints), every fp16 engine moved the keypoints by 0.01 px or less at p99. A few (0.5–1%) jumped further, between two nearly equal spots on the confidence map, as fp16 PyTorch does today. TensorRT fp16 moved them a little more (about 1% over 1 px; p99 0.02–2.8 px depending on the card), because it runs the whole network in fp16.</li>
-    <li><b>fp16 drops 0.6–0.9% of centroids, in PyTorch too.</b> sleap-nn keeps a centroid only where a pixel is strictly higher than all 8 of its neighbours. In fp16 the two top pixels sometimes round to the same value, and that mouse then has no centroid in that frame: 45–64 of 7,466, always with exactly two tied pixels. Full precision never did this. A peak finder that accepts ties would fix it.</li>
+    <li><b>fp16 dropped 0.6–0.9% of centroids, in PyTorch too; <code>campy-live</code> now keeps them.</b> sleap-nn keeps a centroid only where a pixel is strictly higher than all 8 of its neighbours. In fp16 the two top pixels sometimes round to the same value, and that mouse then had no centroid in that frame: 45–64 of 7,466, always with exactly two tied pixels. Full precision never did this. Since pull request 132, <code>campy-live</code> keeps the first of two tied pixels instead (<code>--strict-peaks</code> for sleap-nn's own). On the whole 5-mouse replay (53,652 centroids), fp16 lost 397 with sleap-nn's peak finder and 0 with campy's on the EVO-X2, and 359 and 1 on the RTX 6000 Ada (that one: six peaks for five places, the last two 0.0002 apart, ranked the other way). Mice found either way kept bit-identical keypoints; fp32 is unchanged.</li>
     <li><b>Weights don't change the timing.</b> The same networks with random weights took the same time with CUDA graphs and the compiled engines (within 0.05 ms). Plain PyTorch, which the CPU limits on these GPUs, varied by up to 0.7 ms from run to run either way.</li>
   </ul>
 </section>
@@ -549,7 +549,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 
 <footer>
   <p>Measured 18–22 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
-  <p class="meta">Version 32 · updated 22 October 2026 · reflects campy changes through pull request 134 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p class="meta">Version 33 · updated 22 October 2026 · reflects campy changes through pull request 134 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 
