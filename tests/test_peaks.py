@@ -80,6 +80,7 @@ def SleapPeaks():
 @pytest.fixture
 def sleap():
 	ops = SleapPeaks()
+	peaks.UseTiedPeaks(False) # sleap-nn's own, whatever an earlier test left
 	yield ops
 	peaks.UseTiedPeaks(False)
 

@@ -103,7 +103,7 @@ On the EVO-X2, with the settings above, 3 cameras replaying 5 mice at 60 fps (3,
 
 **fp16 used to lose a few animals; `campy-live` now keeps them.** sleap-nn's centroid peak finder keeps a pixel only if it is strictly higher than all 8 of its neighbours. In fp16 the two top pixels of a peak sometimes round to exactly the same value, and then that animal had no centroid in that frame. This happened to 0.6–0.9% of centroids in every fp16 engine, PyTorch included (`campy-live`'s default), always with exactly two tied pixels per lost centroid, and never in fp32.
 
-Since pull request 132, `campy-live` breaks such a tie by position: of two equal top pixels it keeps the first in reading order (`campy/peaks.py`), so the peak is found once. A peak without a tie is found exactly as before. `--strict-peaks` brings back sleap-nn's own peak finder. Measured with `bench/tied_peaks_check.py` on the 5-mouse replay (3 cameras, all 3,600 sets, 53,652 centroids in fp32):
+Since pull request 132, `campy-live` breaks such a tie by position: of two equal top pixels it keeps the first in reading order (`campy/peaks.py`), so the peak is found once. A peak without a tie is found exactly as before. `--fixed-crops` finds its peaks the same way. `--strict-peaks` brings back sleap-nn's own peak finder, in both. Measured with `bench/tied_peaks_check.py` on the 5-mouse replay (3 cameras, all 3,600 sets, 53,652 centroids in fp32):
 
 | | EVO-X2 | RTX 6000 Ada |
 |---|---|---|

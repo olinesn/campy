@@ -50,10 +50,10 @@ class Sharp(torch.nn.Module):
 		return torch.exp(-((xx - cx[..., None, None]) ** 2 + (yy - cy[..., None, None]) ** 2) / 4)
 
 
-def Model(device, fixed=True, graphs=False, precision="fp32"):
+def Model(device, fixed=True, graphs=False, precision="fp32", strict=False):
 	args = live.ParseArgs(["--model", "random", "--device", device, "--frame-shape", SHAPE, "--precision", precision,
 		"--max-instances", str(MOST), "--animals", str(MOST), "--nodes", "6"] + (["--fixed-crops"] if fixed else []) +
-		(["--cuda-graphs"] if graphs else []))
+		(["--cuda-graphs"] if graphs else []) + (["--strict-peaks"] if strict else []))
 	model = live.MODELS["random"](args, FRAMES, live.FrameShape(SHAPE))
 	backend = model.layer.centered_instance_layer.backend
 	backend.model = Sharp(6, model.layer.centered_instance_layer.output_stride).to(device)
@@ -224,3 +224,33 @@ def test_options():
 	assert not live.ParseArgs([]).fixed_crops
 	with pytest.raises(SystemExit):
 		Model("cpu", graphs=True)
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_tied_centroid_tops(strict):
+	# Each frame's one animal has a top of two equal pixels (as fp16 rounds
+	# about 0.7% of them): campy-live keeps it once, --fixed-crops too, the
+	# same as the layer; --strict-peaks loses it, as sleap-nn does
+	from campy import peaks
+	model, host = Model("cpu", strict=strict)
+	assert model.fixed.tiedPeaks == (not strict) == peaks.TiedPeaksInUse()
+	net = model.layer.centroid_layer.backend.model
+	blobs = net.blobs
+	_, _, h, w = blobs.shape
+
+	class Flat(torch.nn.Module): # no random model output under the blobs, so the two pixels stay equal
+		def forward(self, img):
+			return torch.zeros((img.shape[0], 1, h, w), device=img.device)
+	net.inner = Flat()
+	yy, xx = torch.meshgrid(torch.arange(h, dtype=torch.float32), torch.arange(w, dtype=torch.float32), indexing="ij")
+	new = torch.zeros(blobs.shape)
+	for f in range(FRAMES):
+		cx, cy = w // 2 + 0.5 + 3 * f, h // 2 # half way between two pixels
+		new[f, 0] = torch.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / 8)
+		assert new[f, 0, cy, int(cx)] == new[f, 0, cy, int(cx) + 1]
+	blobs.copy_(new)
+	frames = model.Upload(host.tensor)
+	a, b = model.Predict(frames), Reference(model, frames)
+	assert list(Found(a)) == list(Found(b)) == [0 if strict else 1] * FRAMES
+	if not strict:
+		Compare(a, b, [1] * FRAMES)

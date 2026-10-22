@@ -355,14 +355,16 @@ class TopDown:
 		# A centroid whose top is two equal pixels (fp16 rounding) is kept
 		# once, not dropped as sleap-nn does (campy/peaks.py)
 		from campy import peaks
-		self.tiedPeaks = not getattr(args, "strict_peaks", False) and peaks.UseTiedPeaks()
+		tied = not getattr(args, "strict_peaks", False)
+		self.tiedPeaks = peaks.UseTiedPeaks(tied) and tied
 		self.layer, self.text = self.Build(args)
 		self.graphs = []
 		self.fixed = None
 		if args.cuda_graphs and not self.device.startswith("cuda"):
 			raise SystemExit("--cuda-graphs: CUDA (or ROCm) only, not {}".format(self.device))
 		if getattr(args, "fixed_crops", False):
-			self.fixed = FixedCrops(self.layer, n_frames, self.device, args.max_instances, graph=args.cuda_graphs)
+			self.fixed = FixedCrops(self.layer, n_frames, self.device, args.max_instances, graph=args.cuda_graphs,
+				tiedPeaks=self.tiedPeaks)
 		elif args.cuda_graphs:
 			for backend in (self.layer.centroid_layer.backend, self.layer.centered_instance_layer.backend):
 				graphed = CUDAGraphed(backend.model, backend.use_fp16)
@@ -540,7 +542,8 @@ class FixedCrops:
 	keypoints thrown away), and the peaks are found with fixed shapes:
 
 	- centroids: the confidence map's local maxima above the threshold
-	  (sleap-nn's 8-neighbour test), the max_instances most confident by
+	  (sleap-nn's 8-neighbour test, or with tiedPeaks campy/peaks.py's,
+	  which keeps a top of two equal pixels once, as campy-live's layer), the max_instances most confident by
 	  topk, in sleap-nn's order (by position, or by confidence when there
 	  were more than max_instances), and a mask of the real ones;
 	- keypoints: sleap-nn's global peak per node (find_global_peaks_rough
@@ -573,9 +576,12 @@ class FixedCrops:
 	1024x1280 frames is none.
 	"""
 
-	def __init__(self, layer, n_frames, device, instances, graph=False):
+	def __init__(self, layer, n_frames, device, instances, graph=False, tiedPeaks=None):
 		import torch
+		from campy import peaks
 		self.torch, self.layer, self.device = torch, layer, device
+		# None: as sleap-nn's peak finding in this process (campy-live's layer)
+		self.tiedPeaks = peaks.TiedPeaksInUse() if tiedPeaks is None else tiedPeaks
 		self.c, self.ci = layer.centroid_layer, layer.centered_instance_layer
 		if getattr(self.c, "use_gt_centroids", False) or getattr(self.ci, "use_gt_peaks", False) or \
 				getattr(layer, "centroid_nms", False) or type(layer).__name__ != "TopDownLayer":
@@ -675,8 +681,12 @@ class FixedCrops:
 			raise SystemExit("--fixed-crops: a centroid model with one confidence map, not {}".format(C))
 		K = self.K
 		flat = cms.reshape(B, h * w)
-		around = morphological_dilation(cms.reshape(-1, 1, h, w), None).reshape(B, h * w)
-		peak = (flat > around) & (flat > cfg.peak_threshold)
+		if self.tiedPeaks: # a top of two equal pixels kept once (campy/peaks.py), as the layer does
+			from campy.peaks import PeakMask
+			peak = PeakMask(cms, cfg.peak_threshold).reshape(B, h * w)
+		else:
+			around = morphological_dilation(cms.reshape(-1, 1, h, w), None).reshape(B, h * w)
+			peak = (flat > around) & (flat > cfg.peak_threshold)
 		vals, idx = torch.topk(torch.where(peak, flat, torch.full_like(flat, float("-inf"))), K, dim=1)
 		found = vals > float("-inf")
 		# sleap-nn keeps them in raster order, or, with more than K, the topk's
