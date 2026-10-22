@@ -144,12 +144,17 @@ built from the network's ONNX, kept in --engine-cache and reused), auto is
 tensorrt where it imports and the GPU is NVIDIA's, else compile. A compiled
 engine fuses each convolution with what follows it (bias, activation,
 upsampling), so far less goes to and from GPU memory (bench/compiled_bench.py
-measured it: EVO-X2 11.1 to 4.3 ms for a 15-crop instance batch, RTX 2000
-Ada 10.9 to 4.5 with TensorRT). Only the networks change: crops, peaks and
+measured the networks alone). Live, with 5 mice on 3 cameras, --fixed-crops
+--cuda-graphs took 13.7 ms per set on the EVO-X2 and 6.0 with --engine
+compile; 2.7 ms on an RTX 6000 Ada, 2.2 with compile and 1.6 with tensorrt.
+torch.compile's keypoints are as close to fp32's as torch's fp16; TensorRT's
+fp16 runs the whole network in half precision and moves more of them (1.8%
+by over a pixel, against 0.7%). Only the networks change: crops, peaks and
 everything else are FixedCrops' own, and with --cuda-graphs the engines'
-kernels are recorded into the set's one graph like the rest. The first set
-waits for the engines to be built (torch.compile: a minute or so; TensorRT:
-a few minutes the first time, then its plan is read from --engine-cache).
+kernels are recorded into the set's one graph like the rest. The warm-up
+waits for the engines to be made (torch.compile: about 15 s, less once its
+cache has them; TensorRT: about 10 s the first time, then its plan is read
+back from --engine-cache).
 
 With --results-feed on (the default), each row also goes into shared memory,
 campy-live-results (campy/liveresults.py), as it is logged: campy-live-view
@@ -1051,7 +1056,7 @@ class FixedEngine:
 				with open(stem + ".plan", "rb") as f:
 					plan = f.read()
 			else:
-				print("campy-live: building the {} network's TensorRT engine ({}, {}): a few minutes, once (kept in "
+				print("campy-live: building the {} network's TensorRT engine ({}, {}), once (kept in "
 					"{})".format(self.name, "x".join(str(v) for v in (n, c, h, w)), "fp16" if fp16 else "fp32",
 					cache), flush=True)
 				with warnings.catch_warnings():
