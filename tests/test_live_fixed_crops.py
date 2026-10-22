@@ -53,10 +53,14 @@ class Sharp(torch.nn.Module):
 		return torch.exp(-((xx - cx[..., None, None]) ** 2 + (yy - cy[..., None, None]) ** 2) / 4)
 
 
+def Mode(value):
+	return value if isinstance(value, str) else "on" if value else "off"
+
+
 def Model(device, fixed=True, graphs=False, precision="fp32", strict=False, engine="eager"):
 	args = live.ParseArgs(["--model", "random", "--device", device, "--frame-shape", SHAPE, "--precision", precision,
-		"--max-instances", str(MOST), "--animals", str(MOST), "--nodes", "6", "--engine", engine] +
-		(["--fixed-crops"] if fixed else []) + (["--cuda-graphs"] if graphs else []) + (["--strict-peaks"] if strict else []))
+		"--max-instances", str(MOST), "--animals", str(MOST), "--nodes", "6", "--engine", engine,
+		"--fixed-crops", Mode(fixed), "--cuda-graphs", Mode(graphs)] + (["--strict-peaks"] if strict else []))
 	model = live.MODELS["random"](args, FRAMES, live.FrameShape(SHAPE))
 	backend = model.layer.centered_instance_layer.backend
 	backend.model = Sharp(6, model.layer.centered_instance_layer.output_stride).to(device)
@@ -82,6 +86,32 @@ def SetCounts(model, counts):
 			cx, cy = w * (i + 1) / (k + 1) + 0.3, h * (0.3 + 0.4 * ((i + f) % 2)) - 0.2
 			new[f, 0] += (1 - 0.07 * i) * torch.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / 8)
 	blobs.copy_(new.to(blobs.device))
+
+
+def test_reference_crops_at_crop_size():
+	# The reference is campy-live's own layer, whose crops live.ExactCropSize
+	# cuts at the crop size; sleap-nn's crop_bboxes alone, for this centroid,
+	# cuts them a pixel short (tests/test_live_exact_crops.py), and
+	# --fixed-crops always cuts the crop size
+	from sleap_nn.inference.ops.crops import crop_bboxes, make_centered_bboxes
+	centroid = [221.54798889160156, 77.36744689941406]
+	image = torch.zeros(1, 1, 256, 320, dtype=torch.uint8)
+	boxes = make_centered_bboxes(torch.tensor([centroid]), 192, 192)
+	assert tuple(crop_bboxes(image, boxes, torch.tensor([0])).shape[-2:]) == (192, 191)
+	model, _ = Model("cpu", fixed=False)
+	instance, seen = model.layer.centered_instance_layer, []
+	predict = instance.predict
+
+	def Spy(crops):
+		seen.append(tuple(crops.shape[-2:]))
+		return predict(crops)
+
+	instance.predict = Spy
+	try:
+		model.layer._run_stage_2(image, torch.tensor([[centroid]]), torch.ones(1, 1), torch.ones(1, 1, dtype=torch.bool))
+	finally:
+		instance.predict = predict
+	assert seen == [tuple(model.layer.crop_size)] == [(192, 192)]
 
 
 def Reference(model, frames):
@@ -302,11 +332,39 @@ def test_engine_options():
 
 
 def test_options():
-	args = live.ParseArgs(["--fixed-crops"])
-	assert args.fixed_crops and not args.cuda_graphs
-	assert not live.ParseArgs([]).fixed_crops
+	# auto by default (on with a GPU); the bare option is on
+	args = live.ParseArgs([])
+	assert args.fixed_crops == "auto" and args.cuda_graphs == "auto"
+	args = live.ParseArgs(["--fixed-crops", "--cuda-graphs", "off"])
+	assert args.fixed_crops == "on" and args.cuda_graphs == "off"
+	assert live.OnOff(True) == "on" and live.OnOff(False) == "off"
+	with pytest.raises(SystemExit):
+		live.ParseArgs(["--fixed-crops", "sometimes"])
+	# auto on the CPU: neither, and no error
+	model, _ = Model("cpu", fixed="auto", graphs="auto")
+	assert model.fixed is None and not model.graphs and model.DescribeGraphs() is None
 	with pytest.raises(SystemExit):
 		Model("cpu", graphs=True)
+
+
+@needs_gpu
+def test_auto_is_one_graph_with_a_gpu():
+	model, _ = Model("cuda", fixed="auto", graphs="auto")
+	assert model.fixed is not None and model.fixed.graph is None and not model.graphs # one graph, recorded at the first set
+
+
+@needs_gpu
+def test_auto_falls_back_when_the_model_cant(monkeypatch):
+	# a model FixedCrops refuses: sleap-nn's own layer, graphed per count, and why
+	def Refuse(*a, **k):
+		raise SystemExit("--fixed-crops: integral refinement or none, not local")
+	monkeypatch.setattr(live, "FixedCrops", Refuse)
+	model, _ = Model("cuda", fixed="auto", graphs="auto")
+	assert model.fixed is None and len(model.graphs) == 2
+	assert "not local; so sleap-nn's own top-down layer" in model.DescribeGraphs()
+	assert "not local" in model.fixedNote
+	with pytest.raises(SystemExit):
+		Model("cuda", fixed="on", graphs="auto")
 
 
 @pytest.mark.parametrize("strict", [False, True])

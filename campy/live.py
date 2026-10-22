@@ -136,6 +136,14 @@ with another batch size, so sets with fewer animals than --max-instances can
 differ). It pays when every frame has about --max-instances animals: each
 missing one still costs a crop's worth of instance model.
 
+Both are on by default with a GPU (auto), off on the CPU and MPS: with 5
+mice, 3 cameras and the trained models, a set took 16.8 -> 12.6 ms on an
+RTX 2000 Ada, 10.3 -> 2.7 on an RTX 6000 Ada and 15.0 -> 13.6 on the
+EVO-X2's Radeon (docs/live-tracking.md). A model --fixed-crops can't run
+(centroid NMS, ground truth, classes, other refinement) gets sleap-nn's
+own layer, with graphs per count, and campy-live says why. --fixed-crops
+off and --cuda-graphs off give the old way.
+
 --engine (with --fixed-crops, whose shapes never change) runs the two
 networks as compiled engines (FixedEngine) instead of torch's layer by layer:
 compile is torch.compile (inductor, Triton kernels: ROCm, and NVIDIA where
@@ -381,14 +389,24 @@ class TopDown:
 		ExactCropSize(self.layer)
 		self.graphs = []
 		self.fixed = None
-		if args.cuda_graphs and not self.device.startswith("cuda"):
+		self.fixedNote = None # why --fixed-crops auto left them off
+		gpu = self.device.startswith("cuda")
+		graphs, fixed = OnOff(args.cuda_graphs), OnOff(getattr(args, "fixed_crops", "off"))
+		if graphs == "on" and not gpu:
 			raise SystemExit("--cuda-graphs: CUDA (or ROCm) only, not {}".format(self.device))
-		if getattr(args, "fixed_crops", False):
-			self.fixed = FixedCrops(self.layer, n_frames, self.device, args.max_instances, graph=args.cuda_graphs,
-				tiedPeaks=self.tiedPeaks, engine=getattr(args, "engine", "eager"), cache=getattr(args, "engine_cache", ""))
-		elif getattr(args, "engine", "eager") != "eager":
+		graphs = graphs == "on" or (graphs == "auto" and gpu)
+		engine = getattr(args, "engine", "eager")
+		if fixed == "on" or (fixed == "auto" and gpu):
+			try:
+				self.fixed = FixedCrops(self.layer, n_frames, self.device, args.max_instances, graph=graphs,
+					tiedPeaks=self.tiedPeaks, engine=engine, cache=getattr(args, "engine_cache", ""))
+			except SystemExit as e:
+				if fixed == "on" or engine != "eager":
+					raise
+				self.fixedNote = "{}; so sleap-nn's own top-down layer".format(e)
+		if self.fixed is None and engine != "eager":
 			raise SystemExit("--engine: with --fixed-crops only (a compiled engine is made for one input shape)")
-		elif args.cuda_graphs:
+		if self.fixed is None and graphs:
 			for backend in (self.layer.centroid_layer.backend, self.layer.centered_instance_layer.backend):
 				graphed = CUDAGraphed(backend.model, backend.use_fp16)
 				backend.model, backend.use_fp16 = graphed, False # fp16 now inside the graph
@@ -444,10 +462,11 @@ class TopDown:
 		if self.fixed is not None:
 			return self.fixed.Describe()
 		if not self.graphs:
-			return None
+			return self.fixedNote
 		diff = max(g.max_abs_diff for g in self.graphs)
 		pooled = PoolBytes(set().union(*(g.Pools() for g in self.graphs)))
-		return "CUDA graphs: {} made{}; their output {} (largest difference {:g})".format(
+		return ("" if self.fixedNote is None else self.fixedNote + ". ") + \
+			"CUDA graphs: {} made{}; their output {} (largest difference {:g})".format(
 			sum(len(g.graphs) for g in self.graphs),
 			"" if pooled is None else ", holding {:.0f} MB of GPU memory".format(pooled / 1e6),
 			"the same as without" if diff == 0 else "differs from without", diff)
@@ -1451,6 +1470,18 @@ class SysfsClock(ClockReader):
 		return None
 
 
+def OnOff(value):
+	"""
+	--cuda-graphs, --fixed-crops: on, off or auto (on with a GPU, CUDA or
+	ROCm). The bare option is on; True and False (from older callers) too.
+	"""
+	if value is True or value is False or value is None:
+		return "on" if value else "off"
+	if value not in ("on", "off", "auto"):
+		raise SystemExit("on, off or auto, not {}".format(value))
+	return value
+
+
 def HoldsClock(args, model):
 	# --hold-gpu-clock: auto is on with a GPU (NVIDIA's CUDA or AMD's ROCm)
 	return args.hold_gpu_clock != "off" and getattr(model, "device", "cpu").startswith("cuda")
@@ -2193,15 +2224,18 @@ def ParseArgs(argv=None):
 	p.add_argument("--campy-cpus", default="auto", help="The CPUs campy-acquire (its camera processes and \
 		encoders) is moved onto when its feed comes: auto (the efficiency cores, when --cpus auto put campy-live on \
 		the performance ones), efficiency, all, none, or a list.")
-	p.add_argument("--cuda-graphs", action="store_true", help="Record each model's GPU work as a CUDA graph per \
-		input shape and replay it (CUDA and ROCm): the same results, with less CPU time to launch it.")
-	p.add_argument("--fixed-crops", action="store_true", help="Crop --max-instances animals in every frame, \
-		padding the missing ones, so the GPU runs a whole set without the CPU waiting for the animals found, and \
-		its results come back in one copy (FixedCrops). With --cuda-graphs, the whole set is one graph.")
+	p.add_argument("--cuda-graphs", nargs="?", const="on", default="auto", choices=["auto", "on", "off"],
+		help="Record each model's GPU work as a CUDA graph per input shape and replay it (CUDA and ROCm): the same \
+		results, with less CPU time to launch it. auto (the default): on with a GPU.")
+	p.add_argument("--fixed-crops", nargs="?", const="on", default="auto", choices=["auto", "on", "off"],
+		help="Crop --max-instances animals in every frame, padding the missing ones, so the GPU runs a whole set \
+		without the CPU waiting for the animals found, and its results come back in one copy (FixedCrops). With \
+		--cuda-graphs, the whole set is one graph. auto (the default): on with a GPU, when the models allow it \
+		(else sleap-nn's own layer, and campy-live says why). Set --max-instances to the animals there are.")
 	p.add_argument("--engine", default="eager", choices=["eager", "compile", "tensorrt", "auto"], help="With \
-		--fixed-crops: run the two networks as compiled engines (FixedEngine). compile: torch.compile (ROCm; \
-		NVIDIA with Triton); tensorrt: NVIDIA TensorRT; auto: tensorrt on NVIDIA where it is installed, else \
-		compile. The first set waits for them to be built.")
+		--fixed-crops (on by default with a GPU): run the two networks as compiled engines (FixedEngine). \
+		compile: torch.compile (ROCm; NVIDIA with Triton); tensorrt: NVIDIA TensorRT; auto: tensorrt on NVIDIA \
+		where it is installed, else compile. The first set waits for them to be built.")
 	p.add_argument("--engine-cache", default="", help="--engine tensorrt: the folder its built engines are kept in \
 		and read back from (default: ~/.cache/campy/engines).")
 	p.add_argument("--hold-gpu-clock", default="auto", choices=["auto", "on", "off"], help="Keep a few blocks of \
