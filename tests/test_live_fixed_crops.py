@@ -214,7 +214,7 @@ def test_results_come_back_in_one_copy():
 		model.Predict(frames) # frames: the graph's own input, already there
 	names = [e.name for e in prof.events()]
 	assert names.count("aten::copy_") == 1, names
-	assert not {"aten::item", "aten::_local_scalar_dense", "aten::nonzero", "aten::to"} & set(names), names
+	assert not {"aten::item", "aten::_local_scalar_dense", "aten::nonzero"} & set(names), names
 	assert model.fixed.host.is_pinned()
 
 

@@ -131,6 +131,7 @@ def Main(argv=None):
 	times = {"fixed_graph": [], "fixed_eager": [], "default": []}
 	by_found = {}
 	diffs = {"as_is": [], "exact_crop_size": []}
+	diff_found = {"as_is": [], "exact_crop_size": []} # animals found in the sets of diffs
 	found_diff = {"as_is": 0, "exact_crop_size": 0}
 	missing = {"as_is": 0, "exact_crop_size": 0}
 	cen_diff, eager_diff, found_total = [], [], []
@@ -162,6 +163,7 @@ def Main(argv=None):
 			if not differs:
 				if total:
 					diffs[name].append(kp)
+					diff_found[name].append(total)
 				missing[name] += miss
 		if not Compare(g, d)[0]:
 			cen_diff.append(float(np.nanmax(np.abs(g["centroids"] - d["centroids"]), initial=0)))
@@ -175,13 +177,16 @@ def Main(argv=None):
 			break
 
 	def Diffs(name):
-		kp = np.asarray(diffs[name])
+		kp, f = np.asarray(diffs[name]), np.asarray(diff_found[name])
 		return {"sets_where_found_differs": found_diff[name],
 			"keypoint_max_abs_diff_px": float(kp.max()) if len(kp) else 0.0,
 			"keypoint_p99_of_set_max_diff_px": float(np.percentile(kp, 99)) if len(kp) else 0.0,
 			"keypoint_median_of_set_max_diff_px": float(np.median(kp)) if len(kp) else 0.0,
 			"sets_with_keypoint_diff_over_0.01px": int(np.count_nonzero(kp > 0.01)),
-			"keypoints_missing_in_one_only": missing[name]}
+			"keypoints_missing_in_one_only": missing[name],
+			"by_animals_found": {str(k): {"sets": int(np.count_nonzero(f == k)),
+				"sets_with_keypoint_diff_over_0.01px": int(np.count_nonzero(kp[f == k] > 0.01)),
+				"keypoint_max_abs_diff_px": float(kp[f == k].max(initial=0))} for k in np.unique(f)}}
 
 	summary = {
 		"sets": sets, "videos": a.videos, "centroid": a.centroid, "instance": a.instance, "precision": a.precision,
