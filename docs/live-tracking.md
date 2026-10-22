@@ -108,6 +108,43 @@ The top-down model finds each animal's center, cuts a square crop around it (192
 
 `campy-live` now corrects this for its own models, without changing sleap-nn's installed files (`ExactCropSize` in `campy/live.py`): the crops are always cut at the model's crop size, in the same place as before. On the EVO-X2, replaying 60 s of 5 mice from 3 cameras with the trained models (3 runs each, alternating), 1,059 of the 3,588 sets came out different from before. In those sets, compared with offline SLEAP, the median body-part error went from 3.92 to 3.79 px and the share within 5 px from 62.9% to 64.1%; over all sets the 3D median went from 4.3 to 4.2 mm, and identities were kept as before. The time per set didn't change (inference p50 14.9–15.2 ms before, 15.1–15.2 ms after). `--fixed-crops` cuts its crops at the real size too. Once a sleap-nn version fixes the bug, the first test in `tests/test_live_exact_crops.py` fails, as a reminder that the workaround can go.
 
+## Compiled networks (`--engine`, with `--fixed-crops`, off by default)
+
+Normally PyTorch runs each layer of the two networks as its own small GPU program. A convolution writes its result to memory, then the next step (bias, activation, upsampling) reads it back, and so on. A compiled engine fuses those steps into fewer, bigger programs made for the exact image size, so far less data travels to and from memory (`bench/compiled_bench.py` measured the networks alone; see the hardware guide). Because an engine is made for one input size, it needs `--fixed-crops`, whose sizes never change. With `--cuda-graphs` too, the engines' programs are recorded into the set's single graph like everything else.
+
+- `--engine compile`: `torch.compile`. On Linux it comes with PyTorch (ROCm and NVIDIA). On Windows it needs Triton: `pip install triton-windows`, and the `CC` environment variable set to the `tcc.exe` it bundles (`<site-packages>\triton\runtime\tcc\tcc.exe`).
+- `--engine tensorrt`: NVIDIA's TensorRT (`pip install tensorrt-cu13 onnx`). The first run builds the two networks' engines (about 10 s for both on the RTX 6000 Ada). It keeps them in `--engine-cache` (default `~/.cache/campy/engines`), and later runs read them back in under a second. A new GPU, new weights or a new TensorRT version gets a new one.
+- `--engine auto`: TensorRT on an NVIDIA GPU where it is installed, otherwise `torch.compile`.
+
+The first set waits while the engines are made. `campy-live` does this during its warm-up, before the feed starts: about 15 s for `torch.compile` the first time, a few seconds after that (it caches what it compiled).
+
+Live, 5 mice, 3 cameras, 60 fps, 3D, the same trained models as above, compared with `--fixed-crops --cuda-graphs`:
+
+| | inference per set, p50 / p99 | frame to 3D, p50 / p99 | sets skipped | graph memory |
+|---|---|---|---|---|
+| EVO-X2, `--fixed-crops --cuda-graphs` | 13.7 / 14.2–14.3 ms | 17.4–17.6 / 20.4–20.9 ms | 0–3 of 3,600 | 210 MB |
+| EVO-X2, `+ --engine compile` | **5.9–6.0** / 6.9–7.0 ms | **7.7** / 9.0–9.2 ms | 3–10 of 3,600 | 126 MB |
+| RTX 6000 Ada, `--fixed-crops --cuda-graphs` | 2.7 / 4.6–4.9 ms | 5.7–5.8 / 7.6–8.0 ms | 0 of 1,800 | 229 MB |
+| RTX 6000 Ada, `+ --engine compile` | 2.2–2.3 / 4.2–7.2 ms | 5.4 / 7.1–10.0 ms | 0 of 1,800 | |
+| RTX 6000 Ada, `+ --engine tensorrt` | **1.6** / 5.6–5.8 ms | **4.7** / 8.1–8.7 ms | 0 of 1,800 | 59 MB |
+| Pro Max Slim (RTX 2000 Ada), `--fixed-crops --cuda-graphs` | 12.6 / 12.8–12.9 ms | 15.7 / 16.6–16.8 ms | 0 of 1,800 | |
+| Pro Max Slim, `+ --engine tensorrt` | **5.8** / 6.5–6.6 ms | **9.1** / 10.0–10.1 ms | 0 of 1,800 | |
+
+Three replays of each (EVO-X2: the whole 3,600-set replay; Precision 7875 and Pro Max Slim: 30 s each). Every run was `RIG_CLEAN`, except that the Pro Max Slim's job logged 4 sightings of its security agent during the tests that ran before, minutes before the replays; none came during them. On the EVO-X2, whose GPU is itself the limit, `torch.compile` more than halves the time: a set takes 6 ms instead of 13.7, so 10 ms of each 16.7 ms frame are now free. The tracking matched the offline SLEAP predictions exactly as well as before (2D median 3.8 px, 3D median 4.2 mm, the same identities 99.93% of the time). The Pro Max Slim's small RTX 2000 Ada gains as much with TensorRT: 12.6 to 5.8 ms per set, so 5 mice at 60 fps now leave it 10 ms of each frame (`torch.compile` wasn't measured live there; on the networks alone it is much slower than TensorRT, 7.4 against 4.5 ms). On the RTX 6000 Ada, where the graph had already made a set short, TensorRT saves another 1.1 ms. The Precision 7875's p99 is set by one stretch of about 60–100 sets (from set ~730) that is slow in every run with or without an engine. Outside it, TensorRT's p95 is 1.7 ms against 2.9–3.3 ms.
+
+Accuracy, set by set (`bench/fixed_crops_check.py --engine … --reference fp32`): 3,600 sets of the same replay, against sleap-nn's own layer in fp32 (crop size corrected), about 575,000 keypoints:
+
+| networks | a set alone (RTX 6000 Ada) | keypoints moved over 1 px | p99 moved | sets where the animals found differ |
+|---|---|---|---|---|
+| PyTorch fp16 (today's default) | 2.6 ms | 0.71% | 0.055 px | 388 |
+| `torch.compile` fp16 | 2.2 ms | 0.66% | 0.024 px | 369 |
+| TensorRT fp16 | 1.55 ms | 1.77% | 2.9 px | 393 |
+| TensorRT fp32 (`--precision fp32`) | 3.2 ms | 0.49% | 0.017 px | 1 |
+
+On the EVO-X2 the same comparison gave `torch.compile` fp16 and PyTorch fp16 the same accuracy: 1.78% of keypoints moved over 1 px (p99 2.9 px), and the animals found differ in 382 and 381 sets. Half precision on that GPU moves keypoints more than on the RTX 6000 Ada, with or without the engine. On the Pro Max Slim, TensorRT fp16 moved 1.89% of keypoints over 1 px (p99 2.9 px), against 0.69% for PyTorch fp16, as on the RTX 6000 Ada.
+
+So `torch.compile` is as exact as today's fp16 PyTorch. TensorRT fp16 is the fastest, but it runs the whole network in half precision, so about 1 keypoint in 60 moves more than a pixel (often to a second, nearly as bright spot), against 1 in 140 today. In fp32, TensorRT is exact but slower than fp16 PyTorch. The roughly 380 sets where any fp16 run finds different animals than fp32 aren't caused by the engines. In fp16 the two brightest pixels of a peak sometimes round to the same value, and sleap-nn's peak finder then drops that animal (about 0.7% of centroids; see the hardware guide).
+
 ## Testing without cameras
 
 campy's emulated cameras (`cameraMake: "emu"`) stand in for real ones: each plays a recorded video in a loop, at `frameRate`, and `campy-acquire` records it and copies every frame into the live feed as it would a real camera's. This tests the whole pipeline, encoder included, with real animals and no hardware. Camera n plays `<videoFolder>/<cameraNames[n]>/<videoFilename without its first 3 characters>`, so with `videoFilename: "emuclip.mp4"` each camera plays the `clip.mp4` in its folder:
