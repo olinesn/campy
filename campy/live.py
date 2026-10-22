@@ -352,6 +352,11 @@ class TopDown:
 			nvidia = self.device.startswith("cuda") and not getattr(torch.version, "hip", None)
 			self.memoryFormat = "channels_last" if nvidia else "nchw"
 		self.nodes, self.nodeNames, self.edges = None, None, None
+		# A centroid whose top is two equal pixels (fp16 rounding) is kept
+		# once, not dropped as sleap-nn does (campy/peaks.py)
+		from campy import peaks
+		tied = not getattr(args, "strict_peaks", False)
+		self.tiedPeaks = peaks.UseTiedPeaks(tied) and tied
 		self.layer, self.text = self.Build(args)
 		ExactCropSize(self.layer)
 		self.graphs = []
@@ -359,7 +364,8 @@ class TopDown:
 		if args.cuda_graphs and not self.device.startswith("cuda"):
 			raise SystemExit("--cuda-graphs: CUDA (or ROCm) only, not {}".format(self.device))
 		if getattr(args, "fixed_crops", False):
-			self.fixed = FixedCrops(self.layer, n_frames, self.device, args.max_instances, graph=args.cuda_graphs)
+			self.fixed = FixedCrops(self.layer, n_frames, self.device, args.max_instances, graph=args.cuda_graphs,
+				tiedPeaks=self.tiedPeaks)
 		elif args.cuda_graphs:
 			for backend in (self.layer.centroid_layer.backend, self.layer.centered_instance_layer.backend):
 				graphed = CUDAGraphed(backend.model, backend.use_fp16)
@@ -580,7 +586,8 @@ class FixedCrops:
 	keypoints thrown away), and the peaks are found with fixed shapes:
 
 	- centroids: the confidence map's local maxima above the threshold
-	  (sleap-nn's 8-neighbour test), the max_instances most confident by
+	  (sleap-nn's 8-neighbour test, or with tiedPeaks campy/peaks.py's,
+	  which keeps a top of two equal pixels once, as campy-live's layer), the max_instances most confident by
 	  topk, in sleap-nn's order (by position, or by confidence when there
 	  were more than max_instances), and a mask of the real ones;
 	- keypoints: sleap-nn's global peak per node (find_global_peaks_rough
@@ -613,9 +620,12 @@ class FixedCrops:
 	1024x1280 frames is none.
 	"""
 
-	def __init__(self, layer, n_frames, device, instances, graph=False):
+	def __init__(self, layer, n_frames, device, instances, graph=False, tiedPeaks=None):
 		import torch
+		from campy import peaks
 		self.torch, self.layer, self.device = torch, layer, device
+		# None: as sleap-nn's peak finding in this process (campy-live's layer)
+		self.tiedPeaks = peaks.TiedPeaksInUse() if tiedPeaks is None else tiedPeaks
 		self.c, self.ci = layer.centroid_layer, layer.centered_instance_layer
 		if getattr(self.c, "use_gt_centroids", False) or getattr(self.ci, "use_gt_peaks", False) or \
 				getattr(layer, "centroid_nms", False) or type(layer).__name__ != "TopDownLayer":
@@ -715,8 +725,12 @@ class FixedCrops:
 			raise SystemExit("--fixed-crops: a centroid model with one confidence map, not {}".format(C))
 		K = self.K
 		flat = cms.reshape(B, h * w)
-		around = morphological_dilation(cms.reshape(-1, 1, h, w), None).reshape(B, h * w)
-		peak = (flat > around) & (flat > cfg.peak_threshold)
+		if self.tiedPeaks: # a top of two equal pixels kept once (campy/peaks.py), as the layer does
+			from campy.peaks import PeakMask
+			peak = PeakMask(cms, cfg.peak_threshold).reshape(B, h * w)
+		else:
+			around = morphological_dilation(cms.reshape(-1, 1, h, w), None).reshape(B, h * w)
+			peak = (flat > around) & (flat > cfg.peak_threshold)
 		vals, idx = torch.topk(torch.where(peak, flat, torch.full_like(flat, float("-inf"))), K, dim=1)
 		found = vals > float("-inf")
 		# sleap-nn keeps them in raster order, or, with more than K, the topk's
@@ -1336,8 +1350,8 @@ class RandomTopDown(TopDown):
 		return layer, text
 
 	def Describe(self):
-		return "{} ({}, {}, {}, max {} animals)".format(self.text, self.device, self.precision, self.memoryFormat,
-			self.instances)
+		return "{} ({}, {}, {}, max {} animals{})".format(self.text, self.device, self.precision, self.memoryFormat,
+			self.instances, "" if self.tiedPeaks else ", strict peaks")
 
 
 def SyntheticCentroidPeaks(inner, n_frames, cm_h, cm_w, k, sigma=2.0):
@@ -1401,8 +1415,8 @@ class TrainedTopDown(TopDown):
 		return layer, text
 
 	def Describe(self):
-		return "{} ({}, {}, {}, max {} animals)".format(self.text, self.device, self.precision, self.memoryFormat,
-			self.instances)
+		return "{} ({}, {}, {}, max {} animals{})".format(self.text, self.device, self.precision, self.memoryFormat,
+			self.instances, "" if self.tiedPeaks else ", strict peaks")
 
 
 MODELS = {"random": RandomTopDown, "sleap": TrainedTopDown, "none": NoModel}
@@ -1916,6 +1930,8 @@ def ParseArgs(argv=None):
 		help="auto: channels_last on Nvidia GPUs, where it is faster, and nchw elsewhere (ROCm, MPS, CPU), \
 			as bench/sleap_infer_bench.py.")
 	p.add_argument("--max-instances", type=int, default=5, help="Most animals per frame.")
+	p.add_argument("--strict-peaks", action="store_true", help="sleap-nn's own centroid peak finding: a centroid \
+		whose top is two equal pixels (fp16 rounds about 0.7%% of them so) is lost. Default: kept once (campy/peaks.py).")
 	p.add_argument("--animals", type=int, default=5, help="How many animals there are: with --calibration, the 3D \
 		identities 0 .. animals-1; with --model random, the animals it finds per frame.")
 	p.add_argument("--calibration", default="", help="anipose calibration.toml: match the animals across the \
