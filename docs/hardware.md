@@ -21,6 +21,7 @@ This list leaves the numbers to the guide, so it can't fall out of date with it.
 9. **Linux gave the steadiest timing**: no set took twice the median. On Windows only the largest GPU, or pinned inference with the GPU's clock held, came close.
 10. **The EVO-X2 handles 3 cameras at 60 fps with 5 mice, but not 8 cameras.** The Pro Max Slim keeps up with 3 cameras at 60 fps with 3 mice, but not with 5 on the same models: its GPU needs about as long as one frame per set, so it skips a few percent of the sets and its 3D poses come about 28 ms after the frames, against the EVO-X2's 17. Give it a lighter centered-instance model for 5 mice at 60 fps.
 11. **3D tracking is cheap**, and it runs alongside inference, so it doesn't add to the time per set.
+12. **A compiled engine could make the models several times faster** (measured, not in `campy-live` yet): `torch.compile` on the EVO-X2's AMD GPU, TensorRT on NVIDIA cards, where it most helps the smaller ones. int8 isn't worth it ([Models](models.md)).
 
 ## Measuring a new machine
 

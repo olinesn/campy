@@ -81,6 +81,34 @@ On the EVO-X2, with the settings above, 3 cameras replaying 5 mice at 60 fps (3,
 - **The biggest waste is the upsampling.** The models' bilinear upsampling layers took 3.7 ms of GPU time per set, a third of both models, and the casts between fp16 and fp32 around them took another 1.5 ms. Under fp16 autocast, PyTorch runs bilinear upsampling in fp32, with a kernel that handles each output pixel in a single thread and loops over all the crops and channels. On the smallest layers (5×5 and 10×10 pixels, 384–768 channels) that leaves the GPU almost idle: 1.45 and 0.98 ms, at 2–6 GB/s. Run in channels-last layout, those two layers gave identical keypoints, and the whole top-down step went from 13.8 to 12.4–12.6 ms per set. In the larger layers channels-last was slower, so it helps only the small ones.
 - **Shrinking the frames converts them to float first.** On the GPU, torchvision turns all three 1024×1280 frames from uint8 into float32, shrinks them with antialiasing, and rounds them back to uint8. The model then divides by 255 at 256×320. That costs 0.5 ms per set.
 
+## Running the models faster: compiled engines (measured, not in campy-live yet)
+
+`campy-live` runs both models in plain PyTorch, in fp16. In PyTorch every layer of a network is its own small GPU program: a convolution writes its result to memory, and the step after it (adding the bias, the activation, the upsampling) reads it back. A *compiled engine* fuses those steps into one program and picks the fastest one for the exact image size, so far less goes to and from memory. CUDA graphs (`campy-live --cuda-graphs`) only cut the cost of *starting* each program; fusing is the other half.
+
+`bench/compiled_bench.py` measures this on the trained models above, with the replay videos as input. It times only the two networks (preprocessing, cropping and peak finding stay in PyTorch, as in `campy-live`), 60 sets a second with the GPU clock held, and compares the output with PyTorch in full precision on 500 sets of 3 frames. Per set of 3 frames with 5 mice (15 crops), median / p99:
+
+| Machine | PyTorch fp16 (now) | + CUDA graphs | `torch.compile` | TensorRT fp16 | MIGraphX fp16 |
+|---|---|---|---|---|---|
+| EVO-X2 (Radeon 8060S) | 11.1 / 11.3 ms | 11.1 / 11.3 ms | **4.3 / 4.4 ms** | – | 11.1 / 11.2 ms |
+| RTX 6000 Ada | 5.1 / 6.5 ms | 2.1 / 2.2 ms | 1.7 / 1.9 ms | **1.2 / 1.6 ms** | – |
+| RTX 4000 Ada | 7.3 / 9.5 ms | 5.6 / 5.8 ms | 4.2 / 4.5 ms | **2.7 / 2.8 ms** | – |
+| RTX 2000 Ada (Pro Max Slim) | 10.9 / 11.2 ms | 10.2 / 10.2 ms | 7.4 / 7.9 ms | **4.5 / 4.7 ms** | – |
+
+- **On the EVO-X2, `torch.compile` makes the networks 2.6 times faster** (11.1 to 4.3 ms per set), with the same accuracy as fp16 PyTorch. Most of the gain is the upsampling step, which PyTorch runs slowly on this GPU (3.4 of 11.8 ms in fp32) and the compiler fuses into its neighbours. AMD's own engine, MIGraphX, gained nothing on this GPU.
+- **On NVIDIA, TensorRT is fastest**, then `torch.compile` (max-autotune mode), then CUDA graphs. On the Pro Max Slim's RTX 2000 Ada it saves 6.4 ms per set (10.9 to 4.5 ms), enough to bring the 5-mouse live pipeline (16.5 ms per set, too close to 60 fps) well under the frame time. On the RTX 6000 Ada the networks are already fast, so the gain in milliseconds is small.
+- **int8 isn't worth it.** On the NVIDIA cards TensorRT int8 was at most 0.3 ms faster than fp16 and moved 15.6% of keypoints by more than 1 pixel (p99 4.4 px). MIGraphX's int8 gave exactly its fp16 output, so this GPU doesn't run it in int8 at all.
+- The timings don't depend on the weights: random weights of the same shapes gave the same times with CUDA graphs and the compiled engines (within 0.05 ms).
+
+`campy-live` can't use these yet. A compiled engine is built for a fixed number of crops, while the number of animals found changes from set to set. `campy-live --fixed-crops` (pull request 126) always runs `--max-instances` crops per frame, padding the missing ones, which is what an engine needs.
+
+**fp16 loses a few animals.** sleap-nn's centroid peak finder keeps a pixel only if it is strictly higher than all 8 of its neighbours. In fp16 the two top pixels of a peak sometimes round to exactly the same value, and then that animal has no centroid in that frame. This happened to 0.6–0.9% of centroids in every fp16 engine, PyTorch included (`campy-live`'s default), always with exactly two tied pixels per lost centroid, and never in fp32.
+
+To measure a machine (see the script's help for the engines and what each needs installed):
+```
+python bench/compiled_bench.py --centroid <centroid model folder> --instance <instance model folder> \
+    --videos cam1.mp4 cam2.mp4 cam3.mp4 --engines eager-fp16,graph-fp16,compile-ma,trt-fp16
+```
+
 ## Recording for a model
 
 - **Match the training images' brightness.** The training frames averaged about 24 out of 255. Frames about 8 times brighter, with many saturated pixels, lost most mice and produced hundreds of false detections, and frames half as bright lost about half. Set aperture, exposure and gain so live frames look like the training frames.
