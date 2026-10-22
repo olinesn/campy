@@ -127,6 +127,19 @@ when it made the graphs (0 is the same). Each count of animals found is
 another shape, so another graph: a model's graphs share one pool of GPU
 memory (CUDAGraphed), and campy-live says how much they hold.
 
+--fixed-crops (FixedCrops) crops --max-instances animals in every frame,
+the missing ones padded and their keypoints dropped, and finds the peaks
+with shapes that never depend on the frames. So the CPU launches a whole
+set without waiting for the GPU to say how many animals it found, the
+results come back in one copy, and with --cuda-graphs the whole set, both
+models and everything around them, is one graph. The animals found and the
+keypoints are sleap-nn's own (to the last bit in fp32, as long as sleap-nn
+cuts its crops at their size: sleap-nn 0.3.3 cuts some sets' crops a pixel
+short, FixedCrops never does; in fp16 the instance model rounds differently
+with another batch size, so sets with fewer animals than --max-instances can
+differ). It pays when every frame has about --max-instances animals: each
+missing one still costs a crop's worth of instance model.
+
 With --results-feed on (the default), each row also goes into shared memory,
 campy-live-results (campy/liveresults.py), as it is logged: campy-live-view
 (campy/liveview.py) shows them on the cameras' frames.
@@ -345,9 +358,12 @@ class TopDown:
 		self.nodes, self.nodeNames, self.edges = None, None, None
 		self.layer, self.text = self.Build(args)
 		self.graphs = []
-		if args.cuda_graphs:
-			if not self.device.startswith("cuda"):
-				raise SystemExit("--cuda-graphs: CUDA (or ROCm) only, not {}".format(self.device))
+		self.fixed = None
+		if args.cuda_graphs and not self.device.startswith("cuda"):
+			raise SystemExit("--cuda-graphs: CUDA (or ROCm) only, not {}".format(self.device))
+		if getattr(args, "fixed_crops", False):
+			self.fixed = FixedCrops(self.layer, n_frames, self.device, args.max_instances, graph=args.cuda_graphs)
+		elif args.cuda_graphs:
 			for backend in (self.layer.centroid_layer.backend, self.layer.centered_instance_layer.backend):
 				graphed = CUDAGraphed(backend.model, backend.use_fp16)
 				backend.model, backend.use_fp16 = graphed, False # fp16 now inside the graph
@@ -360,9 +376,16 @@ class TopDown:
 				backend.use_fp16 = True
 
 	def Upload(self, host):
+		if self.fixed is not None:
+			return self.fixed.Upload(host)
 		return host.to(self.device, non_blocking=True)
 
 	def Predict(self, frames):
+		if self.fixed is not None:
+			result = self.fixed.Predict(frames)
+			if self.nodes is None:
+				self.nodes = result["keypoints"].shape[2]
+			return result
 		out = self.layer.predict(frames)
 		result = {}
 		for key, field in (("centroids", "pred_centroids"), ("centroid_vals", "pred_centroid_values"),
@@ -382,16 +405,19 @@ class TopDown:
 		# set with none never runs (the first set with animals took 200 ms
 		# when only the instance model had been warmed). So the whole layer
 		# runs again for each count of crops, with that many peaks put into
-		# the centroid model's output (FakeCentroids).
+		# the centroid model's output (FakeCentroids). With --fixed-crops,
+		# every set runs all of it, on the same shapes: blank frames warm it.
 		frames = self.Upload(host)
 		for _ in range(3):
 			self.Predict(frames)
-		for counts in WarmCounts(self.n_frames, self.instances, crops):
+		for counts in WarmCounts(self.n_frames, self.instances, crops) if self.fixed is None else ():
 			with FakeCentroids(self.layer.centroid_layer, counts):
 				self.Predict(frames)
 		Synchronize(self.device)
 
 	def DescribeGraphs(self):
+		if self.fixed is not None:
+			return self.fixed.Describe()
 		if not self.graphs:
 			return None
 		diff = max(g.max_abs_diff for g in self.graphs)
@@ -497,6 +523,333 @@ def PoolBytes(pools):
 		return sum(s["total_size"] for s in torch.cuda.memory_snapshot() if tuple(s["segment_pool_id"]) in pools)
 	except (KeyError, TypeError, RuntimeError):
 		return None
+
+
+class FixedCrops:
+	"""
+	--fixed-crops: sleap-nn's TopDownLayer done again with no shape that
+	depends on the data, so the GPU runs a whole set without the CPU waiting
+	for it in the middle, and its results come back in one copy.
+
+	sleap-nn's layer finds the centroids (nonzero), brings their count to
+	the CPU, and only then crops that many animals and runs the instance
+	model on them: the CPU waits for the centroid model before it can
+	launch the rest, and --cuda-graphs needs a graph per count. Here every
+	frame gives max_instances crops, frames x max_instances in all, the
+	missing animals' crops padded (cut at the frame's corner, their
+	keypoints thrown away), and the peaks are found with fixed shapes:
+
+	- centroids: the confidence map's local maxima above the threshold
+	  (sleap-nn's 8-neighbour test), the max_instances most confident by
+	  topk, in sleap-nn's order (by position, or by confidence when there
+	  were more than max_instances), and a mask of the real ones;
+	- keypoints: sleap-nn's global peak per node (find_global_peaks_rough
+	  has fixed shapes already);
+	- integral refinement on every peak, real or not, with the same 5x5
+	  patches and the same arithmetic as sleap-nn, so the same sub-pixel
+	  result; the padded ones are dropped after.
+
+	The crops, the coordinates and their order follow sleap-nn's own code
+	step by step (make_centered_bboxes, crop_bboxes, the coordinate ladder),
+	so the results are those of the layer: the same animals found, the same
+	keypoints, up to the instance model's own rounding (its batch is now
+	always frames x max_instances).
+
+	Everything goes into one tensor (per frame, per animal: centroid x, y,
+	its confidence, found, then keypoints x, y and their confidences), which
+	comes back into pinned memory in one non_blocking copy and one wait.
+
+	With --cuda-graphs (CUDA, ROCm), all of it, from the frames' upload
+	buffer to that tensor, is ONE graph, recorded once (it has one shape):
+	the frames are uploaded into its input, it is replayed, its output is
+	copied back. Its memory is one pool; its output is outside the pool
+	(as CUDAGraphed's). Without --cuda-graphs, the same runs eagerly: no
+	wait in the middle, but every operation still launched one by one.
+
+	Not supported: sleap-nn's centroid NMS, ground-truth centroids or
+	keypoints, multi-class models, and refinement other than integral or
+	none. The frames' sizematcher (max_height, max_width) is the same for
+	every frame, so it is a number here: the trained models' 1024x1280 for
+	1024x1280 frames is none.
+	"""
+
+	def __init__(self, layer, n_frames, device, instances, graph=False):
+		import torch
+		self.torch, self.layer, self.device = torch, layer, device
+		self.c, self.ci = layer.centroid_layer, layer.centered_instance_layer
+		if getattr(self.c, "use_gt_centroids", False) or getattr(self.ci, "use_gt_peaks", False) or \
+				getattr(layer, "centroid_nms", False) or type(layer).__name__ != "TopDownLayer":
+			raise SystemExit("--fixed-crops: a plain sleap-nn top-down model only (no centroid NMS, ground truth "
+				"or classes)")
+		for part in (self.c, self.ci):
+			if part.postprocess_config.effective_refinement not in (None, "integral"):
+				raise SystemExit("--fixed-crops: integral refinement or none, not {}".format(
+					part.postprocess_config.refinement))
+		self.B = n_frames
+		self.K = int(self.c.postprocess_config.max_instances or self.c.max_instances or instances)
+		self.cropH, self.cropW = (int(v) for v in layer.crop_size)
+		self.cuda = str(device).startswith("cuda")
+		if graph and not self.cuda:
+			raise SystemExit("--cuda-graphs: CUDA (or ROCm) only, not {}".format(device))
+		self.graph = None if graph else False # None: to record at the first set
+		self.static_in = self.static_out = self.pool = None
+		self.host = self.done = None
+		self.max_abs_diff = 0.0
+		self.nodes = None
+
+	# ------------------------------------------------ the pipeline, fixed shapes
+
+	def Preprocess(self, layer, x):
+		"""
+		sleap-nn's InferenceLayer preprocessing (channels, sizematcher, input
+		scale, padding to the stride, the n_samples axis) on a (N, C, H, W)
+		batch; the sizematcher on the whole batch at once (its frames are all
+		the same size), its scale a number. Returns (x, sizematcher scale).
+		"""
+		from sleap_nn.data.normalization import convert_to_grayscale, convert_to_rgb
+		from sleap_nn.data.resizing import apply_pad_to_stride, apply_sizematcher, resize_image
+		cfg = layer.preprocess_config
+		if cfg.ensure_rgb and x.shape[-3] != 3:
+			x = convert_to_rgb(x)
+		elif cfg.ensure_grayscale and x.shape[-3] != 1:
+			x = convert_to_grayscale(x)
+		eff = 1.0
+		if cfg.max_height is not None or cfg.max_width is not None:
+			x, eff = apply_sizematcher(x, cfg.max_height, cfg.max_width)
+		if cfg.scale != 1.0:
+			x = resize_image(x, cfg.scale)
+		if layer.max_stride != 1:
+			x = apply_pad_to_stride(x, layer.max_stride)
+		return x.unsqueeze(1), float(eff)
+
+	def Confmaps(self, layer, x):
+		# The model, as sleap-nn's TorchBackend runs it, with autocast's weight
+		# cache off (a graph can't record it)
+		torch = self.torch
+		backend = layer.backend
+		with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=bool(backend.use_fp16 and self.cuda),
+				cache_enabled=False):
+			out = backend.model(x)
+		if isinstance(out, dict):
+			out = layer._extract_confmaps(out)
+		return out.float()
+
+	def Integral(self, maps, sample, x, y, patch):
+		"""
+		sleap-nn's integral refinement (find_*_peaks with refinement
+		"integral") of peaks at whole pixels x, y (long, any shape) of
+		maps[sample] (maps: (S, 1, h, w)), all of them: the offsets, (..., 2).
+		The patch and the sums are sleap-nn's (make_centered_bboxes,
+		crop_bboxes, integral_regression), done the same way.
+		"""
+		torch = self.torch
+		F = torch.nn.functional
+		shape = x.shape
+		x, y, sample = x.reshape(-1), y.reshape(-1), sample.reshape(-1)
+		half = patch // 2
+		# make_centered_bboxes' top-left, then crop_bboxes' trunc(top-left + half) - half
+		left = ((x.float() - patch / 2 + 0.5) + half).long() - half
+		top = ((y.float() - patch / 2 + 0.5) + half).long() - half
+		padded = F.pad(maps, (patch, patch, patch, patch), mode="constant", value=0)
+		r = torch.arange(patch, device=maps.device)
+		ax = (left[:, None, None] + r[None, None, :] + patch).clamp(0, padded.shape[-1] - 1)
+		ay = (top[:, None, None] + r[None, :, None] + patch).clamp(0, padded.shape[-2] - 1)
+		cms = padded[sample[:, None, None], 0, ay, ax].unsqueeze(1) # (n, 1, patch, patch)
+		gv = torch.arange(patch, dtype=torch.float32, device=maps.device) - ((patch - 1) / 2)
+		z = torch.sum(cms, dim=[2, 3])
+		dx = torch.sum(gv.view(1, 1, 1, -1) * cms, dim=[2, 3]) / z
+		dy = torch.sum(gv.view(1, 1, -1, 1) * cms, dim=[2, 3]) / z
+		return torch.cat([dx, dy], dim=1).reshape(shape + (2,))
+
+	def Centroids(self, cms, scale):
+		"""
+		CentroidLayer.postprocess with fixed shapes: (centroids (B, K, 2),
+		their values (B, K), found (B, K)), in the input image's pixels (before
+		the sizematcher's scale is undone), NaN where none.
+		"""
+		torch = self.torch
+		from sleap_nn.inference.ops.peaks import morphological_dilation
+		cfg = self.c.postprocess_config
+		B, C, h, w = cms.shape
+		if C != 1:
+			raise SystemExit("--fixed-crops: a centroid model with one confidence map, not {}".format(C))
+		K = self.K
+		flat = cms.reshape(B, h * w)
+		around = morphological_dilation(cms.reshape(-1, 1, h, w), None).reshape(B, h * w)
+		peak = (flat > around) & (flat > cfg.peak_threshold)
+		vals, idx = torch.topk(torch.where(peak, flat, torch.full_like(flat, float("-inf"))), K, dim=1)
+		found = vals > float("-inf")
+		# sleap-nn keeps them in raster order, or, with more than K, the topk's
+		raster = peak.sum(1, keepdim=True) <= K
+		order = torch.where(found, idx, h * w + torch.arange(K, device=cms.device)).argsort(dim=1)
+		idx = torch.where(raster, idx.gather(1, order), idx)
+		vals = torch.where(raster, vals.gather(1, order), vals)
+		found = torch.where(raster, found.gather(1, order), found)
+		x, y = idx % w, torch.div(idx, w, rounding_mode="floor")
+		peaks = torch.stack([x, y], dim=-1).to(torch.float32)
+		if cfg.effective_refinement == "integral":
+			sample = torch.arange(B, device=cms.device)[:, None].expand(B, K)
+			peaks = peaks + self.Integral(cms, sample, x, y, cfg.integral_patch_size)
+		peaks = peaks * self.c.output_stride if self.c.output_stride != 1 else peaks
+		peaks = peaks / scale if scale != 1.0 else peaks
+		nan = torch.full_like(peaks, float("nan"))
+		return torch.where(found[..., None], peaks, nan), torch.where(found, vals, nan[..., 0]), found
+
+	def Crops(self, image, centroids, found):
+		# make_centered_bboxes and crop_bboxes, for every slot: (crops
+		# (B*K, C, cropH, cropW), the boxes' top-left (B*K, 2) as sleap-nn adds it)
+		torch = self.torch
+		F = torch.nn.functional
+		B, K = found.shape
+		ch, cw = self.cropH, self.cropW
+		c = torch.where(found[..., None], centroids, torch.zeros_like(centroids)).reshape(B * K, 2)
+		topleft = torch.stack([c[:, 0] - cw / 2, c[:, 1] - ch / 2], dim=-1) + 0.5
+		corner = torch.stack([(topleft[:, 0] + cw // 2).to(torch.long) - cw // 2,
+			(topleft[:, 1] + ch // 2).to(torch.long) - ch // 2], dim=-1)
+		padded = F.pad(image, (cw, cw, ch, ch), mode="constant", value=0)
+		ax = (corner[:, 0:1, None] + torch.arange(cw, device=image.device)[None, None, :] + cw).clamp(
+			0, padded.shape[-1] - 1)
+		ay = (corner[:, 1:2, None] + torch.arange(ch, device=image.device)[None, :, None] + ch).clamp(
+			0, padded.shape[-2] - 1)
+		sample = torch.arange(B, device=image.device).repeat_interleave(K)[:, None, None]
+		crops = padded[sample, :, ay, ax].permute(0, 3, 1, 2).contiguous()
+		return crops, topleft
+
+	def Keypoints(self, cms):
+		# CenteredInstanceLayer.postprocess: each node's global peak, refined
+		torch = self.torch
+		from sleap_nn.inference.ops.peaks import find_global_peaks_rough
+		cfg = self.ci.postprocess_config
+		rough, vals = find_global_peaks_rough(cms, threshold=cfg.peak_threshold)
+		peaks = rough
+		if cfg.effective_refinement == "integral":
+			N, C, h, w = cms.shape
+			missing = torch.isnan(rough)
+			at = torch.where(missing, torch.zeros_like(rough), rough).to(torch.long)
+			sample = torch.arange(N * C, device=cms.device).view(N, C)
+			offsets = self.Integral(cms.reshape(N * C, 1, h, w), sample, at[..., 0], at[..., 1],
+				cfg.integral_patch_size)
+			peaks = torch.where(missing, rough, rough + offsets)
+		peaks = peaks * self.ci.output_stride if self.ci.output_stride != 1 else peaks
+		scale = self.ci.preprocess_config.scale
+		return (peaks / scale if scale != 1.0 else peaks), vals
+
+	def Pipeline(self, frames):
+		"""
+		The whole set, frames (B, H, W, C) or (B, C, H, W) on the device, to
+		one tensor (B, K, 4 + 3 x nodes): centroid x, y, its value, found (1
+		or 0), keypoints x, y per node, peak value per node. NaN where none.
+		"""
+		torch = self.torch
+		raw = self.c._to_4d_tensor(frames)
+		x, eff = self.Preprocess(self.c, raw)
+		centroids, cvals, found = self.Centroids(self.Confmaps(self.c, x), self.c.preprocess_config.scale)
+		# Crops from the sized frames (TopDownLayer's sizematcher, without
+		# the centroid layer's channel change), at the centroids there
+		sized = raw
+		cfg = self.c.preprocess_config
+		if cfg.max_height is not None or cfg.max_width is not None:
+			from sleap_nn.data.resizing import apply_sizematcher
+			sized, _ = apply_sizematcher(raw, cfg.max_height, cfg.max_width)
+		if eff != 1.0:
+			centroids = centroids / eff # undo_eff_scale, then TopDownLayer's * eff
+			crops, topleft = self.Crops(sized, centroids * eff, found)
+		else:
+			crops, topleft = self.Crops(sized, centroids, found)
+		xi, _ = self.Preprocess(self.ci, crops)
+		keypoints, vals = self.Keypoints(self.Confmaps(self.ci, xi))
+		keypoints = keypoints + topleft.view(-1, 1, 2) # add_crop_offset
+		if eff != 1.0:
+			keypoints = keypoints / eff
+		B, K = found.shape
+		n = keypoints.shape[1]
+		keypoints = torch.where(found.view(B * K, 1, 1), keypoints, torch.full_like(keypoints, float("nan")))
+		vals = torch.where(found.view(B * K, 1), vals, torch.full_like(vals, float("nan")))
+		return torch.cat([centroids, cvals[..., None], found[..., None].to(torch.float32),
+			keypoints.reshape(B, K, 2 * n), vals.reshape(B, K, n)], dim=-1)
+
+	# ------------------------------------------------ running it
+
+	def Upload(self, host):
+		if self.static_in is not None:
+			self.static_in.copy_(host, non_blocking=True)
+			return self.static_in
+		return host.to(self.device, non_blocking=True)
+
+	def Record(self, frames):
+		# The graph, recorded once, as CUDAGraphed.Capture records a model's
+		torch = self.torch
+		self.static_in = torch.empty_like(frames)
+		self.static_in.copy_(frames)
+		side = FixedStream("capture warm-up")
+		side.wait_stream(torch.cuda.current_stream())
+		with torch.cuda.stream(side), torch.inference_mode():
+			for _ in range(3): # cuDNN's (MIOpen's) and cuBLAS's first calls, outside the recording
+				warm = self.Pipeline(self.static_in)
+		torch.cuda.current_stream().wait_stream(side)
+		self.static_out = torch.empty_like(warm) # outside the pool
+		del warm
+		self.pool = torch.cuda.graph_pool_handle()
+		graph = torch.cuda.CUDAGraph()
+		with torch.cuda.graph(graph, pool=self.pool, stream=FixedStream("capture"), capture_error_mode="thread_local"), \
+				torch.inference_mode():
+			self.static_out.copy_(self.Pipeline(self.static_in))
+		graph.replay()
+		with torch.inference_mode():
+			self.max_abs_diff = max(self.max_abs_diff, MaxAbsDiff(self.static_out, self.Pipeline(self.static_in)))
+		self.graph = graph
+
+	def Run(self, frames):
+		# The set's tensor, on the device
+		torch = self.torch
+		if self.graph is None:
+			self.Record(frames)
+		if self.graph:
+			if frames is not self.static_in:
+				self.static_in.copy_(frames, non_blocking=True)
+			self.graph.replay()
+			return self.static_out
+		with torch.inference_mode():
+			return self.Pipeline(frames)
+
+	def Predict(self, frames):
+		torch = self.torch
+		out = self.Run(frames)
+		if self.cuda:
+			# One copy back, into pinned memory, and one wait
+			if self.host is None:
+				self.host = torch.empty(out.shape, dtype=out.dtype, pin_memory=True)
+				self.done = torch.cuda.Event()
+			self.host.copy_(out, non_blocking=True)
+			self.done.record()
+			self.done.synchronize()
+			a = self.host.numpy()
+		else:
+			a = out.cpu().numpy()
+		n = (a.shape[-1] - 4) // 3
+		self.nodes = n
+		B, K = a.shape[:2]
+		return {"centroids": a[..., 0:2].copy(), "centroid_vals": a[..., 2].copy(), "found_mask": a[..., 3] > 0.5,
+			"keypoints": a[..., 4:4 + 2 * n].reshape(B, K, n, 2).copy(), "peak_vals": a[..., 4 + 2 * n:].copy()}
+
+	def Describe(self):
+		if not self.graph:
+			return "fixed crops: {} per set, without a graph".format(self.B * self.K)
+		pooled = PoolBytes({self.pool})
+		return "fixed crops: one CUDA graph for the whole set ({} crops){}; its output {} (largest difference " \
+			"{:g})".format(self.B * self.K, "" if pooled is None else ", holding {:.0f} MB of GPU memory".format(
+			pooled / 1e6), "the same as without" if self.max_abs_diff == 0 else "differs from without",
+			self.max_abs_diff)
+
+
+def MaxAbsDiff(a, b):
+	# The largest difference between two tensors with NaNs; inf if the NaNs differ
+	import torch
+	na, nb = torch.isnan(a), torch.isnan(b)
+	if not torch.equal(na, nb):
+		return float("inf")
+	d = (a - b).abs()[~na]
+	return float(d.max().item()) if d.numel() else 0.0
 
 
 _STREAMS, _STREAMS_LOCK = {}, threading.Lock()
@@ -1559,6 +1912,9 @@ def ParseArgs(argv=None):
 		the performance ones), efficiency, all, none, or a list.")
 	p.add_argument("--cuda-graphs", action="store_true", help="Record each model's GPU work as a CUDA graph per \
 		input shape and replay it (CUDA and ROCm): the same results, with less CPU time to launch it.")
+	p.add_argument("--fixed-crops", action="store_true", help="Crop --max-instances animals in every frame, \
+		padding the missing ones, so the GPU runs a whole set without the CPU waiting for the animals found, and \
+		its results come back in one copy (FixedCrops). With --cuda-graphs, the whole set is one graph.")
 	p.add_argument("--hold-gpu-clock", default="auto", choices=["auto", "on", "off"], help="Keep a few blocks of \
 		the GPU spinning at the lowest priority from the feed's coming to the end, so the GPU keeps its full clock \
 		(see campy-live's help). auto: on with a GPU (NVIDIA's CUDA or AMD's ROCm).")

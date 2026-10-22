@@ -753,6 +753,7 @@ def test_warm_up_runs_the_whole_layer_with_animals_found(monkeypatch):
 
 	model = object.__new__(live.TopDown)
 	model.n_frames, model.instances, model.layer = 3, 5, Layer()
+	model.fixed = None # without --fixed-crops, as __init__ leaves it
 	monkeypatch.setattr(model, "Upload", lambda host: host, raising=False)
 	monkeypatch.setattr(live, "Synchronize", lambda device: None)
 	model.device = "cpu"

@@ -145,6 +145,11 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
       <p class="why">On the RTX 2000 Ada graphs helped only 2–4%, because that card is limited by its own compute. sleap-nn doesn't use graphs on Windows by itself: <code>torch.compile</code>, which would, needs Triton, so the live pipeline captures them the way the benchmark does. <code>campy-live --cuda-graphs</code> now does: on the Pro Max Slim it took the 3-mouse replay from 13.2 to 12.4 ms per set (p99 14.3 to 13.0), and on 300 recorded sets its keypoints were identical to running without graphs. Each number of animals found gives the model a differently sized batch, and each size gets its own graph: up to 15 at 3 cameras with up to 5 animals each, and up to 40 at 8 cameras. The first set with a new count costs 22–73 ms more; <code>campy-live</code>'s warm-up runs every count before the recording starts. Each graph kept its own GPU memory at first, and together they filled a lot of it: on the RTX 6000 Ada, <code>campy-live</code>'s graphs held 11.2 GB at 8 cameras (1.7 GB at 3), and 28 of the benchmark's held 8.1 GB. Now all of a model's graphs share one pool of memory, in the benchmark since pull request 99 and in <code>campy-live</code> since pull request 107: 0.65 GB at 8 cameras and 0.26 GB at 3, with the same time per set (p50 8.7 ms at 8 cameras, 6.0 ms at 3, with up to 5 animals per camera). <code>campy-live</code> says how much its graphs hold when it starts.</p>
     </li>
     <li>
+      <h3>Compiling the models could make them several times faster, most of all on the AMD GPU. <code>campy-live</code> doesn't do it yet.</h3>
+      <p>A compiled engine fuses each convolution with the steps after it, so their results don't make a round trip through memory. Measured on the two trained models with the replay videos (networks only, 60 sets a second, clock held), a set of 3 frames with 5 mice took: on the EVO-X2, 11.1 ms in fp16 PyTorch as now and <b>4.3 ms with <code>torch.compile</code></b>, 2.6 times faster with the same accuracy; on the RTX 6000 Ada, 2.1 ms with CUDA graphs and <b>1.2 ms with TensorRT</b> (1.7 ms with <code>torch.compile</code>); and on the Pro Max Slim's RTX 2000 Ada, 10.9 ms in PyTorch, 10.2 ms with CUDA graphs and <b>4.5 ms with TensorRT</b> (7.4 ms with <code>torch.compile</code>). Details below.</p>
+      <p class="why">That frees about 6.5 ms of the 16.7 ms per set on both the EVO-X2 and the Pro Max Slim. On the Pro Max Slim, whose live pipeline took 16.5 ms per set with 5 mice and skipped 4–6% of the sets, that should be enough for 5 mice at 60 fps with room to spare (to be confirmed live). AMD's own engine (MIGraphX) gained nothing on the EVO-X2's GPU, and int8 gained 0.3 ms at most while moving keypoints. Using an engine in <code>campy-live</code> needs a fixed number of crops, because an engine is built for one batch size; <code>campy-live --fixed-crops</code> (pull request 126) always runs <code>--max-instances</code> crops per frame, which is what an engine needs.</p>
+    </li>
+    <li>
       <h3>Choose a model with about 2 ms to spare in the benchmark.</h3>
       <p>The live pipeline runs 1–1.7 ms slower at the median and 2–2.5 ms at p99 than the inference-only benchmark, because it also copies each set's frames in, reads the results back and logs them. On the EVO-X2 with 5 mice at 60 fps, a model needs a benchmark p99 of about 14–14.5 ms or less to keep up. The model with 160 px crops (14.0 ms in the benchmark) kept up with nothing skipped; one with 192 px crops and 24 filters (15.3 ms) still skipped a set now and then (details below).</p>
     </li>
@@ -343,7 +348,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
       <li>CUDA graphs (<code>campy-live --cuda-graphs</code>): about 6% on the RTX 2000 Ada, with identical keypoints.</li>
       <li>A faster GPU: once the GPU is fast enough, CUDA graphs bring Windows down to a 5–8 ms floor (RTX 6000 Ada). The monitor-free RTX 4000 Ada test will show whether a mid-range card gets there.</li>
       <li>Linux on the same hardware, which would also settle the OS question.</li>
-      <li>Software: fewer GPU waits in sleap-nn's post-processing, such as batched peak finding without per-frame <code>.item()</code> calls. This would help Windows most, on any hardware.</li>
+      <li>Software: fewer GPU waits around the models. <code>campy-live --fixed-crops --cuda-graphs</code> (off by default) cuts every animal's crop in every frame, so a set runs as one graph with no wait in the middle and one copy back, with the same animals and keypoints. With 5 mice it took each set from 10.3 to 2.7 ms on the RTX 6000 Ada (frame to 3D 13.3 to 5.7 ms), and from 15.0 to 13.6 ms on the EVO-X2. On a GPU that is itself the limit, like the EVO-X2's, it pays only when about <code>--max-instances</code> animals are in view, since every missing one still costs a crop. Not yet measured on the Pro Max Slim, where Windows' waits cost most.</li>
     </ol>
   </div>
 </section>
@@ -484,6 +489,37 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
   </ul>
 </section>
 
+<section>
+  <h2>Compiled engines for the two models</h2>
+  <p class="col">On 22 October <code>bench/compiled_bench.py</code> timed the trained centroid model and the 160 px-crop centered-instance model in each inference engine that runs on each machine. Only the networks were timed: preprocessing, cropping and peak finding stay in PyTorch, as in <code>campy-live</code>. Each engine reads its input from PyTorch's GPU memory and writes its output there, with no copy through the CPU, and that hand-over is included in the time. Inputs were real: the 5-mouse replay videos (the frames of each set, and the crops the models cut around each mouse). Sets started 60 times a second with the GPU clock held, 2,000 sets per measurement, every run <code>RIG_CLEAN</code>. The table gives each set's time for both networks, centroid on 3 frames plus centered-instance on 15 crops (5 mice), median / p99, and for 3 crops (1 mouse) the median. A dash means the engine doesn't run on that GPU, or wasn't timed there (fp32 on the RTX 2000 Ada, too slow for 60 sets a second; int8 there, which TensorRT couldn't build).</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Networks only, ms per set: 5 mice median / p99</th><th>EVO-X2</th><th>RTX 6000 Ada</th><th>RTX 4000 Ada</th><th>RTX 2000 Ada (Pro Max Slim)</th></tr></thead>
+      <tbody>
+        <tr><td>PyTorch fp32</td><td class="mono">15.5 / 15.8<br><span class="meta">1 mouse 4.8</span></td><td class="mono">8.0 / 8.7<br><span class="meta">1 mouse 3.5</span></td><td class="mono">22.1 / 22.2<br><span class="meta">1 mouse 7.3</span></td><td class="mono">–</td></tr>
+        <tr><td>PyTorch fp16 (<code>campy-live</code>'s default)</td><td class="mono">11.1 / 11.3<br><span class="meta">1 mouse 4.4</span></td><td class="mono">5.1 / 6.5<br><span class="meta">1 mouse 5.1</span></td><td class="mono">7.3 / 9.5<br><span class="meta">1 mouse 4.8</span></td><td class="mono">10.9 / 11.2<br><span class="meta">1 mouse 5.0</span></td></tr>
+        <tr><td>PyTorch fp16 + CUDA graphs (<code>--cuda-graphs</code>)</td><td class="mono">11.1 / 11.3<br><span class="meta">1 mouse 4.3</span></td><td class="mono">2.1 / 2.2<br><span class="meta">1 mouse 1.2</span></td><td class="mono">5.6 / 5.8<br><span class="meta">1 mouse 2.6</span></td><td class="mono">10.2 / 10.2<br><span class="meta">1 mouse 4.1</span></td></tr>
+        <tr><td><code>torch.compile</code></td><td class="mono">4.3 / 4.5<br><span class="meta">1 mouse 2.3</span></td><td class="mono">2.7 / 4.0<br><span class="meta">1 mouse 2.5</span></td><td class="mono">4.9 / 5.9<br><span class="meta">1 mouse 2.6</span></td><td class="mono">8.2 / 8.4<br><span class="meta">1 mouse 3.8</span></td></tr>
+        <tr><td><code>torch.compile</code>, reduce-overhead</td><td class="mono">4.3 / 4.5<br><span class="meta">1 mouse 2.3</span></td><td class="mono">1.8 / 2.0<br><span class="meta">1 mouse 1.0</span></td><td class="mono">4.3 / 4.6<br><span class="meta">1 mouse 2.2</span></td><td class="mono">7.6 / 7.9<br><span class="meta">1 mouse 3.4</span></td></tr>
+        <tr><td><code>torch.compile</code>, max-autotune</td><td class="mono">4.3 / 4.4<br><span class="meta">1 mouse 2.3</span></td><td class="mono">1.7 / 1.9<br><span class="meta">1 mouse 1.0</span></td><td class="mono">4.2 / 4.4<br><span class="meta">1 mouse 2.1</span></td><td class="mono">7.4 / 7.9<br><span class="meta">1 mouse 3.4</span></td></tr>
+        <tr><td>MIGraphX fp16</td><td class="mono">11.1 / 11.2<br><span class="meta">1 mouse 4.4</span></td><td class="mono">–</td><td class="mono">–</td><td class="mono">–</td></tr>
+        <tr><td>MIGraphX int8</td><td class="mono">11.1 / 11.3<br><span class="meta">1 mouse 4.4</span></td><td class="mono">–</td><td class="mono">–</td><td class="mono">–</td></tr>
+        <tr><td>TensorRT fp16</td><td class="mono">–</td><td class="mono">1.2 / 1.6<br><span class="meta">1 mouse 0.8</span></td><td class="mono">2.7 / 2.8<br><span class="meta">1 mouse 1.3</span></td><td class="mono">4.5 / 4.7<br><span class="meta">1 mouse 2.0</span></td></tr>
+        <tr><td>TensorRT int8</td><td class="mono">–</td><td class="mono">1.2 / 1.7<br><span class="meta">1 mouse 0.9</span></td><td class="mono">2.4 / 2.7<br><span class="meta">1 mouse 1.2</span></td><td class="mono">–</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <ul class="plain col">
+    <li><b>On the EVO-X2, <code>torch.compile</code> is 2.6 times faster than today's PyTorch.</b> The compiled networks launch about 80 GPU programs per crop batch instead of 131 and keep the GPU busy 2.9 ms instead of 8.8. The biggest single saving is the upsampling, which PyTorch runs slowly on this GPU (3.4 of 11.8 ms in fp32). Its three modes gave the same time there. Storing the models' tensors channels-last, the change that helps NVIDIA cards, gave nothing (11.7 ms).</li>
+    <li><b>AMD's MIGraphX didn't help on the EVO-X2.</b> Its fp16 programs took as long as PyTorch (11.1 ms); this GPU isn't one MIGraphX is tuned for. Its int8 mode produced exactly the same output as its fp16 mode, so it never ran in int8 here.</li>
+    <li><b>On NVIDIA, TensorRT is fastest, then <code>torch.compile</code> (max-autotune mode), then CUDA graphs.</b> <code>torch.compile</code> on Windows needs triton-windows. TensorRT needs one engine per crop count, built in 9–25 s each.</li>
+    <li><b>int8 isn't worth it.</b> TensorRT int8, calibrated on 100 sets of real frames, was no faster than its fp16 on the RTX 6000 Ada and only slightly faster on the RTX 4000 Ada (the networks are too small for int8 to pay much), and it moved 15.6% of keypoints by more than 1 pixel, with p99 4.4 px. On the RTX 2000 Ada TensorRT couldn't build the int8 centered-instance engine (a CUDA driver memory error, every time).</li>
+    <li><b>Accuracy, fp16 engines.</b> Against full-precision PyTorch on 500 sets (89,000 keypoints), every fp16 engine moved the keypoints by 0.01 px or less at p99. A few (0.5–1%) jumped further, between two nearly equal spots on the confidence map, as fp16 PyTorch does today. TensorRT fp16 moved them a little more (about 1% over 1 px; p99 0.02–2.8 px depending on the card), because it runs the whole network in fp16.</li>
+    <li><b>fp16 drops 0.6–0.9% of centroids, in PyTorch too.</b> sleap-nn keeps a centroid only where a pixel is strictly higher than all 8 of its neighbours. In fp16 the two top pixels sometimes round to the same value, and that mouse then has no centroid in that frame: 45–64 of 7,466, always with exactly two tied pixels. Full precision never did this. A peak finder that accepts ties would fix it.</li>
+    <li><b>Weights don't change the timing.</b> The same networks with random weights took the same time with CUDA graphs and the compiled engines (within 0.05 ms). Plain PyTorch, which the CPU limits on these GPUs, varied by up to 0.7 ms from run to run either way.</li>
+  </ul>
+</section>
+
 <section class="col">
   <h2>How this was measured, and what it doesn't cover</h2>
   <ul class="plain">
@@ -509,7 +545,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 
 <footer>
   <p>Measured 18–22 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
-  <p class="meta">Version 24 · updated 22 October 2026 · reflects campy changes through pull request 124 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p class="meta">Version 28 · updated 22 October 2026 · reflects campy changes through pull requests 126 and 127 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 
