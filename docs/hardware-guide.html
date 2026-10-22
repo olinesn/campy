@@ -348,7 +348,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
       <li>CUDA graphs (<code>campy-live --cuda-graphs</code>): about 6% on the RTX 2000 Ada, with identical keypoints.</li>
       <li>A faster GPU: once the GPU is fast enough, CUDA graphs bring Windows down to a 5–8 ms floor (RTX 6000 Ada). The monitor-free RTX 4000 Ada test will show whether a mid-range card gets there.</li>
       <li>Linux on the same hardware, which would also settle the OS question.</li>
-      <li>Software: fewer GPU waits in sleap-nn's post-processing, such as batched peak finding without per-frame <code>.item()</code> calls. This would help Windows most, on any hardware.</li>
+      <li>Software: fewer GPU waits around the models. <code>campy-live --fixed-crops --cuda-graphs</code> (off by default) cuts every animal's crop in every frame, so a set runs as one graph with no wait in the middle and one copy back, with the same animals and keypoints. With 5 mice it took each set from 10.3 to 2.7 ms on the RTX 6000 Ada (frame to 3D 13.3 to 5.7 ms), and from 15.0 to 13.6 ms on the EVO-X2. On a GPU that is itself the limit, like the EVO-X2's, it pays only when about <code>--max-instances</code> animals are in view, since every missing one still costs a crop. Not yet measured on the Pro Max Slim, where Windows' waits cost most.</li>
     </ol>
   </div>
 </section>
@@ -545,7 +545,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 
 <footer>
   <p>Measured 18–22 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
-  <p class="meta">Version 27 · updated 22 October 2026 · reflects campy changes through pull request 127 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p class="meta">Version 28 · updated 22 October 2026 · reflects campy changes through pull requests 126 and 127 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 
