@@ -60,9 +60,9 @@ slot n % slots:
   0       int64       begin: the frame number, written before the frame
   8       int64       end: the frame number, written after the frame and the fields below
   16      int64       frame number
-  24      int64       host time: time.monotonic_ns() as campy got the frame
-                      (as in hosttimes.npy; on Linux and macOS, the same
-                      clock in every process)
+  24      int64       host time: as campy got the frame (as in hosttimes.npy:
+                      campy/clock.py's HostNs, the same clock in every
+                      process)
   32      float64     camera timestamp, seconds (the camera's clock)
   40      int64       written: time.perf_counter_ns() once the frame was copied
   64      frame       height x width x channels of dtype, C order

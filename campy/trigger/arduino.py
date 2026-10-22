@@ -9,7 +9,7 @@ Before any camera starts, campy checks that the Arduino answers (OpenTriggers)
 
 import re, serial
 import time, logging
-from campy import configurator
+from campy import clock, configurator
 from campy.utils.utils import Say
 
 # The check: campy sends the stop command and waits for trigger.ino's answer.
@@ -121,7 +121,7 @@ def StartTriggers(systems, params):
 		serialString = ",".join(str(item) for item in serialList)
 
 		# Send command string, noting when, on hosttimes.npy's clock (trigger.json)
-		systems["triggerStartedNs"] = time.monotonic_ns()
+		systems["triggerStartedNs"] = clock.HostNs()
 		systems["serial"].write(serialString.encode())
 
 		Say("Arduino on port {} is triggering pins {} at {} fps{}."\
