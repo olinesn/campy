@@ -106,7 +106,7 @@ without them (an RTX 2000 Ada did so after a restart, not after two days up). A 
 GPU's power or heat limit holds down is left alone. On an AMD integrated
 GPU (the EVO-X2's, which shares its chip with the CPU) at least 1 spins
 while sets come: with none, its clock still read 2650-2850 MHz, yet each
-set took about 1 ms longer (13.6 against 12.8 ms, 5 mice, --fixed-crops
+set took about 1 ms longer (13.7 against 12.8 ms, 5 mice, --fixed-crops
 --cuda-graphs) and the CPU's 3D step too, so the whole chip slows down
 between sets, which its GPU clock doesn't show. auto: on with a GPU
 (NVIDIA's CUDA and AMD's ROCm); off with MPS and the CPU.
