@@ -398,7 +398,10 @@ def test_without_results_the_view_shows_the_newest_frames(rings):
 		image, frame, row = viewer.Step()
 		assert viewer.Shown() == [1] and viewer.layout.cols == 1
 		th, tw = viewer.layout.tile
-		assert frame == 5 and row is None and tuple(image[th - 3, tw - 3]) == (50, 50, 50)
+		# A pixel inside the tile's 4 px border: no frame arrives after the
+		# first five, so on a slow runner (over 0.5 s from Check to Step) the
+		# camera's health says NO FRAMES and a red frame is drawn round its tile
+		assert frame == 5 and row is None and tuple(image[th - 10, tw - 10]) == (50, 50, 50)
 	finally:
 		viewer.Close()
 
