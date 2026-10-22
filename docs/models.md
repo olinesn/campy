@@ -99,7 +99,7 @@ On the EVO-X2, with the settings above, 3 cameras replaying 5 mice at 60 fps (3,
 - **int8 isn't worth it.** On the NVIDIA cards TensorRT int8 was at most 0.3 ms faster than fp16 and moved 15.6% of keypoints by more than 1 pixel (p99 4.4 px). MIGraphX's int8 gave exactly its fp16 output, so this GPU doesn't run it in int8 at all.
 - The timings don't depend on the weights: random weights of the same shapes gave the same times with CUDA graphs and the compiled engines (within 0.05 ms).
 
-`campy-live` can't use these yet. A compiled engine is built for a fixed number of crops, while the number of animals found changes from set to set. `campy-live --fixed-crops` (pull request 126) always runs `--max-instances` crops per frame, padding the missing ones, which is what an engine needs.
+`campy-live` can't use these yet. A compiled engine is built for a fixed number of crops, while the number of animals found changes from set to set. `campy-live --fixed-crops` (pull request 126, on by default with a GPU) always runs `--max-instances` crops per frame, padding the missing ones, which is what an engine needs.
 
 **fp16 loses a few animals.** sleap-nn's centroid peak finder keeps a pixel only if it is strictly higher than all 8 of its neighbours. In fp16 the two top pixels of a peak sometimes round to exactly the same value, and then that animal has no centroid in that frame. This happened to 0.6–0.9% of centroids in every fp16 engine, PyTorch included (`campy-live`'s default), always with exactly two tied pixels per lost centroid, and never in fp32.
 
