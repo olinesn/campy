@@ -81,43 +81,9 @@ def SetCounts(model, counts):
 	blobs.copy_(new.to(blobs.device))
 
 
-def ExactCropSize(original):
-	"""
-	sleap-nn's crop_bboxes, with its crop size made exact. It takes the size
-	from the first box's corners, int(abs(bottom - top)) + 1, in float32: for
-	some centroids (x 221.547989 with 192 px crops) right - left comes out
-	190.99998, not 191, and every crop of the set is cut a pixel short
-	(test_sleap_crop_size_rounding). --fixed-crops always cuts the crop size.
-	Here the first box's far corners are moved half a pixel further, so the
-	size rounds right; the top-lefts, which place the crops, are untouched.
-	"""
-	def crop_bboxes(images, bboxes, sample_inds):
-		if len(bboxes):
-			bboxes = bboxes.clone()
-			bboxes[0, 3, 1] = bboxes[0, 0, 1] + (torch.round(bboxes[0, 3, 1] - bboxes[0, 0, 1]) + 0.5)
-			bboxes[0, 1, 0] = bboxes[0, 0, 0] + (torch.round(bboxes[0, 1, 0] - bboxes[0, 0, 0]) + 0.5)
-		return original(images, bboxes, sample_inds)
-	return crop_bboxes
-
-
-@pytest.fixture(autouse=True)
-def exact_crop_size(monkeypatch):
-	import sleap_nn.inference.layers.topdown as topdown
-	monkeypatch.setattr(topdown, "crop_bboxes", ExactCropSize(topdown.crop_bboxes))
-
-
-def test_sleap_crop_size_rounding():
-	# Why the reference needs ExactCropSize: sleap-nn's own crop size, for a
-	# centroid --fixed-crops crops at the right size
-	from sleap_nn.inference.ops.crops import crop_bboxes, make_centered_bboxes
-	image = torch.zeros(1, 1, 256, 320, dtype=torch.uint8)
-	boxes = make_centered_bboxes(torch.tensor([[221.54798889160156, 77.36744689941406]]), 192, 192)
-	assert tuple(crop_bboxes(image, boxes, torch.tensor([0])).shape[-2:]) == (192, 191)
-	assert tuple(ExactCropSize(crop_bboxes)(image, boxes, torch.tensor([0])).shape[-2:]) == (192, 192)
-
-
 def Reference(model, frames):
-	# sleap-nn's TopDownLayer, as campy-live runs it without --fixed-crops
+	# sleap-nn's TopDownLayer, as campy-live runs it without --fixed-crops:
+	# crops at their real size too (live.ExactCropSize, tests/test_live_exact_crops.py)
 	fixed, model.fixed = model.fixed, None
 	try:
 		return model.Predict(frames)
