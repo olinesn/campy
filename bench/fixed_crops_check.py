@@ -18,7 +18,11 @@ came out short are counted.
         Camera1.mp4 Camera3.mp4 Camera4.mp4 [--sets 3600] [--out check.json]
 
 The videos are decoded with ffmpeg, in gray, frame k of each making set k,
-as campy's cameras would give them. Run it on the rig through its lock.
+as campy's cameras would give them. --engine compile (or tensorrt) runs the
+--fixed-crops graph's networks as compiled engines: then the graph is
+compared with the default, and with --fixed-crops in torch without a graph
+(graph_vs_eager_fixed_max_abs_diff_px: the engines' own difference).
+Run it on the rig through its lock.
 """
 import argparse, json, subprocess, sys, time
 import numpy as np
@@ -99,13 +103,16 @@ def Main(argv=None):
 	p.add_argument("--max-instances", type=int, default=5)
 	p.add_argument("--precision", default="fp16")
 	p.add_argument("--sets", type=int, default=0, help="0: every set of the videos")
+	p.add_argument("--engine", default="eager", help="the --fixed-crops graph's networks: campy-live --engine (eager, "
+		"compile, tensorrt, auto); the --fixed-crops run without a graph stays in torch, as a reference")
+	p.add_argument("--engine-cache", default="")
 	p.add_argument("--out", default="")
 	a = p.parse_args(argv)
 	h, w = [int(x) for x in a.frame_shape.split("x")][:2]
 	n = len(a.videos)
 	args = live.ParseArgs(["--model", "sleap", "--centroid", a.centroid, "--instance", a.instance, "--fixed-crops",
 		"--cuda-graphs", "--max-instances", str(a.max_instances), "--precision", a.precision,
-		"--frame-shape", "{}x{}x1".format(h, w)])
+		"--frame-shape", "{}x{}x1".format(h, w), "--engine", a.engine, "--engine-cache", a.engine_cache])
 	model = live.TrainedTopDown(args, n, (h, w, 1))
 	host = live.HostBuffer(True, (n, h, w, 1), np.uint8)
 	graphed = model.fixed
@@ -190,6 +197,7 @@ def Main(argv=None):
 
 	summary = {
 		"sets": sets, "videos": a.videos, "centroid": a.centroid, "instance": a.instance, "precision": a.precision,
+		"engine": a.engine,
 		"graph": model.DescribeGraphs(),
 		"found_per_set_mean": float(np.mean(found_total)) if found_total else 0.0,
 		"centroid_max_abs_diff_px": max(cen_diff, default=0.0),

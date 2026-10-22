@@ -136,6 +136,21 @@ with another batch size, so sets with fewer animals than --max-instances can
 differ). It pays when every frame has about --max-instances animals: each
 missing one still costs a crop's worth of instance model.
 
+--engine (with --fixed-crops, whose shapes never change) runs the two
+networks as compiled engines (FixedEngine) instead of torch's layer by layer:
+compile is torch.compile (inductor, Triton kernels: ROCm, and NVIDIA where
+Triton is installed), tensorrt is NVIDIA's TensorRT (an fp16 or fp32 engine
+built from the network's ONNX, kept in --engine-cache and reused), auto is
+tensorrt where it imports and the GPU is NVIDIA's, else compile. A compiled
+engine fuses each convolution with what follows it (bias, activation,
+upsampling), so far less goes to and from GPU memory (bench/compiled_bench.py
+measured it: EVO-X2 11.1 to 4.3 ms for a 15-crop instance batch, RTX 2000
+Ada 10.9 to 4.5 with TensorRT). Only the networks change: crops, peaks and
+everything else are FixedCrops' own, and with --cuda-graphs the engines'
+kernels are recorded into the set's one graph like the rest. The first set
+waits for the engines to be built (torch.compile: a minute or so; TensorRT:
+a few minutes the first time, then its plan is read from --engine-cache).
+
 With --results-feed on (the default), each row also goes into shared memory,
 campy-live-results (campy/liveresults.py), as it is logged: campy-live-view
 (campy/liveview.py) shows them on the cameras' frames.
@@ -359,7 +374,10 @@ class TopDown:
 		if args.cuda_graphs and not self.device.startswith("cuda"):
 			raise SystemExit("--cuda-graphs: CUDA (or ROCm) only, not {}".format(self.device))
 		if getattr(args, "fixed_crops", False):
-			self.fixed = FixedCrops(self.layer, n_frames, self.device, args.max_instances, graph=args.cuda_graphs)
+			self.fixed = FixedCrops(self.layer, n_frames, self.device, args.max_instances, graph=args.cuda_graphs,
+				engine=getattr(args, "engine", "eager"), cache=getattr(args, "engine_cache", ""))
+		elif getattr(args, "engine", "eager") != "eager":
+			raise SystemExit("--engine: with --fixed-crops only (a compiled engine is made for one input shape)")
 		elif args.cuda_graphs:
 			for backend in (self.layer.centroid_layer.backend, self.layer.centered_instance_layer.backend):
 				graphed = CUDAGraphed(backend.model, backend.use_fp16)
@@ -613,7 +631,7 @@ class FixedCrops:
 	1024x1280 frames is none.
 	"""
 
-	def __init__(self, layer, n_frames, device, instances, graph=False):
+	def __init__(self, layer, n_frames, device, instances, graph=False, engine="eager", cache=""):
 		import torch
 		self.torch, self.layer, self.device = torch, layer, device
 		self.c, self.ci = layer.centroid_layer, layer.centered_instance_layer
@@ -636,6 +654,9 @@ class FixedCrops:
 		self.host = self.done = None
 		self.max_abs_diff = 0.0
 		self.nodes = None
+		self.engine = FixedEngine.Choose(engine, device)
+		self.cache = cache
+		self.engines = {} # id(layer): FixedEngine, made at its first input
 
 	# ------------------------------------------------ the pipeline, fixed shapes
 
@@ -667,6 +688,11 @@ class FixedCrops:
 		# cache off (a graph can't record it)
 		torch = self.torch
 		backend = layer.backend
+		if self.engine != "eager":
+			if id(layer) not in self.engines:
+				self.engines[id(layer)] = FixedEngine(self.engine, backend, x, bool(backend.use_fp16 and self.cuda),
+					self.cache, "centroid" if layer is self.c else "instance")
+			return self.engines[id(layer)](x)
 		with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=bool(backend.use_fp16 and self.cuda),
 				cache_enabled=False):
 			out = backend.model(x)
@@ -873,13 +899,193 @@ class FixedCrops:
 			"keypoints": a[..., 4:4 + 2 * n].reshape(B, K, n, 2).copy(), "peak_vals": a[..., 4 + 2 * n:].copy()}
 
 	def Describe(self):
+		engines = "" if not self.engines else "; networks: " + ", ".join(e.text for e in self.engines.values())
 		if not self.graph:
-			return "fixed crops: {} per set, without a graph".format(self.B * self.K)
+			return "fixed crops: {} per set, without a graph{}".format(self.B * self.K, engines)
 		pooled = PoolBytes({self.pool})
 		return "fixed crops: one CUDA graph for the whole set ({} crops){}; its output {} (largest difference " \
-			"{:g})".format(self.B * self.K, "" if pooled is None else ", holding {:.0f} MB of GPU memory".format(
+			"{:g}){}".format(self.B * self.K, "" if pooled is None else ", holding {:.0f} MB of GPU memory".format(
 			pooled / 1e6), "the same as without" if self.max_abs_diff == 0 else "differs from without",
-			self.max_abs_diff)
+			self.max_abs_diff, engines)
+
+
+class FixedEngine:
+	"""
+	--engine: one of FixedCrops' two networks as a compiled engine, made for
+	the one input it will ever get (FixedCrops' shapes never change), on its
+	first call. Called as the model is (the preprocessed batch, (N, 1, C, H,
+	W), uint8), it gives the confidence maps, float32, on the device.
+
+	compile: torch.compile of the model's forward (sleap-nn's Lightning
+	module: normalization, backbone, head), fp16 autocast as campy-live's
+	default, no dynamic shapes, one whole graph (fullgraph: a break would
+	stop with its reason rather than quietly run part of it in torch).
+	inductor's kernels are plain launches, so --cuda-graphs records them.
+
+	tensorrt: the backbone and head exported to ONNX at that shape (in fp16
+	for --precision fp16: TensorRT 10 and later build strongly typed
+	networks, so the ONNX's types are the engine's), built into a plan, kept
+	in --engine-cache under a hash of the weights, the shape, the precision,
+	TensorRT's version and the GPU, and read from there the next time. It
+	reads its input from, and writes its output to, torch tensors' memory, on
+	torch's current stream, so --cuda-graphs records it too (TensorRT allows
+	its enqueue in a graph once it has run once, which the warm-up does).
+	The normalization (/ 255) stays in torch, before it.
+	"""
+
+	HEADS = ("CentroidConfmapsHead", "CenteredInstanceConfmapsHead")
+
+	@staticmethod
+	def Choose(engine, device):
+		# eager, compile or tensorrt, for --engine on this device
+		import importlib.util
+		if engine in ("eager", "", None):
+			return "eager"
+		import torch
+		if not str(device).startswith("cuda"):
+			raise SystemExit("--engine {}: CUDA or ROCm only, not {}".format(engine, device))
+		nvidia = not getattr(torch.version, "hip", None)
+		if engine == "auto":
+			engine = "tensorrt" if nvidia and importlib.util.find_spec("tensorrt") else "compile"
+		if engine == "tensorrt":
+			if not nvidia:
+				raise SystemExit("--engine tensorrt: NVIDIA GPUs only (on ROCm, --engine compile)")
+			for module in ("tensorrt", "onnx"):
+				if not importlib.util.find_spec(module):
+					raise SystemExit("--engine tensorrt needs the {0} package (pip install {0})".format(module))
+		elif engine == "compile":
+			if not importlib.util.find_spec("triton"):
+				raise SystemExit("--engine compile needs Triton (Linux: it comes with torch; Windows: pip install "
+					"triton-windows, with the CC environment variable set to the tcc.exe it bundles, "
+					"triton/runtime/tcc/tcc.exe)")
+		else:
+			raise SystemExit("--engine: eager, compile, tensorrt or auto, not {}".format(engine))
+		return engine
+
+	def __init__(self, kind, backend, x, fp16, cache, name):
+		import torch
+		self.torch, self.kind, self.fp16, self.name = torch, kind, fp16, name
+		self.shape = tuple(x.shape)
+		t = time.perf_counter()
+		if kind == "compile":
+			self.Compile(backend.model)
+		else:
+			self.TensorRT(backend.model, cache)
+		self.text = "{} {} {} {}".format(name, {"compile": "torch.compile", "tensorrt": "TensorRT"}[kind],
+			"fp16" if fp16 else "fp32", "x".join(str(v) for v in self.shape[:1] + self.shape[2:]))
+		self.seconds = time.perf_counter() - t
+
+	def Compile(self, model):
+		torch = self.torch
+		fp16 = self.fp16
+
+		def run(x):
+			with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=fp16, cache_enabled=False):
+				out = model(x)
+			if isinstance(out, dict):
+				raise RuntimeError("--engine compile: the model gives a dict, not one confidence map")
+			return out.float()
+		self.fn = torch.compile(run, dynamic=False, fullgraph=True)
+
+	def TensorRT(self, lightning, cache):
+		import copy, hashlib, warnings
+		import tensorrt as trt
+		torch = self.torch
+		body = getattr(lightning, "model", None)
+		if body is None:
+			raise SystemExit("--engine tensorrt: a trained sleap-nn model only (--model sleap), not {}".format(
+				type(lightning).__name__))
+		n, _, c, h, w = self.shape
+		device = next(body.parameters()).device
+		with torch.inference_mode(False), torch.no_grad():
+			probe = body(torch.zeros((1, c, h, w), device=device))
+			heads = [k for k in probe if k in self.HEADS] if isinstance(probe, dict) else []
+			if len(heads) != 1:
+				raise SystemExit("--engine tensorrt: no confidence-map head in the {} model".format(self.name))
+			head = heads[0]
+			fp16 = self.fp16
+
+			class Net(torch.nn.Module):
+				# backbone + head: the normalized image in, float32 confidence maps out
+				def __init__(self):
+					super().__init__()
+					self.body = copy.deepcopy(body).to(memory_format=torch.contiguous_format)
+					if fp16:
+						self.body = self.body.half()
+
+				def forward(self, x):
+					return self.body(x.half() if fp16 else x)[head].float()
+			net = Net().eval()
+			digest = hashlib.sha1()
+			for key, value in net.state_dict().items():
+				digest.update(key.encode())
+				digest.update(value.detach().cpu().contiguous().numpy().tobytes())
+			digest.update("{} {} {} {}".format(self.shape, fp16, trt.__version__,
+				torch.cuda.get_device_name(device)).encode())
+			cache = os.path.expanduser(cache or os.path.join("~", ".cache", "campy", "engines"))
+			os.makedirs(cache, exist_ok=True)
+			stem = os.path.join(cache, "{}_{}".format(self.name, digest.hexdigest()[:16]))
+			logger = trt.Logger(trt.Logger.WARNING)
+			runtime = trt.Runtime(logger)
+			if os.path.exists(stem + ".plan"):
+				with open(stem + ".plan", "rb") as f:
+					plan = f.read()
+			else:
+				print("campy-live: building the {} network's TensorRT engine ({}, {}): a few minutes, once (kept in "
+					"{})".format(self.name, "x".join(str(v) for v in (n, c, h, w)), "fp16" if fp16 else "fp32",
+					cache), flush=True)
+				with warnings.catch_warnings():
+					warnings.simplefilter("ignore")
+					torch.onnx.export(net, (torch.zeros((n, c, h, w), device=device),), stem + ".onnx",
+						input_names=["x"], output_names=["y"], opset_version=17, dynamo=False, do_constant_folding=True)
+				flags = 0
+				if hasattr(trt.NetworkDefinitionCreationFlag, "STRONGLY_TYPED"):
+					flags |= 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
+				builder = trt.Builder(logger)
+				network = builder.create_network(flags)
+				parser = trt.OnnxParser(network, logger)
+				if not parser.parse_from_file(stem + ".onnx"):
+					raise SystemExit("--engine tensorrt: TensorRT can't read the {} network: {}".format(self.name,
+						"; ".join(str(parser.get_error(i)) for i in range(parser.num_errors))))
+				plan = builder.build_serialized_network(network, builder.create_builder_config())
+				if plan is None:
+					raise SystemExit("--engine tensorrt: TensorRT couldn't build the {} network".format(self.name))
+				plan = bytes(plan)
+				with open(stem + ".plan.part", "wb") as f:
+					f.write(plan)
+				os.replace(stem + ".plan.part", stem + ".plan")
+				os.remove(stem + ".onnx")
+			del net, probe
+		self.runtime = runtime
+		self.engine = runtime.deserialize_cuda_engine(plan)
+		if self.engine is None:
+			raise SystemExit("--engine tensorrt: {}.plan doesn't load (another TensorRT?); delete it".format(stem))
+		self.ctx = self.engine.create_execution_context()
+		self.out = torch.empty(tuple(self.engine.get_tensor_shape("y")), dtype=torch.float32, device=device)
+		self.ctx.set_tensor_address("y", self.out.data_ptr())
+		self.fn = self.Enqueue
+
+	def Enqueue(self, x):
+		# sleap-nn's normalize_on_gpu for uint8 (float32 / 255), then the
+		# engine on torch's stream; its output buffer is the same every call
+		torch = self.torch
+		x = x.squeeze(1)
+		if torch.is_floating_point(x):
+			from sleap_nn.data.normalization import normalize_on_gpu
+			x = normalize_on_gpu(x)
+		else:
+			x = x.float() / 255.0
+		x = x.contiguous()
+		self.ctx.set_tensor_address("x", x.data_ptr())
+		if not self.ctx.execute_async_v3(torch.cuda.current_stream().cuda_stream):
+			raise RuntimeError("TensorRT: the {} network didn't run".format(self.name))
+		return self.out
+
+	def __call__(self, x):
+		if tuple(x.shape) != self.shape:
+			raise RuntimeError("--engine: the {} network was made for {}, not {}".format(self.name, self.shape,
+				tuple(x.shape)))
+		return self.fn(x)
 
 
 def MaxAbsDiff(a, b):
@@ -1952,6 +2158,12 @@ def ParseArgs(argv=None):
 	p.add_argument("--fixed-crops", action="store_true", help="Crop --max-instances animals in every frame, \
 		padding the missing ones, so the GPU runs a whole set without the CPU waiting for the animals found, and \
 		its results come back in one copy (FixedCrops). With --cuda-graphs, the whole set is one graph.")
+	p.add_argument("--engine", default="eager", choices=["eager", "compile", "tensorrt", "auto"], help="With \
+		--fixed-crops: run the two networks as compiled engines (FixedEngine). compile: torch.compile (ROCm; \
+		NVIDIA with Triton); tensorrt: NVIDIA TensorRT; auto: tensorrt on NVIDIA where it is installed, else \
+		compile. The first set waits for them to be built.")
+	p.add_argument("--engine-cache", default="", help="--engine tensorrt: the folder its built engines are kept in \
+		and read back from (default: ~/.cache/campy/engines).")
 	p.add_argument("--hold-gpu-clock", default="auto", choices=["auto", "on", "off"], help="Keep a few blocks of \
 		the GPU spinning at the lowest priority from the feed's coming to the end, so the GPU keeps its full clock \
 		(see campy-live's help). auto: on with a GPU (NVIDIA's CUDA or AMD's ROCm).")
