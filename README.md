@@ -366,7 +366,7 @@ pip install --no-deps -e <campy folder>     # or: PYTHONPATH=<campy folder> pyth
 campy-live --cameras 3                                      # random-weight models of the benchmark's sizes
 campy-live --cameras 3 --model sleap --centroid <centroid model folder> --instance <centered-instance model folder>
 ```
-Start it before or after `campy-acquire`. It waits for the feed, and ends when the recording does (or at Ctrl-C). It writes `campy-live_<date_time>.npy`, one row per set (frame number, each camera's host time, the keypoints and their confidence, the centroids, and when the set was read and finished), and a summary `.json`: sets processed and skipped, and the latency from frames to keypoints. `python -m pydoc campy.live` describes the fields and the models. `--model random` (the default) times random-weight models of the sizes `bench/sleap_infer_bench.py` picked, with a fixed number of animals per frame; `--model none` only reads the feed.
+Start it before or after `campy-acquire`. It waits for the feed, and ends when the recording does (or at Ctrl-C). It writes `campy-live_<date_time>.npy`, one row per set (frame number, each camera's host time, the keypoints and their confidence, the centroids, and when the set was read and finished), and a summary `.json`: sets processed and skipped, the latency from frames to keypoints, and the skeleton, calibration and number of animals (for `campy-live-export`). `python -m pydoc campy.live` describes the fields and the models. `--model random` (the default) times random-weight models of the sizes `bench/sleap_infer_bench.py` picked, with a fixed number of animals per frame; `--model none` only reads the feed.
 
 Frames of one trigger pulse have the same frame number on every camera, as long as every camera starts on the trigger's first pulse (campy starts the trigger once all are grabbing) and none loses a frame before campy gets it. A camera that loses one (`flirFramesLost` in "metadata.csv") numbers its later frames one lower than the others. `campy-live` counts the sets whose host times are more than half a frame apart (`misaligned`).
 
@@ -377,6 +377,14 @@ With `--calibration <calibration.toml>` (anipose's), `campy-live` also turns eac
 campy-live --cameras 3 --model sleap --centroid <folder> --instance <folder> --animals 3 --calibration calibration.toml
 ```
 Each row then also has `points3d` (per animal and node, x, y, z in the calibration's units, mm), `members` (which detection in each camera is that animal), `n_views` and `reproj_px`, and the summary gives the latency from frames to 3D.
+
+#### Opening a tracked recording in LUC3D (campy-live-export)
+
+After the recording, `campy-live-export` writes `campy-live`'s results into the recording folder as files LUC3D opens. Run it in campy-live's environment, which has sleap-io:
+```
+campy-live-export <recording folder> --log campy-live_<date_time>.npy
+```
+It writes `campy-live.slp`, which holds each camera's 2D and, with `--calibration`, each animal's identity and 3D pose, grouped across the cameras (LUC3D: File > Load SLP, then pick the recording folder for the videos). It also writes `<camera>/campy-live.slp`, `calibration.toml` and `skeleton.json`, LUC3D's session folder for the 2D (File > Load Session Folder), and `points3d.h5`, the 3D as arrays. Each prediction goes on the video frame that holds it, through each camera's `frametimes.npy`. `--frames FIRST:LAST` exports part of a long recording. `--skeleton <model folder>` gives the skeleton's edges for logs from 2.1.0rc6 and earlier, whose summary lacks them. `--calibration` and `--cameras` cover a calibration that has moved and a log with no summary. See [Live tracking](docs/live-tracking.md#opening-a-tracked-recording-in-luc3d) and `python -m pydoc campy.liveexport`.
 
 #### Watching it live (campy-live-view)
 

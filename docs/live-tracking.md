@@ -42,7 +42,7 @@ Which torch build:
    ```
    It runs as a separate program at low priority and stays open from one recording to the next. Its `c` key, or the "Fast CPUs" box in its panel, moves `campy-live` on and off the performance cores while both run, and the panel shows `campy-live`'s inference time over the last 2 s, so you can see the difference. On a computer without a screen (over SSH), `campy-live-view --no-window --png <folder>` saves pictures instead.
 
-`campy-live` ends with the recording, or at Ctrl-C. It writes `campy-live_<date_time>.npy`, with one row per set processed (keypoints, confidences, and the 3D poses and identities with `--calibration`), and a `.json` summary.
+`campy-live` ends with the recording, or at Ctrl-C. It writes `campy-live_<date_time>.npy`, with one row per set processed (keypoints, confidences, and the 3D poses and identities with `--calibration`), and a `.json` summary. To go through the results frame by frame, open the recording in LUC3D (below).
 
 ## Checking that it keeps up
 
@@ -53,6 +53,24 @@ The summary, and the reports it prints every 10 s, give the sets processed and s
 - **"misaligned" sets**: one camera's frames reached the computer late, or a camera lost a frame (`flirFramesLost` in its `metadata.csv`). See the README on frame numbers.
 
 For a test without animals or without a trained model, `--model random` runs untrained models of the benchmark's default sizes, and `--model none` only reads the feed.
+
+## Opening a tracked recording in LUC3D
+
+After the recording, `campy-live-export` turns `campy-live`'s log into files that [LUC3D](https://github.com/talmolab/luc3d) opens with the results already on the videos: each camera's 2D predictions and, if `campy-live` ran with `--calibration`, each animal's 3D pose and identity. Run it in the inference environment, which has the `sleap-io` package it needs (it comes with sleap-nn):
+```
+campy-live-export <recording folder> --log campy-live_<date_time>.npy
+```
+The recording folder is the one `campy-acquire` made, with one folder per camera. The export writes into it:
+
+- **`campy-live.slp`**: everything in one file. In LUC3D, use File > Load SLP and pick it. When LUC3D asks where the videos are, pick the recording folder; it finds each camera's video by the folder's name. Each camera shows its 2D predictions. With 3D, each animal on each frame is grouped across the cameras with its identity ("animal 0", "animal 1", ...) and its 3D pose, as LUC3D's own triangulation would group it, so the 3D view, the reprojections and the identity timeline work at once.
+- **`<camera>/campy-live.slp`, `calibration.toml` and `skeleton.json`**: the same 2D in LUC3D's session-folder layout. Use File > Load Session Folder and pick the recording folder. This gives the 2D only, which LUC3D can triangulate itself. It is also how to open a recording tracked without `--calibration`. `calibration.toml` holds only the recorded cameras, under campy's camera names.
+- **`points3d.h5`**: the 3D alone, as plain arrays (`points_3d` is frames × animals × nodes × xyz in mm, NaN where unseen, with `frame_indices`, `campy_frames`, `track_names` and `node_names`), for analysis outside LUC3D. LUC3D's File > Load 3D points also reads it, as 3D poses not linked to the 2D.
+
+How the frames line up: `campy-live` skips the sets that arrive while it is busy, so those frames have no predictions. Every prediction goes on the video frame that holds it, found through each camera's `frametimes.npy`. If campy's writer dropped frames from one camera's video, that video runs behind the others in LUC3D from there on. Its 2D still land on its own correct frames, and `campy-live-export` says from which frame. The export also checks that the log belongs to the recording: each row's host times must match the recording's `hosttimes.npy`.
+
+The summary tells the export the skeleton, the calibration and the number of animals. Logs from campy 2.1.0rc6 and earlier lack the skeleton's edges: add `--skeleton <the instance model's folder>`. If the calibration is not at the path `campy-live` used, give `--calibration`. If the summary is missing because `campy-live` was stopped by an error, also give `--cameras`.
+
+Checked on the EVO-X2: three emulated cameras played the 5-mouse clips for 30 s while `campy-live` tracked them in 3D (1,791 sets, 3 skipped). In LUC3D, every 2D point and 3D pose sat on the frame its set came from, and LUC3D's reprojection error of `campy-live`'s 3D was 2.1 px. Exporting takes memory, because sleap-io builds the whole file in memory as it writes it. 10 minutes of 3 cameras at 60 fps with 5 mice took 49 s and up to 3.4 GB, and made a 257 MB file, so an hour needs about 20 GB. For a long recording, export a part at a time with `--frames FIRST:LAST`, given in campy's frame numbers. These are LUC3D's frame numbers too, unless campy's writer dropped frames. `--force` replaces the previous part's files.
 
 ## Testing without cameras
 

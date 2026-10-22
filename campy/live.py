@@ -56,7 +56,11 @@ A set's row is logged once its 3D is made.
 Output
 ------
 <out>.npy, one row per set processed (a structured array; np.load reads it,
-also while campy-live runs), and <out>.json, the summary. Fields of each row:
+also while campy-live runs), and <out>.json, the summary, which also says the
+model's nodes and edges, and with --calibration the calibration's path, its
+cameras' names and the number of animals: what campy-live-export
+(campy/liveexport.py) needs to write the results as files LUC3D opens.
+Fields of each row:
 
   frame          the set's frame number
   host_ns        per camera: when campy got the frame (as hosttimes.npy, on
@@ -1319,7 +1323,10 @@ def Run(args):
 		printer.Close()
 		summary = log.Summary()
 		summary.update(model=model.Describe(), nodes=getattr(model, "nodeNames", None),
-			pose3d=tracker.Describe() if tracker else None, cameras=[r.cameraName for r in cameras.readers],
+			edges=getattr(model, "edges", None), pose3d=tracker.Describe() if tracker else None,
+			calibration=os.path.abspath(args.calibration) if tracker else None,
+			calibration_names=tracker.names if tracker else None, animals=tracker.animals if tracker else 0,
+			cameras=[r.cameraName for r in cameras.readers],
 			rings=names, frame_shape=list(shape), frame_rate=frameRate, log=out + ".npy", cpus=placed,
 			cuda_graphs=model.DescribeGraphs() if hasattr(model, "DescribeGraphs") else None,
 			results_feed=log.results.name if log.results else None,

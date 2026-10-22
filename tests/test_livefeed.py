@@ -653,6 +653,10 @@ def test_campy_live_matches_and_triangulates_the_animals(tmp_path, monkeypatch):
 	assert rows["frame"][-1] == 60 and np.all(np.diff(rows["frame"]) > 0)
 	assert summary["pose3d"].startswith("3 animals, cameras top, left, right")
 	assert summary["pose3d_ms"]["p50"] > 0
+	# What campy-live-export needs to write LUC3D's files from the log alone
+	assert summary["calibration"] == str(tmp_path / "calibration.toml")
+	assert summary["calibration_names"] == ["top", "left", "right"] and summary["animals"] == 3
+	assert "edges" in summary
 
 
 def test_campy_live_makes_the_3d_while_the_model_runs_on_the_next_set(tmp_path, monkeypatch):

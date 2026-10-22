@@ -48,6 +48,11 @@ jobs:
         # OpenCV (headless) for campy-live-view's tests: it is installed in campy-live's
         # environment, not campy's
         run: python -m pip install -e . pytest opencv-python-headless
+      - name: Install sleap-io (campy-live-export's tests)
+        # Also campy-live's environment's, with sleap-nn; it needs Python 3.10 or later,
+        # so on 3.9 those tests are skipped
+        if: matrix.python != '3.9'
+        run: python -m pip install sleap-io
       - name: Install nireyecam (RatCam support)
         if: env.NIREYECAM_TOKEN != ''
         run: python -m pip install "nireyecam @ git+https://x-access-token:${NIREYECAM_TOKEN}@github.com/olinesn/nir-eye-cam.git#subdirectory=host"
