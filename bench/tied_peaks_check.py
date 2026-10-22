@@ -21,9 +21,11 @@ centroids matched to the nearest reference centroid within --match-px
 full-frame pixels (missed: a reference centroid with none; extra: one with no
 reference centroid), the centroid and keypoint shifts of matched animals, and,
 between fp16-strict and fp16-tied, whether the animals both found have the
-same keypoints: in images whose centroids are all the same they should be
-identical; where fp16-tied found one more animal, the instance model ran on
-one more crop, and fp16 results can differ with the batch. Recovered: the
+same keypoints: in sets whose centroids are all the same they should be
+identical; where fp16-tied found one more animal, the instance model (which
+runs on the crops of every camera's image at once) ran on one more crop, and fp16 results can differ with the batch. fp16-strict also
+runs twice: how often its keypoints differ from one run to the next (some GPU
+kernels are not deterministic). Recovered: the
 reference centroids fp16-strict missed and fp16-tied found, with their
 shifts from fp32.
 
@@ -163,6 +165,8 @@ def main():
     # same crops), and in images where fp16-tied found one more (one crop more
     # in the instance model's batch: fp16 kernels may differ with the batch)
     same = {"same_crops": [0, 0, 0.0], "one_more_crop": [0, 0, 0.0]} # animals, keypoints differ, largest px
+    # fp16-strict run twice, sets with the same centroids: how much fp16 keypoints vary run to run
+    again = [0, 0, 0.0]
     for i, host in read_sets(args.videos, args.first, args.sets):
         frames = torch.from_numpy(host).to("cuda")
         r = {m: run(frames, m) for m in MODES}
@@ -174,10 +178,21 @@ def main():
                 recovered_cen.append(gt[k][0])
                 recovered_kp.extend(gt[k][1])
         s, t = r["fp16-strict"], r["fp16-tied"]
+        s2 = run(frames, "fp16-strict")
+        if np.array_equal(s["centroids"], s2["centroids"], equal_nan=True):
+            ok = ~np.isnan(s["centroids"][..., 0])
+            if ok.any():
+                d = np.abs(np.nan_to_num(s["keypoints"][ok], nan=-1e9) - np.nan_to_num(s2["keypoints"][ok], nan=-1e9))
+                d = d.reshape(int(ok.sum()), -1).max(-1)
+                again[0] += len(d)
+                again[1] += int((d > 0).sum())
+                again[2] = max(again[2], float(d.max()))
+        # the instance model runs on the crops of every camera's image at once: compare by set
+        ns, nt = int((~np.isnan(s["centroids"][..., 0])).sum()), int((~np.isnan(t["centroids"][..., 0])).sum())
+        group = "same_crops" if np.array_equal(s["centroids"], t["centroids"], equal_nan=True) else \
+            "one_more_crop" if nt == ns + 1 else None
         for b in range(s["centroids"].shape[0]):
             sc, tc = s["centroids"][b], t["centroids"][b]
-            ns, nt = int((~np.isnan(sc[:, 0])).sum()), int((~np.isnan(tc[:, 0])).sum())
-            group = "same_crops" if np.array_equal(sc, tc, equal_nan=True) else "one_more_crop" if nt == ns + 1 else None
             for a in range(sc.shape[0]):
                 if group is None or np.isnan(sc[a, 0]):
                     continue
@@ -204,6 +219,7 @@ def main():
                "recovered_keypoint_shift_px_p99": pct(recovered_kp, 99),
                "fp16_strict_vs_tied": {g: {"animals": v[0], "keypoints_differ": v[1], "largest_px": v[2]}
                                        for g, v in same.items()},
+               "fp16_strict_run_twice": {"animals": again[0], "keypoints_differ": again[1], "largest_px": again[2]},
                "modes": {m: c.summary() for m, c in cmp.items()}}
     with open(args.json, "w") as f:
         json.dump(results, f, indent=1)
@@ -219,6 +235,9 @@ def main():
     for g, v in results["fp16_strict_vs_tied"].items():
         print("fp16 strict vs tied, {}: {} animals, keypoints differ in {} (largest {:g} px)".format(
             g.replace("_", " "), v["animals"], v["keypoints_differ"], v["largest_px"]))
+    v = results["fp16_strict_run_twice"]
+    print("fp16 strict run twice, same centroids: {} animals, keypoints differ in {} (largest {:g} px)".format(
+        v["animals"], v["keypoints_differ"], v["largest_px"]))
 
 if __name__ == "__main__":
     main()
