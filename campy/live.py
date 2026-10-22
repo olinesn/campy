@@ -378,6 +378,8 @@ class TopDown:
 	Predict runs the layer and brings the results back as numpy arrays.
 	"""
 
+	upsamples = () # --fast-upsample's layers (LayoutUpsample); none in a TopDown made without __init__
+
 	def __init__(self, args, n_frames, shape):
 		import torch
 		self.torch = torch
