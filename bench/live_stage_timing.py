@@ -207,6 +207,8 @@ def Run(a, rest):
 
 	def Prepare(args, n_frames, shape, dtype):
 		model, host = prepare(args, n_frames, shape, dtype) # warmed up untimed
+		if a.timing == "sync" and getattr(model, "fixed", None) is not None:
+			raise SystemExit("--timing sync times sleap-nn's own layer's stages: give campy-live --fixed-crops off")
 		if a.timing == "sync" and hasattr(model, "layer"):
 			Instrument(model, st, torch)
 		upload, predict = model.Upload, model.Predict
@@ -331,7 +333,7 @@ def Kernels(a):
 	from torch.profiler import profile, ProfilerActivity, record_function
 	sys.argv = ["campy-live"]
 	args = live.ParseArgs(["--model", "sleap", "--centroid", a.centroid, "--instance", a.instance,
-		"--max-instances", str(a.max_instances)])
+		"--max-instances", str(a.max_instances), "--fixed-crops", "off", "--cuda-graphs", "off"])
 	frames = Frames(a.video, a.sets)
 	n_frames = frames.shape[1]
 	with warnings.catch_warnings():
