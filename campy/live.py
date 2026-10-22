@@ -339,6 +339,10 @@ class TopDown:
 			nvidia = self.device.startswith("cuda") and not getattr(torch.version, "hip", None)
 			self.memoryFormat = "channels_last" if nvidia else "nchw"
 		self.nodes, self.nodeNames, self.edges = None, None, None
+		# A centroid whose top is two equal pixels (fp16 rounding) is kept
+		# once, not dropped as sleap-nn does (campy/peaks.py)
+		from campy import peaks
+		self.tiedPeaks = not getattr(args, "strict_peaks", False) and peaks.UseTiedPeaks()
 		self.layer, self.text = self.Build(args)
 		self.graphs = []
 		if args.cuda_graphs:
@@ -939,8 +943,8 @@ class RandomTopDown(TopDown):
 		return layer, text
 
 	def Describe(self):
-		return "{} ({}, {}, {}, max {} animals)".format(self.text, self.device, self.precision, self.memoryFormat,
-			self.instances)
+		return "{} ({}, {}, {}, max {} animals{})".format(self.text, self.device, self.precision, self.memoryFormat,
+			self.instances, "" if self.tiedPeaks else ", strict peaks")
 
 
 def SyntheticCentroidPeaks(inner, n_frames, cm_h, cm_w, k, sigma=2.0):
@@ -1004,8 +1008,8 @@ class TrainedTopDown(TopDown):
 		return layer, text
 
 	def Describe(self):
-		return "{} ({}, {}, {}, max {} animals)".format(self.text, self.device, self.precision, self.memoryFormat,
-			self.instances)
+		return "{} ({}, {}, {}, max {} animals{})".format(self.text, self.device, self.precision, self.memoryFormat,
+			self.instances, "" if self.tiedPeaks else ", strict peaks")
 
 
 MODELS = {"random": RandomTopDown, "sleap": TrainedTopDown, "none": NoModel}
@@ -1519,6 +1523,8 @@ def ParseArgs(argv=None):
 		help="auto: channels_last on Nvidia GPUs, where it is faster, and nchw elsewhere (ROCm, MPS, CPU), \
 			as bench/sleap_infer_bench.py.")
 	p.add_argument("--max-instances", type=int, default=5, help="Most animals per frame.")
+	p.add_argument("--strict-peaks", action="store_true", help="sleap-nn's own centroid peak finding: a centroid \
+		whose top is two equal pixels (fp16 rounds about 0.7%% of them so) is lost. Default: kept once (campy/peaks.py).")
 	p.add_argument("--animals", type=int, default=5, help="How many animals there are: with --calibration, the 3D \
 		identities 0 .. animals-1; with --model random, the animals it finds per frame.")
 	p.add_argument("--calibration", default="", help="anipose calibration.toml: match the animals across the \
