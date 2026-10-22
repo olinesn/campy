@@ -101,7 +101,26 @@ On the EVO-X2, with the settings above, 3 cameras replaying 5 mice at 60 fps (3,
 
 `campy-live` can't use these yet. A compiled engine is built for a fixed number of crops, while the number of animals found changes from set to set. `campy-live --fixed-crops` (pull request 126) always runs `--max-instances` crops per frame, padding the missing ones, which is what an engine needs.
 
-**fp16 loses a few animals.** sleap-nn's centroid peak finder keeps a pixel only if it is strictly higher than all 8 of its neighbours. In fp16 the two top pixels of a peak sometimes round to exactly the same value, and then that animal has no centroid in that frame. This happened to 0.6–0.9% of centroids in every fp16 engine, PyTorch included (`campy-live`'s default), always with exactly two tied pixels per lost centroid, and never in fp32.
+**fp16 used to lose a few animals; `campy-live` now keeps them.** sleap-nn's centroid peak finder keeps a pixel only if it is strictly higher than all 8 of its neighbours. In fp16 the two top pixels of a peak sometimes round to exactly the same value, and then that animal had no centroid in that frame. This happened to 0.6–0.9% of centroids in every fp16 engine, PyTorch included (`campy-live`'s default), always with exactly two tied pixels per lost centroid, and never in fp32.
+
+Since pull request 132, `campy-live` breaks such a tie by position: of two equal top pixels it keeps the first in reading order (`campy/peaks.py`), so the peak is found once. A peak without a tie is found exactly as before. `--fixed-crops` finds its peaks the same way. `--strict-peaks` brings back sleap-nn's own peak finder, in both. Measured with `bench/tied_peaks_check.py` on the 5-mouse replay (3 cameras, all 3,600 sets, 53,652 centroids in fp32):
+
+| | EVO-X2 | RTX 6000 Ada |
+|---|---|---|
+| fp16, sleap-nn's peak finder: centroids lost | 397 (0.74%) | 359 (0.67%) |
+| fp16, `campy-live`'s: centroids lost | 0 | 1 |
+| fp32, `campy-live`'s vs sleap-nn's | identical | identical |
+
+- The one centroid still lost on the RTX 6000 Ada isn't a tie: that frame had six peaks for five places (`--max-instances 5`), the 5th and 6th scored 0.6560 and 0.6562, and fp16 kept the other one. sleap-nn's peak finder did the same.
+- In sets where both found the same mice, every keypoint was bit-identical.
+- A recovered mouse's centroid was up to 8.6 px from fp32's, because sleap-nn's sub-pixel refinement leans toward whichever of the two pixels is kept. Its crop moves with it, and its keypoints were 1.1–1.2 px from fp32's at the median (p99 6.6–6.8 px). Before the fix, that mouse had no keypoints at all in that frame.
+- When one more mouse is found in a set, the centered-instance model runs on one more crop, and in fp16 the other mice's keypoints in that set can then change: on the EVO-X2 all of them changed a little, on the RTX 6000 Ada 3% of them did. The largest change was 64 px on the EVO-X2 and 7.2 px on the RTX 6000 Ada, a node jumping between two nearly equal spots on its confidence map, as fp16 nodes sometimes do against fp32. The same happens in fp16 whenever the number of mice found in a set changes.
+
+To check a machine:
+```
+python bench/tied_peaks_check.py --centroid <centroid model folder> --instance <instance model folder> \
+    --videos cam1.mp4 cam2.mp4 cam3.mp4
+```
 
 To measure a machine (see the script's help for the engines and what each needs installed):
 ```
