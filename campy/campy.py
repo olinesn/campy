@@ -21,7 +21,7 @@ from collections import deque
 import multiprocessing as mp
 from campy import writer, configurator, preflight, newfiles, keepawake
 from campy.trigger import trigger
-from campy.cameras import unicam
+from campy.cameras import unicam, emu
 from campy.utils.utils import HandleKeyboardInterrupt, Say, ErrorText, StartPrinter, StopPrinter
 
 def OpenSystems():
@@ -143,16 +143,18 @@ def InitCameraProcess(readyQueue):
 	unicam.SetReadyQueue(readyQueue)
 
 
-def RunCamera(n_cam, readyQueue, done):
+def RunCamera(n_cam, readyQueue, done, start=None):
 	# One camera process: records its camera, then tells Main what went wrong,
 	# if anything (done: unicam.TellMain). One that ends without saying died,
-	# and Main says so.
+	# and Main says so. start: when an emulated camera's frame 0 is due, which
+	# Main sets once every camera is ready (cameras/emu.py StartClock).
 	# What it says is written by a thread of its own, so that a slow console
 	# or log file never holds up its camera; all of it, before it ends
 	StartPrinter()
 	try:
 		InitCameraProcess(readyQueue)
 		unicam.SetMainConnection(done)
+		emu.SetStartClock(start)
 		# Not throttled should standby start anyway (Windows); released as it ends
 		keepawake.KeepAwake(params.get("keepAwake", True), whole=False).Start()
 		recording = AcquireOneCamera(n_cam)
@@ -220,7 +222,10 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 		# go on recording
 		ctx = mp.get_context("spawn")
 		readyQueue = ctx.Queue()
-		cameras = unicam.CameraProcesses(ctx, RunCamera, params, readyQueue)
+		# Emulated cameras (cameraMake "emu") time their frames from one start,
+		# set below once every camera is ready, as a hardware trigger starts them
+		start = ctx.Value("d", 0.0, lock=False)
+		cameras = unicam.CameraProcesses(ctx, RunCamera, params, readyQueue, start=start)
 
 		# The trigger stops and the systems close whatever happens here
 		try:
@@ -232,6 +237,7 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 			if ready and trigger.WaitToStart(systems, params, interrupted=lambda: interrupts.count > 0) \
 				and not cameras.ready() and not interrupts.count: # not if the cameras are stopping (Ctrl-C)
 				systems = trigger.StartTriggers(systems, params)
+				emu.StartClock(start)
 			trigger.SaveStart(params, ready, missing, systems.get("triggerStartedNs"))
 			failures = cameras.Wait(interrupts)
 		finally:

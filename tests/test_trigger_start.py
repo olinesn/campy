@@ -240,9 +240,8 @@ def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path, sim):
 		for name in ("Camera0", "Camera1"):
 			(tmp_path / name).mkdir()
 			write_clip(str(tmp_path / name / "clip.mp4")) # emu reads videoFilename minus its first 3 characters
-		# The emulated cameras free-run rather than wait for triggers, so they must still be
-		# recording once the Arduino can take the start command: campy starts no trigger for
-		# cameras that stopped.
+		# The emulated cameras wait for campy to start the trigger, as triggered cameras do
+		# (cameras/emu.py StartClock), then record 10 s from there.
 		proc = run_campy(tmp_path, os.ttyname(slave))
 		time.sleep(0.2)
 	finally:

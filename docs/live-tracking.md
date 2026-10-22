@@ -54,6 +54,21 @@ The summary, and the reports it prints every 10 s, give the sets processed and s
 
 For a test without animals or without a trained model, `--model random` runs untrained models of the benchmark's default sizes, and `--model none` only reads the feed.
 
+## Testing without cameras
+
+campy's emulated cameras (`cameraMake: "emu"`) stand in for real ones: each plays a recorded video in a loop, at `frameRate`, and `campy-acquire` records it and copies every frame into the live feed as it would a real camera's. This tests the whole pipeline, encoder included, with real animals and no hardware. Camera n plays `<videoFolder>/<cameraNames[n]>/<videoFilename without its first 3 characters>`, so with `videoFilename: "emuclip.mp4"` each camera plays the `clip.mp4` in its folder:
+```
+cameraMake: "emu"
+numCams: 3
+cameraNames: ["Camera1", "Camera2", "Camera3"]
+videoFolder: "C:\\campy_data\\replay"     # Camera1\clip.mp4, Camera2\clip.mp4, Camera3\clip.mp4
+videoFilename: "emuclip.mp4"
+frameRate: 60
+pixelFormatInput: "gray"                 # one channel per frame, as a Mono8 FLIR camera's
+liveFeed: True
+```
+Each run's recording goes into a new folder inside `videoFolder`, as usual, and the clips stay where they are. As with a hardware trigger, campy starts every emulated camera at the same moment once all are ready, so frame n of each camera reaches the computer within a few milliseconds of the others', as with real cameras on a trigger. Each emulated camera used to start on its own, and `campy-live` counted every set as misaligned. Use videos of the same length, recorded together, so that each set of frames shows one moment. The README explains the details ([Emulated cameras](../README.md#emulated-cameras-cameramake-emu)).
+
 ## On Linux (AMD, ROCm)
 
 - **First use of a model**: AMD's MIOpen library tunes every new convolution shape the first time it sees it, so the first warm-up of a new model can take about 10 s. The tuning is cached for later runs.
