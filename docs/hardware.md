@@ -4,7 +4,7 @@ The full guide, with every measurement, is [hardware-guide.html](hardware-guide.
 
 - **GMKtec EVO-X2**: mini-PC, AMD Ryzen AI Max+ 395 with its Radeon 8060S integrated GPU, Ubuntu 24.04 and ROCm.
 - **Dell Pro Max Slim FCS1250**: Intel Core Ultra 9 285 (8 performance + 16 efficiency cores), NVIDIA RTX 2000 Ada, Windows 11 and CUDA.
-- **Dell Precision 7875**: AMD Threadripper PRO 7965WX, NVIDIA RTX 6000 Ada (plus an RTX 4000 Ada for the monitor), Windows 11 and CUDA.
+- **Dell Precision 7875**: AMD Threadripper PRO 7965WX, NVIDIA RTX 6000 Ada (plus an RTX 4000 Ada for the monitor), Windows 11 and CUDA. Since 21 October 2026 it is also set up for live tracking (campy 2.1.0rc5), and has run the 5-mouse replay with 3D.
 
 ## The short version
 
