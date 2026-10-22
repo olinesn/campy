@@ -646,6 +646,8 @@ def FastUpsample(args, device, memoryFormat):
 	# they are, at every upsampling layer (RTX 6000 Ada)
 	if args.fast_upsample == "off" or not device.startswith("cuda"):
 		return False
+	if getattr(args, "engine", "eager") != "eager":
+		return False # a compiled engine fuses the upsampling itself, and can't compile this layer's timing
 	return args.fast_upsample == "on" or memoryFormat == "nchw"
 
 
