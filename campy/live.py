@@ -170,9 +170,9 @@ for its input, as timed while warming up: PyTorch's NCHW upsampling kernel
 leaves the GPU nearly idle on the small, deep layers (5x5 pixels by 768
 channels), and its channels_last one is slower on the big ones. The results
 are the same. auto: on with a GPU (CUDA or ROCm) and --memory-format nchw,
-which auto picks on ROCm (the EVO-X2: 14.2 to 13.1 ms a set, 5 mice, 3
-cameras). With channels_last models (auto's on NVIDIA GPUs) every layer was
-faster as it was, so it does nothing there.
+which auto picks on ROCm (the EVO-X2, 5 mice, 3 cameras, --fixed-crops
+--cuda-graphs: 13.6 to 10.6 ms a set). With channels_last models (auto's on
+NVIDIA GPUs) every layer was faster as it was, so it does nothing there.
 
 With --results-feed on (the default), each row also goes into shared memory,
 campy-live-results (campy/liveresults.py), as it is logged: campy-live-view

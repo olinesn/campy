@@ -149,6 +149,27 @@ On the EVO-X2 the same comparison gave `torch.compile` fp16 and PyTorch fp16 the
 
 So `torch.compile` is as exact as today's fp16 PyTorch. TensorRT fp16 is the fastest, but it runs the whole network in half precision, so about 1 keypoint in 60 moves more than a pixel (often to a second, nearly as bright spot), against 1 in 140 today. In fp32, TensorRT is exact but slower than fp16 PyTorch. The roughly 380 sets where any fp16 run finds different animals than fp32 aren't caused by the engines. In fp16 the two brightest pixels of a peak sometimes round to the same value, and sleap-nn's peak finder then drops that animal (about 0.7% of centroids; see the hardware guide).
 
+## Faster upsampling on AMD (`--fast-upsample`, on by default with ROCm)
+
+The two models make their images bigger again with *bilinear upsampling* layers. PyTorch has two ways to run them, depending on how the image is laid out in memory: NCHW (each channel a whole image after the other, the default on AMD) or channels-last (all channels of one pixel side by side, the default on NVIDIA). In NCHW, PyTorch's upsampling gives each output pixel one GPU thread, which then loops over every crop and every channel. On the deep, small layers (5×5 pixels with 768 channels) that is only a few hundred threads for a GPU built to run tens of thousands, so it sits nearly idle: on the EVO-X2 those layers took 1.45 and 0.98 ms of a set's 9 ms of instance model ([Where a set's time goes](models.md#where-a-sets-time-goes)). In channels-last the work is spread over the channels too, but on the big, shallow layers channels-last is slower.
+
+With `--fast-upsample`, `campy-live` times each upsampling layer both ways while it warms up, for every number of crops it can get, and uses whichever is faster: the input is turned into channels-last, upsampled and turned back, so the layer after it sees no difference. Each output pixel is the same sum of the same four input pixels either way, so the results are identical. `campy-live` says what it chose when it starts (for example "3 of 7 upsampling layer shapes run channels_last ... 2.41 ms less GPU time"). With `--cuda-graphs` the graphs record the faster way. `auto` (the default) turns it on when the models run in NCHW on a GPU, which `--memory-format auto` picks on AMD. On NVIDIA the models already run channels-last, and there every upsampling layer was already at its fastest (RTX 6000 Ada: nothing switched, same time), so it does nothing there. `--fast-upsample off` turns it off. With a compiled engine (`--engine`, above), which fuses the upsampling into the layers around it and is faster still on the EVO-X2 (about 6 ms per set), it stays off: `--fast-upsample` is for PyTorch's own way of running the networks, the default.
+
+On the EVO-X2, 5 mice, 3 cameras, 60 fps, the trained models of the table above, two replays of each (3,600 sets each), all on the same day:
+
+| | inference per set, p50 / p99 | sets skipped | 3D step alone, p50 |
+|---|---|---|---|
+| `--fixed-crops --cuda-graphs` | 13.6 / 14.2 ms | 0, 2 | 1.2–1.7 ms |
+| `--fixed-crops --cuda-graphs --fast-upsample on` | **10.6 / 11.7 ms** | 0, 3 | 0.9–1.0 ms |
+| `--fixed-crops --cuda-graphs --hold-gpu-clock-blocks 1` | 12.8 / 13.0 ms | 0, 2 | 0.9 ms |
+| `--fixed-crops --cuda-graphs --hold-gpu-clock-blocks 1 --fast-upsample on` | **10.6 / 10.8 ms** | 2, 2 | 1.0 ms |
+| `--hold-gpu-clock-blocks 1` (no fixed crops, no graphs) | 14.4 / 16.0–16.2 ms | 0, 3 | 1.0 ms |
+| `--hold-gpu-clock-blocks 1 --fast-upsample on` | 12.3 / 13.8–14.7 ms | 0, 3 | 1.1 ms |
+
+2D and 3D accuracy against the offline SLEAP predictions were the same in every run (2D median 3.8 px; 3D median 4.2 mm). Run in one process on the same 400 sets, the keypoints were identical to the last bit, with and without it, on the EVO-X2 and on the RTX 6000 Ada (with `--memory-format nchw` forced there: 11.6 to 9.5 ms per set, still slower than channels-last's 8.6).
+
+**The GPU clock hold matters on the EVO-X2.** With `--hold-gpu-clock-blocks auto`, `campy-live` stops its spinning block once the GPU's clock reads above 90% of its fastest, about 10 s in. On the EVO-X2 the clock does read high after that, but every set gets about 1 ms slower, and so does the 3D step, which runs on the CPU. So the whole chip seems to drop to a lower power state between sets, not just the GPU's clock. That hid most of `--fast-upsample`'s gain in runs without fixed crops (about 15.2 ms with or without it once the block stopped, against 12.1 and 14.3 ms while it spun). Keeping one block spinning (`--hold-gpu-clock-blocks 1`) avoids it, as the table shows. With `--fast-upsample` the GPU has more idle time, the clock dips, and `auto` kept its block spinning 95% of the time anyway. Changing `auto` to keep one block on the EVO-X2 is a separate change, not made yet.
+
 ## Testing without cameras
 
 campy's emulated cameras (`cameraMake: "emu"`) stand in for real ones: each plays a recorded video in a loop, at `frameRate`, and `campy-acquire` records it and copies every frame into the live feed as it would a real camera's. This tests the whole pipeline, encoder included, with real animals and no hardware. Camera n plays `<videoFolder>/<cameraNames[n]>/<videoFilename without its first 3 characters>`, so with `videoFilename: "emuclip.mp4"` each camera plays the `clip.mp4` in its folder:
