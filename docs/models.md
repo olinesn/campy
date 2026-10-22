@@ -48,7 +48,7 @@ Accuracy on the same 293 validation mice (11 body parts, median / 90th / 99th pe
 2. **Leave about 2 ms.** The live pipeline ran 1–1.7 ms slower than the benchmark at the median and 2–2.5 ms at p99, because it also copies frames in, reads results back and logs them. At 60 fps, pick a model whose benchmark p99 is about 14–14.5 ms or less. At 30 fps there is far more room.
 3. **Check it live**: the summary's skipped sets should be zero ([Live tracking](live-tracking.md)).
 
-On the EVO-X2 with 5 mice and 3 cameras, the benchmark p99s were 14.0 ms for the 160 px model, 15.3 ms for the 24-filter 192 px model and 10.6 ms for the 16-filter one. In the full live pipeline the 160 px model skipped nothing. The 24-filter 192 px model, with less room, still skipped a set now and then, and the 16-filter one kept up easily but was less accurate. The [hardware guide](hardware.md) has the live measurements.
+On the EVO-X2 with 5 mice and 3 cameras, the benchmark p99s were 14.0 ms for the 160 px model, 15.3 ms for the 24-filter 192 px model and 10.6 ms for the 16-filter one. In the full live pipeline the 160 px model skipped nothing. The 24-filter 192 px model, with less room, still skipped a set now and then, and the 16-filter one kept up easily but was less accurate. On the Pro Max Slim (RTX 2000 Ada) the 160 px model took 16.5 ms per set with 5 mice, which is too close to the 16.7 ms between frames: it skipped 4–6% of the sets. Use the 16-filter 192 px model there, or 30 fps. The [hardware guide](hardware.md) has the live measurements.
 
 ## Recording for a model
 
