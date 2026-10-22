@@ -394,6 +394,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     </table>
   </div>
   <p class="meta">Before the 3D step ran alongside inference. Benchmark p99: inference-only benchmark, 5 animals, idle. Identity kept: share of sets in which the live identities paired with the offline ones the same way.</p>
+  <p class="meta">These runs had a sleap-nn rounding error that, in almost a third of the sets, cut every crop one pixel too small. <code>campy-live</code> now cuts them at their real size (pull request 131): replaying with the 160 px model on 22 October, 3 runs before and 3 after, 2D vs offline went from 3.83 to 3.79 px over all sets (3.92 to 3.79 px on the affected ones), 3D from 4.3 to 4.2 mm, at the same speed.</p>
   <p class="col">The 160 px model was as accurate as the 24-filter 192 px model and kept identities far better, but in this first version of the pipeline the 3D step ran after inference, and the two together didn't fit in 16.7 ms. Running the 3D step alongside inference fixed that:</p>
   <div class="tablewrap">
     <table>
@@ -548,7 +549,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 
 <footer>
   <p>Measured 18–22 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
-  <p class="meta">Version 30 · updated 22 October 2026 · reflects campy changes through pull request 130 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p class="meta">Version 31 · updated 22 October 2026 · reflects campy changes through pull requests 130 and 131 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 
