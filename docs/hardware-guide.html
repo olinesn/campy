@@ -450,6 +450,32 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
   </ul>
 </section>
 
+<section>
+  <h2>Five mice through the live pipeline, on the Pro Max Slim</h2>
+  <p class="col">On 21 October the Pro Max Slim got the EVO-X2's 5-mouse test: the same 60 s of the same three views, fed into the live feed at 60 fps, with the same models (the centroid model above and the 160 px-crop centered-instance model) and the session's own calibration for 3D. <code>campy-live</code> ran with its defaults (performance cores at High priority, GPU clock held, no CUDA graphs) except where the table says "not pinned". The recording runs had campy itself record three emulated cameras playing the same clip in a loop, at 60 fps, with Quick Sync H.265, while copying every frame into the live feed, so the CPU and the encoder were as busy as with real cameras. Every run was <code>RIG_CLEAN</code>, with the GPU at 2,475–2,490 MHz.</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>3 cameras at 60 fps, 5 mice</th><th>Sets skipped</th><th>Inference, median / p99</th><th>Frame to 3D pose, median / p99</th><th>Frames recorded</th></tr></thead>
+      <tbody>
+        <tr><td>EVO-X2, replay (20 October)</td><td class="mono">0</td><td class="mono">15.0 / 16.3 ms</td><td class="mono"><b>16.8 / 20.2 ms</b></td><td class="mono">–</td></tr>
+        <tr><td>Pro Max Slim, replay (two runs)</td><td class="mono">144 and 162 of about 3,585 (4.0–4.5%)</td><td class="mono">16.5–16.6 / 17.3–17.4 ms</td><td class="mono"><b>28.0–28.3 / 36.3 ms</b></td><td class="mono">–</td></tr>
+        <tr><td>Pro Max Slim, replay, no 3D</td><td class="mono">86 (2.4%)</td><td class="mono">16.6 / 17.4 ms</td><td class="mono">26.3 / 34.7 ms (to keypoints)</td><td class="mono">–</td></tr>
+        <tr><td>Pro Max Slim, replay, not pinned</td><td class="mono">529 (14.7%)</td><td class="mono">18.3 / 19.3 ms</td><td class="mono">30.6 / 39.4 ms</td><td class="mono">–</td></tr>
+        <tr><td>Pro Max Slim, recording 10 min</td><td class="mono">2,331 of 36,000 (6.5%)</td><td class="mono">16.9 / 17.8 ms</td><td class="mono">26.4 / 35.6 ms</td><td class="mono">36,000 of 36,000 per camera</td></tr>
+        <tr><td>Pro Max Slim, recording 10 min, not pinned</td><td class="mono">6,623 (18.4%)</td><td class="mono">18.9 / 20.7 ms</td><td class="mono">29.6 / 38.9 ms</td><td class="mono">36,000 of 36,000 per camera</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <ul class="plain col">
+    <li><b>Five mice don't fit 60 fps on the Pro Max Slim with these models.</b> 5 mice make 15 crops per set instead of 9 with 3 mice, and inference took 16.5 ms of the 16.7 ms between frames (13.3 ms with 3 mice, above). It is the GPU's own work: its clock was at full speed and the CPU was pinned.</li>
+    <li><b>Being just over the frame time costs a whole frame of delay.</b> The EVO-X2's inference is only 1.5 ms faster, but it finishes each set before the next frame comes, so its 3D poses are ready 16.8 ms after the frame. On the Pro Max Slim each set ends just after the next frame has arrived, so that frame waits (10 ms at the median, up to 18 ms) and the set after it is skipped: frame to 3D pose took 28 ms. A model that leaves room, as the 2 ms rule of thumb above says, avoids this.</li>
+    <li><b>Pinning still matters.</b> Left to Windows, inference was 1.8–2 ms slower and 3–4 times as many sets were skipped.</li>
+    <li><b>3D costs about 1 ms per set</b>, run alongside the next set's inference. Recording costs inference about 0.4 ms and a few more skipped sets.</li>
+    <li><b>The recording was never affected.</b> Each camera kept all 36,000 frames, with no gaps in the frame numbers, pinned or not.</li>
+    <li><b>For 5 mice at 60 fps on this PC</b>, use a lighter centered-instance model, such as the 16-filter 192 px one (12.0 / 13.1 ms on the EVO-X2, above), or record at 30 fps. CUDA graphs saved 6% with 3 mice, which would bring 16.5 ms only to about 15.5, still without the 2 ms of room.</li>
+  </ul>
+</section>
+
 <section class="col">
   <h2>How this was measured, and what it doesn't cover</h2>
   <ul class="plain">
@@ -459,6 +485,8 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     <li>Both 3-camera rigs were then retested with three real FLIR Blackfly S cameras (BFS-U3-13Y3M), triggered at 60 fps by an Arduino running campy's trigger sketch, recording 35 minutes while the full sweep ran: the inference results matched the fake-camera runs. On the EVO-X2 this was done twice, plus once recording alone.</li>
     <li>The 5-mouse replay decoded 60 s (3,600 frames per camera) of a recorded session into campy's live feed at 60 fps. The old-vs-current comparison uses a replay that creates the feed 3 s before the first frame, as campy does before the trigger. Runs that overlapped other GPU work were discarded and repeated; later runs on the EVO-X2 hold a lock that checks nothing else touches the GPU or the trigger.</li>
     <li>The Pro Max Slim's live run used a separate software stack from its benchmark (torch 2.11.0+cu128, sleap-nn 0.3.3).</li>
+    <li>The Pro Max Slim's 5-mouse replays fed the three views straight into the live feed, recording nothing. Its recording runs used campy's emulated cameras (<code>cameraMake: "emu"</code>), which load the CPU and the encoder like real cameras but not USB, from a copy of campy with two test-only changes: each emulated camera gave one gray channel, as the FLIR cameras do, and all three started their first frame at the same moment, as a trigger makes them. Each time the 60 s clip started again, the emulated cameras paused 110–150 ms (9 times in each 10-minute run); no frame was lost.</li>
+    <li><b>Windows' clock.</b> campy's <code>hosttimes.npy</code> and <code>campy-live</code>'s timestamps come from Python's <code>time.monotonic</code>, which on Windows, up to Python 3.12, moves in steps of 15.6 ms. So on the Pro Max Slim those times, and the latencies <code>campy-live</code> reports from them, are rounded to 15–16 ms steps (hence the "Windows' clock steps in 15.6 ms" notes above). Inference times were never affected. The 5-mouse runs replaced that clock with Windows' precise one (QueryPerformanceCounter, which Python 3.13 uses for <code>time.monotonic</code>), so their latencies are exact.</li>
     <li>Windows machines run the GPUs under WDDM; no kernel-log equivalent of Linux's amdgpu messages was checked there.</li>
     <li>Pinning and the Windows changes were measured on the four fastest model pairs in two 21-minute recordings, before and after the changes, with a backup service running in both; the second recording's last minutes fell into Modern Standby and were discarded. All 32 model sizes were then measured pinned, in a separate recording with the backup service stopped and the screen timeout set to Never.</li>
     <li>The 21 October runs on the Pro Max Slim logged the GPU's clock every 50 ms, and held a lock so that no other program used the GPU meanwhile; runs that overlapped another session's were discarded and repeated. The live runs' 1 animal per set makes them lighter than the 3-mouse replays.</li>
@@ -472,7 +500,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 
 <footer>
   <p>Measured 18–21 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
-  <p class="meta">Version 20 · updated 21 October 2026 · reflects campy changes through pull request 113 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p class="meta">Version 21 · updated 21 October 2026 · reflects campy changes through pull request 117 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 
