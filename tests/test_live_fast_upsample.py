@@ -62,6 +62,7 @@ def test_auto():
 	assert On("auto", "cuda", "nchw") and not On("auto", "cuda", "channels_last")
 	assert On("on", "cuda", "channels_last") and not On("off", "cuda", "nchw")
 	assert not On("on", "cpu", "nchw") and not On("auto", "mps", "nchw")
+	assert not live.FastUpsample(argparse.Namespace(fast_upsample="on", engine="compile"), "cuda", "nchw")
 	assert live.ParseArgs([]).fast_upsample == "auto"
 
 
