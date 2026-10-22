@@ -80,6 +80,7 @@ Since pull request 132, `campy-live` breaks such a tie by position: of two equal
 | fp16, `campy-live`'s: centroids lost | 0 | 1 |
 | fp32, `campy-live`'s vs sleap-nn's | identical | identical |
 
+- The one centroid still lost on the RTX 6000 Ada isn't a tie: that frame had six peaks for five places (`--max-instances 5`), the 5th and 6th scored 0.6560 and 0.6562, and fp16 kept the other one. sleap-nn's peak finder did the same.
 - In sets where both found the same mice, every keypoint was bit-identical.
 - A recovered mouse's centroid was up to 8.6 px from fp32's, because sleap-nn's sub-pixel refinement leans toward whichever of the two pixels is kept. Its crop moves with it, and its keypoints were 1.1–1.2 px from fp32's at the median (p99 6.6–6.8 px). Before the fix, that mouse had no keypoints at all in that frame.
 - When one more mouse is found in a set, the centered-instance model runs on one more crop, and in fp16 the other mice's keypoints in that set can then change: on the EVO-X2 all of them changed a little, on the RTX 6000 Ada 3% of them did. The largest change was 64 px on the EVO-X2 and 7.2 px on the RTX 6000 Ada, a node jumping between two nearly equal spots on its confidence map, as fp16 nodes sometimes do against fp32. The same happens in fp16 whenever the number of mice found in a set changes.
