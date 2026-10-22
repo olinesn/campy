@@ -104,12 +104,6 @@ def ExactCropSize(original):
 	return crop_bboxes
 
 
-@pytest.fixture(autouse=True)
-def exact_crop_size(monkeypatch):
-	import sleap_nn.inference.layers.topdown as topdown
-	monkeypatch.setattr(topdown, "crop_bboxes", ExactCropSize(topdown.crop_bboxes))
-
-
 def test_sleap_crop_size_rounding():
 	# Why the reference needs ExactCropSize: sleap-nn's own crop size, for a
 	# centroid --fixed-crops crops at the right size
@@ -121,7 +115,9 @@ def test_sleap_crop_size_rounding():
 
 
 def Reference(model, frames):
-	# sleap-nn's TopDownLayer, as campy-live runs it without --fixed-crops
+	# sleap-nn's TopDownLayer, as campy-live runs it without --fixed-crops: with
+	# its crops cut at their size since pull request 131 (live.ExactCropSize), so
+	# no correction here (a second one, on top, cut 321 px crops)
 	fixed, model.fixed = model.fixed, None
 	try:
 		return model.Predict(frames)
