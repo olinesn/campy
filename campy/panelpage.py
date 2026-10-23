@@ -114,7 +114,7 @@ function render(s){
   $("diskleft").textContent = s.disk.hours_left!=null ? "about "+s.disk.hours_left+" h at this rate" : "";
   const T = H.tracking; $("good3d").textContent = T && T.good3d!=null ? T.good3d+" of "+T.animals : "-";
   const parts = Object.assign({}, L.parts||{}); if((L.live||[]).length) parts["campy-live"] = L.live[L.live.length-1];
-  $("programs").innerHTML = Object.entries(parts).map(([n,p]) => tag(p.state, p.state=="running"?"ok":p.exit_code?"bad":"warn")+" "+esc(n=="acquire"?"campy-acquire":n=="view"?"viewer":n)).join("<br>") || "-";
+  $("programs").innerHTML = Object.entries(parts).map(([n,p]) => tag(p.state, p.state=="running"?"ok":p.exit_code?"bad":"warn")+" "+esc(n=="acquire"?"campy-acquire":n=="view"?"viewer":n=="watch"?"campy-watch":n)).join("<br>") || "-";
   const R = s.recording || {}, counters = {}; (R.cameras||[]).forEach(c => counters[c.name] = c);
   const cams = H.cameras || [];
   if(cams.length != thumbs){ thumbs = cams.length; $("cams").innerHTML = cams.map((c,i) => '<div class="card cam"><img id="th'+i+'" alt="'+esc(c.name)+'"><div id="cm'+i+'"></div></div>').join(""); }

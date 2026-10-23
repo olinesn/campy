@@ -91,7 +91,8 @@ LIVE = {
 	"required": ((bool,), False, "true: no recording if campy-live can't start; false: record without tracking"),
 	"ready_timeout_s": ((int, float), 120, "how long to wait for campy-live's models (a first engine build: ~40 s)"),
 	"wait_s": ((int, float), 600, "how long campy-live waits for the feed, at most (--wait-sec)"),
-	"restart": ((bool,), True, "start campy-live again if it dies while the cameras record"),
+	"restart": ((bool,), True, "start campy-live again if it dies, or hangs, while the cameras record"),
+	"watch": ((bool,), True, "start campy-watch beside campy-live: alerts about the live tracking (docs/alerts.md)"),
 	}
 VIEW = {
 	"show": ((bool,), True, "start campy-live-view (view: true or false says it alone)"),
@@ -527,6 +528,38 @@ class Part:
 			"state": "not started" if self.process is None else "running" if self.ended is None else "ended"}
 
 
+def LastAlert(path, key):
+	"""The latest event of key in an alerts log (JSON lines, campy/notify.py), its time in seconds, or None."""
+	try:
+		with open(path, encoding="utf-8", errors="replace") as f:
+			lines = collections.deque(f, maxlen=500)
+	except OSError:
+		return None
+	for line in reversed(lines):
+		try:
+			event = json.loads(line)
+		except ValueError:
+			continue
+		if event.get("key") == key:
+			try:
+				event["time"] = datetime.fromisoformat(event["time"]).timestamp()
+			except (KeyError, TypeError, ValueError):
+				event["time"] = None
+			return event
+	return None
+
+
+def Alert(key, text, severity="critical"):
+	# To the alerts' channels (campy/notify.py, ~/.campy/alerts.yaml), when there are any; it never stops campy-session
+	try:
+		from campy import notify
+		notifier = notify.Notifier(say=Say)
+		notifier.Problem(key, text, severity, remind=False)
+		notifier.Flush(15)
+	except Exception as e:
+		Say("Could not send the alert: {}".format(e))
+
+
 def Stamp(t):
 	return datetime.fromtimestamp(t).astimezone().isoformat(timespec="milliseconds") if t else None
 
@@ -553,6 +586,7 @@ class Session:
 		# panel's window never ends a recording; its Stop, and Ctrl-C here, reach campy-acquire through its stop file
 		self.detached = detached
 		self.view_wanted = False # the panel's "Open the viewer again", for the main thread (Watch)
+		self.hung, self.hung_at, self.hung_looked = None, 0.0, 0.0 # campy-live stopped because it hung (CheckHung)
 		self.folder = None
 		self.state = "checking"
 		self.parts = {}
@@ -667,10 +701,13 @@ class Session:
 				self.Problem("No recording: campy-live did not start, and live.required is true.")
 				self.Status()
 				return 1
+		if config.live is not None and config.live["watch"] and not self.presses:
+			self.StartWatch()
 		if self.presses:
 			self.state = "stopped"
 			self.Problem("Stopped (Ctrl-C) before the recording started: nothing was recorded.")
 			self.EndLive()
+			self.EndWatch()
 			self.Status()
 			return 1
 
@@ -698,6 +735,7 @@ class Session:
 			self.Problem("campy-acquire ended with exit code {}: see {}.".format(code, acquire.log))
 		self.Status()
 		self.EndLive()
+		self.EndWatch()
 		view = self.parts.get("view")
 		if view is not None:
 			if config.view["keep_open"] and view.Running():
@@ -783,6 +821,10 @@ class Session:
 					self.LiveDied(part)
 				elif name == "view":
 					Say("campy-live-view closed (exit code {}).".format(part.code))
+				elif name == "watch" and part.code not in (0, None):
+					self.Problem("campy-watch stopped (exit code {}): see {}. The recording goes on, without its "
+						"alerts about the live tracking.".format(part.code, part.log))
+		self.CheckHung()
 		if self.view_wanted:
 			self.view_wanted = False
 			self.ReopenView()
@@ -795,13 +837,59 @@ class Session:
 		if time.monotonic() - self.status_at >= STATUS_EVERY_S:
 			self.Status()
 
+	def StartWatch(self):
+		# campy-watch (campy/livewatch.py), beside campy-live: what campy-live-view shows in red, sent as alerts once
+		# it lasts, into alerts-live.log in the recording's folder. Not tied to campy-session: it watches the recording
+		# to its end, as campy-live tracks it
+		self.watchStop = os.path.join(self.logs, "campy-watch.stop")
+		watch = Part("watch", [self.live_python or Python(), "-m", "campy.livewatch",
+			"--name", str(self.config.Value("liveFeedName", "campy-live")), "--cameras", str(self.config.Cameras()[0]),
+			"--stop-file", self.watchStop, "--launcher-pid", str(os.getpid())],
+			os.path.join(self.logs, "campy-watch.log"), env=self.LiveEnv(), cwd=self.folder,
+			apart="console" if self.detached else True)
+		self.parts["watch"] = watch.Start()
+		return watch
+
+	def CheckHung(self, now=None):
+		"""
+		campy-live that hangs (it runs, and makes no result while the cameras
+		record): campy-watch says so in alerts-live.log, key live/campy-live,
+		after 30 s. It is then stopped (its stop file; ended LIVE_STOP_S later
+		if it does not stop) and started again as one that died (LiveDied).
+		"""
+		live = self.parts.get("live")
+		if live is None or not live.Running() or not self.config.live or not self.config.live["restart"]:
+			return
+		now = time.time() if now is None else now
+		if self.hung is live:
+			if now - self.hung_at > LIVE_STOP_S:
+				self.Problem("campy-live did not stop within {} s of its stop file: ended.".format(LIVE_STOP_S))
+				live.End() # which sees it end (Check), so Watch will not: started again from here
+				self.LiveDied(live)
+			return
+		if now - self.hung_looked < STATUS_EVERY_S:
+			return
+		self.hung_looked = now
+		event = LastAlert(os.path.join(self.folder, "alerts-live.log"), "live/campy-live")
+		if event is None or event.get("state") != "open" or (event.get("time") or 0) <= (live.started or now):
+			return
+		self.Problem("campy-watch: campy-live made no result for 30 s while the cameras record: it is stopped, to "
+			"be started again.")
+		self.hung, self.hung_at = live, now
+		try:
+			stopfile.Write(self.liveStop)
+		except OSError as e:
+			Say("Could not write campy-live's stop file: {}".format(e))
+
 	def LiveDied(self, part):
 		# campy-live ends by itself, exit code 0, once the feed has: as the cameras close, before campy-acquire ends
-		if part.code == 0:
+		hung, self.hung = self.hung is part, None
+		if part.code == 0 and not hung:
 			Say("campy-live finished: the feed ended.")
 			return
-		self.Problem("campy-live stopped while the cameras record (exit code {}): see {}. The recording goes on.".format(
-			part.code, part.log))
+		if not hung:
+			self.Problem("campy-live stopped while the cameras record (exit code {}): see {}. The recording goes on."
+				.format(part.code, part.log))
 		if not self.config.live["restart"]:
 			Say("It is not started again (live.restart is false).")
 			return
@@ -809,7 +897,10 @@ class Session:
 		while self.restarts and now - self.restarts[0] > 3600:
 			self.restarts.popleft()
 		if len(self.restarts) >= RESTARTS_PER_HOUR:
-			self.Problem("campy-live stopped {} times within the hour: not started again.".format(len(self.restarts) + 1))
+			text = "campy-live stopped {} times within the hour: not started again. The recording goes on " \
+				"untracked.".format(len(self.restarts) + 1)
+			self.Problem(text)
+			Alert("live/campy-live/restarts", text)
 			return
 		after = RESTART_AFTER_S[min(len(self.restarts), len(RESTART_AFTER_S) - 1)]
 		self.restart_due = now + after
@@ -841,6 +932,26 @@ class Session:
 			time.sleep(0.2)
 		if live.code not in (0, None):
 			self.Problem("campy-live ended with exit code {}: see {}.".format(live.code, live.log))
+
+	def EndWatch(self):
+		# campy-watch ends once the feed has (or, before any recording, at once); else its stop file, then it is ended
+		watch = self.parts.get("watch")
+		if watch is None or not watch.Running():
+			if watch is not None:
+				watch.Check()
+			return
+		deadline = time.monotonic() + (LIVE_END_S if self.parts.get("acquire") else 0)
+		asked = False
+		while not watch.Check():
+			watch.tail.Read()
+			now = time.monotonic()
+			if not asked and now >= deadline:
+				stopfile.Write(self.watchStop)
+				asked, deadline = True, now + LIVE_STOP_S
+			elif asked and now >= deadline:
+				watch.End()
+				break
+			time.sleep(0.2)
 
 	def Press(self, sig, frame):
 		# Ctrl-C reached campy-acquire and its cameras too (this console); the stop file says it again, for a

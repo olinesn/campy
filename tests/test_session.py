@@ -14,6 +14,8 @@ import subprocess
 import sys
 import threading
 import time
+import types
+from datetime import datetime
 
 import numpy as np
 import pytest
@@ -238,7 +240,10 @@ def test_a_tracked_recording_in_one_command(tmp_path, home):
 	# Everything in the recording's folder, each program's output marked here
 	logs = folder / "logs"
 	assert sorted(p.name for p in logs.iterdir()) == ["campy-acquire.log", "campy-acquire.yaml", "campy-live.log",
-		"campy-live.ready", "post.json", "post.log", "session-config.original.yaml", "session-config.yaml"]
+		"campy-live.ready", "campy-watch.log", "post.json", "post.log", "session-config.original.yaml",
+		"session-config.yaml"]
+	assert "campy-watch: watching Camera0, Camera1." in (logs / "campy-watch.log").read_text()
+	assert "campy-watch: the recording ended." in (logs / "campy-watch.log").read_text()
 	assert "[acquire] Camera0 saved 60 frames" in out and "[live]" in out
 	assert "campy-live is ready" in out and "campy-live finished: the feed ended." in out
 	ran = yaml.safe_load((logs / "campy-acquire.yaml").read_text())
@@ -249,6 +254,7 @@ def test_a_tracked_recording_in_one_command(tmp_path, home):
 	assert summary["ended"] == "the recording ended" and summary["sets"] > 30
 	status = json.loads((folder / "launcher.json").read_text())
 	assert status["state"] == "done" and status["parts"]["acquire"]["exit_code"] == 0
+	assert status["parts"]["watch"]["exit_code"] == 0
 	assert status["live"][0]["exit_code"] == 0 and status["problems"] == []
 	assert json.loads((home / ".campy" / "status" / "launcher.json").read_text())["folder"] == str(folder)
 	assert not (home / ".campy" / "status" / "launcher.lock").exists()
@@ -466,3 +472,75 @@ def test_the_post_section_is_checked(tmp_path):
 		session.Config(str(config))
 	c = session.Config(str(write_config(tmp_path / "c.yaml", {"numCams": 1})))
 	assert c.post == {"remux": True, "export": True, "copy": {}, "run": [], "ffmpeg": ""}
+
+
+def test_a_campy_live_that_hangs_is_stopped_to_be_started_again(tmp_path, monkeypatch):
+	# campy-watch's alert (alerts-live.log, key live/campy-live, open) about the campy-live running now: its stop file
+	# is written, and once it has stopped it is started again as one that died; an alert from before it started is not
+	config = write_config(tmp_path / "c.yaml", {"numCams": 1}, live={"model": "none"})
+	s = session.Session(session.Config(str(config)))
+	s.folder, s.logs, s.liveStop = str(tmp_path), str(tmp_path), str(tmp_path / "campy-live.stop")
+	live = types.SimpleNamespace(started=1000.0, Running=lambda: True, End=lambda: ended.append(1))
+	ended = []
+	s.parts["live"] = live
+	def alert(when, state="open"):
+		with open(str(tmp_path / "alerts-live.log"), "a") as f:
+			f.write(json.dumps({"time": datetime.fromtimestamp(when).astimezone().isoformat(), "key": "live/campy-live",
+				"severity": "critical", "event": "problem", "state": state, "text": "no result for 30 s"}) + "\n")
+	alert(990.0) # about an earlier campy-live
+	s.CheckHung(now=1040.0)
+	assert s.hung is None and not (tmp_path / "campy-live.stop").exists()
+	alert(1035.0)
+	s.CheckHung(now=1050.0)
+	assert s.hung is live and (tmp_path / "campy-live.stop").read_text().strip() == "stop"
+	monkeypatch.setattr(session, "Say", lambda text: None)
+	live.code = -9
+	s.CheckHung(now=1050.0 + session.LIVE_STOP_S + 1) # it did not stop: ended, and started again
+	assert ended == [1] and s.restart_due is not None and s.hung is None
+	s.restart_due, s.hung, s.hung_at = None, live, 1050.0
+	live.code = 0 # one that stopped at its stop file: started again too
+	s.LiveDied(live)
+	assert s.restart_due is not None and s.hung is None
+
+
+def test_giving_up_on_campy_live_sends_an_alert(tmp_path, monkeypatch):
+	config = write_config(tmp_path / "c.yaml", {"numCams": 1}, live={"model": "none"})
+	s = session.Session(session.Config(str(config)))
+	s.restarts.extend([time.monotonic()] * session.RESTARTS_PER_HOUR)
+	sent = []
+	monkeypatch.setattr(session, "Alert", lambda key, text, severity="critical": sent.append((key, severity)))
+	s.LiveDied(types.SimpleNamespace(code=1, log="x.log"))
+	assert sent == [("live/campy-live/restarts", "critical")] and s.restart_due is None
+
+
+def test_without_watch_no_campy_watch(tmp_path, home):
+	config, clips = emu_session(tmp_path, home, 2, live={"model": "none", "watch": False})
+	proc, lines = start(tmp_path, home, config)
+	proc.wait(timeout=120)
+	assert proc.returncode == 0, "".join(lines)
+	assert not (the_folder(clips) / "logs" / "campy-watch.log").exists()
+
+
+@POSIX
+def test_a_frozen_campy_live_is_found_by_campy_watch_and_replaced(tmp_path, home):
+	# campy-live frozen (SIGSTOP) mid-recording: campy-watch says "no result for 30 s", campy-session stops it (its
+	# stop file, then ended), and starts it again; the recording keeps every frame
+	config, clips = emu_session(tmp_path, home, 110, live={"model": "none"}, feed="campy-test-hang")
+	proc, lines = start(tmp_path, home, config)
+	try:
+		assert wait_for(lines, r"\[live\] .*Logging to")
+		folder = the_folder(clips)
+		pid = json.loads((folder / "launcher.json").read_text())["live"][0]["pid"]
+		time.sleep(3)
+		os.kill(pid, signal.SIGSTOP)
+		proc.wait(timeout=200)
+	finally:
+		if proc.poll() is None:
+			proc.kill()
+	out = "".join(lines)
+	assert proc.returncode == 0, out
+	assert recorded(folder) == [2200, 2200]
+	assert "campy-watch: campy-live made no result for 30 s while the cameras record" in out
+	assert "Starting campy-live again (campy-live.part2)" in out
+	status = json.loads((folder / "launcher.json").read_text())
+	assert status["live_restarts"] == 1 and status["live"][1]["exit_code"] == 0
