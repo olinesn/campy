@@ -24,7 +24,11 @@ campy-live-view reads, read-only, with campy-live-view's own checks
                    critical (it stopped or hangs); its results ended while
                    they record: a warning
 
-NO FRAMES is left to campy-acquire's watch, which says it already.
+NO FRAMES is left to campy-acquire's watch, which says it already. What it
+finds goes into alerts-live.log in the recording's folder (the cameras'
+feeds say which), one JSON object a line as alerts.log (notify.Notifier.Log),
+whether or not the alerts file names a channel: campy-acquire writes
+alerts.log, and each file has one writer.
 
 It needs only numpy and the standard library, as campy-live-view's checks
 do: run it in campy-live's environment, or campy's. It waits for the feed
@@ -33,7 +37,7 @@ do: run it in campy-live's environment, or campy's. It waits for the feed
     campy-watch --name campy-live --cameras 3
 """
 
-import argparse, collections, sys, time
+import argparse, collections, json, os, sys, time
 
 from campy import livefeed, livehealth, liveresults, notify
 
@@ -182,6 +186,9 @@ def Run(args, notifier=None, say=print):
 				if readers is not None:
 					w.rig = livehealth.Rig([r.cameraName or r.name for r in readers], readers[0].Info("frameRate"),
 						readers[0].slots)
+					folder = RecordingFolder(readers)
+					if folder:
+						notifier.SetLog(os.path.join(folder, "alerts-live.log"))
 					say("campy-watch: watching {}.".format(", ".join(r.cameraName or r.name for r in readers)))
 				elif not said:
 					said = True
@@ -232,6 +239,20 @@ def Run(args, notifier=None, say=print):
 			results.Close()
 		notifier.Flush(15)
 	return 0
+
+
+def RecordingFolder(readers):
+	# The folder the cameras' folders are in, as their feeds say (livefeed.Feed's description), or None
+	folders = set()
+	for reader in readers:
+		try:
+			folder = json.loads(reader.Description() or "{}").get("folder")
+		except (ValueError, AttributeError):
+			folder = None
+		if not folder:
+			return None
+		folders.add(os.path.dirname(os.path.normpath(folder)))
+	return folders.pop() if len(folders) == 1 else None
 
 
 def Attach(names):

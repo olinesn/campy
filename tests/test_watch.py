@@ -9,6 +9,7 @@ campy-acquire, with emulated cameras and injected faults.
 """
 
 import ctypes
+import json
 import os
 import types
 
@@ -68,6 +69,7 @@ class Rig:
 		self.params.update(frameRate=30, recTimeInSec=3600, writeQueueMaxSec=10, serialPort="COM3")
 		self.params.update(values)
 		self.disk = Disk(free)
+		(tmp_path / "2026-10-23_01-00-00").mkdir(exist_ok=True)
 		self.said = []
 		self.stopping = False
 		self.stops = [] # what the watch stopped the recording for
@@ -82,7 +84,9 @@ class Rig:
 
 	def Start(self):
 		self.watch.started = self.clock.now
+		self.watch.startedAt = watch.Wall()
 		self.watch.Begun()
+		self.watch.WriteStatus("recording")
 		return self
 
 	def Frame(self, c, n=1, queued=0, sent=None):
@@ -354,3 +358,28 @@ def test_heartbeat_and_pause(monkeypatch, tmp_path):
 	rig.Run(150)
 	rig.watch.Stop({})
 	assert beats == ["ping", "ping", "ping", "pause"]
+
+
+def test_recording_json(monkeypatch, tmp_path):
+	monkeypatch.setenv("CAMPY_STATUS_DIR", str(tmp_path / "status"))
+	rig = Rig(monkeypatch, tmp_path, free=100e9, recTimeInSec=600).Start()
+	path = tmp_path / "status" / "recording.json"
+	first = json.loads(path.read_text())
+	assert first["schema"] == 1 and first["state"] == "recording" and first["host_model"] == "Test rig"
+	assert first["session"]["folder"].endswith("2026-10-23_01-00-00") and first["session"]["planned_s"] == 600
+	rig.Run(30, cameras=[0, 2])
+	rig.disk.free -= 1e9
+	rig.Run(80)
+	status = json.loads(path.read_text())
+	assert status["session"]["elapsed_s"] == 110
+	cams = {c["name"]: c for c in status["cameras"]}
+	assert cams["Camera0"]["frames"] == 3300 and cams["Camera0"]["fps_measured"] == 30 and cams["Camera0"]["state"] \
+		== "grabbing" and cams["Camera0"]["write_queue_s"] == 0 and cams["Camera0"]["fps_target"] == 30
+	(disk,) = status["disk"]
+	assert disk["free_gb"] == 99.0 and disk["projected_full_at"] is not None
+	assert status["last_error"]["text"].startswith("Camera1: no frame yet") and status["open"] == []
+	rig.watch.Stop({})
+	assert json.loads(path.read_text())["state"] == "ended"
+	log = [json.loads(line) for line in (tmp_path / "2026-10-23_01-00-00" / "alerts.log").read_text().splitlines()]
+	assert [(l["key"], l["event"], l["state"]) for l in log if l["status"] == "queued"] == [(None, "note", None),
+		("Camera1/no-frames", "problem", "open"), ("Camera1/no-frames", "resolved", "resolved"), (None, "note", None)]

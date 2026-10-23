@@ -187,3 +187,8 @@ def test_campy_watch_says_a_camera_fell_behind(tmp_path, service):
 		r"number\)", behind[0]), behind[0] # 0.5 s
 	assert service.Texts()[0].startswith(":red_circle:")
 	assert watcher.returncode == 0
+	# Its own log, beside campy-acquire's alerts.log
+	(session,) = [d for d in tmp_path.iterdir() if re.fullmatch(r"\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d", d.name)]
+	lines = [json.loads(line) for line in (session / "alerts-live.log").read_text().splitlines()]
+	assert any(l["key"] == "live/Camera1/offset" and l["state"] == "open" for l in lines), lines
+	assert (session / "alerts.log").exists()

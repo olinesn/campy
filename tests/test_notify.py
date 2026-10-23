@@ -290,7 +290,15 @@ def test_final_error_not_retried(service, tmp_path):
 	assert service.Paths() == ["/api/chat.postMessage"]
 	assert n.said == ["Alerts: could not send to Slack U0123ABCDEF: Slack's chat.postMessage: invalid_auth"]
 	log = (tmp_path / "alerts.log").read_text()
-	assert "FAILED on Slack U0123ABCDEF" in log and "Camera 1: no frames" in log and "xoxb" not in log
+	assert "xoxb" not in log
+	lines = [json.loads(line) for line in log.splitlines()]
+	assert lines[0]["key"] == "k" and lines[0]["severity"] == "warning" and lines[0]["event"] == "problem"
+	assert lines[0]["state"] == "open" and lines[0]["status"] == "queued" and lines[0]["text"] == "Camera 1: no frames"
+	assert lines[1]["status"] == "FAILED on Slack U0123ABCDEF: Slack's chat.postMessage: invalid_auth"
+	n.Resolved("k")
+	lines = [json.loads(line) for line in (tmp_path / "alerts.log").read_text().splitlines()]
+	assert [(l["event"], l["state"], l["status"]) for l in lines[2:]] == [("resolved", "resolved", "queued"),
+		("resolved", "resolved", "sent to Slack U0123ABCDEF")]
 
 
 def test_unreachable_said(service):

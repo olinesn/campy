@@ -83,6 +83,10 @@ A disk that fills stops every camera's ffmpeg at the same moment, and leaves no 
 
 Apart from that stop, the watch only reads. It never restarts a camera, ffmpeg or the trigger, never deletes anything and never changes a setting mid-recording: a camera unplugged mid-recording needs a replug and a new recording, and a restarted trigger could resume on the wrong device. An error inside one of its checks is said once, and the other checks go on.
 
+### The recording's state now: `recording.json`
+
+Every 4 seconds, and as it ends, the watch also writes the recording's state to `~/.campy/status/recording.json` (`%USERPROFILE%\.campy\status\recording.json` on Windows), for a control panel to show: the state (`recording`, `stopping`, `ended`, `failed`), the session folder, its start, how long it has run and is planned to; for each camera its frame rate (set and measured), frames, dropped frames, seconds of frames waiting for ffmpeg, USB link speed (Linux) and state; each disk's free space and when it would be full at the present rate; the problems open now; and the last critical one. Only campy-acquire writes it, and whole each time. `python -m pydoc campy.watch` lists the fields.
+
 ### Beside campy-live: `campy-watch`
 
 `campy-acquire` can't see what only campy-live-view shows: whether the cameras' frames of the same number came at the same moment, frames a camera lost before campy got them, and how the tracking is doing. `campy-watch` reads what campy-live-view reads (the live feed, `liveFeed: True`, and campy-live's results), read-only, with campy-live-view's own checks, and sends them once they last. Start it beside `campy-live`, in either environment:
@@ -99,7 +103,7 @@ campy-watch --cameras 3
 | Tracking | good 3D for fewer animals than campy-live's `--animals`, for 70 % of the last 3 minutes | warning |
 | campy-live stopped | no new result for 30 s while the cameras record (it has stopped or hangs); or it ended while they record | critical (warning) |
 
-A camera with no frames is left to `campy-acquire`, which says it already. `campy-watch` waits for the feed, and ends when the recording does. `--name` is campy's `liveFeedName` (default `campy-live`), `--bad-px` the 3D error that counts as bad, as in campy-live-view.
+A camera with no frames is left to `campy-acquire`, which says it already. `campy-watch` waits for the feed, and ends when the recording does. `--name` is campy's `liveFeedName` (default `campy-live`), `--bad-px` the 3D error that counts as bad, as in campy-live-view. What it finds goes into `alerts-live.log` in the recording's folder, in `alerts.log`'s format (campy-acquire writes `alerts.log`; each file has one writer), whether or not the alerts file names a channel.
 
 ### Settings
 
@@ -120,6 +124,7 @@ Each can also be given on the command line (`--stopAtFreeGB 5`).
 - A problem that keeps coming and going (3 times in 10 minutes) gets one message saying so, and is called resolved only once it has stayed away for 10 minutes.
 - At most 20 messages an hour per rig. Past that, the rest go into one digest every 15 minutes.
 - Messages go out from a thread of their own, each request with a 10 s timeout and up to 3 tries. A slow or dead network never holds anything up. A message that can't be sent is said on the console and in the log.
+- A recording's `alerts.log` has one JSON object a line, for programs to read: `time`, `key` (such as `Camera1/no-frames`), `severity`, `event` (`problem`, `worse`, `flapping`, `still`, `resolved`, `note`), `state` (`open` or `resolved`), `status` (`queued`, `sent to ...`, `FAILED on ...: why`) and `text`.
 
 ## From scripts: `campy-notify`
 
