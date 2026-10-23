@@ -103,7 +103,12 @@ for about 20 W while waiting (against 2.5 W idle). The model's work goes
 first, on the GPU's other blocks, but a spinning block still costs it
 about 0.3 ms a set (2, 0.55 ms), so none spin when the clock stays up
 without them (an RTX 2000 Ada did so after a restart, not after two days up). A clock that the
-GPU's power or heat limit holds down is left alone. auto: on with a GPU
+GPU's power or heat limit holds down is left alone. On an AMD integrated
+GPU (the EVO-X2's, which shares its chip with the CPU) at least 1 spins
+while sets come: with none, its clock still read 2650-2850 MHz, yet each
+set took about 1 ms longer (13.7 against 12.8 ms, 5 mice, --fixed-crops
+--cuda-graphs) and the CPU's 3D step too, so the whole chip slows down
+between sets, which its GPU clock doesn't show. auto: on with a GPU
 (NVIDIA's CUDA and AMD's ROCm); off with MPS and the CPU.
 
 CPUs (--cpus, --priority, --campy-cpus): on a CPU with performance cores
@@ -1340,8 +1345,9 @@ class GpuClock:
 	the recording's first frames), WAITING_BLOCKS spin: with one alone, an
 	RTX 2000 Ada still judged itself idle and fell to 1000 MHz, and the first
 	second's sets took 20 ms instead of 13. While sets come (Busy), blocks
-	spin (--hold-gpu-clock-blocks): a number, or auto, from 0 to MOST_BUSY as
-	the GPU's clock needs (Adjust), read by a ClockReader. Each spinner's
+	spin (--hold-gpu-clock-blocks): a number, or auto, from fewest to
+	MOST_BUSY as the GPU's clock needs (Adjust), read by a ClockReader:
+	fewest is 1 on an AMD integrated GPU (Fewest), else 0. Each spinner's
 	thread waits on an event that lets it sleep, so they cost no CPU core.
 	Each spins on a stream of its own, the same at every Start (FixedStream).
 	"""
@@ -1358,7 +1364,7 @@ class GpuClock:
 	CALM_S = 10.0 # at full clock this long: one block fewer...
 	MOST_CALM_S = 320.0 # ...or twice as long as last time, up to this, when the last one fewer was too few
 
-	def __init__(self, device, blocks="auto", reader=None):
+	def __init__(self, device, blocks="auto", reader=None, fewest=None):
 		import torch
 		self.torch, self.device = torch, device
 		self.stop = threading.Event()
@@ -1367,13 +1373,26 @@ class GpuClock:
 		self.lastSet = 0.0 # time.monotonic() of the last set (Busy)
 		self.auto = blocks == "auto"
 		self.reader = (reader or ClockReader.For(device)) if self.auto else None
-		# without the clock to read, auto spins FIRST_BUSY
-		self.busy = self.FIRST_BUSY if self.auto else int(blocks)
+		# auto's fewest while sets come; without the clock to read, it spins FIRST_BUSY
+		self.fewest = (self.Fewest(torch, device) if fewest is None else fewest) if self.auto else 0
+		self.busy = max(self.FIRST_BUSY, self.fewest) if self.auto else int(blocks)
 		self.fastest = self.mhz = 0.0 # MHz
 		self.clocks = [] # MHz, read while sets came
 		self.time = {} # blocks spinning while sets came: seconds
 		self.changes = 0
 		self.calm = self.CALM_S
+
+	@staticmethod
+	def Fewest(torch, device):
+		# 1 on an AMD integrated GPU (ROCm, is_integrated: the EVO-X2's
+		# Radeon 8060S): with no block spinning between sets, the chip, CPU
+		# and GPU, slows down though its GPU clock reads high (see the
+		# module's doc). 0 elsewhere: NVIDIA GPUs and AMD's own cards
+		try:
+			integrated = torch.cuda.get_device_properties(torch.device(device)).is_integrated
+		except Exception:
+			return 0
+		return 1 if getattr(torch.version, "hip", None) and integrated else 0
 
 	def Busy(self):
 		self.lastSet = time.monotonic()
@@ -1442,7 +1461,7 @@ class GpuClock:
 					self.calm = min(2 * self.calm, self.MOST_CALM_S)
 				return 0, now, None
 			return low, now, fewerAt
-		if now - calmSince >= self.calm and self.busy > 0:
+		if now - calmSince >= self.calm and self.busy > self.fewest:
 			self.busy -= 1
 			self.changes += 1
 			return 0, now, now
@@ -1457,6 +1476,8 @@ class GpuClock:
 
 	def Describe(self):
 		d = {"blocks_while_sets_come": "auto" if self.auto else self.busy}
+		if self.fewest:
+			d["fewest_blocks"] = self.fewest
 		if self.auto:
 			total = sum(self.time.values())
 			d.update(clock_read_by=self.reader.name if self.reader else None,
@@ -2400,7 +2421,8 @@ def ParseArgs(argv=None):
 		(see campy-live's help). auto: on with a GPU (NVIDIA's CUDA or AMD's ROCm).")
 	p.add_argument("--hold-gpu-clock-blocks", default="auto", type=lambda v: v if v == "auto" else str(int(v)),
 		help="How many blocks spin while sets come: auto (0 to 2, as the GPU's clock needs, read through NVML, \
-		nvidia-smi or sysfs; 1 when it can't be read) or a number.")
+		nvidia-smi or sysfs; 1 when it can't be read; at least 1 on an AMD integrated GPU, as the EVO-X2's) or a \
+		number.")
 	return p.parse_args(argv)
 
 
