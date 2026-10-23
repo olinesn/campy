@@ -87,13 +87,14 @@ FLIR = "FLIR cameras"
 RATCAM = "RatCam (nir-eye-cam) cameras"
 ENC = "Compression"
 LIVE = "Live feed"
+ALERTS = "Recording watch and alerts"
 CHECK = "Launch check"
 DISPLAY = "Display and progress"
 TRIGGER = "Trigger"
 SESSION = "Session"
 PROGRAMS = "Sections other programs read"
 
-SECTIONS = (REC, CAM, FLIR, RATCAM, ENC, LIVE, CHECK, DISPLAY, TRIGGER, SESSION, PROGRAMS)
+SECTIONS = (REC, CAM, FLIR, RATCAM, ENC, LIVE, ALERTS, CHECK, DISPLAY, TRIGGER, SESSION, PROGRAMS)
 
 SETTINGS = [
 	# Recording
@@ -226,6 +227,21 @@ SETTINGS = [
 		help="Keep the computer out of sleep and standby while recording, screen included (default: \
 			True). A Windows PC with Modern Standby otherwise goes into standby when its screen times \
 			out, and the recording slows to a crawl."),
+
+	# Recording watch and alerts (campy/watch.py, campy/notify.py, docs/alerts.md)
+	Setting("alerts", True, bool, section=ALERTS, per_camera=ONE,
+		help="Send the recording watch's alerts (a camera with no frames, dropped frames, a stalled \
+			encoder, ffmpeg stopping, a disk filling up, the trigger gone) to the channels in the alerts \
+			file, ~/.campy/alerts.yaml (default: True; without that file nothing is sent). They are said on \
+			the console, and written to the recording's alerts.log, either way. See docs/alerts.md."),
+	Setting("alertNoFramesSec", 10, float, section=ALERTS, per_camera=ONE, above=0,
+		help="A camera that has sent frames and sends none for this many seconds is an alert (default: 10)."),
+	Setting("alertDiskFreeGB", 20, float, section=ALERTS, per_camera=ONE, low=0,
+		help="Less free space than this on a video folder's disk is an alert (default: 20)."),
+	Setting("stopAtFreeGB", 2, float, section=ALERTS, per_camera=ONE, low=0,
+		help="Below this much free space on a video folder's disk, campy stops the recording, cleanly, as \
+			at Ctrl-C, so that every video and its metadata are whole: a full disk stops every ffmpeg at \
+			once and leaves no room for them (default: 2; 0 = never)."),
 
 	# Live feed
 	Setting("liveFeed", False, bool, section=LIVE,

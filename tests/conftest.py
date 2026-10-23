@@ -30,6 +30,16 @@ def timer_sim(tmp_path_factory):
 	return Compile(TIMER_SKETCH, str(tmp_path_factory.mktemp("timer") / "sim"))
 
 
+@pytest.fixture(autouse=True)
+def no_real_alerts(monkeypatch, tmp_path_factory):
+	# No test sends to the alerts file of the computer it runs on (Slack, healthchecks.io), or writes its
+	# ~/.campy/status/recording.json: campy-acquires started by tests inherit these too. A test that wants
+	# alerts names its own file.
+	folder = tmp_path_factory.mktemp("campy-home")
+	monkeypatch.setenv("CAMPY_ALERTS_FILE", str(folder / "no-alerts.yaml"))
+	monkeypatch.setenv("CAMPY_STATUS_DIR", str(folder / "status"))
+
+
 OUTPUTS_SKETCH = os.path.join(os.path.dirname(HERE), "campy", "outputs_board", "campy_outputs", "campy_outputs.ino")
 
 

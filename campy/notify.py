@@ -274,6 +274,7 @@ class Alert:
 		self.resolving = None # (when Resolved was called, its text): sent after hold
 		self.first = None # its first message, as sent (the edit at its resolution strikes it through)
 		self.flapping = False
+		self.remind = True
 
 
 class Notifier:
@@ -327,8 +328,12 @@ class Notifier:
 
 	# ------------------------------------------------------------------ what callers say
 
-	def Problem(self, key, text, severity=WARNING):
-		"""A problem, now. Sent once while it lasts (reminders aside); its text may change meanwhile."""
+	def Problem(self, key, text, severity=WARNING, remind=True):
+		"""
+		A problem, now. Sent once while it lasts (reminders aside); its text may
+		change meanwhile. remind False: no reminders (a camera that has stopped
+		for good: once is enough).
+		"""
 		severity = severity if severity in LEVELS else WARNING
 		with self.lock:
 			now = self.clock()
@@ -346,6 +351,7 @@ class Notifier:
 			while starts and starts[0] < now - FLAP_S:
 				starts.popleft()
 			alert = self.alerts[key] = Alert(key, text, severity, now)
+			alert.remind = remind
 			if len(starts) >= FLAP_TIMES:
 				alert.flapping = True
 				self.Say(alert, "flapping", text)
@@ -389,7 +395,7 @@ class Notifier:
 							self.Say(alert, "resolved", text, now=at)
 						self.SaveState()
 			# Reminders: of the problems still there, said REMIND_S ago or longer; several in one message
-			due = [a for a in self.alerts.values() if a.resolving is None and a.said is not None
+			due = [a for a in self.alerts.values() if a.resolving is None and a.said is not None and a.remind
 				and now - a.reminded >= REMIND_S]
 			if len(due) == 1:
 				due[0].reminded = now
@@ -563,6 +569,7 @@ class Notifier:
 			for key, a in saved.get("alerts", {}).items():
 				alert = Alert(key, a["text"], a["severity"], a["since"])
 				alert.said, alert.reminded = a.get("said"), a.get("reminded", a["since"])
+				alert.remind = a.get("remind", True)
 				alert.handles = {int(i): h for i, h in a.get("handles", {}).items()}
 				self.alerts[key] = alert
 			self.starts.update({k: collections.deque(v) for k, v in saved.get("starts", {}).items()})
@@ -573,7 +580,7 @@ class Notifier:
 		if not self.state:
 			return
 		saved = {"alerts": {k: {"text": a.text, "severity": a.severity, "since": a.since, "said": a.said,
-			"reminded": a.reminded, "handles": a.handles} for k, a in self.alerts.items()},
+			"reminded": a.reminded, "remind": a.remind, "handles": a.handles} for k, a in self.alerts.items()},
 			"starts": {k: list(v) for k, v in self.starts.items() if v}}
 		try:
 			os.makedirs(os.path.dirname(os.path.abspath(self.state)), exist_ok=True)

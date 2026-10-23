@@ -17,7 +17,8 @@ files stay in <cameraName>/.
 A recording writes, for each camera, into <videoFolder>/<cameraName>/: its
 video (videoFilename), frametimes.npy, hosttimes.npy, frametimes.mat and
 metadata.csv, and for a RatCam ratcam_frames.csv and ratcam_sync.csv; and
-trigger.json and session.json (campy/manifest.py) into videoFolder.
+trigger.json, session.json (campy/manifest.py) and alerts.log (campy/watch.py)
+into videoFolder.
 imageio-ffmpeg starts ffmpeg with -y, and campy opened the others with "w",
 so a second recording into the same
 videoFolder replaced the first one's files without a word (the ChronicRecord
@@ -55,6 +56,7 @@ CALIBRATION_FOLDER = "calibration_images"
 
 TRIGGER_FILE = "trigger.json" # trigger.SaveStart
 SESSION_FILE = "session.json" # how the recording was made: manifest.Session
+ALERTS_FILE = "alerts.log" # what the recording watch found: watch.Watch
 RATCAM_FILES = ("ratcam_frames.csv", "ratcam_sync.csv") # ratcam.Logs
 
 
@@ -101,9 +103,9 @@ def CameraFiles(cam_params):
 
 def RecordingFiles(params):
 	# Every file a recording with these params writes, as (path, n_cam), n_cam
-	# None for trigger.json and session.json
+	# None for trigger.json, session.json and alerts.log
 	from campy import configurator # it imports the camera modules, which import this one
-	files = [(os.path.join(params["videoFolder"], name), None) for name in (TRIGGER_FILE, SESSION_FILE)]
+	files = [(os.path.join(params["videoFolder"], name), None) for name in (TRIGGER_FILE, SESSION_FILE, ALERTS_FILE)]
 	for n in range(params["numCams"]):
 		files += [(path, n) for path in CameraFiles(configurator.CameraParams(params, n))]
 	return files
