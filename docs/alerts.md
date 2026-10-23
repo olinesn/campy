@@ -83,6 +83,24 @@ A disk that fills stops every camera's ffmpeg at the same moment, and leaves no 
 
 Apart from that stop, the watch only reads. It never restarts a camera, ffmpeg or the trigger, never deletes anything and never changes a setting mid-recording: a camera unplugged mid-recording needs a replug and a new recording, and a restarted trigger could resume on the wrong device. An error inside one of its checks is said once, and the other checks go on.
 
+### Beside campy-live: `campy-watch`
+
+`campy-acquire` can't see what only campy-live-view shows: whether the cameras' frames of the same number came at the same moment, frames a camera lost before campy got them, and how the tracking is doing. `campy-watch` reads what campy-live-view reads (the live feed, `liveFeed: True`, and campy-live's results), read-only, with campy-live-view's own checks, and sends them once they last. Start it beside `campy-live`, in either environment:
+
+```bash
+campy-watch --cameras 3
+```
+
+| What | When it is an alert | How bad |
+|---|---|---|
+| A camera a frame or more ahead or behind | for 10 s: every set campy-live makes mixes frames of different trigger pulses, so stop the recording and start it again | critical |
+| Frames lost, missing from the feed, or late | in every check for 30 s (counted over the last 10 s, as campy-live-view does) | warning |
+| A camera slower than the others | for 30 s | warning |
+| Tracking | good 3D for fewer animals than campy-live's `--animals`, for 70 % of the last 3 minutes | warning |
+| campy-live stopped | no new result for 30 s while the cameras record (it has stopped or hangs); or it ended while they record | critical (warning) |
+
+A camera with no frames is left to `campy-acquire`, which says it already. `campy-watch` waits for the feed, and ends when the recording does. `--name` is campy's `liveFeedName` (default `campy-live`), `--bad-px` the 3D error that counts as bad, as in campy-live-view.
+
 ### Settings
 
 | Setting | Default | |
