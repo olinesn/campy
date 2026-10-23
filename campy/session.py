@@ -42,10 +42,11 @@ The recording comes first:
 - campy-live is not tied to campy-session, and it is started apart from the
   console's Ctrl-C (it would stop before the recording's last frames): if
   campy-session dies, it tracks on to the end of the recording. It waits for
-  the feed for at most live.wait_s. If it dies while the cameras record, it
-  is started again (live.restart, on by default: after 10 s, 1 min, then
-  5 min, at most 5 times an hour), into a log of its own (campy-live.part2,
-  ...). It is stopped with its own stop file, never killed, unless it does
+  the feed for at most live.wait_s, and stops waiting if campy-session
+  ends before the recording began (--launcher-pid). If it dies while the
+  cameras record, it is started again (live.restart, on by default: after
+  10 s, 1 min, then 5 min, at most 5 times an hour), into a log of its own
+  (campy-live.part2, ...). It is stopped with its own stop file, never killed, unless it does
   not stop within a minute after the recording ended.
 - campy-live-view is only a display: it is tied to campy-session
   (campy/children.py) and dies with it.
@@ -563,7 +564,8 @@ class Session:
 		self.liveStop = os.path.join(self.logs, "campy-live.stop")
 		command = [self.live_python, "-m", "campy.live", "--cameras", str(n),
 			"--name", str(self.config.Value("liveFeedName", "campy-live")), "--model", live["model"],
-			"--out", out, "--ready-file", self.liveReady, "--stop-file", self.liveStop, "--wait-sec", str(live["wait_s"])]
+			"--out", out, "--ready-file", self.liveReady, "--stop-file", self.liveStop, "--wait-sec", str(live["wait_s"]),
+			"--launcher-pid", str(os.getpid())]
 		if live["centroid"]:
 			command += ["--centroid", live["centroid"]]
 		if live["instance"]:

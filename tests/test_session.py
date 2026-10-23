@@ -382,3 +382,25 @@ def test_a_profile_is_refused_for_now(tmp_path):
 	config = write_config(tmp_path / "c.yaml", {"extends": "rig", "numCams": 1})
 	with pytest.raises(session.SessionError, match="does not read profiles yet"):
 		session.Config(str(config))
+
+
+def test_campy_live_stops_waiting_when_campy_session_ended_first(tmp_path):
+	# campy-session killed while campy-live warms up: campy-live does not wait live.wait_s for a feed that never comes
+	stand_in = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(2)"])
+	threading.Thread(target=stand_in.wait, daemon=True).start() # reaped as it ends, as a shell reaps campy-session
+	env = dict(os.environ, PYTHONPATH=REPO, PYTHONUNBUFFERED="1")
+	t0 = time.monotonic()
+	proc = subprocess.run([sys.executable, "-m", "campy.live", "--model", "none", "--cameras", "1", "--name",
+		"campy-test-orphan-{}".format(os.getpid()), "--wait-sec", "600", "--launcher-pid", str(stand_in.pid)],
+		cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=60)
+	stand_in.wait()
+	assert proc.returncode == 1 and time.monotonic() - t0 < 30, proc.stdout + proc.stderr
+	assert "the program that started campy-live (pid {}) has ended: stopped".format(stand_in.pid) in proc.stdout
+
+
+def test_alive():
+	from campy import children
+	assert children.Alive(os.getpid())
+	p = subprocess.Popen([sys.executable, "-c", "pass"])
+	p.wait()
+	assert not children.Alive(p.pid) and not children.Alive(0)
