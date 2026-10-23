@@ -227,3 +227,44 @@ def test_a_start_that_a_check_stops(tmp_path, home):
 		os.killpg(proc.pid, signal.SIGINT)
 		proc.wait(timeout=30)
 	assert not any(d.is_dir() and re.match(r"\d{4}-", d.name) for d in clips.iterdir())
+
+
+@POSIX
+def test_a_recording_outlives_its_panel_and_the_next_panel_finds_it(tmp_path, home):
+	# The panel's window closed (here: the panel killed) mid-recording: the recording goes on, apart from it; a
+	# panel opened again refuses to start another, says where it is, and can stop it
+	config, clips = emu_session(tmp_path, home, 120, live={"model": "none"}, feed="campy-test-orphan",
+		post={"remux": False, "export": False})
+	proc, lines, url = start_panel(tmp_path, home, config)
+	try:
+		assert call(url, "/start", {}) == (200, {"ok": True})
+		status = wait(url, lambda s: s["state"] == "recording" and s["health"].get("feed") and
+			all(c["frame"] > 20 for c in s["health"]["cameras"]))
+		acquire = status["launcher"]["parts"]["acquire"]["pid"]
+		assert os.getsid(acquire) != os.getsid(proc.pid) # apart from the panel's terminal: no hang-up reaches it
+		os.killpg(proc.pid, signal.SIGKILL) # the panel's whole terminal session, as closing its window would
+		proc.wait(timeout=30)
+		time.sleep(2)
+		assert panel.children.Alive(acquire)
+	finally:
+		if proc.poll() is None:
+			os.killpg(proc.pid, signal.SIGKILL)
+
+	proc, lines, url = start_panel(tmp_path, home, config)
+	try:
+		status = call(url, "/status.json")[1]
+		assert status["orphan"]["pid"] == acquire
+		assert os.path.samefile(status["orphan"]["folder"], str(the_folder(clips)))
+		code, said = call(url, "/start", {})
+		assert code == 409 and "still running" in said["error"]
+		assert call(url, "/stop-orphan", {}) == (200, {"ok": True})
+		t0 = time.monotonic()
+		while panel.children.Alive(acquire) and time.monotonic() - t0 < 60:
+			time.sleep(0.3)
+		assert not panel.children.Alive(acquire)
+		wait(url, lambda s: s["orphan"] is None)
+		counts = recorded(the_folder(clips))
+		assert 20 < min(counts) and max(counts) < 120 * 20, counts
+	finally:
+		os.killpg(proc.pid, signal.SIGINT)
+		proc.wait(timeout=30)

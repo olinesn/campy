@@ -47,7 +47,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from campy import bookmarks, clock, livefeed, livehealth, liveresults, session
+from campy import bookmarks, children, clock, livefeed, livehealth, liveresults, session, stopfile
 
 PORT = 8765
 THUMB_WIDTH = 192 # px, each camera's thumbnail
@@ -272,6 +272,35 @@ def Alerts(folder, keep=200):
 	return open_, resolved
 
 
+def Orphan():
+	"""
+	A recording an earlier campy-session started that is still running,
+	though that campy-session has ended (its window was closed: the panel
+	runs campy-acquire apart from it, so the recording went on). From its
+	~/.campy/status/launcher.json: {folder, pid, stop (its stop file),
+	started}, or None.
+	"""
+	try:
+		with open(os.path.join(session.CampyFolder(), "status", "launcher.json")) as f:
+			status = json.load(f)
+	except (OSError, ValueError):
+		return None
+	acquire = (status.get("parts") or {}).get("acquire") or {}
+	pid, folder = acquire.get("pid"), status.get("folder")
+	if not pid or not folder or acquire.get("state") == "ended" or status.get("pid") == os.getpid():
+		return None
+	if children.Alive(status.get("pid")) or not children.Alive(pid):
+		return None # its campy-session is still there, or the recording has ended
+	try:
+		import psutil
+		if "campy" not in " ".join(psutil.Process(pid).cmdline()):
+			return None # that pid is another program's now
+	except Exception:
+		pass
+	return {"folder": folder, "pid": pid, "stop": os.path.join(folder, "logs", "campy-acquire.stop"),
+		"started": acquire.get("started")}
+
+
 # ------------------------------------------------------------------ the panel
 
 class Panel:
@@ -338,6 +367,9 @@ class Panel:
 		with self.lock:
 			if self.session is not None or self.wanted is not None:
 				return "A recording is already running."
+			orphan = Orphan()
+			if orphan:
+				return "A recording an earlier panel started is still running ({}): stop it first.".format(orphan["folder"])
 			self.checks = self.Checks()
 			blocks = [text for level, text in self.checks if level == "block"]
 			if blocks:
@@ -369,6 +401,17 @@ class Panel:
 		if not s.RequestStop(level):
 			return None if s.stop_written >= level else "campy-acquire isn't running."
 		Say("Stop{} asked from the page.".format(" now" if level == 2 else ""))
+		return None
+
+	def StopOrphan(self, now=False):
+		orphan = Orphan()
+		if orphan is None:
+			return "No earlier recording is running."
+		try:
+			stopfile.Write(orphan["stop"], now=now)
+		except OSError as e:
+			return "Could not write its stop file: {}".format(e)
+		Say("Stop{} asked of the earlier recording in {}.".format(" now" if now else "", orphan["folder"]))
 		return None
 
 	def Viewer(self):
@@ -416,6 +459,7 @@ class Panel:
 			self.marks.fallback.startswith(folder) else []
 		state = "starting" if self.wanted is not None else (s.state if s is not None else "ready")
 		return {"state": state, "rig": platform.node(), "config": self.config.path, "error": self.error,
+			"orphan": Orphan() if s is None else None,
 			"checks": [{"level": level, "text": text} for level, text in self.checks],
 			"launcher": launcher, "health": self.health.snapshot, "recording": recording,
 			"disk": {"free_gb": round(free / 1e9, 1) if free is not None else None,
@@ -486,6 +530,8 @@ class Panel:
 					error = panel.Start(body)
 				elif url.path == "/stop":
 					error = panel.Stop(2 if body.get("now") else 1)
+				elif url.path == "/stop-orphan":
+					error = panel.StopOrphan(bool(body.get("now")))
 				elif url.path == "/viewer":
 					error = panel.Viewer()
 				elif url.path == "/bookmark":
@@ -543,7 +589,7 @@ class Panel:
 		fields, args = self.wanted, self.Args(self.wanted)
 		try:
 			config = session.Config(self.config_path, args)
-			s = session.Session(config, lock=False)
+			s = session.Session(config, lock=False, detached=True)
 			self.session = s
 			self.wanted = None
 			s.Run()
