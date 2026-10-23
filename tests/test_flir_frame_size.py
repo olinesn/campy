@@ -3,6 +3,7 @@
 import importlib
 import logging
 import sys
+import threading
 import time
 import types
 
@@ -267,6 +268,17 @@ class GrabbingCamera(FakeCamera):
 		pass
 
 
+class OpenedAfterTheVideo(GrabbingCamera):
+	# A camera whose Init ends only once the writer has opened its video
+	def __init__(self, video_opened, **frame):
+		super().__init__(**frame)
+		self.video_opened, self.waited = video_opened, False
+
+	def Init(self):
+		self.waited = self.video_opened.wait(10)
+		super().Init()
+
+
 def record(flir, monkeypatch, tmp_path, camera, **values):
 	"""
 	Runs campy.AcquireOneCamera on camera, as a camera process does: it starts
@@ -326,8 +338,20 @@ def test_rounded_only_in_the_camera_thread_the_video_was_scrambled(flir, monkeyp
 	monkeypatch.setattr(writer, "WriteFrames", # without waiting for the camera to open
 		lambda cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=None, recording=None:
 			write(cam_params, writeQueue, stopReadQueue, stopWriteQueue, recording=recording))
-	camera = GrabbingCamera()
+	# The camera's 0.15 s Init alone did not always keep the race the same way
+	# round (a slow runner's writer could take longer to open): the camera thread
+	# is held until the video has opened, as it was on the rig
+	video_opened = threading.Event()
+	open_writer = writer.OpenWriter
+	def OpenWriter(*args, **kwargs):
+		try:
+			return open_writer(*args, **kwargs)
+		finally:
+			video_opened.set()
+	monkeypatch.setattr(writer, "OpenWriter", OpenWriter)
+	camera = OpenedAfterTheVideo(video_opened)
 	opened, sent = record(flir, monkeypatch, tmp_path, camera, frameWidth=1000, frameHeight=600)
+	assert camera.waited
 	assert set(sent) == {(1008, 608)}
 	assert opened == (1000, 600)
 
