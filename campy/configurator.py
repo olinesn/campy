@@ -18,6 +18,8 @@ def DefaultParams():
 	params["numCams"] = 1
 	params["videoFolder"] = "./test"
 	params["sessionFolder"] = True # each run records into a new <videoFolder>/<date_time>/ (newfiles.MakeSessionFolder)
+	params["sessionPath"] = "None" # or record into this folder, made by another program (campy-session): newfiles.GivenSession
+	params["stopFile"] = "None" # stop as at Ctrl-C once this file is there (campy/stopfile.py)
 	params["videoFilename"] = "0.mp4"
 	params["frameRate"] = 100
 	params["recTimeInSec"] = 10
@@ -442,6 +444,23 @@ def ParseClargs(parser, argv=None):
 		help="Record each run into a new folder inside videoFolder, named by the date and time \
 			it started, e.g. 2026-10-18_17-30-05 (default: True). False records into videoFolder \
 			itself, and stops if a recording is already there.",
+	)
+	parser.add_argument(
+		"--sessionPath",
+		dest="sessionPath",
+		type=TextValue,
+		help="Record into this folder instead of a new one inside videoFolder (default: None). \
+			It is made if it is not there, and campy stops if a recording is already in it. For a \
+			program that starts campy-acquire and chose the folder itself (campy-session).",
+	)
+	parser.add_argument(
+		"--stopFile",
+		dest="stopFile",
+		type=TextValue,
+		help="Stop the recording, as Ctrl-C does, once this file is there (default: None); \
+			\"now\" in it is a second Ctrl-C. For a program that started campy-acquire, or a run \
+			started over SSH. campy stops at once if it is there already, and removes it once it \
+			has stopped.",
 	)
 	parser.add_argument(
 		"--videoFilename", 

@@ -86,12 +86,13 @@ class Watch:
 	serial port, the devices found); cameras: unicam.CameraProcesses;
 	counters: status.Make's array; folder: the session's folder (alerts.log
 	goes there). stopping(): the user is stopping it (Ctrl-C), when cameras
-	ending is no problem. Start() runs it in a thread; Stop(failures) ends it
+	ending is no problem. request_stop(why): stops the recording, as Ctrl-C
+	does (the disk is nearly full). Start() runs it in a thread; Stop(failures) ends it
 	and says how the recording ended.
 	"""
 
 	def __init__(self, params, systems, cameras, counters, folder=None, notifier=None, cams=None,
-			clock=time.monotonic, disk_usage=None, sysfs_root="/sys", say=Say, stopping=None):
+			clock=time.monotonic, disk_usage=None, sysfs_root="/sys", say=Say, stopping=None, request_stop=None):
 		self.params, self.systems, self.cameras = params, systems, cameras
 		self.names = list(cameras.names)
 		self.counters = camstatus.Reader(counters, len(self.names))
@@ -99,6 +100,7 @@ class Watch:
 		self.clock, self.sysfs_root, self.say = clock, sysfs_root, say
 		self.disk_usage = disk_usage or (lambda path: DiskUsage(path))
 		self.stopping = stopping or (lambda: False)
+		self.request_stop = request_stop # stops the recording as Ctrl-C does (campy.Main's StopRequested)
 		if notifier is None:
 			if params.get("alerts", True):
 				notifier = notify.Notifier(say=say)
@@ -385,7 +387,8 @@ class Watch:
 				self.Raise("disk/stop", notify.CRITICAL, "Only {} free on {}: stopping the recording now, cleanly, so "
 					"that every video and its metadata are whole (stopAtFreeGB {:g}).".format(DiskText(free), where,
 					self.stopAt / 1e9), remind=False)
-				self.counters.Stop()
+				if self.request_stop is not None:
+					self.request_stop(self.stopped)
 				continue
 			key = "disk/{}".format(folder)
 			if free < self.diskFree:

@@ -70,10 +70,11 @@ class Rig:
 		self.disk = Disk(free)
 		self.said = []
 		self.stopping = False
+		self.stops = [] # what the watch stopped the recording for
 		self.watch = watch.Watch(self.params, systems if systems is not None else {"serial": Serial()}, self.cameras,
 			self.counters, folder=str(tmp_path / "2026-10-23_01-00-00"), notifier=self.notifier, cams=cams,
 			clock=self.clock, disk_usage=self.disk, sysfs_root=sysfs_root or str(tmp_path / "nosys"),
-			say=self.said.append, stopping=lambda: self.stopping)
+			say=self.said.append, stopping=lambda: self.stopping, request_stop=self.stops.append)
 		self.grabbed = [0] * len(names)
 		self.dropped = [0] * len(names)
 		for row in self.rows:
@@ -271,7 +272,7 @@ def test_the_disk_fills_and_the_recording_stops_in_time(monkeypatch, tmp_path):
 	full = [t for t in alerts if "fills at 50 MB/s" in t]
 	assert full and full[0].startswith(":red_circle: *Test rig*: The disk with ")
 	assert "before the recording ends. campy will then stop the recording, cleanly." in full[0]
-	assert not any(rig.counters[c * status.WIDTH + status.STOP] for c in range(3))
+	assert rig.stops == []
 	while rig.disk.free >= 2e9:
 		rig.Run(watch.DISK_EVERY_S)
 		rig.disk.free -= rate * watch.DISK_EVERY_S
@@ -279,8 +280,8 @@ def test_the_disk_fills_and_the_recording_stops_in_time(monkeypatch, tmp_path):
 	assert rig.Sent()[-1].startswith(":red_circle: *Test rig*: Only 1.50 GB free on the disk with ")
 	assert rig.Sent()[-1].endswith(": stopping the recording now, cleanly, so that every video and its metadata are "
 		"whole (stopAtFreeGB 2).")
-	assert all(rig.rows[c].Stopping() for c in range(3)) # each camera stops itself, as at Ctrl-C
-	assert rig.watch.stopped.startswith("only 1.50 GB free on the disk with ")
+	# Stopped as at Ctrl-C (campy.Main's stop request: each camera stops itself)
+	assert rig.stops == [rig.watch.stopped] and rig.watch.stopped.startswith("only 1.50 GB free on the disk with ")
 	rig.watch.Stop({})
 	assert "stopped by campy after" in rig.Sent()[-1]
 
@@ -296,7 +297,7 @@ def test_a_disk_that_lasts(monkeypatch, tmp_path):
 def test_never_stopped_with_stop_at_0(monkeypatch, tmp_path):
 	rig = Rig(monkeypatch, tmp_path, free=1e9, stopAtFreeGB=0).Start()
 	rig.Run(watch.DISK_EVERY_S * 2)
-	assert not rig.rows[0].Stopping() and rig.watch.stopped is None
+	assert rig.stops == [] and rig.watch.stopped is None
 	assert "Only 1.00 GB free" in rig.Sent()[-1]
 
 
