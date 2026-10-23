@@ -36,6 +36,14 @@ def GetModelName(camera):
 	return camera.GetDeviceInfo().GetModelName()
 
 
+def GetFirmwareVersion(camera):
+	# The camera's firmware (DeviceInfo's DeviceVersion), for metadata.csv and session.json
+	try:
+		return str(camera.GetDeviceInfo().GetDeviceVersion()) or "None"
+	except Exception:
+		return "None"
+
+
 def OpenCamera(cam_params):
 	# Open the camera
 	camera = pylon.InstantCamera(cam_params["camera"])
@@ -43,6 +51,7 @@ def OpenCamera(cam_params):
 
 	# Load default camera settings
 	cam_params['cameraModel'] = GetModelName(camera)
+	cam_params['cameraFirmware'] = GetFirmwareVersion(camera)
 	cam_params = LoadSettings(cam_params, camera)
 
 	return camera, cam_params
