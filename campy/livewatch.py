@@ -33,13 +33,17 @@ alerts.log, and each file has one writer.
 It needs only numpy and the standard library, as campy-live-view's checks
 do: run it in campy-live's environment, or campy's. It waits for the feed
 (liveFeed: True), and ends when the recording does (or at Ctrl-C).
+campy-session starts it beside campy-live, with --stop-file (a Ctrl-C for a
+program without a console) and --launcher-pid (it stops waiting for the
+feed if campy-session ended before the recording began; once it watches a
+recording, it watches on to its end).
 
     campy-watch --name campy-live --cameras 3
 """
 
 import argparse, collections, json, os, sys, time
 
-from campy import livefeed, livehealth, liveresults, notify
+from campy import children, livefeed, livehealth, liveresults, notify, stopfile
 
 OFFSET_HOLD_S = 10.0
 COUNTS_HOLD_S = 30.0
@@ -177,9 +181,20 @@ def Run(args, notifier=None, say=print):
 	readers, results, after = None, None, 0
 	said = False
 	checked = sampled = attached = looked = 0.0
+	stopping = []
+	stopWatch = stopfile.Watch(os.path.abspath(args.stop_file), stopping.append).Start() \
+		if getattr(args, "stop_file", None) else None
+	launcher = getattr(args, "launcher_pid", 0)
 	try:
 		while True:
 			now = time.monotonic()
+			if stopping:
+				say("campy-watch: stopped (its stop file).")
+				break
+			if readers is None and launcher and not children.Alive(launcher):
+				say("campy-watch: no live feed, and the program that started it (pid {}) has ended: stopped.".format(
+					launcher))
+				break
 			if readers is None and now - attached >= ATTACH_S:
 				attached = now
 				readers = Attach(names)
@@ -233,6 +248,8 @@ def Run(args, notifier=None, say=print):
 	except KeyboardInterrupt:
 		say("campy-watch: stopped (Ctrl-C).")
 	finally:
+		if stopWatch is not None:
+			stopWatch.Stop()
 		for r in readers or ():
 			r.Close()
 		if results is not None:
@@ -283,6 +300,9 @@ def Main(argv=None):
 	p.add_argument("--bad-px", type=float, default=livehealth.BAD_PX, help="A 3D error above this many pixels is "
 		"bad, as campy-live-view's --bad-px (default: %(default)s)")
 	p.add_argument("--source", help="Which computer it is from (default: the alerts file's rig:)")
+	p.add_argument("--stop-file", default="", help="Stop, as at Ctrl-C, once this file is there (campy-session)")
+	p.add_argument("--launcher-pid", type=int, default=0, help="Stop waiting for the feed if this process (the "
+		"program that started campy-watch, before campy-acquire) ends first")
 	return Run(p.parse_args(argv))
 
 
