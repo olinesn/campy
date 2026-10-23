@@ -23,6 +23,7 @@ setup(
 	entry_points={
 		"console_scripts": [
 			"campy-acquire = campy.campy:Main",
+			"campy-config = campy.configtool:Main",
 			"campy-encode-sweep = campy.sweep:Main",
 			"campy-encode-quality = campy.quality:Main",
 			"campy-align = campy.align:Main",
@@ -31,6 +32,9 @@ setup(
 			"campy-live = campy.live:Main",
 			"campy-live-view = campy.liveview:Main",
 			"campy-live-export = campy.liveexport:Main",
+			"campy-live-flag = campy.liveflag:Main",
+			"campy-label-pack = campy.labelpack:Main",
+			"campy-label-merge = campy.labelmerge:Main",
 		]
 	}
 )

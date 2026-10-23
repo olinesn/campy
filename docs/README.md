@@ -1,13 +1,15 @@
 # campy docs
 
-Guides for recording with campy and tracking animals live while it records: what hardware to use, how to set up the live pipeline, how to train and choose pose models, and how to calibrate and fix a rig. The [main README](../README.md) is the reference for every config key and command; these pages are the how-to around it.
+Guides for recording with campy and tracking animals live while it records: what hardware to use, how to set up the live pipeline, how to train and choose pose models, and how to calibrate and fix a rig. The [main README](../README.md) describes every command, and the [settings reference](config-reference.md) every config key; these pages are the how-to around them.
 
 | Page | What it covers |
 |---|---|
 | [Quickstart](quickstart.md) | A tracked recording in 15 minutes, with no camera: install, record three emulated cameras, track five mice in 3D with campy-live, open the result in LUC3D |
+| [Configs](configs.md) | How campy reads a config, what it checks before any camera opens, and `campy-config check` |
+| [Settings reference](config-reference.md) | Every config key: its default, what it takes, and what it does (generated from `campy/configschema.py`) |
 | [Hardware](hardware.md) | What to buy for live recording + SLEAP + 3D, and the measurements behind it |
 | [Live tracking](live-tracking.md) | Setting up and running `campy-acquire`, `campy-live` and `campy-live-view` on Linux (AMD/ROCm) and Windows (NVIDIA/CUDA), and opening the results in LUC3D (`campy-live-export`) |
-| [Models](models.md) | Training lightweight sleap-nn models for live use, and choosing one that keeps up |
+| [Models](models.md) | Training lightweight sleap-nn models for live use, choosing one that keeps up, finding the frames a model gets wrong on a rig (`campy-live-flag`), and labelling them in LUC3D for the next model (`campy-label-pack`, `campy-label-merge`) |
 | [Calibration and troubleshooting](calibration-and-troubleshooting.md) | Camera placement, exposure and calibration, and fixes for the problems seen so far |
 
 ## Keeping these pages current

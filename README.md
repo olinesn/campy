@@ -243,10 +243,12 @@ Not measured on Windows (the ChronicRecord PC): what the search costs there, and
 - A Basler camera's video has the frame size its '.pfs' file gives the camera, and an emulated camera's (`cameraMake: "emu"`) its clip's. campy says so when that is not `frameWidth` x `frameHeight` (`Camera0: frameWidth x frameHeight 1152x1024 changed to 1280x1024, the camera's frame size with its cameraSettings.`). Each video opens once its camera is open: it used to open first, at `frameWidth` x `frameHeight`, and frames of another size scrambled it. A camera that fails to open gets no video.
 - Edit the config.yaml file to fit your system and recording configuration.
 - Several example config files are located in campy/configs.
-- For help setting config parameters:
+- Every key, its default and what it takes: [docs/config-reference.md](docs/config-reference.md), or `campy-acquire --help`.
+- campy checks the whole config before any camera opens, and lists every problem with its file and line: an unknown key (with the key you probably meant), a value of the wrong kind or out of range, a key given twice, a per-camera list of the wrong length. To check configs without recording:
 ```
-campy-acquire --help
+campy-config check configs/campy_config_chronicrecord.yaml my_rig.yaml
 ```
+- [docs/configs.md](docs/configs.md) explains the checks. In campy 2.1.0 and older, a value out of range was replaced by its default (`frameRate: 0` recorded at 100 fps, `cameraGain: 0` at gain 1); now it stops campy, and 0 is a gain and a quality campy takes.
 
 ### Camera Triggering
 Campy's trigger module supports Python integration with Arduino and Teensy microcontrollers:
@@ -307,7 +309,7 @@ Any config key can be changed for one run on the command line: `--key value` mea
 campy-acquire ./configs/campy_config_chronicrecord.yaml --cameraTrigger None --codec h264 --startArduino False
 campy-acquire ./configs/campy_config_3cams_gpu.yaml --quality "[24, 26, 26]" --gpuID "[0, 0, 1]"
 ```
-campy 2.1.0rc2 and older needed text quoted twice (`--codec "'h265'"`, which still works), read `--startArduino False` as True, and took no lists. Paths are taken as typed (`--ffmpegPath C:\ffmpeg-btbn-8.1\bin\ffmpeg.exe`). As in the config, `yes`, `no`, `on` and `off` are True or False: the True/False keys take them, and a text key refuses them, so quote such text: `"'off'"`. `--preflight off` works as it is. A value campy cannot use stops it before any camera opens, naming the key (`argument --quality: 'high' is not a whole number, or a list of them`).
+campy 2.1.0rc2 and older needed text quoted twice (`--codec "'h265'"`, which still works), read `--startArduino False` as True, and took no lists. Paths are taken as typed (`--ffmpegPath C:\ffmpeg-btbn-8.1\bin\ffmpeg.exe`). As in the config, `yes`, `no`, `on` and `off` are True or False: the True/False keys take them, and a text key refuses them, so quote such text: `"'off'"`. `--preflight off` works as it is. A value campy cannot use stops it before any camera opens, naming the key (`argument --quality: 'high' is not a whole number, or a list of them`). An option is its whole name: `--qual 20` is refused (older campys read it as `--quality 20`), and an unknown option names the one probably meant (`unknown option --framerate. Did you mean --frameRate?`).
 
 ### Stop Recording:
 - Campy can be configured to stop automatically after set recording time (e.g., 1 hour):
@@ -389,6 +391,18 @@ After the recording, `campy-live-export` writes `campy-live`'s results into the 
 campy-live-export <recording folder> --log campy-live_<date_time>.npy
 ```
 It writes `campy-live.slp`, which holds each camera's 2D and, with `--calibration`, each animal's identity and 3D pose, grouped across the cameras (LUC3D: File > Load SLP, then pick the recording folder for the videos). It also writes `<camera>/campy-live.slp`, `calibration.toml` and `skeleton.json`, LUC3D's session folder for the 2D (File > Load Session Folder), and `points3d.h5`, the 3D as arrays. Each prediction goes on the video frame that holds it, through each camera's `frametimes.npy`. `--frames FIRST:LAST` exports part of a long recording. `--skeleton <model folder>` gives the skeleton's edges for logs from 2.1.0rc6 and earlier, whose summary lacks them. `--calibration` and `--cameras` cover a calibration that has moved and a log with no summary. See [Live tracking](docs/live-tracking.md#opening-a-tracked-recording-in-luc3d) and `python -m pydoc campy.liveexport`.
+
+#### Finding the frames to label next (campy-live-flag)
+
+After the recording, `campy-live-flag` reads `campy-live`'s log and finds the sets the model probably got wrong, then picks a few varied ones to label for the next model. It needs only numpy and scipy, and changes nothing in `campy-live`:
+```
+campy-live-flag campy-live_<date_time>.npy --budget 25
+```
+With 3D (`campy-live --calibration`) it flags animals a camera missed while the others saw them, identity swaps and jumps, detections the cameras disagree on, and, with or without 3D, too many or too few animals and low scores. Flags close together make one event; it then picks `--budget` sets (10% at random, the rest from the events, each kind of mistake in turn, each pick the least like the ones before, at least 2 s apart), and writes `flags.csv`, `events.csv` and `sample.json` into `<log>_flags/` with a per-camera count of each kind of mistake. See [Models](docs/models.md#finding-the-frames-a-model-gets-wrong-campy-live-flag) and `python -m pydoc campy.liveflag`.
+
+#### Labelling them (campy-label-pack, campy-label-merge)
+
+`campy-label-pack <log>_flags/sample.json --recording <recording folder>` writes the picked sets as one SLEAP package for LUC3D: every camera's frame of each set embedded in the file, with `campy-live`'s detections, identities and 3D on them, ready to correct (File > Load SLP). After correcting and saving in LUC3D, `campy-label-merge <name>.pkg.slp <name>.labels.slp` writes the corrected camera frames as a training package and a test package. Test sets are whole minutes of a recording, kept out of training for good; `--test-into` adds them to a rig's test set, and `--train-into`/`--train-out` add the rest to a copy of a training package. A camera frame with predictions left in it isn't taken. Both need sleap-io (campy-live's environment). See [Models](docs/models.md#labelling-them-in-luc3d-campy-label-pack-campy-label-merge).
 
 #### Watching it live (campy-live-view)
 
