@@ -483,16 +483,20 @@ class ClockKeeper:
 
     The same method as campy-live's --hold-gpu-clock (campy/live.py,
     GpuClock, while sets come): torch.cuda._sleep spins one block for about
-    2 ms at 2.5 GHz, its thread waits on a blocking event (no CPU core
-    spinning), and spins again until stopped. --hold-clock-blocks spins
+    2 ms at 2.5 GHz (ROCm_CYCLES on ROCm, whose _sleep counts a fixed 100 MHz
+    clock: CYCLES there spun 50 ms on the EVO-X2), its thread waits on a
+    blocking event (no CPU core spinning), and spins again until stopped. --hold-clock-blocks spins
     that many at once, each from its own thread and stream, the same
     streams for every row (fixed_stream).
     """
 
     CYCLES = 5000000
+    ROCM_CYCLES = 200000  # 2 ms, as campy-live's GpuClock (pull request 152)
 
     def __init__(self, blocks=1):
         self.blocks = blocks
+        if getattr(torch.version, "hip", None):
+            self.CYCLES = self.ROCM_CYCLES
         self.stop = threading.Event()
         self.threads = []
         self.spins = 0
