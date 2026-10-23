@@ -52,7 +52,9 @@ not single sets, so no frame a few frames from a test frame is trained on.
 sets.csv's test column says which; campy-label-merge splits them off.
 
 It needs sleap-io (campy-live's environment has it, with sleap-nn), and
-reads the videos with it.
+reads the videos with it. A recording made with campy's fragmentedVideo (the
+default) is copied to plain MP4s in a temporary folder first, stream for
+stream (OpenVideo): sleap-io can't find the frames of a fragmented one.
 """
 
 import argparse, contextlib, csv, hashlib, io, json, os, shutil, sys, tempfile
@@ -100,6 +102,59 @@ def Skeleton(path, nodes, edges):
 		return labels.skeletons[0]
 	n, e = liveexport.ReadSkeleton(path)
 	return sio.Skeleton(nodes=list(n), edges=[(n[a], n[b]) for a, b in e], name="labels")
+
+
+def OpenVideo(path, tmp):
+	"""A camera's video for sleap-io to read frames from. campy records
+	fragmented MP4 by default (fragmentedVideo), which has no index of its
+	frames: sleap-io then reads it as 0 frames long (PyAV) or decodes all of it
+	to count them (imageio-ffmpeg, minutes per hour of video). Such a video is
+	copied, stream for stream (the same frames, nothing decoded), into a plain
+	MP4 in tmp first: 0.2 s for 10 minutes of 3 cameras' worth."""
+	import sleap_io as sio
+	if not Fragmented(path):
+		return sio.Video(path)
+	out = os.path.join(tmp, "plain_{}_{}".format(len(os.listdir(tmp)), os.path.basename(path)))
+	import subprocess
+	r = subprocess.run([FfmpegExe(), "-v", "error", "-y", "-i", path, "-map", "0", "-c", "copy", "-movflags",
+		"+faststart", out], capture_output=True, text=True)
+	if r.returncode != 0:
+		raise PackError("{} is a fragmented MP4 and couldn't be copied to a plain one: {}".format(path,
+			r.stderr.strip()[-300:]))
+	return sio.Video(out)
+
+
+def Fragmented(path):
+	"""Whether an MP4 is fragmented: it has a movie fragment box (moof) at
+	the top level. Reads only the boxes' headers."""
+	import struct
+	try:
+		with open(path, "rb") as f:
+			while True:
+				head = f.read(8)
+				if len(head) < 8:
+					return False
+				size, kind = struct.unpack(">I4s", head)
+				if kind in (b"moof", b"mvex"):
+					return True
+				if size == 1:
+					size = struct.unpack(">Q", f.read(8))[0] - 8
+				elif size == 0:
+					return False
+				if kind == b"moov": # a fragmented file's moov holds mvex
+					body = f.read(size - 8)
+					return b"mvex" in body
+				f.seek(size - 8, 1)
+	except OSError:
+		return False
+
+
+def FfmpegExe():
+	try:
+		import imageio_ffmpeg # sleap-io's own dependency
+		return imageio_ffmpeg.get_ffmpeg_exe()
+	except Exception:
+		return shutil.which("ffmpeg") or "ffmpeg"
 
 
 def Image(video, index):
@@ -197,7 +252,7 @@ def Pack(sample_path, recordings, out=None, name=None, skeleton=None, calibratio
 
 	tmp = tempfile.mkdtemp(prefix="campy-label-pack-")
 	try:
-		videos_src = [[sio.Video(os.path.join(c.folder, c.video)) for c in o["cams"]] for o in opened]
+		videos_src = [[OpenVideo(os.path.join(c.folder, c.video), tmp) for c in o["cams"]] for o in opened]
 		images = [[] for _ in names]
 		table, skipped = [], 0
 		order = sorted(range(len(sets)), key=lambda i: (logs.index(sets[i]["log"]), sets[i]["row"]))
