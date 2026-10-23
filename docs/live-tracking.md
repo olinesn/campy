@@ -144,7 +144,7 @@ Measured on 22 October 2026 on the three test machines, with campy 2.1.0. The sa
 | RTX 4000 Ada, `--engine auto` (TensorRT) | **3.4 / 5.1–5.2 ms** | **6.4–6.5 / 8.1–8.4 ms** | 0 | 670 MB |
 | RTX 4000 Ada, `--engine compile` | 5.1 / 6.0 ms | 8.0–8.1 / 9.1–9.4 ms | 0 | |
 
-Every run was `RIG_CLEAN`, except the two first TensorRT builds (the Pro Max Slim's and the RTX 6000 Ada's), during which the security agent briefly used 2–4.5 cores; their timings match the clean runs. GPU memory is the most the GPU's used memory rose while `campy-live` ran. A first TensorRT build needs about 360 MB more for a moment. The Precision 7875's p99 swings from run to run with or without an engine, as before. Run to run, each setting repeated its p50 to 0.1 ms.
+Every run was `RIG_CLEAN`, except the two first TensorRT builds (the Pro Max Slim's and the RTX 6000 Ada's), during which the security agent briefly used 2–4.5 cores; their timings match the clean runs. GPU memory is the most the GPU's used memory rose while `campy-live` ran. A first TensorRT build needs about 360 MB more for a moment. The Precision 7875's p99 swings from run to run with or without an engine, as before: it comes from the clock hold's tries at one block fewer, during which the RTX 6000 Ada's clock falls for about 1.3 s ([models.md](models.md#where-a-sets-time-goes)). Run to run, each setting repeated its p50 to 0.1 ms.
 
 **Accuracy.** Against the offline SLEAP predictions of the same frames (the rig check's comparison), every setting tracked exactly as well as 2.1.0's default, to the digits it reports:
 
