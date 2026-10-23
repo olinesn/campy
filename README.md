@@ -411,6 +411,14 @@ With 3D (`campy-live --calibration`) it flags animals a camera missed while the 
 
 `campy-model-eval <rig's test package> --pair new=<centroid>,<instance> --pair old=<centroid>,<instance>` runs each pair through campy-live's own inference code on the rig's labelled test sets and reports, per pair and camera: missed and extra animals, skeletons on the wrong mouse, the point error (median, p90, p99), and how often the 3D grouped each animal's detections across the cameras, for the random and the flagged test sets apart. `campy-model-fit stats <training package> --out <model folder>` saves the training images' brightness (and the model's id, `model.json`); `campy-model-fit check <model folder> --recording <recording>` warns when a camera's frames are darker, brighter or more saturated than the training images, its animals' brightness differs, or its gamma isn't the training videos'. See [Models](docs/models.md#measuring-a-model-on-a-rigs-test-sets-campy-model-eval).
 
+#### Closed-loop outputs (campy-rules)
+
+`campy-rules` reads `campy-live`'s results as they come, checks each set's poses against rules from a YAML file (an animal in a region, two animals' body parts within a distance, one identity or any), and switches TTL outputs on an Arduino Nano ESP32 of their own (the sketch `campy/outputs_board/campy_outputs`). The board watches the camera trigger. It makes trains of pulses locked to the frames itself, such as 3 ms photometry excitation on alternate frames, and says how long after its frame's trigger each output switched. It refuses commands about frames older than `bound_ms`. Everything goes off if `campy-rules` stops or goes quiet. `--dry-run` only logs, and `--replay <campy-live log>` tries the rules on a finished recording:
+```
+campy-rules rules.yaml --port /dev/ttyACM1
+```
+See [Closed-loop outputs](docs/closed-loop.md) for the wiring, the rules file, safety and latency.
+
 #### Watching it live (campy-live-view)
 
 `campy-live-view` shows the cameras' frames as campy records them, with campy-live's results drawn on them:

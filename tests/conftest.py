@@ -28,3 +28,12 @@ def sim(tmp_path_factory):
 def timer_sim(tmp_path_factory):
 	# chronicrecord/chronic_timer/chronic_timer.ino: the ChronicRecord rig's timer
 	return Compile(TIMER_SKETCH, str(tmp_path_factory.mktemp("timer") / "sim"))
+
+
+OUTPUTS_SKETCH = os.path.join(os.path.dirname(HERE), "campy", "outputs_board", "campy_outputs", "campy_outputs.ino")
+
+
+@pytest.fixture(scope="session")
+def outputs_sim(tmp_path_factory):
+	# campy/outputs_board/campy_outputs: the board campy-rules switches
+	return Compile(OUTPUTS_SKETCH, str(tmp_path_factory.mktemp("outputs") / "sim"))
