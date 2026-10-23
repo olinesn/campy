@@ -178,6 +178,89 @@ The summary, and the reports it prints every 10 s, give the sets processed and s
 
 For a test without animals or without a trained model, `--model random` runs untrained models of the benchmark's default sizes, and `--model none` only reads the feed.
 
+## Before and after the speed-ups of 22–23 October 2026
+
+The three test machines' rig checks, run at each step with `campy-live`'s defaults and no options: the same scripts, models and 5-mouse clips every time. A set is one frame from each camera.
+
+| Code | What it added |
+|---|---|
+| 2.1.0rc6 (before) | `campy-live` as it was on the morning of 22 October: sleap-nn's own top-down layer, the networks in plain PyTorch fp16 |
+| 2.1.0 | fixed crops and one CUDA graph per set (pull requests 126 and 134), faster upsampling on AMD (138), one block of clock hold on the EVO-X2 (141) |
+| pull request 147 | the two networks compiled by default (`--engine auto`: TensorRT on NVIDIA, `torch.compile` on the EVO-X2) |
+| now | the crops cut with one gather (pull request 151), and the clock hold's two hiccups fixed (152); dev at acdf7b6, measured on 23 October |
+
+In the tables below:
+
+- **Time per set**: from the upload of the frames to the GPU to the 2D results being back on the CPU (`inference_ms` in `campy-live`'s summary). At 60 fps it has to stay under 16.7 ms, or sets are skipped.
+- **Frame to 2D** and **frame to 3D**: from the moment the last camera's frame reached the computer (campy-acquire's arrival stamp, or the replay feeder's) until the set's 2D results, or its 3D poses, were ready. These add noticing the set (up to 0.5 ms), the copy out of shared memory (0.2–0.3 ms), any wait while the GPU was still busy with the set before, and the 3D step.
+- **3D step**: the 3D calculation alone, which runs on its own thread while the GPU starts the next set.
+- p50 is the median, p99 the time 99% of sets stayed under, max the slowest set of the run. Times in ms.
+
+### Recording 3 emulated cameras while tracking 5 mice in 3D (60 s, 3 × 3,600 frames recorded every time)
+
+The EVO-X2 encodes with VA-API on the same GPU that runs the models, the Precision 7875 with NVENC on its RTX 4000 Ada (the models run on the RTX 6000 Ada), and the Pro Max Slim with Quick Sync.
+
+| Machine | Code | Skipped | Time per set p50 / p90 / p99 / max | Frame to 2D p50 / p99 / max | Frame to 3D p50 / p99 / max | 3D step |
+|---|---|---|---|---|---|---|
+| EVO-X2 | 2.1.0rc6 | 3 | 15.4 / 16.2 / 17.3 / 64.3 | 16.9 / 21.5 / 65.7 | 18.6 / 23.1 / 68.6 | 1.36 |
+| | 2.1.0 | 3 | 10.8 / 10.9 / 11.1 / 61.1 | 11.6 / 12.2 / 71.6 | 12.8 / 13.7 / 74.1 | 1.10 |
+| | pull request 147 | 2 | 6.1 / 6.2 / 6.3 / 56.5 | 6.8 / 7.6 / 64.5 | 8.1 / 9.1 / 66.6 | 1.07 |
+| | **now** | **0** | **5.6 / 5.7 / 5.8 / 7.6** | **6.3 / 7.0 / 9.1** | **7.5 / 8.4 / 10.9** | 1.06 |
+| Pro Max Slim (RTX 2000 Ada) | 2.1.0rc6 | 212 (5.9%) | 16.8 / 17.2 / 17.8 / 20.7 | 26.4 / 34.5 / 36.2 | 27.6 / 35.8 / 37.9 | 0.98 |
+| | 2.1.0 | 0 | 12.6 / 12.7 / 12.8 / 13.9 | 13.8 / 14.7 / 21.2 | 14.8 / 15.7 / 23.5 | 0.90 |
+| | pull request 147 | 0 | 5.9 / 6.1 / 6.5 / 11.2 | 7.1 / 7.9 / 13.4 | 8.2 / 9.3 / 14.5 | 1.03 |
+| | **now** ¹ | **0** | **5.5 / 5.6 / 5.7 / 6.4** | **6.7 / 7.1 / 14.2** | **7.7 / 8.4 / 16.0** | 0.98 |
+| Precision 7875 (RTX 6000 Ada) | 2.1.0rc6 | 0 | 10.8 / 12.2 / 14.5 / 18.5 | 11.9 / 15.8 / 33.3 | 13.3 / 17.4 / 37.2 | 1.28 |
+| | 2.1.0 | 0 | 2.7 / 2.8 / 4.8 / 5.1 | 3.9 / 6.0 / 20.3 | 5.3 / 7.3 / 23.8 | 1.31 |
+| | pull request 147 | 0 | 1.6 / 1.7 / 3.7 / 6.0 | 2.8 / 4.9 / 7.5 | 4.1 / 6.2 / 10.2 | 1.24 |
+| | **now** | **0** | **1.6 / 1.7 / 1.8 / 3.0** | **2.7 / 3.4 / 18.3** | **4.1 / 5.3 / 21.6** | 1.28 |
+
+### Replaying the 5-mouse recording, 3 cameras, 3D (EVO-X2 60 s, the Windows machines 30 s)
+
+| Machine | Code | Sets (skipped) | Time per set p50 / p90 / p99 / max | Frame to 2D p50 / p99 / max | Frame to 3D p50 / p99 / max | 3D step |
+|---|---|---|---|---|---|---|
+| EVO-X2 | 2.1.0rc6 | 3,600 (0) | 15.0 / 15.6 / 16.6 / 24.5 | 15.7 / 18.2 / 29.4 | 16.9 / 19.8 / 30.5 | 1.15 |
+| | 2.1.0 | 3,597 (3) | 10.6 / 10.7 / 10.8 / 60.8 | 11.2 / 11.6 / 73.0 | 12.2 / 13.0 / 75.3 | 0.91 |
+| | pull request 147 | 3,598 (2) | 5.9 / 6.0 / 6.1 / 53.8 | 6.5 / 7.0 / 57.5 | 7.5 / 8.5 / 59.8 | 0.86 |
+| | **now** | **3,600 (0)** | **5.5 / 5.5 / 5.6 / 9.6** | **6.1 / 6.5 / 11.6** | **7.1 / 8.1 / 14.2** | 0.89 |
+| Pro Max Slim | 2.1.0rc6 | 1,689 (97, 5.4%) | 16.7 / 17.2 / 17.8 / 19.0 | 27.4 / 35.5 / 37.2 | 28.5 / 36.8 / 39.6 | 1.00 |
+| | 2.1.0 | 1,788 (0) | 12.6 / 12.7 / 12.8 / 14.1 | 14.8 / 15.4 / 27.3 | 15.7 / 16.5 / 29.6 | 0.86 |
+| | pull request 147 | 1,783 (0) | 5.8 / 5.9 / 6.6 / 6.8 | 8.1 / 8.9 / 12.7 | 9.1 / 10.0 / 15.0 | 0.91 |
+| | **now** ¹ | **1,787 (0)** | **5.5 / 5.6 / 5.7 / 6.5** | **7.7 / 8.2 / 24.8** | **8.7 / 9.4 / 27.1** | 0.91 |
+| Precision 7875 | 2.1.0rc6 | 1,788 (0) | 10.0 / 11.1 / 12.4 / 16.0 | 11.6 / 14.1 / 19.0 | 12.9 / 15.5 / 21.8 | 1.15 |
+| | 2.1.0 | 1,787 (0) | 2.7 / 2.8 / 4.7 / 4.8 | 4.2 / 6.5 / 19.9 | 5.7 / 7.7 / 22.9 | 1.31 |
+| | pull request 147 | 1,789 (0) | 1.6 / 1.7 / 5.7 / 5.8 | 3.3 / 7.1 / 9.6 | 4.7 / 8.3 / 11.9 | 1.32 |
+| | **now** | **1,788 (0)** | **1.6 / 1.7 / 1.7 / 2.0** | **3.1 / 4.1 / 10.9** | **4.7 / 5.8 / 13.1** | 1.34 |
+
+### Recording 1 emulated camera while tracking (no 3D; EVO-X2 30 s, the Windows machines 20 s)
+
+| Machine | Time per set, 2.1.0rc6, p50 / p99 / max | Time per set, now | Frame to 2D, 2.1.0rc6, p50 / p99 | Frame to 2D, now |
+|---|---|---|---|---|
+| EVO-X2 | 6.4 / 7.5 / 9.4 | **3.0 / 3.1 / 5.2** | 6.9 / 8.0 | **3.4 / 3.8** |
+| Pro Max Slim ¹ | 9.1 / 10.1 / 10.8 | **2.3 / 2.4 / 2.8** | 10.0 / 11.1 | **3.3 / 3.5** |
+| Precision 7875 | 9.0 / 12.5 / 21.3 | **0.9 / 1.0 / 1.1** | 9.8 / 13.7 | **1.9 / 2.3** |
+
+### Accuracy (EVO-X2 replay, live against offline SLEAP on the same frames)
+
+| Code | 2D error, median / p90 | 3D error, median / p90 | Same identity | Identity switches |
+|---|---|---|---|---|
+| 2.1.0rc6 | 3.8 / 9.6 px | 4.3 / 10.6 mm | 99.93% | 2 |
+| 2.1.0 | 3.8 / 9.3 px | 4.2 / 10.6 mm | 99.93% | 2 |
+| pull request 147 | 3.8 / 9.3 px | 4.2 / 10.6 mm | 99.93% | 2 |
+| now | 3.8 / 9.3 px | 4.2 / 10.6 mm | 99.93% | 2 |
+
+- **A set takes 2.7 times less time on the EVO-X2, 3 times less on the Pro Max Slim and 6 times less on the RTX 6000 Ada**, with the same tracking accuracy.
+- **The Pro Max Slim now keeps up with 5 mice at 60 fps.** Before, each set took just over the 16.7 ms between frames, so the next frame waited and about 1 set in 18 was skipped, and each 3D pose came 28 ms after its frames. Now nothing is skipped and 3D comes 7.7–8.7 ms after.
+- **The slow outliers are gone.** On the EVO-X2 the first set of every run used to take 54–64 ms and the frame after it was skipped; now the slowest set is 7.6–9.6 ms and nothing is skipped. On the RTX 6000 Ada, p99 went from 3.7–5.7 to 1.7–1.8 ms.
+- **The machines are busy about a third of the time or less.** While recording 3 cameras, the GPU work and the copy out of shared memory take about 6 ms of each 16.7 ms on the EVO-X2 and the Pro Max Slim, and about 2 ms on the RTX 6000 Ada.
+- **On the Windows machines one or two sets per run still take 13–27 ms from frame to 3D** (the "max" column), while their time per set stayed normal: the delay is outside the GPU work, and not measured yet.
+
+Notes on the measurements:
+
+- Every run was `RIG_CLEAN` except ¹. The Pro Max Slim's "now" runs were marked `RIG_CONTAMINATED` by one sighting, in the job's first second, before its first check started: 164 MB/s of disk from another test that had just ended. A first attempt shortly before, during which Windows Update and the app-store service were busy (up to 3.6 cores), gave the same times (5.5 / 5.7 ms per set while recording), and so did that PR's own clean runs (5.49 / 5.63 ms).
+- The Windows machines' 2.1.0rc6 replays are the reruns made after the replay feeder was changed to stamp its frames with campy's own host clock. The first runs' frame-to-pose times (41–57 ms) compared two different clocks and mean nothing; their time per set was the same.
+- The "now" runs used a copy of dev's code next to each rig's installed campy; the earlier rows are the rigs' own checks after each update.
+
 ## Fixed crops (`--fixed-crops`, on by default with a GPU)
 
 Normally `campy-live` runs the centroid model, waits for the GPU to say how many animals it found, and only then cuts that many crops for the instance model. That wait in the middle of every set costs time, and it is why `--cuda-graphs` needs a separate graph for every number of animals. With `--fixed-crops`, every frame always gets `--max-instances` crops. When fewer animals are there, the missing ones get a padding crop whose keypoints are thrown away. Nothing in a set then depends on how many animals were found, so:
