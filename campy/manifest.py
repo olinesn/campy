@@ -56,7 +56,7 @@ is one, for a model's training config): campy-live, in an environment of
 its own, uses it too.
 """
 
-import os, sys, json, time, socket, hashlib, platform, subprocess, threading, shutil, csv, ast, argparse
+import os, sys, json, time, socket, shlex, hashlib, platform, subprocess, threading, shutil, csv, ast, argparse
 from datetime import datetime
 
 SCHEMA = "campy-session/1"
@@ -253,6 +253,21 @@ def CpuName():
 PCI_VENDORS = {"0x10de": "NVIDIA", "0x1002": "AMD", "0x8086": "Intel"}
 
 
+def LspciName(line):
+	"""
+	The vendor and device names in a line of lspci -mm: quoted fields, with
+	options such as -rc1 -p00 between them, unquoted:
+	  c6:00.0 "Display controller" "Advanced Micro Devices, Inc. [AMD/ATI]" "Device 1586" -rc1 -p00 ...
+	None when it cannot be read.
+	"""
+	try:
+		fields = [f for f in shlex.split((line or "").strip()) if not f.startswith("-")]
+	except ValueError:
+		return None
+	# slot, class, vendor, device
+	return "{} {}".format(fields[2], fields[3]) if len(fields) >= 4 else None
+
+
 def Gpus():
 	"""
 	The computer's GPUs, each {"name", "driver", ...} as far as it can tell:
@@ -312,12 +327,21 @@ def Gpus():
 				pass
 			slot = os.path.basename(os.path.realpath(device))
 			if lspci:
-				out = Run([lspci, "-s", slot, "-mm"])
-				parts = [p.strip('"') for p in (out or "").strip().split('" "')]
-				if len(parts) >= 3:
-					gpu["name"] = "{} {}".format(parts[1].strip('"'), parts[2].strip('"'))
-			gpu["kernel"] = platform.release()
+				name = LspciName(Run([lspci, "-s", slot, "-mm"]))
+				if name:
+					gpu["name"] = name
+			if read("vbios_version"):
+				gpu["vbios"] = read("vbios_version")
+			gpu["kernel"] = platform.release() # amdgpu and i915 are the kernel's: its version is theirs
 			gpus.append(gpu)
+		try:
+			with open("/opt/rocm/.info/version") as f:
+				rocm = f.read().strip()
+			for gpu in gpus:
+				if gpu.get("vendor") == "AMD":
+					gpu["rocm"] = rocm
+		except OSError:
+			pass
 	elif sys.platform == "darwin":
 		out = Run(["system_profiler", "SPDisplaysDataType", "-json"], timeout=20)
 		try:
@@ -458,24 +482,41 @@ class JsonFile:
 			except OSError:
 				pass
 
+	REPLACE_TRIES, REPLACE_WAIT_S = 50, 0.1
+
 	def Replace(self, data):
 		text = json.dumps(data, indent=2, default=str, ensure_ascii=False) + "\n"
 		temp = "{}.{}.partial".format(self.path, os.getpid())
-		with open(temp, "w", encoding="utf-8") as f:
-			f.write(text)
-			f.flush()
-			os.fsync(f.fileno())
-		for _ in range(50):
+		try:
+			with open(temp, "w", encoding="utf-8") as f:
+				f.write(text)
+				f.flush()
+				os.fsync(f.fileno())
+			for _ in range(self.REPLACE_TRIES):
+				try:
+					os.replace(temp, self.path)
+					self.written = True
+					return
+				except PermissionError: # Windows: a reader has it open
+					time.sleep(self.REPLACE_WAIT_S)
 			try:
-				os.replace(temp, self.path)
-				self.written = True
-				return
-			except PermissionError: # Windows: a reader has it open
-				time.sleep(0.1)
+				self.WriteInPlace(text)
+			except PermissionError as e:
+				# A reader that lets no one else write (some editors, Excel)
+				raise PermissionError(e.errno, "another program has {} open and lets no one write to it: "
+					"close it and try again. The file was not changed".format(os.path.basename(self.path)),
+					self.path) from None
+			self.written = True
+		finally:
+			try:
+				os.remove(temp)
+			except OSError:
+				pass # renamed: it is the file now
+
+	def WriteInPlace(self, text):
+		# Windows, a reader holding the file open: write into it, as it is not renamed over
 		with open(self.path, "w", encoding="utf-8") as f:
 			f.write(text)
-		os.remove(temp)
-		self.written = True
 
 	def Update(self, change):
 		"""
@@ -777,12 +818,17 @@ class Session:
 
 # ------------------------------------------------------------------ notes
 
+def SessionPath(folder):
+	# A recording's session.json, from its folder or the file's own path
+	return folder if os.path.basename(os.path.normpath(folder)) == SESSION_FILE else os.path.join(folder, SESSION_FILE)
+
+
 def AddNote(folder, text, at=None):
 	"""
 	Adds {"at", "text"} to <folder>/session.json's annotations, under its
 	lock: what is already there is kept as it is. Returns the note.
 	"""
-	path = folder if os.path.basename(folder) == SESSION_FILE else os.path.join(folder, SESSION_FILE)
+	path = SessionPath(folder)
 	if not os.path.isfile(path):
 		raise FileNotFoundError("{} has no {}: is it a recording's folder, from campy 2.1.1 or later?".format(
 			os.path.dirname(os.path.abspath(path)), SESSION_FILE))
@@ -810,7 +856,7 @@ def NoteMain(argv=None):
 	except (OSError, ValueError) as e:
 		print(e, file=sys.stderr)
 		return 1
-	print("Added to {}: {} {}".format(os.path.join(args.folder, SESSION_FILE), note["at"], note["text"]))
+	print("Added to {}: {} {}".format(SessionPath(args.folder), note["at"], note["text"]))
 	return 0
 
 

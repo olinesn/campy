@@ -507,6 +507,56 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 </section>
 
 <section>
+  <h2>Before and after the speed-ups of 22–23 October</h2>
+  <p class="col">Each machine's own rig check, run with <code>campy-live</code>'s defaults and no options at each step, with the same scripts, models and 5-mouse clips: campy 2.1.0rc6 as it was on the morning of 22 October; 2.1.0 (fixed crops and one CUDA graph per set, pull requests 126 and 134, plus the EVO-X2's faster upsampling and clock hold, 138 and 141); pull request 147 (compiled networks by default); and dev on 23 October (the faster crop, 151, and the clock hold's fixes, 152). <i>Time per set</i> runs from the upload to the GPU to the 2D results being back on the CPU, and has to stay under 16.7 ms at 60 fps. <i>Frame to 3D pose</i> runs from the moment the last camera's frame reached the computer to the set's 3D poses. Every run was clean on the rig lock except the Pro Max Slim's last row of each table, which picked up one sighting of another test's disk use in its first second, before its first check started; a run a few minutes earlier gave the same times. More detail (p90, frame to 2D, the 3D step, accuracy, 1 camera) in campy's <code>docs/live-tracking.md</code>, "Before and after the speed-ups".</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Recording 3 cameras, 5 mice, 3D (60 s)</th><th>Sets skipped</th><th>Time per set, median / p99 / max</th><th>Frame to 3D pose, median / p99 / max</th></tr></thead>
+      <tbody>
+        <tr><td>EVO-X2, 2.1.0rc6 (before)</td><td class="mono">3 of 3,600</td><td class="mono">15.4 / 17.3 / 64.3 ms</td><td class="mono">18.6 / 23.1 / 68.6 ms</td></tr>
+        <tr><td>EVO-X2, 2.1.0</td><td class="mono">3 of 3,594</td><td class="mono">10.8 / 11.1 / 61.1 ms</td><td class="mono">12.8 / 13.7 / 74.1 ms</td></tr>
+        <tr><td>EVO-X2, pull request 147</td><td class="mono">2 of 3,595</td><td class="mono">6.1 / 6.3 / 56.5 ms</td><td class="mono">8.1 / 9.1 / 66.6 ms</td></tr>
+        <tr><td>EVO-X2, now (through 152)</td><td class="mono"><b>0 of 3,600</b></td><td class="mono"><b>5.6 / 5.8 / 7.6</b> ms</td><td class="mono"><b>7.5 / 8.4 / 10.9</b> ms</td></tr>
+        <tr><td>Pro Max Slim, 2.1.0rc6 (before)</td><td class="mono">212 of 3,591 (5.9%)</td><td class="mono">16.8 / 17.8 / 20.7 ms</td><td class="mono">27.6 / 35.8 / 37.9 ms</td></tr>
+        <tr><td>Pro Max Slim, 2.1.0</td><td class="mono">0 of 3,594</td><td class="mono">12.6 / 12.8 / 14.1 ms</td><td class="mono">14.7 / 17.4 / 31.0 ms</td></tr>
+        <tr><td>Pro Max Slim, pull request 147</td><td class="mono">0 of 3,593</td><td class="mono">5.9 / 6.5 / 11.2 ms</td><td class="mono">8.2 / 9.3 / 14.5 ms</td></tr>
+        <tr><td>Pro Max Slim, now (through 152)</td><td class="mono"><b>0 of 3,589</b></td><td class="mono"><b>5.5 / 5.7 / 6.4</b> ms</td><td class="mono"><b>7.7 / 8.4 / 16.0</b> ms</td></tr>
+        <tr><td>Precision 7875, 2.1.0rc6 (before)</td><td class="mono">0 of 3,596</td><td class="mono">10.8 / 14.5 / 18.5 ms</td><td class="mono">13.3 / 17.4 / 37.2 ms</td></tr>
+        <tr><td>Precision 7875, 2.1.0</td><td class="mono">0 of 3,592</td><td class="mono">2.7 / 4.8 / 5.1 ms</td><td class="mono">5.3 / 7.3 / 23.8 ms</td></tr>
+        <tr><td>Precision 7875, pull request 147</td><td class="mono">0 of 3,598</td><td class="mono">1.6 / 3.7 / 6.0 ms</td><td class="mono">4.1 / 6.2 / 10.2 ms</td></tr>
+        <tr><td>Precision 7875, now (through 152)</td><td class="mono"><b>0 of 3,593</b></td><td class="mono"><b>1.6 / 1.8 / 3.0</b> ms</td><td class="mono"><b>4.1 / 5.3 / 21.6</b> ms</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="tablewrap">
+    <table>
+
+      <thead><tr><th>Replay, 3 cameras, 5 mice, 3D</th><th>Sets skipped</th><th>Time per set, median / p99 / max</th><th>Frame to 3D pose, median / p99 / max</th></tr></thead>
+      <tbody>
+        <tr><td>EVO-X2, 2.1.0rc6 (before)</td><td class="mono">0 of 3,600</td><td class="mono">15.0 / 16.6 / 24.5 ms</td><td class="mono">16.9 / 19.8 / 30.5 ms</td></tr>
+        <tr><td>EVO-X2, 2.1.0</td><td class="mono">3 of 3,600</td><td class="mono">10.6 / 10.8 / 60.8 ms</td><td class="mono">12.2 / 13.0 / 75.3 ms</td></tr>
+        <tr><td>EVO-X2, pull request 147</td><td class="mono">2 of 3,600</td><td class="mono">5.9 / 6.1 / 53.8 ms</td><td class="mono">7.5 / 8.5 / 59.8 ms</td></tr>
+        <tr><td>EVO-X2, now (through 152)</td><td class="mono"><b>0 of 3,600</b></td><td class="mono"><b>5.5 / 5.6 / 9.6</b> ms</td><td class="mono"><b>7.1 / 8.1 / 14.2</b> ms</td></tr>
+        <tr><td>Pro Max Slim, 2.1.0rc6 (before)</td><td class="mono">97 of 1,786 (5.4%)</td><td class="mono">16.7 / 17.8 / 19.0 ms</td><td class="mono">28.5 / 36.8 / 39.6 ms</td></tr>
+        <tr><td>Pro Max Slim, 2.1.0</td><td class="mono">0 of 1,788</td><td class="mono">12.6 / 12.8 / 14.1 ms</td><td class="mono">15.7 / 16.5 / 29.6 ms</td></tr>
+        <tr><td>Pro Max Slim, pull request 147</td><td class="mono">0 of 1,783</td><td class="mono">5.8 / 6.6 / 6.8 ms</td><td class="mono">9.1 / 10.0 / 15.0 ms</td></tr>
+        <tr><td>Pro Max Slim, now (through 152)</td><td class="mono"><b>0 of 1,787</b></td><td class="mono"><b>5.5 / 5.7 / 6.5</b> ms</td><td class="mono"><b>8.7 / 9.4 / 27.1</b> ms</td></tr>
+        <tr><td>Precision 7875, 2.1.0rc6 (before)</td><td class="mono">0 of 1,788</td><td class="mono">10.0 / 12.4 / 16.0 ms</td><td class="mono">12.9 / 15.5 / 21.8 ms</td></tr>
+        <tr><td>Precision 7875, 2.1.0</td><td class="mono">0 of 1,787</td><td class="mono">2.7 / 4.7 / 4.8 ms</td><td class="mono">5.7 / 7.7 / 22.9 ms</td></tr>
+        <tr><td>Precision 7875, pull request 147</td><td class="mono">0 of 1,789</td><td class="mono">1.6 / 5.7 / 5.8 ms</td><td class="mono">4.7 / 8.3 / 11.9 ms</td></tr>
+        <tr><td>Precision 7875, now (through 152)</td><td class="mono"><b>0 of 1,788</b></td><td class="mono"><b>1.6 / 1.7 / 2.0</b> ms</td><td class="mono"><b>4.7 / 5.8 / 13.1</b> ms</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <ul class="plain col">
+    <li><b>A set takes 2.7 times less time on the EVO-X2, 3 times less on the Pro Max Slim and 6 times less on the RTX 6000 Ada</b>, and the EVO-X2's replay matched offline SLEAP exactly as well at every step (2D median 3.8 px, 3D median 4.2–4.3 mm, 2 identity switches).</li>
+    <li><b>The Pro Max Slim now keeps up with 5 mice at 60 fps.</b> Before, about 1 set in 18 was skipped and each 3D pose came 28 ms after its frames; now nothing is skipped and 3D comes 7.7–8.7 ms after.</li>
+    <li><b>The slow outliers are gone.</b> The EVO-X2's first set of each run took 54–64 ms and the frame after it was skipped; now its slowest set is 7.6–9.6 ms and nothing is skipped. On the RTX 6000 Ada, p99 went from 3.7–5.7 to 1.7–1.8 ms.</li>
+    <li><b>On the Windows machines one or two sets per run still take 13–27 ms from frame to 3D pose</b>, while their time per set stays normal: the delay is outside the GPU work, and not measured yet.</li>
+  </ul>
+</section>
+
+<section>
   <h2>Compiled engines for the two models</h2>
   <p class="col">On 22 October <code>bench/compiled_bench.py</code> timed the trained centroid model and the 160 px-crop centered-instance model in each inference engine that runs on each machine. Only the networks were timed: preprocessing, cropping and peak finding stay in PyTorch, as in <code>campy-live</code>. Each engine reads its input from PyTorch's GPU memory and writes its output there, with no copy through the CPU, and that hand-over is included in the time. Inputs were real: the 5-mouse replay videos (the frames of each set, and the crops the models cut around each mouse). Sets started 60 times a second with the GPU clock held, 2,000 sets per measurement, every run <code>RIG_CLEAN</code>. The table gives each set's time for both networks, centroid on 3 frames plus centered-instance on 15 crops (5 mice), median / p99, and for 3 crops (1 mouse) the median. A dash means the engine doesn't run on that GPU, or wasn't timed there (fp32 on the RTX 2000 Ada, too slow for 60 sets a second; int8 there, which TensorRT couldn't build).</p>
   <div class="tablewrap">
@@ -563,7 +613,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 
 <footer>
   <p>Measured 18–22 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
-  <p class="meta">Version 42 · updated 23 October 2026 · reflects campy changes through pull request 152 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p class="meta">Version 43 · updated 23 October 2026 · reflects campy changes through pull request 176 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 

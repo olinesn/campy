@@ -5,6 +5,7 @@ Three programs work together on the computer that records:
 - **`campy-acquire`** records the cameras as usual. With `liveFeed: True` it also copies each frame into shared memory, the *live feed*.
 - **`campy-live`** reads the feed and runs a sleap-nn top-down model on each synchronized set of frames, one frame per camera. With a calibration, it also matches the animals across cameras, keeps their identities and triangulates them in 3D. It is never more than one set behind: a set that arrives while it is busy is skipped and counted, never queued.
 - **`campy-live-view`** (optional) shows the camera frames with the tracking drawn on them, plus a 3D view.
+- **`campy-rules`** (optional) switches TTL outputs from the poses, for closed-loop experiments: see [Closed-loop outputs](closed-loop.md).
 
 campy never waits for `campy-live`, so tracking can't slow down or break a recording. The [main README](../README.md#live-pose-estimation-livefeed-campy-live) lists every option.
 
@@ -24,6 +25,125 @@ Which torch build:
 - **Windows, NVIDIA GPU (CUDA)**: a CUDA build, for example `pip install torch --index-url https://download.pytorch.org/whl/cu128`. The Pro Max Slim uses torch 2.11.0+cu128; the Precision 7875 (RTX 6000 Ada and RTX 4000 Ada, driver 596) uses 2.14.1+cu130 (`--index-url https://download.pytorch.org/whl/cu130`). Any recent CUDA build runs on Ada-generation cards.
 
 ## Recording with live tracking
+
+### In one command: `campy-session`
+
+`campy-session` starts all three programs, each in its own environment, from one config, and stops them together. Add a `live:` section to the recording's config, and a `view:` section if you like:
+
+```yaml
+# ... the recording's keys, as for campy-acquire ...
+live:
+  python: "C:\\Users\\<you>\\miniconda3\\envs\\campyLive\\python.exe"   # optional, see below
+  centroid: "C:\\campy_data\\live\\models\\centroid"
+  instance: "C:\\campy_data\\live\\models\\instance"
+  animals: 5
+  calibration: "C:\\campy_data\\calib\\calibration.toml"
+  env: {CUDA_DEVICE_ORDER: PCI_BUS_ID, CUDA_VISIBLE_DEVICES: "0"}   # two GPUs: campy-live on the first
+  args: ["--report-sec", "30"]   # any other campy-live option, as a list
+view: true                       # or: view: {args: ["--no-3d"], keep_open: true}
+```
+
+Then, in the **recording** environment:
+
+```
+campy-session run <config>.yaml
+```
+
+Options after the config are campy-acquire's, for this run only (`campy-session run <config>.yaml --recTimeInSec 3600`).
+
+**Telling it where the inference environment is.** `campy-session` runs `campy-live` with that environment's python, so neither environment needs activating and nothing needs to be on PATH. It looks in three places, in order:
+
+1. `live.python` in the config;
+2. the `CAMPY_LIVE_PYTHON` environment variable;
+3. the python registered once per computer: in the inference environment, run `campy-session register-live` (or `python -m campy.session register-live`). It writes that python to `~/.campy/envs.json`.
+
+Both environments must have the same campy installed, or `campy-session` stops before anything starts and says so. It compares their live feed code.
+
+**What happens:**
+
+1. It checks the config's `live:` and `view:` sections, and suggests the key you meant for a typo.
+2. It makes the recording's folder (`<videoFolder>/<date and time>/`, as campy-acquire would). Into its `logs/` folder it writes:
+   - the config as given (`session-config.yaml`);
+   - the config campy-acquire runs (`campy-acquire.yaml`): the same, without the two sections, and with `liveFeed: True`.
+3. It starts `campy-live` and waits until its models are warmed up: 5–40 s, longest the first time an engine is built (`live.ready_timeout_s`, default 120 s).
+4. It starts `campy-live-view` (with `view`), then `campy-acquire`, which records into that folder.
+5. The recording ends at `recTimeInSec`, or at Ctrl-C. `campy-live` tracks to the last frame and ends by itself. The view closes, unless `keep_open` is set.
+
+Each program's output is shown in the terminal, each line marked `[acquire]`, `[live]` or `[view]`, and kept in `<folder>/logs/<program>.log`. `campy-live`'s results go into the recording's folder (`campy-live.npy` and `.json`), ready for `campy-live-export`. `<folder>/launcher.json` records when each program started and ended, and its exit code. The exit code is campy-acquire's: 0 when every camera recorded to the end.
+
+**The recording comes first.**
+
+- `campy-acquire` runs as it does when started by hand. Ctrl-C reaches it directly, and it is never killed. If `campy-session` itself is closed or crashes, the recording goes on to `recTimeInSec`, and `campy-live` keeps tracking it.
+- If `campy-live` can't start (a wrong model folder, say), the recording goes on without tracking. With `live.required: true` instead, nothing is recorded.
+- If `campy-live` stops during the recording, the cameras carry on, and `campy-session` starts it again after 10 s, then 1 and 5 minutes, at most 5 times an hour. Each restart writes its own log (`campy-live.part2.npy`, ...). `live.restart: false` turns this off.
+- One `campy-session` runs at a time on a computer.
+
+**After the recording.** When every camera has recorded to the end, `campy-session` runs the steps of the config's `post:` section, and logs each one in `<folder>/logs/post.log`. Without a `post:` section, it runs `remux` and `export`:
+
+```yaml
+post:
+  remux: true          # true (the default), keep, or false
+  export: true         # campy-live-export, when campy-live ran (the default)
+  copy: "\\\\nas\\share\\recordings"   # optional: copies the recording's folder into this one
+  run: ["python C:\\tools\\notify.py {folder}"]   # optional: your own commands
+```
+
+- **remux** turns each fragmented video (campy's default, readable after a crash) into a plain MP4 without re-encoding. Some readers have trouble with fragmented files (an older calibrat3 did), and a fragmented file's header has no frame count.
+  - Before anything is replaced, ffmpeg's packet checksums of the two files are compared line by line: every packet, timestamp and the codec's header must be identical. Only then does the plain file replace the fragmented one.
+  - With `remux: keep`, the fragmented file stays beside it as `<name>.fragmented.mp4`.
+  - If the check fails, or the disk has no room for one more copy of the video, the original stays as it was, and the log says why.
+  - A 30 s video of 3 cameras takes a fraction of a second.
+- **export** runs `campy-live-export` in the inference environment, so the recording opens in LUC3D with the tracking on it (below). If `campy-live` was started again during the recording, its logs are joined first, in order.
+- **copy** copies the whole recording folder into `copy.to`: with robocopy on Windows, with rsync on Linux and macOS (rsync also takes `user@host:/path`). Then it checks every file's size. **Nothing is deleted**, on either side.
+- **run** runs your own commands in a shell, with `{folder}` replaced by the recording's folder. One that fails is logged, and the next one still runs.
+
+After a crash, or when a camera didn't record to the end, none of them run, and `campy-session` says why. The recording's fragmented videos stay readable up to their last second. To run the steps again by hand, or after looking at a crashed recording:
+
+```
+campy-session post <recording folder>                 # the steps not done yet
+campy-session post <recording folder> --only remux    # one step
+campy-session post <recording folder> --force         # after a crash, or again
+```
+
+`campy-session post` also works on a recording made with `campy-acquire` alone. There, every camera's `metadata.csv` must have its totals and no `cameraError` or `videoError`, unless you give `--force`. What each step did is kept in `<folder>/logs/post.json`, so running `post` again repeats nothing that is done. A Ctrl-C during the steps stops them after the current one.
+
+### From a page in the browser: `campy-session panel`
+
+For people who'd rather not use a terminal, the same recording can be run from a page in the browser:
+
+```
+campy-session panel <config>.yaml
+```
+
+It opens the page in this computer's browser, and prints its address. A recording starts only when someone presses **Start recording** on the page, never on its own. Its length is the config's `recTimeInSec`. After each recording the page is ready for the next one, into a new folder. Ctrl-C in the panel's console closes it, when nothing is recording.
+
+What the page shows, refreshed every second:
+
+- **Before the start:**
+  - the experiment's name, the animal IDs and notes, which go into the recording's `session.json`;
+  - the checks. Some stop a start: `campy-live`'s environment not found or not the same campy, or another `campy-session` running. Others only warn: less free disk space than `alertDiskFreeGB`.
+- **While it records:**
+  - **time:** elapsed, against the planned length;
+  - **each camera:** a grey thumbnail, refreshed once a second; its frames per second and frame number; and its health, from the same checks `campy-live-view` draws in red: `NO FRAMES`, behind, `LOST`, `GAP`, `LATE`, frames ahead or behind. When campy-acquire's watch is running, also its dropped frames and write queue;
+  - **disk:** free space, and roughly how long it lasts at the rate it's filling;
+  - **tracking:** how many animals `campy-live` tracked in 3D over the last second;
+  - **warnings:** from the alerts' logs in the recording's folder, and anything `campy-session` reported;
+  - **bookmarks:** a note box and an Add button. They write the same `bookmarks.csv` in the recording's folder as `campy-live-view`'s `m` key, and the two never give two bookmarks the same number;
+  - **programs:** each one's state, and a button that opens `campy-live-view` again if it was closed.
+- **After it:** each step of `post:`, as it runs.
+
+**Stop** stops the recording exactly as Ctrl-C does: each camera closes its video. If a camera hangs while closing, the button turns into **Stop now, without closing**, for a few seconds. Closing the page stops nothing, and the page can be opened again at any time.
+
+The page is served only to this computer (`127.0.0.1`):
+
+- **Over Remote Desktop** (Windows), open it in the rig's own browser.
+- **From another computer**, go through SSH: run `ssh -L 8765:127.0.0.1:8765 <rig>`, then open the printed address on your own computer.
+
+Every request needs the random key in that address, so no other program on the computer can press Start or Stop. `--port` picks another port, and `--no-browser` only prints the address.
+
+### By hand
+
+The three programs can also be started separately, as `campy-session` does:
 
 1. **Start `campy-live` first**, in the inference environment:
    ```
@@ -57,6 +177,89 @@ The summary, and the reports it prints every 10 s, give the sets processed and s
 - **"misaligned" sets**: one camera's frames reached the computer late, or a camera lost a frame (`flirFramesLost` in its `metadata.csv`). See the README on frame numbers.
 
 For a test without animals or without a trained model, `--model random` runs untrained models of the benchmark's default sizes, and `--model none` only reads the feed.
+
+## Before and after the speed-ups of 22–23 October 2026
+
+The three test machines' rig checks, run at each step with `campy-live`'s defaults and no options: the same scripts, models and 5-mouse clips every time. A set is one frame from each camera.
+
+| Code | What it added |
+|---|---|
+| 2.1.0rc6 (before) | `campy-live` as it was on the morning of 22 October: sleap-nn's own top-down layer, the networks in plain PyTorch fp16 |
+| 2.1.0 | fixed crops and one CUDA graph per set (pull requests 126 and 134), faster upsampling on AMD (138), one block of clock hold on the EVO-X2 (141) |
+| pull request 147 | the two networks compiled by default (`--engine auto`: TensorRT on NVIDIA, `torch.compile` on the EVO-X2) |
+| now | the crops cut with one gather (pull request 151), and the clock hold's two hiccups fixed (152); dev at acdf7b6, measured on 23 October |
+
+In the tables below:
+
+- **Time per set**: from the upload of the frames to the GPU to the 2D results being back on the CPU (`inference_ms` in `campy-live`'s summary). At 60 fps it has to stay under 16.7 ms, or sets are skipped.
+- **Frame to 2D** and **frame to 3D**: from the moment the last camera's frame reached the computer (campy-acquire's arrival stamp, or the replay feeder's) until the set's 2D results, or its 3D poses, were ready. These add noticing the set (up to 0.5 ms), the copy out of shared memory (0.2–0.3 ms), any wait while the GPU was still busy with the set before, and the 3D step.
+- **3D step**: the 3D calculation alone, which runs on its own thread while the GPU starts the next set.
+- p50 is the median, p99 the time 99% of sets stayed under, max the slowest set of the run. Times in ms.
+
+### Recording 3 emulated cameras while tracking 5 mice in 3D (60 s, 3 × 3,600 frames recorded every time)
+
+The EVO-X2 encodes with VA-API on the same GPU that runs the models, the Precision 7875 with NVENC on its RTX 4000 Ada (the models run on the RTX 6000 Ada), and the Pro Max Slim with Quick Sync.
+
+| Machine | Code | Skipped | Time per set p50 / p90 / p99 / max | Frame to 2D p50 / p99 / max | Frame to 3D p50 / p99 / max | 3D step |
+|---|---|---|---|---|---|---|
+| EVO-X2 | 2.1.0rc6 | 3 | 15.4 / 16.2 / 17.3 / 64.3 | 16.9 / 21.5 / 65.7 | 18.6 / 23.1 / 68.6 | 1.36 |
+| | 2.1.0 | 3 | 10.8 / 10.9 / 11.1 / 61.1 | 11.6 / 12.2 / 71.6 | 12.8 / 13.7 / 74.1 | 1.10 |
+| | pull request 147 | 2 | 6.1 / 6.2 / 6.3 / 56.5 | 6.8 / 7.6 / 64.5 | 8.1 / 9.1 / 66.6 | 1.07 |
+| | **now** | **0** | **5.6 / 5.7 / 5.8 / 7.6** | **6.3 / 7.0 / 9.1** | **7.5 / 8.4 / 10.9** | 1.06 |
+| Pro Max Slim (RTX 2000 Ada) | 2.1.0rc6 | 212 (5.9%) | 16.8 / 17.2 / 17.8 / 20.7 | 26.4 / 34.5 / 36.2 | 27.6 / 35.8 / 37.9 | 0.98 |
+| | 2.1.0 | 0 | 12.6 / 12.7 / 12.8 / 13.9 | 13.8 / 14.7 / 21.2 | 14.8 / 15.7 / 23.5 | 0.90 |
+| | pull request 147 | 0 | 5.9 / 6.1 / 6.5 / 11.2 | 7.1 / 7.9 / 13.4 | 8.2 / 9.3 / 14.5 | 1.03 |
+| | **now** ¹ | **0** | **5.5 / 5.6 / 5.7 / 6.4** | **6.7 / 7.1 / 14.2** | **7.7 / 8.4 / 16.0** | 0.98 |
+| Precision 7875 (RTX 6000 Ada) | 2.1.0rc6 | 0 | 10.8 / 12.2 / 14.5 / 18.5 | 11.9 / 15.8 / 33.3 | 13.3 / 17.4 / 37.2 | 1.28 |
+| | 2.1.0 | 0 | 2.7 / 2.8 / 4.8 / 5.1 | 3.9 / 6.0 / 20.3 | 5.3 / 7.3 / 23.8 | 1.31 |
+| | pull request 147 | 0 | 1.6 / 1.7 / 3.7 / 6.0 | 2.8 / 4.9 / 7.5 | 4.1 / 6.2 / 10.2 | 1.24 |
+| | **now** | **0** | **1.6 / 1.7 / 1.8 / 3.0** | **2.7 / 3.4 / 18.3** | **4.1 / 5.3 / 21.6** | 1.28 |
+
+### Replaying the 5-mouse recording, 3 cameras, 3D (EVO-X2 60 s, the Windows machines 30 s)
+
+| Machine | Code | Sets (skipped) | Time per set p50 / p90 / p99 / max | Frame to 2D p50 / p99 / max | Frame to 3D p50 / p99 / max | 3D step |
+|---|---|---|---|---|---|---|
+| EVO-X2 | 2.1.0rc6 | 3,600 (0) | 15.0 / 15.6 / 16.6 / 24.5 | 15.7 / 18.2 / 29.4 | 16.9 / 19.8 / 30.5 | 1.15 |
+| | 2.1.0 | 3,597 (3) | 10.6 / 10.7 / 10.8 / 60.8 | 11.2 / 11.6 / 73.0 | 12.2 / 13.0 / 75.3 | 0.91 |
+| | pull request 147 | 3,598 (2) | 5.9 / 6.0 / 6.1 / 53.8 | 6.5 / 7.0 / 57.5 | 7.5 / 8.5 / 59.8 | 0.86 |
+| | **now** | **3,600 (0)** | **5.5 / 5.5 / 5.6 / 9.6** | **6.1 / 6.5 / 11.6** | **7.1 / 8.1 / 14.2** | 0.89 |
+| Pro Max Slim | 2.1.0rc6 | 1,689 (97, 5.4%) | 16.7 / 17.2 / 17.8 / 19.0 | 27.4 / 35.5 / 37.2 | 28.5 / 36.8 / 39.6 | 1.00 |
+| | 2.1.0 | 1,788 (0) | 12.6 / 12.7 / 12.8 / 14.1 | 14.8 / 15.4 / 27.3 | 15.7 / 16.5 / 29.6 | 0.86 |
+| | pull request 147 | 1,783 (0) | 5.8 / 5.9 / 6.6 / 6.8 | 8.1 / 8.9 / 12.7 | 9.1 / 10.0 / 15.0 | 0.91 |
+| | **now** ¹ | **1,787 (0)** | **5.5 / 5.6 / 5.7 / 6.5** | **7.7 / 8.2 / 24.8** | **8.7 / 9.4 / 27.1** | 0.91 |
+| Precision 7875 | 2.1.0rc6 | 1,788 (0) | 10.0 / 11.1 / 12.4 / 16.0 | 11.6 / 14.1 / 19.0 | 12.9 / 15.5 / 21.8 | 1.15 |
+| | 2.1.0 | 1,787 (0) | 2.7 / 2.8 / 4.7 / 4.8 | 4.2 / 6.5 / 19.9 | 5.7 / 7.7 / 22.9 | 1.31 |
+| | pull request 147 | 1,789 (0) | 1.6 / 1.7 / 5.7 / 5.8 | 3.3 / 7.1 / 9.6 | 4.7 / 8.3 / 11.9 | 1.32 |
+| | **now** | **1,788 (0)** | **1.6 / 1.7 / 1.7 / 2.0** | **3.1 / 4.1 / 10.9** | **4.7 / 5.8 / 13.1** | 1.34 |
+
+### Recording 1 emulated camera while tracking (no 3D; EVO-X2 30 s, the Windows machines 20 s)
+
+| Machine | Time per set, 2.1.0rc6, p50 / p99 / max | Time per set, now | Frame to 2D, 2.1.0rc6, p50 / p99 | Frame to 2D, now |
+|---|---|---|---|---|
+| EVO-X2 | 6.4 / 7.5 / 9.4 | **3.0 / 3.1 / 5.2** | 6.9 / 8.0 | **3.4 / 3.8** |
+| Pro Max Slim ¹ | 9.1 / 10.1 / 10.8 | **2.3 / 2.4 / 2.8** | 10.0 / 11.1 | **3.3 / 3.5** |
+| Precision 7875 | 9.0 / 12.5 / 21.3 | **0.9 / 1.0 / 1.1** | 9.8 / 13.7 | **1.9 / 2.3** |
+
+### Accuracy (EVO-X2 replay, live against offline SLEAP on the same frames)
+
+| Code | 2D error, median / p90 | 3D error, median / p90 | Same identity | Identity switches |
+|---|---|---|---|---|
+| 2.1.0rc6 | 3.8 / 9.6 px | 4.3 / 10.6 mm | 99.93% | 2 |
+| 2.1.0 | 3.8 / 9.3 px | 4.2 / 10.6 mm | 99.93% | 2 |
+| pull request 147 | 3.8 / 9.3 px | 4.2 / 10.6 mm | 99.93% | 2 |
+| now | 3.8 / 9.3 px | 4.2 / 10.6 mm | 99.93% | 2 |
+
+- **A set takes 2.7 times less time on the EVO-X2, 3 times less on the Pro Max Slim and 6 times less on the RTX 6000 Ada**, with the same tracking accuracy.
+- **The Pro Max Slim now keeps up with 5 mice at 60 fps.** Before, each set took just over the 16.7 ms between frames, so the next frame waited and about 1 set in 18 was skipped, and each 3D pose came 28 ms after its frames. Now nothing is skipped and 3D comes 7.7–8.7 ms after.
+- **The slow outliers are gone.** On the EVO-X2 the first set of every run used to take 54–64 ms and the frame after it was skipped; now the slowest set is 7.6–9.6 ms and nothing is skipped. On the RTX 6000 Ada, p99 went from 3.7–5.7 to 1.7–1.8 ms.
+- **The machines are busy about a third of the time or less.** While recording 3 cameras, the GPU work and the copy out of shared memory take about 6 ms of each 16.7 ms on the EVO-X2 and the Pro Max Slim, and about 2 ms on the RTX 6000 Ada.
+- **On the Windows machines one or two sets per run still take 13–27 ms from frame to 3D** (the "max" column), while their time per set stayed normal: the delay is outside the GPU work, and not measured yet.
+
+Notes on the measurements:
+
+- Every run was `RIG_CLEAN` except ¹. The Pro Max Slim's "now" runs were marked `RIG_CONTAMINATED` by one sighting, in the job's first second, before its first check started: 164 MB/s of disk from another test that had just ended. A first attempt shortly before, during which Windows Update and the app-store service were busy (up to 3.6 cores), gave the same times (5.5 / 5.7 ms per set while recording), and so did that PR's own clean runs (5.49 / 5.63 ms).
+- The Windows machines' 2.1.0rc6 replays are the reruns made after the replay feeder was changed to stamp its frames with campy's own host clock. The first runs' frame-to-pose times (41–57 ms) compared two different clocks and mean nothing; their time per set was the same.
+- The "now" runs used a copy of dev's code next to each rig's installed campy; the earlier rows are the rigs' own checks after each update.
 
 ## Fixed crops (`--fixed-crops`, on by default with a GPU)
 
@@ -255,7 +458,7 @@ On the EVO-X2, 5 mice, 3 cameras, 60 fps, the trained models of the table above,
 
 ## Opening a tracked recording in LUC3D
 
-After the recording, `campy-live-export` turns `campy-live`'s log into files that [LUC3D](https://github.com/talmolab/luc3d) opens with the results already on the videos: each camera's 2D predictions and, if `campy-live` ran with `--calibration`, each animal's 3D pose and identity. Run it in the inference environment, which has the `sleap-io` package it needs (it comes with sleap-nn):
+`campy-session` runs `campy-live-export` itself after a clean stop (`post: export`, above). By hand: after the recording, `campy-live-export` turns `campy-live`'s log into files that [LUC3D](https://github.com/talmolab/luc3d) opens with the results already on the videos: each camera's 2D predictions and, if `campy-live` ran with `--calibration`, each animal's 3D pose and identity. Run it in the inference environment, which has the `sleap-io` package it needs (it comes with sleap-nn):
 ```
 campy-live-export <recording folder> --log campy-live_<date_time>.npy
 ```

@@ -15,6 +15,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIGS = sorted(glob.glob(os.path.join(HERE, "..", "configs", "*.yaml")))
 
 
+@pytest.fixture(autouse=True)
+def home_elsewhere(tmp_path_factory, monkeypatch):
+	# Messages show a path in the home folder as ~...: put the home folder
+	# beside the tests' files, not around them (on Windows the temp folder is
+	# in the home folder), so the messages name them in full
+	home = str(tmp_path_factory.mktemp("home"))
+	monkeypatch.setenv("HOME", home)
+	monkeypatch.setenv("USERPROFILE", home)
+
+
 def resolve(tmp_path, text, *argv):
 	# campy-acquire c.yaml argv..., for a config written as text
 	path = tmp_path / "c.yaml"
@@ -92,7 +102,8 @@ def test_every_problem_at_once(tmp_path):
 	assert "The config has 2 problems:" in str(configurator.ConfigError(found))
 	# List lengths are checked on the result, once each value is right
 	assert problems(tmp_path, "numCams: 3\ngpuID: [0, 1]\n") == [
-		"gpuID has 2 values for 3 cameras. Give one value per camera, or a single value for all of them."]
+		"gpuID has 2 values for 3 cameras. Give one value per camera, or a single value for all of them. "
+		"(gpuID is from c.yaml:2, numCams from c.yaml:1)"]
 
 
 def test_not_a_config(tmp_path):
@@ -126,7 +137,7 @@ def test_campy_config_check(tmp_path, capsys):
 	bad.write_text("numCams: 1\nframerate: 30\n")
 	assert configtool.Main(["check", str(good)]) == 0
 	out = capsys.readouterr().out
-	assert "OK    {}".format(good) in out and "note: The config says disableGamma: True" in out
+	assert "OK    {}".format(good) in out and "good.yaml says disableGamma: True" in out
 	assert configtool.Main(["check", str(good), str(bad)]) == 1
 	out = capsys.readouterr().out
 	assert "FAIL  {}".format(bad) in out and 'Did you mean "frameRate"?' in out
@@ -145,8 +156,9 @@ def test_schema_and_options_agree():
 	parser = ArgumentParser(prog="campy-acquire")
 	configurator.ParseClargs(parser, ["c.yaml"])
 	options = {a.dest for a in parser._actions} - {"help", "config"}
-	assert options == set(configschema.BY_NAME)
+	sections = {s.name for s in configschema.SETTINGS if s.kind is configschema.SECTION}
+	assert options == set(configschema.BY_NAME) - sections # sections are in the file only
 	assert set(configurator.DefaultParams()) == {s.name for s in configschema.SETTINGS
-		if s.default is not configschema.FILLED and not s.replaced_by}
+		if s.default is not configschema.FILLED and not s.replaced_by and s.name not in sections}
 	for s in configschema.SETTINGS:
 		assert s.section in configschema.SECTIONS and s.help, s.name
