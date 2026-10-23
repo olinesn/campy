@@ -61,10 +61,11 @@ Both environments must have the same campy installed, or `campy-session` stops b
 
 **What happens:**
 
-1. It checks the config's `live:` and `view:` sections, and suggests the key you meant for a typo.
+1. It reads the config exactly as campy-acquire does ([Configs](configs.md)): the same checks, before anything starts, and a config built on a rig profile (`extends:`) works too, its `live:`, `view:` and `post:` sections combined with the profile's one level deep. It also checks those sections' own keys, and suggests the key you meant for a typo. `view: true` and `view: false` are short for `view: {show: true}` and `view: {show: false}`.
 2. It makes the recording's folder (`<videoFolder>/<date and time>/`, as campy-acquire would). Into its `logs/` folder it writes:
-   - the config as given (`session-config.yaml`);
-   - the config campy-acquire runs (`campy-acquire.yaml`): the same, without the two sections, and with `liveFeed: True`.
+   - the config as given (`session-config.original.yaml`);
+   - the same combined into one file (`session-config.yaml`): every setting, with the profile and the command-line options in it, each line saying where its value came from. `campy-session post` reads it again;
+   - the config campy-acquire runs (`campy-acquire.yaml`): the same, with `liveFeed: True` when something reads the feed.
 3. It starts `campy-live` and waits until its models are warmed up: 5–40 s, longest the first time an engine is built (`live.ready_timeout_s`, default 120 s).
 4. It starts `campy-live-view` (with `view`), then `campy-acquire`, which records into that folder.
 5. The recording ends at `recTimeInSec`, or at Ctrl-C. `campy-live` tracks to the last frame and ends by itself. The view closes, unless `keep_open` is set.

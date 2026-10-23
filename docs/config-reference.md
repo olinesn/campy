@@ -134,7 +134,7 @@ Every key a campy config file can have, and its command-line option (`--key valu
 | Key | Default | Takes | Per camera | What it does |
 |---|---|---|---|---|
 | `live` | none | key: value lines of its own | - | campy-session: live tracking while recording (models, calibration, animals, the live environment's python). campy-acquire passes it by; campy-session checks it. |
-| `view` | none | key: value lines of its own | - | campy-session: the live view (campy-live-view). campy-acquire passes it by. |
+| `view` | none | key: value lines of its own | - | campy-session: the live view (campy-live-view); view: true or false is short for view: {show: true}. campy-acquire passes it by. |
 | `post` | none | key: value lines of its own | - | campy-session: what to do after the recording (remux, export, copy). campy-acquire passes it by. |
 | `panel` | none | key: value lines of its own | - | campy-session: its control panel. campy-acquire passes it by. |
 
