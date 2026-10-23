@@ -126,6 +126,21 @@ def test_campy_live_stops(monkeypatch):
 	assert Texts(channel)[-1].endswith(": campy-live: results again")
 
 
+def test_a_camera_that_stops_is_not_a_hung_campy_live(monkeypatch):
+	# campy-live waits for a frame from each camera: one unplugged stops its sets. campy-acquire says that one.
+	w, clock, channel, said = Make()
+	frames = [0, 0]
+	for _ in range(60):
+		clock.now += 1
+		frames[0] += 30
+		if clock.now < 5010:
+			frames[1] += 30 # Camera1 unplugged at 10 s
+		w.Frames(list(frames), clock.now)
+		w.Rows(min(frames), clock.now)
+		w.Check()
+	assert channel.texts == []
+
+
 def test_campy_live_ends_when_the_recording_ends(monkeypatch):
 	w, clock, channel, said = Make()
 	w.Frames(100, clock.now)

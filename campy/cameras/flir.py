@@ -261,7 +261,7 @@ def GrabFrame(camera, frameNumber):
 	try:
 		image_result = camera.GetNextImage(50) # timeout to wait for next frame, in ms
 	except PySpin.SpinnakerException as e:
-		if Gone(camera):
+		if Gone(camera, e):
 			raise unicam.CameraLost("Spinnaker says the camera is no longer valid (unplugged?): {}".format(e))
 		raise
 
@@ -279,15 +279,20 @@ def GrabFrame(camera, frameNumber):
 	return image_result
 
 
-def Gone(camera):
+def Gone(camera, error=None):
 	"""
-	True when Spinnaker says the camera can no longer be used (IsValid False:
-	unplugged), asked after GetNextImage fails. Nothing else counts, an error
-	code included: a triggered camera waits for its first trigger with
-	GetNextImage timing out, for as long as that takes, and which errors an
-	unplugged camera gives has not been seen on a rig. A camera that is gone
-	but still valid is said to send no frames (unicam.FrameWatch) until Ctrl-C.
+	True when Spinnaker says the camera can no longer be used, asked after
+	GetNextImage fails with error: IsValid False, or the error is
+	SPINNAKER_ERR_INVALID_CAMERA (-1024, "Camera has been removed from the
+	list and is no longer valid"). That error is what a Blackfly S unplugged
+	mid-recording gave on the EVO-X2 (Linux, Spinnaker 4, October 2026), every
+	50 ms for minutes, while IsValid did not say False. Nothing else counts: a
+	triggered camera waits for its first trigger with GetNextImage timing out
+	(-1011), for as long as that takes. A camera that is gone but says neither
+	is said to send no frames (unicam.FrameWatch) until Ctrl-C.
 	"""
+	if getattr(error, "errorcode", None) == getattr(PySpin, "SPINNAKER_ERR_INVALID_CAMERA", -1024):
+		return True
 	try:
 		return camera.IsValid() is False
 	except Exception:
