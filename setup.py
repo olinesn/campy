@@ -39,6 +39,7 @@ setup(
 			"campy-session = campy.session:Main",
 			"campy-model-eval = campy.modeleval:Main",
 			"campy-model-fit = campy.modelfit:Main",
+			"campy-notify = campy.notify:Main",
 		]
 	}
 )
