@@ -281,6 +281,15 @@ Notes on the measurements:
   | Precision 7875 | 1,200 / 0.9 / 1.0 | 3,600 / 1.6 / 1.8 / 4.1 / 5.2 | 1,797 / 1.6 / 1.7 / 4.7 / 5.8 |
 
   The runs were 20 s (1,200 frames) on the Windows machines and 30 s on the EVO-X2 with 1 camera, 60 s (3,600 frames) with 3 cameras, and 30 s (Windows) or 60 s (EVO-X2) replaying. At dev df15047, before pull request 183, the Windows machines had tracked about a second less of each run: 1,121–1,132 sets with 1 camera, 3,500–3,536 with 3 and 1,723–1,732 replaying. The EVO-X2 never had that late start: it is a Linux machine with an AMD GPU, so nothing asks PowerShell or `nvidia-smi`, and its rig checks at df15047 had already tracked every set. The replay's accuracy was unchanged: 2D median 3.8 px, 99.93% same identity, 2 switches.
+- The same evening (23 October) all three rigs' checkouts moved on to dev cba7620, version 2.2.0rc1 (pull request 186; its only change to the code since 7d78800 is the version number). Both environments on each rig report campy 2.2.0rc1. The rig checks were all `RIG_CLEAN` and gave the same results as at 7d78800, with nothing skipped or misaligned and every camera keeping all its frames. Each run's log of sets shows where `campy-live` began: at frame 1 on the EVO-X2 and the Precision 7875 (frame 3 when replaying on the Precision), and at frames 3, 4 and 10 on the Pro Max Slim. At df15047 the Windows machines had begun at frames 65–69.
+
+  | Machine | 1 camera, sets / first frame / time per set p50 / p99 | 3 cameras, sets / first frame / time per set / frame to 3D p50 / p99 | Replay, sets / first frame / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | EVO-X2 | 1,800 / 1 / 3.0 / 3.1 | 3,600 / 1 / 5.6 / 5.8 / 7.6 / 8.5 | 3,600 / 1 / 5.5 / 5.6 / 7.1 / 8.0 |
+  | Pro Max Slim | 1,198 / 3 / 2.3 / 2.5 | 3,597 / 4 / 5.5 / 6.0 / 7.8 / 8.7 | 1,791 / 10 / 5.5 / 6.2 / 8.7 / 9.8 |
+  | Precision 7875 | 1,200 / 1 / 0.9 / 1.0 | 3,600 / 1 / 1.6 / 1.7 / 4.1 / 5.2 | 1,798 / 3 / 1.6 / 1.7 / 4.7 / 5.8 |
+
+  The replay's accuracy on the EVO-X2 was unchanged too: 2D median 3.8 px, 3D median 4.2 mm, 99.93% same identity, 2 switches.
 
 ## Fixed crops (`--fixed-crops`, on by default with a GPU)
 
