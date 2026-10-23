@@ -4,6 +4,7 @@ Guides for recording with campy and tracking animals live while it records: what
 
 | Page | What it covers |
 |---|---|
+| [Quickstart](quickstart.md) | A tracked recording in 15 minutes, with no camera: install, record three emulated cameras, track five mice in 3D with campy-live, open the result in LUC3D |
 | [Configs](configs.md) | How campy reads a config, what it checks before any camera opens, and `campy-config check` |
 | [Settings reference](config-reference.md) | Every config key: its default, what it takes, and what it does (generated from `campy/configschema.py`) |
 | [Hardware](hardware.md) | What to buy for live recording + SLEAP + 3D, and the measurements behind it |
