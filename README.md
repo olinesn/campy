@@ -356,6 +356,10 @@ While it records, campy keeps the computer out of sleep and standby (`keepAwake:
 
 campy says how as it starts (`Keeping this computer awake while recording (keepAwake): a Windows power request.`). The request ends with the recording, and with campy if it is killed. Where it cannot be made, campy says why and records anyway. `keepAwake: False` (or `--keepAwake False`) turns it off.
 
+### Alerts on your phone (campy-notify)
+
+campy can send problems as Slack direct messages, and keep a [healthchecks.io](https://healthchecks.io) heartbeat that alerts when a rig stops reporting. Where to send them goes in a file of its own on each computer, `~/.campy/alerts.yaml` (`%USERPROFILE%\.campy\alerts.yaml` on Windows, or the file `CAMPY_ALERTS_FILE` names), never in a campy config, since `metadata.csv` copies every config parameter into the recording. Without the file nothing is sent. `campy-notify --test` sends a test message and pings the heartbeat. `campy-notify --note`, `--problem KEY TEXT` and `--resolved KEY` send from scripts, with each problem sent once, reminded every 30 minutes and marked when resolved. [Alerts](docs/alerts.md) sets up the Slack app and the check step by step.
+
 ### Live pose estimation (liveFeed, campy-live)
 
 With `liveFeed: True` (or `--liveFeed True`), each camera process also copies every frame it grabs into a ring of shared memory, named `campy-live-0`, `campy-live-1`, ... for cameras 0, 1, ... (`liveFeedName: "campy-live"`), holding the newest `liveFeedSlots` (8) frames, each with its frame number, its camera timestamp, and when it reached the computer (as in "hosttimes.npy"). It is one copy per frame (0.05 ms for a 1280x1024 frame on the EVO-X2), and campy never waits for whatever reads it: a reader that falls behind finds the frames it missed replaced by newer ones. Each ring also says which folder its camera records into, so `campy-live-view` can put its bookmarks beside the recording. If the feed fails, the camera says so once and records on without it. Off by default.

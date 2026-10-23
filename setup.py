@@ -31,6 +31,7 @@ setup(
 			"campy-live = campy.live:Main",
 			"campy-live-view = campy.liveview:Main",
 			"campy-live-export = campy.liveexport:Main",
+			"campy-notify = campy.notify:Main",
 		]
 	}
 )
