@@ -169,6 +169,16 @@ waits for the engines to be made (torch.compile: about 15 s, less once its
 cache has them; TensorRT: about 10 s the first time, then its plan is read
 back from --engine-cache).
 
+--fast-upsample runs each of the models' bilinear upsampling layers in the
+other memory layout (channels_last instead of NCHW) where that is faster
+for its input, as timed while warming up: PyTorch's NCHW upsampling kernel
+leaves the GPU nearly idle on the small, deep layers (5x5 pixels by 768
+channels), and its channels_last one is slower on the big ones. The results
+are the same. auto: on with a GPU (CUDA or ROCm) and --memory-format nchw,
+which auto picks on ROCm (the EVO-X2, 5 mice, 3 cameras, --fixed-crops
+--cuda-graphs: 13.6 to 10.6 ms a set). With channels_last models (auto's on
+NVIDIA GPUs) every layer was faster as it was, so it does nothing there.
+
 With --results-feed on (the default), each row also goes into shared memory,
 campy-live-results (campy/liveresults.py), as it is logged: campy-live-view
 (campy/liveview.py) shows them on the cameras' frames.
@@ -373,6 +383,8 @@ class TopDown:
 	Predict runs the layer and brings the results back as numpy arrays.
 	"""
 
+	upsamples = () # --fast-upsample's layers (LayoutUpsample); none in a TopDown made without __init__
+
 	def __init__(self, args, n_frames, shape):
 		import torch
 		self.torch = torch
@@ -392,6 +404,10 @@ class TopDown:
 		self.tiedPeaks = peaks.UseTiedPeaks(tied) and tied
 		self.layer, self.text = self.Build(args)
 		ExactCropSize(self.layer)
+		self.upsamples = []
+		if FastUpsample(args, self.device, self.memoryFormat):
+			for backend in (self.layer.centroid_layer.backend, self.layer.centered_instance_layer.backend):
+				self.upsamples += LayoutUpsample.Into(backend.model) # before CUDAGraphed wraps it
 		self.graphs = []
 		self.fixed = None
 		self.fixedNote = None # why --fixed-crops auto left them off
@@ -455,13 +471,33 @@ class TopDown:
 		# runs again for each count of crops, with that many peaks put into
 		# the centroid model's output (FakeCentroids). With --fixed-crops,
 		# every set runs all of it, on the same shapes: blank frames warm it.
+		# --fast-upsample: each upsampling layer times its two layouts on the
+		# first input of each shape it gets, here (LayoutUpsample)
 		frames = self.Upload(host)
-		for _ in range(3):
-			self.Predict(frames)
-		for counts in WarmCounts(self.n_frames, self.instances, crops) if self.fixed is None else ():
-			with FakeCentroids(self.layer.centroid_layer, counts):
+		for up in self.upsamples:
+			up.measuring = True
+		try:
+			for _ in range(3):
 				self.Predict(frames)
+			for counts in WarmCounts(self.n_frames, self.instances, crops) if self.fixed is None else ():
+				with FakeCentroids(self.layer.centroid_layer, counts):
+					self.Predict(frames)
+		finally:
+			for up in self.upsamples:
+				up.measuring = False
+				up.Settle()
 		Synchronize(self.device)
+
+	def DescribeUpsamples(self):
+		if not self.upsamples:
+			return None
+		timed = [t for up in self.upsamples for t in up.timed.values()]
+		# the GPU time it saves on the largest input each layer got (most animals)
+		most = [up.timed[max(up.timed, key=lambda k: k[0][0])] for up in self.upsamples if up.timed]
+		return "--fast-upsample: {} of {} upsampling layer shapes run {} ({} of {} layers at the most animals, " \
+			"{:.2f} ms less GPU time there)".format(sum(t[2] for t in timed), len(timed),
+			self.upsamples[0].otherName or "in the other layout", sum(t[2] for t in most), len(most),
+			sum(t[0] - t[1] for t in most if t[2]))
 
 	def DescribeGraphs(self):
 		if self.fixed is not None:
@@ -592,6 +628,13 @@ class CUDAGraphed:
 				self.max_abs_diff = max(self.max_abs_diff, diff)
 				return graph, static_in, static_out
 
+			def Settle(self):
+				# After the warm-up: a layer faster as is for every shape goes
+				# back into its model, as it was (this one costs some
+				# microseconds a call)
+				if not any(use for _, _, use in self.timed.values()):
+					setattr(*self.place, self.inner)
+
 			def forward(self, x):
 				key = (tuple(x.shape), x.dtype, x.stride())
 				if key not in self.graphs:
@@ -602,6 +645,114 @@ class CUDAGraphed:
 				return static_out
 
 		return Graphed()
+
+
+def FastUpsample(args, device, memoryFormat):
+	# --fast-upsample: auto is on where it measured faster, models in nchw (on
+	# ROCm, auto's there) on a GPU. Models in channels_last were faster as
+	# they are, at every upsampling layer (RTX 6000 Ada)
+	if args.fast_upsample == "off" or not device.startswith("cuda"):
+		return False
+	if getattr(args, "engine", "eager") != "eager":
+		return False # a compiled engine fuses the upsampling itself, and can't compile this layer's timing
+	return args.fast_upsample == "on" or memoryFormat == "nchw"
+
+
+class LayoutUpsample:
+	"""
+	One of a model's bilinear upsampling layers (nn.Upsample), run in the
+	model's memory layout or the other one, whichever is faster for each
+	shape of input (--fast-upsample). The other layout: the input converted
+	to it, upsampled there and converted back, the next layer getting the
+	layout it always gets. PyTorch's upsampling kernel for NCHW gives each
+	output pixel a GPU thread that loops over the batch and the channels, so
+	on the small, deep layers (5x5 pixels by 768 channels) a few hundred
+	threads do all the work and the GPU waits: on the EVO-X2 those layers took
+	1.45 and 0.98 ms of a set's 9.9 ms of instance model; its channels_last
+	kernel spreads the channels over threads, but is slower than NCHW's on
+	the big, shallow layers. So each layer times both, the first time it gets
+	an input of a shape, while the model warms up (measuring), outside any
+	CUDA graph being recorded: the graph then records the faster one. A shape
+	first seen later runs as sleap-nn has it. The results are the same:
+	each output pixel is the same sum of the same four inputs.
+	"""
+
+	MARGIN = 0.9 # the other layout only if it takes at most this much of the time
+	REPEATS, ROUNDS = 10, 5
+
+	@staticmethod
+	def Into(model):
+		# Each bilinear nn.Upsample in model replaced by one of these
+		import torch
+		made = []
+		for name, module in list(model.named_modules()):
+			for child, inner in list(module.named_children()):
+				if type(inner) is torch.nn.Upsample and inner.mode == "bilinear":
+					up = LayoutUpsample(inner, module, child)
+					setattr(module, child, up)
+					made.append(up)
+		return made
+
+	def __new__(cls, inner, parent, name):
+		import torch
+		import torch.nn.functional as F
+
+		class Upsample(torch.nn.Module):
+			def __init__(self):
+				super().__init__()
+				self.inner = inner
+				self.place = (parent, name)
+				self.measuring = False
+				self.timed = {} # input key -> (ms as is, ms other layout, use the other)
+				self.otherName = None
+
+			def Other(self, x):
+				cl = x.is_contiguous(memory_format=torch.channels_last) and not x.is_contiguous()
+				into, back = (torch.contiguous_format, torch.channels_last) if cl else \
+					(torch.channels_last, torch.contiguous_format)
+				y = F.interpolate(x.contiguous(memory_format=into), scale_factor=inner.scale_factor,
+					mode=inner.mode, align_corners=inner.align_corners)
+				return y.contiguous(memory_format=back)
+
+			def Time(self, x):
+				# GPU ms per call, as is and in the other layout: the best of
+				# ROUNDS of REPEATS calls each, taking turns
+				best = [float("inf"), float("inf")]
+				ways = (self.inner, self.Other)
+				for way in ways:
+					way(x)
+				for _ in range(cls.ROUNDS):
+					for i, way in enumerate(ways):
+						start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+						start.record()
+						for _ in range(cls.REPEATS):
+							way(x)
+						end.record()
+						end.synchronize()
+						best[i] = min(best[i], start.elapsed_time(end) / cls.REPEATS)
+				return best
+
+			def Settle(self):
+				# After the warm-up: a layer faster as is for every shape goes
+				# back into its model, as it was (this one costs some
+				# microseconds a call)
+				if not any(use for _, _, use in self.timed.values()):
+					setattr(*self.place, self.inner)
+
+			def forward(self, x):
+				key = (tuple(x.shape), x.dtype, x.stride(), torch.is_autocast_enabled())
+				timed = self.timed.get(key)
+				if timed is None:
+					if not self.measuring or torch.cuda.is_current_stream_capturing():
+						return self.inner(x)
+					if self.otherName is None:
+						self.otherName = "nchw" if x.is_contiguous(memory_format=torch.channels_last) and \
+							not x.is_contiguous() else "channels_last"
+					asis, other = self.Time(x)
+					timed = self.timed[key] = (asis, other, other <= asis * cls.MARGIN)
+				return self.Other(x) if timed[2] else self.inner(x)
+
+		return Upsample()
 
 
 def PoolBytes(pools):
@@ -2015,6 +2166,7 @@ def Run(args):
 			pose3d=tracker.Describe() if tracker else None, cameras=[r.cameraName for r in cameras.readers],
 			rings=names, frame_shape=list(shape), frame_rate=frameRate, log=out + ".npy", cpus=placed,
 			cuda_graphs=model.DescribeGraphs() if hasattr(model, "DescribeGraphs") else None,
+			fast_upsample=model.DescribeUpsamples() if hasattr(model, "DescribeUpsamples") else None,
 			results_feed=log.results.name if log.results else None,
 			gpu_clock_held=clock is not None, gpu_clock=clock.Describe() if clock is not None else None,
 			ended="stopped (Ctrl-C)" if stop() else "the recording ended")
@@ -2134,9 +2286,10 @@ def Prepare(args, n_frames, shape, dtype):
 		t = time.perf_counter()
 		model.Warm(host.tensor, crops=range(1, n_frames * args.max_instances + 1) if args.model == "sleap" else ())
 		Say("Model: {}. Warmed up in {:.1f} s.".format(model.Describe(), time.perf_counter() - t))
-		graphs = model.DescribeGraphs() if hasattr(model, "DescribeGraphs") else None
-		if graphs:
-			Say(graphs + ".")
+		for describe in ("DescribeUpsamples", "DescribeGraphs"):
+			text = getattr(model, describe)() if hasattr(model, describe) else None
+			if text:
+				Say(text + ".")
 	else:
 		Say("Model: {}.".format(model.Describe()))
 	return model, host
@@ -2259,6 +2412,10 @@ def ParseArgs(argv=None):
 		where it is installed, else compile. The first set waits for them to be built.")
 	p.add_argument("--engine-cache", default="", help="--engine tensorrt: the folder its built engines are kept in \
 		and read back from (default: ~/.cache/campy/engines).")
+	p.add_argument("--fast-upsample", default="auto", choices=["auto", "on", "off"], help="Time each bilinear \
+		upsampling layer of the models in both memory layouts (NCHW and channels_last) while warming up, for each \
+		shape of input, and run it in the faster one: the same results (see campy-live's help). auto: on with \
+		a GPU and --memory-format nchw (auto's on ROCm), where it measured faster.")
 	p.add_argument("--hold-gpu-clock", default="auto", choices=["auto", "on", "off"], help="Keep a few blocks of \
 		the GPU spinning at the lowest priority from the feed's coming to the end, so the GPU keeps its full clock \
 		(see campy-live's help). auto: on with a GPU (NVIDIA's CUDA or AMD's ROCm).")
