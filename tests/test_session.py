@@ -480,24 +480,25 @@ def test_a_campy_live_that_hangs_is_stopped_to_be_started_again(tmp_path, monkey
 	config = write_config(tmp_path / "c.yaml", {"numCams": 1}, live={"model": "none"})
 	s = session.Session(session.Config(str(config)))
 	s.folder, s.logs, s.liveStop = str(tmp_path), str(tmp_path), str(tmp_path / "campy-live.stop")
-	live = types.SimpleNamespace(started=1000.0, Running=lambda: True, End=lambda: ended.append(1))
+	t0 = time.time() - 3600 # times of today: Windows' astimezone refuses those just after 1970
+	live = types.SimpleNamespace(started=t0 + 1000.0, Running=lambda: True, End=lambda: ended.append(1))
 	ended = []
 	s.parts["live"] = live
 	def alert(when, state="open"):
 		with open(str(tmp_path / "alerts-live.log"), "a") as f:
 			f.write(json.dumps({"time": datetime.fromtimestamp(when).astimezone().isoformat(), "key": "live/campy-live",
 				"severity": "critical", "event": "problem", "state": state, "text": "no result for 30 s"}) + "\n")
-	alert(990.0) # about an earlier campy-live
-	s.CheckHung(now=1040.0)
+	alert(t0 + 990.0) # about an earlier campy-live
+	s.CheckHung(now=t0 + 1040.0)
 	assert s.hung is None and not (tmp_path / "campy-live.stop").exists()
-	alert(1035.0)
-	s.CheckHung(now=1050.0)
+	alert(t0 + 1035.0)
+	s.CheckHung(now=t0 + 1050.0)
 	assert s.hung is live and (tmp_path / "campy-live.stop").read_text().strip() == "stop"
 	monkeypatch.setattr(session, "Say", lambda text: None)
 	live.code = -9
-	s.CheckHung(now=1050.0 + session.LIVE_STOP_S + 1) # it did not stop: ended, and started again
+	s.CheckHung(now=t0 + 1050.0 + session.LIVE_STOP_S + 1) # it did not stop: ended, and started again
 	assert ended == [1] and s.restart_due is not None and s.hung is None
-	s.restart_due, s.hung, s.hung_at = None, live, 1050.0
+	s.restart_due, s.hung, s.hung_at = None, live, t0 + 1050.0
 	live.code = 0 # one that stopped at its stop file: started again too
 	s.LiveDied(live)
 	assert s.restart_due is not None and s.hung is None
