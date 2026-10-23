@@ -304,7 +304,7 @@ def test_merge_adds_to_a_training_package_and_a_growing_test_set(made, monkeypat
 def test_merge_refuses_labels_of_another_package(made, tmp_path):
 	out = pack(made)
 	other = sio.Labels(videos=[sio.Video(filename="x.mp4", open_backend=False)],
-		skeletons=[sio.Skeleton(nodes=NODE_NAMES)])
+		skeletons=[sio.Skeleton(nodes=list(NODE_NAMES))]) # a copy: sleap-io turns the list's names into Nodes
 	path = str(tmp_path / "other.slp")
 	other.save(path, verbose=False)
 	with pytest.raises(labelmerge.MergeError, match="1 videos, the package 3"):
