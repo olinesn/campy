@@ -24,11 +24,13 @@ def Args(*extra):
 		str(ANIMALS)] + list(extra))
 
 
-def test_output_names():
+def test_output_names(tmp_path):
+	cam = os.path.join(str(tmp_path), "s1", "Camera2")
 	args = Args()
-	assert infer.OutputPath("/data/s1/Camera2/Camera2.mp4", args) == "/data/s1/Camera2/Camera2.predictions.slp"
-	args = Args("--out", "/preds", "--name", "run1_{folder}_{stem}.slp")
-	assert infer.OutputPath("/data/s1/Camera2/0.mp4", args) == "/preds/run1_Camera2_0.slp"
+	assert infer.OutputPath(os.path.join(cam, "Camera2.mp4"), args) == os.path.join(cam, "Camera2.predictions.slp")
+	preds = os.path.join(str(tmp_path), "preds")
+	args = Args("--out", preds, "--name", "run1_{folder}_{stem}.slp")
+	assert infer.OutputPath(os.path.join(cam, "0.mp4"), args) == os.path.join(preds, "run1_Camera2_0.slp")
 
 
 def test_two_videos_into_one_slp_stops_before_any_model(tmp_path):
