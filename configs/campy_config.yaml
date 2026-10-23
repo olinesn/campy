@@ -23,7 +23,7 @@ quality: 17
 ffmpegLogLevel: "warning"
 # ffmpegPath: "/usr/bin/ffmpeg"       # Location of ffmpeg binary if not using Anaconda
 # fragmentedVideo: True               # the default: if ffmpeg is stopped before it closes the video (a power
-                                      # cut, a crash), all but its last second or so can still be read. README.
+                                      # cut, a crash), all but its last second or so can still be read. docs/acquire.md.
 
 # Display parameters
 displayFrameRate: 10

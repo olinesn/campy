@@ -22,7 +22,7 @@
 #   cameraGain: [7, 10]
 #
 # Then check what quality costs on your own scene (a lossless clip, see the
-# README's campy-encode-quality section). Quick Sync kept up with 16 or more
+# campy-encode-quality section of docs/encoding.md). Quick Sync kept up with 16 or more
 # cameras on this PC.
 
 # Recording parameters
@@ -57,7 +57,7 @@ codec: "h265"                         # hevc_qsv
 # squeezes them into 16-235, which merges the 256 gray levels into 220 and took
 # ffmpeg 3.3 ms of CPU a frame on this PC, against 1.7 in full range. Every
 # level of a 0-255 chart came back to within 0.2 through OpenCV 4.6 to 5.0,
-# PyAV, imageio-ffmpeg, sleap-io and MATLAB R2023b on a Mac (README, colorRange).
+# PyAV, imageio-ffmpeg, sleap-io and MATLAB R2023b on a Mac (docs/encoding.md, colorRange).
 colorRange: "full"
 # Quick Sync's constant quantizer (campy passes quality + 1). Full range spends
 # about 20% more bits at the same number. On the fan at 7 dB, 26 wrote
@@ -71,7 +71,7 @@ colorRange: "full"
 quality: 26
 pixelFormatOutput: "yuv420p"          # 4:2:0: what every decoder supports
 keyframeInterval: 0.5                 # seconds; makes seeking cheap, and the video's fragments (fragmentedVideo,
-                                      # README) 0.5 s long: a power cut loses the last one, and what the encoder holds
+                                      # docs/acquire.md) 0.5 s long: a power cut loses the last one, and what the encoder holds
 # conda-forge's ffmpeg for Windows has no Quick Sync: use BtbN's 8.1 build
 ffmpegPath: 'C:\ffmpeg-btbn-8.1\bin\ffmpeg.exe'
 ffmpegLogLevel: "warning"

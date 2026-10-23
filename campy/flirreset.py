@@ -23,7 +23,7 @@ with it; that costs a few seconds and changes nothing. Cameras on a USB 2 link,
 and models without the setting, are left alone.
 
 Run it once after the computer starts, before anything opens the cameras: on
-Linux, from a systemd service (see the README). Exits 1 if a camera did not
+Linux, from a systemd service (see docs/flir.md). Exits 1 if a camera did not
 come back on USB 3 after its reset.
 
 	campy-flir-reset --gige off|on
