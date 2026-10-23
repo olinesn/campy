@@ -1,5 +1,5 @@
 """
-The outputs board (campy/trigger/campy_outputs/campy_outputs.ino) from Python:
+The outputs board (campy/outputs_board/campy_outputs/campy_outputs.ino) from Python:
 what campy-rules (campy/rules.py) switches.
 
 Board opens its serial port, checks that the sketch answers, and then keeps a
@@ -137,13 +137,13 @@ class Board:
 		except BoardError as e:
 			self.Close(off=False)
 			raise BoardError("The outputs board on {} did not answer as campy_outputs ({}). Is the sketch "
-				"campy/trigger/campy_outputs uploaded? Unplug its USB cable and plug it back in, then try "
+				"campy/outputs_board/campy_outputs uploaded? Unplug its USB cable and plug it back in, then try "
 				"again.".format(port, e))
 		words = line.split()
 		if len(words) < 3 or words[1] != SKETCH or words[2] != str(VERSION):
 			self.Close(off=False)
 			raise BoardError("The board on {} answered {!r}: not campy_outputs version {}. Upload "
-				"campy/trigger/campy_outputs to it.".format(port, line, VERSION))
+				"campy/outputs_board/campy_outputs to it.".format(port, line, VERSION))
 		self.Sync()
 
 	# --------------------------------------------------------- sending

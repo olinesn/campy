@@ -1,4 +1,4 @@
-"""campy/trigger/campy_outputs/campy_outputs.ino, compiled for this computer and run on a simulated clock.
+"""campy/outputs_board/campy_outputs/campy_outputs.ino, compiled for this computer and run on a simulated clock.
 
 The simulated clock (tests/arduino_sim) advances a microsecond each time the
 sketch reads it, so an edge's time here is when the sketch wrote it, to the

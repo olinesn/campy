@@ -1,5 +1,5 @@
 // Just enough of the Arduino API to run campy/trigger/trigger.ino (and
-// chronicrecord/chronic_timer/chronic_timer.ino, campy/trigger/campy_outputs) on a computer,
+// chronicrecord/chronic_timer/chronic_timer.ino, campy/outputs_board/campy_outputs) on a computer,
 // with a simulated clock (see sim.cpp). For tests only.
 #pragma once
 #include <cstdint>

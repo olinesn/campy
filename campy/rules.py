@@ -10,7 +10,7 @@ mice touch noses, photometry excitation pulses locked to the camera frames.
 It reads campy-live's results as campy-live makes them (the results feed,
 campy/liveresults.py, which campy-live never waits for: so it can't slow
 campy-live down), checks each set's poses against the rules, and switches the
-outputs of a board of their own (campy/trigger/campy_outputs, an Arduino Nano
+outputs of a board of their own (campy/outputs_board/campy_outputs, an Arduino Nano
 ESP32; campy/trigger/outputs.py talks to it). The rules come from a YAML file:
 
   board:

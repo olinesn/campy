@@ -411,7 +411,7 @@ With 3D (`campy-live --calibration`) it flags animals a camera missed while the 
 
 #### Closed-loop outputs (campy-rules)
 
-`campy-rules` reads `campy-live`'s results as they come, checks each set's poses against rules from a YAML file (an animal in a region, two animals' body parts within a distance, one identity or any), and switches TTL outputs on an Arduino Nano ESP32 of their own (the sketch `campy/trigger/campy_outputs`). The board watches the camera trigger. It makes trains of pulses locked to the frames itself, such as 3 ms photometry excitation on alternate frames, and says how long after its frame's trigger each output switched. It refuses commands about frames older than `bound_ms`. Everything goes off if `campy-rules` stops or goes quiet. `--dry-run` only logs, and `--replay <campy-live log>` tries the rules on a finished recording:
+`campy-rules` reads `campy-live`'s results as they come, checks each set's poses against rules from a YAML file (an animal in a region, two animals' body parts within a distance, one identity or any), and switches TTL outputs on an Arduino Nano ESP32 of their own (the sketch `campy/outputs_board/campy_outputs`). The board watches the camera trigger. It makes trains of pulses locked to the frames itself, such as 3 ms photometry excitation on alternate frames, and says how long after its frame's trigger each output switched. It refuses commands about frames older than `bound_ms`. Everything goes off if `campy-rules` stops or goes quiet. `--dry-run` only logs, and `--replay <campy-live log>` tries the rules on a finished recording:
 ```
 campy-rules rules.yaml --port /dev/ttyACM1
 ```

@@ -6,7 +6,7 @@ It works on top of [live tracking](live-tracking.md):
 
 - **`campy-live`** puts each set's poses in shared memory, the *results feed*.
 - **`campy-rules`** reads that feed and checks each set against your rules. It is a program of its own: `campy-live` never waits for it, so it can't slow tracking down.
-- **An Arduino Nano ESP32**, the *outputs board*, makes the TTL pulses on up to 8 outputs. It runs the sketch `campy/trigger/campy_outputs`. It watches the camera trigger, so it knows exactly when each frame was taken.
+- **An Arduino Nano ESP32**, the *outputs board*, makes the TTL pulses on up to 8 outputs. It runs the sketch `campy/outputs_board/campy_outputs`. It watches the camera trigger, so it knows exactly when each frame was taken.
 
 How it divides the work: `campy-rules` decides *whether* an output should be on, and the board decides *when* each edge happens, on its own crystal clock. A 3 ms photometry pulse can't be timed precisely over USB, where a message can land anywhere in a 1 ms window. So the board makes every pulse itself, to the microsecond, and `campy-rules` only starts and stops it.
 
@@ -35,8 +35,8 @@ How it divides the work: `campy-rules` decides *whether* an output should be on,
 
 Use the Arduino IDE (board: Arduino Nano ESP32) or arduino-cli:
 ```
-arduino-cli compile --fqbn arduino:esp32:nano_nora campy/trigger/campy_outputs
-arduino-cli upload --fqbn arduino:esp32:nano_nora -p <port> campy/trigger/campy_outputs
+arduino-cli compile --fqbn arduino:esp32:nano_nora campy/outputs_board/campy_outputs
+arduino-cli upload --fqbn arduino:esp32:nano_nora -p <port> campy/outputs_board/campy_outputs
 ```
 The port is `/dev/ttyACM1` or similar on Linux, `COM5` or similar on Windows. The board answers `ok campy_outputs 1` to `id` at 115200 baud.
 
