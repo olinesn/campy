@@ -584,3 +584,21 @@ class Feed:
 				writer.Close()
 			except Exception:
 				pass
+
+
+def RecordingFolder(readers):
+	"""
+	The recording's folder: the one the cameras' folders are in, as their
+	feeds say (livefeed.Feed's description). None when one does not say (a
+	campy from before), or they say different ones.
+	"""
+	folders = set()
+	for reader in readers:
+		try:
+			folder = json.loads(reader.Description() or "{}").get("folder")
+		except (ValueError, AttributeError):
+			folder = None
+		if not folder:
+			return None
+		folders.add(os.path.dirname(os.path.normpath(folder)))
+	return folders.pop() if len(folders) == 1 else None
