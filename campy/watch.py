@@ -67,7 +67,7 @@ Nothing here acts on the recording but the stop at stopAtFreeGB: the watch
 only reads. An error in a check is said, and the others go on.
 """
 
-import collections, datetime, json, os, shutil, sys, threading, time
+import collections, datetime, json, math, os, shutil, sys, threading, time
 
 from campy import notify, status as camstatus
 from campy.utils.utils import Say, ErrorText
@@ -95,7 +95,9 @@ STATUS_ENV = "CAMPY_STATUS_DIR" # where recording.json goes, instead of ~/.campy
 
 
 def DiskText(n):
-	return "{:.{p}f} GB".format(n / 1e9, p=2 if n < 10e9 else 1)
+	# Rounded down: 1.996 GB, below a 2 GB stopAtFreeGB, is "1.99 GB", not "2.00 GB"
+	p = 2 if n < 10e9 else 1
+	return "{:.{p}f} GB".format(math.floor(n / 1e9 * 10 ** p) / 10 ** p, p=p)
 
 
 STATE_NAMES = {camstatus.WAITING: "waiting", camstatus.GRABBING: "grabbing", camstatus.ENDED: "ended",

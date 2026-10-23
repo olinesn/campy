@@ -16,15 +16,31 @@ Usage:
 campy-acquire ./configs/campy_config.yaml
 """
 
-import os, time, sys, logging, threading, queue
+import os, time, sys, copy, logging, threading, queue
 from collections import deque
 import multiprocessing as mp
-from campy import writer, configurator, preflight, newfiles, keepawake, stopfile, status, watch
+from campy import writer, configurator, preflight, newfiles, keepawake, stopfile, defaults, manifest, status, watch
 from campy.trigger import trigger
 from campy.cameras import unicam, emu
 from campy.utils.utils import HandleKeyboardInterrupt, Say, ErrorText, StartPrinter, StopPrinter
 
+# What session.json is made from, in the main process (OpenSystems): the
+# params as the config made them, where each came from, the defaults that
+# changed which this run relies on, and the computer's details, read meanwhile
+configured = sources = None
+defaultWarnings = []
+probe = None
+
+
+def DefaultWarnings(params, sources):
+	# The changed defaults this run relies on (campy/defaults.py), as lines
+	cams = [configurator.CameraParams(params, n) for n in range(params["numCams"])]
+	return defaults.Warnings(params, sources, {"cameras": cams}, known=params.get("defaultsVersion"),
+		enabled=params.get("defaultWarnings", True))
+
+
 def OpenSystems():
+	global configured, sources, defaultWarnings, probe
 	# Configure parameters: a config campy can't use stops here, with every
 	# problem in it, before anything opens
 	try:
@@ -32,6 +48,12 @@ def OpenSystems():
 	except configurator.ConfigError as e:
 		print(e, flush=True)
 		sys.exit(1)
+	if mp.current_process().name == "MainProcess":
+		probe = manifest.Probe()
+		configured, sources = copy.deepcopy(params), configurator.Sources()
+		defaultWarnings = DefaultWarnings(params, sources)
+		if defaultWarnings:
+			print(defaults.Message(defaultWarnings), flush=True)
 
 	# A recording never replaces one: stop now, before anything opens, if any
 	# file it would write is already there, whatever preflight is set to. Each
@@ -251,6 +273,12 @@ def Main():
 			CloseSystems(systems, params)
 			sys.exit(1)
 
+		# session.json: how this recording is made (campy/manifest.py)
+		session = manifest.Session(params, sources or {}, configurator.ConfigPath(), systems, defaultWarnings,
+			probe, say=Say)
+		session.Start(configured)
+		failures, error = None, None
+
 		# The computer stays awake until the cameras have finished: a PC with
 		# Modern Standby would otherwise go into standby when its screen times
 		# out, mid-recording (keepAwake)
@@ -275,7 +303,6 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 
 		# The trigger stops and the systems close whatever happens here
 		guard = None
-		failures = {}
 		try:
 			# Start the trigger only once every camera is grabbing, so that every
 			# camera's first frame is the trigger's first pulse, and once the
@@ -287,6 +314,7 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 				systems = trigger.StartTriggers(systems, params)
 				emu.StartClock(start)
 			trigger.SaveStart(params, ready, missing, systems.get("triggerStartedNs"))
+			session.Recording(ready, missing)
 			# The recording watch: alerts (Slack, the console) while it records, and a clean stop before the
 			# disk is full (watch.py). Whatever goes wrong in it, the recording goes on.
 			try:
@@ -299,12 +327,16 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 			if guard is not None and guard.stopped:
 				for name in cameras.names:
 					failures.setdefault(name, []).append("stopped early: {}".format(guard.stopped))
+		except BaseException as e:
+			error = ErrorText(e)
+			raise
 		finally:
 			stopWatch.Stop()
 			if guard is not None:
 				guard.Stop(failures)
 			awake.Stop()
 			CloseSystems(systems, params)
+			session.End(failures, interrupted=interrupts.count > 0, error=error)
 			# The files still empty go: a camera that saved no frames leaves
 			# what it always left. Not a stopped camera's, whose ffmpeg may still
 			# be finishing its video.

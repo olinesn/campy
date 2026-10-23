@@ -10,6 +10,8 @@ docs/config-reference.md from it, so the code, --help and the docs can't drift.
 # words YAML would change); GAMMA is cameraGamma's number above 0 or "Off".
 TEXT = "text"
 GAMMA = "gamma"
+ID = "id" # an ID: text or a number, kept as text (animalIds)
+MAPPING = "mapping" # names and their values (sessionFields)
 
 # per_camera: how a list is read
 PER_CAMERA = "per camera" # one value for every camera, or a list with one per camera
@@ -42,6 +44,10 @@ class Setting:
 		# What the setting takes, in words, for the reference page
 		if self.kind is GAMMA:
 			return 'a number above 0, or "Off"'
+		if self.kind is ID:
+			return "IDs, text or numbers"
+		if self.kind is MAPPING:
+			return "a mapping, e.g. {cage: B3}"
 		if self.choices:
 			names = ['"{}"'.format(c) for c in self.choices]
 			return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
@@ -78,8 +84,9 @@ ALERTS = "Recording watch and alerts"
 CHECK = "Launch check"
 DISPLAY = "Display and progress"
 TRIGGER = "Trigger"
+SESSION = "Session"
 
-SECTIONS = (REC, CAM, FLIR, RATCAM, ENC, LIVE, ALERTS, CHECK, DISPLAY, TRIGGER)
+SECTIONS = (REC, CAM, FLIR, RATCAM, ENC, LIVE, ALERTS, CHECK, DISPLAY, TRIGGER, SESSION)
 
 SETTINGS = [
 	# Recording
@@ -276,6 +283,26 @@ SETTINGS = [
 	Setting("blinkHz", "None", float, section=TRIGGER, per_camera=ONE, words=("None",), low=0,
 		help="Test LED blink rate. Pick one that is not near a whole or half multiple of the frame rate \
 			(e.g. 43 Hz at 25 or 60 fps)."),
+
+	# Session: the experiment, for the recording's session.json (campy/manifest.py), and the
+	# warnings for defaults that changed (campy/defaults.py)
+	Setting("experiment", "None", TEXT, section=SESSION, per_camera=ONE,
+		help="The experiment's name, for the recording's session.json."),
+	Setting("animalIds", [], ID, section=SESSION, per_camera=LIST,
+		help="The animals recorded, e.g. [M1, M2, M3]: one list for the whole rig, kept in session.json. \
+			One ID alone is a list of one."),
+	Setting("notes", "None", TEXT, section=SESSION, per_camera=ONE,
+		help="Notes on this recording, for session.json. Notes after it: campy-session note <folder> \"text\"."),
+	Setting("sessionFields", {}, MAPPING, section=SESSION, per_camera=ONE,
+		help="Anything else to keep with the recording in session.json, as a mapping: \
+			{cage: B3, condition: saline}."),
+	Setting("defaultsVersion", "None", str, section=SESSION, per_camera=ONE,
+		help="The campy version whose defaults this config was written for, e.g. \"2.1.0\": campy then \
+			says only the defaults changed after it that the config relies on (campy/defaults.py). \
+			None: every one."),
+	Setting("defaultWarnings", True, bool, section=SESSION, per_camera=ONE,
+		help="Say, at startup, each default that changed in a newer campy and that this run relies on \
+			(default: True). Setting a key, or defaultsVersion, stops one."),
 ]
 
 BY_NAME = {s.name: s for s in SETTINGS}

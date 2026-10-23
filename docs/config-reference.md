@@ -118,3 +118,14 @@ Every key a campy config file can have, and its command-line option (`--key valu
 | `blinkPin` | `"None"` | a whole number, 0 or more, or "None" | one for the rig | Arduino pin driving a test LED that every camera can see, for campy-synctest. |
 | `blinkHz` | `"None"` | a number, 0 or more, or "None" | one for the rig | Test LED blink rate. Pick one that is not near a whole or half multiple of the frame rate (e.g. 43 Hz at 25 or 60 fps). |
 
+## Session
+
+| Key | Default | Takes | Per camera | What it does |
+|---|---|---|---|---|
+| `experiment` | `"None"` | text, as typed | one for the rig | The experiment's name, for the recording's session.json. |
+| `animalIds` | `[]` | IDs, text or numbers | a list | The animals recorded, e.g. [M1, M2, M3]: one list for the whole rig, kept in session.json. One ID alone is a list of one. |
+| `notes` | `"None"` | text, as typed | one for the rig | Notes on this recording, for session.json. Notes after it: campy-session note &lt;folder&gt; "text". |
+| `sessionFields` | `{}` | a mapping, e.g. {cage: B3} | one for the rig | Anything else to keep with the recording in session.json, as a mapping: {cage: B3, condition: saline}. |
+| `defaultsVersion` | `"None"` | text | one for the rig | The campy version whose defaults this config was written for, e.g. "2.1.0": campy then says only the defaults changed after it that the config relies on (campy/defaults.py). None: every one. |
+| `defaultWarnings` | `True` | True or False | one for the rig | Say, at startup, each default that changed in a newer campy and that this run relies on (default: True). Setting a key, or defaultsVersion, stops one. |
+
