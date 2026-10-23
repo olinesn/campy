@@ -120,6 +120,7 @@ class Stages:
 		self.started = time.perf_counter_ns()
 		self.start, self.frame = 0, -1 # this set's: upload start (ns since started), frame number
 		self.starts, self.frames = [], []
+		self.checked, self.checks = False, [] # Staged's check ran in this set (its times are left out)
 
 	def Wait(self):
 		# The model's stream only: torch.cuda.synchronize() would also wait
@@ -154,6 +155,8 @@ class Stages:
 		self.crops.append(crops)
 		self.starts.append(self.start)
 		self.frames.append(self.frame)
+		self.checks.append(self.checked)
+		self.checked = False
 		self.wall, self.gpu, self.pending = {}, {}, []
 
 
@@ -394,11 +397,13 @@ class Staged:
 				# (after this set's times; the next set's are its own)
 				f.graph.replay()
 				self.diffs.append((self.sets, live.MaxAbsDiff(f.static_out, out)))
+				self.st.checked = True
 		else:
 			with torch.inference_mode():
 				out = self.Eager(frames, timed=True)
 				if self.check and self.sets % self.check == 0:
 					self.diffs.append((self.sets, live.MaxAbsDiff(f.Pipeline(frames), out)))
+					self.st.checked = True
 		self.sets += 1
 		return out
 
@@ -455,7 +460,13 @@ def Save(a, st):
 	if getattr(st, "saved", False):
 		return
 	st.saved = True
-	rows = st.rows
+	# The sets Staged checked ran campy-live's graph too: left out
+	keep = [not c for c in st.checks]
+	rows = [r for r, k in zip(st.rows, keep) if k]
+	st.gpu_rows = [r for r, k in zip(st.gpu_rows, keep) if k]
+	st.crops = [r for r, k in zip(st.crops, keep) if k]
+	st.starts = [r for r, k in zip(st.starts, keep) if k]
+	st.frames = [r for r, k in zip(st.frames, keep) if k]
 	names = [n for n in ORDER if any(n in r for r in rows)]
 	wall = np.array([[r.get(n, 0) for n in names] for r in rows], np.int64).reshape(len(rows), len(names))
 	gnames = [n for n in ORDER if any(n in r for r in st.gpu_rows)]
@@ -469,6 +480,7 @@ def Save(a, st):
 	if staged is not None:
 		d = [x for _, x in staged.diffs]
 		summary["staged_vs_campy_live"] = {"checks": len(d), "largest_difference": max(d) if d else None,
+			"sets_left_out": len(keep) - sum(keep),
 			"graphs": staged.graphs is not None}
 	if len(rows) > 1:
 		# The first second (the start: kernels' first calls, caches) apart
