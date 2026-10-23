@@ -1394,7 +1394,7 @@ class FixedEngine:
 		self.fn = torch.compile(run, dynamic=False, fullgraph=True)
 
 	def TensorRT(self, lightning, cache, x):
-		import copy, warnings
+		import copy, platform, warnings
 		import tensorrt as trt
 		torch = self.torch
 		body = getattr(lightning, "model", None)
@@ -1435,9 +1435,12 @@ class FixedEngine:
 				print("{}: building the {} network's TensorRT engine ({}, {}), once (kept in "
 					"{})".format(PROGRAM, self.name, "x".join(str(v) for v in (n, c, h, w)), "fp16" if fp16 else "fp32",
 					cache), flush=True)
+				# this process's own temporary files: jobs that share the cache
+				# (campy-infer's on a cluster) may build the same plan at once
+				tmp = "{}.{}-{}".format(stem, platform.node(), os.getpid())
 				with warnings.catch_warnings():
 					warnings.simplefilter("ignore")
-					torch.onnx.export(net, (torch.zeros((n, c, h, w), device=device),), stem + ".onnx",
+					torch.onnx.export(net, (torch.zeros((n, c, h, w), device=device),), tmp + ".onnx",
 						input_names=["x"], output_names=["y"], opset_version=17, dynamo=False, do_constant_folding=True)
 				flags = 0
 				if hasattr(trt.NetworkDefinitionCreationFlag, "STRONGLY_TYPED"):
@@ -1445,17 +1448,17 @@ class FixedEngine:
 				builder = trt.Builder(logger)
 				network = builder.create_network(flags)
 				parser = trt.OnnxParser(network, logger)
-				if not parser.parse_from_file(stem + ".onnx"):
+				if not parser.parse_from_file(tmp + ".onnx"):
 					raise SystemExit("--engine tensorrt: TensorRT can't read the {} network: {}".format(self.name,
 						"; ".join(str(parser.get_error(i)) for i in range(parser.num_errors))))
 				plan = builder.build_serialized_network(network, builder.create_builder_config())
 				if plan is None:
 					raise SystemExit("--engine tensorrt: TensorRT couldn't build the {} network".format(self.name))
 				plan = bytes(plan)
-				with open(stem + ".plan.part", "wb") as f:
+				with open(tmp + ".plan.part", "wb") as f:
 					f.write(plan)
-				os.replace(stem + ".plan.part", stem + ".plan")
-				os.remove(stem + ".onnx")
+				os.replace(tmp + ".plan.part", stem + ".plan")
+				os.remove(tmp + ".onnx")
 			del net, probe
 		self.runtime = runtime
 		self.engine = runtime.deserialize_cuda_engine(plan)

@@ -16,7 +16,7 @@ started again as it was.
 What makes it fast (each measured in docs/offline-inference.md):
 
 - the frames are decoded on the GPU (NVDEC, PyNvVideoCodec) where it can,
-  else by ffmpeg (with VA-API on an AMD GPU), a batch ahead of the models;
+  else by ffmpeg on the CPU, a batch ahead of the models;
 - the two models run as campy-live runs them (campy/live.py FixedCrops):
   the whole batch with fixed shapes, every frame giving --max-instances
   crops, on the GPU from the frames to the results, which come back in one
@@ -82,7 +82,7 @@ class Model:
 		self.torch, self.live, self.args = torch, live, args
 		live.PROGRAM = "campy-infer"
 		self.device = live.ResolveDevice(args.device)
-		if self.device.startswith("cuda"):
+		if self.device.startswith("cuda:"):
 			torch.cuda.set_device(torch.device(self.device))
 		gpu = self.device.startswith("cuda")
 		self.nvidia = gpu and not getattr(torch.version, "hip", None)
@@ -369,8 +369,8 @@ def Parser():
 	p.add_argument("--name", default="{stem}.predictions.slp", help="each .slp's name: {stem} the video's name "
 		"without its extension, {folder} the folder it is in (default: {stem}.predictions.slp)")
 	p.add_argument("--overwrite", action="store_true", help="run videos whose .slp is already there again")
-	p.add_argument("--batch", type=int, default=64, help="frames per batch (default 64; 16-64 measured; lower it if "
-		"the GPU runs out of memory)")
+	p.add_argument("--batch", type=int, default=16, help="frames per batch (default 16: on an A100 and the EVO-X2 "
+		"as fast as 32 or 64, or faster, with less GPU memory)")
 	p.add_argument("--exact", action="store_true", help="a reference run: sleap-nn's own layer, fp32 without TF32, "
 		"strict peaks, every crop at its true size (about 2x sleap-nn track, not 10x)")
 	p.add_argument("--device", default="auto", help="auto (the GPU: cuda, or ROCm's), cuda:N, cpu")
@@ -385,8 +385,9 @@ def Parser():
 		help="auto: channels-last on NVIDIA, where it is faster")
 	p.add_argument("--decoder", default="auto", choices=["auto", "nvdec", "ffmpeg", "pyav"],
 		help="auto: NVDEC on an NVIDIA GPU with PyNvVideoCodec, else ffmpeg")
-	p.add_argument("--hwaccel", default="auto", choices=["auto", "none", "vaapi", "cuda", "qsv", "d3d11va"],
-		help="ffmpeg's GPU decoder: auto (VA-API on Linux with an AMD or Intel GPU, else the CPU)")
+	p.add_argument("--hwaccel", default="none", choices=["none", "vaapi", "cuda", "qsv", "d3d11va"],
+		help="--decoder ffmpeg: a GPU decoder for ffmpeg to use (default none: the CPU, which was faster on the "
+		"EVO-X2, whose GPU also runs the models)")
 	p.add_argument("--frames", type=int, default=0, help="only each video's first N frames (to try settings)")
 	p.add_argument("--progress", type=float, default=30, help="seconds between progress lines (0: none)")
 	return p

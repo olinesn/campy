@@ -21,7 +21,7 @@ valid until the caller asks for the next.
           memory, without copies through pipes. numpy arrays.
 
 Open picks one (auto: nvdec where PyNvVideoCodec and an NVIDIA GPU are, else
-ffmpeg, with VA-API on a Linux PC with an AMD or Intel GPU), and says why.
+ffmpeg on the CPU), and says why when it can't have the GPU's decoder.
 Measured in docs/offline-inference.md.
 """
 
@@ -118,21 +118,6 @@ def LimitedToFull(y):
 
 
 # ---------------------------------------------------------------- ffmpeg
-
-def HwaccelAuto():
-	"""
-	The GPU decoder to ask ffmpeg for when none was named: VA-API on Linux
-	with a render node and no NVIDIA driver (the EVO-X2's AMD GPU: 1,826
-	frames/s against 1,487 on its CPU), else none: on the Pro Max Slim,
-	NVDEC through ffmpeg was no faster than its CPU (686 against 702), and
-	an NVIDIA GPU is better read with nvdec. ffmpeg decodes on the CPU by
-	itself where the hardware decoder can't be opened.
-	"""
-	if sys.platform.startswith("linux") and os.path.exists("/dev/dri/renderD128") and \
-			not os.path.exists("/proc/driver/nvidia"):
-		return "vaapi"
-	return "none"
-
 
 def FfmpegCommand(path, hwaccel="none", frames=0, ffmpeg=None, vaapiDevice="/dev/dri/renderD128"):
 	cmd = [ffmpeg or FfmpegExe(), "-v", "error", "-nostdin"]
@@ -266,7 +251,7 @@ def _PyAVWorker(path, frames, B, name, shape, free, full, threads):
 		stream.thread_type = "AUTO"
 		stream.thread_count = threads
 		slot, n, i0, i = free.get(), 0, 0, 0
-		for frame in container.decode(stream):
+		for frame in container.decode(stream) if slot is not None else ():
 			if frames and i >= frames:
 				break
 			ring[slot, n] = frame.to_ndarray(format="gray")
@@ -383,7 +368,8 @@ class NvdecReader:
 
 	kind = "nvdec"
 
-	def __init__(self, info, batch, frames=0, gpu=0, ahead=4):
+	def __init__(self, info, batch, frames=0, gpu=None, ahead=4):
+		# gpu: the GPU's index (default: torch's current one, as the caller set it)
 		self.info, self.B, self.limit, self.gpu, self.ahead = info, batch, frames, gpu, ahead
 		self.read = 0
 		self.error = None
@@ -414,6 +400,8 @@ class NvdecReader:
 
 	def __iter__(self):
 		import torch
+		if self.gpu is None:
+			self.gpu = torch.cuda.current_device()
 		q = queue.Queue(maxsize=self.ahead)
 		stop = threading.Event()
 		B, limit, full = self.B, self.limit, self.info.fullRange
@@ -476,12 +464,15 @@ class NvdecReader:
 
 # ---------------------------------------------------------------- choosing
 
-def Open(path, batch, decoder="auto", hwaccel="auto", frames=0, info=None, ffmpeg=None):
+def Open(path, batch, decoder="auto", hwaccel="none", frames=0, info=None, ffmpeg=None):
 	"""
 	A reader for the video: (reader, note), note saying why a GPU decoder
 	wasn't used where auto would have liked one (or None). decoder: auto,
-	nvdec, ffmpeg or pyav; hwaccel (ffmpeg's): auto, none, vaapi, cuda, qsv,
-	d3d11va. frames: only the first so many (0: all).
+	nvdec, ffmpeg or pyav; hwaccel (ffmpeg's): none (the CPU), vaapi, cuda,
+	qsv, d3d11va. frames: only the first so many (0: all). ffmpeg on the CPU
+	rather than VA-API by default: on the EVO-X2, whose GPU decodes video
+	and runs the models, the whole video ran at 411 frames/s with the CPU
+	decoding and 349 with VA-API.
 	"""
 	info = info or VideoInfo(path, ffmpeg)
 	note = None
@@ -501,8 +492,6 @@ def Open(path, batch, decoder="auto", hwaccel="auto", frames=0, info=None, ffmpe
 		return PyAVReader(info, batch, frames), note
 	if decoder != "ffmpeg":
 		raise SystemExit("--decoder: auto, nvdec, ffmpeg or pyav, not {}".format(decoder))
-	if hwaccel == "auto":
-		hwaccel = HwaccelAuto()
 	return FfmpegReader(info, batch, hwaccel, frames, ffmpeg), note
 
 
