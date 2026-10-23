@@ -167,6 +167,39 @@ python bench/compiled_bench.py --centroid <centroid model folder> --instance <in
     --videos cam1.mp4 cam2.mp4 cam3.mp4 --engines eager-fp16,graph-fp16,compile-ma,trt-fp16
 ```
 
+## Finding the frames a model gets wrong (`campy-live-flag`)
+
+A model trained on other rigs' videos makes its own mistakes on a new rig: a camera that keeps missing a mouse in one corner, a side view where skeletons land on the wrong mouse. The fastest fix is to label a few of those frames and train again. Labelling only nine frames from one rig removed most of the false detections there. `campy-live-flag` finds those frames for you, from `campy-live`'s log, after the recording:
+
+```
+campy-live-flag campy-live_<date_time>.npy --budget 25
+```
+
+It doesn't change `campy-live` or slow it down: everything it needs is already in each row of the log (the animals each camera found, their scores, and, with `--calibration`, which detection is which animal in each camera, the 3D pose and how well the cameras agree). For each set of frames and each camera it flags:
+
+| Flag | What happened | Needs 3D |
+|---|---|---|
+| `missed` | Two or more other cameras saw an animal and its 3D pose falls inside this camera's picture, but this camera found nothing there. The model missed it, or something hid it. | yes |
+| `swap` | Two animals' identities swapped from one set to the next. | yes |
+| `jump` | An animal's 3D position jumped more than 50 mm in one set (a wrong match). | yes |
+| `unmatched` | A detection that the 3D matched to no animal, though there were no more detections than animals: the cameras disagree on where the animals are. | yes |
+| `disagree` | One camera's skeleton is more than 15 px from where the animal's 3D pose puts it. | yes |
+| `extra` | More detections than animals (seen only when `--max-instances` is above the number of animals). | no |
+| `fewer` | Fewer detections than animals. | no |
+| `low_score` | A detection whose points scored under 0.5 (the median). | no |
+
+A mistake usually lasts many sets in a row: a mouse missed for a second is 60 sets at 60 fps. Flags of the same kind in the same camera less than a second apart count as one *event*, and each event offers one set to label. From those it picks `--budget` sets (25 by default, about an hour of correcting 3 mice in 3 cameras):
+
+- 10% at random from the whole recording, so the labels aren't all hard cases and mistakes no flag catches still turn up;
+- the rest from the events, one kind of mistake at a time in turn (`missed` first), the cameras taking turns within each kind. Each pick is the event *least like* the sets already picked: where the animals are in each camera's picture, how many each camera found, and how close together they are. That avoids picking 25 near-identical frames of the same huddle;
+- no two picks closer than 2 s.
+
+A set is labelled whole, every camera's frame of it. That gives three training images, and lets the 3D check the corrections.
+
+It writes `flags.csv` (every flag, with where in the picture it is: for `missed`, where the animal should have been), `events.csv` and `sample.json` (the picks and why each was picked) into `<log>_flags/`, and prints how often each kind of mistake happened in each camera, a quick health check of a model on a rig. Give several logs to pick one sample from several recordings. It needs only numpy and scipy, and takes about a second for a 2-minute log and about 20 s for an hour. Run `python -m pydoc campy.liveflag` for every option.
+
+If the calibration file named in the log's summary isn't on the computer, give it with `--calibration`. Without it, `missed` can't be worked out, and `disagree` uses the log's own reprojection errors, without saying which camera is wrong. A log made without `--calibration` gets only the `extra`, `fewer` and `low_score` flags.
+
 ## Recording for a model
 
 - **Match the training images' brightness.** The training frames averaged about 24 out of 255. Frames about 8 times brighter, with many saturated pixels, lost most mice and produced hundreds of false detections, and frames half as bright lost about half. Set aperture, exposure and gain so live frames look like the training frames.
