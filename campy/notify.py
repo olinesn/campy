@@ -47,7 +47,9 @@ Each problem has a key (the computer, the camera and the kind of problem):
 Messages go out from a thread of their own, each request with a 10 s timeout
 and a few tries: a slow or dead network never holds up the caller. What was
 sent, and what failed to send, is said (say) and written to a log file
-(SetLog: alerts.log in a recording's folder).
+(SetLog: alerts.log in a recording's folder), one JSON object a line: time,
+key, severity, event (problem, worse, flapping, still, resolved, note, ...),
+state (open, resolved), status (queued, sent to ..., FAILED on ...), text.
 
 Heartbeat (healthchecks.io)
 ---------------------------
@@ -62,7 +64,7 @@ Only the standard library (and PyYAML when there): campy-live's environment
 imports this too.
 """
 
-import argparse, collections, json, os, re, sys, threading, time, queue
+import argparse, collections, datetime, json, os, re, sys, threading, time, queue
 import urllib.error, urllib.request
 
 INFO, WARNING, CRITICAL = "info", "warning", "critical"
@@ -83,6 +85,8 @@ HEALTHCHECKS_API = "https://healthchecks.io/api/v3/"
 SLACK_FINAL = ("not_authed", "invalid_auth", "account_inactive", "token_revoked", "token_expired", "no_permission",
 	"missing_scope", "channel_not_found", "user_not_found", "not_in_channel", "is_archived", "invalid_arguments",
 	"no_service", "no_service_id", "no_team", "team_disabled", "invalid_token")
+
+STATES = {"problem": "open", "worse": "open", "flapping": "open", "still": "open", "resolved": "resolved"}
 
 ICONS = {INFO: ":information_source:", WARNING: ":large_orange_circle:", CRITICAL: ":red_circle:",
 	"resolved": ":white_check_mark:"}
@@ -541,12 +545,16 @@ class Notifier:
 		return None
 
 	def Log(self, severity, key, kind, status, body):
+		# One JSON line: time, key, severity, event (problem, worse, flapping, still, resolved, note, ping, ...),
+		# state (open, resolved; none for a note), status (queued, sent to ..., FAILED on ...), text
 		if not self.log:
 			return
+		line = {"time": datetime.datetime.now().astimezone().isoformat(timespec="seconds"), "key": key,
+			"severity": severity, "event": kind, "state": STATES.get(kind), "status": status,
+			"text": re.sub(r"^:[a-z_]+: (\*[^*]*\*: )?", "", body) if body else None}
 		try:
 			with open(self.log, "a", encoding="utf-8") as f:
-				f.write("{}\t{}\t{}\t{}\t{}\t{}\n".format(time.strftime("%Y-%m-%d %H:%M:%S"), severity or "",
-					key or "", kind, status, (body or "").replace("\n", " / ")))
+				f.write(json.dumps(line) + "\n")
 		except OSError:
 			pass
 
