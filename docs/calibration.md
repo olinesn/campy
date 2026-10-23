@@ -1,4 +1,4 @@
-# Calibration and troubleshooting
+# Calibration
 
 ## Placing 3 cameras
 
@@ -25,22 +25,4 @@ Calibration holds only as long as focus and zoom stay put, so set the lenses fir
 3. **Use it live**: `campy-live --calibration calibration.toml`. The cameras are matched by campy's camera names (`cameraNames`). If the calibration names them differently, give `--calibration-names`, in the feed's camera order.
 4. **Check it** in `campy-live-view`. Each detection is joined by a line to its animal's 3D pose projected back into that camera, with the distance in pixels. Short lines on every camera mean a good calibration and good matching. To check a logged recording afterwards, `python bench/pose3d_live_log.py <campy-live log>.npy calibration.toml` scores the 3D against the best grouping the 2D allows.
 
-## Troubleshooting
-
-**campy stops with "The trigger Arduino … did not answer".** Before any camera starts, campy checks that the trigger Arduino responds. Unplug its USB cable and plug it back in (or power-cycle it), then run campy again. The Arduino sometimes stays busy with a command from a run that just stopped.
-
-**A FLIR camera records at about 33 fps, or its throughput is 43 MB/s.** A camera that stays plugged in through a computer restart comes back with a USB 2 throughput limit. Shutting down and switching on clears it, and so does `campy-flir-reset` ([FLIR cameras](flir.md#flir-cameras-at-43-mbs-after-a-restart)).
-
-**Frames dropped in the middle of a recording** (`framesDropped` in a camera's `metadata.csv`). The encoder fell behind by more than `writeQueueMaxSec`, usually because the disk stopped taking writes. Some SSDs stall for 10–16 s with nothing in the system logs, even with their power saving off. Raise `writeQueueMaxSec` (60 s for 3 cameras takes up to about 14 GB of memory, used only during a stall), or record to a second drive.
-
-**A Windows recording slows to a crawl after about 10 minutes.** Windows went into Modern Standby when the screen timed out. campy's `keepAwake` (on by default) asks Windows to stay awake, but if campy was started over SSH with nobody signed in, Windows refuses the screen part. Set the screen timeout to Never.
-
-**`campy-live` skips sets.** The model is too slow for this machine and frame rate. A few skipped in the first fraction of a second on CUDA are the first sets warming up. Skips throughout mean you need a lighter model ([Models](models.md#choosing-one-that-keeps-up)). On a Windows PC with an Intel hybrid CPU, see [Hardware](hardware.md) on pinning.
-
-**`campy-live` misses the start of the recording.** Start it before `campy-acquire`, and wait for `Waiting for the live feed`. If the cameras' frames aren't 1280 × 1024 grey, give `--frame-shape` so the model is ready for them.
-
-**3D poses are wrong, or mice swap between cameras.** Check the calibration first (lines in `campy-live-view`, above). If it is good, look at the 2D. False detections outside the cage, or a camera that often misses a mouse, pull wrong pairings into the 3D. A model trained on another rig does this more often, and retraining on the rig's own frames helps most.
-
-**A camera fails to open with Spinnaker's "Could not read the XML URL [-1008]".** Seen once, on one of three cameras; campy then recorded the other two. It opened normally on the next run.
-
-**Checking that cameras expose together.** `campy-synctest` measures it from a blinking LED that all cameras see ([Triggering and synchronization](sync.md#checking-that-cameras-expose-together)). `campy-align` puts every camera's frames on the trigger's timeline after recording.
+Problems and their fixes are in [Troubleshooting](troubleshooting.md).
