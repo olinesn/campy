@@ -8,7 +8,7 @@ import multiprocessing.connection
 import numpy as np
 from collections import deque
 from scipy import io as sio
-from campy import clock, frametimes, newfiles, livefeed
+from campy import clock, frametimes, newfiles, livefeed, status
 from campy.utils.utils import Say, ExitCodeText, ErrorText
 
 
@@ -138,10 +138,11 @@ class CameraProcesses:
 	name and exit code, while the other cameras go on recording.
 	"""
 
-	def __init__(self, ctx, target, params, readyQueue, log=Say, start=None, stop=None):
+	def __init__(self, ctx, target, params, readyQueue, log=Say, start=None, stop=None, counters=None):
 		# start: given to each target too, after connection (campy.RunCamera:
-		# the emulated cameras' shared start, cameras/emu.py), and stop after
-		# it (the stop file's request: SetStopRequest)
+		# the emulated cameras' shared start, cameras/emu.py), stop after it
+		# (the stop file's request: SetStopRequest), and counters after that
+		# (every camera's counters, for the recording watch: status.Make)
 		self.names = [params["cameraNames"][n] for n in range(params["numCams"])]
 		self.log = log
 		self.readyQueue = readyQueue # kept while they start: they unpickle it as they do
@@ -157,8 +158,10 @@ class CameraProcesses:
 			receive, send = ctx.Pipe(duplex=False)
 			# Daemon, as the pool's workers were: if campy's main process stops
 			# with an error, they stop with it, rather than keep it waiting
-			args = (n, readyQueue, send) + (() if start is None and stop is None else
-				(start,) if stop is None else (start, stop))
+			extra = [start, stop, counters]
+			while extra and extra[-1] is None:
+				extra.pop()
+			args = (n, readyQueue, send) + tuple(extra)
 			process = ctx.Process(target=target, args=args, name=self.names[n], daemon=True)
 			process.start()
 			send.close() # the camera process has its own copy
@@ -482,6 +485,7 @@ def DropFrame(grabdata, frameNumber, maxQueue):
 	# queued. Its frame number is left out of frametimes.npy, which keeps one
 	# row per video frame: the gap in its frame numbers marks the drop.
 	grabdata["framesDropped"] += 1
+	status.This().Dropped(grabdata["framesDropped"])
 	now = time.perf_counter()
 	if now - grabdata["lastDropReport"] >= 5:
 		grabdata["lastDropReport"] = now
@@ -548,6 +552,7 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 	grabdata = GrabData(cam_params)
 	maxQueue = MaxQueueFrames(cam_params)
 	watch = FrameWatch(cam_params)
+	mine = status.This() # this camera's counters, for campy's recording watch (campy/watch.py)
 	feed = livefeed.Feed(cam_params, say=Say) # liveFeed: every frame into shared memory too
 	frameNumber = 0
 
@@ -561,6 +566,7 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 
 		# Start grabbing frames from the camera (and save its settings: StartGrabbing)
 		grabbing = StartGrabbing(camera, cam_params, cam)
+		mine.State(status.GRABBING if grabbing else status.NOT_STARTED)
 		if not grabbing:
 			recording.cameraError = "did not start grabbing"
 
@@ -570,6 +576,7 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 				grabResult = cam.GrabFrame(camera, frameNumber)
 			except CameraLost as e:
 				recording.cameraError = "the camera is gone, after frame {}: {}".format(frameNumber, ErrorText(e))
+				mine.State(status.LOST)
 				Say("{}: {}. Its recording ends there.".format(cam_params["cameraName"], recording.cameraError))
 				break
 			except Exception as e:
@@ -602,6 +609,7 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 					grabdata["frameTimes"].Add(frameNumber, timeStamp, hostTime)
 				else:
 					DropFrame(grabdata, frameNumber, maxQueue)
+				mine.Frame(frameNumber, len(writeQueue))
 
 				# Display converted, downsampled image in the Window
 				if frameNumber % grabdata["frameRatio"] == 0:
@@ -626,12 +634,14 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 		# the camera closed as below
 		logging.exception("Caught exception at cameras/unicam.py GrabFrames")
 		recording.cameraError = "the camera thread stopped, after frame {}: {}".format(frameNumber, ErrorText(e))
+		mine.State(status.CAMERA_FAILED)
 		Say("{}: {}.".format(cam_params["cameraName"], recording.cameraError))
 
 	finally:
 		# Close the camera, tell the display and the writer to stop, and once
 		# the writer has given ffmpeg the frames still queued, save metadata
 		grabdata["framesGrabbed"] = frameNumber
+		mine.State(status.ENDED, only_from=(status.WAITING, status.GRABBING))
 		CloseCamera(cam, cam_params, camera)
 		feed.Close()
 		if not sys.platform=='win32' or not cam_params['cameraMake'] == 'basler':

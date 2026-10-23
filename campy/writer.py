@@ -8,7 +8,7 @@ command a recording runs.
 """
 from imageio_ffmpeg import write_frames
 import os, re, sys, time, logging, functools, subprocess
-from campy import newfiles
+from campy import newfiles, status
 from campy.cameras import unicam
 from campy.utils.utils import QueueKeyboardInterrupt, Say, ErrorText, ExitCodeText
 
@@ -440,6 +440,7 @@ def VideoFailed(cam_params, recording, stopReadQueue, why, stopping=True):
 	# than recording on into nothing
 	name = cam_params["cameraName"]
 	recording.videoError = why # before the stop: the camera thread reads it as it stops
+	status.This().State(status.VIDEO_FAILED)
 	if stopping:
 		stopReadQueue.append("STOP")
 	# A fragmented video can be read up to the last fragment ffmpeg wrote; a
@@ -459,6 +460,7 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 	# done (recording.written).
 	if recording is None:
 		recording = unicam.Recording()
+	mine = status.This() # this camera's counters, for campy's recording watch (campy/watch.py)
 	ffmpeg = None
 	try:
 		# Ctrl-C from here on stops the camera (stopReadQueue), which then stops
@@ -482,6 +484,7 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 				# Its video is there already (a recording campy-acquire's own check
 				# did not see): no ffmpeg, and the camera is stopped
 				recording.videoError = "not recording: {}".format(e)
+				mine.State(status.VIDEO_FAILED)
 				stopReadQueue.append("STOP")
 				Say("{}: {}".format(cam_params["cameraName"], recording.videoError))
 				return
@@ -500,6 +503,7 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 					if writeQueue:
 						writer.send(writeQueue.popleft())
 						recording.framesSent += 1
+						mine.Sent(recording.framesSent)
 					else:
 						# Once queue is depleted and grabber stops, then stop writing
 						if stopWriteQueue:

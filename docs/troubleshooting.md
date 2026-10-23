@@ -74,7 +74,7 @@ Before recording, campy checks the config and the computer, and most problems sh
 
 ## What a recording holds
 
-**Frames dropped in the middle of a recording** (`framesDropped` in a camera's `metadata.csv`). The encoder fell behind by more than `writeQueueMaxSec`, usually because the disk stopped taking writes. Some SSDs stall for 10–16 s with nothing in the system logs, even with their power saving off. Raise `writeQueueMaxSec` (60 s for 3 cameras takes up to about 14 GB of memory, used only during a stall), or record to a second drive.
+**Frames dropped in the middle of a recording** (`framesDropped` in a camera's `metadata.csv`). The encoder fell behind by more than `writeQueueMaxSec`, usually because the disk stopped taking writes. Some SSDs stall for 10–16 s with nothing in the system logs, even with their power saving off. Raise `writeQueueMaxSec` (60 s for 3 cameras takes up to about 14 GB of memory, used only during a stall), or record to a second drive. campy-acquire says so as it happens: once frames waiting for ffmpeg fill a quarter of `writeQueueMaxSec`, and again when any is dropped, on the console and, with [alerts](alerts.md) set up, as a Slack message.
 
 **`the camera's frame ID skipped 99 frames: they were lost before reaching campy`** (`flirFramesLost` in `metadata.csv`). Frames were lost on the camera, its USB link or in Spinnaker: campy took frames too slowly, or the USB link is too slow for this frame size and rate. Such a camera numbers its later frames one lower than the others ([Stop Recording](acquire.md#stop-recording)).
 

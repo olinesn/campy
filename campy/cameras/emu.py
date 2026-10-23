@@ -10,6 +10,16 @@ campy-live's included:
 	  as a hardware trigger starts them all: frame n reaches the computer at
 	  the same moment on every camera.
 	* The loop back to the clip's start does not pause: ffmpeg loops the clip.
+
+Faults, for tests of campy's recording watch (campy/watch.py): the
+environment variable CAMPY_EMU_FAULTS makes emulated cameras fail as real
+ones do. Faults separated by ";", each <camera>:<kind>@<frame>[+<seconds>],
+camera a camera index or * (every camera), from its frame-th frame on:
+	stall   no frame for <seconds> (as when the trigger pauses), then frames
+	        again, on time (the frames meanwhile were never taken)
+	stop    no frame ever again (a trigger that stopped)
+	lost    the camera is gone (unplugged): unicam.CameraLost
+"*:stall@60+5" pauses every camera after 60 frames for 5 s.
 """
 
 from campy.cameras import unicam
@@ -109,13 +119,59 @@ class Clip:
 		self.frames.close()
 
 
+FAULTS_ENV = "CAMPY_EMU_FAULTS"
+
+
+class NoFrame(Exception):
+	# No frame (a fault: stall, stop), as a triggered camera's grab that times out
+	pass
+
+
+def Faults(n_cam, text=None):
+	"""This camera's faults from CAMPY_EMU_FAULTS: [(kind, frame, seconds)]."""
+	text = os.environ.get(FAULTS_ENV, "") if text is None else text
+	out = []
+	for item in filter(None, (t.strip() for t in text.split(";"))):
+		camera, rest = item.split(":", 1)
+		kind, rest = rest.split("@", 1)
+		frame, _, seconds = rest.partition("+")
+		if camera.strip() in ("*", str(n_cam)):
+			out.append((kind.strip(), int(frame), float(seconds or 0)))
+	return out
+
+
 class EmulatedCamera:
 	# A clip served as a camera's frames, at the configured frame rate
-	def __init__(self, clip, frameRate, start=None):
+	def __init__(self, clip, frameRate, start=None, faults=()):
 		self.clip = clip
 		self.framePeriod = 1.0 / frameRate if frameRate > 0 else 0.0
 		self.start = start # shared with campy's main process (SetStartClock), or None
 		self.startTime = None
+		self.faults = list(faults) # (kind, frame, seconds): see Faults
+		self.stalled = None # when the stall now going began
+
+	def Fault(self, frameNumber):
+		# Raises what this frame's fault makes the camera do, if it has one
+		for kind, frame, seconds in self.faults:
+			if frameNumber < frame:
+				continue
+			if kind == "lost":
+				raise unicam.CameraLost("emulated: the camera is gone")
+			if kind == "stop":
+				time.sleep(0.02)
+				raise NoFrame("emulated: no frame (stopped)")
+			if kind == "stall" and frameNumber == frame:
+				now = time.perf_counter()
+				if self.stalled is None:
+					self.stalled = now
+				if now - self.stalled < seconds:
+					time.sleep(0.02)
+					raise NoFrame("emulated: no frame (stalled)")
+				# Frames again, on time: the frames due meanwhile were never taken
+				self.startTime += now - self.stalled
+				self.stalled = None
+				self.faults.remove((kind, frame, seconds))
+				return
 
 	def Start(self, wait=WAIT_FOR_START_SEC):
 		# When frame 0 is due: the shared start, once campy's main process has
@@ -134,6 +190,9 @@ class EmulatedCamera:
 
 	def get_data(self, frameNumber):
 		start = self.Start()
+		if self.faults:
+			self.Fault(frameNumber)
+			start = self.startTime
 		# The frame first, then the wait until its time (relative to frame 0):
 		# reading it does not make it late
 		img = self.clip.get_data(frameNumber)
@@ -191,7 +250,7 @@ def OpenCamera(cam_params):
 	full_file_name = ClipPath(cam_params)
 	# pixelFormatInput "gray": one channel, as a Mono8 camera's frames (imageio read them as RGB)
 	clip = Clip(full_file_name, gray=str(cam_params.get("pixelFormatInput")) == "gray")
-	camera = EmulatedCamera(clip, cam_params["frameRate"], _start)
+	camera = EmulatedCamera(clip, cam_params["frameRate"], _start, Faults(cam_params.get("n_cam", 0)))
 
 	# The clip's frame size, for the writer (which waits for it) and metadata
 	cam_params = unicam.SetFrameSize(cam_params, clip.width, clip.height, "the clip's frame size")
