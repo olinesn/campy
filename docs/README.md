@@ -6,7 +6,7 @@ Guides for recording with campy and tracking animals live while it records: what
 |---|---|
 | [Hardware](hardware.md) | What to buy for live recording + SLEAP + 3D, and the measurements behind it |
 | [Live tracking](live-tracking.md) | Setting up and running `campy-acquire`, `campy-live` and `campy-live-view` on Linux (AMD/ROCm) and Windows (NVIDIA/CUDA), and opening the results in LUC3D (`campy-live-export`) |
-| [Models](models.md) | Training lightweight sleap-nn models for live use, choosing one that keeps up, finding the frames a model gets wrong on a rig (`campy-live-flag`), and labelling them in LUC3D for the next model (`campy-label-pack`, `campy-label-merge`) |
+| [Models](models.md) | Training lightweight sleap-nn models for live use, choosing one that keeps up, finding the frames a model gets wrong on a rig (`campy-live-flag`), labelling them in LUC3D for the next model (`campy-label-pack`, `campy-label-merge`), and measuring models against a rig's labelled test sets (`campy-model-eval`, `campy-model-fit`) |
 | [Calibration and troubleshooting](calibration-and-troubleshooting.md) | Camera placement, exposure and calibration, and fixes for the problems seen so far |
 
 ## Keeping these pages current

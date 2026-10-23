@@ -398,6 +398,10 @@ With 3D (`campy-live --calibration`) it flags animals a camera missed while the 
 
 `campy-label-pack <log>_flags/sample.json --recording <recording folder>` writes the picked sets as one SLEAP package for LUC3D: every camera's frame of each set embedded in the file, with `campy-live`'s detections, identities and 3D on them, ready to correct (File > Load SLP). After correcting and saving in LUC3D, `campy-label-merge <name>.pkg.slp <name>.labels.slp` writes the corrected camera frames as a training package and a test package. Test sets are whole minutes of a recording, kept out of training for good; `--test-into` adds them to a rig's test set, and `--train-into`/`--train-out` add the rest to a copy of a training package. A camera frame with predictions left in it isn't taken. Both need sleap-io (campy-live's environment). See [Models](docs/models.md#labelling-them-in-luc3d-campy-label-pack-campy-label-merge).
 
+#### Measuring models, and whether one suits a rig (campy-model-eval, campy-model-fit)
+
+`campy-model-eval <rig's test package> --pair new=<centroid>,<instance> --pair old=<centroid>,<instance>` runs each pair through campy-live's own inference code on the rig's labelled test sets and reports, per pair and camera: missed and extra animals, skeletons on the wrong mouse, the point error (median, p90, p99), and how often the 3D grouped each animal's detections across the cameras, for the random and the flagged test sets apart. `campy-model-fit stats <training package> --out <model folder>` saves the training images' brightness (and the model's id, `model.json`); `campy-model-fit check <model folder> --recording <recording>` warns when a camera's frames are darker, brighter or more saturated than the training images, its animals' brightness differs, or its gamma isn't the training videos'. See [Models](docs/models.md#measuring-a-model-on-a-rigs-test-sets-campy-model-eval).
+
 #### Watching it live (campy-live-view)
 
 `campy-live-view` shows the cameras' frames as campy records them, with campy-live's results drawn on them:

@@ -230,6 +230,56 @@ campy-label-merge <name>.pkg.slp <name>.labels.slp --test-into tests/<rig>.test.
 
 Tried on a 30-second, 3-camera recording of 5 mice: 12 picked sets were packed in 18 s (15 MB). LUC3D opened the package with the predictions, identities and 3D on it. A set corrected and saved there was merged into the 1,000-frame 12-node training package in 5 minutes, mostly reading the 550 MB package over the network. The result read back as 1,003 frames, the new ones pixel for pixel the package's.
 
+## Measuring a model on a rig's test sets (`campy-model-eval`)
+
+Until now, a model's accuracy on a rig was judged by consistency: how well the cameras agree in 3D, and how often the count of animals is right. `campy-model-eval` measures it against labels instead: the rig's test sets from `campy-label-merge`, which are never trained on. Give it one pair of models, or several to compare (an old and a new one, say):
+
+```
+campy-model-eval tests/<rig>.test.pkg.slp --pair new=<centroid folder>,<instance folder> \
+    --pair old=<centroid folder>,<instance folder> --out eval.json
+```
+
+It runs each set through `campy-live`'s own inference code, with `campy-live`'s defaults: the same preprocessing, fixed crops, the tie-tolerant peaks, fp16 and the compiled engines on a GPU. So the numbers are the models as `campy-live` runs them. Run it in the inference environment, on the rig's own GPU (under the rig lock). Any of `campy-live`'s options can follow `--live-args`, for example `--max-instances 3`. For each pair, and for each camera, it reports:
+
+| Measure | What it is |
+|---|---|
+| missed | Labelled animals with no detection: no centroid within 50 px of the label's Trunk (`--match-px`), matched one to one. |
+| extra | Detections that are no labelled animal, per camera frame. |
+| wrong mouse | Animals found whose skeleton sits on another animal: their points' median distance from the label is over 30 px (`--wrong-px`). |
+| node error | The distance of each labelled point from the model's, in pixels: median, p90, p99, and the share within 5 and 10 px. Points the model didn't place are counted apart. |
+| grouped | Of the labelled animals seen in two or more cameras, the share whose detections `campy-live`'s 3D (the same tracker, started afresh on each set) put together as one animal, with no other animal's detections. |
+
+Identity switches over time need labelled sequences, which single test sets aren't. Everything is also reported separately for the sets picked at random (the model as it meets the rig) and for those picked for a flag (the hard cases).
+
+Checked with stand-in labels: the predictions `campy-live` logged on a 5-mouse replay, packed and merged as if they had been corrected. Run on a laptop CPU in fp32 against those labels:
+
+- the models that made them (a 1,000-frame training set: the centroid model with output stride 2 and a 10 px spread, the 160 px centered-instance model) scored a median point error of 0.09 px, p99 4.75 px, 0.6% missed and no wrong mouse (the rest is fp32 on a CPU against fp16 on the rig's GPU);
+- a pair with the same settings trained on the 10,223-frame set (plus 9 frames from another rig) scored 5.4 px median, 17.9% missed against those labels, and 8 wrong-mouse skeletons.
+
+That says the tool measures what it should, not which model is better: stand-in labels are the first model's own predictions. Real numbers need real corrected labels.
+
+## Does a model suit a rig? (`campy-model-fit`)
+
+A model loses animals on frames that look unlike its training images: brighter, more saturated, recorded with another gamma ([Recording for a model](#recording-for-a-model)). `campy-model-fit` compares them before a recording, in two steps:
+
+```
+campy-model-fit stats <training package> --out <model folder> --gamma Off
+campy-model-fit check <model folder> --recording <a short recording on the rig>
+```
+
+`stats` reads 300 labelled frames of the training package and writes `image_stats.json` into the model's folder. It records the spread of each frame's mean brightness, its 95th percentile and its share of saturated pixels, and the animals' brightness (the pixels within 10 px of their labelled points). It also writes `model.json` with the model's id: the first 12 hex digits of the SHA-256 of its `best.ckpt`, so a recording can name the exact model it ran.
+
+`check` reads the first 10 s of each camera's video and its `metadata.csv`. It warns, per camera, when:
+
+- its frames are darker or brighter than 90% of the training frames;
+- it has far more saturated pixels;
+- its animals (with `--log`, from `campy-live`'s keypoints) are over 25% darker or brighter than the training animals;
+- its `cameraGamma` isn't the one the training videos had.
+
+It exits with 1 when any camera got a warning.
+
+On the 1,000-frame training set: frame mean brightness 14–33 (5th–95th percentile), animals 127. Against it, a 30-second replay of 5 mice on three cameras: one camera matched, two were brighter (mean 33 and 35), and on the brightest the animals were too (178 against 127).
+
 ## Recording for a model
 
 - **Match the training images' brightness.** The training frames averaged about 24 out of 255. Frames about 8 times brighter, with many saturated pixels, lost most mice and produced hundreds of false detections, and frames half as bright lost about half. Set aperture, exposure and gain so live frames look like the training frames.
