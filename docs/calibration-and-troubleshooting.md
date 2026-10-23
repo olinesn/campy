@@ -17,7 +17,7 @@ Calibration holds only as long as focus and zoom stay put, so set the lenses fir
 
 ## Calibrating
 
-1. **Record a calibration video** with the calibration board moving through the arena. Any `videoFilename` containing "calibration" is treated as one, and goes into each camera's `calibration_images/` folder, where calibration tools look for it ([README](../README.md#stop-recording)). A slower, shorter run is enough:
+1. **Record a calibration video** with the calibration board moving through the arena. Any `videoFilename` containing "calibration" is treated as one, and goes into each camera's `calibration_images/` folder, where calibration tools look for it ([Recording with campy-acquire](acquire.md#stop-recording)). A slower, shorter run is enough:
    ```
    campy-acquire <config>.yaml --frameRate 10 --recTimeInSec 90 --videoFilename calibration.mp4
    ```
@@ -29,7 +29,7 @@ Calibration holds only as long as focus and zoom stay put, so set the lenses fir
 
 **campy stops with "The trigger Arduino … did not answer".** Before any camera starts, campy checks that the trigger Arduino responds. Unplug its USB cable and plug it back in (or power-cycle it), then run campy again. The Arduino sometimes stays busy with a command from a run that just stopped.
 
-**A FLIR camera records at about 33 fps, or its throughput is 43 MB/s.** A camera that stays plugged in through a computer restart comes back with a USB 2 throughput limit. Shutting down and switching on clears it, and so does `campy-flir-reset` ([README](../README.md#flir-cameras-at-43-mbs-after-a-restart)).
+**A FLIR camera records at about 33 fps, or its throughput is 43 MB/s.** A camera that stays plugged in through a computer restart comes back with a USB 2 throughput limit. Shutting down and switching on clears it, and so does `campy-flir-reset` ([FLIR cameras](flir.md#flir-cameras-at-43-mbs-after-a-restart)).
 
 **Frames dropped in the middle of a recording** (`framesDropped` in a camera's `metadata.csv`). The encoder fell behind by more than `writeQueueMaxSec`, usually because the disk stopped taking writes. Some SSDs stall for 10–16 s with nothing in the system logs, even with their power saving off. Raise `writeQueueMaxSec` (60 s for 3 cameras takes up to about 14 GB of memory, used only during a stall), or record to a second drive. campy-acquire says so as it happens: once frames waiting for ffmpeg fill a quarter of `writeQueueMaxSec`, and again when any is dropped, on the console and, with [alerts](alerts.md) set up, as a Slack message.
 
@@ -43,4 +43,4 @@ Calibration holds only as long as focus and zoom stay put, so set the lenses fir
 
 **A camera fails to open with Spinnaker's "Could not read the XML URL [-1008]".** Seen once, on one of three cameras; campy then recorded the other two. It opened normally on the next run.
 
-**Checking that cameras expose together.** `campy-synctest` measures it from a blinking LED that all cameras see ([README](../README.md#checking-that-cameras-expose-together)). `campy-align` puts every camera's frames on the trigger's timeline after recording.
+**Checking that cameras expose together.** `campy-synctest` measures it from a blinking LED that all cameras see ([Triggering and synchronization](sync.md#checking-that-cameras-expose-together)). `campy-align` puts every camera's frames on the trigger's timeline after recording.

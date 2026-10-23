@@ -226,3 +226,12 @@ python bench/offline_infer_bench.py compare --base runs/base runs/fast runs/trt
 Each run writes `<out>.json`: frames per second, stage times with `--stage-timing`, GPU use, CPU cores and decoding waits. It also writes `<out>.npz` with the predictions; `--write-slp` also saves an `.slp`. `compare` matches the mice frame by frame and reports how many differ and how far their keypoints moved. It also reads `.slp` files from `sleap-nn track`. `--decoder` chooses `sleapio`, `opencv`, `pyav` (in its own process), `ffmpeg` (with `--hwaccel vaapi`, `cuda`, `qsv` or `d3d11va`; `--hwaccel-device` picks the D3D11VA adapter) or `nvdec` (PyNvVideoCodec). Run `--help` for the rest.
 
 On PyTorch 2.6, `torch.compile` can't trace sleap-nn 0.3.3's max-pool padding, which computes `torch.ceil(torch.tensor(i / s)).item()`. The script replaces it with `math.ceil(i / s)` (the same number) for its compile runs. Newer PyTorch traces it as is.
+
+## Poses from recorded videos (campy-infer)
+
+`campy-infer` runs a SLEAP top-down model pair (sleap-nn) over recorded videos and writes one `.slp` per video, as `sleap-nn track` does, about 10 times faster on a cluster GPU and 6 times faster on a benchtop PC. It uses `campy-live`'s fixed crops with a compiled engine (TensorRT on NVIDIA, `torch.compile` on AMD), fp16 with the tied-peaks fix, and decodes the video on the GPU (NVDEC) where it can. A folder stands for its videos and its sub-folders' videos (a campy session's cameras):
+```
+campy-infer <video or session folder> ... --centroid <centroid model folder> --instance <instance model folder> --max-instances 5
+campy-infer <session> --centroid ... --instance ... --max-instances 5 --out <session>/predictions --name "run1_{stem}.slp"
+```
+Each `.slp` goes next to its video (`<name>.predictions.slp`) or into `--out`. A video whose `.slp` is already there is skipped, so a stopped job can be started again as it was (`--overwrite` runs them all). `--exact` is a reference run in fp32 with sleap-nn's own layer. It runs in `campy-live`'s environment (sleap-nn and PyTorch); TensorRT and PyNvVideoCodec are optional. Options, speeds and accuracy: [Offline inference](offline-inference.md#how-to-run-it).

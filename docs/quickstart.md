@@ -26,7 +26,7 @@ git clone -b master https://github.com/olinesn/campy.git
 cd campy
 pip install -e .
 ```
-That's all the quickstart needs. For real cameras you'll also install the camera maker's software ([Installation](../README.md#installation)).
+That's all the quickstart needs. For real cameras you'll also install the camera maker's software ([Installation](install.md#installation)).
 
 **The tracking environment.** In a new terminal, from the same `campy` folder:
 ```
@@ -117,7 +117,7 @@ Those are the Mac's numbers. A *set* is one frame from each camera, taken at the
 
 The recording's folder now holds one folder per camera with its video (`emuclip.mp4`), its frame times and its settings. campy-live wrote its results into the folder it was started from, `campy-quickstart`: `campy-live_<date_time>.npy` and a `.json` summary.
 
-**Optional, watch it live:** in a third terminal with the `campy-live` environment active, run `campy-live-view` before step 4. It shows each camera with the tracked mice drawn on it, and a 3D view ([live view](../README.md#watching-it-live-campy-live-view)).
+**Optional, watch it live:** in a third terminal with the `campy-live` environment active, run `campy-live-view` before step 4. It shows each camera with the tracked mice drawn on it, and a 3D view ([live view](live-view.md#watching-it-live-campy-live-view)).
 
 ## 5. Open it in LUC3D
 
@@ -136,7 +136,7 @@ You'll see the three cameras with each mouse's body parts and its identity, the 
 
 ## Your own camera
 
-To record a real camera instead, install its maker's software into the `campy` environment ([Installation](../README.md#installation), step 3), then copy `campy_config_quickstart.yaml` and change the camera lines. For one FLIR camera, running at its own pace (no trigger):
+To record a real camera instead, install its maker's software into the `campy` environment ([Installation](install.md#installation), step 3), then copy `campy_config_quickstart.yaml` and change the camera lines. For one FLIR camera, running at its own pace (no trigger):
 ```
 numCams: 1
 cameraMake: "flir"
@@ -145,7 +145,7 @@ cameraTrigger: "None"
 cameraExposureTimeInUs: 1500
 cameraGain: 1
 ```
-Delete `videoFilename`, or set it to the video's name (`0.mp4`). Set `videoFolder` to where recordings should go. For a Basler camera, `cameraMake: "basler"` with `cameraSettings` pointing to a `.pfs` file saved from Pylon Viewer (`configs/mono8.pfs` is an example). [Configuration](../README.md#configuration) and `campy-acquire --help` list every setting, and `configs/` has examples for more cameras, GPU encoders and triggers.
+Delete `videoFilename`, or set it to the video's name (`0.mp4`). Set `videoFolder` to where recordings should go. For a Basler camera, `cameraMake: "basler"` with `cameraSettings` pointing to a `.pfs` file saved from Pylon Viewer (`configs/mono8.pfs` is an example). [Configuration](configs.md#configuration) and `campy-acquire --help` list every setting, and `configs/` has examples for more cameras, GPU encoders and triggers.
 
 The quickstart model was trained on about 1,000 frames of three mice from several camera angles ([Models](models.md#how-they-were-trained)), so expect it to do worse on a rig with other lighting, cameras or animals. The same page explains how to train a small model that keeps up live. With one camera, run `campy-live --cameras 1 --model sleap --centroid <folder> --instance <folder>` without `--calibration`: you get 2D poses, and LUC3D opens them with File ▸ Load Session Folder.
 

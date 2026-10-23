@@ -13,7 +13,7 @@ name: Promote dev to master
 # promoted, with notes listing the pull requests since the last release.
 # setup.py's version must already say it, so a pip install of the release
 # reports the same version. Pre-releases (v2.1.0rc1) are cut from dev by hand:
-# see the README's "Development and releases".
+# see "Development and releases" in docs/development.md.
 on:
   workflow_dispatch:
     inputs:

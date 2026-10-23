@@ -23,10 +23,10 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         # 3.9: the oldest campy (setup.py) and nireyecam support. 3.10: FLIR's PySpin on
-        # Ubuntu 22.04. 3.12: the README's, and PySpin's on Windows, macOS and Ubuntu 24.04.
+        # Ubuntu 22.04. 3.12: docs/install.md's, and PySpin's on Windows, macOS and Ubuntu 24.04.
         python: ["3.9", "3.10", "3.12"]
         include:
-          # Windows rigs, at the Python the README installs
+          # Windows rigs, at the Python docs/install.md installs
           - os: windows-latest
             python: "3.12"
     defaults:

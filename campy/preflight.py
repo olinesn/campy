@@ -295,7 +295,7 @@ NVENC_HINTS = [
 	("Cannot get the preset configuration",
 		"ffmpeg 4.3 and older ask the driver for NVENC presets with a call that NVIDIA drivers "
 		"from 591.44 (December 2025) reject. Set ffmpegPath to an ffmpeg 4.4 or newer that is "
-		"built for an NVENC version this driver supports (README: NVIDIA GPU encoding)."),
+		"built for an NVENC version this driver supports (docs/encoding.md: NVIDIA GPU encoding)."),
 	("Driver does not support the required nvenc API version",
 		"This ffmpeg is built for a newer NVENC version than the driver supports (Required, "
 		"Found). Update the NVIDIA driver to the version ffmpeg names, or set ffmpegPath to an "
