@@ -240,6 +240,9 @@ from campy.frametimes import GrowingNpy, Writer
 # so later it can't say whether the user set it (FixedEngine.Compile)
 _INDUCTOR_DIR = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
 
+# The command FixedEngine's messages name (campy-infer uses it too)
+PROGRAM = "campy-live"
+
 # The random models: what bench/sleap_infer_bench.py's default pair is
 RANDOM_CENTROID = dict(scale=0.25, filters=16, max_stride=16, output_stride=4)
 RANDOM_INSTANCE = dict(crop=192, filters=16, max_stride=16, output_stride=2)
@@ -1378,8 +1381,9 @@ class FixedEngine:
 		if not _INDUCTOR_DIR:
 			os.environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(self.CacheDir(cache), "inductor")
 		if self.name == "centroid":
-			print("campy-live: compiling the networks with torch.compile (their kernels kept in {}: up to about "
-				"40 s the first time, a few seconds after)".format(os.environ["TORCHINDUCTOR_CACHE_DIR"]), flush=True)
+			print("{}: compiling the networks with torch.compile (their kernels kept in {}: up to about "
+				"40 s the first time, a few seconds after)".format(PROGRAM, os.environ["TORCHINDUCTOR_CACHE_DIR"]),
+				flush=True)
 
 		def run(x):
 			with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=fp16, cache_enabled=False):
@@ -1428,8 +1432,8 @@ class FixedEngine:
 				with open(stem + ".plan", "rb") as f:
 					plan = f.read()
 			else:
-				print("campy-live: building the {} network's TensorRT engine ({}, {}), once (kept in "
-					"{})".format(self.name, "x".join(str(v) for v in (n, c, h, w)), "fp16" if fp16 else "fp32",
+				print("{}: building the {} network's TensorRT engine ({}, {}), once (kept in "
+					"{})".format(PROGRAM, self.name, "x".join(str(v) for v in (n, c, h, w)), "fp16" if fp16 else "fp32",
 					cache), flush=True)
 				with warnings.catch_warnings():
 					warnings.simplefilter("ignore")

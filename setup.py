@@ -37,6 +37,7 @@ setup(
 			"campy-label-merge = campy.labelmerge:Main",
 			"campy-model-eval = campy.modeleval:Main",
 			"campy-model-fit = campy.modelfit:Main",
+			"campy-infer = campy.infer:Main",
 		]
 	}
 )
