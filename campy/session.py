@@ -530,9 +530,11 @@ ACQUIRE = "import sys; sys.argv = ['campy-acquire'] + sys.argv[1:]; from campy.c
 class Session:
 	"""One run of campy-session: run() starts the programs, waits, ends them, and returns campy-acquire's exit code."""
 
-	def __init__(self, config, live_python=None):
+	def __init__(self, config, live_python=None, lock=True):
 		self.config = config
 		self.live_python = live_python
+		self.take_lock = lock # False: the panel holds campy-session's lock (campy/panel.py)
+		self.view_wanted = False # the panel's "Open the viewer again", for the main thread (Watch)
 		self.folder = None
 		self.state = "checking"
 		self.parts = {}
@@ -616,13 +618,14 @@ class Session:
 	# ---------------------------------------------------------- the run
 
 	def Run(self):
-		self.lock = Lock().Take()
+		self.lock = Lock().Take() if self.take_lock else None
 		previous = signal.signal(signal.SIGINT, self.Press)
 		try:
 			return self.Steps()
 		finally:
 			signal.signal(signal.SIGINT, previous)
-			self.lock.Release()
+			if self.lock is not None:
+				self.lock.Release()
 
 	def Steps(self):
 		config = self.config
@@ -650,10 +653,7 @@ class Session:
 			return 1
 
 		if config.view["show"]:
-			view = Part("view", [self.ViewPython(), "-m", "campy.liveview", "--cameras", str(config.Cameras()[0]),
-				"--name", str(config.Value("liveFeedName", "campy-live"))] + [str(a) for a in config.view["args"]],
-				os.path.join(self.logs, "campy-live-view.log"), env=self.ViewEnv(), tied=True)
-			self.parts["view"] = view.Start()
+			self.StartView()
 
 		env = dict(os.environ, PYTHONUNBUFFERED="1")
 		env[LAUNCHER_ENV] = VERSION
@@ -696,6 +696,22 @@ class Session:
 		pressed = self.presses
 		self.post_results = post.Run(self.folder, self.config.post, live_python=self.live_python,
 			stop=lambda: self.presses > pressed)
+
+	def StartView(self):
+		view = Part("view", [self.ViewPython(), "-m", "campy.liveview", "--cameras", str(self.config.Cameras()[0]),
+			"--name", str(self.config.Value("liveFeedName", "campy-live"))] + [str(a) for a in self.config.view["args"]],
+			os.path.join(self.logs, "campy-live-view.log"), env=self.ViewEnv(), tied=True)
+		self.parts["view"] = view.Start()
+		return view
+
+	def ReopenView(self):
+		# The panel's "Open viewer": a view again, while the cameras record, if the last one has closed
+		view = self.parts.get("view")
+		if self.state != "recording" or (view is not None and view.Running()):
+			return False
+		Say("Opening campy-live-view again.")
+		self.StartView()
+		return True
 
 	def ViewPython(self):
 		return self.live_python or Python()
@@ -745,6 +761,9 @@ class Session:
 					self.LiveDied(part)
 				elif name == "view":
 					Say("campy-live-view closed (exit code {}).".format(part.code))
+		if self.view_wanted:
+			self.view_wanted = False
+			self.ReopenView()
 		if self.restart_due is not None and time.monotonic() >= self.restart_due:
 			self.restart_due = None
 			n = len(self.live_parts) + 1
@@ -817,29 +836,53 @@ class Session:
 			Say("Ctrl-C: the steps after the recording stop after this one (campy-session post <folder> runs the rest).")
 			return
 		level = min(self.presses, 2)
-		if level > self.stop_written and acquire.Running():
-			try:
-				stopfile.Write(self.stopFile, now=level == 2)
-				self.stop_written = level
-			except OSError as e:
-				Say("Could not write campy-acquire's stop file: {}".format(e))
+		self.RequestStop(level)
 		Say("Ctrl-C: campy-acquire stops its cameras{}.".format(" now, without closing the ones that hang" if level == 2
 			else ", each closing its video: please wait"))
 
+	def RequestStop(self, level=1):
+		"""
+		campy-acquire's stop file: 1 stops the recording as Ctrl-C does, 2
+		is the second Ctrl-C (a camera that hangs as it closes). For Ctrl-C
+		here, and the panel's Stop. True when it was written.
+		"""
+		acquire = self.parts.get("acquire")
+		if acquire is None or not acquire.Running() or level <= self.stop_written:
+			return False
+		try:
+			stopfile.Write(self.stopFile, now=level == 2)
+		except OSError as e:
+			Say("Could not write campy-acquire's stop file: {}".format(e))
+			return False
+		self.stop_written = level
+		return True
+
 	# ---------------------------------------------------------- status
 
-	def Status(self):
-		self.status_at = time.monotonic()
-		if self.folder is None:
-			return
-		status = {"schema": SCHEMA, "launcher": VERSION, "updated_at": Stamp(time.time()), "state": self.state,
+	def StatusDict(self):
+		acquire = self.parts.get("acquire")
+		started = acquire.started if acquire is not None else None
+		ended = acquire.ended if acquire is not None else None
+		try:
+			planned = float(self.config.Value("recTimeInSec", 0))
+		except (TypeError, ValueError):
+			planned = None
+		return {"schema": SCHEMA, "launcher": VERSION, "updated_at": Stamp(time.time()), "state": self.state,
 			"folder": self.folder, "config": self.config.path, "pid": os.getpid(),
 			"manifests": ["session.json", "campy-live-session.json"],
 			"parts": {name: part.Status() for name, part in self.parts.items() if not name.startswith("live")},
 			"live": [part.Status() for part in self.live_parts],
 			"live_restarts": len(self.live_parts) - 1 if self.live_parts else 0,
 			"problems": [{"time": t, "text": text} for t, text in self.problems],
-			"post": {step: {"state": state, "message": message} for step, (state, message) in self.post_results.items()}}
+			"post": {step: {"state": state, "message": message} for step, (state, message) in self.post_results.items()},
+			"recording": {"started": Stamp(started), "elapsed_s": round((ended or time.time()) - started, 1) if started else
+				None, "planned_s": planned, "stop_asked": self.stop_written}}
+
+	def Status(self):
+		self.status_at = time.monotonic()
+		if self.folder is None:
+			return
+		status = self.StatusDict()
 		for path in (os.path.join(self.folder, "launcher.json"), os.path.join(CampyFolder(), "status", "launcher.json")):
 			try:
 				os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -868,10 +911,12 @@ def RunMain(argv):
 def Main(argv=None):
 	argv = sys.argv[1:] if argv is None else list(argv)
 	from campy import post
-	commands = {"run": RunMain, "register-live": Register, "post": post.Main}
+	from campy import panel
+	commands = {"run": RunMain, "register-live": Register, "post": post.Main, "panel": panel.Main}
 	if not argv or argv[0] not in commands:
 		print("usage: campy-session run <config>.yaml [--key value ...]\n"
 			"       campy-session post <recording folder> [--only remux,export] [--force]\n"
+			"       campy-session panel <config>.yaml [--port 8765] [--no-browser]\n"
 			"       campy-session register-live   (once, in campy-live's environment)", file=sys.stderr)
 		sys.exit(2)
 	sys.exit(commands[argv[0]](argv[1:]))

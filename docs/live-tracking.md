@@ -106,6 +106,40 @@ campy-session post <recording folder> --force         # after a crash, or again
 
 `campy-session post` also works on a recording made with `campy-acquire` alone. There, every camera's `metadata.csv` must have its totals and no `cameraError` or `videoError`, unless you give `--force`. What each step did is kept in `<folder>/logs/post.json`, so running `post` again repeats nothing that is done. A Ctrl-C during the steps stops them after the current one.
 
+### From a page in the browser: `campy-session panel`
+
+For people who'd rather not use a terminal, the same recording can be run from a page in the browser:
+
+```
+campy-session panel <config>.yaml
+```
+
+It opens the page in this computer's browser, and prints its address. A recording starts only when someone presses **Start recording** on the page, never on its own. Its length is the config's `recTimeInSec`. After each recording the page is ready for the next one, into a new folder. Ctrl-C in the panel's console closes it, when nothing is recording.
+
+What the page shows, refreshed every second:
+
+- **Before the start:**
+  - the experiment's name, the animal IDs and notes, which go into the recording's `session.json`;
+  - the checks. Some stop a start: `campy-live`'s environment not found or not the same campy, or another `campy-session` running. Others only warn: less free disk space than `alertDiskFreeGB`.
+- **While it records:**
+  - **time:** elapsed, against the planned length;
+  - **each camera:** a grey thumbnail, refreshed once a second; its frames per second and frame number; and its health, from the same checks `campy-live-view` draws in red: `NO FRAMES`, behind, `LOST`, `GAP`, `LATE`, frames ahead or behind. When campy-acquire's watch is running, also its dropped frames and write queue;
+  - **disk:** free space, and roughly how long it lasts at the rate it's filling;
+  - **tracking:** how many animals `campy-live` tracked in 3D over the last second;
+  - **warnings:** from the alerts' logs in the recording's folder, and anything `campy-session` reported;
+  - **bookmarks:** a note box and an Add button. They write the same `bookmarks.csv` in the recording's folder as `campy-live-view`'s `m` key, and the two never give two bookmarks the same number;
+  - **programs:** each one's state, and a button that opens `campy-live-view` again if it was closed.
+- **After it:** each step of `post:`, as it runs.
+
+**Stop** stops the recording exactly as Ctrl-C does: each camera closes its video. If a camera hangs while closing, the button turns into **Stop now, without closing**, for a few seconds. Closing the page stops nothing, and the page can be opened again at any time.
+
+The page is served only to this computer (`127.0.0.1`):
+
+- **Over Remote Desktop** (Windows), open it in the rig's own browser.
+- **From another computer**, go through SSH: run `ssh -L 8765:127.0.0.1:8765 <rig>`, then open the printed address on your own computer.
+
+Every request needs the random key in that address, so no other program on the computer can press Start or Stop. `--port` picks another port, and `--no-browser` only prints the address.
+
 ### By hand
 
 The three programs can also be started separately, as `campy-session` does:
