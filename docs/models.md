@@ -227,6 +227,7 @@ It writes `<name>/<name>.pkg.slp` next to `sample.json`:
 - **The frames are in the file**: every camera's frame of each picked set, as PNG, so exactly the video's pixels. It opens on any computer, without the recording's videos. Frame 0, 1, 2, … of the package are the picked sets in order; `sets.csv` says which recording, campy frame and video frame each one is, why it was picked, and its flags.
 - **The predictions are on them**: each camera's detections, and with 3D each animal's identity and 3D pose, grouped across the cameras. So LUC3D also shows where the 3D puts an animal in a camera that missed it.
 - `--skeleton <training package>` writes the labels in the training set's nodes. The live models have no tail points, so those stay empty unless you add them.
+- **Fragmented recordings work too.** campy records fragmented MP4 by default (`fragmentedVideo`), which has no index of its frames, so sleap-io can't read them by number. `campy-label-pack` first copies such a video into a plain MP4 in a temporary folder, stream for stream: no frame is decoded or changed, and it takes about 0.2 s per camera for 10 minutes. On a 10-minute, 3-camera Pro Max Slim recording, 40 sets were packed in 1.5 minutes.
 
 **Correcting in LUC3D.** File > Load SLP > `<name>.pkg.slp` (nothing else to pick). Shift+Right goes to the next set. Correct each set in every camera:
 
