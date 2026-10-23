@@ -496,6 +496,16 @@ def DropFrame(grabdata, frameNumber, maxQueue):
 def StartGrabbing(camera, cam_params, cam):
 	grabbing = cam.StartGrabbing(camera)
 	if grabbing:
+		# The camera's settings into metadata.csv before campy is told it is
+		# ready: campy's main process reads that file for session.json as soon
+		# as every camera is ready, and an external trigger starts at once.
+		# Also so that a recording that stops without closing (SaveMetadata)
+		# still has them; SaveMetadata adds the totals.
+		try:
+			WriteMetadata(cam_params)
+		except Exception as e:
+			SignalReady(cam_params, False, "could not write metadata.csv: {}".format(e))
+			raise
 		Say("{} ready to trigger.".format(cam_params["cameraName"]))
 	else:
 		Say("{} did not start grabbing, so it records nothing.".format(cam_params["cameraName"]))
@@ -554,15 +564,10 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 		# this camera is ready and starts the trigger
 		feed.Prepare(cam_params)
 
-		# Start grabbing frames from the camera
+		# Start grabbing frames from the camera (and save its settings: StartGrabbing)
 		grabbing = StartGrabbing(camera, cam_params, cam)
 		mine.State(status.GRABBING if grabbing else status.NOT_STARTED)
-
-		# The camera's settings, now, so that a recording that stops without
-		# closing (SaveMetadata) still has them; SaveMetadata adds the totals
-		if grabbing:
-			WriteMetadata(cam_params)
-		else:
+		if not grabbing:
 			recording.cameraError = "did not start grabbing"
 
 		while grabbing and not stopReadQueue and not StopRequested():

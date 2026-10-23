@@ -1,10 +1,10 @@
 """The trigger starts once every camera is grabbing, from campy's main process only."""
 
-import json, os, re, sys, queue, subprocess, threading, time
+import json, os, re, sys, queue, subprocess, threading, time, types
 
 import pytest
 
-from campy import configurator
+from campy import configurator, newfiles
 from campy.cameras import unicam
 from campy.trigger import arduino, trigger
 
@@ -73,6 +73,60 @@ def test_signal_ready_reports_only_when_asked():
 		assert q.get_nowait() == (3, "Camera3", False, "why")
 	finally:
 		unicam.SetReadyQueue(None)
+
+
+class ReadyQueue:
+	# Stands in for the queue to campy's main process: notes, as each camera
+	# says it is ready, whether its metadata.csv was there to read
+	def __init__(self, folder):
+		self.folder, self.said = folder, []
+
+	def put(self, message):
+		n_cam, name, ok, error = message
+		path = os.path.join(self.folder, name, "metadata.csv")
+		self.said.append((ok, error, os.path.exists(path) and open(path).read()))
+
+
+def grab_with(q, started):
+	cam_params = {"n_cam": 0, "cameraName": "Camera0", "videoFolder": q.folder,
+		"cameraModel": "Emulated_Camera", "frameWidth": 64, "frameHeight": 48}
+	unicam.SetReadyQueue(q)
+	try:
+		return unicam.StartGrabbing(object(), cam_params, types.SimpleNamespace(StartGrabbing=lambda camera: started))
+	finally:
+		unicam.SetReadyQueue(None)
+
+
+def test_metadata_is_written_before_the_camera_says_it_is_ready(tmp_path):
+	# campy's main process reads every camera's metadata.csv for session.json
+	# as soon as they are all ready, and with an external trigger it does so
+	# at once. It used to be written just after: session.json then sometimes
+	# lacked what the cameras opened as (cameraModel, frameWidth...)
+	q = ReadyQueue(str(tmp_path))
+	assert grab_with(q, True)
+	[(ok, error, metadata)] = q.said
+	assert ok and error == ""
+	assert '"cameraModel","Emulated_Camera"' in metadata and '"frameWidth","64"' in metadata
+
+
+def test_a_camera_that_does_not_grab_writes_no_metadata(tmp_path):
+	q = ReadyQueue(str(tmp_path))
+	assert not grab_with(q, False)
+	assert q.said == [(False, "", False)]
+	assert not (tmp_path / "Camera0").exists()
+
+
+def test_a_camera_that_cannot_write_its_metadata_says_so(tmp_path):
+	# metadata.csv already holds another recording's (campy never replaces
+	# a recording's files): not ready, with why, and the error goes on up
+	(tmp_path / "Camera0").mkdir()
+	(tmp_path / "Camera0" / "metadata.csv").write_text("someone else's")
+	q = ReadyQueue(str(tmp_path))
+	with pytest.raises(newfiles.WouldOverwrite):
+		grab_with(q, True)
+	[(ok, error, metadata)] = q.said
+	assert not ok and error.startswith("could not write metadata.csv: ") and "already there" in error
+	assert metadata == "someone else's"
 
 
 def test_a_port_that_does_not_open_stops_campy(capsys):
