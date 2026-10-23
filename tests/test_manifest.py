@@ -128,8 +128,8 @@ def test_animal_ids_are_one_list_for_the_whole_rig(tmp_path):
 
 
 def test_a_bad_experiment_key_fails_at_startup(tmp_path):
-	with pytest.raises(ValueError, match="sessionFields is a mapping"):
-		configure(tmp_path, "cameraMake: emu\nsessionFields: [a, b]\n")
+	with pytest.raises(ValueError, match="sessionFields: .* is not a mapping"):
+		configure(tmp_path, "cameraMake: emu\nsessionFields: cage B3\n")
 	with pytest.raises(ValueError, match="defaultsVersion is a campy version"):
 		configure(tmp_path, "cameraMake: emu\ndefaultsVersion: soon\n")
 

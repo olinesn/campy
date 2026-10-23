@@ -241,10 +241,12 @@ Not measured on Windows (the ChronicRecord PC): what the search costs there, and
 - A Basler camera's video has the frame size its '.pfs' file gives the camera, and an emulated camera's (`cameraMake: "emu"`) its clip's. campy says so when that is not `frameWidth` x `frameHeight` (`Camera0: frameWidth x frameHeight 1152x1024 changed to 1280x1024, the camera's frame size with its cameraSettings.`). Each video opens once its camera is open: it used to open first, at `frameWidth` x `frameHeight`, and frames of another size scrambled it. A camera that fails to open gets no video.
 - Edit the config.yaml file to fit your system and recording configuration.
 - Several example config files are located in campy/configs.
-- For help setting config parameters:
+- Every key, its default and what it takes: [docs/config-reference.md](docs/config-reference.md), or `campy-acquire --help`.
+- campy checks the whole config before any camera opens, and lists every problem with its file and line: an unknown key (with the key you probably meant), a value of the wrong kind or out of range, a key given twice, a per-camera list of the wrong length. To check configs without recording:
 ```
-campy-acquire --help
+campy-config check configs/campy_config_chronicrecord.yaml my_rig.yaml
 ```
+- [docs/configs.md](docs/configs.md) explains the checks. In campy 2.1.0 and older, a value out of range was replaced by its default (`frameRate: 0` recorded at 100 fps, `cameraGain: 0` at gain 1); now it stops campy, and 0 is a gain and a quality campy takes.
 - The experiment's details go into the recording's "session.json" (below): `experiment` (its name), `animalIds` (the animals recorded, one list for the whole rig: `animalIds: [M1, M2, M3]`), `notes`, and `sessionFields`, a mapping for anything else (`sessionFields: {cage: B3, condition: saline}`). Each is also a command-line option (`--animalIds "[M4, M7]" --notes "after surgery"`). campy does not ask for them at startup. A note after the recording: `campy-session note <recording folder> "text"` (or `python -m campy.manifest note <folder> "text"`).
 - When a config leaves out a setting whose default changed in a newer campy, `campy-acquire` says so once at startup, in plain words: `cameraGamma not set: since 2.1.0 the default is 0.6 (was Off). ...`. Each is said only where it applies (cameraGamma with a FLIR camera). Setting the key stops it; `defaultsVersion: "2.1.0"` says the config was written for 2.1.0's defaults, so only later changes are said; `defaultWarnings: False` stops them all. The table of changed defaults is `campy/defaults.py`, listed in [Recording folders](docs/recordings.md#defaults-that-changed-the-startup-warnings).
 
@@ -307,7 +309,7 @@ Any config key can be changed for one run on the command line: `--key value` mea
 campy-acquire ./configs/campy_config_chronicrecord.yaml --cameraTrigger None --codec h264 --startArduino False
 campy-acquire ./configs/campy_config_3cams_gpu.yaml --quality "[24, 26, 26]" --gpuID "[0, 0, 1]"
 ```
-campy 2.1.0rc2 and older needed text quoted twice (`--codec "'h265'"`, which still works), read `--startArduino False` as True, and took no lists. Paths are taken as typed (`--ffmpegPath C:\ffmpeg-btbn-8.1\bin\ffmpeg.exe`). As in the config, `yes`, `no`, `on` and `off` are True or False: the True/False keys take them, and a text key refuses them, so quote such text: `"'off'"`. `--preflight off` works as it is. A value campy cannot use stops it before any camera opens, naming the key (`argument --quality: 'high' is not a whole number, or a list of them`).
+campy 2.1.0rc2 and older needed text quoted twice (`--codec "'h265'"`, which still works), read `--startArduino False` as True, and took no lists. Paths are taken as typed (`--ffmpegPath C:\ffmpeg-btbn-8.1\bin\ffmpeg.exe`). As in the config, `yes`, `no`, `on` and `off` are True or False: the True/False keys take them, and a text key refuses them, so quote such text: `"'off'"`. `--preflight off` works as it is. A value campy cannot use stops it before any camera opens, naming the key (`argument --quality: 'high' is not a whole number, or a list of them`). An option is its whole name: `--qual 20` is refused (older campys read it as `--quality 20`), and an unknown option names the one probably meant (`unknown option --framerate. Did you mean --frameRate?`).
 
 ### Stop Recording:
 - Campy can be configured to stop automatically after set recording time (e.g., 1 hour):

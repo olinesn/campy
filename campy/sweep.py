@@ -411,7 +411,10 @@ def BaseParams(args):
 	params["pixelFormatInput"] = "gray"
 	params["pixelFormatOutput"] = "yuv420p"
 	if args.config:
-		params.update(configurator.LoadConfig(args.config) or {})
+		try:
+			params.update(configurator.ReadCheckedConfig(args.config))
+		except configurator.ConfigError as e:
+			sys.exit(str(e)) # campy-encode-quality reads its config here too
 		params = configurator.FillCameraLists(params)
 		params = configurator.CameraParams(params, 0)
 	for key in ("frameWidth", "frameHeight", "frameRate", "pixelFormatInput", "pixelFormatOutput",

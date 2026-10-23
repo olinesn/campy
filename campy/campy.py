@@ -41,8 +41,13 @@ def DefaultWarnings(params, sources):
 
 def OpenSystems():
 	global configured, sources, defaultWarnings, probe
-	# Configure parameters
-	params = configurator.ConfigureParams()
+	# Configure parameters: a config campy can't use stops here, with every
+	# problem in it, before anything opens
+	try:
+		params = configurator.ConfigureParams()
+	except configurator.ConfigError as e:
+		print(e, flush=True)
+		sys.exit(1)
 	if mp.current_process().name == "MainProcess":
 		probe = manifest.Probe()
 		configured, sources = copy.deepcopy(params), configurator.Sources()
