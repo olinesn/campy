@@ -105,6 +105,8 @@ It holds:
 
 `campy-live`'s summary (`<log>.json`) has the path to it under `session`.
 
+`campy-live` gathers what this file says about campy, the computer and the models while its models load: hashing `best.ckpt` and asking git, `nvidia-smi` and Windows take a second or more. It writes the file in the background once the feed appears, so tracking starts with the recording's first frames and never waits for it.
+
 ## In campy-live-export and LUC3D
 
 `campy-live-export` copies `session.json` and the matching `campy-live-session.json` into the `.slp`'s provenance, with the animal IDs. It leaves the identities named "animal 1", "animal 2", …: campy-live numbers the animals in the order it first matches them, which says nothing about which animal ID each one is. When you pass `--calibration`, it checks that file against the one campy-live tracked with, and says so if their SHA-256s differ.
