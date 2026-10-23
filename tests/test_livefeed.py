@@ -847,25 +847,64 @@ def test_auto_does_not_fight_a_power_or_heat_limit(monkeypatch):
 	assert Looks(clock)([1800] * 6, limited=True) == [1] * 6
 
 
-def test_auto_spins_a_block_fewer_at_full_clock_and_waits_longer_when_that_was_too_few(monkeypatch):
+def test_auto_spins_a_block_fewer_at_full_clock_and_never_tries_a_count_found_too_few(monkeypatch):
 	clock = auto_clock(monkeypatch)
 	looks = Looks(clock)
 	calm = int(clock.CALM_S / clock.LOOK_S)
 	# At full clock for CALM_S: one fewer
 	assert looks([2475] * calm) == [1] * (calm - 1) + [0]
-	# 0 was too few (the clock fell at once): one back, and the next try
-	# at 0 waits twice as long
-	assert looks([1000, 1000]) == [0, 1] and clock.calm == 2 * clock.CALM_S
-	assert looks([2475] * 2 * calm) == [1] * (2 * calm - 1) + [0]
-	# Too few again: four times as long, ... up to MOST_CALM_S
-	looks([1000, 1000])
-	assert clock.calm == 4 * clock.CALM_S
-	for _ in range(8):
-		looks([2475] * int(clock.calm / clock.LOOK_S) + [1000, 1000])
-	assert clock.calm == clock.MOST_CALM_S and clock.busy == 1
-	# 0 that holds the clock: stays 0, and the wait does not grow
-	assert looks([2475] * int(clock.calm / clock.LOOK_S))[-1] == 0
-	assert looks([2475] * 3 * calm) == [0] * 3 * calm
+	# 0 was too few (the clock fell at once): one back, and 1 is now this
+	# GPU's fewest: 0 is never tried again (an RTX 6000 Ada's p99 dips)
+	assert looks([1000, 1000]) == [0, 1] and clock.fewest == 1
+	assert looks([2475] * 20 * calm) == [1] * 20 * calm
+	# a slow clock later still adds the second block, and calm takes it back to 1
+	assert looks([1635, 1635]) == [1, 2]
+	assert looks([2475] * calm)[-1] == 1
+	# a fall long after a fewer that held is not a failed try: still 0 allowed
+	other = auto_clock(monkeypatch)
+	looks = Looks(other)
+	looks([2475] * calm)
+	assert other.busy == 0
+	looks([2475] * (calm + 1) + [1000, 1000])
+	assert other.busy == 1 and other.fewest == 0
+
+
+def test_auto_remembers_a_gpus_fewest_until_its_computer_restarts(monkeypatch, tmp_path):
+	monkeypatch.setitem(__import__("sys").modules, "torch", types.SimpleNamespace())
+	monkeypatch.setattr(live.GpuClock, "GpuId", staticmethod(lambda torch, device: "GPU-abc"))
+	boot = [1000.0]
+	monkeypatch.setattr(live.GpuClock, "Boot", staticmethod(lambda: boot[0]))
+	memory = str(tmp_path / "engines" / "gpu_clock.json")
+	def Clock():
+		c = live.GpuClock("cuda", "auto", reader=types.SimpleNamespace(name="fake"), fewest=0, memory=memory)
+		c.fastest = 2500.0
+		return c
+	first = Clock()
+	assert first.fewest == 0 and first.busy == 1 and first.remembered == 0
+	looks = Looks(first)
+	looks([2475] * int(first.CALM_S / first.LOOK_S))
+	looks([1000, 1000]) # 0 too few
+	assert first.fewest == 1
+	first.Remember() # as Watch does when fewest grows
+	assert json.load(open(memory))["GPU-abc"]["fewest"] == 1
+	assert first.Describe()["fewest_learned"] == 1
+	# the next run on this GPU starts at 1 and never tries 0
+	second = Clock()
+	assert second.fewest == 1 and second.remembered == 1
+	assert Looks(second)([2475] * 100) == [1] * 100
+	assert second.Describe()["fewest_remembered"] == 1 and "fewest_learned" not in second.Describe()
+	# after a restart: forgotten, 0 tried again
+	boot[0] = 90000.0
+	assert Clock().fewest == 0
+	# another GPU: its own; an unreadable file: nothing remembered
+	boot[0] = 1000.0
+	monkeypatch.setattr(live.GpuClock, "GpuId", staticmethod(lambda torch, device: "GPU-other"))
+	assert Clock().fewest == 0
+	open(memory, "w").write("not json")
+	monkeypatch.setattr(live.GpuClock, "GpuId", staticmethod(lambda torch, device: "GPU-abc"))
+	assert Clock().fewest == 0
+	# a fixed number of blocks neither reads nor writes it
+	assert live.GpuClock("cuda", "2", memory=memory).memory is None
 
 
 def test_auto_says_how_it_went(monkeypatch):
