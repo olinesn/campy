@@ -81,6 +81,15 @@ Every key a campy config file can have, and its command-line option (`--key valu
 | `liveFeedName` | `"campy-live"` | text, as typed | one, or one per camera | Name of the live feed's shared memory: camera n's is &lt;liveFeedName&gt;-&lt;n&gt; (default: campy-live). Two campys running at once each need their own. |
 | `liveFeedSlots` | `8` | a whole number, 1 or more | one for the rig | Frames each camera's live feed holds (default: 8): how far behind a reader can be and still read a frame. |
 
+## Recording watch and alerts
+
+| Key | Default | Takes | Per camera | What it does |
+|---|---|---|---|---|
+| `alerts` | `True` | True or False | one for the rig | Send the recording watch's alerts (a camera with no frames, dropped frames, a stalled encoder, ffmpeg stopping, a disk filling up, the trigger gone) to the channels in the alerts file, ~/.campy/alerts.yaml (default: True; without that file nothing is sent). They are said on the console, and written to the recording's alerts.log, either way. See docs/alerts.md. |
+| `alertNoFramesSec` | `10` | a number above 0 | one for the rig | A camera that has sent frames and sends none for this many seconds is an alert (default: 10). |
+| `alertDiskFreeGB` | `20` | a number, 0 or more | one for the rig | Less free space than this on a video folder's disk is an alert (default: 20). |
+| `stopAtFreeGB` | `2` | a number, 0 or more | one for the rig | Below this much free space on a video folder's disk, campy stops the recording, cleanly, as at Ctrl-C, so that every video and its metadata are whole: a full disk stops every ffmpeg at once and leaves no room for them (default: 2; 0 = never). |
+
 ## Launch check
 
 | Key | Default | Takes | Per camera | What it does |
@@ -125,7 +134,7 @@ Every key a campy config file can have, and its command-line option (`--key valu
 | Key | Default | Takes | Per camera | What it does |
 |---|---|---|---|---|
 | `live` | none | key: value lines of its own | - | campy-session: live tracking while recording (models, calibration, animals, the live environment's python). campy-acquire passes it by; campy-session checks it. |
-| `view` | none | key: value lines of its own | - | campy-session: the live view (campy-live-view). campy-acquire passes it by. |
+| `view` | none | key: value lines of its own | - | campy-session: the live view (campy-live-view); view: true or false is short for view: {show: true}. campy-acquire passes it by. |
 | `post` | none | key: value lines of its own | - | campy-session: what to do after the recording (remux, export, copy). campy-acquire passes it by. |
 | `panel` | none | key: value lines of its own | - | campy-session: its control panel. campy-acquire passes it by. |
 

@@ -86,9 +86,45 @@ Once the model is fast, decoding sets the pace. Gray frames per second from the 
 | A100 node | 247 | 587 | 773 | 1,506 (NVDEC) |
 | L40S node | – | – | 615 | 2,702 (NVDEC) |
 | GMKtec EVO-X2 | 722 | 1,296 | 1,487 | 1,826 (VA-API) |
-| Dell Pro Max Slim FCS1250 | 272 | 415 | 702 | 686 (NVDEC through ffmpeg) |
+| Dell Pro Max Slim FCS1250 | 272 | 415 | 701 | 707 (NVDEC), 666 (Quick Sync), 673 (D3D11VA on the Intel iGPU), all through ffmpeg |
 
 sleap-io's reader varied from run to run on network storage (12–480 frames/s). It checks that the file still exists, opening it again, for every frame it reads. A GPU decoder keeps up with every model path here using under one CPU core. On the benchtop PCs, ffmpeg on the CPU is already faster than the model. PyAV could not run in the same process as PyTorch and OpenCV: it hung on its first frames while holding Python's interpreter lock. The bench script runs it in a process of its own and hands frames over through shared memory.
+
+### Decoding on the Pro Max Slim's Intel iGPU
+
+The Pro Max Slim's Intel iGPU already encodes campy's recordings (Quick Sync). It can also decode them for offline inference, which leaves the NVIDIA GPU to the model and takes most of the work off the CPU. Every way below gave gray frames identical to the bit to ffmpeg's CPU decoding, on all 18,000 frames of the test video. Tested on 23 October 2026: ffmpeg 8.1 (BtbN's Windows build), Intel graphics driver 32.0.101.9150, Windows 11. Every run held the rig lock and was `RIG_CLEAN`.
+
+ffmpeg on its own, writing the gray frames nowhere: frames per second over 6,000 frames (3 runs), CPU cores at full speed, and CPU cores when held to 450 frames/s, the fastest model's pace:
+
+| ffmpeg options before `-i` (output: `-pix_fmt gray`) | Decoder | frames/s | CPU cores | CPU cores at 450 frames/s |
+|---|---|---:|---:|---:|
+| none | CPU | 1,695–1,714 | 4.8 | 1.37 |
+| `-hwaccel cuda` | NVDEC on the RTX 2000 Ada | 1,224–1,234 | 1.8 | 0.59 |
+| `-c:v hevc_qsv` | Quick Sync | 1,553–1,659 | 1.8 | 0.59 |
+| `-hwaccel d3d11va -hwaccel_device 0 -hwaccel_output_format d3d11`, then `-vf hwdownload,format=nv12` | the iGPU through Windows' decoder interface | 1,656–1,873 | 1.7 | 0.49 |
+| `-init_hw_device vulkan=vk:0 -hwaccel vulkan -hwaccel_device vk` | the iGPU through Vulkan | 1,816–1,912 | 2.7 | 0.59 |
+| `-hwaccel qsv -hwaccel_output_format qsv`, then `-vf hwdownload,format=nv12` | Quick Sync | 853–861 | 1.7 | 0.95 |
+| `-hwaccel qsv -hwaccel_output_format nv12` | Quick Sync | 585–588 | 1.5 | 1.09 |
+| `-hwaccel d3d11va -hwaccel_device 0` | the iGPU through Windows' decoder interface | 970–972 | 1.4 | – |
+| `-hwaccel d3d12va -hwaccel_device 0` | the iGPU through Direct3D 12 | 234–245 | 0.4 | – |
+
+- **Why the first try failed.** `-hwaccel qsv` with `-pix_fmt gray` gives no frames: "Task finished with error code: -22 (Invalid argument)". Since ffmpeg 8, `-hwaccel qsv` leaves the decoded frames in the iGPU's memory (ffmpeg warns "defaulting hwaccel_output_format to qsv"), and ffmpeg has no way to turn frames there into gray. The driver, the iGPU and the full-range video (yuvj420p) were all fine. Either copy the frames out (`hwdownload`), or use the Quick Sync decoder by name (`-c:v hevc_qsv`), which hands back frames in ordinary memory and is twice as fast.
+- **Adapter numbers.** On this PC, Direct3D and Vulkan list the Intel iGPU first (0) and the RTX 2000 Ada second (1). `-hwaccel d3d11va` with no `-hwaccel_device` picks adapter 0, the iGPU here.
+- **How the frames come back matters more than the decoder.** The same D3D11VA decoding ran at 972 frames/s when ffmpeg copied the frames out by itself, and at 1,800 with `hwdownload`.
+- **What doesn't work:** `-hwaccel dxva2` (the older Direct3D 9 interface) can't create its device, and Quick Sync on a Direct3D device made on the NVIDIA adapter fails with "Error creating a MFX session".
+
+Through `bench/offline_infer_bench.py`, every decoder gave 666–707 frames/s on its own, because the script reads the frames from ffmpeg through a pipe into Python, and that is the limit on Windows. With the fastest model path (fixed crops, TensorRT fp16, 6,000 frames) the iGPU decoders ran as fast as CPU decoding, and NVDEC was slower because it shares the RTX 2000 Ada with the model:
+
+| `--hwaccel` | frames/s | whole run, frames/s |
+|---|---:|---:|
+| `none` (CPU) | 473 | 450 |
+| `cuda` (NVDEC) | 432 | 411 |
+| `qsv` (`-c:v hevc_qsv`) | 470 | 427 |
+| `d3d11va` (adapter 0, the iGPU) | 475 | 445 |
+
+All four found the same 29,318 mice.
+
+**Beside a recording.** The rig check recorded 3 emulated cameras at 60 fps with Quick Sync H.265 (the same iGPU) for 60 s, while `campy-live` tracked them in 3D on the RTX 2000 Ada. Meanwhile ffmpeg decoded the test video over and over, as fast as it could. The recording didn't notice. Every camera kept all 3,600 frames, `campy-live` skipped no sets, and its latency changed by 0.1–0.3 ms (p50 6.7 → 6.8–6.9 ms, p99 7.1 → 7.3–7.4 ms). Decoding slowed by 10–25%: Quick Sync to 1,234–1,511 frames/s, D3D11VA to 1,262–1,412, still about three times the model's pace.
 
 ## Accuracy
 
@@ -187,6 +223,6 @@ python bench/offline_infer_bench.py run ... --out runs/trt --path fixed --precis
 python bench/offline_infer_bench.py compare --base runs/base runs/fast runs/trt
 ```
 
-Each run writes `<out>.json`: frames per second, stage times with `--stage-timing`, GPU use, CPU cores and decoding waits. It also writes `<out>.npz` with the predictions; `--write-slp` also saves an `.slp`. `compare` matches the mice frame by frame and reports how many differ and how far their keypoints moved. It also reads `.slp` files from `sleap-nn track`. `--decoder` chooses `sleapio`, `opencv`, `pyav` (in its own process), `ffmpeg` (with `--hwaccel vaapi`, `cuda` or `qsv`) or `nvdec` (PyNvVideoCodec). Run `--help` for the rest.
+Each run writes `<out>.json`: frames per second, stage times with `--stage-timing`, GPU use, CPU cores and decoding waits. It also writes `<out>.npz` with the predictions; `--write-slp` also saves an `.slp`. `compare` matches the mice frame by frame and reports how many differ and how far their keypoints moved. It also reads `.slp` files from `sleap-nn track`. `--decoder` chooses `sleapio`, `opencv`, `pyav` (in its own process), `ffmpeg` (with `--hwaccel vaapi`, `cuda`, `qsv` or `d3d11va`; `--hwaccel-device` picks the D3D11VA adapter) or `nvdec` (PyNvVideoCodec). Run `--help` for the rest.
 
 On PyTorch 2.6, `torch.compile` can't trace sleap-nn 0.3.3's max-pool padding, which computes `torch.ceil(torch.tensor(i / s)).item()`. The script replaces it with `math.ceil(i / s)` (the same number) for its compile runs. Newer PyTorch traces it as is.
