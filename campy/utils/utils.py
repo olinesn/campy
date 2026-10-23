@@ -204,5 +204,23 @@ class HandleKeyboardInterrupt:
 		else:
 			Say("SIGINT received again.")
 
+	def Request(self, level, why):
+		"""
+		A stop asked for another way than Ctrl-C (campy/stopfile.py): level 1
+		counts as the first press, 2 as the second, unless they came already.
+		It is a press too: a Ctrl-C within a second of it is the same one
+		(campy-session writes the stop file at the Ctrl-C that reaches campy
+		itself, and either can come first).
+		"""
+		self.last = time.monotonic()
+		if level <= self.count:
+			return
+		self.count = level
+		if level == 1:
+			Say("Stop requested ({}). Each camera stops and closes its video: please wait. If one hangs as it "
+				"closes, \"now\" in that file stops it at once, without closing it.".format(why))
+		else:
+			Say("Stop now requested ({}).".format(why))
+
 	def __exit__(self, type, value, traceback):
 		pass

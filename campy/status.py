@@ -17,14 +17,14 @@ This() is a Camera whose stores do nothing.
 from campy import clock
 
 # A camera's row: its fields, in this order
-FIELDS = ("grabbed", "queued", "sent", "dropped", "frameNs", "sentNs", "state", "stop")
-GRABBED, QUEUED, SENT, DROPPED, FRAME_NS, SENT_NS, STATE, STOP = range(len(FIELDS))
+FIELDS = ("grabbed", "queued", "sent", "dropped", "frameNs", "sentNs", "state")
+GRABBED, QUEUED, SENT, DROPPED, FRAME_NS, SENT_NS, STATE = range(len(FIELDS))
 WIDTH = 16 # words per camera: room for more fields
 
 # state
 WAITING = 0 # not grabbing yet
 GRABBING = 1
-ENDED = 2 # its recording ended as it should (recTimeInSec, Ctrl-C, a stop)
+ENDED = 2 # its recording ended as it should (recTimeInSec, Ctrl-C, a stop file, the watch's stop)
 NOT_STARTED = 3 # the camera did not start grabbing
 LOST = 4 # the camera is gone (unicam.CameraLost)
 VIDEO_FAILED = 5 # ffmpeg stopped, or did not start
@@ -72,10 +72,6 @@ class Camera:
 		if self.a is not None and (only_from is None or self.a[self.o + STATE] in only_from):
 			self.a[self.o + STATE] = state
 
-	def Stopping(self):
-		# campy's main process asks this camera to stop (watch: the disk is nearly full)
-		return self.a is not None and self.a[self.o + STOP] != 0
-
 
 class Reader:
 	"""campy's main process's view of every camera's row."""
@@ -89,10 +85,6 @@ class Reader:
 	def Row(self, c):
 		o = c * WIDTH
 		return {name: self.a[o + i] for i, name in enumerate(FIELDS)}
-
-	def Stop(self, c=None):
-		for k in range(self.n) if c is None else [c]:
-			self.a[k * WIDTH + STOP] = 1
 
 
 _camera = Camera()
