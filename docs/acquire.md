@@ -70,7 +70,7 @@ ffmpeg -fflags +discardcorrupt -i 0.mp4 -c copy 0-repaired.mp4
 ```
 `fragmentedVideo: False` writes a plain MP4, as campy did before. Other containers (.mkv, .avi) are written as they always were.
 
-After a clean stop, `campy-session` turns the fragmented videos into plain MP4s (`post: remux`). It uses no re-encoding, and checks every packet before the plain file replaces the fragmented one. For a recording made with `campy-acquire` alone, run `campy-session post <recording folder> --only remux` ([Live tracking](docs/live-tracking.md#in-one-command-campy-session)). A crashed recording keeps its fragmented videos.
+After a clean stop, `campy-session` turns the fragmented videos into plain MP4s (`post: remux`). It uses no re-encoding, and checks every packet before the plain file replaces the fragmented one. For a recording made with `campy-acquire` alone, run `campy-session post <recording folder> --only remux` ([Live tracking](live-tracking.md#in-one-command-campy-session)). A crashed recording keeps its fragmented videos.
 
 ## Keeping the computer awake (keepAwake)
 
