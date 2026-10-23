@@ -899,9 +899,20 @@ def test_the_gpu_clock_spins_until_stopped():
 	clock = live.GpuClock("cuda")
 	clock.CYCLES = 100000
 	clock.Start()
-	time.sleep(0.3)
-	assert len(clock.threads) == clock.WAITING_BLOCKS
-	clock.Stop()
+	try:
+		time.sleep(0.3)
+		# the spinners (as many as the waiting needs), and with auto the
+		# clock's reader too, where the GPU's clock can be read (#104)
+		names = [thread.name for thread in clock.threads]
+		spinners = [n for n in names if n.startswith("campy-live GPU clock ") and n[-1].isdigit()]
+		assert len(spinners) == max(clock.WAITING_BLOCKS, clock.MOST_BUSY)
+		assert names.count("campy-live GPU clock reader") == (clock.reader is not None)
+		assert len(names) == len(spinners) + (clock.reader is not None)
+	finally:
+		# even when an assert fails: spinners left running at the
+		# interpreter's exit abort it (terminate called without an active
+		# exception, exit 134)
+		clock.Stop()
 	spins = clock.spins
 	assert spins > 0 and clock.threads == []
 	time.sleep(0.1)
