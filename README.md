@@ -33,6 +33,7 @@ Each run records into a new folder inside the config's `videoFolder`, named by t
 | `campy-encode-sweep`, `campy-encode-quality` | Measure how many cameras each encoder keeps up with, and what each quality costs | [Video encoding](docs/encoding.md#scaling-the-number-of-cameras) |
 | `campy-flir-reset` | Reset FLIR cameras a restart left at USB 2 speed; turn Spinnaker's GigE search off | [FLIR cameras](docs/flir.md) |
 | `campy-align`, `campy-synctest` | Put every camera on the trigger's timeline; check that cameras expose together | [Triggering and synchronization](docs/sync.md) |
+| `campy-session` | A tracked recording in one command (`run`), from a page in the browser (`panel`), and what to do after a clean stop (`post`: remux, export, copy) | [Live tracking](docs/live-tracking.md#in-one-command-campy-session) |
 | `campy-live` | Track animals live, in 2D and 3D, while campy records | [Live tracking](docs/live-tracking.md) |
 | `campy-live-view` | Watch the cameras and the tracking live | [Watching it live](docs/live-view.md) |
 | `campy-live-export` | Open a tracked recording in LUC3D | [Live tracking](docs/live-tracking.md#opening-a-tracked-recording-in-luc3d) |

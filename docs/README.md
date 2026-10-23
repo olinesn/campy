@@ -15,7 +15,7 @@ Guides for recording with campy and tracking animals live while it records. The 
 | [Triggering and synchronization](sync.md) | Arduino, Teensy and external triggers, `campy-align` and `campy-synctest` |
 | [RatCam cameras](ratcam.md) | nir-eye-cam's NIR eye cameras, alongside the others and on the same timeline |
 | [Hardware](hardware.md) | What to buy for live recording + SLEAP + 3D, and the measurements behind it |
-| [Live tracking](live-tracking.md) | Setting up and running `campy-acquire`, `campy-live` and `campy-live-view` on Linux (AMD/ROCm) and Windows (NVIDIA/CUDA), and opening the results in LUC3D (`campy-live-export`) |
+| [Live tracking](live-tracking.md) | Setting up and running `campy-acquire`, `campy-live` and `campy-live-view` (in one command with `campy-session`) on Linux (AMD/ROCm) and Windows (NVIDIA/CUDA), and opening the results in LUC3D (`campy-live-export`) |
 | [Watching it live](live-view.md) | `campy-live-view`: the cameras with the tracking drawn on them, a 3D view, warnings at a glance, bookmarks |
 | [3D poses](pose3d.md) | How `campy/pose3d.py` matches animals across cameras, keeps their identities and triangulates them, and how it was validated |
 | [Models](models.md) | Training lightweight sleap-nn models for live use, choosing one that keeps up, finding the frames a model gets wrong on a rig (`campy-live-flag`), labelling them in LUC3D for the next model (`campy-label-pack`, `campy-label-merge`), and measuring models against a rig's labelled test sets (`campy-model-eval`, `campy-model-fit`) |
