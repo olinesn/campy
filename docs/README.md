@@ -10,6 +10,7 @@ Guides for recording with campy and tracking animals live while it records: what
 | [Live tracking](live-tracking.md) | Setting up and running `campy-acquire`, `campy-live` and `campy-live-view` on Linux (AMD/ROCm) and Windows (NVIDIA/CUDA), and opening the results in LUC3D (`campy-live-export`) |
 | [Models](models.md) | Training lightweight sleap-nn models for live use, choosing one that keeps up, finding the frames a model gets wrong on a rig (`campy-live-flag`), and labelling them in LUC3D for the next model (`campy-label-pack`, `campy-label-merge`) |
 | [Offline inference](offline-inference.md) | Running SLEAP on recorded videos 6–15× faster than `sleap-nn track`: where its time goes, what helps on cluster GPUs and benchtop PCs, and the accuracy |
+| [Recording folders](recordings.md) | What a recording folder holds, `session.json` (how the recording was made), the experiment's details and notes, and the warnings for defaults that changed |
 | [Calibration and troubleshooting](calibration-and-troubleshooting.md) | Camera placement, exposure and calibration, and fixes for the problems seen so far |
 
 ## Keeping these pages current

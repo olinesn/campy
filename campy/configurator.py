@@ -59,7 +59,7 @@ def ResolveParams(clargs):
 	# check, or a ConfigError listing every problem found
 	params = CombineConfigAndClargs(clargs)
 	problems = []
-	for check in (ValidateCameraLists, ValidateColorRange, ValidateGamma):
+	for check in (ValidateCameraLists, ValidateColorRange, ValidateGamma, ValidateExperiment):
 		try:
 			check(params)
 		except ValueError as e:
@@ -96,7 +96,7 @@ def ConfigureCamParams(systems, params, n_cam):
 
 
 # Lists that are not one value per camera
-NON_CAMERA_LISTS = ("digitalPins", "ratcamPorts")
+NON_CAMERA_LISTS = ("digitalPins", "ratcamPorts", "animalIds")
 # Lists that need a value for every camera: one name or index cannot be shared
 EVERY_CAMERA_LISTS = ("cameraNames", "cameraSelection")
 
@@ -350,6 +350,14 @@ def SettingError(setting, item):
 			return GammaSetting(item), None
 		except ValueError as e:
 			return item, str(e)
+	if setting.kind is configschema.ID:
+		if isinstance(item, bool) or not isinstance(item, (str, int, float)):
+			return item, "{!r} is not an ID (text or a number)".format(item)
+		return str(item), None
+	if setting.kind is configschema.MAPPING:
+		if not isinstance(item, dict):
+			return item, "{!r} is not a mapping, e.g. {{cage: B3, condition: saline}}".format(item)
+		return item, None
 	if setting.kind is configschema.TEXT:
 		if setting.name == "preflight" and item is False:
 			return item, None # preflight: off, unquoted: YAML's False, which preflight reads as off
@@ -423,7 +431,29 @@ def ReadCheckedConfig(config_path):
 	return values
 
 
+# Where each key's value came from, for the last config read (Sources)
+FROM_DEFAULT, FROM_FILE, FROM_COMMAND_LINE = "default", "file", "command line"
+_sources = {}
+_configPath = None
+
+
+def Sources():
+	"""
+	{key: "default", "file" or "command line"}: where each of the last
+	config's values came from (CombineConfigAndClargs), for session.json. A
+	disableGamma read as cameraGamma counts as cameraGamma's; cameraNames and
+	cameraSelection made from numCams are defaults.
+	"""
+	return dict(_sources)
+
+
+def ConfigPath():
+	# The last config file read, as given
+	return _configPath
+
+
 def CombineConfigAndClargs(clargs):
+	global _sources, _configPath
 	values, lines = ReadConfig(clargs.config)
 	values, problems = CheckValues(values,
 		lambda key: "{}:{}".format(clargs.config, lines[key]) if key in lines else clargs.config)
@@ -437,10 +467,15 @@ def CombineConfigAndClargs(clargs):
 	if "cameraGamma" in overrides:
 		values.pop("disableGamma", None) # the command line's gamma wins
 	params = RENAMED["disableGamma"](values, "The config")
-	params.update(RENAMED["disableGamma"](overrides, "The command line"))
+	from_file = set(params)
+	overrides = RENAMED["disableGamma"](overrides, "The command line")
+	params.update(overrides)
 	for key, value in DefaultParams().items():
 		params.setdefault(key, value)
 	params = FillCameraLists(params)
+	_sources = {key: FROM_COMMAND_LINE if key in overrides else FROM_FILE if key in from_file else FROM_DEFAULT
+		for key in params}
+	_configPath = clargs.config
 	return params
 
 
@@ -488,6 +523,26 @@ def GammaValue(text):
 		raise ArgumentTypeError(str(e))
 
 
+def YamlValue(text):
+	# A value as YAML reads it, of any kind: CheckValues checks it
+	try:
+		return yaml.safe_load(text)
+	except yaml.YAMLError as e:
+		raise ArgumentTypeError("{!r} is not a value campy can read ({})".format(text, getattr(e, "problem", e)))
+
+
+def ValidateExperiment(params):
+	# animalIds as session.json keeps it, a list of text (one ID alone is a
+	# list of one), and defaultsVersion a version
+	ids = params.get("animalIds", [])
+	params["animalIds"] = [str(i) for i in (ids if isinstance(ids, list) else [ids])]
+	from campy import defaults
+	version = str(params.get("defaultsVersion", "None"))
+	if version != "None" and defaults.VersionKey(version) is None:
+		raise ValueError('defaultsVersion is a campy version, e.g. "2.1.0", not {!r}.'.format(version))
+	params["defaultsVersion"] = version
+
+
 def TextValue(text):
 	# Paths, and words YAML would change (preflight's off is not False), are taken
 	# as typed, so C:\ffmpeg\bin\ffmpeg.exe keeps its backslashes. One pair of
@@ -505,6 +560,8 @@ def OptionType(setting):
 		return TextValue
 	if setting.kind is configschema.GAMMA:
 		return GammaValue
+	if setting.kind in (configschema.ID, configschema.MAPPING):
+		return YamlValue # checked as the config's values are (CheckValues)
 	return ConfigValue(setting.kind, setting.words, lists=setting.per_camera != configschema.ONE)
 
 
