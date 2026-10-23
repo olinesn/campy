@@ -72,11 +72,15 @@ writes only the rest (videos, skeleton, tracks, identities, calibration).
 sleap-io's own writer builds a Python object per detection and a tuple per
 point first, which took 5.6 min and 20.7 GB of memory for an hour of 3
 cameras at 60 fps with 5 animals (214,920 sets), and the files are the same
-value for value. Now that hour takes 13 s and 0.3 GB at most (the Mac,
-M-series). What it keeps grows with the recording only by where each frame
-and detection goes, ~45 MB an hour, so a day takes ~5 min and ~1.4 GB. The
-files take ~3 GB an hour: campy-live.slp 1.5 GB, each camera's 0.4 GB,
-points3d.h5 0.3 GB.
+value for value. Now that hour takes 9 s and 0.2 GB (the EVO-X2, Linux; 13 s
+and 0.3 GB on an M-series Mac), and a day (5,158,080 sets, a 17.8 GB log)
+3.2 min and 0.95 GB, the same with the log read cold from disk. What it
+keeps grows with the recording only by where each frame and detection goes.
+The process's resident size counts the log's pages too (18.9 GB for the
+day), but those are the file's, which the system drops and reads again when
+memory is short: capped at 3 GB, the day took 4.6 min. The files take ~3 GB
+an hour: for the day, campy-live.slp 37 GB, each camera's 9.5 GB,
+points3d.h5 7.5 GB (73 GB).
 
 Opening them is LUC3D's part. File > Load SLP reads the whole file in the
 browser: 10 minutes (257 MB) opened, an hour (1.5 GB) ran the tab out of
