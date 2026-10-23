@@ -31,14 +31,14 @@ def test_say_writes_the_text_and_its_newline_together(monkeypatch):
 	assert out.writes == ["Camera0 collected 100 frames.\n", "no such device\n"]
 
 
-def test_ready_to_trigger_is_one_write(monkeypatch):
+def test_ready_to_trigger_is_one_write(monkeypatch, tmp_path):
 	# Name and text used to be written separately, so two cameras made
 	# "Camera0Camera1 ready to trigger." and " ready to trigger.": no line had Camera0's
 	out = Stdout()
 	monkeypatch.setattr(sys, "stdout", out)
 	unicam.SetReadyQueue(None)
 	cam = types.SimpleNamespace(StartGrabbing=lambda camera: True)
-	assert unicam.StartGrabbing(object(), {"n_cam": 0, "cameraName": "Camera0"}, cam)
+	assert unicam.StartGrabbing(object(), {"n_cam": 0, "cameraName": "Camera0", "videoFolder": str(tmp_path)}, cam)
 	assert out.writes == ["Camera0 ready to trigger.\n"]
 
 
