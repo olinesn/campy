@@ -61,7 +61,8 @@ Each run records into a new folder inside the config's `videoFolder`, named by t
 | [Closed-loop outputs](docs/closed-loop.md) | `campy-rules`: TTL outputs on an Arduino from the live poses, with the wiring, the rules file, safety and latency |
 | [Models](docs/models.md), [Offline inference](docs/offline-inference.md) | Small models that keep up live; running SLEAP faster on recorded videos |
 | [Hardware](docs/hardware.md) | What to buy, with the measurements behind it |
-| [Calibration and troubleshooting](docs/calibration-and-troubleshooting.md) | Camera placement, calibration, and fixes for the problems seen so far |
+| [Calibration](docs/calibration.md) | Camera placement, exposure and calibration |
+| [Troubleshooting](docs/troubleshooting.md) | Problems seen so far, by the message or symptom, with what to do |
 | [Development](docs/development.md) | Tests, timing tests on a shared machine, branches and releases |
 
 ## This fork

@@ -155,4 +155,4 @@ The quickstart model was trained on about 1,000 frames of three mice from severa
 - **Every set "misaligned"**: the cameras' frames came at different moments. With emulated cameras this means a very busy computer; close other programs.
 - **`campy-live-export` says "the log's frames are not this recording's"**: the log is from another recording. Use the `.npy` that campy-live wrote during this one.
 
-[Troubleshooting](calibration-and-troubleshooting.md#troubleshooting) covers more.
+[Troubleshooting](troubleshooting.md) covers more.
