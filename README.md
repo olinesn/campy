@@ -1,6 +1,8 @@
 # campy
 - Python package for acquiring synchronized video from multiple cameras with real-time compression
 
+**New to campy?** [The quickstart](docs/quickstart.md) gets you from nothing installed to a recording of five mice, tracked in 3D while it recorded and open in LUC3D, in about 15 minutes, with no camera. [docs/](docs/README.md) has the other guides.
+
 ## Hardware/Software Recommendations
 - Basler and/or FLIR machine vision camera(s)
 - Windows, IOS, or Linux system
