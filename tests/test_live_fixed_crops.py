@@ -88,6 +88,42 @@ def SetCounts(model, counts):
 	blobs.copy_(new.to(blobs.device))
 
 
+def PaddedCrops(image, centroids, found, ch, cw):
+	# FixedCrops.Crops as it was (sleap-nn's crop_bboxes' way): the frames
+	# padded with 0, then indexed by frame, row and column
+	F = torch.nn.functional
+	B, K = found.shape
+	c = torch.where(found[..., None], centroids, torch.zeros_like(centroids)).reshape(B * K, 2)
+	topleft = torch.stack([c[:, 0] - cw / 2, c[:, 1] - ch / 2], dim=-1) + 0.5
+	corner = torch.stack([(topleft[:, 0] + cw // 2).to(torch.long) - cw // 2,
+		(topleft[:, 1] + ch // 2).to(torch.long) - ch // 2], dim=-1)
+	padded = F.pad(image, (cw, cw, ch, ch), mode="constant", value=0)
+	ax = (corner[:, 0:1, None] + torch.arange(cw)[None, None, :] + cw).clamp(0, padded.shape[-1] - 1)
+	ay = (corner[:, 1:2, None] + torch.arange(ch)[None, :, None] + ch).clamp(0, padded.shape[-2] - 1)
+	sample = torch.arange(B).repeat_interleave(K)[:, None, None]
+	return padded[sample, :, ay, ax].permute(0, 3, 1, 2).contiguous(), topleft
+
+
+@pytest.mark.parametrize("channels", [1, 3])
+def test_crops_are_the_padded_frames(channels):
+	# FixedCrops.Crops reads the frames with one gather, 0 outside them: the
+	# same pixels as padding them first, for crops inside, across and past
+	# the frames' edges, and for slots with no animal
+	import types
+	g = torch.Generator().manual_seed(3)
+	B, K, H, W, ch, cw = 3, 5, 96, 128, 40, 48
+	fc = types.SimpleNamespace(torch=torch, cropH=ch, cropW=cw)
+	for i in range(50):
+		image = torch.randint(0, 256, (B, H, W, channels), dtype=torch.uint8, generator=g).permute(0, 3, 1, 2)
+		xy = torch.rand(B, K, 2, generator=g) * torch.tensor([W, H]) * 1.8 - torch.tensor([W, H]) * 0.4
+		found = torch.rand(B, K, generator=g) > 0.25
+		xy = torch.where(found[..., None], xy, torch.full_like(xy, float("nan")))
+		got, topleft = live.FixedCrops.Crops(fc, image, xy, found)
+		want, want_topleft = PaddedCrops(image, xy, found, ch, cw)
+		assert got.shape == (B * K, channels, ch, cw)
+		assert torch.equal(got, want) and torch.equal(topleft, want_topleft)
+
+
 def test_reference_crops_at_crop_size():
 	# The reference is campy-live's own layer, whose crops live.ExactCropSize
 	# cuts at the crop size; sleap-nn's crop_bboxes alone, for this centroid,
