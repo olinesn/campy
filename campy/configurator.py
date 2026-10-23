@@ -370,7 +370,7 @@ def ValidateCameraLists(params, sources=None, notes=None):
 			# A list from the file a config extends, and numCams from the config
 			# itself: say so, since the rig's list was written for its own cameras
 			numcams_file = sources["numCams"].path
-			elsewhere = sorted(set(sources[key].Where().split(":")[0] for key in longer
+			elsewhere = sorted(set(Shown(sources[key].path) for key in longer
 				if key in sources and sources[key].kind == Source.FILE and sources[key].path != numcams_file))
 			if elsewhere:
 				note += " {} from {}, numCams {} from {}: campy-config show --cameras lists each camera's " \
