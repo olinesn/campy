@@ -447,7 +447,10 @@ class Part:
 	"""
 	One program of the session: its command, log file and process, and how
 	it ended. tied: dies with campy-session (children.Child); apart: started
-	apart from this console's Ctrl-C (its own process group).
+	apart from this console's Ctrl-C (its own process group); "console":
+	apart from this console altogether (Windows: a hidden console of its
+	own; Linux: a session of its own), so that closing campy-session's window
+	or terminal does not end it either (the panel's recordings).
 	"""
 
 	def __init__(self, name, command, log, env=None, cwd=None, tied=False, apart=False):
@@ -469,8 +472,10 @@ class Part:
 				if self.apart:
 					if sys.platform == "win32":
 						kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP # no Ctrl-C from the console
+						if self.apart == "console":
+							kwargs["creationflags"] |= subprocess.CREATE_NO_WINDOW # a console of its own, hidden
 					else:
-						kwargs["start_new_session"] = True
+						kwargs["start_new_session"] = True # nor the terminal's hang-up when it closes
 				self.process = subprocess.Popen(self.command, **kwargs)
 		finally:
 			out.close() # the child has its own handle
@@ -530,10 +535,13 @@ ACQUIRE = "import sys; sys.argv = ['campy-acquire'] + sys.argv[1:]; from campy.c
 class Session:
 	"""One run of campy-session: run() starts the programs, waits, ends them, and returns campy-acquire's exit code."""
 
-	def __init__(self, config, live_python=None, lock=True):
+	def __init__(self, config, live_python=None, lock=True, detached=False):
 		self.config = config
 		self.live_python = live_python
 		self.take_lock = lock # False: the panel holds campy-session's lock (campy/panel.py)
+		# True (the panel): campy-acquire and campy-live apart from this console altogether, so that closing the
+		# panel's window never ends a recording; its Stop, and Ctrl-C here, reach campy-acquire through its stop file
+		self.detached = detached
 		self.view_wanted = False # the panel's "Open the viewer again", for the main thread (Watch)
 		self.folder = None
 		self.state = "checking"
@@ -660,7 +668,7 @@ class Session:
 		env.pop(newfiles.SESSION_ENV, None)
 		acquire = Part("acquire", [Python(), "-c", ACQUIRE, self.acquireConfig, "--sessionPath", self.folder,
 			"--stopFile", self.stopFile] + config.args, os.path.join(self.logs, "campy-acquire.log"), env=env,
-			cwd=os.getcwd())
+			cwd=os.getcwd(), apart="console" if self.detached else False)
 		self.parts["acquire"] = acquire.Start()
 		self.state = "recording"
 		self.Status()
@@ -722,7 +730,7 @@ class Session:
 	def StartLive(self, part, wait=False):
 		live = Part("live" if part == 1 else "live.part{}".format(part), self.LiveCommand(part),
 			os.path.join(self.logs, "campy-live.log" if part == 1 else "campy-live.part{}.log".format(part)),
-			env=self.LiveEnv(), cwd=self.folder, apart=True)
+			env=self.LiveEnv(), cwd=self.folder, apart="console" if self.detached else True)
 		for path in (self.liveReady, self.liveStop):
 			if os.path.exists(path):
 				os.remove(path)
@@ -911,12 +919,14 @@ def RunMain(argv):
 def Main(argv=None):
 	argv = sys.argv[1:] if argv is None else list(argv)
 	from campy import post
-	from campy import panel
-	commands = {"run": RunMain, "register-live": Register, "post": post.Main, "panel": panel.Main}
+	from campy import panel, shortcut
+	commands = {"run": RunMain, "register-live": Register, "post": post.Main, "panel": panel.Main,
+		"shortcut": shortcut.Main}
 	if not argv or argv[0] not in commands:
 		print("usage: campy-session run <config>.yaml [--key value ...]\n"
 			"       campy-session post <recording folder> [--only remux,export] [--force]\n"
 			"       campy-session panel <config>.yaml [--port 8765] [--no-browser]\n"
+			"       campy-session shortcut <config>.yaml [--name ...]   (a desktop shortcut that opens the panel)\n"
 			"       campy-session register-live   (once, in campy-live's environment)", file=sys.stderr)
 		sys.exit(2)
 	sys.exit(commands[argv[0]](argv[1:]))
