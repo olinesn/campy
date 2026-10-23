@@ -128,6 +128,13 @@ def test_a_recording_that_goes_well(tmp_path, service):
 	assert hc[0] == "/0c5e9a8e-1234-4abc-9def-0123456789ab" and hc[-1].endswith("/pause")
 	log = (Session(tmp_path) / "alerts.log").read_text()
 	assert "sent to Slack U1" in log and "xoxb" not in log
+	assert [json.loads(line)["event"] for line in log.splitlines() if json.loads(line)["status"] == "queued"] == \
+		["note", "note"]
+	# The state for a panel, as it ended
+	status = json.load(open(os.path.join(os.environ["CAMPY_STATUS_DIR"], "recording.json")))
+	assert status["state"] == "ended" and status["session"]["folder"] == str(Session(tmp_path))
+	assert [(c["name"], c["frames"], c["dropped"], c["state"]) for c in status["cameras"]] == [
+		("Camera0", 90, 0, "ended"), ("Camera1", 90, 0, "ended")]
 
 
 def test_ffmpeg_killed(tmp_path, service):

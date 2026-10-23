@@ -83,6 +83,10 @@ A disk that fills stops every camera's ffmpeg at the same moment, and leaves no 
 
 Apart from that stop, the watch only reads. It never restarts a camera, ffmpeg or the trigger, never deletes anything and never changes a setting mid-recording: a camera unplugged mid-recording needs a replug and a new recording, and a restarted trigger could resume on the wrong device. An error inside one of its checks is said once, and the other checks go on.
 
+### The recording's state now: `recording.json`
+
+Every 4 seconds, and as it ends, the watch also writes the recording's state to `~/.campy/status/recording.json` (`%USERPROFILE%\.campy\status\recording.json` on Windows), for a control panel to show: the state (`recording`, `stopping`, `ended`, `failed`), the session folder, its start, how long it has run and is planned to; for each camera its frame rate (set and measured), frames, dropped frames, seconds of frames waiting for ffmpeg, USB link speed (Linux) and state; each disk's free space and when it would be full at the present rate; the problems open now; and the last critical one. Only campy-acquire writes it, and whole each time. `python -m pydoc campy.watch` lists the fields.
+
 ### Settings
 
 | Setting | Default | |

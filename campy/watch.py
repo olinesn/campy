@@ -42,11 +42,32 @@ and says when the recording started and how it ended. With a healthchecks.io
 check in the alerts file, it pings it every minute and pauses it at the end
 (notify.Notifier.Heartbeat).
 
+What it finds goes into the recording's alerts.log (one JSON object a line:
+notify.Notifier.Log), whether or not the alerts file names a channel. And
+every STATUS_EVERY_S, and as the recording ends, it writes the recording's
+state now to ~/.campy/status/recording.json (Windows:
+%USERPROFILE%\\.campy\\status\\recording.json; CAMPY_STATUS_DIR names
+another folder), for a control panel to show (campy-session's):
+
+  schema       1
+  updated_at   ISO time, with its UTC offset
+  host_model   the alerts file's rig:, or null
+  campy_version
+  state        recording, stopping, ended or failed
+  session      {folder, started_at, elapsed_s, planned_s}
+  cameras      [{name, serial, make, fps_target, fps_measured, frames,
+               dropped, write_queue_s, usb_speed (Mb/s, Linux), state}]
+  disk         [{path, free_gb, projected_full_at (ISO, or null)}]
+  open         [{key, severity, text}]: the problems open now
+  last_error   {time, text} of the last critical problem, or null
+
+written whole each time (a .tmp file, then replaced), by campy-acquire only.
+
 Nothing here acts on the recording but the stop at stopAtFreeGB: the watch
 only reads. An error in a check is said, and the others go on.
 """
 
-import collections, os, shutil, sys, threading, time
+import collections, datetime, json, os, shutil, sys, threading, time
 
 from campy import notify, status as camstatus
 from campy.utils.utils import Say, ErrorText
@@ -68,10 +89,18 @@ EXTERNAL_WAIT_S = 600.0 # an external trigger (startArduino False): waiting this
 TOGETHER_S = 1.0 # cameras whose last frames are this close stopped together: the trigger
 SENT_WINDOW_S = 10.0
 DiskUsage = shutil.disk_usage # (tests replace it: a disk that fills)
+STATUS_EVERY_S = 4.0 # recording.json, written this often
+STATUS_SCHEMA = 1
+STATUS_ENV = "CAMPY_STATUS_DIR" # where recording.json goes, instead of ~/.campy/status
 
 
 def DiskText(n):
 	return "{:.{p}f} GB".format(n / 1e9, p=2 if n < 10e9 else 1)
+
+
+STATE_NAMES = {camstatus.WAITING: "waiting", camstatus.GRABBING: "grabbing", camstatus.ENDED: "ended",
+	camstatus.NOT_STARTED: "not started", camstatus.LOST: "lost", camstatus.VIDEO_FAILED: "video failed",
+	camstatus.CAMERA_FAILED: "camera failed"}
 
 
 class Problem:
@@ -107,7 +136,7 @@ class Watch:
 			else:
 				notifier = notify.Notifier(channels=[], say=say)
 		self.notifier = notifier
-		if self.notifier.on and folder:
+		if folder:
 			self.notifier.SetLog(os.path.join(folder, "alerts.log"))
 		self.cams = cams
 		self.frameRate = float(params["frameRate"])
@@ -123,7 +152,11 @@ class Watch:
 		self.disks = collections.defaultdict(collections.deque) # folder: (t, free)
 		self.at = collections.defaultdict(lambda: None) # what ran when: "disk", "serial", "usb"
 		self.started = None
+		self.startedAt = None # wall time, for recording.json
 		self.stopped = None # why the watch stopped the recording, if it did
+		self.diskState = {} # folder: {path, free_gb, projected_full_at}, for recording.json
+		self.usbSpeed = {} # camera: its link's Mb/s, as last read
+		self.lastError = None
 		self.errors = set()
 		self.done = threading.Event()
 		self.thread = None
@@ -132,7 +165,9 @@ class Watch:
 
 	def Start(self):
 		self.started = self.clock()
+		self.startedAt = Wall()
 		self.Begun()
+		self.WriteStatus("recording")
 		self.thread = threading.Thread(target=self.Run, name="campy watch", daemon=True)
 		self.thread.start()
 		return self
@@ -150,6 +185,7 @@ class Watch:
 			self.Ended(failures or {})
 		except Exception as e:
 			self.say("Watch: could not say how the recording ended: {}".format(ErrorText(e)))
+		self.WriteStatus("failed" if failures or self.stopped else "ended")
 		self.notifier.Pause()
 		self.notifier.Flush(timeout)
 
@@ -157,7 +193,9 @@ class Watch:
 		"""Every check, once (the thread calls it every EVERY_S)."""
 		now = self.clock() if now is None else now
 		for name, check, every in (("cameras", self.CheckCameras, 0), ("disk", self.CheckDisk, DISK_EVERY_S),
-				("serial", self.CheckSerial, SERIAL_EVERY_S), ("usb", self.CheckUsb, USB_EVERY_S)):
+				("serial", self.CheckSerial, SERIAL_EVERY_S), ("usb", self.CheckUsb, USB_EVERY_S),
+				("status", lambda now: self.WriteStatus("stopping" if self.stopping() else "recording"),
+				STATUS_EVERY_S)):
 			if every and self.at[name] is not None and now - self.at[name] < every:
 				continue
 			self.at[name] = now
@@ -175,6 +213,8 @@ class Watch:
 
 	def Raise(self, key, severity, text, hold=0.0, remind=True):
 		problem = self.problems.get(key)
+		if severity == notify.CRITICAL:
+			self.lastError = {"time": Wall(), "text": text}
 		if problem is None:
 			self.problems[key] = Problem(severity, text, hold, remind)
 			self.say("Alert: {}".format(text))
@@ -398,6 +438,11 @@ class Watch:
 				self.Clear(key + "/low", "{} free on {}".format(DiskText(free), where), now)
 			t0, f0 = history[0]
 			rate = (f0 - free) / (now - t0) if now - t0 >= DISK_RATE_MIN_S else None
+			full = None
+			if rate is not None and rate > 0:
+				full = (datetime.datetime.now().astimezone() + datetime.timedelta(seconds=free / rate)).isoformat(
+					timespec="seconds")
+			self.diskState[folder] = {"path": folder, "free_gb": round(free / 1e9, 2), "projected_full_at": full}
 			if rate is None or not left:
 				continue
 			toStop = (free - self.stopAt) / rate if rate > 0 else float("inf")
@@ -445,12 +490,53 @@ class Watch:
 			if device is None:
 				continue # not on the bus: unplugged, which the camera says itself
 			key = "{}/usb".format(cam["cameraName"])
+			self.usbSpeed[cam["cameraName"]] = device["speed"]
 			if device["speed"] < 5000:
 				self.Raise(key, notify.CRITICAL, "{} is now on a USB 2 link ({:g} Mb/s), not USB 3: it can't carry its "
 					"frames, so expect lost frames. Check its cable and port.".format(cam["cameraName"],
 					device["speed"]))
 			else:
 				self.Clear(key, "{} is back on USB 3 ({:g} Mb/s)".format(cam["cameraName"], device["speed"]), now)
+
+	# ------------------------------------------------------------------ recording.json
+
+	def Status(self, state):
+		now = self.clock()
+		cameras = []
+		cams = {cam.get("cameraName"): cam for cam in self.cams or []}
+		for c, name in enumerate(self.names):
+			row = self.counters.Row(c)
+			history = self.history.get(c)
+			fps = None
+			if history and len(history) >= 2:
+				then = self.Since(c, 5.0, now)
+				if then is not None and history[-1][0] > then[0]:
+					fps = round((history[-1][1] - then[1]) / (history[-1][0] - then[0]), 2)
+			cam = cams.get(name, {})
+			cameras.append({"name": name, "serial": cam.get("cameraSerialNo"), "make": cam.get("cameraMake"),
+				"fps_target": self.frameRate, "fps_measured": fps, "frames": row["grabbed"], "dropped": row["dropped"],
+				"write_queue_s": round(row["queued"] / self.frameRate, 2), "usb_speed": self.usbSpeed.get(name),
+				"state": STATE_NAMES.get(row["state"], str(row["state"]))})
+		return {"schema": STATUS_SCHEMA, "updated_at": Wall(), "host_model": self.notifier.source or None,
+			"campy_version": CampyVersion(), "state": state,
+			"session": {"folder": self.folder, "started_at": self.startedAt,
+				"elapsed_s": round(now - self.started, 1) if self.started is not None else None,
+				"planned_s": self.recTime},
+			"cameras": cameras, "disk": list(self.diskState.values()),
+			"open": [{"key": k, "severity": p.severity, "text": p.text} for k, p in self.problems.items()],
+			"last_error": self.lastError}
+
+	def WriteStatus(self, state):
+		try:
+			path = StatusPath()
+			os.makedirs(os.path.dirname(path), exist_ok=True)
+			with open(path + ".tmp", "w", encoding="utf-8") as f:
+				json.dump(self.Status(state), f, indent=1)
+			os.replace(path + ".tmp", path)
+		except Exception as e:
+			if "status" not in self.errors:
+				self.errors.add("status")
+				self.say("Watch: could not write {}: {}".format(StatusPath(), ErrorText(e)))
 
 	# ------------------------------------------------------------------ start and end
 
@@ -498,6 +584,24 @@ class Watch:
 		else:
 			head, severity = "Recording {} ended after {}:".format(self.Session(), took), notify.INFO
 		self.notifier.Note("\n".join([head] + lines), severity)
+
+
+def Wall():
+	# Now, as ISO time with its UTC offset
+	return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def StatusPath():
+	folder = os.environ.get(STATUS_ENV) or os.path.join(os.path.expanduser("~"), ".campy", "status")
+	return os.path.join(folder, "recording.json")
+
+
+def CampyVersion():
+	try:
+		from importlib import metadata
+		return metadata.version("campy")
+	except Exception:
+		return None
 
 
 def PortGone(port):
