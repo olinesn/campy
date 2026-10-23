@@ -42,13 +42,16 @@ Both paths:
                            centroid whose top is two equal pixels (fp16 drops
                            them otherwise; talmolab/sleap-nn#782)
   --memory-format nchw|channels_last
-  --decoder sleapio|opencv|pyav|nvdec  --decode-threads N  --decode-workers N
+  --decoder sleapio|opencv|pyav|ffmpeg|nvdec  --decode-threads N  --decode-workers N
            sleapio: sleap-nn's own VideoProvider (sleap-io, OpenCV, one
            thread, frame by frame, RGB then channel 0); opencv: one
            cv2.VideoCapture read in order; pyav: PyAV, the luma plane
            (gray) only, ffmpeg's own threads (--decode-threads); nvdec: the
            GPU's video decoder (PyNvVideoCodec), luma plane, frames stay on
-           the GPU. --decode-workers splits the video into that many
+           the GPU; ffmpeg: an ffmpeg process (--ffmpeg) piping gray frames,
+           --hwaccel vaapi|cuda|qsv|d3d11va for a GPU's decoder (qsv: Intel
+           Quick Sync's own decoder, e.g. hevc_qsv; d3d11va: --hwaccel-device
+           picks the adapter). --decode-workers splits the video into that many
            contiguous parts, each decoded by its own reader (process).
   --write-slp PATH         also build the Labels and save the .slp (timed)
   --stage-timing           synchronize the GPU around every stage and time
@@ -98,6 +101,18 @@ def VideoRate(path):
 	return rate
 
 
+def QsvDecoder(path):
+	# ffmpeg's Quick Sync decoder for the video's codec, from its fourcc
+	import cv2
+	cap = cv2.VideoCapture(path)
+	tag = int(cap.get(cv2.CAP_PROP_FOURCC)).to_bytes(4, "little").decode("ascii", "replace").lower()
+	cap.release()
+	codecs = {"hvc1": "hevc", "hev1": "hevc", "hevc": "hevc", "avc1": "h264", "h264": "h264", "av01": "av1", "vp09": "vp9"}
+	if tag not in codecs:
+		raise SystemExit("--hwaccel qsv: no Quick Sync decoder known for fourcc {!r}; try --hwaccel d3d11va".format(tag))
+	return codecs[tag] + "_qsv"
+
+
 def DecodeRange(args, start, stop):
 	"""
 	Frames start..stop-1 of the video, one at a time, as (H, W) uint8 numpy
@@ -143,17 +158,32 @@ def DecodeRange(args, start, stop):
 			i += 1
 		container.close()
 	elif args.decoder == "ffmpeg":
-		# an ffmpeg process (--ffmpeg, its own threads; --hwaccel vaapi or
-		# cuda: the GPU's video decoder) writing gray frames to a pipe
+		# an ffmpeg process (--ffmpeg, its own threads; --hwaccel vaapi, cuda,
+		# qsv or d3d11va: a GPU's video decoder) writing gray frames to a pipe
 		_, H, W = VideoInfo(args.video)
 		cmd = [args.ffmpeg, "-v", "error", "-nostdin"]
-		if args.hwaccel != "none":
+		vf = []
+		if args.hwaccel == "qsv":
+			# Intel Quick Sync's own decoder (hevc_qsv, ...), which hands
+			# frames back in system memory. Not -hwaccel qsv: since ffmpeg 8
+			# that leaves the frames in GPU memory, which -pix_fmt gray can't
+			# convert (error -22), and copying them out after is 2-3x slower
+			cmd += ["-c:v", QsvDecoder(args.video)]
+		elif args.hwaccel == "d3d11va":
+			# Windows' own decoder API on adapter --hwaccel-device (0: the
+			# first, an Intel iGPU's when the display is on it); frames copied
+			# out with hwdownload, nearly twice as fast as ffmpeg's own copy
+			cmd += ["-hwaccel", "d3d11va", "-hwaccel_output_format", "d3d11"]
+			if args.hwaccel_device:
+				cmd += ["-hwaccel_device", args.hwaccel_device]
+			vf = ["-vf", "hwdownload,format=nv12"]
+		elif args.hwaccel != "none":
 			cmd += ["-hwaccel", args.hwaccel]
 			if args.hwaccel == "vaapi":
 				cmd += ["-hwaccel_device", args.vaapi_device]
 		if start:
 			cmd += ["-ss", "{:.6f}".format(start / VideoRate(args.video))]
-		cmd += ["-i", args.video, "-frames:v", str(stop - start), "-f", "rawvideo", "-pix_fmt", "gray", "-"]
+		cmd += ["-i", args.video, "-frames:v", str(stop - start)] + vf + ["-f", "rawvideo", "-pix_fmt", "gray", "-"]
 		proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=H * W * 8)
 		try:
 			for _ in range(start, stop):
@@ -816,6 +846,7 @@ def Main(argv=None):
 	r.add_argument("--ffmpeg", default="ffmpeg", help="--decoder ffmpeg: the ffmpeg to run")
 	r.add_argument("--hwaccel", choices=("none", "vaapi", "cuda", "qsv", "d3d11va"), default="none")
 	r.add_argument("--vaapi-device", default="/dev/dri/renderD128")
+	r.add_argument("--hwaccel-device", default="", help="--hwaccel d3d11va: the adapter (0, 1, ...; default ffmpeg's)")
 	r.add_argument("--decode-threads", type=int, default=0, help="pyav: ffmpeg's threads (0: auto)")
 	r.add_argument("--decode-workers", type=int, default=1)
 	r.add_argument("--queue", type=int, default=4)
