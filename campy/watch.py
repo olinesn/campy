@@ -121,7 +121,8 @@ class Watch:
 	"""
 
 	def __init__(self, params, systems, cameras, counters, folder=None, notifier=None, cams=None,
-			clock=time.monotonic, disk_usage=None, sysfs_root="/sys", say=Say, stopping=None, request_stop=None):
+			clock=time.monotonic, disk_usage=None, sysfs_root="/sys", say=Say, stopping=None, request_stop=None,
+			port_gone=None):
 		self.params, self.systems, self.cameras = params, systems, cameras
 		self.names = list(cameras.names)
 		self.counters = camstatus.Reader(counters, len(self.names))
@@ -130,6 +131,7 @@ class Watch:
 		self.disk_usage = disk_usage or (lambda path: DiskUsage(path))
 		self.stopping = stopping or (lambda: False)
 		self.request_stop = request_stop # stops the recording as Ctrl-C does (campy.Main's StopRequested)
+		self.port_gone = port_gone or PortGone # (tests: a port that is there)
 		if notifier is None:
 			if params.get("alerts", True):
 				notifier = notify.Notifier(say=say)
@@ -468,7 +470,7 @@ class Watch:
 		except Exception as e:
 			why = ErrorText(e)
 		if why is None:
-			why = PortGone(port)
+			why = self.port_gone(port)
 		if why:
 			self.Raise("trigger/serial", notify.CRITICAL, "The trigger Arduino on {} is gone ({}): it sends no more "
 				"trigger pulses, so the cameras get no frames. Replug it; campy does not restart the trigger "

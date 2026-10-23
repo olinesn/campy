@@ -11,7 +11,10 @@ campy-acquire, with emulated cameras and injected faults.
 import ctypes
 import json
 import os
+import sys
 import types
+
+import pytest
 
 
 from campy import configurator, notify, status, watch
@@ -76,7 +79,8 @@ class Rig:
 		self.watch = watch.Watch(self.params, systems if systems is not None else {"serial": Serial()}, self.cameras,
 			self.counters, folder=str(tmp_path / "2026-10-23_01-00-00"), notifier=self.notifier, cams=cams,
 			clock=self.clock, disk_usage=self.disk, sysfs_root=sysfs_root or str(tmp_path / "nosys"),
-			say=self.said.append, stopping=lambda: self.stopping, request_stop=self.stops.append)
+			say=self.said.append, stopping=lambda: self.stopping, request_stop=self.stops.append,
+			port_gone=lambda port: None)
 		self.grabbed = [0] * len(names)
 		self.dropped = [0] * len(names)
 		for row in self.rows:
@@ -316,9 +320,10 @@ def test_the_trigger_port_is_gone(monkeypatch, tmp_path):
 		"restart the trigger mid-recording.")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="device files: Linux and macOS")
 def test_port_gone():
 	assert watch.PortGone("/dev/ttyACM-no-such-port") == "/dev/ttyACM-no-such-port is gone"
-	assert watch.PortGone(os.devnull) is None or os.name == "nt"
+	assert watch.PortGone(os.devnull) is None
 
 
 def test_a_camera_drops_to_usb_2(monkeypatch, tmp_path):
