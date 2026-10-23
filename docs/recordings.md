@@ -28,7 +28,7 @@ campy writes it three times during a recording. Each write adds sections and nev
 
 1. **At the start**, before the cameras open:
    - `campy`: the version, the git commit and branch, and `dirty` (true when the checkout's files differ from that commit).
-   - `host`: the computer's name, operating system, CPU, Python and its environment, each GPU with its driver version, ffmpeg's path and version, the camera SDK version (Spinnaker, pylon) and the versions of the Python packages campy uses.
+   - `host`: the computer's name, operating system, CPU, Python and its environment, each GPU with its driver version (on Linux, where amdgpu and i915 are part of the kernel, the kernel's version, plus the GPU's firmware and ROCm's version where ROCm is installed), ffmpeg's path and version, the camera SDK version (Spinnaker, pylon) and the versions of the Python packages campy uses.
    - `config`: the config file's path, its SHA-256 and its full text, and the command line. It also has `effective`: every setting's value, with where it came from (`"default"`, `"file"` or `"command line"`). A default that has changed since an earlier version also says when and what it was (`"defaultChanged": {"in": "2.1.0", "was": "Off", "now": 0.6}`). Last, the startup warnings (below).
    - `experiment`: the experiment's name, the animal IDs, the notes and any other fields (below).
    - `cameras`: each camera's name, make, serial number, folder and video, and its settings file with a SHA-256 (Basler `.pfs`).
@@ -88,7 +88,7 @@ To add a note afterwards (something seen during the recording, a correction):
 campy-session note C:\campy_data\chronicRecording\2026-10-23_14-05-11 "M3 lost its ear tag at about 5 min"
 ```
 
-The note goes into `annotations`, with the time it was added, and nothing else in the file changes. Until the `campy-session` launcher is installed, `python -m campy.manifest note <folder> "text"` does the same. A note can be added while the recording is still running: campy keeps it when it next writes the file.
+The note goes into `annotations`, with the time it was added, and nothing else in the file changes. Until the `campy-session` launcher is installed, `python -m campy.manifest note <folder> "text"` does the same. A note can be added while the recording is still running: campy keeps it when it next writes the file. On Windows, a program that has `session.json` open (a viewer, an editor) holds up a note for up to 5 seconds; a program that also stops others from writing to the file (Excel, some editors) makes the note fail with a message saying so, and the file is not changed: close that program and add the note again.
 
 ## campy-live-session.json
 
