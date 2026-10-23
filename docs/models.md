@@ -167,6 +167,78 @@ python bench/compiled_bench.py --centroid <centroid model folder> --instance <in
     --videos cam1.mp4 cam2.mp4 cam3.mp4 --engines eager-fp16,graph-fp16,compile-ma,trt-fp16
 ```
 
+## Finding the frames a model gets wrong (`campy-live-flag`)
+
+A model trained on other rigs' videos makes its own mistakes on a new rig: a camera that keeps missing a mouse in one corner, a side view where skeletons land on the wrong mouse. The fastest fix is to label a few of those frames and train again. Labelling only nine frames from one rig removed most of the false detections there. `campy-live-flag` finds those frames for you, from `campy-live`'s log, after the recording:
+
+```
+campy-live-flag campy-live_<date_time>.npy --budget 25
+```
+
+It doesn't change `campy-live` or slow it down: everything it needs is already in each row of the log (the animals each camera found, their scores, and, with `--calibration`, which detection is which animal in each camera, the 3D pose and how well the cameras agree). For each set of frames and each camera it flags:
+
+| Flag | What happened | Needs 3D |
+|---|---|---|
+| `missed` | Two or more other cameras saw an animal and its 3D pose falls inside this camera's picture, but this camera found nothing there. The model missed it, or something hid it. | yes |
+| `swap` | Two animals' identities swapped from one set to the next. | yes |
+| `jump` | An animal's 3D position jumped more than 50 mm in one set (a wrong match). | yes |
+| `unmatched` | A detection that the 3D matched to no animal, though there were no more detections than animals: the cameras disagree on where the animals are. | yes |
+| `disagree` | One camera's skeleton is more than 15 px from where the animal's 3D pose puts it. | yes |
+| `extra` | More detections than animals (seen only when `--max-instances` is above the number of animals). | no |
+| `fewer` | Fewer detections than animals. | no |
+| `low_score` | A detection whose points scored under 0.5 (the median). | no |
+
+A mistake usually lasts many sets in a row: a mouse missed for a second is 60 sets at 60 fps. Flags of the same kind in the same camera less than a second apart count as one *event*, and each event offers one set to label. From those it picks `--budget` sets (25 by default, about an hour of correcting 3 mice in 3 cameras):
+
+- 10% at random from the whole recording, so the labels aren't all hard cases and mistakes no flag catches still turn up;
+- the rest from the events, one kind of mistake at a time in turn (`missed` first), the cameras taking turns within each kind. Each pick is the event *least like* the sets already picked: where the animals are in each camera's picture, how many each camera found, and how close together they are. That avoids picking 25 near-identical frames of the same huddle;
+- no two picks closer than 2 s.
+
+A set is labelled whole, every camera's frame of it. That gives three training images, and lets the 3D check the corrections.
+
+It writes `flags.csv` (every flag, with where in the picture it is: for `missed`, where the animal should have been), `events.csv` and `sample.json` (the picks and why each was picked) into `<log>_flags/`, and prints how often each kind of mistake happened in each camera, a quick health check of a model on a rig. Give several logs to pick one sample from several recordings. It needs only numpy and scipy, and takes about a second for a 2-minute log and about 20 s for an hour. Run `python -m pydoc campy.liveflag` for every option.
+
+If the calibration file named in the log's summary isn't on the computer, give it with `--calibration`. Without it, `missed` can't be worked out, and `disagree` uses the log's own reprojection errors, without saying which camera is wrong. A log made without `--calibration` gets only the `extra`, `fewer` and `low_score` flags.
+
+## Labelling them in LUC3D (`campy-label-pack`, `campy-label-merge`)
+
+`campy-label-pack` turns the sets `campy-live-flag` picked into one file to correct in [LUC3D](https://github.com/talmolab/luc3d), with `campy-live`'s predictions already on them, so labelling means correcting, not starting from nothing. Run it in the inference environment (it needs `sleap-io`, which comes with sleap-nn):
+
+```
+campy-label-pack <log>_flags/sample.json --recording <recording folder> --name <rig>_<date>
+```
+
+It writes `<name>/<name>.pkg.slp` next to `sample.json`:
+
+- **The frames are in the file**: every camera's frame of each picked set, as PNG, so exactly the video's pixels. It opens on any computer, without the recording's videos. Frame 0, 1, 2, … of the package are the picked sets in order; `sets.csv` says which recording, campy frame and video frame each one is, why it was picked, and its flags.
+- **The predictions are on them**: each camera's detections, and with 3D each animal's identity and 3D pose, grouped across the cameras. So LUC3D also shows where the 3D puts an animal in a camera that missed it.
+- `--skeleton <training package>` writes the labels in the training set's nodes. The live models have no tail points, so those stay empty unless you add them.
+
+**Correcting in LUC3D.** File > Load SLP > `<name>.pkg.slp` (nothing else to pick). Shift+Right goes to the next set. Correct each set in every camera:
+
+- double-click an animal's predictions to make them your labels, then drag the points that are wrong (dragging a predicted point converts it too);
+- where a camera missed an animal, double-click its projection there to make it a label, and drag the points into place;
+- press T to triangulate again, to see where the cameras still disagree;
+- delete detections that aren't an animal.
+
+**Every prediction must become a label or be deleted.** A camera's frame that still has a prediction left in it isn't used for training: the mouse left unlabelled would teach the model there is no mouse there. When done, File > Save as `<name>.labels.slp` next to the package.
+
+LUC3D can't open an embedded frame whose frame numbers or size are stored as 64-bit numbers, as `sleap-io` writes them ("Cannot mix BigInt and other types"). `campy-label-pack` stores them as 32-bit; packages made otherwise, the training packages included, don't open in LUC3D yet.
+
+**Making training and test sets.** `campy-label-merge` reads what LUC3D saved and takes the frames out of the package:
+
+```
+campy-label-merge <name>.pkg.slp <name>.labels.slp --test-into tests/<rig>.test.pkg.slp \
+    --train-into <training package> --train-out <new training package>
+```
+
+- **Test sets are kept apart for good.** About a third of each recording's minutes are test minutes, chosen by a hash of the recording's name and the minute. A set is always on the same side, and whole minutes are kept out, so no frame a few frames from a test frame is trained on. Test frames go to `<name>.test.pkg.slp` and, with `--test-into`, into that rig's test set, which only grows. They are for measuring models, never for training.
+- **The rest go to `<name>.train.pkg.slp`**, and, with `--train-into`, into a copy of the training package (`--train-out`). The labels are written in that package's nodes, so run it once for the 15-node package (centroid model) and once for the 12-node one (centered-instance model).
+- **Points marked hidden are left out**, as SLEAP trains on them. That includes the points LUC3D fills in when a prediction becomes a label.
+- **`<name>.merge.csv`** says what happened to each camera frame: taken, not finished (predictions left), untouched, or emptied (every prediction deleted and no label; left out unless `--keep-emptied`).
+
+Tried on a 30-second, 3-camera recording of 5 mice: 12 picked sets were packed in 18 s (15 MB). LUC3D opened the package with the predictions, identities and 3D on it. A set corrected and saved there was merged into the 1,000-frame 12-node training package in 5 minutes, mostly reading the 550 MB package over the network. The result read back as 1,003 frames, the new ones pixel for pixel the package's.
+
 ## Recording for a model
 
 - **Match the training images' brightness.** The training frames averaged about 24 out of 255. Frames about 8 times brighter, with many saturated pixels, lost most mice and produced hundreds of false detections, and frames half as bright lost about half. Set aperture, exposure and gain so live frames look like the training frames.
