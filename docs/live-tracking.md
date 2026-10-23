@@ -161,6 +161,11 @@ The three programs can also be started separately, as `campy-session` does:
    campy-live-view
    ```
    It runs as a separate program at low priority and stays open from one recording to the next. Its `c` key, or the "Fast CPUs" box in its panel, moves `campy-live` on and off the performance cores while both run, and the panel shows `campy-live`'s inference time over the last 2 s, so you can see the difference. On a computer without a screen (over SSH), `campy-live-view --no-window --png <folder>` saves pictures instead.
+4. **For an unattended recording, also start `campy-watch`**, in either environment:
+   ```
+   campy-watch --cameras 3
+   ```
+   It runs campy-live-view's checks without a window, and sends what lasts as a Slack message ([Alerts](alerts.md)): a camera a frame ahead or behind the others, frames lost or late, good 3D for fewer animals than `--animals` for most of 3 minutes, and `campy-live` stopping while the cameras record. It waits for the feed and ends with the recording.
 
 To start the recording from a script once `campy-live` is ready, give `campy-live --ready-file <path>`: it writes that file as it prints `Waiting for the live feed`. To stop a recording that was started without a console, or detached over SSH, give `campy-acquire` a stop file (`--stopFile <path>`) and create that file: campy stops as at Ctrl-C, and `campy-live` analyses the recording to its last frame, as it does when a recording ends by itself ([Stop Recording](../README.md#stop-recording)).
 
