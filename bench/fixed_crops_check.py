@@ -7,12 +7,11 @@ model, results back), with nothing else running: the --fixed-crops graph
 
 sleap-nn 0.3.3 takes the crop size from the first crop's corners in float32,
 int(abs(right - left)) + 1, which for some centroids gives a pixel less (319
-for 320 px crops), and then cuts every crop of the set that size: the
-instance model sees those crops resized a little differently. --fixed-crops
-always cuts the crop size. So the keypoints are compared with the default
-twice: as it is, and with that size made exact (ExactCropSize), which is
-sleap-nn's layer otherwise unchanged; and the sets where sleap-nn's crops
-came out short are counted.
+for 320 px crops), and then cuts every crop of the set that size
+(talmolab/sleap-nn#778). campy-live corrects that for its own layers
+(live.ExactCropSize, pull request 131), and --fixed-crops always cuts the
+crop size, so both cut the same crops; the sets where sleap-nn alone would
+have cut them short are counted (ShortCrops).
 
     python bench/fixed_crops_check.py --centroid <model> --instance <model> \
         Camera1.mp4 Camera3.mp4 Camera4.mp4 [--sets 3600] [--out check.json]
@@ -48,32 +47,23 @@ def Frames(videos, shape):
 			p.kill()
 
 
-class ExactCropSize:
+class ShortCrops:
 	"""
-	sleap-nn's crop_bboxes (in its top-down layer) with the crop size made
-	exact, while on: the first box's far corners moved half a pixel further,
-	so its size rounds right (the top-lefts, which place the crops, as they
-	were). Counts the calls where sleap-nn's own size was short.
+	Counts the calls of sleap-nn's crop_bboxes (in its top-down layer) whose
+	own crop size, from the boxes as sleap-nn made them, would be short. It
+	goes around campy-live's ExactCropSize, which then cuts the real size.
 	"""
 
 	def __init__(self):
 		import sleap_nn.inference.layers.topdown as topdown
-		self.topdown, self.original = topdown, topdown.crop_bboxes
-		self.on, self.short = False, 0
+		self.original, self.short = topdown.crop_bboxes, 0
 		topdown.crop_bboxes = self
 
 	def __call__(self, images, bboxes, sample_inds):
 		import torch
 		if len(bboxes):
-			fixed = bboxes.clone()
-			fixed[0, 3, 1] = bboxes[0, 0, 1] + (torch.round(bboxes[0, 3, 1] - bboxes[0, 0, 1]) + 0.5)
-			fixed[0, 1, 0] = bboxes[0, 0, 0] + (torch.round(bboxes[0, 1, 0] - bboxes[0, 0, 0]) + 0.5)
-			if not self.on:
-				size = (bboxes[0, 3, 1] - bboxes[0, 0, 1]).abs().to(torch.long), (bboxes[0, 1, 0] - bboxes[0, 0, 0]).abs().to(torch.long)
-				exact = torch.round(bboxes[0, 3, 1] - bboxes[0, 0, 1]).to(torch.long), torch.round(bboxes[0, 1, 0] - bboxes[0, 0, 0]).to(torch.long)
-				self.short += int(any(bool(a != b) for a, b in zip(size, exact)))
-			else:
-				bboxes = fixed
+			sides = bboxes[0, 3, 1] - bboxes[0, 0, 1], bboxes[0, 1, 0] - bboxes[0, 0, 0]
+			self.short += int(any(bool(side.abs().to(torch.long) != torch.round(side).to(torch.long)) for side in sides))
 		return self.original(images, bboxes, sample_inds)
 
 
@@ -185,15 +175,13 @@ def Main(argv=None):
 		eager.Predict(eager.Upload(host.tensor))
 	print("warmed up in {:.1f} s; {}".format(time.perf_counter() - t, model.DescribeGraphs()), flush=True)
 
-	exact = ExactCropSize()
+	short = ShortCrops()
 	times = {"fixed_graph": [], "fixed_eager": [], "default": []}
 	by_found = {}
-	diffs = {"as_is": [], "exact_crop_size": []}
-	diff_found = {"as_is": [], "exact_crop_size": []} # animals found in the sets of diffs
-	found_diff = {"as_is": 0, "exact_crop_size": 0}
-	missing = {"as_is": 0, "exact_crop_size": 0}
+	diffs, diff_found = [], [] # each set's keypoint max diff, and the animals found in it
+	found_diff = missing = 0
 	cen_diff, eager_diff, found_total = [], [], []
-	moved = {"fixed_graph": Keypoints(), "fixed_eager_torch": Keypoints()} # vs the exact-crop-size reference
+	moved = {"fixed_graph": Keypoints(), "fixed_eager_torch": Keypoints()} # vs the default (crops at their real size)
 	sets = 0
 	for frames in Frames(a.videos, (h, w)):
 		host.array[:] = frames
@@ -205,11 +193,8 @@ def Main(argv=None):
 		on_gpu = host.tensor.to(model.device, non_blocking=True)
 		d = Default(on_gpu)
 		t3 = time.perf_counter_ns()
-		exact.on = True
-		x = Default(on_gpu)
-		exact.on = False
-		moved["fixed_graph"].Add(g, x)
-		moved["fixed_eager_torch"].Add(e, x)
+		moved["fixed_graph"].Add(g, d)
+		moved["fixed_eager_torch"].Add(e, d)
 		times["fixed_graph"].append(t1 - t0)
 		times["fixed_eager"].append(t2 - t1)
 		times["default"].append(t3 - t2)
@@ -218,33 +203,30 @@ def Main(argv=None):
 		by_found.setdefault(total, {"default": [], "fixed_graph": []})
 		by_found[total]["default"].append(t3 - t2)
 		by_found[total]["fixed_graph"].append(t1 - t0)
-		for name, ref in (("as_is", d), ("exact_crop_size", x)):
-			differs, kp, miss = Compare(g, ref)
-			found_diff[name] += int(differs)
-			if not differs:
-				if total:
-					diffs[name].append(kp)
-					diff_found[name].append(total)
-				missing[name] += miss
-		if not Compare(g, d)[0]:
+		differs, kp, miss = Compare(g, d)
+		found_diff += int(differs)
+		if not differs:
+			if total:
+				diffs.append(kp)
+				diff_found.append(total)
+			missing += miss
 			cen_diff.append(float(np.nanmax(np.abs(g["centroids"] - d["centroids"]), initial=0)))
 		eager_diff.append(float(np.nanmax(np.abs(g["keypoints"] - e["keypoints"]), initial=0)))
 		sets += 1
 		if sets % 600 == 0:
-			print("{} sets: found differs in {} / {}; keypoints max diff {:.4g} px as is, {:.4g} with the exact crop "
-				"size; sleap-nn's crops short in {} sets".format(sets, found_diff["as_is"], found_diff["exact_crop_size"],
-				max(diffs["as_is"], default=0), max(diffs["exact_crop_size"], default=0), exact.short), flush=True)
+			print("{} sets: found differs in {}; keypoints max diff {:.4g} px; sleap-nn alone would have cut short "
+				"crops in {} sets".format(sets, found_diff, max(diffs, default=0), short.short), flush=True)
 		if a.sets and sets >= a.sets:
 			break
 
-	def Diffs(name):
-		kp, f = np.asarray(diffs[name]), np.asarray(diff_found[name])
-		return {"sets_where_found_differs": found_diff[name],
+	def Diffs():
+		kp, f = np.asarray(diffs), np.asarray(diff_found)
+		return {"sets_where_found_differs": found_diff,
 			"keypoint_max_abs_diff_px": float(kp.max()) if len(kp) else 0.0,
 			"keypoint_p99_of_set_max_diff_px": float(np.percentile(kp, 99)) if len(kp) else 0.0,
 			"keypoint_median_of_set_max_diff_px": float(np.median(kp)) if len(kp) else 0.0,
 			"sets_with_keypoint_diff_over_0.01px": int(np.count_nonzero(kp > 0.01)),
-			"keypoints_missing_in_one_only": missing[name],
+			"keypoints_missing_in_one_only": missing,
 			"by_animals_found": {str(k): {"sets": int(np.count_nonzero(f == k)),
 				"sets_with_keypoint_diff_over_0.01px": int(np.count_nonzero(kp[f == k] > 0.01)),
 				"keypoint_max_abs_diff_px": float(kp[f == k].max(initial=0))} for k in np.unique(f)}}
@@ -256,9 +238,8 @@ def Main(argv=None):
 		"graph": model.DescribeGraphs(),
 		"found_per_set_mean": float(np.mean(found_total)) if found_total else 0.0,
 		"centroid_max_abs_diff_px": max(cen_diff, default=0.0),
-		"vs_default_as_is": Diffs("as_is"),
-		"vs_default_exact_crop_size": Diffs("exact_crop_size"),
-		"sets_where_sleap_nn_crops_were_short": exact.short,
+		"vs_default": Diffs(),
+		"sets_where_sleap_nn_alone_cuts_short": short.short,
 		"graph_vs_eager_fixed_max_abs_diff_px": max(eager_diff, default=0.0),
 		"time_ms": {k: Ms(v) for k, v in times.items()},
 		"time_ms_by_animals_found": {str(k): {m: Ms(v) for m, v in d.items()} | {"sets": len(d["default"])}
@@ -269,7 +250,7 @@ def Main(argv=None):
 	if a.out:
 		with open(a.out, "w") as f:
 			f.write(text)
-	return 0 if found_diff["exact_crop_size"] == 0 else 1
+	return 0 if found_diff == 0 else 1
 
 
 if __name__ == "__main__":
