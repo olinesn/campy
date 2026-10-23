@@ -127,13 +127,14 @@ def test_crops_are_the_padded_frames(channels):
 def test_reference_crops_at_crop_size():
 	# The reference is campy-live's own layer, whose crops live.ExactCropSize
 	# cuts at the crop size; sleap-nn's crop_bboxes alone, for this centroid,
-	# cuts them a pixel short (tests/test_live_exact_crops.py), and
-	# --fixed-crops always cuts the crop size
+	# cuts them a pixel short before talmolab/sleap-nn#780
+	# (tests/test_live_exact_crops.py), and --fixed-crops always cuts the
+	# crop size
 	from sleap_nn.inference.ops.crops import crop_bboxes, make_centered_bboxes
 	centroid = [221.54798889160156, 77.36744689941406]
 	image = torch.zeros(1, 1, 256, 320, dtype=torch.uint8)
 	boxes = make_centered_bboxes(torch.tensor([centroid]), 192, 192)
-	assert tuple(crop_bboxes(image, boxes, torch.tensor([0])).shape[-2:]) == (192, 191)
+	assert tuple(crop_bboxes(image, boxes, torch.tensor([0])).shape[-2:]) == ((192, 191) if live.SleapCutsShort() else (192, 192))
 	model, _ = Model("cpu", fixed=False)
 	instance, seen = model.layer.centered_instance_layer, []
 	predict = instance.predict

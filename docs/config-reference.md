@@ -2,7 +2,7 @@
 
 <!-- Generated from campy/configschema.py by `campy-config reference > docs/config-reference.md`. Edit the table there, not this page: a test fails when the two differ. -->
 
-Every key a campy config file can have, and its command-line option (`--key value` means what `key: value` means in the file). "Per camera" says how a list is read: *one, or one per camera* takes one value for every camera or a list with a value for each, in camera order; *one for the rig* refuses a list. [Configs](configs.md) explains how campy checks a config, and `campy-config check` checks one without starting any camera.
+Every key a campy config file can have, and its command-line option (`--key value` means what `key: value` means in the file). "Per camera" says how a list is read: *one, or one per camera* takes one value for every camera or a list with a value for each, in camera order; *one for the rig* refuses a list. A config can also start with `extends: <rig profile or file>`, which takes every setting the config doesn't give from that file. [Configs](configs.md) explains profiles and how campy checks a config; `campy-config show` prints where each setting of a config came from.
 
 ## Recording
 
@@ -128,4 +128,13 @@ Every key a campy config file can have, and its command-line option (`--key valu
 | `sessionFields` | `{}` | a mapping, e.g. {cage: B3} | one for the rig | Anything else to keep with the recording in session.json, as a mapping: {cage: B3, condition: saline}. |
 | `defaultsVersion` | `"None"` | text | one for the rig | The campy version whose defaults this config was written for, e.g. "2.1.0": campy then says only the defaults changed after it that the config relies on (campy/defaults.py). None: every one. |
 | `defaultWarnings` | `True` | True or False | one for the rig | Say, at startup, each default that changed in a newer campy and that this run relies on (default: True). Setting a key, or defaultsVersion, stops one. |
+
+## Sections other programs read
+
+| Key | Default | Takes | Per camera | What it does |
+|---|---|---|---|---|
+| `live` | none | key: value lines of its own | - | campy-session: live tracking while recording (models, calibration, animals, the live environment's python). campy-acquire passes it by; campy-session checks it. |
+| `view` | none | key: value lines of its own | - | campy-session: the live view (campy-live-view). campy-acquire passes it by. |
+| `post` | none | key: value lines of its own | - | campy-session: what to do after the recording (remux, export, copy). campy-acquire passes it by. |
+| `panel` | none | key: value lines of its own | - | campy-session: its control panel. campy-acquire passes it by. |
 

@@ -50,6 +50,8 @@ def OpenSystems():
 		sys.exit(1)
 	if mp.current_process().name == "MainProcess":
 		probe = manifest.Probe()
+		# where each value came from: "default", "file" (the config, or a file it extends) or
+		# "command line" (configurator.Resolved.sources has the file and line)
 		configured, sources = copy.deepcopy(params), configurator.Sources()
 		defaultWarnings = DefaultWarnings(params, sources)
 		if defaultWarnings:
