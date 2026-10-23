@@ -64,3 +64,10 @@ def test_a_number_still_decides(monkeypatch):
 	for n in ("0", "2"):
 		c = clock(monkeypatch, "6.4", True, blocks=n)
 		assert c.fewest == 0 and c.busy == int(n) and not c.auto
+
+
+def test_a_spin_is_2_ms_on_rocm_too(monkeypatch):
+	# ROCm's _sleep counts a fixed 100 MHz clock: CYCLES there would spin
+	# 50 ms, and the feed's first set waited for one to end
+	assert clock(monkeypatch, "6.4", True).CYCLES == live.GpuClock.ROCM_CYCLES == 200000
+	assert clock(monkeypatch, None, False).CYCLES == live.GpuClock.CYCLES == 5000000

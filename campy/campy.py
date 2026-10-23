@@ -19,7 +19,7 @@ campy-acquire ./configs/campy_config.yaml
 import os, time, sys, copy, logging, threading, queue
 from collections import deque
 import multiprocessing as mp
-from campy import writer, configurator, preflight, newfiles, keepawake, defaults, manifest
+from campy import writer, configurator, preflight, newfiles, keepawake, stopfile, defaults, manifest
 from campy.trigger import trigger
 from campy.cameras import unicam, emu
 from campy.utils.utils import HandleKeyboardInterrupt, Say, ErrorText, StartPrinter, StopPrinter
@@ -53,14 +53,22 @@ def OpenSystems():
 	# A recording never replaces one: stop now, before anything opens, if any
 	# file it would write is already there, whatever preflight is set to. Each
 	# run records into a new folder of its own (sessionFolder), made in Main;
-	# the camera processes are told which.
+	# the camera processes are told which. A folder given by another program
+	# (sessionPath, campy-session) instead of a new one may already hold
+	# that program's own files, but none of the recording's. A stop file
+	# already there would stop the recording as it starts (stopFile).
 	if mp.current_process().name == "MainProcess":
 		try:
-			if newfiles.SessionFolders(params):
+			given = newfiles.GivenSession(params)
+			if given:
+				newfiles.UseSession(params, given)
+				newfiles.Check(params)
+			elif newfiles.SessionFolders(params):
 				newfiles.CheckNames(params)
 			else:
 				newfiles.Check(params)
-		except newfiles.WouldOverwrite as e:
+			stopfile.Check(params)
+		except (newfiles.WouldOverwrite, stopfile.AlreadyThere) as e:
 			print(e, flush=True)
 			sys.exit(1)
 	elif os.environ.get(newfiles.SESSION_ENV):
@@ -165,17 +173,20 @@ def InitCameraProcess(readyQueue):
 	unicam.SetReadyQueue(readyQueue)
 
 
-def RunCamera(n_cam, readyQueue, done, start=None):
+def RunCamera(n_cam, readyQueue, done, start=None, stop=None):
 	# One camera process: records its camera, then tells Main what went wrong,
 	# if anything (done: unicam.TellMain). One that ends without saying died,
 	# and Main says so. start: when an emulated camera's frame 0 is due, which
-	# Main sets once every camera is ready (cameras/emu.py StartClock).
+	# Main sets once every camera is ready (cameras/emu.py StartClock). stop:
+	# set by Main when a stop file asks for a stop (stopFile), which then
+	# stops the camera as Ctrl-C does (unicam.StopRequested).
 	# What it says is written by a thread of its own, so that a slow console
 	# or log file never holds up its camera; all of it, before it ends
 	StartPrinter()
 	try:
 		InitCameraProcess(readyQueue)
 		unicam.SetMainConnection(done)
+		unicam.SetStopRequest(stop)
 		emu.SetStartClock(start)
 		# Not throttled should standby start anyway (Windows); released as it ends
 		keepawake.KeepAwake(params.get("keepAwake", True), whole=False).Start()
@@ -197,6 +208,16 @@ def Main():
 	# Ctrl-C stops every camera, each closing its video, and Main waits for
 	# them; a second Ctrl-C stops the ones that hang as they close
 	with HandleKeyboardInterrupt() as interrupts:
+		# A stop file (stopFile) stops campy as Ctrl-C does, from the start:
+		# its first request is the first press, "now" the second. The camera
+		# processes, which no Ctrl-C reached, see it in stop (unicam.StopRequested).
+		ctx = mp.get_context("spawn")
+		stop = ctx.Value("i", 0, lock=False)
+		def StopRequested(level):
+			interrupts.Request(level, "stopFile {}".format(stopfile.Path(params)))
+			stop.value = level
+		stopWatch = stopfile.Watch(stopfile.Path(params), StopRequested).Start()
+
 		# The trigger Arduino answers, or nothing starts: a dead one used to
 		# leave the cameras waiting for frames that never came. Ctrl-C stops
 		# the check, and campy, at once.
@@ -204,15 +225,22 @@ def Main():
 			systems = trigger.OpenTriggers(systems, params, interrupted=lambda: interrupts.count > 0)
 		except trigger.TriggerError as e:
 			print(e, flush=True)
+			stopWatch.Stop()
 			CloseSystems(systems, params)
 			sys.exit(1)
 
 		# This run's own folder, inside videoFolder, named by the date and time
 		# (sessionFolder): the camera processes, which read the config again,
 		# find it in their environment
-		if newfiles.SessionFolders(params):
+		# Or the folder another program chose (sessionPath), into which
+		# OpenSystems already set it to record
+		folder = newfiles.GivenSession(params)
+		if folder:
+			os.makedirs(folder, exist_ok=True)
+		elif newfiles.SessionFolders(params):
 			folder = newfiles.MakeSessionFolder(params)
 			newfiles.UseSession(params, folder)
+		if folder:
 			os.environ[newfiles.SESSION_ENV] = folder
 			Say("Recording into {}".format(folder))
 		calibration = newfiles.CalibrationCameras(params)
@@ -226,6 +254,7 @@ def Main():
 			claimed = newfiles.Claim(params)
 		except newfiles.WouldOverwrite as e:
 			print(e, flush=True)
+			stopWatch.Stop()
 			CloseSystems(systems, params)
 			sys.exit(1)
 
@@ -248,12 +277,11 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 		# One process per camera, started the same way on Windows and Linux
 		# (spawn), and watched: one that dies is said at once, and the others
 		# go on recording
-		ctx = mp.get_context("spawn")
 		readyQueue = ctx.Queue()
 		# Emulated cameras (cameraMake "emu") time their frames from one start,
 		# set below once every camera is ready, as a hardware trigger starts them
 		start = ctx.Value("d", 0.0, lock=False)
-		cameras = unicam.CameraProcesses(ctx, RunCamera, params, readyQueue, start=start)
+		cameras = unicam.CameraProcesses(ctx, RunCamera, params, readyQueue, start=start, stop=stop)
 
 		# The trigger stops and the systems close whatever happens here
 		try:
@@ -273,6 +301,7 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 			error = ErrorText(e)
 			raise
 		finally:
+			stopWatch.Stop()
 			awake.Stop()
 			CloseSystems(systems, params)
 			session.End(failures, interrupted=interrupts.count > 0, error=error)

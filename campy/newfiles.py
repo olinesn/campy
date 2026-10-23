@@ -5,7 +5,9 @@ Each run of campy-acquire records into a new folder inside videoFolder,
 named by the date and time it started: <videoFolder>/2026-10-18_17-30-05/
 (sessionFolder, on by default; MakeSessionFolder). So campy-acquire can be
 run again and again with the same config. sessionFolder False records into
-videoFolder itself, as campy always did, under the checks below.
+videoFolder itself, as campy always did, under the checks below. sessionPath
+records into a folder another program chose (campy-session), under the same
+checks (GivenSession).
 
 A calibration video, one whose videoFilename has "calibration" in it
 (0-calibration.mp4), goes into <cameraName>/calibration_images/, where luc3d
@@ -138,6 +140,21 @@ def Message(params, existing):
 
 def SessionFolders(params):
 	return bool(params.get("sessionFolder", True))
+
+
+def GivenSession(params):
+	"""
+	The folder sessionPath names, made absolute, or None ("None"): the run
+	records into it instead of a new <videoFolder>/<date_time>/, whatever
+	sessionFolder says. A program that starts campy-acquire (campy-session)
+	makes it first, to keep its own logs there; campy makes it otherwise.
+	Like a session folder of campy's own, it may hold other files, but none
+	of the recording's (Check).
+	"""
+	path = params.get("sessionPath", "None")
+	if path in (None, "", "None"):
+		return None
+	return os.path.abspath(str(path))
 
 
 def MakeSessionFolder(params, now=None):
