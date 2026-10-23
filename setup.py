@@ -36,6 +36,7 @@ setup(
 			"campy-live-flag = campy.liveflag:Main",
 			"campy-label-pack = campy.labelpack:Main",
 			"campy-label-merge = campy.labelmerge:Main",
+			"campy-session = campy.session:Main",
 			"campy-model-eval = campy.modeleval:Main",
 			"campy-model-fit = campy.modelfit:Main",
 		]

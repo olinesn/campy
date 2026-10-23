@@ -26,6 +26,125 @@ Which torch build:
 
 ## Recording with live tracking
 
+### In one command: `campy-session`
+
+`campy-session` starts all three programs, each in its own environment, from one config, and stops them together. Add a `live:` section to the recording's config, and a `view:` section if you like:
+
+```yaml
+# ... the recording's keys, as for campy-acquire ...
+live:
+  python: "C:\\Users\\<you>\\miniconda3\\envs\\campyLive\\python.exe"   # optional, see below
+  centroid: "C:\\campy_data\\live\\models\\centroid"
+  instance: "C:\\campy_data\\live\\models\\instance"
+  animals: 5
+  calibration: "C:\\campy_data\\calib\\calibration.toml"
+  env: {CUDA_DEVICE_ORDER: PCI_BUS_ID, CUDA_VISIBLE_DEVICES: "0"}   # two GPUs: campy-live on the first
+  args: ["--report-sec", "30"]   # any other campy-live option, as a list
+view: true                       # or: view: {args: ["--no-3d"], keep_open: true}
+```
+
+Then, in the **recording** environment:
+
+```
+campy-session run <config>.yaml
+```
+
+Options after the config are campy-acquire's, for this run only (`campy-session run <config>.yaml --recTimeInSec 3600`).
+
+**Telling it where the inference environment is.** `campy-session` runs `campy-live` with that environment's python, so neither environment needs activating and nothing needs to be on PATH. It looks in three places, in order:
+
+1. `live.python` in the config;
+2. the `CAMPY_LIVE_PYTHON` environment variable;
+3. the python registered once per computer: in the inference environment, run `campy-session register-live` (or `python -m campy.session register-live`). It writes that python to `~/.campy/envs.json`.
+
+Both environments must have the same campy installed, or `campy-session` stops before anything starts and says so. It compares their live feed code.
+
+**What happens:**
+
+1. It checks the config's `live:` and `view:` sections, and suggests the key you meant for a typo.
+2. It makes the recording's folder (`<videoFolder>/<date and time>/`, as campy-acquire would). Into its `logs/` folder it writes:
+   - the config as given (`session-config.yaml`);
+   - the config campy-acquire runs (`campy-acquire.yaml`): the same, without the two sections, and with `liveFeed: True`.
+3. It starts `campy-live` and waits until its models are warmed up: 5–40 s, longest the first time an engine is built (`live.ready_timeout_s`, default 120 s).
+4. It starts `campy-live-view` (with `view`), then `campy-acquire`, which records into that folder.
+5. The recording ends at `recTimeInSec`, or at Ctrl-C. `campy-live` tracks to the last frame and ends by itself. The view closes, unless `keep_open` is set.
+
+Each program's output is shown in the terminal, each line marked `[acquire]`, `[live]` or `[view]`, and kept in `<folder>/logs/<program>.log`. `campy-live`'s results go into the recording's folder (`campy-live.npy` and `.json`), ready for `campy-live-export`. `<folder>/launcher.json` records when each program started and ended, and its exit code. The exit code is campy-acquire's: 0 when every camera recorded to the end.
+
+**The recording comes first.**
+
+- `campy-acquire` runs as it does when started by hand. Ctrl-C reaches it directly, and it is never killed. If `campy-session` itself is closed or crashes, the recording goes on to `recTimeInSec`, and `campy-live` keeps tracking it.
+- If `campy-live` can't start (a wrong model folder, say), the recording goes on without tracking. With `live.required: true` instead, nothing is recorded.
+- If `campy-live` stops during the recording, the cameras carry on, and `campy-session` starts it again after 10 s, then 1 and 5 minutes, at most 5 times an hour. Each restart writes its own log (`campy-live.part2.npy`, ...). `live.restart: false` turns this off.
+- One `campy-session` runs at a time on a computer.
+
+**After the recording.** When every camera has recorded to the end, `campy-session` runs the steps of the config's `post:` section, and logs each one in `<folder>/logs/post.log`. Without a `post:` section, it runs `remux` and `export`:
+
+```yaml
+post:
+  remux: true          # true (the default), keep, or false
+  export: true         # campy-live-export, when campy-live ran (the default)
+  copy: "\\\\nas\\share\\recordings"   # optional: copies the recording's folder into this one
+  run: ["python C:\\tools\\notify.py {folder}"]   # optional: your own commands
+```
+
+- **remux** turns each fragmented video (campy's default, readable after a crash) into a plain MP4 without re-encoding. Some readers have trouble with fragmented files (an older calibrat3 did), and a fragmented file's header has no frame count.
+  - Before anything is replaced, ffmpeg's packet checksums of the two files are compared line by line: every packet, timestamp and the codec's header must be identical. Only then does the plain file replace the fragmented one.
+  - With `remux: keep`, the fragmented file stays beside it as `<name>.fragmented.mp4`.
+  - If the check fails, or the disk has no room for one more copy of the video, the original stays as it was, and the log says why.
+  - A 30 s video of 3 cameras takes a fraction of a second.
+- **export** runs `campy-live-export` in the inference environment, so the recording opens in LUC3D with the tracking on it (below). If `campy-live` was started again during the recording, its logs are joined first, in order.
+- **copy** copies the whole recording folder into `copy.to`: with robocopy on Windows, with rsync on Linux and macOS (rsync also takes `user@host:/path`). Then it checks every file's size. **Nothing is deleted**, on either side.
+- **run** runs your own commands in a shell, with `{folder}` replaced by the recording's folder. One that fails is logged, and the next one still runs.
+
+After a crash, or when a camera didn't record to the end, none of them run, and `campy-session` says why. The recording's fragmented videos stay readable up to their last second. To run the steps again by hand, or after looking at a crashed recording:
+
+```
+campy-session post <recording folder>                 # the steps not done yet
+campy-session post <recording folder> --only remux    # one step
+campy-session post <recording folder> --force         # after a crash, or again
+```
+
+`campy-session post` also works on a recording made with `campy-acquire` alone. There, every camera's `metadata.csv` must have its totals and no `cameraError` or `videoError`, unless you give `--force`. What each step did is kept in `<folder>/logs/post.json`, so running `post` again repeats nothing that is done. A Ctrl-C during the steps stops them after the current one.
+
+### From a page in the browser: `campy-session panel`
+
+For people who'd rather not use a terminal, the same recording can be run from a page in the browser:
+
+```
+campy-session panel <config>.yaml
+```
+
+It opens the page in this computer's browser, and prints its address. A recording starts only when someone presses **Start recording** on the page, never on its own. Its length is the config's `recTimeInSec`. After each recording the page is ready for the next one, into a new folder. Ctrl-C in the panel's console closes it, when nothing is recording.
+
+What the page shows, refreshed every second:
+
+- **Before the start:**
+  - the experiment's name, the animal IDs and notes, which go into the recording's `session.json`;
+  - the checks. Some stop a start: `campy-live`'s environment not found or not the same campy, or another `campy-session` running. Others only warn: less free disk space than `alertDiskFreeGB`.
+- **While it records:**
+  - **time:** elapsed, against the planned length;
+  - **each camera:** a grey thumbnail, refreshed once a second; its frames per second and frame number; and its health, from the same checks `campy-live-view` draws in red: `NO FRAMES`, behind, `LOST`, `GAP`, `LATE`, frames ahead or behind. When campy-acquire's watch is running, also its dropped frames and write queue;
+  - **disk:** free space, and roughly how long it lasts at the rate it's filling;
+  - **tracking:** how many animals `campy-live` tracked in 3D over the last second;
+  - **warnings:** from the alerts' logs in the recording's folder, and anything `campy-session` reported;
+  - **bookmarks:** a note box and an Add button. They write the same `bookmarks.csv` in the recording's folder as `campy-live-view`'s `m` key, and the two never give two bookmarks the same number;
+  - **programs:** each one's state, and a button that opens `campy-live-view` again if it was closed.
+- **After it:** each step of `post:`, as it runs.
+
+**Stop** stops the recording exactly as Ctrl-C does: each camera closes its video. If a camera hangs while closing, the button turns into **Stop now, without closing**, for a few seconds. Closing the page stops nothing, and the page can be opened again at any time.
+
+The page is served only to this computer (`127.0.0.1`):
+
+- **Over Remote Desktop** (Windows), open it in the rig's own browser.
+- **From another computer**, go through SSH: run `ssh -L 8765:127.0.0.1:8765 <rig>`, then open the printed address on your own computer.
+
+Every request needs the random key in that address, so no other program on the computer can press Start or Stop. `--port` picks another port, and `--no-browser` only prints the address.
+
+### By hand
+
+The three programs can also be started separately, as `campy-session` does:
+
 1. **Start `campy-live` first**, in the inference environment:
    ```
    campy-live --cameras 3 --model sleap --centroid <centroid model folder> --instance <centered-instance model folder> \
@@ -256,7 +375,7 @@ On the EVO-X2, 5 mice, 3 cameras, 60 fps, the trained models of the table above,
 
 ## Opening a tracked recording in LUC3D
 
-After the recording, `campy-live-export` turns `campy-live`'s log into files that [LUC3D](https://github.com/talmolab/luc3d) opens with the results already on the videos: each camera's 2D predictions and, if `campy-live` ran with `--calibration`, each animal's 3D pose and identity. Run it in the inference environment, which has the `sleap-io` package it needs (it comes with sleap-nn):
+`campy-session` runs `campy-live-export` itself after a clean stop (`post: export`, above). By hand: after the recording, `campy-live-export` turns `campy-live`'s log into files that [LUC3D](https://github.com/talmolab/luc3d) opens with the results already on the videos: each camera's 2D predictions and, if `campy-live` ran with `--calibration`, each animal's 3D pose and identity. Run it in the inference environment, which has the `sleap-io` package it needs (it comes with sleap-nn):
 ```
 campy-live-export <recording folder> --log campy-live_<date_time>.npy
 ```
@@ -309,6 +428,10 @@ Each run's recording goes into a new folder inside `videoFolder`, as usual, and 
 - **A monitor** plugged into the inference GPU slowed it noticeably. If the machine has two GPUs, plug the monitor into the other one.
 - **Two GPUs**: run `campy-live` on one and let campy's encoders use the other. torch numbers GPUs fastest first unless told otherwise, and `nvidia-smi` by their slot, so start `campy-live` with `CUDA_DEVICE_ORDER=PCI_BUS_ID` and `CUDA_VISIBLE_DEVICES=<the GPU's nvidia-smi index>`. Give the cameras the other GPU's `gpuID` for NVENC. On the Precision 7875 that is `CUDA_VISIBLE_DEVICES=0` (RTX 6000 Ada) for `campy-live` and `gpuID: 1` (RTX 4000 Ada, which also drives the monitor) for the encoders; while it recorded, `nvidia-smi` listed `campy-live` only on the first and ffmpeg only on the second.
 
+## A tracked recording in one command (campy-session)
+
+`campy-session run <config>.yaml`, in the recording environment, starts `campy-live` (in the inference environment), `campy-live-view` and `campy-acquire` from one config, and ends them together. The config holds campy-acquire's keys plus a `live:` section (the trained models, `animals`, `calibration`, `env`, more campy-live `args`) and an optional `view:` section. Every program's output goes into the recording's folder (`logs/`), and so do `campy-live`'s results. `campy-session register-live`, run once in the inference environment, tells it where that environment is; `live.python` in the config does the same. After a clean stop it runs the `post:` section's steps: remux the videos to plain MP4 (each checked packet by packet), `campy-live-export`, an optional copy to another folder or computer, and your own commands. `campy-session post <folder>` runs them again by hand. `campy-session panel <config>.yaml` does the same from a page in the browser, for those who'd rather not use a terminal: Start, each camera's thumbnail and health, disk space, warnings, bookmarks, Stop. The recording comes first: campy-acquire is never killed, and it records on if `campy-session` or `campy-live` stops. See [Live tracking](live-tracking.md#in-one-command-campy-session).
+
 ## Live pose estimation (liveFeed, campy-live)
 
 With `liveFeed: True` (or `--liveFeed True`), each camera process also copies every frame it grabs into a ring of shared memory, named `campy-live-0`, `campy-live-1`, ... for cameras 0, 1, ... (`liveFeedName: "campy-live"`), holding the newest `liveFeedSlots` (8) frames, each with its frame number, its camera timestamp, and when it reached the computer (as in "hosttimes.npy"). It is one copy per frame (0.05 ms for a 1280x1024 frame on the EVO-X2), and campy never waits for whatever reads it: a reader that falls behind finds the frames it missed replaced by newer ones. Each ring also says which folder its camera records into, so `campy-live-view` can put its bookmarks beside the recording. If the feed fails, the camera says so once and records on without it. Off by default.
@@ -319,7 +442,7 @@ pip install --no-deps -e <campy folder>     # or: PYTHONPATH=<campy folder> pyth
 campy-live --cameras 3                                      # random-weight models of the benchmark's sizes
 campy-live --cameras 3 --model sleap --centroid <centroid model folder> --instance <centered-instance model folder>
 ```
-Start it before or after `campy-acquire`. It waits for the feed, and ends when the recording does (or at Ctrl-C). `--ready-file <path>` makes it write that file (JSON: its pid and the time) once its models are loaded and warmed up, as it starts waiting for the feed, so a program that starts `campy-acquire` after it knows when to. It writes `campy-live_<date_time>.npy`, one row per set (frame number, each camera's host time, the keypoints and their confidence, the centroids, and when the set was read and finished), and a summary `.json`: sets processed and skipped, the latency from frames to keypoints, and the skeleton, calibration and number of animals (for `campy-live-export`). It also writes "campy-live-session.json" into the recording's folder (found from the feed): the models' folders and SHA-256s and the settings they were trained with, the calibration's SHA-256, every option and whether it was given, its environment, and how it ended ([Recording folders](recordings.md#campy-live-sessionjson)). Like `campy-acquire`, it says at startup each changed default it relies on (`--defaults-version 2.1.0`, `--default-warnings off`). `python -m pydoc campy.live` describes the fields and the models. `--model random` (the default) times random-weight models of the sizes `bench/sleap_infer_bench.py` picked, with a fixed number of animals per frame; `--model none` only reads the feed. `--cuda-graphs` replays each model as a recorded CUDA graph. `--fixed-crops` crops `--max-instances` animals in every frame, padding the missing ones, so the GPU never stops mid-set to report how many it found and the results come back in one copy. With `--cuda-graphs` as well, the whole set is one graph. It gives the same animals and keypoints, and pays when about `--max-instances` animals are in view: with 5 mice it took each set from 15.0 to 13.6 ms on the EVO-X2, and from 10.3 to 2.7 ms on an RTX 6000 Ada ([Live tracking](#fixed-crops---fixed-crops-on-by-default-with-a-gpu)). Both are on by default with a GPU (NVIDIA or AMD); `--fixed-crops off --cuda-graphs off` turns them off. With `--fixed-crops`, `--engine` runs the two networks as compiled engines, and its default, `auto`, does so with a GPU: TensorRT on NVIDIA where `tensorrt` and `onnx` are installed, otherwise `torch.compile` where Triton is (it comes with PyTorch on Linux). With 5 mice it took the EVO-X2 from 10.6 to 5.9 ms per set (`torch.compile`), the Pro Max Slim's RTX 2000 Ada from 12.6 to 5.8 ms and an RTX 6000 Ada from 2.7 to 1.6 ms (TensorRT), with tracking as good against offline SLEAP. If no engine can be made, `campy-live` says why in one line and runs the networks in plain PyTorch. The first start with a new model or update takes up to about 40 s while the engines are made; they are kept in `--engine-cache` (`~/.cache/campy/engines`), and later starts are quick. `--engine off` turns it off, and `--engine on`, `compile` or `tensorrt` stops `campy-live` if that engine can't be made ([Compiled networks](#compiled-networks---engine-on-by-default-with-a-gpu)). `--fast-upsample` (default `auto`: on with AMD GPUs when no engine runs) runs PyTorch's slow upsampling layers in a faster memory layout, with the same results.
+Start it before or after `campy-acquire`. It waits for the feed, and ends when the recording does (or at Ctrl-C). `--ready-file <path>` makes it write that file (JSON: its pid and the time) once its models are loaded and warmed up, as it starts waiting for the feed, so a program that starts `campy-acquire` after it knows when to. `--stop-file <path>` stops it, as Ctrl-C does, once that file is there: for a program that started it without a console. It writes `campy-live_<date_time>.npy`, one row per set (frame number, each camera's host time, the keypoints and their confidence, the centroids, and when the set was read and finished), and a summary `.json`: sets processed and skipped, the latency from frames to keypoints, and the skeleton, calibration and number of animals (for `campy-live-export`). It also writes "campy-live-session.json" into the recording's folder (found from the feed): the models' folders and SHA-256s and the settings they were trained with, the calibration's SHA-256, every option and whether it was given, its environment, and how it ended ([Recording folders](recordings.md#campy-live-sessionjson)). Like `campy-acquire`, it says at startup each changed default it relies on (`--defaults-version 2.1.0`, `--default-warnings off`). `python -m pydoc campy.live` describes the fields and the models. `--model random` (the default) times random-weight models of the sizes `bench/sleap_infer_bench.py` picked, with a fixed number of animals per frame; `--model none` only reads the feed. `--cuda-graphs` replays each model as a recorded CUDA graph. `--fixed-crops` crops `--max-instances` animals in every frame, padding the missing ones, so the GPU never stops mid-set to report how many it found and the results come back in one copy. With `--cuda-graphs` as well, the whole set is one graph. It gives the same animals and keypoints, and pays when about `--max-instances` animals are in view: with 5 mice it took each set from 15.0 to 13.6 ms on the EVO-X2, and from 10.3 to 2.7 ms on an RTX 6000 Ada ([Live tracking](live-tracking.md#fixed-crops---fixed-crops-on-by-default-with-a-gpu)). Both are on by default with a GPU (NVIDIA or AMD); `--fixed-crops off --cuda-graphs off` turns them off. With `--fixed-crops`, `--engine` runs the two networks as compiled engines, and its default, `auto`, does so with a GPU: TensorRT on NVIDIA where `tensorrt` and `onnx` are installed, otherwise `torch.compile` where Triton is (it comes with PyTorch on Linux). With 5 mice it took the EVO-X2 from 10.6 to 5.9 ms per set (`torch.compile`), the Pro Max Slim's RTX 2000 Ada from 12.6 to 5.8 ms and an RTX 6000 Ada from 2.7 to 1.6 ms (TensorRT), with tracking as good against offline SLEAP. If no engine can be made, `campy-live` says why in one line and runs the networks in plain PyTorch. The first start with a new model or update takes up to about 40 s while the engines are made; they are kept in `--engine-cache` (`~/.cache/campy/engines`), and later starts are quick. `--engine off` turns it off, and `--engine on`, `compile` or `tensorrt` stops `campy-live` if that engine can't be made ([Compiled networks](live-tracking.md#compiled-networks---engine-on-by-default-with-a-gpu)). `--fast-upsample` (default `auto`: on with AMD GPUs when no engine runs) runs PyTorch's slow upsampling layers in a faster memory layout, with the same results.
 
 Frames of one trigger pulse have the same frame number on every camera, as long as every camera starts on the trigger's first pulse (campy starts the trigger once all are grabbing) and none loses a frame before campy gets it. A camera that loses one (`flirFramesLost` in "metadata.csv") numbers its later frames one lower than the others. `campy-live` counts the sets whose host times are more than half a frame apart (`misaligned`).
 

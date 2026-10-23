@@ -73,6 +73,30 @@ class Child(subprocess.Popen):
 			self._job = None
 
 
+def Alive(pid):
+	"""Whether a process with this id is running (only the standard library, as the rest of this module)."""
+	if not pid or pid <= 0:
+		return False
+	if sys.platform == "win32":
+		import ctypes
+		k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+		k32.OpenProcess.restype = ctypes.c_void_p
+		handle = k32.OpenProcess(0x00100000 | 0x1000, False, int(pid)) # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
+		if not handle:
+			return ctypes.get_last_error() == 5 # access denied: it is there, someone else's
+		try:
+			return k32.WaitForSingleObject(ctypes.c_void_p(handle), 0) == 0x102 # WAIT_TIMEOUT: not ended
+		finally:
+			k32.CloseHandle(ctypes.c_void_p(handle))
+	try:
+		os.kill(pid, 0)
+		return True
+	except ProcessLookupError:
+		return False
+	except PermissionError:
+		return True
+
+
 def _Job(process_handle):
 	# A job that kills its processes when its last handle closes, with the child in it
 	import ctypes
