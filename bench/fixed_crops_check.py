@@ -11,7 +11,8 @@ for 320 px crops), and then cuts every crop of the set that size
 (talmolab/sleap-nn#778). campy-live corrects that for its own layers
 (live.ExactCropSize, pull request 131), and --fixed-crops always cuts the
 crop size, so both cut the same crops; the sets where sleap-nn alone would
-have cut them short are counted (ShortCrops).
+have cut them short are counted (ShortCrops). A sleap-nn with #780 (after
+0.3.4) cuts them at their real size itself, and the count is 0.
 
     python bench/fixed_crops_check.py --centroid <model> --instance <model> \
         Camera1.mp4 Camera3.mp4 Camera4.mp4 [--sets 3600] [--out check.json]
@@ -59,12 +60,14 @@ class ShortCrops:
 		self.original, self.short = topdown.crop_bboxes, 0
 		topdown.crop_bboxes = self
 
-	def __call__(self, images, bboxes, sample_inds):
+	def __call__(self, images, bboxes, sample_inds, **kwargs):
 		import torch
-		if len(bboxes):
+		# A sleap-nn that passes crop_size= (talmolab/sleap-nn#780, after
+		# 0.3.4) cuts that size: none of its crops are short
+		if len(bboxes) and kwargs.get("crop_size") is None:
 			sides = bboxes[0, 3, 1] - bboxes[0, 0, 1], bboxes[0, 1, 0] - bboxes[0, 0, 0]
 			self.short += int(any(bool(side.abs().to(torch.long) != torch.round(side).to(torch.long)) for side in sides))
-		return self.original(images, bboxes, sample_inds)
+		return self.original(images, bboxes, sample_inds, **kwargs)
 
 
 def Compare(g, d):

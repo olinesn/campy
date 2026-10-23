@@ -203,8 +203,8 @@ def Instrument(model, st, torch):
 	sm = layer._sizematch_like_centroid_layer
 	layer._sizematch_like_centroid_layer = lambda x: st.Time("sizematch", sm, x)
 	crop = td.crop_bboxes
-	def Crop(images, bboxes, inds):
-		out = st.Time("crop", crop, images, bboxes, inds)
+	def Crop(images, bboxes, inds, **kwargs): # crop_size=, from talmolab/sleap-nn#780 on
+		out = st.Time("crop", crop, images, bboxes, inds, **kwargs)
 		st.last_crops = int(bboxes.shape[0])
 		return out
 	td.crop_bboxes = Crop
