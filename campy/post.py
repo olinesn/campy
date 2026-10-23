@@ -362,6 +362,8 @@ def StepCopy(folder, settings, log, stop=None):
 	remote = re.match(r"^[^/\\:]+@[^:]+:", str(to)) is not None # user@host:/path, for rsync
 	dest = "{}/{}".format(str(to).rstrip("/"), name) if remote else os.path.join(str(to), name)
 	t0 = time.monotonic()
+	if not remote:
+		os.makedirs(dest, exist_ok=True) # rsync makes only the last folder of a path (GNU rsync, on Linux)
 	if sys.platform == "win32" and not remote:
 		command = ["robocopy", folder, dest, "/E", "/Z", "/R:3", "/W:10", "/NP", "/NFL", "/NDL"]
 		out = subprocess.run(command, capture_output=True, text=True)
