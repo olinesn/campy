@@ -182,6 +182,53 @@ def test_a_note_is_added_and_nothing_else_changes(tmp_path):
 		manifest.AddNote(str(tmp_path / "nothing"), "x")
 
 
+def test_a_note_given_the_files_path_says_that_path(tmp_path, capsys):
+	(tmp_path / "session.json").write_text(json.dumps({"schema": manifest.SCHEMA, "annotations": []}))
+	assert manifest.NoteMain([str(tmp_path / "session.json"), "x"]) == 0
+	said = capsys.readouterr().out
+	assert "Added to {}:".format(tmp_path / "session.json") in said and "session.json" + os.sep + "session.json" not in said
+
+
+def test_a_reader_holding_the_file_open(tmp_path, monkeypatch):
+	# Windows: a reader that has session.json open stops the rename. Once it
+	# lets go, the rename goes through; one that holds on is written into; one
+	# that lets no one write fails plainly, and nothing is left behind.
+	path = tmp_path / "session.json"
+	path.write_text(json.dumps({"annotations": []}))
+	monkeypatch.setattr(manifest.JsonFile, "REPLACE_WAIT_S", 0)
+	real = os.replace
+	tries = []
+	def held(n):
+		def replace(src, dst):
+			tries.append(1)
+			if len(tries) <= n:
+				raise PermissionError(13, "Access is denied")
+			return real(src, dst)
+		return replace
+	monkeypatch.setattr(manifest.os, "replace", held(3))
+	manifest.AddNote(str(tmp_path), "let go")
+	monkeypatch.setattr(manifest.os, "replace", held(10 ** 6))
+	manifest.AddNote(str(tmp_path), "held on")
+	assert [a["text"] for a in json.loads(path.read_text())["annotations"]] == ["let go", "held on"]
+	def denied(self, text):
+		raise PermissionError(13, "Permission denied", self.path)
+	monkeypatch.setattr(manifest.JsonFile, "WriteInPlace", denied)
+	with pytest.raises(PermissionError, match="close it and try again"):
+		manifest.AddNote(str(tmp_path), "lost")
+	assert [a["text"] for a in json.loads(path.read_text())["annotations"]] == ["let go", "held on"]
+	assert sorted(p.name for p in tmp_path.iterdir()) == ["session.json"] # no .partial, no .lock
+
+
+def test_a_linux_gpu_is_named_from_lspci():
+	# lspci -mm on the EVO-X2: options between the quoted fields
+	line = 'c6:00.0 "Display controller" "Advanced Micro Devices, Inc. [AMD/ATI]" "Device 1586" -rc1 -p00 ' \
+		'"Unknown vendor 2014" "Device 801d"\n'
+	assert manifest.LspciName(line) == "Advanced Micro Devices, Inc. [AMD/ATI] Device 1586"
+	assert manifest.LspciName('01:00.0 "VGA compatible controller" "NVIDIA Corporation" "AD107GL [RTX 2000 Ada]" '
+		'-ra1 "Dell" "Device 0cfd"') == "NVIDIA Corporation AD107GL [RTX 2000 Ada]"
+	assert manifest.LspciName("") is None and manifest.LspciName(None) is None and manifest.LspciName('x "un') is None
+
+
 def test_git_commit_without_git(tmp_path):
 	# The rigs' checkouts, read from the files where git is not installed
 	git = tmp_path / ".git"

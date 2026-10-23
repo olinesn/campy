@@ -29,6 +29,7 @@ Each run records into a new folder inside the config's `videoFolder`, named by t
 | Command | What it does | Guide |
 |---|---|---|
 | `campy-acquire` | Record the cameras | [Recording](docs/acquire.md) |
+| `campy-notify` | Send problems as Slack direct messages, and keep a healthchecks.io heartbeat for unattended recordings | [Alerts](docs/alerts.md) |
 | `campy-config` | Check, show and compare configs without recording (`check`, `show`, `diff`, `where`, `new`); rig profiles | [Configs](docs/configs.md) |
 | `campy-encode-sweep`, `campy-encode-quality` | Measure how many cameras each encoder keeps up with, and what each quality costs | [Video encoding](docs/encoding.md#scaling-the-number-of-cameras) |
 | `campy-flir-reset` | Reset FLIR cameras a restart left at USB 2 speed; turn Spinnaker's GigE search off | [FLIR cameras](docs/flir.md) |
@@ -50,6 +51,7 @@ Each run records into a new folder inside the config's `videoFolder`, named by t
 | [Configs](docs/configs.md) and [Settings reference](docs/config-reference.md) | How campy reads a config, and every key |
 | [Recording with campy-acquire](docs/acquire.md) | Starting and stopping, failures, video that survives a crash, keeping the computer awake, emulated cameras |
 | [Recording folders](docs/recordings.md) | What a recording holds, and `session.json` |
+| [Alerts](docs/alerts.md) | Slack direct messages and a healthchecks.io heartbeat for unattended recordings |
 | [Video encoding](docs/encoding.md) | NVENC, Quick Sync, VA-API, colour range, H.265 on a Mac, how many cameras an encoder keeps up with, building ffmpeg |
 | [FLIR cameras](docs/flir.md) | 43 MB/s after a restart, GigE search, gamma, frame rate, frame size and USB limit |
 | [Triggering and synchronization](docs/sync.md) | Arduino and external triggers, `campy-align`, `campy-synctest` |
