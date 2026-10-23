@@ -66,6 +66,12 @@ def DefaultParams():
 	params["liveFeedName"] = "campy-live" # the shared memory of camera n is <liveFeedName>-<n>
 	params["liveFeedSlots"] = 8 # frames each camera's shared memory holds
 
+	# Recording watch and alerts (campy/watch.py, campy/notify.py)
+	params["alerts"] = True # send the watch's alerts to the alerts file's channels (~/.campy/alerts.yaml)
+	params["alertNoFramesSec"] = 10 # a camera with no frame for this long is an alert
+	params["alertDiskFreeGB"] = 20 # less free space than this on a video folder's disk is an alert
+	params["stopAtFreeGB"] = 2 # stop the recording, cleanly, below this much free space; 0 = never
+
 	# Launch check parameters (campy/preflight.py)
 	params["preflight"] = "error" # "error", "warn" or "off"
 	params["capacityFile"] = "None" # written by campy-encode-sweep; "None" = ~/.campy/capacity.json
@@ -673,6 +679,35 @@ def ParseClargs(parser, argv=None):
 		help="Keep the computer out of sleep and standby while recording, screen included \
 			(default: True). A Windows PC with Modern Standby otherwise goes into standby when \
 			its screen times out, and the recording slows to a crawl.",
+	)
+	parser.add_argument(
+		"--alerts",
+		dest="alerts",
+		type=ConfigValue(bool, lists=False),
+		help="Send the recording watch's alerts (a camera with no frames, dropped frames, a stalled encoder, \
+			ffmpeg stopping, a disk filling up, the trigger gone) to the channels in the alerts file, \
+			~/.campy/alerts.yaml (default: True; without that file nothing is sent). They are said on \
+			the console either way. See docs/alerts.md.",
+	)
+	parser.add_argument(
+		"--alertNoFramesSec",
+		dest="alertNoFramesSec",
+		type=ConfigValue(float, lists=False),
+		help="A camera that has sent frames and sends none for this many seconds is an alert (default: 10).",
+	)
+	parser.add_argument(
+		"--alertDiskFreeGB",
+		dest="alertDiskFreeGB",
+		type=ConfigValue(float, lists=False),
+		help="Less free space than this on a video folder's disk is an alert (default: 20).",
+	)
+	parser.add_argument(
+		"--stopAtFreeGB",
+		dest="stopAtFreeGB",
+		type=ConfigValue(float, lists=False),
+		help="Below this much free space on a video folder's disk, campy stops the recording, cleanly, as at \
+			Ctrl-C, so that every video and its metadata are whole: a full disk stops every ffmpeg at once and \
+			leaves no room for them (default: 2; 0 = never).",
 	)
 	parser.add_argument(
 		"--liveFeed",

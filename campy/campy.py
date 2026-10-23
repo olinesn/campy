@@ -19,7 +19,7 @@ campy-acquire ./configs/campy_config.yaml
 import os, time, sys, logging, threading, queue
 from collections import deque
 import multiprocessing as mp
-from campy import writer, configurator, preflight, newfiles, keepawake
+from campy import writer, configurator, preflight, newfiles, keepawake, status, watch
 from campy.trigger import trigger
 from campy.cameras import unicam, emu
 from campy.utils.utils import HandleKeyboardInterrupt, Say, ErrorText, StartPrinter, StopPrinter
@@ -129,6 +129,12 @@ def AcquireOneCamera(n_cam):
 	return recording
 
 
+def SessionFolder(params):
+	# This run's folder: its videoFolder, which is the session's own with sessionFolder (newfiles.UseSession)
+	folder = params.get("videoFolder")
+	return folder if isinstance(folder, str) else None
+
+
 def ShowPreview(cam_params, dispQueue):
 	# The display thread. Qt is imported here, not in the camera process's main
 	# thread: Qt takes the first thread that loads it as its main thread, and
@@ -143,11 +149,12 @@ def InitCameraProcess(readyQueue):
 	unicam.SetReadyQueue(readyQueue)
 
 
-def RunCamera(n_cam, readyQueue, done, start=None):
+def RunCamera(n_cam, readyQueue, done, start=None, counters=None):
 	# One camera process: records its camera, then tells Main what went wrong,
 	# if anything (done: unicam.TellMain). One that ends without saying died,
 	# and Main says so. start: when an emulated camera's frame 0 is due, which
 	# Main sets once every camera is ready (cameras/emu.py StartClock).
+	# counters: every camera's, which Main's recording watch reads (status.py).
 	# What it says is written by a thread of its own, so that a slow console
 	# or log file never holds up its camera; all of it, before it ends
 	StartPrinter()
@@ -155,6 +162,7 @@ def RunCamera(n_cam, readyQueue, done, start=None):
 		InitCameraProcess(readyQueue)
 		unicam.SetMainConnection(done)
 		emu.SetStartClock(start)
+		status.Set(counters, n_cam)
 		# Not throttled should standby start anyway (Windows); released as it ends
 		keepawake.KeepAwake(params.get("keepAwake", True), whole=False).Start()
 		recording = AcquireOneCamera(n_cam)
@@ -225,9 +233,13 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 		# Emulated cameras (cameraMake "emu") time their frames from one start,
 		# set below once every camera is ready, as a hardware trigger starts them
 		start = ctx.Value("d", 0.0, lock=False)
-		cameras = unicam.CameraProcesses(ctx, RunCamera, params, readyQueue, start=start)
+		# Each camera's counters, which the recording watch reads (status.py, watch.py)
+		counters = status.Make(ctx, params["numCams"])
+		cameras = unicam.CameraProcesses(ctx, RunCamera, params, readyQueue, start=start, counters=counters)
 
 		# The trigger stops and the systems close whatever happens here
+		guard = None
+		failures = {}
 		try:
 			# Start the trigger only once every camera is grabbing, so that every
 			# camera's first frame is the trigger's first pulse, and once the
@@ -239,8 +251,20 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 				systems = trigger.StartTriggers(systems, params)
 				emu.StartClock(start)
 			trigger.SaveStart(params, ready, missing, systems.get("triggerStartedNs"))
+			# The recording watch: alerts (Slack, the console) while it records, and a clean stop before the
+			# disk is full (watch.py). Whatever goes wrong in it, the recording goes on.
+			try:
+				guard = watch.Watch(params, systems, cameras, counters, folder=SessionFolder(params),
+					cams=preflight.CameraList(systems, params), stopping=lambda: interrupts.count > 0).Start()
+			except Exception as e:
+				Say("The recording watch did not start: {}. Recording without it.".format(ErrorText(e)))
 			failures = cameras.Wait(interrupts)
+			if guard is not None and guard.stopped:
+				for name in cameras.names:
+					failures.setdefault(name, []).append("stopped early: {}".format(guard.stopped))
 		finally:
+			if guard is not None:
+				guard.Stop(failures)
 			awake.Stop()
 			CloseSystems(systems, params)
 			# The files still empty go: a camera that saved no frames leaves
