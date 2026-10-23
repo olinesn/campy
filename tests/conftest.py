@@ -38,3 +38,12 @@ def no_real_alerts(monkeypatch, tmp_path_factory):
 	folder = tmp_path_factory.mktemp("campy-home")
 	monkeypatch.setenv("CAMPY_ALERTS_FILE", str(folder / "no-alerts.yaml"))
 	monkeypatch.setenv("CAMPY_STATUS_DIR", str(folder / "status"))
+
+
+OUTPUTS_SKETCH = os.path.join(os.path.dirname(HERE), "campy", "outputs_board", "campy_outputs", "campy_outputs.ino")
+
+
+@pytest.fixture(scope="session")
+def outputs_sim(tmp_path_factory):
+	# campy/outputs_board/campy_outputs: the board campy-rules switches
+	return Compile(OUTPUTS_SKETCH, str(tmp_path_factory.mktemp("outputs") / "sim"))
