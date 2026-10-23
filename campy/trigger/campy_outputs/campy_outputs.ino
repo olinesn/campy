@@ -326,9 +326,9 @@ void Rose(int64_t t) {
   frame++;
   rises[frame % RISES] = t;
   int8_t level[MAX_CH];
+  for (int ch = 0; ch < MAX_CH; ch++) { level[ch] = -1; } // all of it before Clash reads it
   bool any = false;
   for (int ch = 0; ch < MAX_CH; ch++) {
-    level[ch] = -1;
     Channel& c = chans[ch];
     if (c.remaining == 0 || c.width <= 0 || frame < (int64_t) c.phase) { continue; }
     if ((uint64_t) (frame - (int64_t) c.phase) % c.every != 0) { continue; }
