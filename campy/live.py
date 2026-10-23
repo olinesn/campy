@@ -2323,6 +2323,25 @@ class Log:
 
 # ---------------------------------------------------------------- the program
 
+def Ready(path):
+	"""
+	Says campy-live is ready (--ready-file): its models loaded and warmed up,
+	about to wait for the feed. A program that starts campy-live before
+	campy-acquire (campy-session) waits for this file, so the recording is
+	analysed from its first frame. JSON: {"pid", "time"}, written beside it
+	and moved into place, so it is never seen half written.
+	"""
+	path = os.path.abspath(path)
+	tmp = "{}.{}.tmp".format(path, os.getpid())
+	try:
+		os.makedirs(os.path.dirname(path), exist_ok=True)
+		with open(tmp, "w") as f:
+			json.dump({"pid": os.getpid(), "time": datetime.now().astimezone().isoformat(timespec="milliseconds")}, f)
+		os.replace(tmp, path)
+	except OSError as e:
+		Say("Could not write the ready file (--ready-file) {}: {}".format(path, e))
+
+
 def Run(args):
 	names = args.rings.split(",") if args.rings else [livefeed.RingName(args.name, n) for n in range(args.cameras)]
 	stopping = []
@@ -2349,6 +2368,8 @@ def Run(args):
 		model, host = Prepare(args, len(names), *expected)
 		if args.calibration:
 			from campy import pose3d
+		if args.ready_file:
+			Ready(args.ready_file)
 		if not cameras.Attach(wait=args.wait_sec, stop=stop):
 			Say("No live feed: stopped." if stop() else "No live feed after {:g} s.".format(args.wait_sec))
 			return 1
@@ -2633,6 +2654,8 @@ def ParseArgs(argv=None):
 	p.add_argument("--results-feed", default="on", choices=["on", "off"], help="on: each set's row also into \
 		shared memory <name>-results, as it is logged, for campy-live-view to show on the frames.")
 	p.add_argument("--wait-sec", type=float, default=float("inf"), help="How long to wait for the feed.")
+	p.add_argument("--ready-file", default="", help="Write this file (JSON: pid, time) once the models are ready, "
+		"as campy-live starts waiting for the feed: for a program that starts campy-acquire after campy-live.")
 	p.add_argument("--poll-ms", type=float, default=0.5, help="How often to look for a new set.")
 	p.add_argument("--report-sec", type=float, default=10, help="Say how it goes this often; 0: only at the end.")
 	p.add_argument("--nice", type=int, default=0, help="Lower this program's CPU priority by this much (POSIX).")
