@@ -102,8 +102,12 @@ the lowest priority: 4 while it waits for frames, and while they come, 0 to
 second (NVML, through the nvidia-ml-py package's pynvml if installed, else
 nvidia-smi; on ROCm the driver's pp_dpm_sclk) and spins one block more
 when the clock falls below 90% of the fastest it has seen, one fewer after
-10 s at full clock. The GPU then looks busy and stays at its full clock,
-for about 20 W while waiting (against 2.5 W idle). The model's work goes
+10 s at full clock. When one fewer turns out too few (the clock falls
+again within those 10 s: an RTX 6000 Ada's fell to 800-975 MHz for 1.3 s,
+every set 3-4 times slower), it puts the block back and never tries that
+count again on that GPU until the computer restarts (gpu_clock.json in
+--engine-cache, by the GPU's UUID). The GPU then looks busy and stays at
+its full clock, for about 20 W while waiting (against 2.5 W idle). The model's work goes
 first, on the GPU's other blocks, but a spinning block still costs it
 about 0.3 ms a set (2, 0.55 ms), so none spin when the clock stays up
 without them (an RTX 2000 Ada did so after a restart, not after two days up). A clock that the
@@ -112,7 +116,9 @@ GPU (the EVO-X2's, which shares its chip with the CPU) at least 1 spins
 while sets come: with none, its clock still read 2650-2850 MHz, yet each
 set took about 1 ms longer (13.7 against 12.8 ms, 5 mice, --fixed-crops
 --cuda-graphs) and the CPU's 3D step too, so the whole chip slows down
-between sets, which its GPU clock doesn't show. auto: on with a GPU
+between sets, which its GPU clock doesn't show. Each spin is about 2 ms
+(on ROCm, whose counter runs at a fixed 100 MHz, fewer cycles: 50 ms
+spins made the feed's first set wait for one, 17-57 ms). auto: on with a GPU
 (NVIDIA's CUDA and AMD's ROCm); off with MPS and the CPU.
 
 CPUs (--cpus, --priority, --campy-cpus): on a CPU with performance cores
@@ -1499,12 +1505,18 @@ class GpuClock:
 	second's sets took 20 ms instead of 13. While sets come (Busy), blocks
 	spin (--hold-gpu-clock-blocks): a number, or auto, from fewest to
 	MOST_BUSY as the GPU's clock needs (Adjust), read by a ClockReader:
-	fewest is 1 on an AMD integrated GPU (Fewest), else 0. Each spinner's
-	thread waits on an event that lets it sleep, so they cost no CPU core.
-	Each spins on a stream of its own, the same at every Start (FixedStream).
+	fewest is 1 on an AMD integrated GPU (Fewest), else 0, or more where a
+	try at fewer turned out too few on this GPU since its computer started
+	(memory, Remember). Each spinner's thread waits on an event that lets it
+	sleep, so they cost no CPU core. Each spins on a stream of its own, the
+	same at every Start (FixedStream).
 	"""
 
 	CYCLES = 5000000 # one spin: 2 ms at 2.5 GHz, 24 ms at the idle clock
+	# ROCm's _sleep counts a fixed 100 MHz clock: 5000000 spun 50 ms on the
+	# EVO-X2, and the feed's first set, launched while the WAITING_BLOCKS
+	# spun, waited for one to end (17-57 ms, the next frames skipped)
+	ROCM_CYCLES = 200000 # 2 ms
 	WAITING_BLOCKS, WAITING_S = 4, 0.5
 	# auto, while sets come: at most 2 (in the benchmark, an RTX 2000 Ada that
 	# had fallen into its slow clock reached 1635 MHz with 1, 2295 with 2, and
@@ -1513,12 +1525,14 @@ class GpuClock:
 	LOOK_S = 0.5 # how often auto reads the clock
 	LOW = 0.9 # a clock below this share of the fastest seen is too slow
 	LOW_LOOKS = 2 # this many slow looks in a row: one block more
-	CALM_S = 10.0 # at full clock this long: one block fewer...
-	MOST_CALM_S = 320.0 # ...or twice as long as last time, up to this, when the last one fewer was too few
+	CALM_S = 10.0 # at full clock this long: one block fewer, unless that count was too few before
+	BOOT_S = 120.0 # a remembered fewest with its computer's start this near now's is the same start
 
-	def __init__(self, device, blocks="auto", reader=None, fewest=None):
+	def __init__(self, device, blocks="auto", reader=None, fewest=None, memory=None):
 		import torch
 		self.torch, self.device = torch, device
+		if getattr(getattr(torch, "version", None), "hip", None):
+			self.CYCLES = self.ROCM_CYCLES
 		self.stop = threading.Event()
 		self.threads = []
 		self.spins = 0
@@ -1527,6 +1541,12 @@ class GpuClock:
 		self.reader = (reader or ClockReader.For(device)) if self.auto else None
 		# auto's fewest while sets come; without the clock to read, it spins FIRST_BUSY
 		self.fewest = (self.Fewest(torch, device) if fewest is None else fewest) if self.auto else 0
+		# memory: a JSON file of each GPU's fewest found too few to go below
+		self.memory, self.gpu, self.remembered, self.learned = (memory if self.auto else None), None, 0, 0
+		if self.memory:
+			self.gpu = self.GpuId(torch, device)
+			self.remembered = self.Recall()
+			self.fewest = max(self.fewest, self.remembered)
 		self.busy = max(self.FIRST_BUSY, self.fewest) if self.auto else int(blocks)
 		self.fastest = self.mhz = 0.0 # MHz
 		self.clocks = [] # MHz, read while sets came
@@ -1545,6 +1565,66 @@ class GpuClock:
 		except Exception:
 			return 0
 		return 1 if getattr(torch.version, "hip", None) and integrated else 0
+
+	@staticmethod
+	def GpuId(torch, device):
+		# the GPU's UUID (else its name), as its fewest is remembered under
+		try:
+			return ClockReader.Uuid(torch, device)
+		except Exception:
+			try:
+				return str(torch.cuda.get_device_properties(torch.device(device)).name) or None
+			except Exception:
+				return None
+
+	@staticmethod
+	def Boot():
+		# when this computer started (time.time() s): a restart can lift a
+		# GPU's slow clock (an RTX 2000 Ada kept its full clock with no block
+		# spinning after a restart, not after two days up)
+		try:
+			import psutil
+			return float(psutil.boot_time())
+		except Exception:
+			return time.time() - time.monotonic()
+
+	def Load(self):
+		try:
+			with open(self.memory) as f:
+				known = json.load(f)
+			return known if isinstance(known, dict) else {}
+		except Exception: # none yet, or unreadable: nothing remembered
+			return {}
+
+	def Recall(self):
+		# the fewest remembered for this GPU since this computer started, else 0
+		entry = self.Load().get(self.gpu) if self.gpu else None
+		try:
+			if abs(float(entry["boot"]) - self.Boot()) < self.BOOT_S:
+				return max(0, min(int(entry["fewest"]), self.MOST_BUSY))
+		except Exception:
+			pass
+		return 0
+
+	def Remember(self):
+		# this GPU's fewest, from a try at fewer that was too few: not tried
+		# again (that try's slow sets: an RTX 6000 Ada fell to 800-975 MHz,
+		# every set 3-4 times slower, for ~1.3 s) until the computer restarts
+		self.learned = self.fewest
+		if not (self.memory and self.gpu):
+			return
+		try:
+			known = self.Load()
+			known[self.gpu] = {"fewest": self.fewest, "boot": self.Boot(),
+				"when": datetime.now().isoformat(timespec="seconds")}
+			folder = os.path.dirname(os.path.abspath(self.memory))
+			os.makedirs(folder, exist_ok=True)
+			part = "{}.{}.part".format(self.memory, os.getpid())
+			with open(part, "w") as f:
+				json.dump(known, f, indent=1)
+			os.replace(part, self.memory)
+		except Exception: # a folder not written: remembered for this run only
+			pass
 
 	def Busy(self):
 		self.lastSet = time.monotonic()
@@ -1593,7 +1673,10 @@ class GpuClock:
 			self.clocks.append(mhz)
 			self.mhz = mhz
 			self.time[self.busy] = self.time.get(self.busy, 0.0) + self.LOOK_S
+			fewest = self.fewest
 			low, calmSince, fewerAt = self.Adjust(mhz, limited, low, calmSince, fewerAt, time.monotonic())
+			if self.fewest > fewest:
+				self.Remember()
 
 	def Adjust(self, mhz, limited, low, calmSince, fewerAt, now):
 		"""
@@ -1602,15 +1685,18 @@ class GpuClock:
 		calm (at full clock) for self.calm, one fewer. A clock held down by
 		the GPU's power or heat (limited) is not raised: more blocks would
 		only take power from the model. When one fewer turned out too few
-		within self.calm, the next try waits twice as long.
+		(the clock fell within self.calm), the block put back, that count
+		becomes this GPU's fewest: not tried again (Watch remembers it till
+		the computer restarts).
 		"""
+		trying = fewerAt is not None and now - fewerAt < self.calm
 		if mhz < self.LOW * self.fastest and not limited:
 			low += 1
 			if low >= self.LOW_LOOKS and self.busy < self.MOST_BUSY:
 				self.busy += 1
 				self.changes += 1
-				if fewerAt is not None and now - fewerAt < self.calm:
-					self.calm = min(2 * self.calm, self.MOST_CALM_S)
+				if trying:
+					self.fewest = max(self.fewest, self.busy)
 				return 0, now, None
 			return low, now, fewerAt
 		if now - calmSince >= self.calm and self.busy > self.fewest:
@@ -1630,6 +1716,10 @@ class GpuClock:
 		d = {"blocks_while_sets_come": "auto" if self.auto else self.busy}
 		if self.fewest:
 			d["fewest_blocks"] = self.fewest
+		if self.remembered:
+			d["fewest_remembered"] = self.remembered # from an earlier run on this GPU, since its computer started
+		if self.learned:
+			d["fewest_learned"] = self.learned # in this run: a try at fewer was too few
 		if self.auto:
 			total = sum(self.time.values())
 			d.update(clock_read_by=self.reader.name if self.reader else None,
@@ -2294,7 +2384,8 @@ def Run(args):
 			return 1
 		Say("Live feed: {}.".format(cameras.Describe()))
 		if HoldsClock(args, model):
-			clock = GpuClock(model.device, args.hold_gpu_clock_blocks)
+			clock = GpuClock(model.device, args.hold_gpu_clock_blocks,
+				memory=os.path.join(FixedEngine.CacheDir(getattr(args, "engine_cache", "")), "gpu_clock.json"))
 			clock.Start()
 		if placed:
 			PlaceCampy(args, cameras.readers)
@@ -2608,7 +2699,7 @@ def ParseArgs(argv=None):
 		torch, and campy-live says why. on: auto's choice, and stop if it can't be made. off (or eager): none.")
 	p.add_argument("--engine-cache", default="", help="--engine: the folder its built engines are kept in and \
 		read back from: TensorRT's plans, and torch.compile's kernels in inductor/ unless TORCHINDUCTOR_CACHE_DIR \
-		is set (default: ~/.cache/campy/engines).")
+		is set (default: ~/.cache/campy/engines). --hold-gpu-clock-blocks auto keeps gpu_clock.json there too.")
 	p.add_argument("--fast-upsample", default="auto", choices=["auto", "on", "off"], help="Time each bilinear \
 		upsampling layer of the models in both memory layouts (NCHW and channels_last) while warming up, for each \
 		shape of input, and run it in the faster one: the same results (see campy-live's help). auto: on with \
@@ -2618,8 +2709,8 @@ def ParseArgs(argv=None):
 		(see campy-live's help). auto: on with a GPU (NVIDIA's CUDA or AMD's ROCm).")
 	p.add_argument("--hold-gpu-clock-blocks", default="auto", type=lambda v: v if v == "auto" else str(int(v)),
 		help="How many blocks spin while sets come: auto (0 to 2, as the GPU's clock needs, read through NVML, \
-		nvidia-smi or sysfs; 1 when it can't be read; at least 1 on an AMD integrated GPU, as the EVO-X2's) or a \
-		number.")
+		nvidia-smi or sysfs; 1 when it can't be read; at least 1 on an AMD integrated GPU, as the EVO-X2's; a count \
+		found too few on a GPU isn't tried again there until the computer restarts) or a number.")
 	return p.parse_args(argv)
 
 
