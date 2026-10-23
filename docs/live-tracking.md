@@ -67,7 +67,7 @@ Both environments must have the same campy installed, or `campy-session` stops b
    - the same combined into one file (`session-config.yaml`): every setting, with the profile and the command-line options in it, each line saying where its value came from. `campy-session post` reads it again;
    - the config campy-acquire runs (`campy-acquire.yaml`): the same, with `liveFeed: True` when something reads the feed.
 3. It starts `campy-live` and waits until its models are warmed up: 5–40 s, longest the first time an engine is built (`live.ready_timeout_s`, default 120 s).
-4. It starts `campy-live-view` (with `view`), then `campy-acquire`, which records into that folder.
+4. It starts `campy-live-view` (with `view`), then `campy-acquire`, which records into that folder. `campy-live` tracks from its first frame.
 5. The recording ends at `recTimeInSec`, or at Ctrl-C. `campy-live` tracks to the last frame and ends by itself. The view closes, unless `keep_open` is set.
 
 Each program's output is shown in the terminal, each line marked `[acquire]`, `[live]` or `[view]`, and kept in `<folder>/logs/<program>.log`. `campy-live`'s results go into the recording's folder (`campy-live.npy` and `.json`), ready for `campy-live-export`. `<folder>/launcher.json` records when each program started and ended, and its exit code. The exit code is campy-acquire's: 0 when every camera recorded to the end.
@@ -160,7 +160,7 @@ The three programs can also be started separately, as `campy-session` does:
    ```
    campy-acquire <config>.yaml --liveFeed True
    ```
-   Because `campy-live` is already waiting, it analyses the recording from the first frame.
+   Because `campy-live` is already waiting, it analyses the recording from the first frame. It looks for the feed every 20 ms and takes its first set at once, writing `campy-live-session.json` in the background. On the Precision 7875, with three emulated cameras at 60 fps and the trained models with 3D, it tracked from frame 1 both ways, by hand and through `campy-session`, with all 1,200 sets tracked and none skipped. On dev between pull requests 163 and 183 (never in a release), writing that file came first, and the first 64–73 frames, 1.1–1.2 s, went untracked.
 3. **Optionally, watch it** in the inference environment:
    ```
    campy-live-view

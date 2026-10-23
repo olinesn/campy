@@ -456,9 +456,9 @@ def test_campy_live_waits_for_a_ring_still_being_made(rings):
 def _record(prefix, cameras, frames, rate, delay, trigger=None):
 	# campy-acquire's rings, made after delay, and frames at rate from when
 	# trigger is set: campy makes its rings a few seconds before the trigger,
-	# and a campy-live already waiting attaches meanwhile. A recording of
-	# 0.3 s started at once could end between campy-live's looks for the
-	# feed (every 0.2 s), and it would wait for the next one.
+	# and a campy-live already waiting attaches meanwhile. A short recording
+	# started at once could end between campy-live's looks for the feed
+	# (every 20 ms), and it would wait for the next one.
 	time.sleep(delay)
 	writers = [livefeed.RingWriter(livefeed.RingName(prefix, c), (16, 20), np.uint8, slots=4, frameRate=rate,
 		camera=c, cameraName="Camera{}".format(c)) for c in range(cameras)]
@@ -503,6 +503,17 @@ def test_campy_live_reads_a_recording_to_its_end(tmp_path, capsys):
 	assert summary["ended"] == "the recording ended"
 	text = capsys.readouterr().out
 	assert "Waiting for the live feed" in text and "Done, the recording ended" in text
+
+
+def test_campy_live_waiting_tracks_from_the_first_frames(tmp_path):
+	# Started first, it looks for the feed every 20 ms: a camera without a
+	# trigger sends its first frame as its ring is made, at 60 fps one every
+	# 17 ms; it looked every 0.2 s, and missed up to 12
+	out = str(tmp_path / "live")
+	assert run_live(name(), out, ["--model", "none", "--report-sec", "0", "--wait-sec", "30"], frames=60, rate=60,
+		delay=0.5, triggered=False) == 0
+	rows = np.load(out + ".npy")
+	assert rows["frame"][0] <= 6 and rows["frame"][-1] == 60
 
 
 def log_sets(log, first, count):
@@ -606,11 +617,13 @@ def seeing(tmp_path, monkeypatch):
 	return args, truth, order
 
 
-def run_live(prefix, out, args, frames=60, rate=200, delay=0.3):
+def run_live(prefix, out, args, frames=60, rate=200, delay=0.3, triggered=True):
 	# campy-live on a recording of 3 cameras' frames, from a thread: its rings
 	# made after delay, its frames from when campy-live has attached to them
+	# (triggered), or else from when the rings are made, as cameras without a
+	# trigger send them
 	trigger = threading.Event()
-	t = threading.Thread(target=_record, args=(prefix, 3, frames, rate, delay, trigger))
+	t = threading.Thread(target=_record, args=(prefix, 3, frames, rate, delay, trigger if triggered else None))
 	attach = live.Cameras.Attach
 
 	def Attach(cameras, *a, **k):

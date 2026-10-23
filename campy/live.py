@@ -298,7 +298,10 @@ class Cameras:
 				if reader is not None and reader.Ended():
 					reader.Close()
 					self.readers[i] = None
-			time.sleep(0.2)
+			# Every 20 ms: cameras without a trigger (emulated ones) send their
+			# first frame as their ring is made, and each look missed is a
+			# frame or two of the recording's start not analysed
+			time.sleep(0.02)
 		shapes = {(r.shape, r.dtype.str) for r in self.readers}
 		if len(shapes) > 1:
 			raise ValueError("the cameras' frames differ in size or type: {}".format(
@@ -2386,7 +2389,10 @@ def Run(args):
 
 	cameras = Cameras(names, poll=args.poll_ms / 1e3)
 	log = worker = clock = session = None
-	models = ModelRecords(args) # the models' SHA-256s, read meanwhile
+	# What campy-live-session.json says of the models, campy and the computer,
+	# read meanwhile: the models' SHA-256s, git, nvidia-smi and PowerShell take
+	# a second or more, done before the feed comes
+	facts = SessionFacts(args)
 	# The progress lines, from a thread of their own: printed in the loop,
 	# into a log file on the disk the videos go to, one could wait as long as
 	# a log write
@@ -2431,7 +2437,9 @@ def Run(args):
 		tracker = Pose3D(args, [r.cameraName for r in cameras.readers]) if args.calibration else None
 
 		out = args.out or "campy-live_{}".format(datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
-		session = StartSession(args, model, tracker, cameras, models, out, warnings)
+		# campy-live-session.json, from a thread of its own: the first set is
+		# taken without waiting for its write
+		session = SessionFile(args, model, tracker, cameras, facts, out, warnings)
 		log = Log(out + ".npy", len(names), model.instances, model.nodes or args.nodes, frameRate,
 			tracker.animals if tracker else 0)
 		if args.results_feed == "on":
@@ -2475,7 +2483,7 @@ def Run(args):
 			results_feed=log.results.name if log.results else None,
 			gpu_clock_held=clock is not None, gpu_clock=clock.Describe() if clock is not None else None,
 			ended="stopped (Ctrl-C)" if stop() else "the recording ended")
-		summary["session"] = session.path if session else None
+		summary["session"] = session.Path() if session else None
 		with open(out + ".json", "x") as f:
 			json.dump(summary, f, indent=2)
 		Say("Done, {}: {}".format(summary["ended"], Line(summary, log)))
@@ -2510,29 +2518,37 @@ def Run(args):
 				stopWatch.Stop()
 
 
-class ModelRecords:
+class SessionFacts:
 	"""
-	The trained models' records for campy-live-session.json (manifest.
-	ModelRecord), made on a thread of their own as campy-live starts: a
-	best.ckpt can be several hundred MB to hash.
+	What campy-live-session.json says that does not depend on the feed, made
+	on a thread of its own as campy-live starts, while its models load: the
+	trained models' records (manifest.ModelRecord; a best.ckpt can be several
+	hundred MB to hash), and campy's and the computer's (git, nvidia-smi and,
+	on Windows, PowerShell take a second or more).
 	"""
 
 	def __init__(self, args):
-		self.records = {}
+		self.facts = {"models": {}}
 		folders = {"centroid": args.centroid, "instance": args.instance} if args.model == "sleap" else {}
-		self.thread = threading.Thread(target=self.Run, args=(folders,), daemon=True, name="campy-live model hashes")
+		self.thread = threading.Thread(target=self.Run, args=(folders,), daemon=True, name="campy-live session facts")
 		self.thread.start()
 
 	def Run(self, folders):
 		for kind, folder in folders.items():
 			try:
-				self.records[kind] = manifest.ModelRecord(folder)
+				self.facts["models"][kind] = manifest.ModelRecord(folder)
 			except Exception as e:
-				self.records[kind] = {"folder": folder, "error": str(e)}
+				self.facts["models"][kind] = {"folder": folder, "error": str(e)}
+		for key, read in (("campy", manifest.CampyInfo), ("host", lambda: manifest.HostInfo(manifest.LIVE_PACKAGES,
+				ffmpeg=False))):
+			try:
+				self.facts[key] = read()
+			except Exception as e:
+				self.facts[key] = {"error": str(e)}
 
 	def Get(self):
 		self.thread.join()
-		return self.records
+		return self.facts
 
 
 def RunContext(model):
@@ -2567,35 +2583,68 @@ def DefaultWarnings(args, model):
 	return warnings
 
 
-def StartSession(args, model, tracker, cameras, models, out, warnings):
+class SessionFile:
 	"""
 	Writes campy-live-session.json (manifest.LiveSession): into the
-	recording's folder, which the feed says, else beside the log. Returns it,
-	or None when it could not be made: it never stops campy-live.
+	recording's folder, which the feed says, else beside the log. From a
+	thread of its own, once the feed is found: the first sets are not kept
+	waiting for SessionFacts or the disk. Path and End wait for it. It never
+	stops campy-live: what fails is said, and the run goes on without it.
 	"""
-	try:
-		recording = livefeed.RecordingFolder(cameras.readers)
-		session = manifest.LiveSession(manifest.LiveSession.Place(recording, out), say=Say)
-		calibration = None
-		if tracker is not None:
-			calibration = manifest.FileRecord(args.calibration)
-			calibration["cameraNames"] = tracker.names
-		describe = lambda name: getattr(model, name)() if hasattr(model, name) else None
-		reader = cameras.readers[0]
-		session.Start(args, Parser(), getattr(args, "argv", None) or [], recording, models.Get(), calibration,
-			warnings, extra={
+
+	def __init__(self, args, model, tracker, cameras, facts, out, warnings):
+		self.session = None
+		try:
+			# What the feed and the model say, now, on campy-live's own thread
+			reader = cameras.readers[0]
+			describe = lambda name: getattr(model, name)() if hasattr(model, name) else None
+			self.recording = livefeed.RecordingFolder(cameras.readers)
+			self.extra = {
 				"feed": {"rings": list(cameras.names), "cameras": [r.cameraName for r in cameras.readers],
 					"frameShape": list(reader.shape), "frameRate": reader.Info("frameRate")},
 				"model": {"kind": args.model, "description": model.Describe(), "device": str(getattr(model, "device", "")),
 					"engine": describe("DescribeEngine"), "nodes": getattr(model, "nodeNames", None)},
 				"pose3d": {"animals": tracker.animals, "description": tracker.Describe()} if tracker else None,
 				"log": os.path.abspath(out + ".npy"),
-				})
-	except Exception as e:
-		Say("Could not write campy-live-session.json: {}. Tracking goes on.".format(e))
-		return None
-	Say("How this run is made: {}.".format(session.path))
-	return session
+				}
+			names = tracker.names if tracker is not None else None
+		except Exception as e:
+			self.thread = None
+			Say("Could not write campy-live-session.json: {}. Tracking goes on.".format(e))
+			return
+		self.thread = threading.Thread(target=self.Run, args=(args, facts, out, warnings, names), daemon=True,
+			name="campy-live session file")
+		self.thread.start()
+
+	def Run(self, args, facts, out, warnings, names):
+		try:
+			session = manifest.LiveSession(manifest.LiveSession.Place(self.recording, out), say=Say)
+			calibration = None
+			if names is not None:
+				calibration = manifest.FileRecord(args.calibration)
+				calibration["cameraNames"] = names
+			known = facts.Get()
+			session.Start(args, Parser(), getattr(args, "argv", None) or [], self.recording, known["models"],
+				calibration, warnings, extra=self.extra, facts=known)
+		except Exception as e:
+			Say("Could not write campy-live-session.json: {}. Tracking goes on.".format(e))
+			return
+		self.session = session
+		Say("How this run is made: {}.".format(session.path))
+
+	def Wait(self):
+		if self.thread is not None:
+			self.thread.join()
+		return self.session
+
+	def Path(self):
+		session = self.Wait()
+		return session.path if session is not None else None
+
+	def End(self, summary, log, stopped=False, error=None):
+		session = self.Wait()
+		if session is not None:
+			session.End(summary, log, stopped=stopped, error=error)
 
 
 def Publish(args, log, names, cameras, model, tracker, frameRate):
