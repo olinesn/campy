@@ -205,10 +205,11 @@ def test_a_disk_that_fills_stops_the_recording_cleanly(tmp_path, service):
 	texts = Texts(service)
 	assert any(t.startswith("The disk with ") and "campy will then stop the recording, cleanly." in t for t in texts), \
 		texts
-	(stop,) = [t for t in texts if re.match(r"Only 1\.\d\d GB free", t)]
+	(stop,) = [t for t in texts if "stopping the recording now" in t] # below 2 GB: when, on a slow computer, varies
+	assert re.match(r"Only [01]\.\d\d GB free on the disk with ", stop), stop
 	assert stop.endswith("stopping the recording now, cleanly, so that every video and its metadata are whole "
 		"(stopAtFreeGB 2).")
-	assert re.match(r"Recording \S+ stopped by campy after \d+ s: only 1\.\d\d GB free on the disk with ", texts[-1])
+	assert re.match(r"Recording \S+ stopped by campy after \d+ s: only [01]\.\d\d GB free on the disk with ", texts[-1])
 	assert "2 of 2 cameras did not record to the end" in out
 	# Every camera's files, whole: as many frames in the video as metadata.csv and frametimes.npy say
 	import imageio_ffmpeg

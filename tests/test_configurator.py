@@ -75,12 +75,12 @@ def test_display_rate_zero_means_headless(tmp_path, monkeypatch):
 	assert configurator.ConfigureParams()["displayFrameRate"] == 0
 
 
-def test_range_checks_take_one_value_per_camera(capsys):
-	p = params(3, frameRate=[60, 60, -1], cameraExposureTimeInUs=[1500, 1500, 10000])
-	p = configurator.AutoParams(p, configurator.DefaultParams())
-	assert p["frameRate"] == [60, 60, 100] # the bad one reset to the default
-	assert p["cameraExposureTimeInUs"] == [1500, 1500, 10000]
-	assert "frameRate set to invalid value" in capsys.readouterr().out
+def test_out_of_range_values_stop_campy(tmp_path, monkeypatch):
+	# They used to be reset to the default: frameRate 0 recorded at 100 fps, cameraGain 0 at 1
+	with pytest.raises(configurator.ConfigError, match=r"c.yaml:2: frameRate: -1 is not a number above 0"):
+		run_config(tmp_path, monkeypatch, {"frameRate": [60, -1]})
+	p = run_config(tmp_path, monkeypatch, {"cameraGain": 0, "quality": 0, "cameraExposureTimeInUs": [1500, 10000]})
+	assert (p["cameraGain"], p["quality"], p["cameraExposureTimeInUs"]) == (0, 0, [1500, 10000])
 
 
 def test_trigger_rate_with_a_free_running_camera():
@@ -204,13 +204,16 @@ def test_bad_values_name_the_option(capsys):
 def test_overrides_get_the_config_checks(tmp_path, monkeypatch, capsys):
 	config = tmp_path / "c.yaml"
 	config.write_text(yaml.safe_dump({"numCams": 2, "cameraMake": "emu", "cameraTrigger": "Line3"}))
-	argv = ["campy-acquire", str(config), "--quality", "[24, 26]", "--cameraTrigger", "None", "--frameRate", "-5"]
+	argv = ["campy-acquire", str(config), "--quality", "[24, 26]", "--cameraTrigger", "None"]
 	monkeypatch.setattr(sys, "argv", argv)
 	p = configurator.ConfigureParams()
 	assert [configurator.CameraParams(p, n)["quality"] for n in range(2)] == [24, 26]
 	assert p["cameraTrigger"] == "None"
-	assert p["frameRate"] == 100 # range-checked like the config's own values
-	assert "frameRate set to invalid value" in capsys.readouterr().out
+
+	# range-checked like the config's own values
+	monkeypatch.setattr(sys, "argv", argv + ["--frameRate", "-5"])
+	with pytest.raises(configurator.ConfigError, match="--frameRate: frameRate: -5 is not a number above 0"):
+		configurator.ConfigureParams()
 
 	monkeypatch.setattr(sys, "argv", ["campy-acquire", str(config), "--numCams", "4", "--gpuID", "[0, 1]"])
 	with pytest.raises(ValueError, match="gpuID has 2 values for 4 cameras"):
