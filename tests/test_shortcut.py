@@ -12,7 +12,7 @@ import pytest
 
 from campy import shortcut
 
-ODD = "Lab $HOME rig's \"configs\""
+ODD = "Lab $HOME rig's \"configs\"" if sys.platform != "win32" else "Lab $HOME rig's configs" # Windows: no " in names
 
 
 def exec_line(path):
