@@ -41,6 +41,7 @@ setup(
 			"campy-model-fit = campy.modelfit:Main",
 			"campy-notify = campy.notify:Main",
 			"campy-watch = campy.livewatch:Main",
+			"campy-infer = campy.infer:Main",
 		]
 	}
 )
