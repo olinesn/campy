@@ -174,37 +174,36 @@ def Overrides(args):
 
 class Config:
 	"""
-	One config: campy-acquire's keys (acquire), with the command line's
-	--key value on top (overrides), and campy-session's sections, checked
-	(live, view: None when the section is not there).
+	One config, read as campy-acquire reads it (campy's configurator: its
+	checks, and profiles, extends:), with the command line's --key value on
+	top: every campy-acquire setting (acquire), and campy-session's sections,
+	checked (live, view, post; live None when there is none).
 	"""
 
 	def __init__(self, path, overrides=()):
+		from campy import configurator
 		self.path = os.path.abspath(path)
 		try:
-			with open(self.path, "rb") as f:
-				raw = yaml.safe_load(f) or {}
-		except (OSError, yaml.YAMLError) as e:
+			with open(self.path, encoding="utf-8", errors="replace") as f:
+				self.text = f.read()
+		except OSError as e:
 			raise SessionError("Could not read the config {}: {}".format(self.path, e))
-		if not isinstance(raw, dict):
-			raise SessionError("{} is not a campy config (a list of key: value).".format(self.path))
-		self.text = open(self.path, encoding="utf-8", errors="replace").read()
 		self.args = list(overrides)
 		self.overrides = Overrides(self.args)
-		if "extends" in raw:
-			# A profile (extends:, config profiles) is combined by campy's configurator; the config campy-acquire runs
-			# is written elsewhere (logs/), where a relative extends: would no longer point at the profile
-			raise SessionError("extends: campy-session does not read profiles yet. Give it the whole config.")
 		for key in ("sessionPath", "stopFile"):
-			if key in raw or key in self.overrides:
+			if key in self.overrides:
 				raise SessionError("{}: campy-session sets it itself; leave it out.".format(key))
-		self.acquire = {k: v for k, v in raw.items() if k not in SECTIONS}
-		self.live = Section("live", raw["live"], LIVE) if raw.get("live") is not None else None
-		view = raw.get("view")
-		self.view = Section("view", {"show": view} if isinstance(view, bool) else view, VIEW)
-		if "view" not in raw:
+		self.resolved = self.Resolve()
+		self.acquire = self.resolved.params
+		for key in ("sessionPath", "stopFile"):
+			if str(self.acquire.get(key, "None")) not in ("None", ""):
+				raise SessionError("{}: campy-session sets it itself; leave it out of the config.".format(key))
+		sections = self.resolved.sections
+		self.live = Section("live", sections["live"], LIVE) if "live" in sections else None
+		self.view = Section("view", sections.get("view"), VIEW)
+		if "view" not in sections:
 			self.view["show"] = self.live is not None # without tracking, the cameras' own preview is there
-		self.post = Section("post", raw.get("post"), POST)
+		self.post = Section("post", sections.get("post"), POST)
 		if self.post["remux"] not in (True, False, "keep"):
 			raise SessionError("post.remux: {!r} is not true, false or keep.".format(self.post["remux"]))
 		if isinstance(self.post["copy"], str):
@@ -215,25 +214,36 @@ class Config:
 			raise SessionError("live: give the trained models' folders, centroid: and instance: (or model: random, "
 				"or none).")
 
-	def Value(self, key, default=None):
-		# What campy-acquire will use: the command line's, the config's, or campy's default
-		if key in self.overrides:
-			return self.overrides[key]
-		if key in self.acquire:
-			return self.acquire[key]
+	def Resolve(self, more=()):
+		# campy's configurator's reading (configurator.Resolve): every setting, and where it came from
 		from campy import configurator
-		return configurator.DefaultParams().get(key, default)
+		try:
+			return configurator.Resolve(self.path, self.args + list(more))
+		except configurator.ConfigError as e:
+			raise SessionError(str(e))
+		except SystemExit:
+			# argparse refused an option, and said which
+			raise SessionError("campy-acquire does not take these options: {}".format(" ".join(self.args)))
+
+	def Value(self, key, default=None):
+		# What campy-acquire will use: the command line's, the config's (or its profile's), or campy's default
+		return self.acquire.get(key, default)
 
 	def Feed(self):
 		# The live feed is on whenever something reads it
 		return self.live is not None or self.view["show"] or bool(self.Value("liveFeed"))
 
-	def AcquireConfig(self):
-		# The config campy-acquire runs: the same keys, without campy-session's sections; the feed on if read
-		acquire = dict(self.acquire)
-		if self.Feed():
-			acquire["liveFeed"] = True
-		return acquire
+	def AcquireYaml(self):
+		"""
+		The config campy-acquire runs, as one file: every setting, no extends:,
+		each line saying where its value came from (configurator's ToYaml),
+		with the command line's options in it, and the live feed on when
+		something reads it.
+		"""
+		resolved = self.resolved
+		if self.Feed() and not self.Value("liveFeed"):
+			resolved = self.Resolve(["--liveFeed", "True"])
+		return resolved.ToYaml()
 
 	def Cameras(self):
 		n = int(self.Value("numCams", 1))
@@ -447,7 +457,10 @@ class Part:
 	"""
 	One program of the session: its command, log file and process, and how
 	it ended. tied: dies with campy-session (children.Child); apart: started
-	apart from this console's Ctrl-C (its own process group).
+	apart from this console's Ctrl-C (its own process group); "console":
+	apart from this console altogether (Windows: a hidden console of its
+	own; Linux: a session of its own), so that closing campy-session's window
+	or terminal does not end it either (the panel's recordings).
 	"""
 
 	def __init__(self, name, command, log, env=None, cwd=None, tied=False, apart=False):
@@ -469,8 +482,10 @@ class Part:
 				if self.apart:
 					if sys.platform == "win32":
 						kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP # no Ctrl-C from the console
+						if self.apart == "console":
+							kwargs["creationflags"] |= subprocess.CREATE_NO_WINDOW # a console of its own, hidden
 					else:
-						kwargs["start_new_session"] = True
+						kwargs["start_new_session"] = True # nor the terminal's hang-up when it closes
 				self.process = subprocess.Popen(self.command, **kwargs)
 		finally:
 			out.close() # the child has its own handle
@@ -530,10 +545,13 @@ ACQUIRE = "import sys; sys.argv = ['campy-acquire'] + sys.argv[1:]; from campy.c
 class Session:
 	"""One run of campy-session: run() starts the programs, waits, ends them, and returns campy-acquire's exit code."""
 
-	def __init__(self, config, live_python=None, lock=True):
+	def __init__(self, config, live_python=None, lock=True, detached=False):
 		self.config = config
 		self.live_python = live_python
 		self.take_lock = lock # False: the panel holds campy-session's lock (campy/panel.py)
+		# True (the panel): campy-acquire and campy-live apart from this console altogether, so that closing the
+		# panel's window never ends a recording; its Stop, and Ctrl-C here, reach campy-acquire through its stop file
+		self.detached = detached
 		self.view_wanted = False # the panel's "Open the viewer again", for the main thread (Watch)
 		self.folder = None
 		self.state = "checking"
@@ -565,15 +583,19 @@ class Session:
 		self.logs = os.path.join(folder, "logs")
 		os.makedirs(self.logs, exist_ok=True)
 		self.stopFile = os.path.join(self.logs, "campy-acquire.stop")
-		with open(os.path.join(self.logs, "session-config.yaml"), "w", encoding="utf-8") as f:
+		# The config as given (its profiles, extends:, stay where they are), and the same in one file, profiles and
+		# command-line options combined, which campy-session post reads again
+		with open(os.path.join(self.logs, "session-config.original.yaml"), "w", encoding="utf-8") as f:
 			f.write("# {} as campy-session read it, {}; command-line options: {}\n".format(self.config.path,
 				Stamp(time.time()), " ".join(self.config.args) or "none"))
 			f.write(self.config.text)
+		with open(os.path.join(self.logs, "session-config.yaml"), "w", encoding="utf-8") as f:
+			f.write(self.config.resolved.ToYaml())
 		self.acquireConfig = os.path.join(self.logs, "campy-acquire.yaml")
 		with open(self.acquireConfig, "w", encoding="utf-8") as f:
-			f.write("# What campy-acquire ran: {} without campy-session's sections (live, view, post){}.\n".format(
-				self.config.path, ", with liveFeed on" if self.config.Feed() else ""))
-			yaml.safe_dump(self.config.AcquireConfig(), f, sort_keys=False, allow_unicode=True)
+			f.write("# What campy-acquire ran{}.\n".format(" (liveFeed on: campy-session reads it)" if self.config.Feed()
+				and not self.config.Value("liveFeed") else ""))
+			f.write(self.config.AcquireYaml())
 		return folder
 
 	def LiveCommand(self, part):
@@ -659,8 +681,8 @@ class Session:
 		env[LAUNCHER_ENV] = VERSION
 		env.pop(newfiles.SESSION_ENV, None)
 		acquire = Part("acquire", [Python(), "-c", ACQUIRE, self.acquireConfig, "--sessionPath", self.folder,
-			"--stopFile", self.stopFile] + config.args, os.path.join(self.logs, "campy-acquire.log"), env=env,
-			cwd=os.getcwd())
+			"--stopFile", self.stopFile], os.path.join(self.logs, "campy-acquire.log"), env=env,
+			cwd=os.getcwd(), apart="console" if self.detached else False)
 		self.parts["acquire"] = acquire.Start()
 		self.state = "recording"
 		self.Status()
@@ -722,7 +744,7 @@ class Session:
 	def StartLive(self, part, wait=False):
 		live = Part("live" if part == 1 else "live.part{}".format(part), self.LiveCommand(part),
 			os.path.join(self.logs, "campy-live.log" if part == 1 else "campy-live.part{}.log".format(part)),
-			env=self.LiveEnv(), cwd=self.folder, apart=True)
+			env=self.LiveEnv(), cwd=self.folder, apart="console" if self.detached else True)
 		for path in (self.liveReady, self.liveStop):
 			if os.path.exists(path):
 				os.remove(path)
@@ -911,12 +933,14 @@ def RunMain(argv):
 def Main(argv=None):
 	argv = sys.argv[1:] if argv is None else list(argv)
 	from campy import post
-	from campy import panel
-	commands = {"run": RunMain, "register-live": Register, "post": post.Main, "panel": panel.Main}
+	from campy import panel, shortcut
+	commands = {"run": RunMain, "register-live": Register, "post": post.Main, "panel": panel.Main,
+		"shortcut": shortcut.Main}
 	if not argv or argv[0] not in commands:
 		print("usage: campy-session run <config>.yaml [--key value ...]\n"
 			"       campy-session post <recording folder> [--only remux,export] [--force]\n"
 			"       campy-session panel <config>.yaml [--port 8765] [--no-browser]\n"
+			"       campy-session shortcut <config>.yaml [--name ...]   (a desktop shortcut that opens the panel)\n"
 			"       campy-session register-live   (once, in campy-live's environment)", file=sys.stderr)
 		sys.exit(2)
 	sys.exit(commands[argv[0]](argv[1:]))

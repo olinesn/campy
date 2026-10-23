@@ -648,6 +648,8 @@ def CheckValues(values, where):
 			problems.append("{}: {}".format(where(key), UnknownKey(key)))
 			continue
 		if setting.kind is configschema.SECTION:
+			if key == "view" and isinstance(value, bool):
+				value = {"show": value} # view: true or false, campy-session's shorthand for view: {show: ...}
 			if not isinstance(value, dict):
 				problems.append("{}: {} is a section of key: value lines (indented under it), not {!r}".format(
 					where(key), key, value))
