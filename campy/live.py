@@ -157,21 +157,34 @@ off and --cuda-graphs off give the old way.
 networks as compiled engines (FixedEngine) instead of torch's layer by layer:
 compile is torch.compile (inductor, Triton kernels: ROCm, and NVIDIA where
 Triton is installed), tensorrt is NVIDIA's TensorRT (an fp16 or fp32 engine
-built from the network's ONNX, kept in --engine-cache and reused), auto is
-tensorrt where it imports and the GPU is NVIDIA's, else compile. A compiled
-engine fuses each convolution with what follows it (bias, activation,
-upsampling), so far less goes to and from GPU memory (bench/compiled_bench.py
-measured the networks alone). Live, with 5 mice on 3 cameras, --fixed-crops
---cuda-graphs took 13.7 ms per set on the EVO-X2 and 6.0 with --engine
-compile; 2.7 ms on an RTX 6000 Ada, 2.2 with compile and 1.6 with tensorrt.
-torch.compile's keypoints are as close to fp32's as torch's fp16; TensorRT's
-fp16 runs the whole network in half precision and moves more of them (1.8%
-by over a pixel, against 0.7%). Only the networks change: crops, peaks and
-everything else are FixedCrops' own, and with --cuda-graphs the engines'
-kernels are recorded into the set's one graph like the rest. The warm-up
-waits for the engines to be made (torch.compile: about 15 s, less once its
-cache has them; TensorRT: about 10 s the first time, then its plan is read
-back from --engine-cache).
+built from the network's ONNX). A compiled engine fuses each convolution with
+what follows it (bias, activation, upsampling), so far less goes to and from
+GPU memory (bench/compiled_bench.py measured the networks alone). Only the
+networks change: crops, peaks and everything else are FixedCrops' own, and
+with --cuda-graphs the engines' kernels are recorded into the set's one
+graph like the rest.
+
+auto, the default (FixedEngine.Pick): tensorrt on an NVIDIA GPU where
+tensorrt and onnx import, else compile where Triton does, else none, said
+once. An engine that fails while warming up (a Triton that doesn't match
+torch, a TensorRT build error) leaves the networks in torch, as --engine off,
+with one line saying why, and the warm-up runs again: all before the feed is
+waited for, so never during a recording. on: auto's choice, stopping if it
+can't be made; compile, tensorrt: that one, stopping likewise; off (eager):
+none. Live, 5 mice on 3 cameras at 60 fps, against the defaults before it (5
+to 9 replays each, docs/live-tracking.md): EVO-X2 10.6 -> 5.9 ms a set
+(compile); RTX 2000 Ada 12.6 -> 5.8, RTX 4000 Ada 6.4 -> 3.4, RTX 6000 Ada
+2.7 -> 1.6 (tensorrt), tracking as close to the offline SLEAP predictions as
+before, and no more GPU memory. TensorRT's fp16 runs the whole network in
+half precision and moves 2.0-2.3% of the keypoints by over a pixel from torch's
+fp16 (torch.compile 0.7%): the same animals, and the same 2D and 3D errors
+against offline SLEAP. The warm-up waits for the engines: the first time
+(another model, GPU, PyTorch or TensorRT) 13-35 s more, then 0-4 s. Both
+keep what they made in --engine-cache (~/.cache/campy/engines): TensorRT's
+plans, named by the weights, shape, precision, GPU and the versions, and
+torch.compile's kernels in its inductor folder (TORCHINDUCTOR_CACHE_DIR,
+unless set; inductor's own default, the temp folder, is emptied at each
+restart on Linux).
 
 --fast-upsample runs each of the models' bilinear upsampling layers in the
 other memory layout (channels_last instead of NCHW) where that is faster
@@ -181,7 +194,10 @@ channels), and its channels_last one is slower on the big ones. The results
 are the same. auto: on with a GPU (CUDA or ROCm) and --memory-format nchw,
 which auto picks on ROCm (the EVO-X2, 5 mice, 3 cameras, --fixed-crops
 --cuda-graphs: 13.6 to 10.6 ms a set). With channels_last models (auto's on
-NVIDIA GPUs) every layer was faster as it was, so it does nothing there.
+NVIDIA GPUs) every layer was faster as it was, so it does nothing there. With
+a compiled engine (--engine auto's, on every GPU with the packages) it is off:
+the engine fuses the upsampling itself (EVO-X2: 5.9 ms a set, against 10.6
+with --fast-upsample and no engine); it is for the networks run in torch.
 
 With --results-feed on (the default), each row also goes into shared memory,
 campy-live-results (campy/liveresults.py), as it is logged: campy-live-view
@@ -203,6 +219,11 @@ import numpy as np
 from campy import children, cpus, livefeed, liveresults
 from campy import clock as hostclock # not clock: Run's clock is the GPU's
 from campy.frametimes import GrowingNpy, Writer
+
+# TORCHINDUCTOR_CACHE_DIR as campy-live was started with it: torch's inductor
+# writes its own default into it the first time it looks (cache_dir_utils),
+# so later it can't say whether the user set it (FixedEngine.Compile)
+_INDUCTOR_DIR = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
 
 # The random models: what bench/sleap_infer_bench.py's default pair is
 RANDOM_CENTROID = dict(scale=0.25, filters=16, max_stride=16, output_stride=4)
@@ -388,6 +409,7 @@ class TopDown:
 	"""
 
 	upsamples = () # --fast-upsample's layers (LayoutUpsample); none in a TopDown made without __init__
+	engineAuto, engineNote = False, None # --engine auto, and what it says (a TopDown made without __init__: off)
 
 	def __init__(self, args, n_frames, shape):
 		import torch
@@ -408,10 +430,22 @@ class TopDown:
 		self.tiedPeaks = peaks.UseTiedPeaks(tied) and tied
 		self.layer, self.text = self.Build(args)
 		ExactCropSize(self.layer)
+		# --engine: auto (the default) is FixedEngine.Pick's choice, and if
+		# that can't be made, the networks in torch, as off, said once
+		# (engineNote); any other choice that can't be made stops campy-live
+		engine = getattr(args, "engine", "eager")
+		self.engineAuto = engine == "auto"
+		self.engineNote = None
+		if self.engineAuto:
+			engine, why = FixedEngine.Pick(self.device)
+			if why:
+				self.engineNote = "--engine auto: {}; so the networks run in torch".format(why)
+		else:
+			engine = FixedEngine.Choose(engine, self.device)
+		self.args = args
 		self.upsamples = []
-		if FastUpsample(args, self.device, self.memoryFormat):
-			for backend in (self.layer.centroid_layer.backend, self.layer.centered_instance_layer.backend):
-				self.upsamples += LayoutUpsample.Into(backend.model) # before CUDAGraphed wraps it
+		if FastUpsample(args, self.device, self.memoryFormat, engine):
+			self.AddUpsamples()
 		self.graphs = []
 		self.fixed = None
 		self.fixedNote = None # why --fixed-crops auto left them off
@@ -420,22 +454,42 @@ class TopDown:
 		if graphs == "on" and not gpu:
 			raise SystemExit("--cuda-graphs: CUDA (or ROCm) only, not {}".format(self.device))
 		graphs = graphs == "on" or (graphs == "auto" and gpu)
-		engine = getattr(args, "engine", "eager")
+		explicit = engine != "eager" and not self.engineAuto
 		if fixed == "on" or (fixed == "auto" and gpu):
 			try:
 				self.fixed = FixedCrops(self.layer, n_frames, self.device, args.max_instances, graph=graphs,
 					tiedPeaks=self.tiedPeaks, engine=engine, cache=getattr(args, "engine_cache", ""))
 			except SystemExit as e:
-				if fixed == "on" or engine != "eager":
+				if fixed == "on" or explicit:
 					raise
 				self.fixedNote = "{}; so sleap-nn's own top-down layer".format(e)
-		if self.fixed is None and engine != "eager":
+		if self.fixed is None and explicit:
 			raise SystemExit("--engine: with --fixed-crops only (a compiled engine is made for one input shape)")
+		if self.fixed is None and engine != "eager":
+			self.engineNote = None # auto, without fixed crops: nothing to compile, nothing to say
+			if FastUpsample(args, self.device, self.memoryFormat, "eager") and not self.upsamples:
+				self.AddUpsamples()
 		if self.fixed is None and graphs:
 			for backend in (self.layer.centroid_layer.backend, self.layer.centered_instance_layer.backend):
 				graphed = CUDAGraphed(backend.model, backend.use_fp16)
 				backend.model, backend.use_fp16 = graphed, False # fp16 now inside the graph
 				self.graphs.append(graphed)
+
+	def AddUpsamples(self):
+		# --fast-upsample's layers, before CUDAGraphed wraps the models
+		for backend in (self.layer.centroid_layer.backend, self.layer.centered_instance_layer.backend):
+			self.upsamples += LayoutUpsample.Into(backend.model)
+
+	def EngineFallback(self, error):
+		# --engine auto: the engine couldn't be made (or run) while warming
+		# up, so the networks in torch, with --fast-upsample as it would be
+		# with --engine off
+		self.engineNote = "--engine auto: the {} engine failed ({}: {}); so the networks run in torch".format(
+			{"compile": "torch.compile", "tensorrt": "TensorRT"}.get(self.fixed.engine, self.fixed.engine),
+			type(error).__name__, str(error).strip().splitlines()[0][:300] if str(error).strip() else "no message")
+		self.fixed.Plain()
+		if FastUpsample(self.args, self.device, self.memoryFormat, "eager") and not self.upsamples:
+			self.AddUpsamples()
 
 	def Fp16(self, backends):
 		# fp16 autocast inside sleap-nn's TorchBackend (cuda and ROCm only)
@@ -476,7 +530,20 @@ class TopDown:
 		# the centroid model's output (FakeCentroids). With --fixed-crops,
 		# every set runs all of it, on the same shapes: blank frames warm it.
 		# --fast-upsample: each upsampling layer times its two layouts on the
-		# first input of each shape it gets, here (LayoutUpsample)
+		# first input of each shape it gets, here (LayoutUpsample).
+		# --engine auto: the engines are made here, at the first set; if that
+		# fails, the networks run in torch instead and the warm-up starts again
+		try:
+			self.WarmOnce(host, crops)
+		except (Exception, SystemExit) as e:
+			if not (self.engineAuto and self.fixed is not None and self.fixed.engine != "eager"):
+				raise
+			if self.device.startswith("cuda"):
+				self.torch.cuda.synchronize()
+			self.EngineFallback(e)
+			self.WarmOnce(host, crops)
+
+	def WarmOnce(self, host, crops):
 		frames = self.Upload(host)
 		for up in self.upsamples:
 			up.measuring = True
@@ -491,6 +558,9 @@ class TopDown:
 				up.measuring = False
 				up.Settle()
 		Synchronize(self.device)
+
+	def DescribeEngine(self):
+		return self.engineNote
 
 	def DescribeUpsamples(self):
 		if not self.upsamples:
@@ -651,13 +721,14 @@ class CUDAGraphed:
 		return Graphed()
 
 
-def FastUpsample(args, device, memoryFormat):
+def FastUpsample(args, device, memoryFormat, engine=None):
 	# --fast-upsample: auto is on where it measured faster, models in nchw (on
 	# ROCm, auto's there) on a GPU. Models in channels_last were faster as
-	# they are, at every upsampling layer (RTX 6000 Ada)
+	# they are, at every upsampling layer (RTX 6000 Ada). engine: the
+	# networks' engine as chosen (FixedEngine.Pick or Choose), else --engine's
 	if args.fast_upsample == "off" or not device.startswith("cuda"):
 		return False
-	if getattr(args, "engine", "eager") != "eager":
+	if (engine or getattr(args, "engine", "eager")) not in ("eager", "off"):
 		return False # a compiled engine fuses the upsampling itself, and can't compile this layer's timing
 	return args.fast_upsample == "on" or memoryFormat == "nchw"
 
@@ -843,6 +914,7 @@ class FixedCrops:
 		if graph and not self.cuda:
 			raise SystemExit("--cuda-graphs: CUDA (or ROCm) only, not {}".format(device))
 		self.graph = None if graph else False # None: to record at the first set
+		self.graphWanted = graph
 		self.static_in = self.static_out = self.pool = None
 		self.host = self.done = None
 		self.max_abs_diff = 0.0
@@ -1095,6 +1167,15 @@ class FixedCrops:
 		return {"centroids": a[..., 0:2].copy(), "centroid_vals": a[..., 2].copy(), "found_mask": a[..., 3] > 0.5,
 			"keypoints": a[..., 4:4 + 2 * n].reshape(B, K, n, 2).copy(), "peak_vals": a[..., 4 + 2 * n:].copy()}
 
+	def Plain(self):
+		# The networks in torch from now on (--engine auto, when an engine
+		# failed while warming up): nothing recorded or made yet
+		self.engine, self.engines = "eager", {}
+		self.graph = None if self.graphWanted else False
+		self.static_in = self.static_out = self.pool = None
+		self.host = self.done = None
+		self.max_abs_diff = 0.0
+
 	def Describe(self):
 		engines = "" if not self.engines else "; networks: " + ", ".join(e.text for e in self.engines.values())
 		if not self.graph:
@@ -1132,18 +1213,48 @@ class FixedEngine:
 
 	HEADS = ("CentroidConfmapsHead", "CenteredInstanceConfmapsHead")
 
+	TRITON = "Triton (Linux: it comes with PyTorch; Windows: pip install triton-windows, the version that " \
+		"matches your PyTorch: docs/live-tracking.md)"
+
+	@staticmethod
+	def Pick(device):
+		"""
+		--engine auto's choice on this device: (kind, None), kind tensorrt
+		where the GPU is NVIDIA's and tensorrt and onnx are installed, else
+		compile where Triton is; or ("eager", why not) with a GPU and
+		neither; ("eager", None) without a GPU.
+		"""
+		import importlib.util
+		if not str(device).startswith("cuda"):
+			return "eager", None
+		import torch
+		nvidia = not getattr(torch.version, "hip", None)
+		if nvidia and importlib.util.find_spec("tensorrt") and importlib.util.find_spec("onnx"):
+			return "tensorrt", None
+		if importlib.util.find_spec("triton"):
+			return "compile", None
+		if nvidia:
+			return "eager", "neither TensorRT (pip install tensorrt onnx) nor {} is installed".format(FixedEngine.TRITON)
+		return "eager", "{} isn't installed".format(FixedEngine.TRITON)
+
 	@staticmethod
 	def Choose(engine, device):
-		# eager, compile or tensorrt, for --engine on this device
+		# eager, compile or tensorrt, for --engine on this device; one that
+		# can't be had here stops campy-live (auto: Pick's, or eager)
 		import importlib.util
-		if engine in ("eager", "", None):
+		if engine in ("eager", "off", "", None):
 			return "eager"
+		if engine == "auto":
+			return FixedEngine.Pick(device)[0]
 		import torch
 		if not str(device).startswith("cuda"):
 			raise SystemExit("--engine {}: CUDA or ROCm only, not {}".format(engine, device))
 		nvidia = not getattr(torch.version, "hip", None)
-		if engine == "auto":
-			engine = "tensorrt" if nvidia and importlib.util.find_spec("tensorrt") else "compile"
+		if engine == "on":
+			kind, why = FixedEngine.Pick(device)
+			if kind == "eager":
+				raise SystemExit("--engine on: {}".format(why))
+			return kind
 		if engine == "tensorrt":
 			if not nvidia:
 				raise SystemExit("--engine tensorrt: NVIDIA GPUs only (on ROCm, --engine compile)")
@@ -1152,11 +1263,9 @@ class FixedEngine:
 					raise SystemExit("--engine tensorrt needs the {0} package (pip install {0})".format(module))
 		elif engine == "compile":
 			if not importlib.util.find_spec("triton"):
-				raise SystemExit("--engine compile needs Triton (Linux: it comes with torch; Windows: pip install "
-					"triton-windows, with the CC environment variable set to the tcc.exe it bundles, "
-					"triton/runtime/tcc/tcc.exe)")
+				raise SystemExit("--engine compile needs {}".format(FixedEngine.TRITON))
 		else:
-			raise SystemExit("--engine: eager, compile, tensorrt or auto, not {}".format(engine))
+			raise SystemExit("--engine: auto, on, off, compile or tensorrt, not {}".format(engine))
 		return engine
 
 	def __init__(self, kind, backend, x, fp16, cache, name):
@@ -1165,7 +1274,7 @@ class FixedEngine:
 		self.shape = tuple(x.shape)
 		t = time.perf_counter()
 		if kind == "compile":
-			self.Compile(backend.model)
+			self.Compile(backend.model, cache)
 		else:
 			self.TensorRT(backend.model, cache, x)
 		self.text = "{} {} {} {}".format(name, {"compile": "torch.compile", "tensorrt": "TensorRT"}[kind],
@@ -1191,10 +1300,44 @@ class FixedEngine:
 			if isinstance(cfg, DictConfig):
 				module.backbone_config = Plain(OmegaConf.to_container(cfg, resolve=True))
 
-	def Compile(self, model):
+	@staticmethod
+	def CacheDir(cache):
+		# --engine-cache, or ~/.cache/campy/engines: TensorRT's plans, and
+		# torch.compile's kernels in its inductor folder
+		return os.path.expanduser(cache or os.path.join("~", ".cache", "campy", "engines"))
+
+	PLAN_FORMAT = 2 # FixedEngine's ONNX export, as the plan names count it: a change here makes new plans
+
+	@staticmethod
+	def PlanName(name, state, shape, fp16, trtVersion, gpu):
+		# A plan's file name: the network (its state_dict's names and
+		# values), the input's shape, the precision, TensorRT's and PyTorch's
+		# versions (PyTorch exports the ONNX), the GPU and PLAN_FORMAT. Another
+		# model, campy's export or package version is another file, built anew
+		import hashlib, torch
+		digest = hashlib.sha1()
+		for key, value in state.items():
+			digest.update(key.encode())
+			digest.update(value.detach().cpu().contiguous().numpy().tobytes())
+		digest.update("{} {} {} {} {} {}".format(tuple(shape), fp16, trtVersion, gpu, torch.__version__,
+			FixedEngine.PLAN_FORMAT).encode())
+		return "{}_{}".format(name, digest.hexdigest()[:16])
+
+	def Compile(self, model, cache):
 		torch = self.torch
 		fp16 = self.fp16
 		self.PlainConfigs(model)
+		# inductor's own cache is the temp folder's torchinductor_<user>,
+		# which Linux empties at each restart (about 15 s more to start on the
+		# EVO-X2): kept with the TensorRT plans instead, unless campy-live was
+		# started with TORCHINDUCTOR_CACHE_DIR set. inductor reads it at each
+		# compile. Its keys are the traced graph, PyTorch's version and the
+		# GPU (the weights are inputs), so another model or update compiles anew
+		if not _INDUCTOR_DIR:
+			os.environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(self.CacheDir(cache), "inductor")
+		if self.name == "centroid":
+			print("campy-live: compiling the networks with torch.compile (their kernels kept in {}: up to about "
+				"40 s the first time, a few seconds after)".format(os.environ["TORCHINDUCTOR_CACHE_DIR"]), flush=True)
 
 		def run(x):
 			with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=fp16, cache_enabled=False):
@@ -1205,7 +1348,7 @@ class FixedEngine:
 		self.fn = torch.compile(run, dynamic=False, fullgraph=True)
 
 	def TensorRT(self, lightning, cache, x):
-		import copy, hashlib, warnings
+		import copy, warnings
 		import tensorrt as trt
 		torch = self.torch
 		body = getattr(lightning, "model", None)
@@ -1233,15 +1376,10 @@ class FixedEngine:
 				def forward(self, x):
 					return self.body(x.half() if fp16 else x)[head].float()
 			net = Net().eval()
-			digest = hashlib.sha1()
-			for key, value in net.state_dict().items():
-				digest.update(key.encode())
-				digest.update(value.detach().cpu().contiguous().numpy().tobytes())
-			digest.update("{} {} {} {}".format(self.shape, fp16, trt.__version__,
-				torch.cuda.get_device_name(device)).encode())
-			cache = os.path.expanduser(cache or os.path.join("~", ".cache", "campy", "engines"))
+			cache = self.CacheDir(cache)
 			os.makedirs(cache, exist_ok=True)
-			stem = os.path.join(cache, "{}_{}".format(self.name, digest.hexdigest()[:16]))
+			stem = os.path.join(cache, self.PlanName(self.name, net.state_dict(), self.shape, fp16, trt.__version__,
+				torch.cuda.get_device_name(device)))
 			logger = trt.Logger(trt.Logger.WARNING)
 			runtime = trt.Runtime(logger)
 			if os.path.exists(stem + ".plan"):
@@ -2293,7 +2431,7 @@ def Prepare(args, n_frames, shape, dtype):
 		t = time.perf_counter()
 		model.Warm(host.tensor, crops=range(1, n_frames * args.max_instances + 1) if args.model == "sleap" else ())
 		Say("Model: {}. Warmed up in {:.1f} s.".format(model.Describe(), time.perf_counter() - t))
-		for describe in ("DescribeUpsamples", "DescribeGraphs"):
+		for describe in ("DescribeEngine", "DescribeUpsamples", "DescribeGraphs"):
 			text = getattr(model, describe)() if hasattr(model, describe) else None
 			if text:
 				Say(text + ".")
@@ -2413,12 +2551,15 @@ def ParseArgs(argv=None):
 		without the CPU waiting for the animals found, and its results come back in one copy (FixedCrops). With \
 		--cuda-graphs, the whole set is one graph. auto (the default): on with a GPU, when the models allow it \
 		(else sleap-nn's own layer, and campy-live says why). Set --max-instances to the animals there are.")
-	p.add_argument("--engine", default="eager", choices=["eager", "compile", "tensorrt", "auto"], help="With \
-		--fixed-crops (on by default with a GPU): run the two networks as compiled engines (FixedEngine). \
-		compile: torch.compile (ROCm; NVIDIA with Triton); tensorrt: NVIDIA TensorRT; auto: tensorrt on NVIDIA \
-		where it is installed, else compile. The first set waits for them to be built.")
-	p.add_argument("--engine-cache", default="", help="--engine tensorrt: the folder its built engines are kept in \
-		and read back from (default: ~/.cache/campy/engines).")
+	p.add_argument("--engine", default="auto", choices=["auto", "on", "off", "compile", "tensorrt", "eager"],
+		help="With --fixed-crops (on by default with a GPU): run the two networks as compiled engines \
+		(FixedEngine), made while warming up, before the feed is waited for. compile: torch.compile (ROCm; NVIDIA \
+		with Triton); tensorrt: NVIDIA TensorRT. auto (the default): tensorrt on NVIDIA where tensorrt and onnx \
+		are installed, else compile where Triton is, else none; if the engine can't be made, the networks run in \
+		torch, and campy-live says why. on: auto's choice, and stop if it can't be made. off (or eager): none.")
+	p.add_argument("--engine-cache", default="", help="--engine: the folder its built engines are kept in and \
+		read back from: TensorRT's plans, and torch.compile's kernels in inductor/ unless TORCHINDUCTOR_CACHE_DIR \
+		is set (default: ~/.cache/campy/engines).")
 	p.add_argument("--fast-upsample", default="auto", choices=["auto", "on", "off"], help="Time each bilinear \
 		upsampling layer of the models in both memory layouts (NCHW and channels_last) while warming up, for each \
 		shape of input, and run it in the faster one: the same results (see campy-live's help). auto: on with \
