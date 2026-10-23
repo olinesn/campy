@@ -155,7 +155,7 @@ The three programs can also be started separately, as `campy-session` does:
    ```
    campy-acquire <config>.yaml --liveFeed True
    ```
-   Because `campy-live` is already waiting, it analyses the recording from the first frame. It looks for the feed every 20 ms and takes its first set at once, writing `campy-live-session.json` in the background. On the Precision 7875, with three emulated cameras at 60 fps and the trained models with 3D, it tracked from frame 1 both ways, by hand and through `campy-session`, with all 1,200 sets tracked and none skipped. On dev between pull requests 163 and PRNUM (never in a release), writing that file came first, and the first 64–73 frames, 1.1–1.2 s, went untracked.
+   Because `campy-live` is already waiting, it analyses the recording from the first frame. It looks for the feed every 20 ms and takes its first set at once, writing `campy-live-session.json` in the background. On the Precision 7875, with three emulated cameras at 60 fps and the trained models with 3D, it tracked from frame 1 both ways, by hand and through `campy-session`, with all 1,200 sets tracked and none skipped. On dev between pull requests 163 and 183 (never in a release), writing that file came first, and the first 64–73 frames, 1.1–1.2 s, went untracked.
 3. **Optionally, watch it** in the inference environment:
    ```
    campy-live-view
