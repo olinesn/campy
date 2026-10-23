@@ -309,3 +309,106 @@ def test_main_says_how_to_open_it(recording, capsys):
 	assert "Camera2: its video is behind the others' from video frame 20 (campy frame 23)" in said
 	assert liveexport.Main([rec, "--log", log]) == 1  # not again without --force
 	assert "already there" in capsys.readouterr().err
+
+
+def test_a_log_out_of_order_is_refused(recording):
+	rec, log, _ = recording
+	rows = np.load(log)
+	rows[[3, 4]] = rows[[4, 3]]
+	np.save(log, rows)
+	with pytest.raises(liveexport.ExportError, match="after frame"):
+		liveexport.Export(rec, log)
+
+
+def tables(path):
+	# The .slp's tables, as numpy arrays, by name
+	out = {}
+	with h5py.File(path, "r") as f:
+		f.visititems(lambda name, d: out.__setitem__(name, d[()]) if isinstance(d, h5py.Dataset) else None)
+		out["format_id"] = f["metadata"].attrs["format_id"]
+	return out
+
+
+@pytest.mark.parametrize("which", ["campy-live.slp", "Camera2/campy-live.slp"])
+def test_sleap_io_would_write_the_same_files(recording, tmp_path, which):
+	# campy-live-export writes the big tables itself; sleap-io, given what it
+	# reads from them, writes them back the same, value for value
+	rec, log, _ = recording
+	liveexport.Export(rec, log)
+	ours = os.path.join(rec, which)
+	again = str(tmp_path / "again.slp")
+	sio.save_slp(sio.load_slp(ours), again, verbose=False)
+	a, b = tables(ours), tables(again)
+	big = ["frames", "instances", "pred_points", "points", "format_id"] + [n for n in a if n.startswith("session_data/")]
+	if which == "campy-live.slp":
+		assert "session_data/frame_groups" in big
+		big += ["sessions_json", "tracks_json", "identity/name"]
+	for name in big:
+		assert a[name].dtype == b[name].dtype and a[name].shape == b[name].shape, name
+		if a[name].dtype.names:
+			for field in a[name].dtype.names:
+				assert np.array_equal(a[name][field], b[name][field], equal_nan=a[name][field].dtype.kind == "f"), \
+					(name, field)
+		else:
+			assert np.array_equal(a[name], b[name], equal_nan=a[name].dtype.kind == "f"), name
+
+
+def big_recording(tmp_path, frames):
+	# A recording of `frames` frames and campy-live's log of all of them, made
+	# up fast: 3 animals seen by every camera, with their 3D
+	rec = tmp_path / "big{}".format(frames)
+	numbers = list(range(1, frames + 1))
+	for name in CAMERAS:
+		write_camera(str(rec), name, numbers)
+	rng = np.random.default_rng(1)
+	rows = np.zeros(frames, live.RowType(3, 5, len(NODES), ANIMALS))
+	rows["frame"] = numbers
+	rows["host_ns"] = [[host(c, n) for c in range(3)] for n in numbers]
+	for key in ("centroids", "centroid_vals", "keypoints", "peak_vals", "points3d"):
+		rows[key] = np.nan
+	rows["keypoints"][:, :, :ANIMALS] = rng.uniform(0, 1000, (frames, 3, ANIMALS, len(NODES), 2))
+	rows["peak_vals"][:, :, :ANIMALS] = 0.9
+	rows["centroid_vals"][:, :, :ANIMALS] = 0.8
+	rows["found"] = ANIMALS
+	rows["members"] = np.arange(ANIMALS)[None, :, None]
+	rows["points3d"] = rng.uniform(-200, 200, (frames, ANIMALS, len(NODES), 3))
+	write_calibration(str(tmp_path / "calibration.toml"), scene3d.rig())
+	log = str(tmp_path / "big{}".format(frames))
+	np.save(log + ".npy", rows)
+	with open(log + ".json", "w") as f:
+		json.dump({"cameras": CAMERAS, "nodes": NODES, "edges": EDGES, "calibration": str(tmp_path / "calibration.toml"),
+			"calibration_names": CALIBRATION_NAMES, "animals": ANIMALS}, f)
+	return str(rec), log + ".npy"
+
+
+def test_memory_hardly_grows_with_the_recording(tmp_path, monkeypatch):
+	# The tables are written a block of the log's rows at a time: an export
+	# holds only a few hundred bytes per set for the whole recording (where
+	# each frame and detection goes). sleap-io's own writer held ~100 kB per
+	# set (3.6 GB for 10 minutes of 3 cameras and 5 mice).
+	import tracemalloc
+	monkeypatch.setattr(liveexport, "BLOCK", 500)
+	small, large = big_recording(tmp_path, 2000), big_recording(tmp_path, 8000)
+	liveexport.Export(*small) # sleap-io's imports
+	peaks = []
+	for recording in (small, large):
+		tracemalloc.start()
+		out = liveexport.Export(*recording, force=True)
+		peaks.append(tracemalloc.get_traced_memory()[1])
+		tracemalloc.stop()
+	assert out["frames_3d"] == 8000 and out["instances"] == 3 * 8000 * ANIMALS
+	assert (peaks[1] - peaks[0]) / 6000 < 1000, peaks
+	labels = sio.load_slp(out["slp"])
+	assert len(labels.labeled_frames) == 3 * 8000 and len(labels.sessions[0].frame_groups) == 8000
+
+
+def test_an_export_that_fails_leaves_no_files(recording, monkeypatch):
+	rec, log, _ = recording
+	def fail(*args):
+		raise OSError("disk full")
+	monkeypatch.setattr(liveexport, "Write3D", fail)
+	with pytest.raises(OSError):
+		liveexport.Export(rec, log)
+	assert not [p for p in os.listdir(rec) if not p.startswith("Camera")]
+	assert all(sorted(os.listdir(os.path.join(rec, name))) == ["0.mp4", "frametimes.npy", "hosttimes.npy",
+		"metadata.csv"] for name in CAMERAS)
