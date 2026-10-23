@@ -191,6 +191,45 @@ It writes `flags.csv` (every flag, with where in the picture it is: for `missed`
 
 If the calibration file named in the log's summary isn't on the computer, give it with `--calibration`. Without it, `missed` can't be worked out, and `disagree` uses the log's own reprojection errors, without saying which camera is wrong. A log made without `--calibration` gets only the `extra`, `fewer` and `low_score` flags.
 
+## Labelling them in LUC3D (`campy-label-pack`, `campy-label-merge`)
+
+`campy-label-pack` turns the sets `campy-live-flag` picked into one file to correct in [LUC3D](https://github.com/talmolab/luc3d), with `campy-live`'s predictions already on them, so labelling means correcting, not starting from nothing. Run it in the inference environment (it needs `sleap-io`, which comes with sleap-nn):
+
+```
+campy-label-pack <log>_flags/sample.json --recording <recording folder> --name <rig>_<date>
+```
+
+It writes `<name>/<name>.pkg.slp` next to `sample.json`:
+
+- **The frames are in the file**: every camera's frame of each picked set, as PNG, so exactly the video's pixels. It opens on any computer, without the recording's videos. Frame 0, 1, 2, … of the package are the picked sets in order; `sets.csv` says which recording, campy frame and video frame each one is, why it was picked, and its flags.
+- **The predictions are on them**: each camera's detections, and with 3D each animal's identity and 3D pose, grouped across the cameras. So LUC3D also shows where the 3D puts an animal in a camera that missed it.
+- `--skeleton <training package>` writes the labels in the training set's nodes. The live models have no tail points, so those stay empty unless you add them.
+
+**Correcting in LUC3D.** File > Load SLP > `<name>.pkg.slp` (nothing else to pick). Shift+Right goes to the next set. Correct each set in every camera:
+
+- double-click an animal's predictions to make them your labels, then drag the points that are wrong (dragging a predicted point converts it too);
+- where a camera missed an animal, double-click its projection there to make it a label, and drag the points into place;
+- press T to triangulate again, to see where the cameras still disagree;
+- delete detections that aren't an animal.
+
+**Every prediction must become a label or be deleted.** A camera's frame that still has a prediction left in it isn't used for training: the mouse left unlabelled would teach the model there is no mouse there. When done, File > Save as `<name>.labels.slp` next to the package.
+
+LUC3D can't open an embedded frame whose frame numbers or size are stored as 64-bit numbers, as `sleap-io` writes them ("Cannot mix BigInt and other types"). `campy-label-pack` stores them as 32-bit; packages made otherwise, the training packages included, don't open in LUC3D yet.
+
+**Making training and test sets.** `campy-label-merge` reads what LUC3D saved and takes the frames out of the package:
+
+```
+campy-label-merge <name>.pkg.slp <name>.labels.slp --test-into tests/<rig>.test.pkg.slp \
+    --train-into <training package> --train-out <new training package>
+```
+
+- **Test sets are kept apart for good.** About a third of each recording's minutes are test minutes, chosen by a hash of the recording's name and the minute. A set is always on the same side, and whole minutes are kept out, so no frame a few frames from a test frame is trained on. Test frames go to `<name>.test.pkg.slp` and, with `--test-into`, into that rig's test set, which only grows. They are for measuring models, never for training.
+- **The rest go to `<name>.train.pkg.slp`**, and, with `--train-into`, into a copy of the training package (`--train-out`). The labels are written in that package's nodes, so run it once for the 15-node package (centroid model) and once for the 12-node one (centered-instance model).
+- **Points marked hidden are left out**, as SLEAP trains on them. That includes the points LUC3D fills in when a prediction becomes a label.
+- **`<name>.merge.csv`** says what happened to each camera frame: taken, not finished (predictions left), untouched, or emptied (every prediction deleted and no label; left out unless `--keep-emptied`).
+
+Tried on a 30-second, 3-camera recording of 5 mice: 12 picked sets were packed in 18 s (15 MB). LUC3D opened the package with the predictions, identities and 3D on it. A set corrected and saved there was merged into the 1,000-frame 12-node training package in 5 minutes, mostly reading the 550 MB package over the network. The result read back as 1,003 frames, the new ones pixel for pixel the package's.
+
 ## Recording for a model
 
 - **Match the training images' brightness.** The training frames averaged about 24 out of 255. Frames about 8 times brighter, with many saturated pixels, lost most mice and produced hundreds of false detections, and frames half as bright lost about half. Set aperture, exposure and gain so live frames look like the training frames.
