@@ -398,6 +398,31 @@ def test_campy_live_writes_its_session_into_the_recording(tmp_path, monkeypatch)
 	assert found["session"]["schema"] == manifest.SCHEMA and found["live"][0]["status"] == "complete"
 
 
+def test_campy_live_tracks_from_the_first_frame_while_its_session_is_written(tmp_path, monkeypatch, capsys):
+	# What campy-live-session.json says of campy, the computer and the models
+	# (git, nvidia-smi, PowerShell, best.ckpt's SHA-256) can take seconds: it is
+	# read and written from threads, and the first set is not kept waiting
+	# for it. Waited for, the first 1.5 s went untracked (frame 68 at 60 fps
+	# on the Precision 7875).
+	import test_livefeed
+	campy_info = manifest.CampyInfo
+	def SlowCampyInfo():
+		time.sleep(1.5)
+		return campy_info()
+	monkeypatch.setattr(manifest, "CampyInfo", SlowCampyInfo)
+	out = str(tmp_path / "live")
+	assert test_livefeed.run_live(test_livefeed.name(), out, ["--model", "none", "--report-sec", "0",
+		"--wait-sec", "30", "--frame-shape", "16x20x1"], frames=120, rate=60, delay=0.1) == 0
+	rows = np.load(out + ".npy")
+	assert rows["frame"][0] <= 3 and rows["frame"][-1] == 120
+	# The file is the same as when written before the first set
+	data = json.loads(open(out + ".session.json").read())
+	assert data["status"] == "complete" and data["campy"]["path"].endswith("campy")
+	assert data["host"]["packages"]["numpy"] and data["models"] == {} and data["end"]["sets"] == len(rows)
+	assert json.loads(open(out + ".json").read())["session"] == out + ".session.json"
+	assert "How this run is made" in capsys.readouterr().out
+
+
 def test_campy_live_without_a_recording_folder_writes_beside_its_log(tmp_path):
 	assert manifest.LiveSession.Place(None, str(tmp_path / "live")) == str(tmp_path / "live") + ".session.json"
 

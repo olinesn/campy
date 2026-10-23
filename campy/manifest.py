@@ -1027,7 +1027,10 @@ class LiveSession:
 				self.say("Could not write {}: {}.".format(self.path, e))
 			self.failed = True
 
-	def Start(self, args, parser, argv, recording, models, calibration, warnings, extra=None):
+	def Start(self, args, parser, argv, recording, models, calibration, warnings, extra=None, facts=None):
+		# facts: "campy" and "host" as CampyInfo and HostInfo give them, read
+		# earlier (campy-live, while its models load); else read here
+		facts = facts or {}
 		sources, names = OptionSources(parser, argv)
 		options = {names[dest]: {"value": value, "source": sources.get(names[dest], "default")}
 			for dest, value in sorted(vars(args).items()) if dest in names}
@@ -1044,8 +1047,8 @@ class LiveSession:
 				"written": {"start": Now()},
 				"recording": os.path.abspath(recording) if recording else None,
 				"session": SESSION_FILE if recording and os.path.isfile(os.path.join(recording, SESSION_FILE)) else None,
-				"campy": CampyInfo(),
-				"host": HostInfo(LIVE_PACKAGES, ffmpeg=False),
+				"campy": facts["campy"] if "campy" in facts else CampyInfo(),
+				"host": facts["host"] if "host" in facts else HostInfo(LIVE_PACKAGES, ffmpeg=False),
 				"torch": TorchInfo(),
 				"commandLine": list(argv) if argv is not None else sys.argv[1:],
 				"options": options,
