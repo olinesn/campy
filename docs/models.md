@@ -200,6 +200,20 @@ It writes `flags.csv` (every flag, with where in the picture it is: for `missed`
 
 If the calibration file named in the log's summary isn't on the computer, give it with `--calibration`. Without it, `missed` can't be worked out, and `disagree` uses the log's own reprojection errors, without saying which camera is wrong. A log made without `--calibration` gets only the `extra`, `fewer` and `low_score` flags.
 
+**On the Dell Pro Max Slim FCS1250.** A 10-minute recording of 3 mice (3 cameras, 30 fps) was replayed through `campy-live` with 3D and the models trained on the 10,223-frame set: the centroid model with output stride 2 and a 10 px spread, and the 160 px centered-instance model. `--max-instances 5` let extra detections show. `campy-live-flag` read the 17,996 sets in under 3 seconds:
+
+- 4,654 sets (26%) had at least one flag.
+- No identity swaps, and no detections the 3D left unmatched. 105 sets (0.6%) had a 3D jump, in 26 events.
+- Camera 2, the side view, was the weakest:
+
+| Camera | Missed a mouse the others saw | Fewer than 3 | More than 3 | Low score | Disagrees with the 3D |
+|---|---|---|---|---|---|
+| Camera 0 | 1.2% | 2.5% | 3.7% | 2.7% | 1.3% |
+| Camera 1 | 0.1% | 0.4% | 4.8% | 2.9% | 0.4% |
+| Camera 2 | 4.8% | 6.0% | 10.0% | 6.0% | 2.5% |
+
+A budget of 40 sets (round one: enough that about a third can become the rig's test set) took 6 for each of the six kinds of flag found and 4 at random, spread over the whole recording.
+
 ## Labelling them in LUC3D (`campy-label-pack`, `campy-label-merge`)
 
 `campy-label-pack` turns the sets `campy-live-flag` picked into one file to correct in [LUC3D](https://github.com/talmolab/luc3d), with `campy-live`'s predictions already on them, so labelling means correcting, not starting from nothing. Run it in the inference environment (it needs `sleap-io`, which comes with sleap-nn):
