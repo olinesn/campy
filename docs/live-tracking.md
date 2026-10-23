@@ -61,10 +61,11 @@ Both environments must have the same campy installed, or `campy-session` stops b
 
 **What happens:**
 
-1. It checks the config's `live:` and `view:` sections, and suggests the key you meant for a typo.
+1. It reads the config exactly as campy-acquire does ([Configs](configs.md)): the same checks, before anything starts, and a config built on a rig profile (`extends:`) works too, its `live:`, `view:` and `post:` sections combined with the profile's one level deep. It also checks those sections' own keys, and suggests the key you meant for a typo. `view: true` and `view: false` are short for `view: {show: true}` and `view: {show: false}`.
 2. It makes the recording's folder (`<videoFolder>/<date and time>/`, as campy-acquire would). Into its `logs/` folder it writes:
-   - the config as given (`session-config.yaml`);
-   - the config campy-acquire runs (`campy-acquire.yaml`): the same, without the two sections, and with `liveFeed: True`.
+   - the config as given (`session-config.original.yaml`);
+   - the same combined into one file (`session-config.yaml`): every setting, with the profile and the command-line options in it, each line saying where its value came from. `campy-session post` reads it again;
+   - the config campy-acquire runs (`campy-acquire.yaml`): the same, with `liveFeed: True` when something reads the feed.
 3. It starts `campy-live` and waits until its models are warmed up: 5–40 s, longest the first time an engine is built (`live.ready_timeout_s`, default 120 s).
 4. It starts `campy-live-view` (with `view`), then `campy-acquire`, which records into that folder.
 5. The recording ends at `recTimeInSec`, or at Ctrl-C. `campy-live` tracks to the last frame and ends by itself. The view closes, unless `keep_open` is set.
@@ -140,6 +141,10 @@ The page is served only to this computer (`127.0.0.1`):
 - **From another computer**, go through SSH: run `ssh -L 8765:127.0.0.1:8765 <rig>`, then open the printed address on your own computer.
 
 Every request needs the random key in that address, so no other program on the computer can press Start or Stop. `--port` picks another port, and `--no-browser` only prints the address.
+
+**Closing the panel's window never ends a recording.** The panel starts `campy-acquire` and `campy-live` apart from its own console: on Windows in a hidden console of their own, on Linux in a session of their own. So closing the window, or the terminal, or the panel crashing, leaves the recording going to its end, with `campy-live` tracking it. Stop and Ctrl-C in the panel's window reach `campy-acquire` through its stop file. A panel opened again while such a recording is still running says so, refuses to start another (two recordings can't share the cameras), and offers **Stop that recording**. `campy-session run` in a terminal keeps its own behaviour: there, Ctrl-C reaches `campy-acquire` directly.
+
+**A desktop icon** for labmates: `campy-session shortcut <config>.yaml --name "Record: 3 cameras"` makes one. It's a shortcut on Windows, a `.desktop` file on Linux and a `.command` file on macOS. Double-clicking it opens the panel with that config. [Recording a session from the desktop](recording-a-session.md) is the page to give them.
 
 ### By hand
 
@@ -518,7 +523,7 @@ Each run's recording goes into a new folder inside `videoFolder`, as usual, and 
 
 ## A tracked recording in one command (campy-session)
 
-`campy-session run <config>.yaml`, in the recording environment, starts `campy-live` (in the inference environment), `campy-live-view` and `campy-acquire` from one config, and ends them together. The config holds campy-acquire's keys plus a `live:` section (the trained models, `animals`, `calibration`, `env`, more campy-live `args`) and an optional `view:` section. Every program's output goes into the recording's folder (`logs/`), and so do `campy-live`'s results. `campy-session register-live`, run once in the inference environment, tells it where that environment is; `live.python` in the config does the same. After a clean stop it runs the `post:` section's steps: remux the videos to plain MP4 (each checked packet by packet), `campy-live-export`, an optional copy to another folder or computer, and your own commands. `campy-session post <folder>` runs them again by hand. `campy-session panel <config>.yaml` does the same from a page in the browser, for those who'd rather not use a terminal: Start, each camera's thumbnail and health, disk space, warnings, bookmarks, Stop. The recording comes first: campy-acquire is never killed, and it records on if `campy-session` or `campy-live` stops. See [Live tracking](live-tracking.md#in-one-command-campy-session).
+`campy-session run <config>.yaml`, in the recording environment, starts `campy-live` (in the inference environment), `campy-live-view` and `campy-acquire` from one config, and ends them together. The config holds campy-acquire's keys plus a `live:` section (the trained models, `animals`, `calibration`, `env`, more campy-live `args`) and an optional `view:` section. Every program's output goes into the recording's folder (`logs/`), and so do `campy-live`'s results. `campy-session register-live`, run once in the inference environment, tells it where that environment is; `live.python` in the config does the same. After a clean stop it runs the `post:` section's steps: remux the videos to plain MP4 (each checked packet by packet), `campy-live-export`, an optional copy to another folder or computer, and your own commands. `campy-session post <folder>` runs them again by hand. `campy-session panel <config>.yaml` does the same from a page in the browser, for those who'd rather not use a terminal: Start, each camera's thumbnail and health, disk space, warnings, bookmarks, Stop. `campy-session shortcut <config>.yaml` puts an icon on the desktop that opens it ([Recording a session from the desktop](recording-a-session.md)). The recording comes first: campy-acquire is never killed, and it records on if `campy-session` or `campy-live` stops. See [Live tracking](live-tracking.md#in-one-command-campy-session).
 
 ## Live pose estimation (liveFeed, campy-live)
 
