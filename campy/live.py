@@ -1032,22 +1032,32 @@ class FixedCrops:
 
 	def Crops(self, image, centroids, found):
 		# make_centered_bboxes and crop_bboxes, for every slot: (crops
-		# (B*K, C, cropH, cropW), the boxes' top-left (B*K, 2) as sleap-nn adds it)
+		# (B*K, C, cropH, cropW), the boxes' top-left (B*K, 2) as sleap-nn adds it).
+		# sleap-nn's crop_bboxes pads the frames with 0 and indexes them by
+		# (frame, row, column); here each pixel's place in the unpadded frames
+		# is one number, read with one gather, and 0 where it is outside them:
+		# the same pixels, without writing the padded frames and with one index
+		# per pixel rather than three (0.69 to 0.18 ms per set on the EVO-X2,
+		# 0.44 to 0.12 ms on the RTX 2000 Ada: bench/live_stage_timing.py)
 		torch = self.torch
-		F = torch.nn.functional
 		B, K = found.shape
 		ch, cw = self.cropH, self.cropW
+		C, h, w = image.shape[-3:]
 		c = torch.where(found[..., None], centroids, torch.zeros_like(centroids)).reshape(B * K, 2)
 		topleft = torch.stack([c[:, 0] - cw / 2, c[:, 1] - ch / 2], dim=-1) + 0.5
 		corner = torch.stack([(topleft[:, 0] + cw // 2).to(torch.long) - cw // 2,
 			(topleft[:, 1] + ch // 2).to(torch.long) - ch // 2], dim=-1)
-		padded = F.pad(image, (cw, cw, ch, ch), mode="constant", value=0)
-		ax = (corner[:, 0:1, None] + torch.arange(cw, device=image.device)[None, None, :] + cw).clamp(
-			0, padded.shape[-1] - 1)
-		ay = (corner[:, 1:2, None] + torch.arange(ch, device=image.device)[None, :, None] + ch).clamp(
-			0, padded.shape[-2] - 1)
+		x = corner[:, 0:1, None] + torch.arange(cw, device=image.device)[None, None, :] # (B*K, 1, cw)
+		y = corner[:, 1:2, None] + torch.arange(ch, device=image.device)[None, :, None] # (B*K, ch, 1)
+		inside = (x >= 0) & (x < w) & (y >= 0) & (y < h)
 		sample = torch.arange(B, device=image.device).repeat_interleave(K)[:, None, None]
-		crops = padded[sample, :, ay, ax].permute(0, 3, 1, 2).contiguous()
+		at = sample * (h * w) + y.clamp(0, h - 1) * w + x.clamp(0, w - 1) # (B*K, ch, cw)
+		if C == 1:
+			crops = image.reshape(-1)[at]
+			crops = torch.where(inside, crops, torch.zeros_like(crops)).unsqueeze(1)
+		else:
+			crops = image.permute(0, 2, 3, 1).reshape(B * h * w, C)[at] # (B*K, ch, cw, C)
+			crops = torch.where(inside[..., None], crops, torch.zeros_like(crops)).permute(0, 3, 1, 2).contiguous()
 		return crops, topleft
 
 	def Keypoints(self, cms):
