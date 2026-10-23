@@ -55,8 +55,9 @@ def test_the_sections_are_checked_and_taken_out(tmp_path):
 	assert c.live["restart"] is True and c.live["args"] == []
 	assert c.view["show"] is False
 	assert c.Value("recTimeInSec") == 60 and c.Value("numCams") == 2 and c.Value("frameRate") == 100 # campy's default
-	acquire = c.AcquireConfig()
-	assert "live" not in acquire and "view" not in acquire and acquire["liveFeed"] is True
+	acquire = yaml.safe_load(c.AcquireYaml()) # every setting, the command line's, the feed on for campy-live
+	assert acquire["liveFeed"] is True and acquire["recTimeInSec"] == 60 and acquire["frameRate"] == 100
+	assert "extends" not in acquire
 	assert c.Cameras() == (2, ["Camera0", "Camera1"])
 
 
@@ -96,7 +97,7 @@ def test_campy_session_sets_the_folder_and_stop_file_itself(tmp_path):
 def test_without_a_live_section_the_view_is_off_and_the_feed_as_configured(tmp_path):
 	c = session.Config(str(write_config(tmp_path / "c.yaml", {"numCams": 1})))
 	assert c.live is None and c.view["show"] is False and not c.Feed()
-	assert "liveFeed" not in c.AcquireConfig()
+	assert yaml.safe_load(c.AcquireYaml())["liveFeed"] is False
 
 
 def test_campy_lives_options_come_from_the_config(tmp_path):
@@ -237,12 +238,13 @@ def test_a_tracked_recording_in_one_command(tmp_path, home):
 	# Everything in the recording's folder, each program's output marked here
 	logs = folder / "logs"
 	assert sorted(p.name for p in logs.iterdir()) == ["campy-acquire.log", "campy-acquire.yaml", "campy-live.log",
-		"campy-live.ready", "post.json", "post.log", "session-config.yaml"]
+		"campy-live.ready", "post.json", "post.log", "session-config.original.yaml", "session-config.yaml"]
 	assert "[acquire] Camera0 saved 60 frames" in out and "[live]" in out
 	assert "campy-live is ready" in out and "campy-live finished: the feed ended." in out
 	ran = yaml.safe_load((logs / "campy-acquire.yaml").read_text())
-	assert ran["liveFeed"] is True and "live" not in ran and "view" not in ran
-	assert "live:" in (logs / "session-config.yaml").read_text()
+	assert ran["liveFeed"] is True and ran["recTimeInSec"] == 3
+	assert "live:" in (logs / "session-config.original.yaml").read_text()
+	assert yaml.safe_load((logs / "session-config.yaml").read_text())["live"]["model"] == "none"
 	summary = json.loads((folder / "campy-live.json").read_text())
 	assert summary["ended"] == "the recording ended" and summary["sets"] > 30
 	status = json.loads((folder / "launcher.json").read_text())
@@ -377,11 +379,34 @@ def test_campy_live_that_cannot_start_and_is_not_required(tmp_path, home):
 	assert recorded(the_folder(clips)) == [40, 40]
 
 
-def test_a_profile_is_refused_for_now(tmp_path):
-	# Until campy-session reads configs through campy's configurator (config profiles' extends:)
-	config = write_config(tmp_path / "c.yaml", {"extends": "rig", "numCams": 1})
-	with pytest.raises(session.SessionError, match="does not read profiles yet"):
-		session.Config(str(config))
+def test_a_config_on_a_profile(tmp_path, monkeypatch):
+	# extends: a rig profile in ~/.campy/configs (CAMPY_CONFIG_DIR): its keys, and its sections combined one level
+	# deep, as campy-acquire combines them; the config campy-acquire runs is one file, profile included
+	profiles = tmp_path / "profiles"
+	profiles.mkdir()
+	monkeypatch.setenv("CAMPY_CONFIG_DIR", str(profiles))
+	write_config(profiles / "rig.yaml", {"numCams": 3, "frameRate": 60, "liveFeedName": "rigfeed"},
+		live={"model": "sleap", "centroid": "C", "instance": "I", "animals": 5}, post={"remux": "keep"})
+	config = write_config(tmp_path / "today.yaml", {"extends": "rig", "recTimeInSec": 600}, live={"animals": 3})
+	c = session.Config(str(config))
+	assert c.Value("numCams") == 3 and c.Value("frameRate") == 60 and c.Value("recTimeInSec") == 600
+	assert (c.live["centroid"], c.live["instance"], c.live["animals"]) == ("C", "I", 3)
+	assert c.post["remux"] == "keep"
+	ran = yaml.safe_load(c.AcquireYaml())
+	assert "extends" not in ran and ran["numCams"] == 3 and ran["liveFeedName"] == "rigfeed" and ran["liveFeed"] is True
+
+
+def test_view_true_or_false_is_short_for_show(tmp_path):
+	for value in (True, False):
+		c = session.Config(str(write_config(tmp_path / "c.yaml", {"numCams": 1}, view=value)))
+		assert c.view["show"] is value
+
+
+def test_a_typo_in_campy_acquires_keys_is_caught_before_anything_starts(tmp_path):
+	with pytest.raises(session.SessionError, match="frameRate"):
+		session.Config(str(write_config(tmp_path / "c.yaml", {"numCams": 1, "framerate": 60})))
+	with pytest.raises(session.SessionError, match="campy-session sets it itself"):
+		session.Config(str(write_config(tmp_path / "c.yaml", {"numCams": 1, "stopFile": "x"})))
 
 
 def test_campy_live_stops_waiting_when_campy_session_ended_first(tmp_path):

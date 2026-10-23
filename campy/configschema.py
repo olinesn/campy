@@ -302,7 +302,8 @@ SETTINGS = [
 		help="campy-session: live tracking while recording (models, calibration, animals, the live \
 			environment's python). campy-acquire passes it by; campy-session checks it."),
 	Setting("view", None, SECTION, section=PROGRAMS, per_camera=ONE,
-		help="campy-session: the live view (campy-live-view). campy-acquire passes it by."),
+		help="campy-session: the live view (campy-live-view); view: true or false is short for view: {show: \
+			true}. campy-acquire passes it by."),
 	Setting("post", None, SECTION, section=PROGRAMS, per_camera=ONE,
 		help="campy-session: what to do after the recording (remux, export, copy). campy-acquire passes it by."),
 	Setting("panel", None, SECTION, section=PROGRAMS, per_camera=ONE,
