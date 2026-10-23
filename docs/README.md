@@ -6,6 +6,7 @@ Guides for recording with campy and tracking animals live while it records: what
 |---|---|
 | [Hardware](hardware.md) | What to buy for live recording + SLEAP + 3D, and the measurements behind it |
 | [Live tracking](live-tracking.md) | Setting up and running `campy-acquire`, `campy-live` and `campy-live-view` on Linux (AMD/ROCm) and Windows (NVIDIA/CUDA), and opening the results in LUC3D (`campy-live-export`) |
+| [Closed-loop outputs](closed-loop.md) | `campy-rules`: TTL outputs from the live poses (regions, distances between animals, identities), photometry pulse trains locked to the frames, the outputs board, safety and latency |
 | [Models](models.md) | Training lightweight sleap-nn models for live use, and choosing one that keeps up |
 | [Calibration and troubleshooting](calibration-and-troubleshooting.md) | Camera placement, exposure and calibration, and fixes for the problems seen so far |
 

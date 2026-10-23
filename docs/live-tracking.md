@@ -5,6 +5,7 @@ Three programs work together on the computer that records:
 - **`campy-acquire`** records the cameras as usual. With `liveFeed: True` it also copies each frame into shared memory, the *live feed*.
 - **`campy-live`** reads the feed and runs a sleap-nn top-down model on each synchronized set of frames, one frame per camera. With a calibration, it also matches the animals across cameras, keeps their identities and triangulates them in 3D. It is never more than one set behind: a set that arrives while it is busy is skipped and counted, never queued.
 - **`campy-live-view`** (optional) shows the camera frames with the tracking drawn on them, plus a 3D view.
+- **`campy-rules`** (optional) switches TTL outputs from the poses, for closed-loop experiments: see [Closed-loop outputs](closed-loop.md).
 
 campy never waits for `campy-live`, so tracking can't slow down or break a recording. The [main README](../README.md#live-pose-estimation-livefeed-campy-live) lists every option.
 

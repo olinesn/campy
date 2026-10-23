@@ -386,6 +386,14 @@ campy-live-export <recording folder> --log campy-live_<date_time>.npy
 ```
 It writes `campy-live.slp`, which holds each camera's 2D and, with `--calibration`, each animal's identity and 3D pose, grouped across the cameras (LUC3D: File > Load SLP, then pick the recording folder for the videos). It also writes `<camera>/campy-live.slp`, `calibration.toml` and `skeleton.json`, LUC3D's session folder for the 2D (File > Load Session Folder), and `points3d.h5`, the 3D as arrays. Each prediction goes on the video frame that holds it, through each camera's `frametimes.npy`. `--frames FIRST:LAST` exports part of a long recording. `--skeleton <model folder>` gives the skeleton's edges for logs from 2.1.0rc6 and earlier, whose summary lacks them. `--calibration` and `--cameras` cover a calibration that has moved and a log with no summary. See [Live tracking](docs/live-tracking.md#opening-a-tracked-recording-in-luc3d) and `python -m pydoc campy.liveexport`.
 
+#### Closed-loop outputs (campy-rules)
+
+`campy-rules` reads `campy-live`'s results as they come, checks each set's poses against rules from a YAML file (an animal in a region, two animals' body parts within a distance, one identity or any), and switches TTL outputs on an Arduino Nano ESP32 of their own (the sketch `campy/trigger/campy_outputs`). The board watches the camera trigger. It makes trains of pulses locked to the frames itself, such as 3 ms photometry excitation on alternate frames, and says how long after its frame's trigger each output switched. It refuses commands about frames older than `bound_ms`. Everything goes off if `campy-rules` stops or goes quiet. `--dry-run` only logs, and `--replay <campy-live log>` tries the rules on a finished recording:
+```
+campy-rules rules.yaml --port /dev/ttyACM1
+```
+See [Closed-loop outputs](docs/closed-loop.md) for the wiring, the rules file, safety and latency.
+
 #### Watching it live (campy-live-view)
 
 `campy-live-view` shows the cameras' frames as campy records them, with campy-live's results drawn on them:

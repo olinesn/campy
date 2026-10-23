@@ -1,5 +1,5 @@
 // Just enough of the Arduino API to run campy/trigger/trigger.ino (and
-// chronicrecord/chronic_timer/chronic_timer.ino) on a computer,
+// chronicrecord/chronic_timer/chronic_timer.ino, campy/trigger/campy_outputs) on a computer,
 // with a simulated clock (see sim.cpp). For tests only.
 #pragma once
 #include <cstdint>
@@ -7,11 +7,14 @@
 #define HIGH 1
 #define LOW 0
 #define OUTPUT 1
+#define INPUT 0
+#define INPUT_PULLDOWN 9
 
 unsigned long micros();
 void delay(unsigned long ms);
 void pinMode(int pin, int mode);
 void digitalWrite(int pin, int level);
+int digitalRead(int pin);
 void noInterrupts();
 void interrupts();
 
