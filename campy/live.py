@@ -10,9 +10,10 @@ again. Sets that came while it was busy are skipped, and counted, never
 queued, so it is never further behind than one set.
 
 It runs in its own Python environment, the one with torch and sleap-nn: it
-imports only numpy and this package's livefeed, liveresults, frametimes, clock
-and children, which need nothing else, so campy's camera drivers need not be installed there. In that
-environment, either install campy without its dependencies
+imports only numpy and this package's livefeed, liveresults, frametimes, clock,
+children, manifest and defaults, which need nothing else, so campy's camera
+drivers need not be installed there. In that environment, either install
+campy without its dependencies
 
     pip install --no-deps -e <campy folder>
     campy-live --cameras 3
@@ -60,6 +61,14 @@ also while campy-live runs), and <out>.json, the summary, which also says the
 model's nodes and edges, and with --calibration the calibration's path, its
 cameras' names and the number of animals: what campy-live-export
 (campy/liveexport.py) needs to write the results as files LUC3D opens.
+And campy-live-session.json in the recording's folder (beside the log,
+<out>.session.json, when the feed does not say where the recording is): how
+this run was made, for the recording to keep (campy/manifest.py): campy-
+live's environment, the models' folders and SHA-256s and the settings they
+were trained with, the calibration's SHA-256, every option and where it came
+from, and how the run ended. At startup campy-live says each default that
+changed in a newer campy and that this run relies on (campy/defaults.py):
+--defaults-version and --default-warnings stop them.
 Fields of each row:
 
   frame          the set's frame number
@@ -222,7 +231,7 @@ and its first.
 import argparse, json, math, os, queue, signal, sys, threading, time
 from datetime import datetime
 import numpy as np
-from campy import children, cpus, livefeed, liveresults, stopfile
+from campy import children, cpus, defaults, livefeed, liveresults, manifest, stopfile
 from campy import clock as hostclock # not clock: Run's clock is the GPU's
 from campy.frametimes import GrowingNpy, Writer
 
@@ -2359,7 +2368,8 @@ def Run(args):
 			Say("Could not lower this program's priority (--nice): {}".format(e))
 
 	cameras = Cameras(names, poll=args.poll_ms / 1e3)
-	log = worker = clock = None
+	log = worker = clock = session = None
+	models = ModelRecords(args) # the models' SHA-256s, read meanwhile
 	# The progress lines, from a thread of their own: printed in the loop,
 	# into a log file on the disk the videos go to, one could wait as long as
 	# a log write
@@ -2370,6 +2380,7 @@ def Run(args):
 		# before the trigger); pose3d's imports too
 		expected = (FrameShape(args.frame_shape), np.dtype(np.uint8))
 		model, host = Prepare(args, len(names), *expected)
+		warnings = DefaultWarnings(args, model) # said now, before the wait for the feed
 		if args.calibration:
 			from campy import pose3d
 		if args.ready_file:
@@ -2403,6 +2414,7 @@ def Run(args):
 		tracker = Pose3D(args, [r.cameraName for r in cameras.readers]) if args.calibration else None
 
 		out = args.out or "campy-live_{}".format(datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+		session = StartSession(args, model, tracker, cameras, models, out, warnings)
 		log = Log(out + ".npy", len(names), model.instances, model.nodes or args.nodes, frameRate,
 			tracker.animals if tracker else 0)
 		if args.results_feed == "on":
@@ -2446,11 +2458,24 @@ def Run(args):
 			results_feed=log.results.name if log.results else None,
 			gpu_clock_held=clock is not None, gpu_clock=clock.Describe() if clock is not None else None,
 			ended="stopped (Ctrl-C)" if stop() else "the recording ended")
+		summary["session"] = session.path if session else None
 		with open(out + ".json", "x") as f:
 			json.dump(summary, f, indent=2)
 		Say("Done, {}: {}".format(summary["ended"], Line(summary, log)))
 		Say("Summary in {}.json.".format(out))
+		if session is not None:
+			session.End(summary, out + ".npy", stopped=stop())
+			session = None
 		return 0
+	except BaseException as e:
+		if session is not None:
+			try:
+				summary = log.Summary()
+			except Exception:
+				summary = None
+			session.End(summary, log.path if log is not None else None, error="{}: {}".format(type(e).__name__, e))
+			session = None
+		raise
 	finally:
 		# Stopped by an error too: the rows and lines still queued are written
 		try:
@@ -2466,6 +2491,94 @@ def Run(args):
 			signal.signal(signal.SIGINT, previous)
 			if stopWatch is not None:
 				stopWatch.Stop()
+
+
+class ModelRecords:
+	"""
+	The trained models' records for campy-live-session.json (manifest.
+	ModelRecord), made on a thread of their own as campy-live starts: a
+	best.ckpt can be several hundred MB to hash.
+	"""
+
+	def __init__(self, args):
+		self.records = {}
+		folders = {"centroid": args.centroid, "instance": args.instance} if args.model == "sleap" else {}
+		self.thread = threading.Thread(target=self.Run, args=(folders,), daemon=True, name="campy-live model hashes")
+		self.thread.start()
+
+	def Run(self, folders):
+		for kind, folder in folders.items():
+			try:
+				self.records[kind] = manifest.ModelRecord(folder)
+			except Exception as e:
+				self.records[kind] = {"folder": folder, "error": str(e)}
+
+	def Get(self):
+		self.thread.join()
+		return self.records
+
+
+def RunContext(model):
+	# What the default changes apply to (defaults.Relied): a GPU, and ROCm
+	device = str(getattr(model, "device", "cpu"))
+	gpu = device.startswith("cuda") and not isinstance(model, NoModel)
+	rocm = False
+	if gpu:
+		try:
+			import torch
+			rocm = bool(getattr(torch.version, "hip", None))
+		except ImportError:
+			pass
+	return {"gpu": gpu, "rocm": rocm}
+
+
+def DefaultWarnings(args, model):
+	"""
+	Says the changed defaults this run relies on (campy/defaults.py), once,
+	and returns them as lines, for campy-live-session.json.
+	"""
+	try:
+		sources, _ = manifest.OptionSources(Parser(), getattr(args, "argv", None) or [])
+		known = None if args.defaults_version in ("", "None") else args.defaults_version
+		warnings = defaults.Warnings(vars(args), sources, RunContext(model), program="campy-live", known=known,
+			enabled=args.default_warnings == "on")
+	except ValueError as e: # a --defaults-version that is not a version
+		Say(str(e))
+		return []
+	if warnings:
+		Say(defaults.Message(warnings, "campy-live"))
+	return warnings
+
+
+def StartSession(args, model, tracker, cameras, models, out, warnings):
+	"""
+	Writes campy-live-session.json (manifest.LiveSession): into the
+	recording's folder, which the feed says, else beside the log. Returns it,
+	or None when it could not be made: it never stops campy-live.
+	"""
+	try:
+		recording = livefeed.RecordingFolder(cameras.readers)
+		session = manifest.LiveSession(manifest.LiveSession.Place(recording, out), say=Say)
+		calibration = None
+		if tracker is not None:
+			calibration = manifest.FileRecord(args.calibration)
+			calibration["cameraNames"] = tracker.names
+		describe = lambda name: getattr(model, name)() if hasattr(model, name) else None
+		reader = cameras.readers[0]
+		session.Start(args, Parser(), getattr(args, "argv", None) or [], recording, models.Get(), calibration,
+			warnings, extra={
+				"feed": {"rings": list(cameras.names), "cameras": [r.cameraName for r in cameras.readers],
+					"frameShape": list(reader.shape), "frameRate": reader.Info("frameRate")},
+				"model": {"kind": args.model, "description": model.Describe(), "device": str(getattr(model, "device", "")),
+					"engine": describe("DescribeEngine"), "nodes": getattr(model, "nodeNames", None)},
+				"pose3d": {"animals": tracker.animals, "description": tracker.Describe()} if tracker else None,
+				"log": os.path.abspath(out + ".npy"),
+				})
+	except Exception as e:
+		Say("Could not write campy-live-session.json: {}. Tracking goes on.".format(e))
+		return None
+	Say("How this run is made: {}.".format(session.path))
+	return session
 
 
 def Publish(args, log, names, cameras, model, tracker, frameRate):
@@ -2624,7 +2737,7 @@ class HostBuffer:
 		self.array = self.tensor.numpy()
 
 
-def ParseArgs(argv=None):
+def Parser():
 	p = argparse.ArgumentParser(prog="campy-live", description="SLEAP pose estimation on the frames campy is "
 		"recording (campy-acquire with liveFeed True).", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 	p.add_argument("--cameras", type=int, default=3, help="How many cameras: rings <name>-0 to <name>-<cameras - 1>.")
@@ -2711,7 +2824,19 @@ def ParseArgs(argv=None):
 		help="How many blocks spin while sets come: auto (0 to 2, as the GPU's clock needs, read through NVML, \
 		nvidia-smi or sysfs; 1 when it can't be read; at least 1 on an AMD integrated GPU, as the EVO-X2's; a count \
 		found too few on a GPU isn't tried again there until the computer restarts) or a number.")
-	return p.parse_args(argv)
+	p.add_argument("--defaults-version", default="None", help="The campy version whose defaults the command \
+		that starts campy-live was written for, e.g. 2.1.0: campy-live then says only the defaults changed after \
+		it that this run relies on (campy/defaults.py). None: every one.")
+	p.add_argument("--default-warnings", default="on", choices=["on", "off"], help="Say, at startup, each \
+		default that changed in a newer campy and that this run relies on.")
+	return p
+
+
+def ParseArgs(argv=None):
+	argv = sys.argv[1:] if argv is None else list(argv)
+	args = Parser().parse_args(argv)
+	args.argv = argv # which options were given (manifest.OptionSources)
+	return args
 
 
 def Main(argv=None):
