@@ -88,6 +88,32 @@ def SetCounts(model, counts):
 	blobs.copy_(new.to(blobs.device))
 
 
+def test_reference_crops_at_crop_size():
+	# The reference is campy-live's own layer, whose crops live.ExactCropSize
+	# cuts at the crop size; sleap-nn's crop_bboxes alone, for this centroid,
+	# cuts them a pixel short (tests/test_live_exact_crops.py), and
+	# --fixed-crops always cuts the crop size
+	from sleap_nn.inference.ops.crops import crop_bboxes, make_centered_bboxes
+	centroid = [221.54798889160156, 77.36744689941406]
+	image = torch.zeros(1, 1, 256, 320, dtype=torch.uint8)
+	boxes = make_centered_bboxes(torch.tensor([centroid]), 192, 192)
+	assert tuple(crop_bboxes(image, boxes, torch.tensor([0])).shape[-2:]) == (192, 191)
+	model, _ = Model("cpu", fixed=False)
+	instance, seen = model.layer.centered_instance_layer, []
+	predict = instance.predict
+
+	def Spy(crops):
+		seen.append(tuple(crops.shape[-2:]))
+		return predict(crops)
+
+	instance.predict = Spy
+	try:
+		model.layer._run_stage_2(image, torch.tensor([[centroid]]), torch.ones(1, 1), torch.ones(1, 1, dtype=torch.bool))
+	finally:
+		instance.predict = predict
+	assert seen == [tuple(model.layer.crop_size)] == [(192, 192)]
+
+
 def Reference(model, frames):
 	# sleap-nn's TopDownLayer, as campy-live runs it without --fixed-crops
 	# (its crops cut at their real size by live.ExactCropSize, as
