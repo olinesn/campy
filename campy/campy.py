@@ -16,17 +16,39 @@ Usage:
 campy-acquire ./configs/campy_config.yaml
 """
 
-import os, time, sys, logging, threading, queue
+import os, time, sys, copy, logging, threading, queue
 from collections import deque
 import multiprocessing as mp
-from campy import writer, configurator, preflight, newfiles, keepawake
+from campy import writer, configurator, preflight, newfiles, keepawake, defaults, manifest
 from campy.trigger import trigger
 from campy.cameras import unicam, emu
 from campy.utils.utils import HandleKeyboardInterrupt, Say, ErrorText, StartPrinter, StopPrinter
 
+# What session.json is made from, in the main process (OpenSystems): the
+# params as the config made them, where each came from, the defaults that
+# changed which this run relies on, and the computer's details, read meanwhile
+configured = sources = None
+defaultWarnings = []
+probe = None
+
+
+def DefaultWarnings(params, sources):
+	# The changed defaults this run relies on (campy/defaults.py), as lines
+	cams = [configurator.CameraParams(params, n) for n in range(params["numCams"])]
+	return defaults.Warnings(params, sources, {"cameras": cams}, known=params.get("defaultsVersion"),
+		enabled=params.get("defaultWarnings", True))
+
+
 def OpenSystems():
+	global configured, sources, defaultWarnings, probe
 	# Configure parameters
 	params = configurator.ConfigureParams()
+	if mp.current_process().name == "MainProcess":
+		probe = manifest.Probe()
+		configured, sources = copy.deepcopy(params), configurator.Sources()
+		defaultWarnings = DefaultWarnings(params, sources)
+		if defaultWarnings:
+			print(defaults.Message(defaultWarnings), flush=True)
 
 	# A recording never replaces one: stop now, before anything opens, if any
 	# file it would write is already there, whatever preflight is set to. Each
@@ -207,6 +229,12 @@ def Main():
 			CloseSystems(systems, params)
 			sys.exit(1)
 
+		# session.json: how this recording is made (campy/manifest.py)
+		session = manifest.Session(params, sources or {}, configurator.ConfigPath(), systems, defaultWarnings,
+			probe, say=Say)
+		session.Start(configured)
+		failures, error = None, None
+
 		# The computer stays awake until the cameras have finished: a PC with
 		# Modern Standby would otherwise go into standby when its screen times
 		# out, mid-recording (keepAwake)
@@ -239,10 +267,15 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 				systems = trigger.StartTriggers(systems, params)
 				emu.StartClock(start)
 			trigger.SaveStart(params, ready, missing, systems.get("triggerStartedNs"))
+			session.Recording(ready, missing)
 			failures = cameras.Wait(interrupts)
+		except BaseException as e:
+			error = ErrorText(e)
+			raise
 		finally:
 			awake.Stop()
 			CloseSystems(systems, params)
+			session.End(failures, interrupted=interrupts.count > 0, error=error)
 			# The files still empty go: a camera that saved no frames leaves
 			# what it always left. Not a stopped camera's, whose ffmpeg may still
 			# be finishing its video.

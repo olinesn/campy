@@ -32,6 +32,14 @@ folder, next to the camera folders:
                        as 3D poses not linked to the 2D; also for analysis
                        outside LUC3D.
 
+The .slp's provenance keeps how the recording and the tracking were made:
+the recording's session.json and the campy-live-session.json of this log
+(campy/manifest.py), and the animals' IDs from the session (animalIds). The
+identities stay "animal 1", "animal 2", ...: campy-live numbers the animals
+as it first matches them, which says nothing of which is which animal ID.
+With --calibration, a calibration that is not the one campy-live tracked
+with (its SHA-256 differs) is said.
+
 It runs after the recording, not while campy-live runs: writing these as it
 goes would cost the live loop time, an .slp cannot grow safely while it is
 written, and which video frame holds which of campy's frames is known for
@@ -97,6 +105,7 @@ not depend on it.
 
 import argparse, json, os, re, sys
 import numpy as np
+from campy import manifest
 
 SLP = "campy-live.slp"
 CALIBRATION = "calibration.toml"
@@ -544,6 +553,7 @@ def Export(recording, log, calibration=None, skeleton=None, cameras=None, frames
 		calib = ReadCalibration(cal_path, cal_names or names, names)
 
 	recording = os.path.abspath(recording)
+	provenance = Provenance(recording, log, cal_path if with3d else None)
 	cams = [Camera(recording, n) for n in names]
 	place = Placement(rows, cams)
 
@@ -585,7 +595,7 @@ def Export(recording, log, calibration=None, skeleton=None, cameras=None, frames
 	# campy-live.slp: every camera's frames, one camera after the other, and
 	# the session; each camera's own .slp: its frames alone, its video next to it
 	labels = sio.Labels(videos=videos, skeletons=[skel], tracks=tracks, identities=identities, sessions=sessions,
-		provenance={"campy-live-export": os.path.abspath(log if log.endswith(".npy") else log + ".npy")})
+		provenance=provenance)
 	n, files = len(nodes), []
 	try:
 		files.append(StartSlp(out["slp"], labels, int(layout.frames.sum()), int(layout.instances.sum()), n,
@@ -616,6 +626,43 @@ def Export(recording, log, calibration=None, skeleton=None, cameras=None, frames
 	out.update(sets=len(rows), frames_2d=int(layout.frames.sum()), frames_3d=len(layout.kept) if with3d else 0,
 		instances=int(layout.instances.sum()))
 	return out
+
+
+def LogPath(log):
+	if log.endswith(".json"):
+		log = log[:-5]
+	return os.path.abspath(log if log.endswith(".npy") else log + ".npy")
+
+
+def Provenance(recording, log, calibration=None):
+	"""
+	The .slp's provenance: the log, the recording's session.json and this
+	log's campy-live-session.json (the one whose log it is; campy/manifest.py),
+	and the session's animalIds. Says when the calibration is not the one
+	campy-live used.
+	"""
+	path = LogPath(log)
+	found = manifest.Read(recording)
+	live = [m for m in found["live"] if os.path.normcase(str(m.get("log"))) == os.path.normcase(path)]
+	if not live and len(found["live"]) == 1:
+		live = found["live"] # a log moved since: the recording's one campy-live run
+	live = live[0] if live else None
+	# A log campy-live wrote beside itself (the feed did not say the recording's folder)
+	if live is None and os.path.isfile(path[:-4] + ".session.json"):
+		live = manifest.JsonFile(path[:-4] + ".session.json").Read()
+	session = found["session"]
+	provenance = {"campy-live-export": path, "session": session, "campy-live-session": live,
+		"animalIds": ((session or {}).get("experiment") or {}).get("animalIds") or []}
+	used = ((live or {}).get("calibration") or {}).get("sha256")
+	if calibration and used:
+		given = manifest.Sha256(calibration)
+		if given and given != used:
+			Say("The calibration {} is not the one campy-live tracked with ({}, SHA-256 {}...): its 3D was "
+				"made with that one.".format(calibration, live["calibration"].get("path"), used[:12]))
+			provenance["calibrationDiffers"] = {"given": given, "campyLive": used}
+	if session is None:
+		Say("The recording has no session.json (from campy before 2.1.1): the .slp says less of how it was made.")
+	return provenance
 
 
 def WriteCalibration(path, cameras):

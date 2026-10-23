@@ -85,6 +85,16 @@ def DefaultParams():
 	params["blinkPin"] = "None" # Arduino pin with campy-synctest's test LED; "None" = no LED
 	params["blinkHz"] = "None" # its blink rate: not near a whole or half multiple of frameRate
 
+	# The experiment, for the recording's session.json (campy/manifest.py)
+	params["experiment"] = "None" # its name
+	params["animalIds"] = [] # the animals recorded, one list for the whole rig
+	params["notes"] = "None"
+	params["sessionFields"] = {} # anything else, e.g. {cage: B3, condition: saline}
+	# Defaults that changed (campy/defaults.py): the version the config was
+	# written for ("None": said for every change), and whether they are said
+	params["defaultsVersion"] = "None"
+	params["defaultWarnings"] = True
+
 	return params
 
 
@@ -141,6 +151,7 @@ def ConfigureParams():
 	ValidateCameraLists(params)
 	ValidateColorRange(params)
 	ValidateGamma(params)
+	ValidateExperiment(params)
 	if params["startArduino"]:
 		TriggerFrameRate(params) # fails here, with the reason, if the rates disagree
 
@@ -171,7 +182,7 @@ def ConfigureCamParams(systems, params, n_cam):
 
 
 # Lists that are not one value per camera
-NON_CAMERA_LISTS = ("digitalPins", "ratcamPorts")
+NON_CAMERA_LISTS = ("digitalPins", "ratcamPorts", "animalIds")
 # Lists that need a value for every camera: one name or index cannot be shared
 EVERY_CAMERA_LISTS = ("cameraNames", "cameraSelection")
 
@@ -325,7 +336,29 @@ def LoadConfig(config_path):
 	return config
 
 
+# Where each key's value came from, for the last config read (Sources)
+FROM_DEFAULT, FROM_FILE, FROM_COMMAND_LINE = "default", "file", "command line"
+_sources = {}
+_configPath = None
+
+
+def Sources():
+	"""
+	{key: "default", "file" or "command line"}: where each of the last
+	config's values came from (CombineConfigAndClargs). A disableGamma read as
+	cameraGamma counts as cameraGamma's; cameraNames and cameraSelection made
+	from numCams are defaults.
+	"""
+	return dict(_sources)
+
+
+def ConfigPath():
+	# The last config file read, as given
+	return _configPath
+
+
 def CombineConfigAndClargs(clargs):
+	global _sources, _configPath
 	params = LoadConfig(clargs.config)
 	# Overrides go in before CheckConfig, so a value from the command line gets
 	# the same range check as one from the config
@@ -333,9 +366,14 @@ def CombineConfigAndClargs(clargs):
 	if "cameraGamma" in overrides:
 		params.pop("disableGamma", None) # the command line's gamma wins
 	params = GammaFromDisableGamma(params, "The config")
-	params.update(GammaFromDisableGamma(overrides, "The command line"))
+	from_file = set(params)
+	overrides = GammaFromDisableGamma(overrides, "The command line")
+	params.update(overrides)
 	params = CheckConfig(params, clargs)
 	params = FillCameraLists(params)
+	_sources = {key: FROM_COMMAND_LINE if key in overrides else FROM_FILE if key in from_file else FROM_DEFAULT
+		for key in params}
+	_configPath = clargs.config
 	return params
 
 
@@ -400,6 +438,39 @@ def GammaValue(text):
 		return [GammaSetting(v) for v in value] if isinstance(value, list) else GammaSetting(value)
 	except ValueError as e:
 		raise ArgumentTypeError(str(e))
+
+
+def YamlValue(text):
+	# A value as YAML reads it, any kind: ValidateExperiment checks it
+	try:
+		return yaml.safe_load(text)
+	except yaml.YAMLError as e:
+		raise ArgumentTypeError("{!r} is not a value campy can read ({})".format(text, getattr(e, "problem", e)))
+
+
+def ValidateExperiment(params):
+	# The experiment's keys, as session.json keeps them: animalIds a list of
+	# text (one ID alone is a list of one), sessionFields a mapping, and
+	# defaultsVersion a version
+	ids = params.get("animalIds", [])
+	if ids is None or str(ids) == "None":
+		ids = []
+	if not isinstance(ids, list):
+		ids = [ids]
+	if any(isinstance(i, (list, dict)) for i in ids):
+		raise ValueError("animalIds is a list of IDs, e.g. [M1, M2], not {!r}.".format(params["animalIds"]))
+	params["animalIds"] = [str(i) for i in ids]
+	fields = params.get("sessionFields", {})
+	if fields is None or str(fields) == "None":
+		fields = {}
+	if not isinstance(fields, dict):
+		raise ValueError("sessionFields is a mapping, e.g. {{cage: B3, condition: saline}}, not {!r}.".format(fields))
+	params["sessionFields"] = fields
+	for key in ("experiment", "notes", "defaultsVersion"):
+		params[key] = str(params.get(key, "None"))
+	from campy import defaults
+	if params["defaultsVersion"] != "None" and defaults.VersionKey(params["defaultsVersion"]) is None:
+		raise ValueError('defaultsVersion is a campy version, e.g. "2.1.0", not {!r}.'.format(params["defaultsVersion"]))
 
 
 def TextValue(text):
@@ -820,6 +891,47 @@ def ParseClargs(parser, argv=None):
 		dest="digitalPins",
 		type=ConfigValue(int),
 		help="Digital pins on microcontroller board for sending TTL camera triggers.",
+	)
+
+	# The experiment, for session.json
+	parser.add_argument(
+		"--experiment",
+		dest="experiment",
+		type=TextValue,
+		help="The experiment's name, for the recording's session.json.",
+	)
+	parser.add_argument(
+		"--animalIds",
+		dest="animalIds",
+		type=YamlValue,
+		help="The animals recorded, e.g. \"[M1, M2, M3]\": one list for the whole rig, in session.json. \
+			campy-live-export names the animals by them.",
+	)
+	parser.add_argument(
+		"--notes",
+		dest="notes",
+		type=TextValue,
+		help="Notes on this recording, for session.json. Notes after it: campy-session note <folder> \"text\".",
+	)
+	parser.add_argument(
+		"--sessionFields",
+		dest="sessionFields",
+		type=YamlValue,
+		help="Anything else to keep with the recording, as a YAML mapping: \"{cage: B3, condition: saline}\".",
+	)
+	parser.add_argument(
+		"--defaultsVersion",
+		dest="defaultsVersion",
+		type=TextValue,
+		help="The campy version whose defaults this config was written for, e.g. 2.1.0: campy then says \
+			only the defaults changed after it that the config relies on (campy/defaults.py).",
+	)
+	parser.add_argument(
+		"--defaultWarnings",
+		dest="defaultWarnings",
+		type=ConfigValue(bool, lists=False),
+		help="Say, at startup, each default that changed in a newer campy and that this run relies on \
+			(default: True).",
 	)
 
 	return parser.parse_args(argv)
