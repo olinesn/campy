@@ -92,7 +92,8 @@ def test_every_problem_at_once(tmp_path):
 	assert "The config has 2 problems:" in str(configurator.ConfigError(found))
 	# List lengths are checked on the result, once each value is right
 	assert problems(tmp_path, "numCams: 3\ngpuID: [0, 1]\n") == [
-		"gpuID has 2 values for 3 cameras. Give one value per camera, or a single value for all of them."]
+		"gpuID has 2 values for 3 cameras. Give one value per camera, or a single value for all of them. "
+		"(gpuID is from c.yaml:2, numCams from c.yaml:1)"]
 
 
 def test_not_a_config(tmp_path):
@@ -126,7 +127,7 @@ def test_campy_config_check(tmp_path, capsys):
 	bad.write_text("numCams: 1\nframerate: 30\n")
 	assert configtool.Main(["check", str(good)]) == 0
 	out = capsys.readouterr().out
-	assert "OK    {}".format(good) in out and "note: The config says disableGamma: True" in out
+	assert "OK    {}".format(good) in out and "good.yaml says disableGamma: True" in out
 	assert configtool.Main(["check", str(good), str(bad)]) == 1
 	out = capsys.readouterr().out
 	assert "FAIL  {}".format(bad) in out and 'Did you mean "frameRate"?' in out

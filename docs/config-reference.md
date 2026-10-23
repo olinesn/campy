@@ -2,7 +2,7 @@
 
 <!-- Generated from campy/configschema.py by `campy-config reference > docs/config-reference.md`. Edit the table there, not this page: a test fails when the two differ. -->
 
-Every key a campy config file can have, and its command-line option (`--key value` means what `key: value` means in the file). "Per camera" says how a list is read: *one, or one per camera* takes one value for every camera or a list with a value for each, in camera order; *one for the rig* refuses a list. [Configs](configs.md) explains how campy checks a config, and `campy-config check` checks one without starting any camera.
+Every key a campy config file can have, and its command-line option (`--key value` means what `key: value` means in the file). "Per camera" says how a list is read: *one, or one per camera* takes one value for every camera or a list with a value for each, in camera order; *one for the rig* refuses a list. A config can also start with `extends: <rig profile or file>`, which takes every setting the config doesn't give from that file. [Configs](configs.md) explains profiles and how campy checks a config; `campy-config show` prints where each setting of a config came from.
 
 ## Recording
 

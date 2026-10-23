@@ -246,7 +246,7 @@ Not measured on Windows (the ChronicRecord PC): what the search costs there, and
 ```
 campy-config check configs/campy_config_chronicrecord.yaml my_rig.yaml
 ```
-- [docs/configs.md](docs/configs.md) explains the checks. In campy 2.1.0 and older, a value out of range was replaced by its default (`frameRate: 0` recorded at 100 fps, `cameraGain: 0` at gain 1); now it stops campy, and 0 is a gain and a quality campy takes.
+- Keep a computer's own settings in a rig profile, `~/.campy/configs/<name>.yaml`, outside campy, and start each experiment's config with `extends: <name>` and the few settings it changes. `campy-config show <config>` prints every setting and the file and line it came from, and `campy-config diff old.yaml new.yaml` shows that a rewritten config records the same. [docs/configs.md](docs/configs.md) explains profiles and the checks. In campy 2.1.0 and older, a value out of range was replaced by its default (`frameRate: 0` recorded at 100 fps, `cameraGain: 0` at gain 1); now it stops campy, and 0 is a gain and a quality campy takes.
 
 ### Camera Triggering
 Campy's trigger module supports Python integration with Arduino and Teensy microcontrollers:

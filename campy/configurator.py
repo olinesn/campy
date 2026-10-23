@@ -41,25 +41,218 @@ class ConfigError(ValueError):
 		super().__init__(text)
 
 
-def ConfigureParams():
+def ConfigureParams(resolved=False):
+	"""
+	campy-acquire's settings, from its command line: the config (and the files
+	it extends), then the options. resolved=True also returns the Resolved, for
+	what each value is and where it came from (a recording's manifest).
+	"""
 	parser = ArgumentParser(description="Campy CLI",
 						formatter_class=ArgumentDefaultsHelpFormatter,)
 	clargs = ParseClargs(parser)
-	params = ResolveParams(clargs)
+	result = ResolveClargs(clargs)
+	for note in result.notes:
+		Say(note)
+	params = result.params
 
 	# Optionally, user can manually set path to find ffmpeg binary.
 	if params["ffmpegPath"] != "None":
 		os.environ["IMAGEIO_FFMPEG_EXE"] = params["ffmpegPath"]
 
-	return params
+	return (params, result) if resolved else params
+
+
+def Resolve(config, argv=()):
+	"""
+	The settings campy-acquire config argv... would record with, and where each
+	came from, without opening anything: a Resolved, or a ConfigError listing
+	every problem. argv is campy-acquire's options, e.g. ["--frameRate", "60"].
+	"""
+	clargs = ParseClargs(ArgumentParser(prog="campy-acquire"), [config] + list(argv))
+	return ResolveClargs(clargs)
 
 
 def ResolveParams(clargs):
-	# The config and the command line as campy-acquire uses them, after every
-	# check, or a ConfigError listing every problem found
-	params = CombineConfigAndClargs(clargs)
-	problems = []
-	for check in (ValidateCameraLists, ValidateColorRange, ValidateGamma):
+	# Resolve's params, for parsed options, with its notes said
+	result = ResolveClargs(clargs)
+	for note in result.notes:
+		Say(note)
+	return result.params
+
+
+def ProfileFolder():
+	# Where this computer's rig profiles are: extends: <name> is <folder>/<name>.yaml
+	return os.path.expanduser(os.environ.get("CAMPY_CONFIG_DIR") or os.path.join("~", ".campy", "configs"))
+
+
+def Shown(path):
+	# A path as campy's messages show it, with ~ for the home folder
+	home = os.path.expanduser("~")
+	if os.path.isabs(path) and path.startswith(home + os.sep):
+		return "~" + path[len(home):]
+	return path
+
+
+class Source:
+	"""Where one setting's value came from: campy's default, a line of a config file, or the command line."""
+	DEFAULT, FILE, COMMAND_LINE = "default", "file", "command line"
+
+	def __init__(self, kind, path=None, line=None, note=None):
+		self.kind, self.path, self.line, self.note = kind, path, line, note
+
+	def Where(self):
+		if self.kind != Source.FILE:
+			return self.kind
+		return "{}:{}".format(Shown(self.path), self.line) if self.line else Shown(self.path)
+
+	def __str__(self):
+		return self.Where() + (" ({})".format(self.note) if self.note else "")
+
+
+class Resolved:
+	"""
+	A config as campy-acquire records with it:
+	  params: every setting (what ConfigureParams returns)
+	  sources: {key: Source}, where each value came from
+	  chain: the config files, the one given first, then each file it extends
+	  notes: what campy says about it as it starts (renamed keys, shortened lists)
+	"""
+	def __init__(self, params, sources, chain, notes):
+		self.params, self.sources, self.chain, self.notes = params, sources, chain, notes
+
+	def Effective(self):
+		# {key: {"value": ..., "source": "default" | "<file>:<line>" | "command line"}}, ready for JSON
+		return {key: {"value": copy.deepcopy(value), "source": str(self.sources[key])}
+			for key, value in self.params.items()}
+
+	def Cameras(self):
+		# Each camera's settings, as its process gets them
+		return [CameraParams(self.params, n) for n in range(self.params["numCams"])]
+
+	def ToYaml(self):
+		# One config with every setting and no extends:, each line saying where
+		# its value came from. campy-acquire records with it as with the original.
+		made = " -> ".join(Shown(path) for path in self.chain)
+		if any(source.kind == Source.COMMAND_LINE for source in self.sources.values()):
+			made += ", and the command line"
+		lines = ["# Every campy setting, as campy-acquire records with it.",
+			"# From: {}. Each comment says where the value came from.".format(made), ""]
+		for key, value in self.params.items():
+			# The value as YAML on one line: a one-item flow list, without its brackets
+			text = yaml.safe_dump([value], default_flow_style=True, width=float("inf")).strip()[1:-1]
+			lines.append("{}: {}  # {}".format(key, text, self.sources[key]))
+		return "\n".join(lines) + "\n"
+
+
+def ParentPath(name, child):
+	# The file extends: name means, in the config child. A bare name is a rig
+	# profile; anything with a folder or an extension is a path from child's folder.
+	if os.path.basename(name) == name and "\\" not in name and not os.path.splitext(name)[1] \
+			and not name.startswith("~"):
+		return os.path.join(ProfileFolder(), name + ".yaml")
+	path = os.path.expanduser(name)
+	return path if os.path.isabs(path) else os.path.join(os.path.dirname(os.path.abspath(child)), path)
+
+
+MAX_EXTENDS = 20
+
+
+def ReadChain(config_path):
+	"""
+	The config and the files it extends, the one given first: [(path, values,
+	lines)], without their extends:. A missing file, an extends: that loops
+	and an extends: that is not one name are refused.
+	"""
+	chain, seen, path = [], [], config_path
+	while True:
+		real = os.path.realpath(path)
+		if real in seen:
+			raise ConfigError(["extends: loops: {}".format(" -> ".join(
+				[Shown(p) for p, _, _ in chain] + [Shown(path)]))])
+		seen.append(real)
+		values, lines = ReadConfig(path)
+		parent = values.pop("extends", None)
+		line = lines.pop("extends", None)
+		chain.append((path, values, lines))
+		if parent is None:
+			return chain
+		where = "{}:{}".format(Shown(path), line)
+		if not isinstance(parent, str) or not parent.strip():
+			raise ConfigError(["{}: extends: names one config file or rig profile, not {!r}".format(where, parent)])
+		next_path = ParentPath(parent.strip(), path)
+		if not os.path.isfile(next_path):
+			hint = " (the rig profile folder; CAMPY_CONFIG_DIR sets another, and campy-config where lists " \
+				"its profiles)" if os.path.dirname(next_path) == ProfileFolder() else ""
+			raise ConfigError(["{}: extends: {}, but there is no {}{}".format(where, parent, Shown(next_path), hint)])
+		if len(chain) >= MAX_EXTENDS:
+			raise ConfigError(["{}: more than {} files extend each other".format(where, MAX_EXTENDS)])
+		path = next_path
+
+
+def MergeChain(chain, notes, problems):
+	# The chain's values, the root profile first and each file over the one it
+	# extends, key by key (a list is replaced whole), with the Source of each.
+	# Each file's values are checked, and its renamed keys read as the new ones.
+	params, sources = {}, {}
+	for path, values, lines in reversed(chain):
+		def where(key, path=path, lines=lines):
+			return "{}:{}".format(Shown(path), lines[key]) if key in lines else Shown(path)
+		values, more = CheckValues(values, where)
+		problems += more
+		layer = {key: Source(Source.FILE, path, lines.get(key)) for key in values}
+		values, renamed = Rename(values, Shown(path), notes, problems)
+		for old, (new, value) in renamed.items():
+			layer.pop(old, None)
+			layer[new] = Source(Source.FILE, path, lines.get(old), "written as {}: {}".format(old, value))
+		params.update(values)
+		sources.update(layer)
+	return params, sources
+
+
+def Rename(values, where, notes, problems):
+	# values with each renamed key (RENAMED) read as the key that replaced it,
+	# and {old key: (new key, the old value)}
+	renamed = {}
+	for old, (new, read) in RENAMED.items():
+		if old in values:
+			value = values[old]
+			try:
+				values = read(values, where, notes)
+				renamed[old] = (new, value)
+			except ValueError as e:
+				problems.append(str(e))
+				values.pop(old, None)
+	return values, renamed
+
+
+def ResolveClargs(clargs):
+	# Resolve, for parsed options
+	notes, problems = [], []
+	chain = ReadChain(clargs.config)
+	params, sources = MergeChain(chain, notes, problems)
+	# Options are read by argparse (ConfigValue); here they get the same range
+	# and word checks as the config's own values
+	overrides = {key: value for key, value in clargs.__dict__.items() if value is not None and key != "config"}
+	overrides, more = CheckValues(overrides, lambda key: "--" + key)
+	problems += more
+	overrides, renamed = Rename(overrides, "The command line", notes, problems)
+	if problems:
+		raise ConfigError(problems)
+	for key in overrides:
+		sources[key] = Source(Source.COMMAND_LINE)
+	for old, (new, value) in renamed.items():
+		sources[new] = Source(Source.COMMAND_LINE, note="written as {}: {}".format(old, value))
+	params.update(overrides)
+	for key, value in DefaultParams().items():
+		if key not in params:
+			params[key] = value
+			sources[key] = Source(Source.DEFAULT)
+	for key in ("cameraNames", "cameraSelection"):
+		if key not in params:
+			sources[key] = Source(Source.DEFAULT, note="one per camera, from numCams")
+	params = FillCameraLists(params)
+
+	for check in (lambda p: ValidateCameraLists(p, sources, notes), ValidateColorRange, ValidateGamma):
 		try:
 			check(params)
 		except ValueError as e:
@@ -73,7 +266,7 @@ def ResolveParams(clargs):
 			problems.append(str(e))
 	if problems:
 		raise ConfigError(problems)
-	return params
+	return Resolved(params, sources, [path for path, _, _ in chain], notes)
 
 
 def ConfigureCamParams(systems, params, n_cam):
@@ -116,25 +309,45 @@ def OptParams(cam_params):
 	return cam_params
 
 
-def ValidateCameraLists(params):
+def ValidateCameraLists(params, sources=None, notes=None):
 	# Per-camera lists must cover every camera, so changing numCams fails here
-	# with the key's name rather than in a camera process.
+	# with the key's name rather than in a camera process. With sources, the
+	# messages say where a list and numCams were set; notes collects what
+	# would otherwise be said.
 	num_cams = params["numCams"]
+	def From(key):
+		if not sources or key not in sources:
+			return ""
+		return " ({} is from {}, numCams from {})".format(key, sources[key].Where(), sources["numCams"].Where())
 	longer = []
 	for key, value in params.items():
 		if type(value) is not list or key in NON_CAMERA_LISTS:
 			continue
 		if key in EVERY_CAMERA_LISTS and len(value) < num_cams:
-			raise ValueError("{} has {} values for {} cameras. It needs one per camera."\
-				.format(key, len(value), num_cams))
+			raise ValueError("{} has {} values for {} cameras. It needs one per camera.{}"\
+				.format(key, len(value), num_cams, From(key)))
 		if 1 < len(value) < num_cams:
 			raise ValueError("{} has {} values for {} cameras. Give one value per camera, "
-				"or a single value for all of them.".format(key, len(value), num_cams))
+				"or a single value for all of them.{}".format(key, len(value), num_cams, From(key)))
 		if len(value) > num_cams:
 			longer.append(key)
 	if longer:
-		Say("{} list{} more values than numCams: using the first {}.".format(
-			", ".join(longer), "s" if len(longer) == 1 else "", num_cams))
+		note = "{} list{} more values than numCams: using the first {}.".format(
+			", ".join(longer), "s" if len(longer) == 1 else "", num_cams)
+		if sources and "numCams" in sources:
+			# A list from the file a config extends, and numCams from the config
+			# itself: say so, since the rig's list was written for its own cameras
+			numcams_file = sources["numCams"].path
+			elsewhere = sorted(set(sources[key].Where().split(":")[0] for key in longer
+				if key in sources and sources[key].kind == Source.FILE and sources[key].path != numcams_file))
+			if elsewhere:
+				note += " {} from {}, numCams {} from {}: campy-config show --cameras lists each camera's " \
+					"values.".format("The list is" if len(longer) == 1 else "The lists are", ", ".join(elsewhere),
+					num_cams, sources["numCams"].Where())
+		if notes is None:
+			Say(note)
+		else:
+			notes.append(note)
 
 
 def ValidateColorRange(params):
@@ -170,7 +383,7 @@ def ValidateGamma(params):
 	params["cameraGamma"] = [GammaSetting(v) for v in value] if isinstance(value, list) else GammaSetting(value)
 
 
-def GammaFromDisableGamma(values, where):
+def GammaFromDisableGamma(values, where, notes=None):
 	# disableGamma, the key cameraGamma replaced, read as cameraGamma: True is
 	# "Off" (linear, as it was), False the default. A config with both is
 	# refused, since they can disagree.
@@ -183,8 +396,12 @@ def GammaFromDisableGamma(values, where):
 	default = DefaultParams()["cameraGamma"]
 	new = [GAMMA_OFF if v else default for v in old] if isinstance(old, list) else (GAMMA_OFF if old else default)
 	values["cameraGamma"] = new
-	Say("{} says disableGamma: {}, read as cameraGamma: {}. cameraGamma replaced disableGamma; write it "
-		"instead.".format(where, old, new))
+	note = "{} says disableGamma: {}, read as cameraGamma: {}. cameraGamma replaced disableGamma; write it " \
+		"instead.".format(where, old, new)
+	if notes is None:
+		Say(note)
+	else:
+		notes.append(note)
 	return values
 
 
@@ -232,10 +449,11 @@ def ValidateQuality(params):
 				"" if params["numCams"] == 1 else " (camera {})".format(n)))
 
 
-# Keys campy used to have, each read as the key that replaced it. Each function
-# takes one layer's values (the config, or the command line) and where they
-# come from, and returns them with the old key replaced.
-RENAMED = {"disableGamma": GammaFromDisableGamma}
+# Keys campy used to have: {old key: (the key that replaced it, a function)}.
+# Each function takes one layer's values (a config file, or the command line),
+# where they come from and a list for its note, and returns them with the old
+# key read as the new one.
+RENAMED = {"disableGamma": ("cameraGamma", GammaFromDisableGamma)}
 
 
 def LoadConfig(config_path):
@@ -410,38 +628,16 @@ def CheckValues(values, where):
 
 
 def ReadCheckedConfig(config_path):
-	# A config file's values, checked (CheckValues) and with renamed keys read
-	# as their new ones, for tools that take a config but not campy-acquire's
-	# options (campy-encode-sweep, campy-encode-quality)
-	values, lines = ReadConfig(config_path)
-	values, problems = CheckValues(values,
-		lambda key: "{}:{}".format(config_path, lines[key]) if key in lines else config_path)
+	# A config's values, with the files it extends, checked (CheckValues) and
+	# with renamed keys read as their new ones, for tools that take a config
+	# but not campy-acquire's options (campy-encode-sweep, campy-encode-quality)
+	notes, problems = [], []
+	values, _ = MergeChain(ReadChain(config_path), notes, problems)
 	if problems:
 		raise ConfigError(problems)
-	for rename in RENAMED.values():
-		values = rename(values, "The config")
+	for note in notes:
+		Say(note)
 	return values
-
-
-def CombineConfigAndClargs(clargs):
-	values, lines = ReadConfig(clargs.config)
-	values, problems = CheckValues(values,
-		lambda key: "{}:{}".format(clargs.config, lines[key]) if key in lines else clargs.config)
-	# Overrides are read by argparse (ConfigValue); here they get the same range
-	# and word checks as the config's own values
-	overrides = {key: value for key, value in clargs.__dict__.items() if value is not None and key != "config"}
-	overrides, more = CheckValues(overrides, lambda key: "--" + key)
-	problems += more
-	if problems:
-		raise ConfigError(problems)
-	if "cameraGamma" in overrides:
-		values.pop("disableGamma", None) # the command line's gamma wins
-	params = RENAMED["disableGamma"](values, "The config")
-	params.update(RENAMED["disableGamma"](overrides, "The command line"))
-	for key, value in DefaultParams().items():
-		params.setdefault(key, value)
-	params = FillCameraLists(params)
-	return params
 
 
 # What each kind of override value is called in an error
