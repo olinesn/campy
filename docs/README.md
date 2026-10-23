@@ -19,6 +19,7 @@ Guides for recording with campy and tracking animals live while it records. The 
 | [Watching it live](live-view.md) | `campy-live-view`: the cameras with the tracking drawn on them, a 3D view, warnings at a glance, bookmarks |
 | [3D poses](pose3d.md) | How `campy/pose3d.py` matches animals across cameras, keeps their identities and triangulates them, and how it was validated |
 | [Models](models.md) | Training lightweight sleap-nn models for live use, choosing one that keeps up, finding the frames a model gets wrong on a rig (`campy-live-flag`), labelling them in LUC3D for the next model (`campy-label-pack`, `campy-label-merge`), and measuring models against a rig's labelled test sets (`campy-model-eval`, `campy-model-fit`) |
+| [Closed-loop outputs](closed-loop.md) | `campy-rules`: TTL outputs from the live poses (regions, distances between animals, identities), photometry pulse trains locked to the frames, the outputs board, safety and latency |
 | [Offline inference](offline-inference.md) | Running SLEAP on recorded videos 6–15× faster than `sleap-nn track`: where its time goes, what helps on cluster GPUs and benchtop PCs, and the accuracy |
 | [Calibration](calibration.md) | Camera placement, exposure and calibration |
 | [Troubleshooting](troubleshooting.md) | Problems seen so far, by what you see: the message campy prints, or what is wrong with the recording, with what to do and where to read more |

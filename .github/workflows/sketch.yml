@@ -1,17 +1,24 @@
 name: Trigger sketch
 
-# Compiles campy/trigger/trigger.ino for real boards. The tests also run it, but
-# as plain C++ against a simulated Arduino (tests/arduino_sim), which cannot catch
-# what only a board's compiler and core would (an 8-bit int, a missing API).
+# Compiles campy/trigger/trigger.ino, and the outputs board's sketch
+# (campy/outputs_board/campy_outputs, for campy-rules), for real boards. The tests also
+# run them, but as plain C++ against a simulated Arduino (tests/arduino_sim),
+# which cannot catch what only a board's compiler and core would (an 8-bit int,
+# a missing API, the ESP32's registers).
+# Each board compiles only its own sketch folder: compile-sketches searches a
+# folder's subfolders too, so the outputs sketch lives outside campy/trigger
+# (it is for the Nano ESP32 only).
 on:
   push:
     branches: [master, dev]
     paths:
       - "campy/trigger/trigger.ino"
+      - "campy/outputs_board/campy_outputs/**"
       - ".github/workflows/sketch.yml"
   pull_request:
     paths:
       - "campy/trigger/trigger.ino"
+      - "campy/outputs_board/campy_outputs/**"
       - ".github/workflows/sketch.yml"
   workflow_dispatch:
 
@@ -33,18 +40,26 @@ jobs:
         board:
           - name: Arduino Uno
             fqbn: arduino:avr:uno
+            sketch: campy/trigger
             platforms: |
               - name: arduino:avr
           - name: Teensy 4.0
             fqbn: teensy:avr:teensy40
+            sketch: campy/trigger
             platforms: |
               - name: teensy:avr
                 source-url: https://www.pjrc.com/teensy/package_teensy_index.json
           - name: Teensy 3.2
             fqbn: teensy:avr:teensy31
+            sketch: campy/trigger
             platforms: |
               - name: teensy:avr
                 source-url: https://www.pjrc.com/teensy/package_teensy_index.json
+          - name: Nano ESP32 (outputs board)
+            fqbn: arduino:esp32:nano_nora
+            sketch: campy/outputs_board/campy_outputs
+            platforms: |
+              - name: arduino:esp32
     steps:
       - uses: actions/checkout@v4
       - uses: arduino/compile-sketches@v1
@@ -52,4 +67,4 @@ jobs:
           fqbn: ${{ matrix.board.fqbn }}
           platforms: ${{ matrix.board.platforms }}
           sketch-paths: |
-            - campy/trigger
+            - ${{ matrix.board.sketch }}

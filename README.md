@@ -37,6 +37,7 @@ Each run records into a new folder inside the config's `videoFolder`, named by t
 | `campy-live-view` | Watch the cameras and the tracking live | [Watching it live](docs/live-view.md) |
 | `campy-live-export` | Open a tracked recording in LUC3D | [Live tracking](docs/live-tracking.md#opening-a-tracked-recording-in-luc3d) |
 | `campy-live-flag`, `campy-label-pack`, `campy-label-merge`, `campy-model-eval`, `campy-model-fit` | Find the frames a model gets wrong, label them for the next model, and compare models on a rig | [Models](docs/models.md) |
+| `campy-rules` | Switch TTL outputs from the live poses (an animal in a region, two animals close), for closed-loop experiments | [Closed-loop outputs](docs/closed-loop.md) |
 
 ## Documentation
 
@@ -52,6 +53,7 @@ Each run records into a new folder inside the config's `videoFolder`, named by t
 | [Triggering and synchronization](docs/sync.md) | Arduino and external triggers, `campy-align`, `campy-synctest` |
 | [RatCam cameras](docs/ratcam.md) | nir-eye-cam's NIR eye cameras |
 | [Live tracking](docs/live-tracking.md), [Watching it live](docs/live-view.md), [3D poses](docs/pose3d.md) | `campy-live`, `campy-live-view`, `campy-live-export`, and the 3D tracker |
+| [Closed-loop outputs](docs/closed-loop.md) | `campy-rules`: TTL outputs on an Arduino from the live poses, with the wiring, the rules file, safety and latency |
 | [Models](docs/models.md), [Offline inference](docs/offline-inference.md) | Small models that keep up live; running SLEAP faster on recorded videos |
 | [Hardware](docs/hardware.md) | What to buy, with the measurements behind it |
 | [Calibration](docs/calibration.md) | Camera placement, exposure and calibration |
