@@ -32,6 +32,22 @@ def SetMainConnection(connection):
 	_mainConnection = connection
 
 
+# Set in each camera process (campy.RunCamera): a shared number that campy's
+# main process sets when a stop file asks for a stop (campy/stopfile.py). The
+# camera then stops as at Ctrl-C, which a program that started campy without
+# a console could not send it. Read once per frame: a plain shared int, no lock.
+_stopRequest = None
+
+
+def SetStopRequest(value):
+	global _stopRequest
+	_stopRequest = value
+
+
+def StopRequested():
+	return _stopRequest is not None and _stopRequest.value != 0
+
+
 def TellMain(message):
 	# A (kind, value) message for campy's main process: ("ffmpeg", pid or
 	# None), ("done", what went wrong). Nothing outside a camera process.
@@ -122,9 +138,10 @@ class CameraProcesses:
 	name and exit code, while the other cameras go on recording.
 	"""
 
-	def __init__(self, ctx, target, params, readyQueue, log=Say, start=None):
+	def __init__(self, ctx, target, params, readyQueue, log=Say, start=None, stop=None):
 		# start: given to each target too, after connection (campy.RunCamera:
-		# the emulated cameras' shared start, cameras/emu.py)
+		# the emulated cameras' shared start, cameras/emu.py), and stop after
+		# it (the stop file's request: SetStopRequest)
 		self.names = [params["cameraNames"][n] for n in range(params["numCams"])]
 		self.log = log
 		self.readyQueue = readyQueue # kept while they start: they unpickle it as they do
@@ -140,7 +157,8 @@ class CameraProcesses:
 			receive, send = ctx.Pipe(duplex=False)
 			# Daemon, as the pool's workers were: if campy's main process stops
 			# with an error, they stop with it, rather than keep it waiting
-			args = (n, readyQueue, send) + (() if start is None else (start,))
+			args = (n, readyQueue, send) + (() if start is None and stop is None else
+				(start,) if stop is None else (start, stop))
 			process = ctx.Process(target=target, args=args, name=self.names[n], daemon=True)
 			process.start()
 			send.close() # the camera process has its own copy
@@ -541,7 +559,7 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 		else:
 			recording.cameraError = "did not start grabbing"
 
-		while grabbing and not stopReadQueue:
+		while grabbing and not stopReadQueue and not StopRequested():
 			try:
 				# Grab image from camera buffer if available
 				grabResult = cam.GrabFrame(camera, frameNumber)

@@ -104,11 +104,20 @@ Measured on 22 October 2026, campy dev after pull request 148, the same 5-mouse 
 | Upload to results back, timed step by step | 6.20 / 6.58–6.63 | 6.02–6.03 / 6.52–6.57 | 1.92 / 6.19–6.20 |
 | The same, untimed (as `campy-live` logs it) | 5.93–5.94 / 6.10–6.12 | 5.80–5.82 / 6.54–6.55 | 1.62–1.63 / 3.63–5.10 |
 | **The same, with the faster crop below** (pull request 151) | **5.46–5.47 / 5.64** | **5.49–5.54 / 6.46–6.50** | 1.62 / 4.40–5.24 |
+| **The same, with the clock-hold fixes below** (pull request 152) | **5.46–5.48 / 5.60–5.64** | **5.49 / 5.63–5.65** | **1.60–1.61 / 1.71–1.72** |
 
 - **The networks are now 70–75% of a set.** Moving data in and out (the copy out of shared memory, the upload and the download) is 0.4–0.8 ms, and the shrinking 0.1–0.3 ms. Even made free, they would save little.
 - **Cutting out the crops was the largest step outside the networks**: 0.67 ms on the EVO-X2 and 0.47 ms on the Pro Max Slim, though it only copies 1.5 MB. It followed sleap-nn's way: pad all three frames with 320 pixels of zeros on every side (writing 9.6 MB), then index them by frame, row and column, with three indexes for every pixel. PyTorch's indexing kernel is slow with three indexes, on ROCm and on the RTX 2000 Ada alike (on the RTX 6000 Ada it took 0.07 ms). Since pull request 151, `campy-live` computes one number per pixel (where it is in the unpadded frames) and reads the frames with a single gather, writing 0 where a crop runs past a frame's edge, as the padding did. The pixels are exactly the same: in a test of 400 random sets, half with crops past the edges, and in the replays, where every keypoint of every set was identical to the bit. The crop took 0.69 → 0.18 ms on the EVO-X2, 0.44 → 0.12 ms on the RTX 2000 Ada and 0.07 → 0.06 ms on the RTX 6000 Ada, measured alone in a CUDA graph; the whole set's graph also holds 25 MB less GPU memory (126 → 101 MB on the EVO-X2, 59 → 42 MB on NVIDIA). Compiled with `torch.compile`, the same crop would take 0.02 ms, another 0.1–0.2 ms, but on NVIDIA that would add Triton next to TensorRT.
-- **The RTX 6000 Ada's p99 is its GPU clock, not data.** All of that machine's slow sets came in one or two stretches of about 1.3 s per minute (12–13.4 s and around 36 s into the replay), in which every step, network or copy, ran 3–4 times slower on the GPU itself. Those are the moments when `--hold-gpu-clock-blocks auto` tries spinning one block fewer: after 10 s at full clock it drops from 1 block to none, the RTX 6000 Ada's clock falls to 800–975 MHz within half a second, and 1 s later `auto` puts the block back and waits twice as long (20 s, 40 s, … up to 320 s) before trying again. In each 60-s replay it did that twice (4 block changes); in the 10-s stretches without a try, p99 was 1.7–2.0 ms. In a long recording the tries become rare (one 1.3-s stretch every 5 minutes or so), so a long recording's p99 would be close to 2 ms. The Pro Max Slim tries too, but its clock only falls to about 2,050 MHz.
-- **The EVO-X2's first-second hiccup is one set.** The first set after the recording starts takes 25–57 ms (the next one is then skipped); every other set of the first second is normal. In that set the upload waits about 27 ms on the CPU for a copy the GPU does in 0.05 ms. With `--hold-gpu-clock off` it went away (the slowest set 12 ms, nothing skipped), but every set was 0.8 ms slower (6.7 ms), so the cause is the clock hold's spinners starting just before the first set (`GpuClock.Start` runs once the feed is there).
+- **The RTX 6000 Ada's p99 is its GPU clock, not data.** All of that machine's slow sets came in one or two stretches of about 1.3 s per minute (12–13.4 s and around 36 s into the replay), in which every step, network or copy, ran 3–4 times slower on the GPU itself. Those are the moments when `--hold-gpu-clock-blocks auto` tries spinning one block fewer: after 10 s at full clock it drops from 1 block to none, the RTX 6000 Ada's clock falls to 800–975 MHz within half a second, and 1 s later `auto` puts the block back and waits twice as long (20 s, 40 s, … up to 320 s) before trying again. In each 60-s replay it did that twice (4 block changes); in the 10-s stretches without a try, p99 was 1.7–2.0 ms. In a long recording the tries become rare (one 1.3-s stretch every 5 minutes or so), so a long recording's p99 would be close to 2 ms. The Pro Max Slim tries too, but its clock only falls to about 2,050 MHz. Since pull request 152, `auto` doesn't try a count of blocks again on a GPU once it turned out too few there (below).
+- **The EVO-X2's first-second hiccup is one set.** The first set after the recording starts takes 25–57 ms (the next one is then skipped); every other set of the first second is normal. In that set the upload waits about 27 ms on the CPU for a copy the GPU does in 0.05 ms. With `--hold-gpu-clock off` it went away (the slowest set 12 ms, nothing skipped), but every set was 0.8 ms slower (6.7 ms), so the cause is the clock hold's spinners starting just before the first set (`GpuClock.Start` runs once the feed is there). The cause turned out to be the spinners' length, not their start (below); fixed in pull request 152.
+#### The clock hold's two timing problems, fixed (pull request 152)
+
+Measured on 23 October 2026 on the same replay (5 mice, 3 cameras, 60 fps, 3D), on campy dev with pull request 151 ("before") and the same with pull request 152 ("after"), each under the rig lock, 4–6 runs per machine of about 3,590 sets, every run `RIG_CLEAN` (one batch on the Pro Max Slim was not, because a Windows shadow-copy service used 2.7 cores for a few seconds; it was rerun). The keypoints of every set were identical before and after, to the bit, on all three machines.
+
+- **The RTX 6000 Ada's p99: 5.1–5.7 → 1.7–2.0 ms.** `--hold-gpu-clock-blocks auto` drops one spinning block after 10 s at full clock, and puts it back when the clock falls. On the RTX 6000 Ada the clock falls at once with none, so every try cost about 1.3 s of sets 3–4 times slower, and the tries kept coming (4 block changes per minute). Now, when a try at fewer blocks turns out too few (the clock falls again within those 10 s), that count becomes the GPU's fewest: `auto` doesn't try it again, in this run or in later runs on the same GPU, until the computer restarts. It keeps that in `gpu_clock.json` in `--engine-cache` (by default `~/.cache/campy/engines`), by the GPU's UUID, with the time the computer started. A restart forgets it, because a restart can bring a GPU's clock back by itself: the Pro Max Slim's RTX 2000 Ada kept its full clock with no block spinning right after a restart, not after two days up. So the first run on a GPU after a restart still tries once, 10 s in (p99 3.0–3.4 ms in that run, one 1.3-s stretch); every later run had no slow set at all: p99 1.71–1.97 ms, the slowest set 2.0–2.35 ms (it was 5.1–8.1). The median was unchanged (1.60–1.61 ms untimed).
+- **The Pro Max Slim: p99 6.4–6.5 → 5.6–5.8 ms.** Today its RTX 2000 Ada needs 1 block too (it has been up for days), and before, `auto` went back and forth between 0, 1 and 2 blocks (5–6 changes a minute, 2 blocks a third of the time). It now learns 1 on the first try and stays there; the median went 5.53–5.55 → 5.49–5.50 ms. After a restart it will try 0 again, which is what it needed then.
+- **The EVO-X2's first set: 17–57 → 7.7–8.1 ms, nothing skipped.** A spin is `torch.cuda._sleep`, a loop that counts the GPU's clock cycles. On NVIDIA the 5,000,000 cycles it spun take about 2 ms at full clock. On ROCm the counter it reads runs at a fixed 100 MHz, so on the EVO-X2 each spin took 50 ms (measured: 50.0 ms, every time). The first set comes while the 4 blocks that spin during the wait for the feed are still spinning, and it waited for one of their spins to end: 25–56 ms, a random part of 50, as measured. After it only 1 block spins, which doesn't hold up the sets. Waiting for the spinners' first spin before the first set didn't help (tried: 51–53 ms). On ROCm a spin is now 200,000 cycles, 2 ms as on NVIDIA. In 4 runs the first set took 7.7–8.1 ms (before, in the same session: 17–56 ms) and no set was skipped (before: 1–3 per run); the median and p99 stayed 5.46–5.48 / 5.60–5.64 ms, so the shorter spins keep the chip as fast as the long ones did.
+
 - **What's left.** The copy out of shared memory (0.17–0.28 ms) could be skipped by registering the shared-memory rings as pinned GPU memory and uploading straight from a ring's slot, but that saves less than 0.3 ms of latency. Peak finding (0.3 + 0.3 ms on the EVO-X2) could go inside the `torch.compile` region, but compiled floating-point sums may round differently, so the keypoints would no longer be exactly today's.
 
 ## Running the models faster: compiled engines (on by default in campy-live)
@@ -157,6 +166,78 @@ To measure a machine (see the script's help for the engines and what each needs 
 python bench/compiled_bench.py --centroid <centroid model folder> --instance <instance model folder> \
     --videos cam1.mp4 cam2.mp4 cam3.mp4 --engines eager-fp16,graph-fp16,compile-ma,trt-fp16
 ```
+
+## Finding the frames a model gets wrong (`campy-live-flag`)
+
+A model trained on other rigs' videos makes its own mistakes on a new rig: a camera that keeps missing a mouse in one corner, a side view where skeletons land on the wrong mouse. The fastest fix is to label a few of those frames and train again. Labelling only nine frames from one rig removed most of the false detections there. `campy-live-flag` finds those frames for you, from `campy-live`'s log, after the recording:
+
+```
+campy-live-flag campy-live_<date_time>.npy --budget 25
+```
+
+It doesn't change `campy-live` or slow it down: everything it needs is already in each row of the log (the animals each camera found, their scores, and, with `--calibration`, which detection is which animal in each camera, the 3D pose and how well the cameras agree). For each set of frames and each camera it flags:
+
+| Flag | What happened | Needs 3D |
+|---|---|---|
+| `missed` | Two or more other cameras saw an animal and its 3D pose falls inside this camera's picture, but this camera found nothing there. The model missed it, or something hid it. | yes |
+| `swap` | Two animals' identities swapped from one set to the next. | yes |
+| `jump` | An animal's 3D position jumped more than 50 mm in one set (a wrong match). | yes |
+| `unmatched` | A detection that the 3D matched to no animal, though there were no more detections than animals: the cameras disagree on where the animals are. | yes |
+| `disagree` | One camera's skeleton is more than 15 px from where the animal's 3D pose puts it. | yes |
+| `extra` | More detections than animals (seen only when `--max-instances` is above the number of animals). | no |
+| `fewer` | Fewer detections than animals. | no |
+| `low_score` | A detection whose points scored under 0.5 (the median). | no |
+
+A mistake usually lasts many sets in a row: a mouse missed for a second is 60 sets at 60 fps. Flags of the same kind in the same camera less than a second apart count as one *event*, and each event offers one set to label. From those it picks `--budget` sets (25 by default, about an hour of correcting 3 mice in 3 cameras):
+
+- 10% at random from the whole recording, so the labels aren't all hard cases and mistakes no flag catches still turn up;
+- the rest from the events, one kind of mistake at a time in turn (`missed` first), the cameras taking turns within each kind. Each pick is the event *least like* the sets already picked: where the animals are in each camera's picture, how many each camera found, and how close together they are. That avoids picking 25 near-identical frames of the same huddle;
+- no two picks closer than 2 s.
+
+A set is labelled whole, every camera's frame of it. That gives three training images, and lets the 3D check the corrections.
+
+It writes `flags.csv` (every flag, with where in the picture it is: for `missed`, where the animal should have been), `events.csv` and `sample.json` (the picks and why each was picked) into `<log>_flags/`, and prints how often each kind of mistake happened in each camera, a quick health check of a model on a rig. Give several logs to pick one sample from several recordings. It needs only numpy and scipy, and takes about a second for a 2-minute log and about 20 s for an hour. Run `python -m pydoc campy.liveflag` for every option.
+
+If the calibration file named in the log's summary isn't on the computer, give it with `--calibration`. Without it, `missed` can't be worked out, and `disagree` uses the log's own reprojection errors, without saying which camera is wrong. A log made without `--calibration` gets only the `extra`, `fewer` and `low_score` flags.
+
+## Labelling them in LUC3D (`campy-label-pack`, `campy-label-merge`)
+
+`campy-label-pack` turns the sets `campy-live-flag` picked into one file to correct in [LUC3D](https://github.com/talmolab/luc3d), with `campy-live`'s predictions already on them, so labelling means correcting, not starting from nothing. Run it in the inference environment (it needs `sleap-io`, which comes with sleap-nn):
+
+```
+campy-label-pack <log>_flags/sample.json --recording <recording folder> --name <rig>_<date>
+```
+
+It writes `<name>/<name>.pkg.slp` next to `sample.json`:
+
+- **The frames are in the file**: every camera's frame of each picked set, as PNG, so exactly the video's pixels. It opens on any computer, without the recording's videos. Frame 0, 1, 2, … of the package are the picked sets in order; `sets.csv` says which recording, campy frame and video frame each one is, why it was picked, and its flags.
+- **The predictions are on them**: each camera's detections, and with 3D each animal's identity and 3D pose, grouped across the cameras. So LUC3D also shows where the 3D puts an animal in a camera that missed it.
+- `--skeleton <training package>` writes the labels in the training set's nodes. The live models have no tail points, so those stay empty unless you add them.
+
+**Correcting in LUC3D.** File > Load SLP > `<name>.pkg.slp` (nothing else to pick). Shift+Right goes to the next set. Correct each set in every camera:
+
+- double-click an animal's predictions to make them your labels, then drag the points that are wrong (dragging a predicted point converts it too);
+- where a camera missed an animal, double-click its projection there to make it a label, and drag the points into place;
+- press T to triangulate again, to see where the cameras still disagree;
+- delete detections that aren't an animal.
+
+**Every prediction must become a label or be deleted.** A camera's frame that still has a prediction left in it isn't used for training: the mouse left unlabelled would teach the model there is no mouse there. When done, File > Save as `<name>.labels.slp` next to the package.
+
+LUC3D can't open an embedded frame whose frame numbers or size are stored as 64-bit numbers, as `sleap-io` writes them ("Cannot mix BigInt and other types"). `campy-label-pack` stores them as 32-bit; packages made otherwise, the training packages included, don't open in LUC3D yet.
+
+**Making training and test sets.** `campy-label-merge` reads what LUC3D saved and takes the frames out of the package:
+
+```
+campy-label-merge <name>.pkg.slp <name>.labels.slp --test-into tests/<rig>.test.pkg.slp \
+    --train-into <training package> --train-out <new training package>
+```
+
+- **Test sets are kept apart for good.** About a third of each recording's minutes are test minutes, chosen by a hash of the recording's name and the minute. A set is always on the same side, and whole minutes are kept out, so no frame a few frames from a test frame is trained on. Test frames go to `<name>.test.pkg.slp` and, with `--test-into`, into that rig's test set, which only grows. They are for measuring models, never for training.
+- **The rest go to `<name>.train.pkg.slp`**, and, with `--train-into`, into a copy of the training package (`--train-out`). The labels are written in that package's nodes, so run it once for the 15-node package (centroid model) and once for the 12-node one (centered-instance model).
+- **Points marked hidden are left out**, as SLEAP trains on them. That includes the points LUC3D fills in when a prediction becomes a label.
+- **`<name>.merge.csv`** says what happened to each camera frame: taken, not finished (predictions left), untouched, or emptied (every prediction deleted and no label; left out unless `--keep-emptied`).
+
+Tried on a 30-second, 3-camera recording of 5 mice: 12 picked sets were packed in 18 s (15 MB). LUC3D opened the package with the predictions, identities and 3D on it. A set corrected and saved there was merged into the 1,000-frame 12-node training package in 5 minutes, mostly reading the 550 MB package over the network. The result read back as 1,003 frames, the new ones pixel for pixel the package's.
 
 ## Recording for a model
 

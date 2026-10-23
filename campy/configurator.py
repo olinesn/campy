@@ -1,8 +1,12 @@
 """
+campy-acquire's settings: the config file, the command line and their checks.
+Every setting is described once, in configschema.py: its default, the values
+it takes and its help.
 """
 
-import os, copy, yaml, time, logging
+import os, sys, copy, yaml, time, logging
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter, ArgumentTypeError
+from campy import configschema
 from campy.cameras import unicam
 from campy.utils.utils import Say
 
@@ -11,116 +15,8 @@ def DefaultParams():
 	"""
 	Default parameters for campy config.
 	Omitted parameters will revert to these default values.
-	""" 
-
-	params = {}
-	# Recording default parameters
-	params["numCams"] = 1
-	params["videoFolder"] = "./test"
-	params["sessionFolder"] = True # each run records into a new <videoFolder>/<date_time>/ (newfiles.MakeSessionFolder)
-	params["videoFilename"] = "0.mp4"
-	params["frameRate"] = 100
-	params["recTimeInSec"] = 10
-
-	# Camera default parameters
-	params["cameraMake"] = "basler"
-	params["cameraSettings"] = "None"
-	params["frameWidth"] = 1152
-	params["frameHeight"] = 1024
-	params["cameraDebug"] = False
-
-	# Flir camera default parameters
-	params["cameraTrigger"] = "None" # "Line3"
-	params["cameraOut"] = 2
-	params["bufferMode"] = "OldestFirst"
-	params["bufferSize"] = 100
-	params["cameraExposureTimeInUs"] = 1500
-	params["cameraGain"] = 1
-	params["cameraGamma"] = 0.6 # a number turns the camera's gamma on at that value; "Off" = linear
-	params["cameraLinkLimitMBps"] = "auto" # USB throughput limit: "auto", MB/s, or "None" (flir.ConfigureLinkLimit)
-
-	# RatCam (nir-eye-cam) parameters: see campy/cameras/ratcam.py
-	params["ratcamPorts"] = "None" # "None" = find RatCams by USB; or a list of ports, "sim" = simulated
-	params["ratcamGain"] = 0 # analog gain code (AGAIN): RP2040 0-3, ESP32-P4 0-28
-	params["ratcamLed"] = 0 # IR LED level 0-1000 (ESP32-P4: on/off); 0 = off
-	params["ratcamSyncOut"] = False # drive the random sync pulse train on SYNC_OUT
-
-	# Compression default parameters
-	params["ffmpegLogLevel"] = "quiet"
-	params["ffmpegPath"] = "None" # "/home/usr/Documents/ffmpeg/ffmpeg"
-	params["pixelFormatInput"] = "rgb24" # "bayer_bggr8" "rgb24"
-	params["pixelFormatOutput"] = "rgb0"
-	params["colorRange"] = "limited" # "full": 0-255 video, every gray level of the camera (writer.EncoderArgs)
-	params["gpuID"] = -1
-	params["gpuMake"] = "nvidia"
-	params["codec"] = "h264"  
-	params["quality"] = 21
-	params["preset"] = "None"
-	params["keyframeInterval"] = "None" # seconds between keyframes; "None" = encoder default
-	params["fragmentedVideo"] = True # .mp4/.mov in fragments of up to 1 s, readable after a crash (writer.EncoderArgs)
-	params["vaapiDevice"] = "/dev/dri/renderD128" # gpuMake "vaapi" only
-	params["vaapiLinearSurfaces"] = True # gpuMake "vaapi" on AMD GPUs: see writer.EncoderArgs
-	params["writeQueueMaxSec"] = 5 # frames waiting for the encoder, in seconds; "None" = unbounded
-	params["keepAwake"] = True # keep the computer out of sleep and standby while recording (keepawake.py)
-	params["liveFeed"] = False # also copy every frame into shared memory, for campy-live (livefeed.py)
-	params["liveFeedName"] = "campy-live" # the shared memory of camera n is <liveFeedName>-<n>
-	params["liveFeedSlots"] = 8 # frames each camera's shared memory holds
-
-	# Launch check parameters (campy/preflight.py)
-	params["preflight"] = "error" # "error", "warn" or "off"
-	params["capacityFile"] = "None" # written by campy-encode-sweep; "None" = ~/.campy/capacity.json
-	params["usbBudgetMBps"] = "None" # per USB bus; "None" = by bus speed (see preflight.py)
-
-	# Display parameters
-	params["chunkLengthInSec"] = 5
-	params["displayFrameRate"] = 10
-	params["displayDownsample"] = 2
-
-	# Trigger parameters
-	params["triggerController"] = "arduino"
-	params["startArduino"] = False
-	params["serialPort"] = "COM3"
-	params["digitalPins"] = [0,1,2,3,4,5,6]
-	params["readyTimeoutSec"] = 30 # wait this long for every camera before starting the trigger
-	params["blinkPin"] = "None" # Arduino pin with campy-synctest's test LED; "None" = no LED
-	params["blinkHz"] = "None" # its blink rate: not near a whole or half multiple of frameRate
-
-	return params
-
-
-def AutoParams(params, default_params):
-	# Handle out of range values (reset to default)
-	range_params = [
-		"numCams",
-		"frameRate",
-		"recTimeInSec",
-		"frameHeight",
-		"frameWidth",
-		"bufferSize",
-		"cameraGain",
-		"cameraExposureTimeInUs",
-		"quality",
-		"chunkLengthInSec",
-		"displayFrameRate",
-		"displayDownsample",
-		]
-
-	for key in range_params:
-		default_value = default_params[key]
-		# One value, or one per camera: check each
-		values = params[key] if isinstance(params[key], list) else [params[key]]
-		fixed = []
-		for value in values:
-			if key == "displayFrameRate" and value == 0:
-				pass # 0 = no display window (headless)
-			elif value <= 0:
-				value = default_value
-				Say("{} set to invalid value in config. Setting to default ({})."\
-						.format(key, default_value))
-			fixed.append(value)
-		params[key] = fixed if isinstance(params[key], list) else fixed[0]
-
-	return params
+	"""
+	return configschema.Defaults()
 
 
 def FillCameraLists(params):
@@ -133,21 +29,50 @@ def FillCameraLists(params):
 	return params
 
 
+class ConfigError(ValueError):
+	"""Everything wrong with a config, found before any camera opens: one line each."""
+	def __init__(self, problems):
+		self.problems = list(problems)
+		if len(self.problems) == 1:
+			text = self.problems[0]
+		else:
+			text = "The config has {} problems:\n".format(len(self.problems)) + \
+				"\n".join("  " + p for p in self.problems)
+		super().__init__(text)
+
+
 def ConfigureParams():
-	parser = ArgumentParser(description="Campy CLI", 
+	parser = ArgumentParser(description="Campy CLI",
 						formatter_class=ArgumentDefaultsHelpFormatter,)
 	clargs = ParseClargs(parser)
-	params = CombineConfigAndClargs(clargs)
-	ValidateCameraLists(params)
-	ValidateColorRange(params)
-	ValidateGamma(params)
-	if params["startArduino"]:
-		TriggerFrameRate(params) # fails here, with the reason, if the rates disagree
+	params = ResolveParams(clargs)
 
 	# Optionally, user can manually set path to find ffmpeg binary.
 	if params["ffmpegPath"] != "None":
 		os.environ["IMAGEIO_FFMPEG_EXE"] = params["ffmpegPath"]
 
+	return params
+
+
+def ResolveParams(clargs):
+	# The config and the command line as campy-acquire uses them, after every
+	# check, or a ConfigError listing every problem found
+	params = CombineConfigAndClargs(clargs)
+	problems = []
+	for check in (ValidateCameraLists, ValidateColorRange, ValidateGamma):
+		try:
+			check(params)
+		except ValueError as e:
+			problems.append(str(e))
+	# These look at each camera's values, which needs lists that fit numCams
+	checks = [ValidateQuality] + ([TriggerFrameRate] if params["startArduino"] else [])
+	for check in checks if not problems else []:
+		try:
+			check(params) # TriggerFrameRate fails here, with the reason, if the rates disagree
+		except ValueError as e:
+			problems.append(str(e))
+	if problems:
+		raise ConfigError(problems)
 	return params
 
 
@@ -195,6 +120,7 @@ def ValidateCameraLists(params):
 	# Per-camera lists must cover every camera, so changing numCams fails here
 	# with the key's name rather than in a camera process.
 	num_cams = params["numCams"]
+	longer = []
 	for key, value in params.items():
 		if type(value) is not list or key in NON_CAMERA_LISTS:
 			continue
@@ -205,7 +131,10 @@ def ValidateCameraLists(params):
 			raise ValueError("{} has {} values for {} cameras. Give one value per camera, "
 				"or a single value for all of them.".format(key, len(value), num_cams))
 		if len(value) > num_cams:
-			Say("{} lists {} values; using the first {} (numCams).".format(key, len(value), num_cams))
+			longer.append(key)
+	if longer:
+		Say("{} list{} more values than numCams: using the first {}.".format(
+			", ".join(longer), "s" if len(longer) == 1 else "", num_cams))
 
 
 def ValidateColorRange(params):
@@ -292,27 +221,21 @@ def CameraParams(params, n_cam):
 	return cam_params
 
 
-def CheckConfig(params, clargs):
-	default_params = DefaultParams()
-	for key,value in default_params.items():
-		if key not in params.keys():
-			params[key] = value
 
-	auto_params = AutoParams(params, default_params)
-	for key,value in auto_params.items():
-		params[key] = value
+def ValidateQuality(params):
+	# quality is H.264's and H.265's quantizer or CRF, 0-51, and AV1's quantizer index, 0-255
+	for n in range(params["numCams"]):
+		cam = CameraParams(params, n)
+		limit = 255 if str(cam["codec"]) == "av1" else 51
+		if isinstance(cam["quality"], int) and cam["quality"] > limit:
+			raise ValueError("quality is 0 to {} for codec {}, not {}{}.".format(limit, cam["codec"], cam["quality"],
+				"" if params["numCams"] == 1 else " (camera {})".format(n)))
 
-	invalid_keys = []
-	for key in params.keys():
-		if key not in clargs.__dict__.keys():
-			invalid_keys.append(key)
 
-	if len(invalid_keys) > 0:
-		invalid_key_msg = [" %s," % key for key in invalid_keys]
-		msg = "Unrecognized keys in the config: %s" % "".join(invalid_key_msg)
-		raise ValueError(msg)
-
-	return params
+# Keys campy used to have, each read as the key that replaced it. Each function
+# takes one layer's values (the config, or the command line) and where they
+# come from, and returns them with the old key replaced.
+RENAMED = {"disableGamma": GammaFromDisableGamma}
 
 
 def LoadConfig(config_path):
@@ -325,16 +248,198 @@ def LoadConfig(config_path):
 	return config
 
 
+def ReadConfig(config_path):
+	"""
+	A config file's values and the line each key is on. A key given twice is
+	refused (YAML would keep the last one without a word), as is a file that is
+	not a list of key: value lines.
+	"""
+	with open(config_path, "rb") as f:
+		text = f.read()
+	name = config_path
+	try:
+		values = yaml.safe_load(text)
+		node = yaml.compose(text, Loader=yaml.SafeLoader)
+	except yaml.YAMLError as e:
+		mark = getattr(e, "problem_mark", None)
+		where = "{}:{}".format(name, mark.line + 1) if mark is not None else name
+		raise ConfigError(["{}: campy can't read this YAML ({})".format(where, getattr(e, "problem", e))])
+	if values is None:
+		return {}, {}
+	if not isinstance(values, dict):
+		raise ConfigError(["{}: a campy config is a list of key: value lines, not a {}".format(
+			name, type(values).__name__)])
+	lines, problems = {}, []
+	for key_node, _ in node.value:
+		key, line = key_node.value, key_node.start_mark.line + 1
+		if key in lines:
+			problems.append("{}:{}: {} is already set on line {}. Give each key once.".format(name, line, key, lines[key]))
+		lines[key] = line
+	if problems:
+		raise ConfigError(problems)
+	return values, lines
+
+
+def Distance(a, b):
+	# Edits (insert, delete, change a letter) that turn a into b
+	row = list(range(len(b) + 1))
+	for i, ca in enumerate(a, 1):
+		prev, row[0] = row[0], i
+		for j, cb in enumerate(b, 1):
+			prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (ca != cb))
+	return row[-1]
+
+
+def Suggest(word, names):
+	# The name word was probably meant to be, or None: the same name in another
+	# case, then the nearest within a few edits, then the only one containing it
+	lower = str(word).lower()
+	same = [n for n in names if n.lower() == lower]
+	if same:
+		return same[0]
+	scored = sorted((Distance(lower, n.lower()), n) for n in names)
+	if scored and scored[0][0] <= (3 if len(lower) > 12 else 2) and \
+			(len(scored) == 1 or scored[1][0] > scored[0][0]):
+		return scored[0][1]
+	inside = [n for n in names if len(lower) >= 4 and lower in n.lower()]
+	if len(inside) == 1:
+		return inside[0]
+	return None
+
+
+def UnknownKey(key):
+	suggestion = Suggest(key, configschema.BY_NAME)
+	if suggestion:
+		return 'unknown key "{}". Did you mean "{}"?'.format(key, suggestion)
+	return 'unknown key "{}". docs/config-reference.md (or campy-config reference) lists every key.'.format(key)
+
+
+def ItemError(item, kind, words=(), lists=True):
+	# What is wrong with one value of a kind (configschema), or None. Floats
+	# take whole numbers too. Returns the value as campy uses it: PyYAML reads
+	# 1e3 as text, which is a number here.
+	if isinstance(item, str) and item in words:
+		return item, None
+	if kind is float and isinstance(item, str):
+		try:
+			return float(item), None
+		except ValueError:
+			pass
+	if isinstance(item, bool):
+		fits = kind is bool
+	else:
+		fits = kind is not bool and isinstance(item, (int, float) if kind is float else kind)
+	if fits:
+		return item, None
+	expected = " or ".join([KIND_NAMES[kind]] + ['"{}"'.format(w) for w in words])
+	if lists:
+		expected += ", or a list of them"
+	if item is None:
+		hint = " (YAML reads null, ~ and an empty value as no value: write None)"
+	elif isinstance(item, bool):
+		hint = " (YAML reads yes, no, on, off, true and false as True or False: quote text, e.g. \"'off'\")"
+	else:
+		hint = ""
+	return item, "{!r} is not {}{}".format(item, expected, hint)
+
+
+def SettingError(setting, item):
+	# One value of a setting: (the value as campy uses it, what is wrong or None)
+	if setting.kind is configschema.GAMMA:
+		try:
+			return GammaSetting(item), None
+		except ValueError as e:
+			return item, str(e)
+	if setting.kind is configschema.TEXT:
+		if setting.name == "preflight" and item is False:
+			return item, None # preflight: off, unquoted: YAML's False, which preflight reads as off
+		if not isinstance(item, str):
+			return item, "{!r} is not text".format(item)
+	else:
+		item, error = ItemError(item, setting.kind, setting.words, setting.per_camera != configschema.ONE)
+		if error:
+			return item, error
+	if isinstance(item, str) and item in setting.words:
+		return item, None
+	if setting.choices:
+		folded = item.lower() if setting.fold_case else item
+		if folded not in setting.choices:
+			near = Suggest(item, setting.choices)
+			return item, "{!r} is not {}{}".format(item, setting.Takes(),
+				'. Did you mean "{}"?'.format(near) if near else "")
+	if isinstance(item, (int, float)) and not isinstance(item, bool):
+		if (setting.above is not None and not item > setting.above) or \
+				(setting.low is not None and item < setting.low) or \
+				(setting.high is not None and item > setting.high):
+			return item, "{!r} is not {}".format(item, setting.Takes())
+	return item, None
+
+
+def CheckValues(values, where):
+	"""
+	One layer's values (a config file, or the command line) as campy uses them,
+	and what is wrong with each: unknown keys (with the key that was probably
+	meant), values of the wrong kind, out of range or not one of the words a
+	setting takes, and a list where the rig takes one value. where(key) says
+	where the key was set, for the messages.
+	"""
+	checked, problems = {}, []
+	for key, value in values.items():
+		setting = configschema.BY_NAME.get(key)
+		if setting is None:
+			problems.append("{}: {}".format(where(key), UnknownKey(key)))
+			continue
+		if isinstance(value, list):
+			if setting.per_camera == configschema.ONE:
+				problems.append("{}: {} takes one value for the whole rig, not a list ({!r})".format(
+					where(key), key, value))
+				continue
+			if not value:
+				problems.append("{}: {} is an empty list".format(where(key), key))
+				continue
+			items = [SettingError(setting, item) for item in value]
+			errors = [e for _, e in items if e]
+			value = [v for v, _ in items]
+		else:
+			value, error = SettingError(setting, value)
+			errors = [error] if error else []
+		if errors:
+			problems.append("{}: {}: {}".format(where(key), key, errors[0]))
+		checked[key] = value
+	return checked, problems
+
+
+def ReadCheckedConfig(config_path):
+	# A config file's values, checked (CheckValues) and with renamed keys read
+	# as their new ones, for tools that take a config but not campy-acquire's
+	# options (campy-encode-sweep, campy-encode-quality)
+	values, lines = ReadConfig(config_path)
+	values, problems = CheckValues(values,
+		lambda key: "{}:{}".format(config_path, lines[key]) if key in lines else config_path)
+	if problems:
+		raise ConfigError(problems)
+	for rename in RENAMED.values():
+		values = rename(values, "The config")
+	return values
+
+
 def CombineConfigAndClargs(clargs):
-	params = LoadConfig(clargs.config)
-	# Overrides go in before CheckConfig, so a value from the command line gets
-	# the same range check as one from the config
-	overrides = {key: value for key, value in clargs.__dict__.items() if value is not None}
+	values, lines = ReadConfig(clargs.config)
+	values, problems = CheckValues(values,
+		lambda key: "{}:{}".format(clargs.config, lines[key]) if key in lines else clargs.config)
+	# Overrides are read by argparse (ConfigValue); here they get the same range
+	# and word checks as the config's own values
+	overrides = {key: value for key, value in clargs.__dict__.items() if value is not None and key != "config"}
+	overrides, more = CheckValues(overrides, lambda key: "--" + key)
+	problems += more
+	if problems:
+		raise ConfigError(problems)
 	if "cameraGamma" in overrides:
-		params.pop("disableGamma", None) # the command line's gamma wins
-	params = GammaFromDisableGamma(params, "The config")
-	params.update(GammaFromDisableGamma(overrides, "The command line"))
-	params = CheckConfig(params, clargs)
+		values.pop("disableGamma", None) # the command line's gamma wins
+	params = RENAMED["disableGamma"](values, "The config")
+	params.update(RENAMED["disableGamma"](overrides, "The command line"))
+	for key, value in DefaultParams().items():
+		params.setdefault(key, value)
 	params = FillCameraLists(params)
 	return params
 
@@ -354,29 +459,10 @@ def ConfigValue(kind, words=(), lists=True):
 	trigger's, recTimeInSec in the launch check), which a list would break.
 	"""
 	def Check(item):
-		if isinstance(item, str) and item in words:
-			return item
-		if kind is float and isinstance(item, str):
-			try:
-				return float(item) # PyYAML reads 1e3 as text: its floats need a point
-			except ValueError:
-				pass
-		if isinstance(item, bool):
-			fits = kind is bool
-		else:
-			fits = kind is not bool and isinstance(item, (int, float) if kind is float else kind)
-		if fits:
-			return item
-		expected = " or ".join([KIND_NAMES[kind]] + ['"{}"'.format(w) for w in words])
-		if lists:
-			expected += ", or a list of them"
-		if item is None:
-			hint = " (YAML reads null, ~ and an empty value as no value: write None)"
-		elif isinstance(item, bool):
-			hint = " (YAML reads yes, no, on, off, true and false as True or False: quote text, e.g. \"'off'\")"
-		else:
-			hint = ""
-		raise ArgumentTypeError("{!r} is not {}{}".format(item, expected, hint))
+		item, error = ItemError(item, kind, words, lists)
+		if error:
+			raise ArgumentTypeError(error)
+		return item
 
 	def Parse(text):
 		try:
@@ -411,416 +497,45 @@ def TextValue(text):
 	return text
 
 
+
+
+def OptionType(setting):
+	# The argparse type that reads a setting's --key value
+	if setting.kind is configschema.TEXT:
+		return TextValue
+	if setting.kind is configschema.GAMMA:
+		return GammaValue
+	return ConfigValue(setting.kind, setting.words, lists=setting.per_camera != configschema.ONE)
+
+
 def ParseClargs(parser, argv=None):
 	parser.epilog = "Each --key value means what key: value means in the config file, which is YAML: \
 		Line3 and h265 are text, True and False are booleans, and None is the text None. YAML also reads \
 		yes, no, on and off as booleans, which the True/False options take; text options refuse them, \
 		so quote such text: \"'off'\". Options that take one value per camera also take a list, e.g. \
-		--quality \"[24, 26]\" (quoted for the shell). Paths, and --preflight, are taken as typed."
+		--quality \"[24, 26]\" (quoted for the shell). Paths, and --preflight, are taken as typed. \
+		docs/config-reference.md describes every setting."
+	# --qual is not --quality: an option is its whole name
+	parser.allow_abbrev = False
 	parser.add_argument(
 		"config", metavar="config", help="Campy configuration .yaml file.",
 	)
+	groups = {section: parser.add_argument_group(section) for section in configschema.SECTIONS}
+	for setting in configschema.SETTINGS:
+		groups[setting.section].add_argument(
+			"--" + setting.name,
+			dest=setting.name,
+			type=OptionType(setting),
+			help=setting.help,
+		)
 
-	# Recording arguments
-	parser.add_argument(
-		"--videoFolder", 
-		dest="videoFolder", 
-		type=TextValue,
-		help="Folder in which to save videos. Each run records into a new folder inside it, \
-			named by the date and time it started (sessionFolder).",
-	)
-	parser.add_argument(
-		"--sessionFolder",
-		dest="sessionFolder",
-		type=ConfigValue(bool),
-		help="Record each run into a new folder inside videoFolder, named by the date and time \
-			it started, e.g. 2026-10-18_17-30-05 (default: True). False records into videoFolder \
-			itself, and stops if a recording is already there.",
-	)
-	parser.add_argument(
-		"--videoFilename", 
-		dest="videoFilename", 
-		type=TextValue,
-		help="Name for video output file. A name with \"calibration\" in it (0-calibration.mp4) \
-			is a calibration video: it goes into <camera>/calibration_images/.",
-	)
-	parser.add_argument(
-		"--frameRate", 
-		dest="frameRate",
-		type=ConfigValue(float),
-		help="Frame rate equal to trigger frequency.",
-	)
-	parser.add_argument(
-		"--recTimeInSec",
-		dest="recTimeInSec",
-		type=ConfigValue(float, lists=False),
-		help="Recording time in seconds.",
-	)    
-	parser.add_argument(
-		"--numCams", 
-		dest="numCams", 
-		type=ConfigValue(int, lists=False),
-		help="Number of cameras.",
-	)
-	parser.add_argument(
-		"--cameraNames", 
-		dest="cameraNames", 
-		type=ConfigValue(str),
-		help="Names assigned to the cameras in the order of cameraSelection.",
-	)
-	parser.add_argument(
-		"--cameraSelection",
-		dest="cameraSelection",
-		type=ConfigValue(int),
-		help="Selects and orders camera indices to include in the recording. \
-				List length must be equal to numCams",
-	)
-
-	# Camera arguments. May be specific to particular camera make
-	parser.add_argument(
-		"--cameraMake", 
-		dest="cameraMake", 
-		type=ConfigValue(str),
-		help="Company that produced the camera. Currently supported: 'basler', 'flir', 'ratcam' \
-			(nir-eye-cam), 'emu' (plays a video file).",
-	)
-	parser.add_argument(
-		"--cameraSettings", 
-		dest="cameraSettings",
-		type=TextValue,
-		help="Path to camera settings file.",
-	)
-	parser.add_argument(
-		"--frameHeight", 
-		dest="frameHeight",
-		type=ConfigValue(int),
-		help="Frame height in pixels.",
-	)
-	parser.add_argument(
-		"--frameWidth", 
-		dest="frameWidth",
-		type=ConfigValue(int),
-		help="Frame width in pixels.",
-	)
-	parser.add_argument(
-		"--cameraDebug", 
-		dest="cameraDebug",
-		type=ConfigValue(bool),
-		help="Flag to turn on camera debug mode.",
-	)
-	parser.add_argument(
-		"--cameraTrigger", 
-		dest="cameraTrigger",
-		type=ConfigValue(str),
-		help="String indicating trigger input to camera (e.g. 'Line3').",
-	)
-	parser.add_argument(
-		"--cameraOut", 
-		dest="cameraOut",
-		type=ConfigValue(int),
-		help="Integer indicating camera output line for exposure active signal (e.g. 2).",
-	)
-	parser.add_argument(
-		"--cameraExposureTimeInUs", 
-		dest="cameraExposureTimeInUs",
-		type=ConfigValue(int),
-		help="Exposure time (in microseconds) for each camera frame.",
-	)
-	parser.add_argument(
-		"--cameraGain", 
-		dest="cameraGain",
-		type=ConfigValue(float),
-		help="Intensity gain applied to each camera frame.",
-	)
-	parser.add_argument(
-		"--cameraGamma",
-		dest="cameraGamma",
-		type=GammaValue,
-		help="FLIR cameras: the gamma the camera applies to each frame (Gamma, with GammaEnable on): \
-			brightness out = brightness in ^ cameraGamma, so below 1 brightens the dark and middle grays \
-			and leaves black and white where they are. Default 0.6. 'Off' turns the camera's gamma off \
-			(GammaEnable False: brightness in proportion to the light, what disableGamma True did). \
-			A value the camera cannot take is set to its nearest limit (a Blackfly S takes 0.25 to 4), and \
-			metadata.csv's gamma says what the camera has. Basler cameras take gamma from their .pfs file.",
-	)
-	parser.add_argument(
-		"--disableGamma",
-		dest="disableGamma",
-		type=ConfigValue(bool),
-		help="Replaced by cameraGamma, and read as it: True is cameraGamma 'Off', False is the default, 0.6.",
-	)
-	parser.add_argument(
-		"--cameraLinkLimitMBps",
-		dest="cameraLinkLimitMBps",
-		type=ConfigValue(float, ("auto", "None")),
-		help="FLIR USB3 cameras: the camera's USB throughput limit (DeviceLinkThroughputLimit). 'auto' \
-			(default) raises it to the camera's maximum when it is too low for frameRate; a number sets \
-			it in MB/s; 'None' leaves the camera's own limit.",
-	)
-	parser.add_argument(
-		"--bufferMode", 
-		dest="bufferMode",
-		type=ConfigValue(str),
-		help="Type of buffer to use in camera (default: 'OldestFirst').",
-	)
-	parser.add_argument(
-		"--bufferSize", 
-		dest="bufferSize",
-		type=ConfigValue(int),
-		help="Size of buffer to use in camera in frames (default: 100).",
-	)
-
-	# RatCam (nir-eye-cam) arguments
-	parser.add_argument(
-		"--ratcamPorts",
-		dest="ratcamPorts",
-		type=ConfigValue(str),
-		help="RatCam serial ports, e.g. ['/dev/ttyACM1']; 'sim' is a simulated camera. \
-			Default: every RatCam found by USB, in order of serial number.",
-	)
-	parser.add_argument(
-		"--ratcamGain",
-		dest="ratcamGain",
-		type=ConfigValue(int),
-		help="RatCam analog gain code (the firmware's AGAIN): RP2040 0-3 (1x-8x), ESP32-P4 0-28.",
-	)
-	parser.add_argument(
-		"--ratcamLed",
-		dest="ratcamLed",
-		type=ConfigValue(int),
-		help="RatCam IR LED level, 0-1000 (ESP32-P4: on or off). 0 (the default) = off.",
-	)
-	parser.add_argument(
-		"--ratcamSyncOut",
-		dest="ratcamSyncOut",
-		type=ConfigValue(bool),
-		help="Drive the random sync pulse train on this RatCam's SYNC_OUT (one camera per rig).",
-	)
-
-	# ffmpeg arguments
-	parser.add_argument(
-		"--ffmpegPath",
-		dest="ffmpegPath",
-		type=TextValue,
-		help="Location of ffmpeg binary for imageio.",
-	)
-	parser.add_argument(
-		"--ffmpegLogLevel",
-		dest="ffmpegLogLevel",
-		type=ConfigValue(str),
-		help="Sets verbosity level for ffmpeg logging. ('quiet' (no warnings), \
-			'warning', 'info' (real-time stats)).",
-	)
-	parser.add_argument(
-		"--pixelFormatInput",
-		dest="pixelFormatInput",
-		type=ConfigValue(str),
-		help="Pixel format input. Use 'rgb24' for RGB or 'bayer_bggr8' for 8-bit bayer pattern.",
-	)
-	parser.add_argument(
-		"--pixelFormatOutput",
-		dest="pixelFormatOutput",
-		type=ConfigValue(str),
-		help="Pixel format output. Use 'rgb0' for best results.",
-	)
-	parser.add_argument(
-		"--colorRange",
-		dest="colorRange",
-		type=ConfigValue(str),
-		help="Video color range: 'limited' (16-235, the default) or 'full' (0-255: every gray level of the \
-			camera, and less CPU for ffmpeg; raise quality by about 2 for the same file size).",
-	)
-	parser.add_argument(
-		"--gpuID",
-		dest="gpuID",
-		type=ConfigValue(int),
-		help="List of integers assigning the gpu index to stream each camera. \
-			Set to -1 to stream with CPU.",
-	)
-	parser.add_argument(
-		"--gpuMake",
-		dest="gpuMake",
-		type=ConfigValue(str),
-		help="Company that produced the GPU. Currently supported: 'nvidia', 'amd', 'intel' (QuickSync), \
-			'vaapi' (Linux VA-API: AMD through Mesa, or Intel).",
-	)
-	parser.add_argument(
-		"--vaapiDevice",
-		dest="vaapiDevice",
-		type=TextValue,
-		help="VA-API render device for gpuMake 'vaapi' (default: /dev/dri/renderD128).",
-	)
-	parser.add_argument(
-		"--vaapiLinearSurfaces",
-		dest="vaapiLinearSurfaces",
-		type=ConfigValue(bool),
-		help="gpuMake 'vaapi' on AMD GPUs: keep video surfaces linear (Mesa's AMD_DEBUG=novideotiling), \
-			so each frame goes straight from the CPU into GPU memory instead of being copied there by \
-			the GPU's compute engine (default: True).",
-	)
-	parser.add_argument(
-		"--writeQueueMaxSec",
-		dest="writeQueueMaxSec",
-		type=ConfigValue(float, ("None",)),
-		help="Most frames held waiting for the encoder, in seconds of video. When the encoder \
-			falls this far behind, new frames are dropped and counted (frametimes.npy shows the \
-			gaps, metadata.csv the count) instead of filling memory. 'None' = unbounded.",
-	)
-	parser.add_argument(
-		"--keepAwake",
-		dest="keepAwake",
-		type=ConfigValue(bool, lists=False),
-		help="Keep the computer out of sleep and standby while recording, screen included \
-			(default: True). A Windows PC with Modern Standby otherwise goes into standby when \
-			its screen times out, and the recording slows to a crawl.",
-	)
-	parser.add_argument(
-		"--liveFeed",
-		dest="liveFeed",
-		type=ConfigValue(bool),
-		help="Also copy every frame each camera grabs into shared memory, for a program that \
-			reads them live, such as campy-live (default: False). One copy per frame: campy \
-			never waits for the reader.",
-	)
-	parser.add_argument(
-		"--liveFeedName",
-		dest="liveFeedName",
-		type=TextValue,
-		help="Name of the live feed's shared memory: camera n's is <liveFeedName>-<n> \
-			(default: campy-live). Two campys running at once each need their own.",
-	)
-	parser.add_argument(
-		"--liveFeedSlots",
-		dest="liveFeedSlots",
-		type=ConfigValue(int, lists=False),
-		help="Frames each camera's live feed holds (default: 8): how far behind a reader can \
-			be and still read a frame.",
-	)
-	parser.add_argument(
-		"--preflight",
-		dest="preflight",
-		type=TextValue, # off is a mode here, not YAML's False
-		help="Launch check of USB bandwidth, encoder capacity and disk: 'error' (stop if the \
-			configuration does not fit), 'warn' (report only) or 'off'.",
-	)
-	parser.add_argument(
-		"--capacityFile",
-		dest="capacityFile",
-		type=TextValue,
-		help="Encoder capacity table written by campy-encode-sweep (default: ~/.campy/capacity.json).",
-	)
-	parser.add_argument(
-		"--usbBudgetMBps",
-		dest="usbBudgetMBps",
-		type=ConfigValue(float, ("None",), lists=False),
-		help="Most camera data per USB bus, in MB/s, for the launch check. Default: by bus speed.",
-	)
-	parser.add_argument(
-		"--codec",
-		dest="codec",
-		type=ConfigValue(str),
-		help="Video codec for compression. Currently supported: 'h264', 'h265' (hevc), and 'av1' \
-			with gpuMake 'vaapi', 'nvidia' or 'intel' (quality is then AV1's quantizer index, 0-255).",
-	)
-	parser.add_argument(
-		"--quality",
-		dest="quality",
-		type=ConfigValue(int),
-		help="Compression quality: lower is less compression and larger files. libx264/libx265 \
-			take it as a CRF, which adapts to the picture; NVENC, VA-API and AMF as a constant \
-			quantizer, which spends bits on sensor noise too, so the same number gives much larger \
-			files there. One value, or one per camera. campy-encode-quality measures each setting.",
-	)
-	parser.add_argument(
-		"--preset",
-		dest="preset",
-		type=ConfigValue(str),
-		help="Compression preset (e.g. 'slow', 'fast', 'veryfast'). \
-				Incorrect settings may break the pipe. Test with ffmpegLogLevel 'warning' or 'info'.",
-	)
-	parser.add_argument(
-		"--keyframeInterval",
-		dest="keyframeInterval",
-		type=ConfigValue(float, ("None",)),
-		help="Seconds between keyframes (I-frames), e.g. 0.5. Shorter makes seeking and \
-			sparse frame sampling cheaper (LUCID's image ID-switch check needs 0.5) \
-			but files larger. Default: the encoder's own (NVENC: every 250 frames).",
-	)
-	parser.add_argument(
-		"--fragmentedVideo",
-		dest="fragmentedVideo",
-		type=ConfigValue(bool),
-		help="Write .mp4 and .mov videos in fragments of at most a second (default: True), so that a \
-			video whose ffmpeg is stopped before it closes the file (a power cut, an OS crash, ffmpeg \
-			killed) is still readable up to its last fragment. A plain MP4 is then unreadable. \
-			False writes a plain MP4.",
-	)
-
-	# Display and CLI feedback arguments
-	parser.add_argument(
-		"--chunkLengthInSec",
-		dest="chunkLengthInSec",
-		type=ConfigValue(float),
-		help="Length of video chunks in seconds for reporting recording progress.",
-	)
-	parser.add_argument(
-		"--displayFrameRate",
-		dest="displayFrameRate",
-		type=ConfigValue(float),
-		help="Display frame rate in Hz. Max ~30. 0 = no display window (headless).",
-	)
-	parser.add_argument(
-		"--displayDownsample",
-		dest="displayDownsample",
-		type=ConfigValue(int),
-		help="Downsampling factor for displaying images.",
-	)
-
-	# Microcontroller triggering arguments
-	parser.add_argument(
-		"--triggerController",
-		dest="triggerController",
-		type=ConfigValue(str, lists=False),
-		help="Microntroller make for camera triggering. Currently supported: 'arduino'.",
-	)
-	parser.add_argument(
-		"--startArduino",
-		dest="startArduino",
-		type=ConfigValue(bool, lists=False),
-		help="If True, start Arduino after initializing cameras.",
-	)
-	parser.add_argument(
-		"--blinkPin",
-		dest="blinkPin",
-		type=ConfigValue(int, ("None",), lists=False),
-		help="Arduino pin driving a test LED that every camera can see, for campy-synctest.",
-	)
-	parser.add_argument(
-		"--blinkHz",
-		dest="blinkHz",
-		type=ConfigValue(float, ("None",), lists=False),
-		help="Test LED blink rate. Pick one that is not near a whole or half multiple of the \
-			frame rate (e.g. 43 Hz at 25 or 60 fps).",
-	)
-	parser.add_argument(
-		"--readyTimeoutSec",
-		dest="readyTimeoutSec",
-		type=ConfigValue(float, lists=False),
-		help="Longest wait for every camera to be grabbing before campy starts the trigger \
-			anyway (and says which cameras were not ready).",
-	)
-	parser.add_argument(
-		"--serialPort",
-		dest="serialPort",
-		type=ConfigValue(str, lists=False),
-		help="Serial port for communicating with Arduino.",
-	)
-	parser.add_argument(
-		"--digitalPins",
-		dest="digitalPins",
-		type=ConfigValue(int),
-		help="Digital pins on microcontroller board for sending TTL camera triggers.",
-	)
+	# An option campy doesn't have stops here, with the one probably meant
+	for word in (argv if argv is not None else sys.argv[1:]):
+		if word.startswith("--") and len(word) > 2:
+			name = word[2:].split("=", 1)[0]
+			if name not in configschema.BY_NAME and name != "help":
+				suggestion = Suggest(name, configschema.BY_NAME)
+				parser.error("unknown option {}{}".format("--" + name,
+					". Did you mean --{}?".format(suggestion) if suggestion else ""))
 
 	return parser.parse_args(argv)
-
