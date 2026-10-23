@@ -103,6 +103,14 @@ SETTINGS = [
 		help="Record each run into a new folder inside videoFolder, named by the date and time it started, \
 			e.g. 2026-10-18_17-30-05 (default: True). False records into videoFolder itself, and stops if a \
 			recording is already there."),
+	Setting("sessionPath", "None", TEXT, section=REC, per_camera=ONE,
+		help="Record into this folder instead of a new one inside videoFolder (default: None). It is made if \
+			it is not there, and campy stops if a recording is already in it. For a program that starts \
+			campy-acquire and chose the folder itself (campy-session)."),
+	Setting("stopFile", "None", TEXT, section=REC, per_camera=ONE,
+		help="Stop the recording, as Ctrl-C does, once this file is there (default: None); \"now\" in it is \
+			a second Ctrl-C. For a program that started campy-acquire, or a run started over SSH. campy stops \
+			at once if it is there already, and removes it once it has stopped."),
 	Setting("videoFilename", "0.mp4", TEXT, section=REC,
 		help="Name for video output file. A name with \"calibration\" in it (0-calibration.mp4) is a \
 			calibration video: it goes into <camera>/calibration_images/."),
