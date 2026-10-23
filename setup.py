@@ -30,6 +30,7 @@ setup(
 			"campy-flir-reset = campy.flirreset:Main",
 			"campy-live = campy.live:Main",
 			"campy-live-view = campy.liveview:Main",
+			"campy-live-export = campy.liveexport:Main",
 		]
 	}
 )
