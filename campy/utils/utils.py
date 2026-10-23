@@ -208,7 +208,11 @@ class HandleKeyboardInterrupt:
 		"""
 		A stop asked for another way than Ctrl-C (campy/stopfile.py): level 1
 		counts as the first press, 2 as the second, unless they came already.
+		It is a press too: a Ctrl-C within a second of it is the same one
+		(campy-session writes the stop file at the Ctrl-C that reaches campy
+		itself, and either can come first).
 		"""
+		self.last = time.monotonic()
 		if level <= self.count:
 			return
 		self.count = level

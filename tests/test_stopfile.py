@@ -290,3 +290,18 @@ def test_campy_live_says_it_is_ready(tmp_path):
 	said = json.loads(ready.read_text())
 	assert said["pid"] > 0 and re.match(r"\d{4}-\d\d-\d\dT", said["time"])
 	assert os.listdir(str(ready.parent)) == ["campy-live.ready"]
+
+
+def test_a_ctrl_c_just_after_a_request_is_the_same_press(monkeypatch, capsys):
+	# campy-session writes the stop file at the Ctrl-C that reaches campy too: whichever comes first, one press
+	interrupts = utils.HandleKeyboardInterrupt()
+	interrupts.Request(1, "stopFile x")
+	interrupts.handler(None, None) # the console's Ctrl-C, a moment later
+	assert interrupts.count == 1
+	interrupts.last -= 2 # a press more than a second later is the second
+	interrupts.handler(None, None)
+	assert interrupts.count == 2
+	interrupts = utils.HandleKeyboardInterrupt()
+	interrupts.handler(None, None) # the other way round
+	interrupts.Request(1, "stopFile x")
+	assert interrupts.count == 1
