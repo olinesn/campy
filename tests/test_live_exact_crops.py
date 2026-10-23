@@ -2,7 +2,9 @@
 campy-live's own sleap-nn TopDownLayers cut their crops at the crop size
 (campy/live.py: ExactCropSize). sleap-nn 0.3.3's crop_bboxes takes the size
 from the first box's float32 corners, and for some centroids cuts every crop
-of the set a pixel short. Needs torch and sleap-nn; runs on the CPU.
+of the set a pixel short. talmolab/sleap-nn#780 (after 0.3.4) fixed it, and
+campy-live then leaves sleap-nn as it is; these tests check whichever is
+installed. Needs torch and sleap-nn; runs on the CPU.
 """
 import pytest
 
@@ -40,12 +42,21 @@ def CropShape(layer):
 	return seen[0]
 
 
-def test_sleap_cuts_short():
-	# sleap-nn's own crop_bboxes, as installed: the bug this works around.
-	# If this fails, sleap-nn has fixed it, and ExactCropSize can go.
+def SleapCrop():
+	# sleap-nn's own crop_bboxes, as installed, for one animal at CENTROID
 	from sleap_nn.inference.ops.crops import crop_bboxes, make_centered_bboxes
 	boxes = make_centered_bboxes(torch.tensor([CENTROID]), 192, 192)
-	assert tuple(crop_bboxes(torch.zeros(1, 1, 256, 320), boxes, torch.tensor([0])).shape[-2:]) == (192, 191)
+	return tuple(crop_bboxes(torch.zeros(1, 1, 256, 320), boxes, torch.tensor([0])).shape[-2:])
+
+
+FIXED = "this sleap-nn cuts crops at their size itself (talmolab/sleap-nn#780), and campy-live leaves it as it is; " \
+	"ExactCropSize can go once campy needs a sleap-nn with the fix"
+
+
+def test_sleap_cuts_short():
+	# The bug this works around, and campy-live telling whether the
+	# installed sleap-nn has it
+	assert SleapCrop() == ((192, 191) if live.SleapCutsShort() else (192, 192))
 
 
 def test_default_cuts_crop_size():
@@ -58,13 +69,33 @@ def test_other_layers_untouched():
 	ours = Model().layer
 	other = TopDownLayer(centroid_layer=ours.centroid_layer, centered_instance_layer=ours.centered_instance_layer,
 		crop_size=(192, 192))
-	assert CropShape(other) == (192, 191)
+	assert CropShape(other) == SleapCrop()
 	assert CropShape(ours) == (192, 192)
+
+
+def test_steps_aside_for_a_fixed_sleap(monkeypatch):
+	# A sleap-nn whose crop_bboxes takes crop_size= cuts that size, and
+	# rounds the size it works out: ExactCropSize changes nothing there
+	from sleap_nn.inference.layers import topdown
+	from sleap_nn.inference.ops import crops
+	original = crops.crop_bboxes
+
+	def Fixed(images, bboxes, sample_inds, crop_size=None):
+		return original(images, bboxes, sample_inds)
+
+	monkeypatch.setattr(crops, "crop_bboxes", Fixed)
+	monkeypatch.setattr(topdown, "crop_bboxes", Fixed)
+	assert not live.SleapCutsShort()
+	model = Model()
+	assert topdown.crop_bboxes is Fixed
+	assert "_run_stage_2" not in vars(model.layer) # not wrapped
 
 
 def test_keypoints_placed_as_before():
 	# Only the crop's size changes: where it is cut, and so where its
 	# keypoints land in the frame, is sleap-nn's top-left, as before
+	if not live.SleapCutsShort():
+		pytest.skip(FIXED)
 	from sleap_nn.inference.layers import topdown
 	from sleap_nn.inference.ops.crops import crop_bboxes, make_centered_bboxes
 	Model() # puts ExactCropSize's crop_bboxes into topdown
