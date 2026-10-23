@@ -39,6 +39,7 @@ Each run records into a new folder inside the config's `videoFolder`, named by t
 | `campy-live-view` | Watch the cameras and the tracking live | [Watching it live](docs/live-view.md) |
 | `campy-live-export` | Open a tracked recording in LUC3D | [Live tracking](docs/live-tracking.md#opening-a-tracked-recording-in-luc3d) |
 | `campy-live-flag`, `campy-label-pack`, `campy-label-merge`, `campy-model-eval`, `campy-model-fit` | Find the frames a model gets wrong, label them for the next model, and compare models on a rig | [Models](docs/models.md) |
+| `campy-infer` | SLEAP predictions on recorded videos, about 10 times faster than `sleap-nn track`, as ordinary `.slp` files | [Offline inference](docs/offline-inference.md#poses-from-recorded-videos-campy-infer) |
 | `campy-rules` | Switch TTL outputs from the live poses (an animal in a region, two animals close), for closed-loop experiments | [Closed-loop outputs](docs/closed-loop.md) |
 
 ## Documentation
