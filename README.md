@@ -392,6 +392,18 @@ campy-live-export <recording folder> --log campy-live_<date_time>.npy
 ```
 It writes `campy-live.slp`, which holds each camera's 2D and, with `--calibration`, each animal's identity and 3D pose, grouped across the cameras (LUC3D: File > Load SLP, then pick the recording folder for the videos). It also writes `<camera>/campy-live.slp`, `calibration.toml` and `skeleton.json`, LUC3D's session folder for the 2D (File > Load Session Folder), and `points3d.h5`, the 3D as arrays. Each prediction goes on the video frame that holds it, through each camera's `frametimes.npy`. `--frames FIRST:LAST` exports part of a long recording. `--skeleton <model folder>` gives the skeleton's edges for logs from 2.1.0rc6 and earlier, whose summary lacks them. `--calibration` and `--cameras` cover a calibration that has moved and a log with no summary. See [Live tracking](docs/live-tracking.md#opening-a-tracked-recording-in-luc3d) and `python -m pydoc campy.liveexport`.
 
+#### Finding the frames to label next (campy-live-flag)
+
+After the recording, `campy-live-flag` reads `campy-live`'s log and finds the sets the model probably got wrong, then picks a few varied ones to label for the next model. It needs only numpy and scipy, and changes nothing in `campy-live`:
+```
+campy-live-flag campy-live_<date_time>.npy --budget 25
+```
+With 3D (`campy-live --calibration`) it flags animals a camera missed while the others saw them, identity swaps and jumps, detections the cameras disagree on, and, with or without 3D, too many or too few animals and low scores. Flags close together make one event; it then picks `--budget` sets (10% at random, the rest from the events, each kind of mistake in turn, each pick the least like the ones before, at least 2 s apart), and writes `flags.csv`, `events.csv` and `sample.json` into `<log>_flags/` with a per-camera count of each kind of mistake. See [Models](docs/models.md#finding-the-frames-a-model-gets-wrong-campy-live-flag) and `python -m pydoc campy.liveflag`.
+
+#### Labelling them (campy-label-pack, campy-label-merge)
+
+`campy-label-pack <log>_flags/sample.json --recording <recording folder>` writes the picked sets as one SLEAP package for LUC3D: every camera's frame of each set embedded in the file, with `campy-live`'s detections, identities and 3D on them, ready to correct (File > Load SLP). After correcting and saving in LUC3D, `campy-label-merge <name>.pkg.slp <name>.labels.slp` writes the corrected camera frames as a training package and a test package. Test sets are whole minutes of a recording, kept out of training for good; `--test-into` adds them to a rig's test set, and `--train-into`/`--train-out` add the rest to a copy of a training package. A camera frame with predictions left in it isn't taken. Both need sleap-io (campy-live's environment). See [Models](docs/models.md#labelling-them-in-luc3d-campy-label-pack-campy-label-merge).
+
 #### Watching it live (campy-live-view)
 
 `campy-live-view` shows the cameras' frames as campy records them, with campy-live's results drawn on them:
