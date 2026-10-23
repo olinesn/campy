@@ -167,7 +167,7 @@ def test_one_campy_session_at_a_time(home):
 NAMES = ["Camera0", "Camera1"]
 
 
-def emu_session(tmp_path, home, rec_s, live=None, view=False, feed="campy-test-session"):
+def emu_session(tmp_path, home, rec_s, live=None, view=False, feed="campy-test-session", post=None):
 	clips = tmp_path / "clips"
 	for name in NAMES:
 		(clips / name).mkdir(parents=True)
@@ -176,7 +176,7 @@ def emu_session(tmp_path, home, rec_s, live=None, view=False, feed="campy-test-s
 		"videoFilename": "emuclip.mp4", "frameRate": 20, "recTimeInSec": rec_s, "chunkLengthInSec": 1,
 		"displayFrameRate": 0, "pixelFormatInput": "gray", "pixelFormatOutput": "yuv420p", "gpuID": -1,
 		"codec": "h264", "preflight": "off", "liveFeedName": "{}-{}".format(feed, os.getpid())}
-	sections = {"view": view}
+	sections = {"view": view, "post": post if post is not None else {"remux": False, "export": False}}
 	if live is not None:
 		sections["live"] = dict({"python": sys.executable}, **live)
 	return write_config(tmp_path / "config.yaml", acquire, **sections), clips
@@ -237,7 +237,7 @@ def test_a_tracked_recording_in_one_command(tmp_path, home):
 	# Everything in the recording's folder, each program's output marked here
 	logs = folder / "logs"
 	assert sorted(p.name for p in logs.iterdir()) == ["campy-acquire.log", "campy-acquire.yaml", "campy-live.log",
-		"campy-live.ready", "session-config.yaml"]
+		"campy-live.ready", "post.json", "post.log", "session-config.yaml"]
 	assert "[acquire] Camera0 saved 60 frames" in out and "[live]" in out
 	assert "campy-live is ready" in out and "campy-live finished: the feed ended." in out
 	ran = yaml.safe_load((logs / "campy-acquire.yaml").read_text())
@@ -404,3 +404,40 @@ def test_alive():
 	p = subprocess.Popen([sys.executable, "-c", "pass"])
 	p.wait()
 	assert not children.Alive(p.pid) and not children.Alive(0)
+
+
+def test_after_a_clean_stop_the_post_steps_run(tmp_path, home):
+	from campy import post
+	dest = tmp_path / "nas"
+	marker = tmp_path / "ran.txt"
+	command = "{} -c \"import sys; open(sys.argv[1], 'w').write(sys.argv[2])\" {} {{folder}}".format(
+		'"{}"'.format(sys.executable) if sys.platform == "win32" else sys.executable, marker)
+	config, clips = emu_session(tmp_path, home, 2, live={"model": "none"},
+		post={"remux": "keep", "export": False, "copy": str(dest), "run": [command]})
+	proc, lines = start(tmp_path, home, config)
+	proc.wait(timeout=180)
+	out = "".join(lines)
+	assert proc.returncode == 0, out
+	folder = the_folder(clips)
+	for name in NAMES:
+		assert not post.Fragmented(str(folder / name / "emuclip.mp4"))
+		assert post.Fragmented(str(folder / name / "emuclip.fragmented.mp4"))
+		assert frames(folder, name) == 40
+	assert "[post] remux: done, 2 videos remuxed to plain MP4, each checked packet by packet." in out
+	assert (dest / folder.name / "Camera0" / "emuclip.mp4").is_file()
+	assert marker.read_text() == str(folder)
+	status = json.loads((folder / "launcher.json").read_text())
+	assert status["state"] == "done"
+	assert {k: v["state"] for k, v in status["post"].items()} == {"remux": "done", "export": "skipped", "copy": "done",
+		"run": "done"}
+
+
+def test_the_post_section_is_checked(tmp_path):
+	config = write_config(tmp_path / "c.yaml", {"numCams": 1}, post={"remux": "yes please"})
+	with pytest.raises(session.SessionError, match="post.remux: 'yes please' is not true, false or keep"):
+		session.Config(str(config))
+	config = write_config(tmp_path / "c.yaml", {"numCams": 1}, post={"copy": {"to": "x", "delete": True}})
+	with pytest.raises(session.SessionError, match="post.copy: it takes to: only"):
+		session.Config(str(config))
+	c = session.Config(str(write_config(tmp_path / "c.yaml", {"numCams": 1})))
+	assert c.post == {"remux": True, "export": True, "copy": {}, "run": [], "ffmpeg": ""}

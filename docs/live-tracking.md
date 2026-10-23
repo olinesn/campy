@@ -77,6 +77,35 @@ Each program's output is shown in the terminal, each line marked `[acquire]`, `[
 - If `campy-live` stops during the recording, the cameras carry on, and `campy-session` starts it again after 10 s, then 1 and 5 minutes, at most 5 times an hour. Each restart writes its own log (`campy-live.part2.npy`, ...). `live.restart: false` turns this off.
 - One `campy-session` runs at a time on a computer.
 
+**After the recording.** When every camera has recorded to the end, `campy-session` runs the steps of the config's `post:` section, and logs each one in `<folder>/logs/post.log`. Without a `post:` section, it runs `remux` and `export`:
+
+```yaml
+post:
+  remux: true          # true (the default), keep, or false
+  export: true         # campy-live-export, when campy-live ran (the default)
+  copy: "\\\\nas\\share\\recordings"   # optional: copies the recording's folder into this one
+  run: ["python C:\\tools\\notify.py {folder}"]   # optional: your own commands
+```
+
+- **remux** turns each fragmented video (campy's default, readable after a crash) into a plain MP4 without re-encoding. Some readers have trouble with fragmented files (an older calibrat3 did), and a fragmented file's header has no frame count.
+  - Before anything is replaced, ffmpeg's packet checksums of the two files are compared line by line: every packet, timestamp and the codec's header must be identical. Only then does the plain file replace the fragmented one.
+  - With `remux: keep`, the fragmented file stays beside it as `<name>.fragmented.mp4`.
+  - If the check fails, or the disk has no room for one more copy of the video, the original stays as it was, and the log says why.
+  - A 30 s video of 3 cameras takes a fraction of a second.
+- **export** runs `campy-live-export` in the inference environment, so the recording opens in LUC3D with the tracking on it (below). If `campy-live` was started again during the recording, its logs are joined first, in order.
+- **copy** copies the whole recording folder into `copy.to`: with robocopy on Windows, with rsync on Linux and macOS (rsync also takes `user@host:/path`). Then it checks every file's size. **Nothing is deleted**, on either side.
+- **run** runs your own commands in a shell, with `{folder}` replaced by the recording's folder. One that fails is logged, and the next one still runs.
+
+After a crash, or when a camera didn't record to the end, none of them run, and `campy-session` says why. The recording's fragmented videos stay readable up to their last second. To run the steps again by hand, or after looking at a crashed recording:
+
+```
+campy-session post <recording folder>                 # the steps not done yet
+campy-session post <recording folder> --only remux    # one step
+campy-session post <recording folder> --force         # after a crash, or again
+```
+
+`campy-session post` also works on a recording made with `campy-acquire` alone. There, every camera's `metadata.csv` must have its totals and no `cameraError` or `videoError`, unless you give `--force`. What each step did is kept in `<folder>/logs/post.json`, so running `post` again repeats nothing that is done. A Ctrl-C during the steps stops them after the current one.
+
 ### By hand
 
 The three programs can also be started separately, as `campy-session` does:
@@ -309,7 +338,7 @@ On the EVO-X2, 5 mice, 3 cameras, 60 fps, the trained models of the table above,
 
 ## Opening a tracked recording in LUC3D
 
-After the recording, `campy-live-export` turns `campy-live`'s log into files that [LUC3D](https://github.com/talmolab/luc3d) opens with the results already on the videos: each camera's 2D predictions and, if `campy-live` ran with `--calibration`, each animal's 3D pose and identity. Run it in the inference environment, which has the `sleap-io` package it needs (it comes with sleap-nn):
+`campy-session` runs `campy-live-export` itself after a clean stop (`post: export`, above). By hand: after the recording, `campy-live-export` turns `campy-live`'s log into files that [LUC3D](https://github.com/talmolab/luc3d) opens with the results already on the videos: each camera's 2D predictions and, if `campy-live` ran with `--calibration`, each animal's 3D pose and identity. Run it in the inference environment, which has the `sleap-io` package it needs (it comes with sleap-nn):
 ```
 campy-live-export <recording folder> --log campy-live_<date_time>.npy
 ```

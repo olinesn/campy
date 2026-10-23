@@ -145,6 +145,8 @@ ffmpeg -fflags +discardcorrupt -i 0.mp4 -c copy 0-repaired.mp4
 ```
 `fragmentedVideo: False` writes a plain MP4, as campy did before. Other containers (.mkv, .avi) are written as they always were.
 
+After a clean stop, `campy-session` turns the fragmented videos into plain MP4s (`post: remux`). It uses no re-encoding, and checks every packet before the plain file replaces the fragmented one. For a recording made with `campy-acquire` alone, run `campy-session post <recording folder> --only remux` ([Live tracking](docs/live-tracking.md#in-one-command-campy-session)). A crashed recording keeps its fragmented videos.
+
 ### Spinnaker 4.4 on Windows: when the installer fails
 On one Windows 11 PC (October 2026), Spinnaker 4.4.0.246's installer failed the same way every time. Teledyne Common Components installed, then the installer's administrator process went away and nothing else installed: no SpinView, and PySpin found 0 cameras, although Settings ▸ Apps listed "Teledyne Spinnaker SDK 4.4.0.246". Its log in `%TEMP%` (`Teledyne_Spinnaker_SDK_4.4.0.246_(x64)_*.log`) shows `Applied execute package: TeledyneCommonComponentsSetup.exe, result: 0x0`, then `Error 0x800700e8: Failed to write message type to pipe`. No crash or Microsoft Defender event explained it. By then the installer has saved its packages under `C:\ProgramData\Package Cache`, so they can be installed directly, in PowerShell run as administrator:
 
@@ -360,7 +362,7 @@ campy says how as it starts (`Keeping this computer awake while recording (keepA
 
 ### A tracked recording in one command (campy-session)
 
-`campy-session run <config>.yaml`, in the recording environment, starts `campy-live` (in the inference environment), `campy-live-view` and `campy-acquire` from one config, and ends them together. The config holds campy-acquire's keys plus a `live:` section (the trained models, `animals`, `calibration`, `env`, more campy-live `args`) and an optional `view:` section. Every program's output goes into the recording's folder (`logs/`), and so do `campy-live`'s results. `campy-session register-live`, run once in the inference environment, tells it where that environment is; `live.python` in the config does the same. The recording comes first: campy-acquire is never killed, and it records on if `campy-session` or `campy-live` stops. See [Live tracking](docs/live-tracking.md#in-one-command-campy-session).
+`campy-session run <config>.yaml`, in the recording environment, starts `campy-live` (in the inference environment), `campy-live-view` and `campy-acquire` from one config, and ends them together. The config holds campy-acquire's keys plus a `live:` section (the trained models, `animals`, `calibration`, `env`, more campy-live `args`) and an optional `view:` section. Every program's output goes into the recording's folder (`logs/`), and so do `campy-live`'s results. `campy-session register-live`, run once in the inference environment, tells it where that environment is; `live.python` in the config does the same. After a clean stop it runs the `post:` section's steps: remux the videos to plain MP4 (each checked packet by packet), `campy-live-export`, an optional copy to another folder or computer, and your own commands. `campy-session post <folder>` runs them again by hand. The recording comes first: campy-acquire is never killed, and it records on if `campy-session` or `campy-live` stops. See [Live tracking](docs/live-tracking.md#in-one-command-campy-session).
 
 ### Live pose estimation (liveFeed, campy-live)
 

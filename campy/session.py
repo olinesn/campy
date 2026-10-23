@@ -98,7 +98,16 @@ VIEW = {
 	"args": ((list,), [], "more campy-live-view options, as a list"),
 	"keep_open": ((bool,), False, "leave the view open once the recording has ended"),
 	}
-SECTIONS = {"live": LIVE, "view": VIEW}
+POST = {
+	"remux": ((bool, str), True, "fragmented MP4s to plain ones, checked packet by packet: true, keep (the fragmented "
+		"one stays beside it) or false"),
+	"export": ((bool,), True, "campy-live-export, when campy-live ran"),
+	"copy": ((dict, str), {}, "copy the recording to copy.to/<its folder's name> (robocopy or rsync); nothing deleted"),
+	"run": ((list,), [], "your own commands, {folder} replaced by the recording's folder"),
+	"ffmpeg": ((str,), "", "the ffmpeg to remux with (default: imageio-ffmpeg's)"),
+	}
+POST_DEFAULTS = {key: default for key, (kinds, default, _) in POST.items()}
+SECTIONS = {"live": LIVE, "view": VIEW, "post": POST}
 
 RESTART_AFTER_S = (10, 60, 300) # campy-live started again after these, then every 300 s
 RESTARTS_PER_HOUR = 5
@@ -195,6 +204,13 @@ class Config:
 		self.view = Section("view", {"show": view} if isinstance(view, bool) else view, VIEW)
 		if "view" not in raw:
 			self.view["show"] = self.live is not None # without tracking, the cameras' own preview is there
+		self.post = Section("post", raw.get("post"), POST)
+		if self.post["remux"] not in (True, False, "keep"):
+			raise SessionError("post.remux: {!r} is not true, false or keep.".format(self.post["remux"]))
+		if isinstance(self.post["copy"], str):
+			self.post["copy"] = {"to": self.post["copy"]}
+		if set(self.post["copy"]) - {"to"}:
+			raise SessionError("post.copy: it takes to: only (the folder the recording is copied into).")
 		if self.live is not None and self.live["model"] == "sleap" and not (self.live["centroid"] and self.live["instance"]):
 			raise SessionError("live: give the trained models' folders, centroid: and instance: (or model: random, "
 				"or none).")
@@ -528,6 +544,7 @@ class Session:
 		self.last_press = None
 		self.status_at = 0
 		self.stop_written = 0 # what campy-session asked of campy-acquire's stop file: 1 stop, 2 now
+		self.post_results = {}
 
 	# ---------------------------------------------------------- setup
 
@@ -552,7 +569,7 @@ class Session:
 			f.write(self.config.text)
 		self.acquireConfig = os.path.join(self.logs, "campy-acquire.yaml")
 		with open(self.acquireConfig, "w", encoding="utf-8") as f:
-			f.write("# What campy-acquire ran: {} without campy-session's sections (live, view){}.\n".format(
+			f.write("# What campy-acquire ran: {} without campy-session's sections (live, view, post){}.\n".format(
 				self.config.path, ", with liveFeed on" if self.config.Feed() else ""))
 			yaml.safe_dump(self.config.AcquireConfig(), f, sort_keys=False, allow_unicode=True)
 		return folder
@@ -665,9 +682,20 @@ class Session:
 				Say("The view stays open (view.keep_open): close it when you are done.")
 			else:
 				view.End()
+		self.Post()
 		self.state = "done" if code == 0 else "failed"
 		self.Status()
 		return code
+
+	def Post(self):
+		# After a clean stop (post.CleanStop reads launcher.json, just written): post.py; a Ctrl-C from here on stops
+		# them between steps (ffmpeg, stopped mid-remux, leaves the original as it was)
+		from campy import post
+		self.state = "post"
+		self.Status()
+		pressed = self.presses
+		self.post_results = post.Run(self.folder, self.config.post, live_python=self.live_python,
+			stop=lambda: self.presses > pressed)
 
 	def ViewPython(self):
 		return self.live_python or Python()
@@ -785,6 +813,9 @@ class Session:
 		if acquire is None:
 			Say("Ctrl-C: stopping before the recording starts.")
 			return
+		if self.state == "post":
+			Say("Ctrl-C: the steps after the recording stop after this one (campy-session post <folder> runs the rest).")
+			return
 		level = min(self.presses, 2)
 		if level > self.stop_written and acquire.Running():
 			try:
@@ -807,7 +838,8 @@ class Session:
 			"parts": {name: part.Status() for name, part in self.parts.items() if not name.startswith("live")},
 			"live": [part.Status() for part in self.live_parts],
 			"live_restarts": len(self.live_parts) - 1 if self.live_parts else 0,
-			"problems": [{"time": t, "text": text} for t, text in self.problems]}
+			"problems": [{"time": t, "text": text} for t, text in self.problems],
+			"post": {step: {"state": state, "message": message} for step, (state, message) in self.post_results.items()}}
 		for path in (os.path.join(self.folder, "launcher.json"), os.path.join(CampyFolder(), "status", "launcher.json")):
 			try:
 				os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -835,9 +867,11 @@ def RunMain(argv):
 
 def Main(argv=None):
 	argv = sys.argv[1:] if argv is None else list(argv)
-	commands = {"run": RunMain, "register-live": Register}
+	from campy import post
+	commands = {"run": RunMain, "register-live": Register, "post": post.Main}
 	if not argv or argv[0] not in commands:
 		print("usage: campy-session run <config>.yaml [--key value ...]\n"
+			"       campy-session post <recording folder> [--only remux,export] [--force]\n"
 			"       campy-session register-live   (once, in campy-live's environment)", file=sys.stderr)
 		sys.exit(2)
 	sys.exit(commands[argv[0]](argv[1:]))
