@@ -84,9 +84,9 @@ LIVE = "Live feed"
 CHECK = "Launch check"
 DISPLAY = "Display and progress"
 TRIGGER = "Trigger"
-SESSION = "Sections other programs read"
+PROGRAMS = "Sections other programs read"
 
-SECTIONS = (REC, CAM, FLIR, RATCAM, ENC, LIVE, CHECK, DISPLAY, TRIGGER, SESSION)
+SECTIONS = (REC, CAM, FLIR, RATCAM, ENC, LIVE, CHECK, DISPLAY, TRIGGER, PROGRAMS)
 
 SETTINGS = [
 	# Recording
@@ -271,14 +271,14 @@ SETTINGS = [
 
 	# Sections other programs read: campy-acquire takes them as they are (no
 	# command-line option), and combines them across extends: one level deep
-	Setting("live", None, SECTION, section=SESSION, per_camera=ONE,
+	Setting("live", None, SECTION, section=PROGRAMS, per_camera=ONE,
 		help="campy-session: live tracking while recording (models, calibration, animals, the live \
 			environment's python). campy-acquire passes it by; campy-session checks it."),
-	Setting("view", None, SECTION, section=SESSION, per_camera=ONE,
+	Setting("view", None, SECTION, section=PROGRAMS, per_camera=ONE,
 		help="campy-session: the live view (campy-live-view). campy-acquire passes it by."),
-	Setting("post", None, SECTION, section=SESSION, per_camera=ONE,
+	Setting("post", None, SECTION, section=PROGRAMS, per_camera=ONE,
 		help="campy-session: what to do after the recording (remux, export, copy). campy-acquire passes it by."),
-	Setting("panel", None, SECTION, section=SESSION, per_camera=ONE,
+	Setting("panel", None, SECTION, section=PROGRAMS, per_camera=ONE,
 		help="campy-session: its control panel. campy-acquire passes it by."),
 ]
 
