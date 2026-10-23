@@ -116,11 +116,33 @@ The top-down model finds each animal's center, cuts a square crop around it (192
 
 Normally PyTorch runs each layer of the two networks as its own small GPU program. A convolution writes its result to memory, then the next step (bias, activation, upsampling) reads it back, and so on. A compiled engine fuses those steps into fewer, bigger programs made for the exact image size, so far less data travels to and from memory (`bench/compiled_bench.py` measured the networks alone; see the hardware guide). Because an engine is made for one input size, it needs `--fixed-crops`, whose sizes never change. With `--cuda-graphs` too, the engines' programs are recorded into the set's single graph like everything else.
 
-- `--engine compile`: `torch.compile`. On Linux it comes with PyTorch (ROCm and NVIDIA). On Windows it needs Triton: `pip install triton-windows`, and the `CC` environment variable set to the `tcc.exe` it bundles (`<site-packages>\triton\runtime\tcc\tcc.exe`).
+- `--engine compile`: `torch.compile`. On Linux it comes with PyTorch (ROCm and NVIDIA). On Windows it needs Triton, from the `triton-windows` package, in the version that matches your PyTorch (see below). Triton brings its own small C compiler, so nothing else is needed.
 - `--engine tensorrt`: NVIDIA's TensorRT (`pip install tensorrt-cu13 onnx`). The first run builds the two networks' engines (about 10 s for both on the RTX 6000 Ada). It keeps them in `--engine-cache` (default `~/.cache/campy/engines`), and later runs read them back in under a second. A new GPU, new weights or a new TensorRT version gets a new one.
 - `--engine auto`: TensorRT on an NVIDIA GPU where it is installed, otherwise `torch.compile`.
 
 The first set waits while the engines are made. `campy-live` does this during its warm-up, before the feed starts: about 15 s for `torch.compile` the first time, a few seconds after that (it caches what it compiled).
+
+### Installing the engine packages (Windows)
+
+The engines need packages that a plain campy-live environment doesn't have. Install them into the same conda environment `campy-live` runs from (the one with PyTorch and sleap-nn), not into the recording environment:
+
+```
+<env>\python.exe -m pip install tensorrt-cu13==11.4.0.106 onnx==1.23.2 triton-windows==<version>
+```
+
+- `tensorrt-cu13` and `onnx` are for `--engine tensorrt`. 11.4.0.106 is the build that was tested. It brings its own copy of NVIDIA's libraries and works next to PyTorch builds for CUDA 12.8 as well as 13.0. The NVIDIA driver must support CUDA 13.
+- `triton-windows` is for `--engine compile`. Each PyTorch minor version works with one Triton minor version only, so pick the one that matches `torch.__version__`. PyTorch 2.11 needs Triton 3.6 (`triton-windows==3.6.0.post26`), and PyTorch 2.14 needs Triton 3.8 (`triton-windows==3.8.0.post29`). (On Linux the matching `triton` comes with PyTorch; `triton-windows` uses the same version numbers.) A mismatched Triton fails when the networks compile, during the warm-up.
+- None of the three changes PyTorch, NumPy or anything else already installed. Check afterwards with `<env>\python.exe -c "import torch, tensorrt, onnx, triton; print(torch.__version__, tensorrt.__version__, triton.__version__)"`.
+- When you upgrade PyTorch in that environment, upgrade `triton-windows` to the matching version too. When you change TensorRT version, the next run rebuilds its engines on its own (about 10–20 s, once).
+
+Then check it with a short replay (see [Testing without cameras](#testing-without-cameras)) with `--fixed-crops --cuda-graphs --engine tensorrt`. The first run prints `building the centroid network's TensorRT engine ... once`, and the report should say `networks: centroid TensorRT fp16`. After installing this way, the same 30 s, 5-mouse, 3-camera replay as in the next table gave:
+
+| | `--engine tensorrt`, inference per set p50 / p99 | `--engine compile` |
+|---|---|---|
+| RTX 6000 Ada (PyTorch 2.14, Triton 3.8) | 1.6 / 5.9–6.3 ms, 0 skipped | 2.2 / 7.4 ms, 5 skipped in the first seconds |
+| Pro Max Slim, RTX 2000 Ada (PyTorch 2.11, Triton 3.6) | 5.8 / 6.5–6.6 ms, 0 skipped | 9.6 / 9.8 ms, 0 skipped |
+
+These match the results in the next table, which used the same packages from a separate folder. On the Pro Max Slim `torch.compile` is clearly slower than TensorRT (9.6 against 5.8 ms), so use `--engine tensorrt` (or `auto`) there.
 
 Live, 5 mice, 3 cameras, 60 fps, 3D, the same trained models as above, compared with `--fixed-crops --cuda-graphs` (the default with a GPU):
 
@@ -134,7 +156,7 @@ Live, 5 mice, 3 cameras, 60 fps, 3D, the same trained models as above, compared 
 | Pro Max Slim (RTX 2000 Ada), `--fixed-crops --cuda-graphs` | 12.6 / 12.8–12.9 ms | 15.7 / 16.6–16.8 ms | 0 of 1,800 | |
 | Pro Max Slim, `+ --engine tensorrt` | **5.8** / 6.5–6.6 ms | **9.1** / 10.0–10.1 ms | 0 of 1,800 | |
 
-Three replays of each (EVO-X2: the whole 3,600-set replay; Precision 7875 and Pro Max Slim: 30 s each). Every run was `RIG_CLEAN`, except that the Pro Max Slim's job logged 4 sightings of its security agent during the tests that ran before, minutes before the replays; none came during them. On the EVO-X2, whose GPU is itself the limit, `torch.compile` more than halves the time: a set takes 6 ms instead of 13.7, so 10 ms of each 16.7 ms frame are now free. The tracking matched the offline SLEAP predictions exactly as well as before (2D median 3.8 px, 3D median 4.2 mm, the same identities 99.93% of the time). The Pro Max Slim's small RTX 2000 Ada gains as much with TensorRT: 12.6 to 5.8 ms per set, so 5 mice at 60 fps now leave it 10 ms of each frame (`torch.compile` wasn't measured live there; on the networks alone it is much slower than TensorRT, 7.4 against 4.5 ms). On the RTX 6000 Ada, where the graph had already made a set short, TensorRT saves another 1.1 ms. The Precision 7875's p99 is set by one stretch of about 60–100 sets (from set ~730) that is slow in every run with or without an engine. Outside it, TensorRT's p95 is 1.7 ms against 2.9–3.3 ms.
+Three replays of each (EVO-X2: the whole 3,600-set replay; Precision 7875 and Pro Max Slim: 30 s each). Every run was `RIG_CLEAN`, except that the Pro Max Slim's job logged 4 sightings of its security agent during the tests that ran before, minutes before the replays; none came during them. On the EVO-X2, whose GPU is itself the limit, `torch.compile` more than halves the time: a set takes 6 ms instead of 13.7, so 10 ms of each 16.7 ms frame are now free. The tracking matched the offline SLEAP predictions exactly as well as before (2D median 3.8 px, 3D median 4.2 mm, the same identities 99.93% of the time). The Pro Max Slim's small RTX 2000 Ada gains as much with TensorRT: 12.6 to 5.8 ms per set, so 5 mice at 60 fps now leave it 10 ms of each frame (`torch.compile`, measured live there later, takes 9.6 ms per set; on the networks alone it is also much slower than TensorRT, 7.4 against 4.5 ms). On the RTX 6000 Ada, where the graph had already made a set short, TensorRT saves another 1.1 ms. The Precision 7875's p99 is set by one stretch of about 60–100 sets (from set ~730) that is slow in every run with or without an engine. Outside it, TensorRT's p95 is 1.7 ms against 2.9–3.3 ms.
 
 Accuracy, set by set (`bench/fixed_crops_check.py --engine … --reference fp32`): 3,600 sets of the same replay, against sleap-nn's own layer in fp32 (crop size corrected), about 575,000 keypoints:
 
