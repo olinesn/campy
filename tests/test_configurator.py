@@ -257,7 +257,7 @@ def test_disable_gamma_is_read_as_camera_gamma(tmp_path, monkeypatch, capsys):
 	# Configs written before cameraGamma: disableGamma True kept the camera linear, False now means 0.6
 	p = run_config(tmp_path, monkeypatch, {"disableGamma": True})
 	assert p["cameraGamma"] == "Off" and "disableGamma" not in p
-	assert "The config says disableGamma: True, read as cameraGamma: Off." in capsys.readouterr().out
+	assert "c.yaml says disableGamma: True, read as cameraGamma: Off." in capsys.readouterr().out
 	assert run_config(tmp_path, monkeypatch, {"disableGamma": False})["cameraGamma"] == 0.6
 	assert run_config(tmp_path, monkeypatch, {"disableGamma": [True, False]})["cameraGamma"] == ["Off", 0.6]
 	assert run_config(tmp_path, monkeypatch, {}, "--disableGamma", "True")["cameraGamma"] == "Off"
@@ -267,7 +267,7 @@ def test_disable_gamma_is_read_as_camera_gamma(tmp_path, monkeypatch, capsys):
 
 
 def test_disable_gamma_and_camera_gamma_together_are_refused(tmp_path, monkeypatch):
-	with pytest.raises(ValueError, match="The config gives both cameraGamma and disableGamma"):
+	with pytest.raises(ValueError, match="c.yaml gives both cameraGamma and disableGamma"):
 		run_config(tmp_path, monkeypatch, {"disableGamma": True, "cameraGamma": 0.6})
 	with pytest.raises(ValueError, match="The command line gives both cameraGamma and disableGamma"):
 		run_config(tmp_path, monkeypatch, {}, "--disableGamma", "False", "--cameraGamma", "0.6")
