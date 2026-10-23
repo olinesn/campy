@@ -183,8 +183,10 @@ def test_campy_watch_says_a_camera_fell_behind(tmp_path, service):
 	texts = [t.split("*Test rig*: ", 1)[1] for t in service.Texts()]
 	behind = [t for t in texts if t.startswith("Camera1: ") and " behind the other cameras" in t]
 	assert behind, (texts, out)
-	assert re.match(r"Camera1: 1[4-6] frames behind the other cameras \(\+(4[5-9]|5[0-9])\d ms for the same frame "
-		r"number\)", behind[0]), behind[0] # 0.5 s
+	# About 15 frames (0.5 s), or a few less: the offset is a mean over the last 2 s, and the alert can go out
+	# before all of them are from after the pause
+	m = re.match(r"Camera1: (\d+) frames behind the other cameras \(\+(\d+) ms for the same frame number\)", behind[0])
+	assert m and 8 <= int(m.group(1)) <= 17 and 250 <= int(m.group(2)) <= 600, behind[0]
 	assert service.Texts()[0].startswith(":red_circle:")
 	assert watcher.returncode == 0
 	# Its own log, beside campy-acquire's alerts.log
