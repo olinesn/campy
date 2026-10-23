@@ -43,13 +43,15 @@ def picture(c, n):
 	return img
 
 
-def write_recording(rec):
+def write_recording(rec, fragmented=False):
+	# fragmented: as campy records by default (fragmentedVideo)
 	for c, name in enumerate(CAMERAS):
 		d = os.path.join(rec, name)
 		os.makedirs(d)
 		frames = [n for n in range(1, FRAMES + 1) if n not in DROPPED.get(name, ())]
 		sio.save_video(np.stack([np.repeat(picture(c, n)[..., None], 3, -1) for n in frames]),
-			os.path.join(d, "0.mp4"), fps=60, crf=0, output_params=["-g", "1"])
+			os.path.join(d, "0.mp4"), fps=60, crf=0, output_params=["-g", "1"] +
+			(["-movflags", "frag_keyframe+empty_moov"] if fragmented else []))
 		np.save(os.path.join(d, "frametimes.npy"), np.array([frames, (np.array(frames) - 1) / 60.0], float))
 		np.save(os.path.join(d, "hosttimes.npy"), np.array([host(c, n) for n in frames], np.int64))
 		with open(os.path.join(d, "metadata.csv"), "w", newline="") as f:
@@ -132,6 +134,22 @@ def test_the_package_holds_each_cameras_frame_of_each_set(made):
 			assert got.shape == (H, W, 1)
 			assert np.array_equal(got[..., 0], np.asarray(video[idx])[..., 0])
 			assert abs(int(np.median(got)) - (20 + 5 * n)) <= 2 # the right frame, not a neighbour
+
+
+def test_a_fragmented_recording_packs_the_same_frames(made, tmp_path):
+	# campy's default video: sleap-io can't find its frames until it is copied to a plain MP4
+	frag = str(tmp_path / "frag" / os.path.basename(made["rec"]))
+	write_recording(frag, fragmented=True)
+	for name in CAMERAS:
+		assert labelpack.Fragmented(os.path.join(frag, name, "0.mp4"))
+		assert not labelpack.Fragmented(os.path.join(made["rec"], name, "0.mp4"))
+	plain = sio.load_slp(pack(made)["package"])
+	out = labelpack.Pack(made["sample"], [frag], out=str(tmp_path / "fragout"), name="round1")
+	got = sio.load_slp(out["package"])
+	assert out["sets"] == 2
+	for c in range(3):
+		for j in range(2):
+			assert np.array_equal(got.videos[c][j], plain.videos[c][j])
 
 
 def test_predictions_and_3d_are_the_logs(made):
@@ -304,7 +322,7 @@ def test_merge_adds_to_a_training_package_and_a_growing_test_set(made, monkeypat
 def test_merge_refuses_labels_of_another_package(made, tmp_path):
 	out = pack(made)
 	other = sio.Labels(videos=[sio.Video(filename="x.mp4", open_backend=False)],
-		skeletons=[sio.Skeleton(nodes=NODE_NAMES)])
+		skeletons=[sio.Skeleton(nodes=list(NODE_NAMES))]) # a copy: sleap-io turns the list's names into Nodes
 	path = str(tmp_path / "other.slp")
 	other.save(path, verbose=False)
 	with pytest.raises(labelmerge.MergeError, match="1 videos, the package 3"):
