@@ -25,6 +25,62 @@ Which torch build:
 
 ## Recording with live tracking
 
+### In one command: `campy-session`
+
+`campy-session` starts all three programs, each in its own environment, from one config, and stops them together. Add a `live:` section to the recording's config, and a `view:` section if you like:
+
+```yaml
+# ... the recording's keys, as for campy-acquire ...
+live:
+  python: "C:\\Users\\<you>\\miniconda3\\envs\\campyLive\\python.exe"   # optional, see below
+  centroid: "C:\\campy_data\\live\\models\\centroid"
+  instance: "C:\\campy_data\\live\\models\\instance"
+  animals: 5
+  calibration: "C:\\campy_data\\calib\\calibration.toml"
+  env: {CUDA_DEVICE_ORDER: PCI_BUS_ID, CUDA_VISIBLE_DEVICES: "0"}   # two GPUs: campy-live on the first
+  args: ["--report-sec", "30"]   # any other campy-live option, as a list
+view: true                       # or: view: {args: ["--no-3d"], keep_open: true}
+```
+
+Then, in the **recording** environment:
+
+```
+campy-session run <config>.yaml
+```
+
+Options after the config are campy-acquire's, for this run only (`campy-session run <config>.yaml --recTimeInSec 3600`).
+
+**Telling it where the inference environment is.** `campy-session` runs `campy-live` with that environment's python, so neither environment needs activating and nothing needs to be on PATH. It looks in three places, in order:
+
+1. `live.python` in the config;
+2. the `CAMPY_LIVE_PYTHON` environment variable;
+3. the python registered once per computer: in the inference environment, run `campy-session register-live` (or `python -m campy.session register-live`). It writes that python to `~/.campy/envs.json`.
+
+Both environments must have the same campy installed, or `campy-session` stops before anything starts and says so. It compares their live feed code.
+
+**What happens:**
+
+1. It checks the config's `live:` and `view:` sections, and suggests the key you meant for a typo.
+2. It makes the recording's folder (`<videoFolder>/<date and time>/`, as campy-acquire would). Into its `logs/` folder it writes:
+   - the config as given (`session-config.yaml`);
+   - the config campy-acquire runs (`campy-acquire.yaml`): the same, without the two sections, and with `liveFeed: True`.
+3. It starts `campy-live` and waits until its models are warmed up: 5–40 s, longest the first time an engine is built (`live.ready_timeout_s`, default 120 s).
+4. It starts `campy-live-view` (with `view`), then `campy-acquire`, which records into that folder.
+5. The recording ends at `recTimeInSec`, or at Ctrl-C. `campy-live` tracks to the last frame and ends by itself. The view closes, unless `keep_open` is set.
+
+Each program's output is shown in the terminal, each line marked `[acquire]`, `[live]` or `[view]`, and kept in `<folder>/logs/<program>.log`. `campy-live`'s results go into the recording's folder (`campy-live.npy` and `.json`), ready for `campy-live-export`. `<folder>/launcher.json` records when each program started and ended, and its exit code. The exit code is campy-acquire's: 0 when every camera recorded to the end.
+
+**The recording comes first.**
+
+- `campy-acquire` runs as it does when started by hand. Ctrl-C reaches it directly, and it is never killed. If `campy-session` itself is closed or crashes, the recording goes on to `recTimeInSec`, and `campy-live` keeps tracking it.
+- If `campy-live` can't start (a wrong model folder, say), the recording goes on without tracking. With `live.required: true` instead, nothing is recorded.
+- If `campy-live` stops during the recording, the cameras carry on, and `campy-session` starts it again after 10 s, then 1 and 5 minutes, at most 5 times an hour. Each restart writes its own log (`campy-live.part2.npy`, ...). `live.restart: false` turns this off.
+- One `campy-session` runs at a time on a computer.
+
+### By hand
+
+The three programs can also be started separately, as `campy-session` does:
+
 1. **Start `campy-live` first**, in the inference environment:
    ```
    campy-live --cameras 3 --model sleap --centroid <centroid model folder> --instance <centered-instance model folder> \

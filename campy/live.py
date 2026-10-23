@@ -216,7 +216,7 @@ and its first.
 import argparse, json, math, os, queue, signal, sys, threading, time
 from datetime import datetime
 import numpy as np
-from campy import children, cpus, livefeed, liveresults
+from campy import children, cpus, livefeed, liveresults, stopfile
 from campy import clock as hostclock # not clock: Run's clock is the GPU's
 from campy.frametimes import GrowingNpy, Writer
 
@@ -2257,6 +2257,10 @@ def Run(args):
 	stopping = []
 	previous = signal.signal(signal.SIGINT, lambda *a: stopping.append(1))
 	stop = lambda: bool(stopping)
+	# A stop file (--stop-file) is a Ctrl-C too, for a program that started
+	# campy-live without a console (campy-session)
+	stopWatch = stopfile.Watch(os.path.abspath(args.stop_file), lambda level: stopping.append(level)).Start() \
+		if args.stop_file else None
 	placed = PlaceSelf(args)
 	if args.nice:
 		try:
@@ -2364,6 +2368,8 @@ def Run(args):
 		finally:
 			cameras.Close()
 			signal.signal(signal.SIGINT, previous)
+			if stopWatch is not None:
+				stopWatch.Stop()
 
 
 def Publish(args, log, names, cameras, model, tracker, frameRate):
@@ -2565,6 +2571,8 @@ def ParseArgs(argv=None):
 	p.add_argument("--wait-sec", type=float, default=float("inf"), help="How long to wait for the feed.")
 	p.add_argument("--ready-file", default="", help="Write this file (JSON: pid, time) once the models are ready, "
 		"as campy-live starts waiting for the feed: for a program that starts campy-acquire after campy-live.")
+	p.add_argument("--stop-file", default="", help="Stop, as at Ctrl-C, once this file is there: for a program that "
+		"started campy-live without a console.")
 	p.add_argument("--poll-ms", type=float, default=0.5, help="How often to look for a new set.")
 	p.add_argument("--report-sec", type=float, default=10, help="Say how it goes this often; 0: only at the end.")
 	p.add_argument("--nice", type=int, default=0, help="Lower this program's CPU priority by this much (POSIX).")
