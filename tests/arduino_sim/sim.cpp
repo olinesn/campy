@@ -5,6 +5,9 @@
 // The first command is waiting at power-up; the others arrive at their times.
 // SIM_START_US in the environment starts the clock there instead of at 0 (to
 // run a sketch across micros()'s 32-bit wrap); all times printed are the clock's.
+// SIM_INPUT makes an input pin a pulse train, as a camera trigger:
+// "<pin>:<start_us>:<period_us>:<high_us>:<count>", several separated by ";"
+// (digitalRead: HIGH during a pulse). In live mode, times from the start.
 //
 //   sim live
 // Runs it in real time instead, as a serial device: it reads its commands
@@ -37,6 +40,8 @@ static std::string input;
 static size_t pos = 0;
 static std::vector<std::pair<unsigned long long, std::string> > later;
 static std::map<int, int> level;
+struct Pulses { int pin; unsigned long long start, period, high, count; };
+static std::vector<Pulses> inputs;
 SimSerial Serial;
 
 static unsigned long long Now() {
@@ -67,6 +72,31 @@ void delay(unsigned long ms) {
 }
 
 void pinMode(int, int) {}
+
+int digitalRead(int pin) {
+	unsigned long long t = Now();
+	for (const Pulses& p : inputs) {
+		if (p.pin != pin || t < p.start || p.period == 0) continue;
+		unsigned long long k = (t - p.start) / p.period;
+		if (k < p.count && t - p.start - k * p.period < p.high) return HIGH;
+	}
+	return LOW;
+}
+
+static void ReadInputs() {
+	const char* text = std::getenv("SIM_INPUT");
+	if (!text) return;
+	std::string all = text;
+	size_t at = 0;
+	while (at < all.size()) {
+		size_t end = all.find(';', at);
+		if (end == std::string::npos) end = all.size();
+		Pulses p = {0, 0, 0, 0, 0};
+		if (std::sscanf(all.substr(at, end - at).c_str(), "%d:%llu:%llu:%llu:%llu", &p.pin, &p.start, &p.period,
+				&p.high, &p.count) == 5) inputs.push_back(p);
+		at = end + 1;
+	}
+}
 void noInterrupts() {}
 void interrupts() {}
 
@@ -125,7 +155,7 @@ static void Receive(int wait_ms) {
 }
 
 int SimSerial::available() {
-	if (live) Receive(1);
+	if (live) Receive(0); // a look, not a wait: the sketch's loop runs on (micros() paces it)
 	while (!later.empty() && later.front().first <= now_us) {
 		input += later.front().second;
 		later.erase(later.begin());
@@ -178,6 +208,7 @@ float SimSerial::parseFloat() {
 }
 
 int main(int argc, char** argv) {
+	ReadInputs();
 	if (argc == 2 && std::strcmp(argv[1], "live") == 0) {
 		live = true;
 		started = std::chrono::steady_clock::now();

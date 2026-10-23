@@ -5,6 +5,7 @@ Three programs work together on the computer that records:
 - **`campy-acquire`** records the cameras as usual. With `liveFeed: True` it also copies each frame into shared memory, the *live feed*.
 - **`campy-live`** reads the feed and runs a sleap-nn top-down model on each synchronized set of frames, one frame per camera. With a calibration, it also matches the animals across cameras, keeps their identities and triangulates them in 3D. It is never more than one set behind: a set that arrives while it is busy is skipped and counted, never queued.
 - **`campy-live-view`** (optional) shows the camera frames with the tracking drawn on them, plus a 3D view.
+- **`campy-rules`** (optional) switches TTL outputs from the poses, for closed-loop experiments: see [Closed-loop outputs](closed-loop.md).
 
 campy never waits for `campy-live`, so tracking can't slow down or break a recording. [The reference at the end of this page](#live-pose-estimation-livefeed-campy-live) lists every option.
 
@@ -353,3 +354,11 @@ With 3D (`campy-live --calibration`) it flags animals a camera missed while the 
 ### Measuring models, and whether one suits a rig (campy-model-eval, campy-model-fit)
 
 `campy-model-eval <rig's test package> --pair new=<centroid>,<instance> --pair old=<centroid>,<instance>` runs each pair through campy-live's own inference code on the rig's labelled test sets and reports, per pair and camera: missed and extra animals, skeletons on the wrong mouse, the point error (median, p90, p99), and how often the 3D grouped each animal's detections across the cameras, for the random and the flagged test sets apart. `campy-model-fit stats <training package> --out <model folder>` saves the training images' brightness (and the model's id, `model.json`); `campy-model-fit check <model folder> --recording <recording>` warns when a camera's frames are darker, brighter or more saturated than the training images, its animals' brightness differs, or its gamma isn't the training videos'. See [Models](models.md#measuring-a-model-on-a-rigs-test-sets-campy-model-eval).
+
+### Closed-loop outputs (campy-rules)
+
+`campy-rules` reads `campy-live`'s results as they come, checks each set's poses against rules from a YAML file (an animal in a region, two animals' body parts within a distance, one identity or any), and switches TTL outputs on an Arduino Nano ESP32 of their own (the sketch `campy/outputs_board/campy_outputs`). The board watches the camera trigger. It makes trains of pulses locked to the frames itself, such as 3 ms photometry excitation on alternate frames, and says how long after its frame's trigger each output switched. It refuses commands about frames older than `bound_ms`. Everything goes off if `campy-rules` stops or goes quiet. `--dry-run` only logs, and `--replay <campy-live log>` tries the rules on a finished recording:
+```
+campy-rules rules.yaml --port /dev/ttyACM1
+```
+See [Closed-loop outputs](closed-loop.md) for the wiring, the rules file, safety and latency.
