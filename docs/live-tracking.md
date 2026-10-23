@@ -30,7 +30,7 @@ Which torch build:
    campy-live --cameras 3 --model sleap --centroid <centroid model folder> --instance <centered-instance model folder> \
        --animals 5 --calibration calibration.toml
    ```
-   It loads the models and warms them up before any frame exists, then prints `Waiting for the live feed`. On a computer with performance and efficiency cores (Intel Core Ultra and 12th-generation Core or later) it first moves itself onto the performance cores at High priority, and once the feed appears it moves campy-acquire, its camera processes and their encoders onto the efficiency cores (see below, On Windows). The wait is 5–8 s on the EVO-X2 and up to about 18 s on Windows, mostly imports. It assumes 1280 × 1024 grey frames. For other cameras, give `--frame-shape <height>x<width>x<channels>`, or it builds the model again when the frames arrive and misses the first seconds.
+   It loads the models and warms them up before any frame exists, compiling the networks if it can ([Compiled networks](#compiled-networks---engine-on-by-default-with-a-gpu)), then prints `Waiting for the live feed`. On a computer with performance and efficiency cores (Intel Core Ultra and 12th-generation Core or later) it first moves itself onto the performance cores at High priority, and once the feed appears it moves campy-acquire, its camera processes and their encoders onto the efficiency cores (see below, On Windows). The wait is 5–8 s on the EVO-X2 and up to about 18 s on Windows, mostly imports. The first start with a new model, GPU or update takes 13–35 s longer while the compiled networks are made; they are kept, and later starts take 0–4 s longer than without. It assumes 1280 × 1024 grey frames. For other cameras, give `--frame-shape <height>x<width>x<channels>`, or it builds the model again when the frames arrive and misses the first seconds.
 2. **Start the recording** with the live feed on:
    ```
    campy-acquire <config>.yaml --liveFeed True
@@ -112,15 +112,69 @@ The top-down model finds each animal's center, cuts a square crop around it (192
 
 `campy-live` now corrects this for its own models, without changing sleap-nn's installed files (`ExactCropSize` in `campy/live.py`): the crops are always cut at the model's crop size, in the same place as before. On the EVO-X2, replaying 60 s of 5 mice from 3 cameras with the trained models (3 runs each, alternating), 1,059 of the 3,588 sets came out different from before. In those sets, compared with offline SLEAP, the median body-part error went from 3.92 to 3.79 px and the share within 5 px from 62.9% to 64.1%; over all sets the 3D median went from 4.3 to 4.2 mm, and identities were kept as before. The time per set didn't change (inference p50 14.9–15.2 ms before, 15.1–15.2 ms after). `--fixed-crops` cuts its crops at the real size too. Once a sleap-nn version fixes the bug, the first test in `tests/test_live_exact_crops.py` fails, as a reminder that the workaround can go.
 
-## Compiled networks (`--engine`, with `--fixed-crops`, off by default)
+## Compiled networks (`--engine`, on by default with a GPU)
 
 Normally PyTorch runs each layer of the two networks as its own small GPU program. A convolution writes its result to memory, then the next step (bias, activation, upsampling) reads it back, and so on. A compiled engine fuses those steps into fewer, bigger programs made for the exact image size, so far less data travels to and from memory (`bench/compiled_bench.py` measured the networks alone; see the hardware guide). Because an engine is made for one input size, it needs `--fixed-crops`, whose sizes never change. With `--cuda-graphs` too, the engines' programs are recorded into the set's single graph like everything else.
 
-- `--engine compile`: `torch.compile`. On Linux it comes with PyTorch (ROCm and NVIDIA). On Windows it needs Triton, from the `triton-windows` package, in the version that matches your PyTorch (see below). Triton brings its own small C compiler, so nothing else is needed.
-- `--engine tensorrt`: NVIDIA's TensorRT (`pip install tensorrt-cu13 onnx`). The first run builds the two networks' engines (about 10 s for both on the RTX 6000 Ada). It keeps them in `--engine-cache` (default `~/.cache/campy/engines`), and later runs read them back in under a second. A new GPU, new weights or a new TensorRT version gets a new one.
-- `--engine auto`: TensorRT on an NVIDIA GPU where it is installed, otherwise `torch.compile`.
+`--engine auto`, the default since pull request PRNUM, picks an engine by itself:
 
-The first set waits while the engines are made. `campy-live` does this during its warm-up, before the feed starts: about 15 s for `torch.compile` the first time, a few seconds after that (it caches what it compiled).
+- **TensorRT** (NVIDIA's own) on an NVIDIA GPU, where the `tensorrt` and `onnx` packages are installed;
+- otherwise **`torch.compile`**, where Triton is installed. On Linux it comes with PyTorch, for AMD (ROCm) and NVIDIA alike. On Windows it is the `triton-windows` package (see below);
+- otherwise **none**. The networks run in plain PyTorch, as before, and `campy-live` says so once as it starts: `--engine auto: neither TensorRT (pip install tensorrt onnx) nor Triton (...) is installed; so the networks run in torch`.
+
+If the engine it picked can't be made, `campy-live` doesn't stop. A Triton that doesn't match PyTorch, a TensorRT build that fails, or any other error while the engine is made or first run: it says why in one line (`--engine auto: the torch.compile engine failed (...); so the networks run in torch`), and warms up again without the engine. All of this happens during the warm-up, before `Waiting for the live feed`, so it can never stall or slow a recording. Without a GPU, or with `--fixed-crops off`, there is nothing to compile, and `auto` stays quiet.
+
+The other choices: `--engine compile` or `--engine tensorrt` asks for that engine, and `--engine on` for `auto`'s choice. All three stop `campy-live` with the reason if the engine can't be made. `--engine off` runs the networks in plain PyTorch, the default before.
+
+### Why it is on by default
+
+Measured on 22 October 2026 on the three test machines, with campy 2.1.0. The same 5-mouse replay as above, 3 cameras at 60 fps with 3D, against 2.1.0's defaults (fixed crops, CUDA graphs, and `--fast-upsample` on the EVO-X2). EVO-X2: 3,600 sets per replay. Windows machines: 30 s, about 1,790 sets.
+
+| | inference per set, p50 / p99 | frame to 3D, p50 / p99 | sets skipped | GPU memory (`campy-live`) |
+|---|---|---|---|---|
+| EVO-X2, 2.1.0 default | 10.6 / 10.7–10.8 ms | 12.2 / 13.0 ms | 3 | 1,055 MB |
+| EVO-X2, `--engine auto` (`torch.compile`) | **5.9 / 6.1 ms** | **7.5 / 8.4 ms** | 1–2 | 820 MB |
+| Pro Max Slim (RTX 2000 Ada), 2.1.0 default | 12.6 / 12.8 ms | 15.6–15.7 / 16.4 ms | 0 | 615–625 MB |
+| Pro Max Slim, `--engine auto` (TensorRT) | **5.8 / 6.5 ms** | **9.1 / 9.8 ms** | 0 | 490–515 MB |
+| Pro Max Slim, `--engine compile` | 9.6 / 9.8–10.2 ms | 12.8 / 13.5–13.7 ms | 0 | 545–555 MB |
+| RTX 6000 Ada, 2.1.0 default | 2.7 / 4.8–4.9 ms | 5.7–5.8 / 7.9 ms | 0 | 1,000 MB |
+| RTX 6000 Ada, `--engine auto` (TensorRT) | **1.6** / 3.9–6.4 ms | **4.7–4.8** / 7.0–9.2 ms | 0 | 870–945 MB |
+| RTX 6000 Ada, `--engine compile` | 2.2 / 4.3–6.8 ms | 5.3 / 7.3–9.9 ms | 0–4 | 900–970 MB |
+| RTX 4000 Ada, 2.1.0 default | 6.4 / 6.7 ms | 9.3 / 10.6 ms | 0 | 720 MB |
+| RTX 4000 Ada, `--engine auto` (TensorRT) | **3.4 / 5.1–5.2 ms** | **6.4–6.5 / 8.1–8.4 ms** | 0 | 670 MB |
+| RTX 4000 Ada, `--engine compile` | 5.1 / 6.0 ms | 8.0–8.1 / 9.1–9.4 ms | 0 | |
+
+Every run was `RIG_CLEAN`, except the two first TensorRT builds (the Pro Max Slim's and the RTX 6000 Ada's), during which the security agent briefly used 2–4.5 cores; their timings match the clean runs. GPU memory is the most the GPU's used memory rose while `campy-live` ran. A first TensorRT build needs about 360 MB more for a moment. The Precision 7875's p99 swings from run to run with or without an engine, as before. Run to run, each setting repeated its p50 to 0.1 ms.
+
+**Accuracy.** Against the offline SLEAP predictions of the same frames (the rig check's comparison), every setting tracked exactly as well as 2.1.0's default, to the digits it reports:
+
+| | 2D error, median / p90 | within 5 px | 3D error, median / p90 | same identity | identity switches |
+|---|---|---|---|---|---|
+| EVO-X2, default and `--engine auto` | 3.8 / 9.3 px | 64% | 4.2 / 10.6 mm | 99.93% | 2 |
+| Pro Max Slim, default, `auto` and `compile` | 3.8 / 9.8 px | 63% | 4.4 / 11.2–11.3 mm | 99.85% | 2 |
+| RTX 6000 Ada, default, `auto` and `compile` | P6ACC |
+
+Set by set against the default's own output, `torch.compile` moved 0.7% of the keypoints by more than a pixel (p99 0.013 px), and TensorRT moved 2.3% (p99 2.9 px). TensorRT runs the whole network in half precision, so now and then a keypoint lands on a second, nearly as bright spot. In 1,788 sets each found the same animals as the default in every camera but one. The default itself repeated its output exactly from run to run. Those moved keypoints don't show in the comparison with offline SLEAP above, so `auto` takes TensorRT on NVIDIA, where it is clearly the fastest. On the Pro Max Slim it takes 6.8 ms per set off the default, against 3.0 ms for `torch.compile`. For the exact keypoints of plain fp16 PyTorch, use `--engine compile` (on Windows it needs `triton-windows`) or `--engine off`.
+
+**`--fast-upsample` adds nothing on top.** It only applies to the networks run in plain PyTorch, so with an engine it stays off. The engine already fuses the slow upsampling into the layers around it: on the EVO-X2 a set took 12.8 ms with neither, 10.6 ms with `--fast-upsample` and 5.9 ms with `torch.compile`. On NVIDIA, `--fast-upsample on` changed nothing (12.6 and 2.7 ms per set with or without it, the keypoints identical), which is why its `auto` already left it off there. Its default stays `auto`: on with ROCm when the networks run in plain PyTorch, which is when `--engine auto` found no engine or one failed.
+
+### Start-up time, and where the engines are kept
+
+An engine is made while `campy-live` warms up, before it prints `Waiting for the live feed`. It is made once and kept, so only the first start takes longer. Seconds from starting `campy-live` to `Waiting for the live feed`:
+
+| | 2.1.0 default | `--engine auto`, first start | `--engine auto`, later starts |
+|---|---|---|---|
+| EVO-X2 (`torch.compile`) | 4.4–4.5 s | 17.3–17.5 s (19.8 s with MIOpen's cache empty too) | 6.9–7.0 s |
+| Pro Max Slim (TensorRT) | 5.0 s | 26.4–26.9 s | 5.0 s |
+| RTX 6000 Ada (TensorRT) | 6.4–6.6 s | 26.8–37.2 s | 6.6–10.8 s |
+| RTX 4000 Ada (TensorRT) | 6.4 s | 28.3 s | 6.5 s |
+| `--engine compile` on Windows | | 40.7–41.7 s | 7.4–9.8 s |
+
+- **TensorRT** keeps its engines (*plans*) in `--engine-cache`, by default `~/.cache/campy/engines` (on Windows `C:\Users\<you>\.cache\campy\engines`). A plan's name comes from the network's weights, the input size, the precision, the GPU, and the TensorRT and PyTorch versions. So another model, a retrained one, another GPU or an update gets a new plan, built once, and an old plan is never used by mistake. Old plans stay in the folder; delete them to free the space (35–45 MB per model pair).
+- **`torch.compile`** keeps its compiled kernels in the same folder, under `inductor/`. On Linux its own default is the temp folder, which is emptied at every restart. On the EVO-X2 that would mean a 17 s start after every reboot, so `campy-live` keeps them with the TensorRT plans. If `TORCHINDUCTOR_CACHE_DIR` is set, that folder is used instead. PyTorch names what it keeps by the traced network, its own version and the GPU. The weights are inputs, so a retrained model of the same size reuses the kernels, and another architecture or a PyTorch update compiles anew.
+- `campy-live` says when it is making them: `building the centroid network's TensorRT engine ... once (kept in ...)`, or `compiling the networks with torch.compile (their kernels kept in ...)`.
+
+So after installing or updating campy, PyTorch or TensorRT, or with a new model, the first start takes up to about 40 s. Start `campy-live` before the recording, as always, and wait for `Waiting for the live feed`; then it analyses the recording from the first frame. Or run a short replay once ([Testing without cameras](#testing-without-cameras)), and every start after that is quick.
 
 ### Installing the engine packages (Windows)
 
@@ -135,16 +189,18 @@ The engines need packages that a plain campy-live environment doesn't have. Inst
 - None of the three changes PyTorch, NumPy or anything else already installed. Check afterwards with `<env>\python.exe -c "import torch, tensorrt, onnx, triton; print(torch.__version__, tensorrt.__version__, triton.__version__)"`.
 - When you upgrade PyTorch in that environment, upgrade `triton-windows` to the matching version too. When you change TensorRT version, the next run rebuilds its engines on its own (about 10–20 s, once).
 
-Then check it with a short replay (see [Testing without cameras](#testing-without-cameras)) with `--fixed-crops --cuda-graphs --engine tensorrt`. The first run prints `building the centroid network's TensorRT engine ... once`, and the report should say `networks: centroid TensorRT fp16`. After installing this way, the same 30 s, 5-mouse, 3-camera replay as in the next table gave:
+Then check it with a short replay (see [Testing without cameras](#testing-without-cameras)) with `--engine tensorrt` (or the default, `auto`). The first run prints `building the centroid network's TensorRT engine ... once`, and the report should say `networks: centroid TensorRT fp16`. After installing this way, the same 30 s, 5-mouse, 3-camera replay as in the tables gave:
 
 | | `--engine tensorrt`, inference per set p50 / p99 | `--engine compile` |
 |---|---|---|
 | RTX 6000 Ada (PyTorch 2.14, Triton 3.8) | 1.6 / 5.9–6.3 ms, 0 skipped | 2.2 / 7.4 ms, 5 skipped in the first seconds |
 | Pro Max Slim, RTX 2000 Ada (PyTorch 2.11, Triton 3.6) | 5.8 / 6.5–6.6 ms, 0 skipped | 9.6 / 9.8 ms, 0 skipped |
 
-These match the results in the next table, which used the same packages from a separate folder. On the Pro Max Slim `torch.compile` is clearly slower than TensorRT (9.6 against 5.8 ms), so use `--engine tensorrt` (or `auto`) there.
+These match the earlier measurements below, which used the same packages from a separate folder. On the Pro Max Slim `torch.compile` is clearly slower than TensorRT (9.6 against 5.8 ms), so use `--engine tensorrt` (or `auto`) there.
 
-Live, 5 mice, 3 cameras, 60 fps, 3D, the same trained models as above, compared with `--fixed-crops --cuda-graphs` (the default with a GPU):
+### Earlier measurements (when `--engine` came, pull request 133)
+
+These came before `--fast-upsample` and the clock hold's one block on the EVO-X2, so its default was slower then (13.7 ms per set; 10.6 ms with both). Live, 5 mice, 3 cameras, 60 fps, 3D, the same trained models as above, compared with `--fixed-crops --cuda-graphs`:
 
 | | inference per set, p50 / p99 | frame to 3D, p50 / p99 | sets skipped | graph memory |
 |---|---|---|---|---|
@@ -171,11 +227,11 @@ On the EVO-X2 the same comparison gave `torch.compile` fp16 and PyTorch fp16 the
 
 So `torch.compile` is as exact as today's fp16 PyTorch. TensorRT fp16 is the fastest, but it runs the whole network in half precision, so about 1 keypoint in 60 moves more than a pixel (often to a second, nearly as bright spot), against 1 in 140 today. In fp32, TensorRT is exact but slower than fp16 PyTorch. The roughly 380 sets where any fp16 run finds different animals than fp32 aren't caused by the engines. In fp16 the two brightest pixels of a peak sometimes round to the same value, and sleap-nn's peak finder then drops that animal (about 0.7% of centroids; see the hardware guide).
 
-## Faster upsampling on AMD (`--fast-upsample`, on by default with ROCm)
+## Faster upsampling on AMD (`--fast-upsample`, on by default with ROCm when no engine runs)
 
 The two models make their images bigger again with *bilinear upsampling* layers. PyTorch has two ways to run them, depending on how the image is laid out in memory: NCHW (each channel a whole image after the other, the default on AMD) or channels-last (all channels of one pixel side by side, the default on NVIDIA). In NCHW, PyTorch's upsampling gives each output pixel one GPU thread, which then loops over every crop and every channel. On the deep, small layers (5×5 pixels with 768 channels) that is only a few hundred threads for a GPU built to run tens of thousands, so it sits nearly idle: on the EVO-X2 those layers took 1.45 and 0.98 ms of a set's 9 ms of instance model ([Where a set's time goes](models.md#where-a-sets-time-goes)). In channels-last the work is spread over the channels too, but on the big, shallow layers channels-last is slower.
 
-With `--fast-upsample`, `campy-live` times each upsampling layer both ways while it warms up, for every number of crops it can get, and uses whichever is faster: the input is turned into channels-last, upsampled and turned back, so the layer after it sees no difference. Each output pixel is the same sum of the same four input pixels either way, so the results are identical. `campy-live` says what it chose when it starts (for example "3 of 7 upsampling layer shapes run channels_last ... 2.41 ms less GPU time"). With `--cuda-graphs` the graphs record the faster way. `auto` (the default) turns it on when the models run in NCHW on a GPU, which `--memory-format auto` picks on AMD. On NVIDIA the models already run channels-last, and there every upsampling layer was already at its fastest (RTX 6000 Ada: nothing switched, same time), so it does nothing there. `--fast-upsample off` turns it off. With a compiled engine (`--engine`, above), which fuses the upsampling into the layers around it and is faster still on the EVO-X2 (about 6 ms per set), it stays off: `--fast-upsample` is for PyTorch's own way of running the networks, the default.
+With `--fast-upsample`, `campy-live` times each upsampling layer both ways while it warms up, for every number of crops it can get, and uses whichever is faster: the input is turned into channels-last, upsampled and turned back, so the layer after it sees no difference. Each output pixel is the same sum of the same four input pixels either way, so the results are identical. `campy-live` says what it chose when it starts (for example "3 of 7 upsampling layer shapes run channels_last ... 2.41 ms less GPU time"). With `--cuda-graphs` the graphs record the faster way. `auto` (the default) turns it on when the models run in NCHW on a GPU, which `--memory-format auto` picks on AMD. On NVIDIA the models already run channels-last, and there every upsampling layer was already at its fastest (RTX 6000 Ada: nothing switched, same time), so it does nothing there. `--fast-upsample off` turns it off. With a compiled engine (`--engine`, above, on by default since pull request PRNUM), which fuses the upsampling into the layers around it and is faster still on the EVO-X2 (5.9 ms per set), it stays off: `--fast-upsample` is for PyTorch's own way of running the networks, which `campy-live` falls back to when no engine can be made, or with `--engine off`.
 
 On the EVO-X2, 5 mice, 3 cameras, 60 fps, the trained models of the table above, two replays of each (3,600 sets each), all on the same day:
 

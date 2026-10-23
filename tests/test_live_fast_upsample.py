@@ -63,13 +63,17 @@ def test_auto():
 	assert On("on", "cuda", "channels_last") and not On("off", "cuda", "nchw")
 	assert not On("on", "cpu", "nchw") and not On("auto", "mps", "nchw")
 	assert not live.FastUpsample(argparse.Namespace(fast_upsample="on", engine="compile"), "cuda", "nchw")
+	# the engine as chosen (--engine auto's, or eager when it fell back) over --engine's
+	assert not live.FastUpsample(argparse.Namespace(fast_upsample="on", engine="auto"), "cuda", "nchw", "tensorrt")
+	assert live.FastUpsample(argparse.Namespace(fast_upsample="auto", engine="auto"), "cuda", "nchw", "eager")
+	assert live.FastUpsample(argparse.Namespace(fast_upsample="on", engine="off"), "cuda", "nchw")
 	assert live.ParseArgs([]).fast_upsample == "auto"
 
 
 def Keypoints(fast, more):
 	pytest.importorskip("sleap_nn")
 	args = live.ParseArgs(["--model", "random", "--frame-shape", SHAPE, "--memory-format", "nchw",
-		"--max-instances", "3", "--animals", "3", "--fast-upsample", fast] + more)
+		"--max-instances", "3", "--animals", "3", "--fast-upsample", fast, "--engine", "off"] + more)
 	model = live.MODELS["random"](args, 2, live.FrameShape(SHAPE))
 	host = live.HostBuffer(True, (2,) + live.FrameShape(SHAPE), np.uint8)
 	host.array[:] = np.random.default_rng(1).integers(0, 255, host.array.shape, dtype=np.uint8)

@@ -320,15 +320,122 @@ def test_tensorrt_engine(graphs, tmp_path):
 
 
 def test_engine_options():
-	assert live.ParseArgs([]).engine == "eager"
+	assert live.ParseArgs([]).engine == "auto"
 	with pytest.raises(SystemExit):
 		Model("cpu", engine="compile") # CUDA or ROCm only
 	with pytest.raises(SystemExit):
-		Model("cpu", fixed=False, engine="auto") # --fixed-crops only
+		Model("cpu", engine="on")
+	with pytest.raises(SystemExit):
+		Model("cuda" if GPU else "cpu", fixed=False, engine="compile") # --fixed-crops only
+	for engine in ("auto", "off", "eager"): # auto without a GPU, or without fixed crops: none, and nothing said
+		for fixed in (True, False):
+			model, _ = Model("cpu", fixed=fixed, engine=engine)
+			assert model.DescribeEngine() is None
+			assert model.fixed is None or model.fixed.engine == "eager"
+	assert live.FixedEngine.Choose("off", "cuda") == live.FixedEngine.Choose("eager", "cpu") == "eager"
+	assert live.FixedEngine.Pick("cpu") == ("eager", None)
 	if GPU and getattr(torch.version, "hip", None):
 		with pytest.raises(SystemExit):
 			live.FixedEngine.Choose("tensorrt", "cuda")
-		assert live.FixedEngine.Choose("auto", "cuda") == "compile"
+		assert live.FixedEngine.Choose("auto", "cuda") == live.FixedEngine.Choose("on", "cuda") == "compile"
+
+
+def Hide(monkeypatch, *modules):
+	# importlib.util.find_spec as if these packages weren't installed
+	find = importlib.util.find_spec
+	monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None if name in modules else find(name, *a))
+
+
+@pytest.mark.parametrize("hip", [None, "7.0"])
+def test_engine_auto_picks(monkeypatch, hip):
+	# auto: TensorRT on NVIDIA where tensorrt and onnx are installed, else
+	# torch.compile where Triton is, else none and why; on: the same, or stop
+	monkeypatch.setattr(torch.version, "hip", hip)
+	monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: object())
+	assert live.FixedEngine.Pick("cuda") == ("compile" if hip else "tensorrt", None)
+	Hide(monkeypatch, "onnx")
+	assert live.FixedEngine.Pick("cuda") == ("compile", None)
+	Hide(monkeypatch, "onnx", "tensorrt", "triton")
+	kind, why = live.FixedEngine.Pick("cuda")
+	assert kind == "eager" and "Triton" in why and ("TensorRT" in why) == (hip is None)
+	assert live.FixedEngine.Choose("auto", "cuda") == "eager"
+	with pytest.raises(SystemExit, match="--engine on: "):
+		live.FixedEngine.Choose("on", "cuda")
+
+
+@needs_gpu
+def test_engine_auto_without_packages(monkeypatch):
+	# Neither TensorRT nor Triton: the networks in torch, said once, and the
+	# same as --engine off (with --fast-upsample as it would be then)
+	Hide(monkeypatch, "tensorrt", "onnx", "triton")
+	model, host = Model("cuda", graphs=True, engine="auto")
+	model.Warm(host.tensor)
+	assert model.fixed.engine == "eager" and not model.fixed.engines and model.fixed.graph
+	assert model.DescribeEngine().startswith("--engine auto: ") and "so the networks run in torch" in model.DescribeEngine()
+	plain, _ = Model("cuda", graphs=True, engine="off")
+	assert len(model.upsamples) == len(plain.upsamples)
+	with pytest.raises(SystemExit):
+		Model("cuda", engine="on")
+
+
+@needs_gpu
+@pytest.mark.parametrize("error", [RuntimeError("inductor: no kernel for this"),
+	SystemExit("--engine tensorrt: TensorRT couldn't build the instance network")])
+@pytest.mark.parametrize("graphs", [False, True])
+def test_engine_auto_falls_back_when_it_fails(monkeypatch, error, graphs):
+	# auto: an engine that fails while warming up (torch.compile, a TensorRT
+	# build) leaves the networks in torch, with one message, and the warm-up
+	# done again: the results then are --engine off's, graph and all.
+	# Chosen explicitly, the same failure stops campy-live
+	def Fail(self, *a, **k):
+		raise error
+	monkeypatch.setattr(live.FixedEngine, "Pick", staticmethod(lambda device: ("compile", None)))
+	monkeypatch.setattr(live.FixedEngine, "Choose", staticmethod(lambda engine, device: "compile"))
+	monkeypatch.setattr(live.FixedEngine, "__init__", Fail)
+	counts = [2, 3]
+	model, host = Model("cuda", graphs=graphs, engine="auto")
+	SetCounts(model, counts)
+	model.Warm(host.tensor)
+	fixed = model.fixed
+	assert fixed.engine == "eager" and not fixed.engines
+	assert bool(fixed.graph) == graphs and fixed.max_abs_diff == 0
+	note = model.DescribeEngine()
+	assert note.startswith("--engine auto: the torch.compile engine failed (") and str(error) in note
+	frames = model.Upload(host.tensor)
+	Compare(model.Predict(frames), Reference(model, model.Upload(host.tensor)), counts)
+	explicit, host = Model("cuda", graphs=graphs, engine="compile")
+	with pytest.raises(type(error)):
+		explicit.Warm(host.tensor)
+
+
+def test_plan_names():
+	# A TensorRT plan's file name changes with the weights, the shape, the
+	# precision, TensorRT, the GPU and PyTorch (it exports the ONNX)
+	net = torch.nn.Conv2d(1, 2, 3)
+	args = ("instance", net.state_dict(), (15, 1, 1, 160, 160), True, "11.4.0", "NVIDIA RTX 2000 Ada")
+	name = live.FixedEngine.PlanName(*args)
+	assert name.startswith("instance_") and name == live.FixedEngine.PlanName(*args)
+	for i, other in ((1, torch.nn.Conv2d(1, 2, 3).state_dict()), (2, (15, 1, 1, 192, 192)), (3, False),
+			(4, "11.5.0"), (5, "NVIDIA RTX 6000 Ada")):
+		changed = list(args)
+		changed[i] = other
+		assert live.FixedEngine.PlanName(*changed) != name, i
+
+
+def test_compile_cache_survives_restarts(monkeypatch, tmp_path):
+	# torch.compile's kernels go with the TensorRT plans (--engine-cache),
+	# not into the temp folder Linux empties at each restart, unless
+	# TORCHINDUCTOR_CACHE_DIR says where
+	monkeypatch.setattr(torch, "compile", lambda fn, **k: fn)
+	engine = live.FixedEngine.__new__(live.FixedEngine)
+	engine.torch, engine.fp16, engine.name = torch, False, "centroid"
+	monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising=False)
+	engine.Compile(torch.nn.Identity(), str(tmp_path))
+	assert live.os.environ["TORCHINDUCTOR_CACHE_DIR"] == str(tmp_path / "inductor")
+	monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path / "mine"))
+	engine.Compile(torch.nn.Identity(), "")
+	assert live.os.environ["TORCHINDUCTOR_CACHE_DIR"] == str(tmp_path / "mine")
+	assert live.FixedEngine.CacheDir("") == live.os.path.expanduser(live.os.path.join("~", ".cache", "campy", "engines"))
 
 
 def test_options():
