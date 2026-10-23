@@ -508,7 +508,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 
 <section>
   <h2>Before and after the speed-ups of 22–23 October</h2>
-  <p class="col">Each machine's own rig check, run with <code>campy-live</code>'s defaults and no options at each step, with the same scripts, models and 5-mouse clips: campy 2.1.0rc6 as it was on the morning of 22 October; 2.1.0 (fixed crops and one CUDA graph per set, pull requests 126 and 134, plus the EVO-X2's faster upsampling and clock hold, 138 and 141); pull request 147 (compiled networks by default); and dev on 23 October (the faster crop, 151, and the clock hold's fixes, 152). <i>Time per set</i> runs from the upload to the GPU to the 2D results being back on the CPU, and has to stay under 16.7 ms at 60 fps. <i>Frame to 3D pose</i> runs from the moment the last camera's frame reached the computer to the set's 3D poses. Every run was clean on the rig lock except the Pro Max Slim's last row of each table, which picked up one sighting of another test's disk use in its first second, before its first check started; a run a few minutes earlier gave the same times. More detail (p90, frame to 2D, the 3D step, accuracy, 1 camera) in campy's <code>docs/live-tracking.md</code>, "Before and after the speed-ups".</p>
+  <p class="col">Each machine's own rig check, run with <code>campy-live</code>'s defaults and no options at each step, with the same scripts, models and 5-mouse clips: campy 2.1.0rc6 as it was on the morning of 22 October; 2.1.0 (fixed crops and one CUDA graph per set, pull requests 126 and 134, plus the EVO-X2's faster upsampling and clock hold, 138 and 141); pull request 147 (compiled networks by default); and dev on 23 October (the faster crop, 151, and the clock hold's fixes, 152). <i>Time per set</i> runs from the upload to the GPU to the 2D results being back on the CPU, and has to stay under 16.7 ms at 60 fps. <i>Frame to 3D pose</i> runs from the moment the last camera's frame reached the computer to the set's 3D poses. Every run was clean on the rig lock except the Pro Max Slim's last row of each table, which picked up one sighting of another test's disk use in its first second, before its first check started; a run a few minutes earlier gave the same times, and so did the Pro Max Slim's own clean rig checks after its update to dev on 23 October (5.5 / 5.7 ms per set recording or replaying, nothing skipped). More detail (p90, frame to 2D, the 3D step, accuracy, 1 camera) in campy's <code>docs/live-tracking.md</code>, "Before and after the speed-ups".</p>
   <div class="tablewrap">
     <table>
       <thead><tr><th>Recording 3 cameras, 5 mice, 3D (60 s)</th><th>Sets skipped</th><th>Time per set, median / p99 / max</th><th>Frame to 3D pose, median / p99 / max</th></tr></thead>
@@ -613,7 +613,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 
 <footer>
   <p>Measured 18–22 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
-  <p class="meta">Version 43 · updated 23 October 2026 · reflects campy changes through pull request 176 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p class="meta">Version 44 · updated 23 October 2026 · reflects campy changes through pull request 180 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 

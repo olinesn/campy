@@ -61,10 +61,11 @@ Both environments must have the same campy installed, or `campy-session` stops b
 
 **What happens:**
 
-1. It checks the config's `live:` and `view:` sections, and suggests the key you meant for a typo.
+1. It reads the config exactly as campy-acquire does ([Configs](configs.md)): the same checks, before anything starts, and a config built on a rig profile (`extends:`) works too, its `live:`, `view:` and `post:` sections combined with the profile's one level deep. It also checks those sections' own keys, and suggests the key you meant for a typo. `view: true` and `view: false` are short for `view: {show: true}` and `view: {show: false}`.
 2. It makes the recording's folder (`<videoFolder>/<date and time>/`, as campy-acquire would). Into its `logs/` folder it writes:
-   - the config as given (`session-config.yaml`);
-   - the config campy-acquire runs (`campy-acquire.yaml`): the same, without the two sections, and with `liveFeed: True`.
+   - the config as given (`session-config.original.yaml`);
+   - the same combined into one file (`session-config.yaml`): every setting, with the profile and the command-line options in it, each line saying where its value came from. `campy-session post` reads it again;
+   - the config campy-acquire runs (`campy-acquire.yaml`): the same, with `liveFeed: True` when something reads the feed.
 3. It starts `campy-live` and waits until its models are warmed up: 5–40 s, longest the first time an engine is built (`live.ready_timeout_s`, default 120 s).
 4. It starts `campy-live-view` (with `view`), then `campy-acquire`, which records into that folder.
 5. The recording ends at `recTimeInSec`, or at Ctrl-C. `campy-live` tracks to the last frame and ends by itself. The view closes, unless `keep_open` is set.
@@ -165,6 +166,11 @@ The three programs can also be started separately, as `campy-session` does:
    campy-live-view
    ```
    It runs as a separate program at low priority and stays open from one recording to the next. Its `c` key, or the "Fast CPUs" box in its panel, moves `campy-live` on and off the performance cores while both run, and the panel shows `campy-live`'s inference time over the last 2 s, so you can see the difference. On a computer without a screen (over SSH), `campy-live-view --no-window --png <folder>` saves pictures instead.
+4. **For an unattended recording, also start `campy-watch`**, in either environment:
+   ```
+   campy-watch --cameras 3
+   ```
+   It runs campy-live-view's checks without a window, and sends what lasts as a Slack message ([Alerts](alerts.md)): a camera a frame ahead or behind the others, frames lost or late, good 3D for fewer animals than `--animals` for most of 3 minutes, and `campy-live` stopping while the cameras record. It waits for the feed and ends with the recording.
 
 To start the recording from a script once `campy-live` is ready, give `campy-live --ready-file <path>`: it writes that file as it prints `Waiting for the live feed`. To stop a recording that was started without a console, or detached over SSH, give `campy-acquire` a stop file (`--stopFile <path>`) and create that file: campy stops as at Ctrl-C, and `campy-live` analyses the recording to its last frame, as it does when a recording ends by itself ([Stop Recording](../README.md#stop-recording)).
 
@@ -261,7 +267,7 @@ The EVO-X2 encodes with VA-API on the same GPU that runs the models, the Precisi
 
 Notes on the measurements:
 
-- Every run was `RIG_CLEAN` except ¹. The Pro Max Slim's "now" runs were marked `RIG_CONTAMINATED` by one sighting, in the job's first second, before its first check started: 164 MB/s of disk from another test that had just ended. A first attempt shortly before, during which Windows Update and the app-store service were busy (up to 3.6 cores), gave the same times (5.5 / 5.7 ms per set while recording), and so did that PR's own clean runs (5.49 / 5.63 ms).
+- Every run was `RIG_CLEAN` except ¹. The Pro Max Slim's "now" runs were marked `RIG_CONTAMINATED` by one sighting, in the job's first second, before its first check started: 164 MB/s of disk from another test that had just ended. A first attempt shortly before, during which Windows Update and the app-store service were busy (up to 3.6 cores), gave the same times (5.5 / 5.7 ms per set while recording), and so did that PR's own clean runs (5.49 / 5.63 ms). The Pro Max Slim's own rig checks after its update to dev df15047 (pull request 158; 23 October, campy installed from the rig's checkout) were all `RIG_CLEAN` and gave the same times: 5.5 / 5.7 ms per set recording 3 cameras (frame to 3D 7.7 / 8.4 ms), 5.5 / 5.7 ms replaying (8.7 / 9.4 ms), and 2.3 / 2.4 ms with 1 camera, with nothing skipped or misaligned and every camera keeping all its frames.
 - The Windows machines' 2.1.0rc6 replays are the reruns made after the replay feeder was changed to stamp its frames with campy's own host clock. The first runs' frame-to-pose times (41–57 ms) compared two different clocks and mean nothing; their time per set was the same.
 - The "now" runs used a copy of dev's code next to each rig's installed campy; the earlier rows are the rigs' own checks after each update.
 
