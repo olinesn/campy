@@ -605,6 +605,20 @@ class TopDown:
 _exactCrop = threading.local() # the crop size, while one of campy-live's layers crops
 
 
+def SleapCutsShort():
+	"""
+	Whether the installed sleap-nn can cut a top-down crop a pixel short (see
+	ExactCropSize). talmolab/sleap-nn#780 fixed it, on sleap-nn's main branch
+	since 22 October 2026, after 0.3.4 (main still calls itself 0.3.4, so its
+	version can't tell): crop_bboxes rounds the size it works out, and takes
+	crop_size=, which its TopDownLayer passes. So a crop_bboxes without
+	crop_size= is one that cuts short.
+	"""
+	import inspect
+	from sleap_nn.inference.ops import crops
+	return "crop_size" not in inspect.signature(crops.crop_bboxes).parameters
+
+
 def ExactCropSize(layer):
 	"""
 	Has this sleap-nn TopDownLayer cut its crops at its crop size. sleap-nn
@@ -616,20 +630,23 @@ def ExactCropSize(layer):
 	box's far corners are put half a pixel past the crop size's, a copy of
 	the boxes, and the size rounds right; the top-lefts, which place the
 	crops and the keypoints, are untouched. sleap-nn's other layers, and
-	its files, are left as they are.
+	its files, are left as they are. A sleap-nn that has the fix
+	(SleapCutsShort) already cuts the crop size, and is left as it is: its
+	crop_bboxes rounds the size, so the half pixel would make it one more.
 	"""
-	import torch
+	if not SleapCutsShort():
+		return
 	from sleap_nn.inference.layers import topdown
 	if not getattr(topdown.crop_bboxes, "campyExact", False):
 		original = topdown.crop_bboxes
 
-		def crop_bboxes(images, bboxes, sample_inds):
+		def crop_bboxes(images, bboxes, sample_inds, **kwargs):
 			size = getattr(_exactCrop, "size", None)
 			if size is not None and len(bboxes):
 				bboxes = bboxes.clone()
 				bboxes[0, 3, 1] = bboxes[0, 0, 1] + (size[0] - 0.5)
 				bboxes[0, 1, 0] = bboxes[0, 0, 0] + (size[1] - 0.5)
-			return original(images, bboxes, sample_inds)
+			return original(images, bboxes, sample_inds, **kwargs)
 
 		crop_bboxes.campyExact = True
 		topdown.crop_bboxes = crop_bboxes

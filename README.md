@@ -1,6 +1,8 @@
 # campy
 - Python package for acquiring synchronized video from multiple cameras with real-time compression
 
+**New to campy?** [The quickstart](docs/quickstart.md) gets you from nothing installed to a recording of five mice, tracked in 3D while it recorded and open in LUC3D, in about 15 minutes, with no camera. [docs/](docs/README.md) has the other guides.
+
 ## Hardware/Software Recommendations
 - Basler and/or FLIR machine vision camera(s)
 - Windows, IOS, or Linux system
@@ -248,7 +250,7 @@ Not measured on Windows (the ChronicRecord PC): what the search costs there, and
 ```
 campy-config check configs/campy_config_chronicrecord.yaml my_rig.yaml
 ```
-- [docs/configs.md](docs/configs.md) explains the checks. In campy 2.1.0 and older, a value out of range was replaced by its default (`frameRate: 0` recorded at 100 fps, `cameraGain: 0` at gain 1); now it stops campy, and 0 is a gain and a quality campy takes.
+- Keep a computer's own settings in a rig profile, `~/.campy/configs/<name>.yaml`, outside campy, and start each experiment's config with `extends: <name>` and the few settings it changes. `campy-config show <config>` prints every setting and the file and line it came from, and `campy-config diff old.yaml new.yaml` shows that a rewritten config records the same. [docs/configs.md](docs/configs.md) explains profiles and the checks. In campy 2.1.0 and older, a value out of range was replaced by its default (`frameRate: 0` recorded at 100 fps, `cameraGain: 0` at gain 1); now it stops campy, and 0 is a gain and a quality campy takes.
 - The experiment's details go into the recording's "session.json" (below): `experiment` (its name), `animalIds` (the animals recorded, one list for the whole rig: `animalIds: [M1, M2, M3]`), `notes`, and `sessionFields`, a mapping for anything else (`sessionFields: {cage: B3, condition: saline}`). Each is also a command-line option (`--animalIds "[M4, M7]" --notes "after surgery"`). campy does not ask for them at startup. A note after the recording: `campy-session note <recording folder> "text"` (or `python -m campy.manifest note <folder> "text"`).
 - When a config leaves out a setting whose default changed in a newer campy, `campy-acquire` says so once at startup, in plain words: `cameraGamma not set: since 2.1.0 the default is 0.6 (was Off). ...`. Each is said only where it applies (cameraGamma with a FLIR camera). Setting the key stops it; `defaultsVersion: "2.1.0"` says the config was written for 2.1.0's defaults, so only later changes are said; `defaultWarnings: False` stops them all. The table of changed defaults is `campy/defaults.py`, listed in [Recording folders](docs/recordings.md#defaults-that-changed-the-startup-warnings).
 
@@ -414,6 +416,14 @@ With 3D (`campy-live --calibration`) it flags animals a camera missed while the 
 #### Measuring models, and whether one suits a rig (campy-model-eval, campy-model-fit)
 
 `campy-model-eval <rig's test package> --pair new=<centroid>,<instance> --pair old=<centroid>,<instance>` runs each pair through campy-live's own inference code on the rig's labelled test sets and reports, per pair and camera: missed and extra animals, skeletons on the wrong mouse, the point error (median, p90, p99), and how often the 3D grouped each animal's detections across the cameras, for the random and the flagged test sets apart. `campy-model-fit stats <training package> --out <model folder>` saves the training images' brightness (and the model's id, `model.json`); `campy-model-fit check <model folder> --recording <recording>` warns when a camera's frames are darker, brighter or more saturated than the training images, its animals' brightness differs, or its gamma isn't the training videos'. See [Models](docs/models.md#measuring-a-model-on-a-rigs-test-sets-campy-model-eval).
+
+#### Closed-loop outputs (campy-rules)
+
+`campy-rules` reads `campy-live`'s results as they come, checks each set's poses against rules from a YAML file (an animal in a region, two animals' body parts within a distance, one identity or any), and switches TTL outputs on an Arduino Nano ESP32 of their own (the sketch `campy/outputs_board/campy_outputs`). The board watches the camera trigger. It makes trains of pulses locked to the frames itself, such as 3 ms photometry excitation on alternate frames, and says how long after its frame's trigger each output switched. It refuses commands about frames older than `bound_ms`. Everything goes off if `campy-rules` stops or goes quiet. `--dry-run` only logs, and `--replay <campy-live log>` tries the rules on a finished recording:
+```
+campy-rules rules.yaml --port /dev/ttyACM1
+```
+See [Closed-loop outputs](docs/closed-loop.md) for the wiring, the rules file, safety and latency.
 
 #### Watching it live (campy-live-view)
 

@@ -4,12 +4,14 @@ Guides for recording with campy and tracking animals live while it records: what
 
 | Page | What it covers |
 |---|---|
-| [Configs](configs.md) | How campy reads a config, what it checks before any camera opens, and `campy-config check` |
+| [Quickstart](quickstart.md) | A tracked recording in 15 minutes, with no camera: install, record three emulated cameras, track five mice in 3D with campy-live, open the result in LUC3D |
+| [Configs](configs.md) | Rig profiles (`extends:`, kept outside campy), what campy checks before any camera opens, and `campy-config show`, `diff` and `check` |
 | [Settings reference](config-reference.md) | Every config key: its default, what it takes, and what it does (generated from `campy/configschema.py`) |
 | [Hardware](hardware.md) | What to buy for live recording + SLEAP + 3D, and the measurements behind it |
 | [Recording a session from the desktop](recording-a-session.md) | For labmates who don't use a terminal: the desktop icon, the panel in the browser, Start, bookmarks, Stop, and what the warnings mean (`campy-session shortcut`, `campy-session panel`) |
 | [Live tracking](live-tracking.md) | Setting up and running `campy-acquire`, `campy-live` and `campy-live-view` (in one command with `campy-session`) on Linux (AMD/ROCm) and Windows (NVIDIA/CUDA), and opening the results in LUC3D (`campy-live-export`) |
 | [Models](models.md) | Training lightweight sleap-nn models for live use, choosing one that keeps up, finding the frames a model gets wrong on a rig (`campy-live-flag`), labelling them in LUC3D for the next model (`campy-label-pack`, `campy-label-merge`), and measuring models against a rig's labelled test sets (`campy-model-eval`, `campy-model-fit`) |
+| [Closed-loop outputs](closed-loop.md) | `campy-rules`: TTL outputs from the live poses (regions, distances between animals, identities), photometry pulse trains locked to the frames, the outputs board, safety and latency |
 | [Offline inference](offline-inference.md) | Running SLEAP on recorded videos 6–15× faster than `sleap-nn track`: where its time goes, what helps on cluster GPUs and benchtop PCs, and the accuracy |
 | [Recording folders](recordings.md) | What a recording folder holds, `session.json` (how the recording was made), the experiment's details and notes, and the warnings for defaults that changed |
 | [Calibration and troubleshooting](calibration-and-troubleshooting.md) | Camera placement, exposure and calibration, and fixes for the problems seen so far |
