@@ -32,6 +32,8 @@ setup(
 			"campy-live-view = campy.liveview:Main",
 			"campy-live-export = campy.liveexport:Main",
 			"campy-live-flag = campy.liveflag:Main",
+			"campy-label-pack = campy.labelpack:Main",
+			"campy-label-merge = campy.labelmerge:Main",
 		]
 	}
 )
