@@ -25,8 +25,13 @@ from campy.cameras import unicam, emu
 from campy.utils.utils import HandleKeyboardInterrupt, Say, ErrorText, StartPrinter, StopPrinter
 
 def OpenSystems():
-	# Configure parameters
-	params = configurator.ConfigureParams()
+	# Configure parameters: a config campy can't use stops here, with every
+	# problem in it, before anything opens
+	try:
+		params = configurator.ConfigureParams()
+	except configurator.ConfigError as e:
+		print(e, flush=True)
+		sys.exit(1)
 
 	# A recording never replaces one: stop now, before anything opens, if any
 	# file it would write is already there, whatever preflight is set to. Each
