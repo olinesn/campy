@@ -10,6 +10,9 @@ docs/config-reference.md from it, so the code, --help and the docs can't drift.
 # words YAML would change); GAMMA is cameraGamma's number above 0 or "Off".
 TEXT = "text"
 GAMMA = "gamma"
+# SECTION is a mapping of its own key: value lines that campy-acquire passes
+# by, for another program to read (campy-session's live:, view:, post:, panel:)
+SECTION = "section"
 
 # per_camera: how a list is read
 PER_CAMERA = "per camera" # one value for every camera, or a list with one per camera
@@ -42,6 +45,8 @@ class Setting:
 		# What the setting takes, in words, for the reference page
 		if self.kind is GAMMA:
 			return 'a number above 0, or "Off"'
+		if self.kind is SECTION:
+			return "key: value lines of its own"
 		if self.choices:
 			names = ['"{}"'.format(c) for c in self.choices]
 			return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
@@ -64,6 +69,8 @@ class Setting:
 		return text
 
 	def Lists(self):
+		if self.kind is SECTION:
+			return "-"
 		return {PER_CAMERA: "one, or one per camera", EVERY_CAMERA: "one per camera",
 			ONE: "one for the rig", LIST: "a list"}[self.per_camera]
 
@@ -77,8 +84,9 @@ LIVE = "Live feed"
 CHECK = "Launch check"
 DISPLAY = "Display and progress"
 TRIGGER = "Trigger"
+SESSION = "Sections other programs read"
 
-SECTIONS = (REC, CAM, FLIR, RATCAM, ENC, LIVE, CHECK, DISPLAY, TRIGGER)
+SECTIONS = (REC, CAM, FLIR, RATCAM, ENC, LIVE, CHECK, DISPLAY, TRIGGER, SESSION)
 
 SETTINGS = [
 	# Recording
@@ -252,6 +260,18 @@ SETTINGS = [
 	Setting("blinkHz", "None", float, section=TRIGGER, per_camera=ONE, words=("None",), low=0,
 		help="Test LED blink rate. Pick one that is not near a whole or half multiple of the frame rate \
 			(e.g. 43 Hz at 25 or 60 fps)."),
+
+	# Sections other programs read: campy-acquire takes them as they are (no
+	# command-line option), and combines them across extends: one level deep
+	Setting("live", None, SECTION, section=SESSION, per_camera=ONE,
+		help="campy-session: live tracking while recording (models, calibration, animals, the live \
+			environment's python). campy-acquire passes it by; campy-session checks it."),
+	Setting("view", None, SECTION, section=SESSION, per_camera=ONE,
+		help="campy-session: the live view (campy-live-view). campy-acquire passes it by."),
+	Setting("post", None, SECTION, section=SESSION, per_camera=ONE,
+		help="campy-session: what to do after the recording (remux, export, copy). campy-acquire passes it by."),
+	Setting("panel", None, SECTION, section=SESSION, per_camera=ONE,
+		help="campy-session: its control panel. campy-acquire passes it by."),
 ]
 
 BY_NAME = {s.name: s for s in SETTINGS}
@@ -261,7 +281,7 @@ def Defaults():
 	# What a config that says nothing gets (cameraNames and cameraSelection are filled in later)
 	import copy
 	return {s.name: copy.deepcopy(s.default) for s in SETTINGS
-		if s.default is not FILLED and s.replaced_by is None}
+		if s.default is not FILLED and s.replaced_by is None and s.kind is not SECTION}
 
 
 def Reference():
@@ -271,6 +291,8 @@ def Reference():
 			return "from numCams"
 		if s.replaced_by:
 			return "replaced by `{}`".format(s.replaced_by)
+		if s.kind is SECTION:
+			return "none"
 		return "`{}`".format(s.default if not isinstance(s.default, str) else '"{}"'.format(s.default))
 
 	lines = [

@@ -97,6 +97,9 @@ def Show(result, changed=False, cameras=False):
 			lines += ["", "The whole rig", Table([[k, Text(params[k]), str(sources[k])] for k in rig])]
 	else:
 		lines += [""] + [Table([[k, Text(params[k]), str(sources[k])] for k in keys])] if keys else []
+	for name, values in result.sections.items():
+		lines += ["", name + ":", Table([["  " + k, Text(v), str(result.section_sources[name][k])]
+			for k, v in values.items()])]
 	if result.notes:
 		lines += [""] + ["note: " + n for n in result.notes]
 	return "\n".join(lines)
@@ -184,7 +187,7 @@ def Main(argv=None):
 		if args.command == "show":
 			result = configurator.Resolve(args.config, options)
 			if args.json:
-				print(json.dumps({"chain": [os.path.abspath(p) for p in result.chain],
+				print(json.dumps({"chain": result.chain,
 					"settings": result.Effective(), "notes": result.notes}, indent=1))
 			elif args.yaml:
 				sys.stdout.write(result.ToYaml())

@@ -107,3 +107,12 @@ Every key a campy config file can have, and its command-line option (`--key valu
 | `blinkPin` | `"None"` | a whole number, 0 or more, or "None" | one for the rig | Arduino pin driving a test LED that every camera can see, for campy-synctest. |
 | `blinkHz` | `"None"` | a number, 0 or more, or "None" | one for the rig | Test LED blink rate. Pick one that is not near a whole or half multiple of the frame rate (e.g. 43 Hz at 25 or 60 fps). |
 
+## Sections other programs read
+
+| Key | Default | Takes | Per camera | What it does |
+|---|---|---|---|---|
+| `live` | none | key: value lines of its own | - | campy-session: live tracking while recording (models, calibration, animals, the live environment's python). campy-acquire passes it by; campy-session checks it. |
+| `view` | none | key: value lines of its own | - | campy-session: the live view (campy-live-view). campy-acquire passes it by. |
+| `post` | none | key: value lines of its own | - | campy-session: what to do after the recording (remux, export, copy). campy-acquire passes it by. |
+| `panel` | none | key: value lines of its own | - | campy-session: its control panel. campy-acquire passes it by. |
+

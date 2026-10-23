@@ -108,6 +108,11 @@ class Source:
 	def __str__(self):
 		return self.Where() + (" ({})".format(self.note) if self.note else "")
 
+	def Structured(self):
+		# For programs: {"kind", "file" (absolute, or None), "line", "note"}
+		return {"kind": self.kind, "file": os.path.abspath(self.path) if self.path else None,
+			"line": self.line, "note": self.note}
+
 
 class Resolved:
 	"""
@@ -116,14 +121,23 @@ class Resolved:
 	  sources: {key: Source}, where each value came from
 	  chain: the config files, the one given first, then each file it extends
 	  notes: what campy says about it as it starts (renamed keys, shortened lists)
+	  sections: the sections other programs read ({"live": {...}, ...}), and
+	  section_sources: {"live": {key: Source}}
 	"""
-	def __init__(self, params, sources, chain, notes):
+	def __init__(self, params, sources, chain, notes, sections=None, section_sources=None):
 		self.params, self.sources, self.chain, self.notes = params, sources, chain, notes
+		self.sections, self.section_sources = sections or {}, section_sources or {}
 
 	def Effective(self):
-		# {key: {"value": ..., "source": "default" | "<file>:<line>" | "command line"}}, ready for JSON
-		return {key: {"value": copy.deepcopy(value), "source": str(self.sources[key])}
+		# {key: {"value": ..., "source": {"kind", "file", "line", "note"}}}, ready for JSON. A
+		# section's keys are "<section>.<key>" (live.models).
+		effective = {key: {"value": copy.deepcopy(value), "source": self.sources[key].Structured()}
 			for key, value in self.params.items()}
+		for name, values in self.sections.items():
+			for key, value in values.items():
+				effective["{}.{}".format(name, key)] = {"value": copy.deepcopy(value),
+					"source": self.section_sources[name][key].Structured()}
+		return effective
 
 	def Cameras(self):
 		# Each camera's settings, as its process gets them
@@ -141,6 +155,11 @@ class Resolved:
 			# The value as YAML on one line: a one-item flow list, without its brackets
 			text = yaml.safe_dump([value], default_flow_style=True, width=float("inf")).strip()[1:-1]
 			lines.append("{}: {}  # {}".format(key, text, self.sources[key]))
+		for name, values in self.sections.items():
+			lines.append("{}:".format(name))
+			for key, value in values.items():
+				text = yaml.safe_dump([value], default_flow_style=True, width=float("inf")).strip()[1:-1]
+				lines.append("  {}: {}  # {}".format(key, text, self.section_sources[name][key]))
 		return "\n".join(lines) + "\n"
 
 
@@ -189,16 +208,24 @@ def ReadChain(config_path):
 		path = next_path
 
 
-def MergeChain(chain, notes, problems):
+def MergeChain(chain, notes, problems, sections=None, section_sources=None):
 	# The chain's values, the root profile first and each file over the one it
 	# extends, key by key (a list is replaced whole), with the Source of each.
 	# Each file's values are checked, and its renamed keys read as the new ones.
+	# Sections (live:, post: ...) go into sections instead, combined one level
+	# deep: a file's live: models replaces the profile's, its other keys stay.
 	params, sources = {}, {}
+	sections = {} if sections is None else sections
+	section_sources = {} if section_sources is None else section_sources
 	for path, values, lines in reversed(chain):
 		def where(key, path=path, lines=lines):
 			return "{}:{}".format(Shown(path), lines[key]) if key in lines else Shown(path)
 		values, more = CheckValues(values, where)
 		problems += more
+		for name in [k for k in values if configschema.BY_NAME[k].kind is configschema.SECTION]:
+			for key, value in values.pop(name).items():
+				sections.setdefault(name, {})[key] = value
+				section_sources.setdefault(name, {})[key] = Source(Source.FILE, path, lines.get(name))
 		layer = {key: Source(Source.FILE, path, lines.get(key)) for key in values}
 		values, renamed = Rename(values, Shown(path), notes, problems)
 		for old, (new, value) in renamed.items():
@@ -229,7 +256,8 @@ def ResolveClargs(clargs):
 	# Resolve, for parsed options
 	notes, problems = [], []
 	chain = ReadChain(clargs.config)
-	params, sources = MergeChain(chain, notes, problems)
+	sections, section_sources = {}, {}
+	params, sources = MergeChain(chain, notes, problems, sections, section_sources)
 	# Options are read by argparse (ConfigValue); here they get the same range
 	# and word checks as the config's own values
 	overrides = {key: value for key, value in clargs.__dict__.items() if value is not None and key != "config"}
@@ -266,7 +294,7 @@ def ResolveClargs(clargs):
 			problems.append(str(e))
 	if problems:
 		raise ConfigError(problems)
-	return Resolved(params, sources, [path for path, _, _ in chain], notes)
+	return Resolved(params, sources, [os.path.abspath(path) for path, _, _ in chain], notes, sections, section_sources)
 
 
 def ConfigureCamParams(systems, params, n_cam):
@@ -607,6 +635,13 @@ def CheckValues(values, where):
 		if setting is None:
 			problems.append("{}: {}".format(where(key), UnknownKey(key)))
 			continue
+		if setting.kind is configschema.SECTION:
+			if not isinstance(value, dict):
+				problems.append("{}: {} is a section of key: value lines (indented under it), not {!r}".format(
+					where(key), key, value))
+			else:
+				checked[key] = value
+			continue
 		if isinstance(value, list):
 			if setting.per_camera == configschema.ONE:
 				problems.append("{}: {} takes one value for the whole rig, not a list ({!r})".format(
@@ -718,6 +753,8 @@ def ParseClargs(parser, argv=None):
 	)
 	groups = {section: parser.add_argument_group(section) for section in configschema.SECTIONS}
 	for setting in configschema.SETTINGS:
+		if setting.kind is configschema.SECTION:
+			continue # in the config file only
 		groups[setting.section].add_argument(
 			"--" + setting.name,
 			dest=setting.name,
@@ -729,7 +766,8 @@ def ParseClargs(parser, argv=None):
 	for word in (argv if argv is not None else sys.argv[1:]):
 		if word.startswith("--") and len(word) > 2:
 			name = word[2:].split("=", 1)[0]
-			if name not in configschema.BY_NAME and name != "help":
+			if (name not in configschema.BY_NAME or configschema.BY_NAME[name].kind is configschema.SECTION) \
+					and name != "help":
 				suggestion = Suggest(name, configschema.BY_NAME)
 				parser.error("unknown option {}{}".format("--" + name,
 					". Did you mean --{}?".format(suggestion) if suggestion else ""))

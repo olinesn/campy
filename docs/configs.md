@@ -83,6 +83,10 @@ Keep the rig's own settings in a profile, not as an edit of a config in `configs
 - Each file is checked on its own lines, and its renamed keys are read in that file. A profile's `disableGamma: True` is its `cameraGamma: "Off"`, so an experiment's `cameraGamma: 0.6` replaces it.
 - Relative paths in a setting (`videoFolder: ./test`, `cameraSettings`) are still from the folder campy runs in, as before.
 
+## Sections other programs read
+
+A config can also hold sections of their own `key: value` lines, indented under the section's name, for a program that starts campy-acquire: `live:`, `view:`, `post:` and `panel:` (campy-session's). campy-acquire passes them by, and the program that reads them checks what is inside. Across `extends:` they combine one level deep: an experiment's `live:` with only `animals: 3` keeps the profile's other `live:` keys. A misspelled section name is caught like any key (`lives` → "Did you mean "live"?").
+
 ## Where each setting came from: campy-config show
 
 ```
@@ -103,7 +107,7 @@ codec                   h265                               chronicrecord.yaml:28
 - `--changed`: only the settings that are not campy's defaults.
 - `--cameras`: one column per camera, for the per-camera settings.
 - `--yaml`: the whole config as one file with no `extends:`. Each line says where its value came from, and `campy-acquire` records with it exactly as with the original.
-- `--json`: the same values and sources, for programs.
+- `--json`: the same values, each with its source as `{"kind", "file", "line", "note"}` (a section's keys as `live.animals`), for programs.
 
 **Moving to profiles without changing a recording: campy-config diff.** `campy-config diff old.yaml new.yaml` lists every setting whose value differs between two configs, each with where it came from. It also takes campy-acquire's options, applied to both. When a standalone config is rewritten as a profile plus a short experiment file, "No difference" proves they record the same.
 

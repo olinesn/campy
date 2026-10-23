@@ -120,8 +120,11 @@ def test_effective_config_round_trip(tmp_path, profiles):
 	again = configurator.Resolve(flat)
 	assert again.params == r.params and again.chain == [flat]
 	effective = json.loads(json.dumps(r.Effective()))
-	assert effective["quality"] == {"value": [20, 21, 22], "source": "command line"}
-	assert effective["frameRate"]["source"] == exp + ":2"
+	assert effective["quality"] == {"value": [20, 21, 22],
+		"source": {"kind": "command line", "file": None, "line": None, "note": None}}
+	assert effective["frameRate"]["source"] == {"kind": "file", "file": exp, "line": 2, "note": None}
+	assert effective["cameraGamma"]["source"]["note"] == "written as disableGamma: True"
+	assert effective["bufferSize"]["source"]["kind"] == "default"
 
 
 def test_configure_params_keeps_the_resolved(tmp_path, profiles, monkeypatch):
@@ -182,3 +185,22 @@ def test_sweep_reads_the_chain(tmp_path, profiles):
 	exp = write(tmp_path / "exp.yaml", "extends: rig\nframeRate: 80\n")
 	values = configurator.ReadCheckedConfig(exp)
 	assert (values["frameRate"], values["codec"], values["cameraGamma"]) == (80, "h265", "Off")
+
+
+def test_sections_for_other_programs(tmp_path, profiles):
+	# campy-session's live: and post: pass campy-acquire by, combined one level deep
+	(profiles / "rig.yaml").write_text("numCams: 2\nlive:\n  models: /models/a\n  animals: 5\npost:\n  remux: True\n")
+	exp = write(tmp_path / "exp.yaml", "extends: rig\nlive:\n  animals: 3\n")
+	r = configurator.Resolve(exp)
+	assert r.sections == {"live": {"models": "/models/a", "animals": 3}, "post": {"remux": True}}
+	assert "live" not in r.params and "post" not in r.params # not camera settings
+	assert r.section_sources["live"]["animals"].path == exp and r.section_sources["live"]["models"].line == 2
+	effective = r.Effective()
+	assert effective["live.animals"]["value"] == 3 and effective["live.models"]["source"]["line"] == 2
+	again = configurator.Resolve(write(tmp_path / "flat.yaml", r.ToYaml()))
+	assert again.sections == r.sections and again.params == r.params
+	with pytest.raises(configurator.ConfigError, match="bad.yaml:2: live is a section of key: value lines"):
+		configurator.Resolve(write(tmp_path / "bad.yaml", "extends: rig\nlive: yes\n"))
+	with pytest.raises(configurator.ConfigError, match='unknown key "lives". Did you mean "live"?'):
+		configurator.Resolve(write(tmp_path / "bad.yaml", "lives:\n  animals: 3\n"))
+	assert "live.animals" not in configurator.ReadCheckedConfig(exp) and "live" not in configurator.ReadCheckedConfig(exp)

@@ -146,8 +146,9 @@ def test_schema_and_options_agree():
 	parser = ArgumentParser(prog="campy-acquire")
 	configurator.ParseClargs(parser, ["c.yaml"])
 	options = {a.dest for a in parser._actions} - {"help", "config"}
-	assert options == set(configschema.BY_NAME)
+	sections = {s.name for s in configschema.SETTINGS if s.kind is configschema.SECTION}
+	assert options == set(configschema.BY_NAME) - sections # sections are in the file only
 	assert set(configurator.DefaultParams()) == {s.name for s in configschema.SETTINGS
-		if s.default is not configschema.FILLED and not s.replaced_by}
+		if s.default is not configschema.FILLED and not s.replaced_by and s.name not in sections}
 	for s in configschema.SETTINGS:
 		assert s.section in configschema.SECTIONS and s.help, s.name
