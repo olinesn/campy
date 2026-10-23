@@ -50,7 +50,8 @@ label{font-size:12px;color:var(--muted)}h2{font-size:15px;font-weight:500;margin
       <label for="ids">Animal IDs, comma-separated</label><input id="ids" placeholder="M12, M14, M15">
       <label for="notes">Notes</label><input id="notes" placeholder="Cage 2, new bedding">
     </div>
-    <div><ul id="checks"></ul><p class="muted" id="length"></p><button id="start" class="go">Start recording</button>
+    <div><div id="orphan" class="err" hidden></div><button id="stoporphan" class="stop" hidden>Stop that recording</button>
+      <ul id="checks"></ul><p class="muted" id="length"></p><button id="start" class="go">Start recording</button>
       <div id="starterr" class="err"></div></div>
   </div>
 </div>
@@ -102,6 +103,9 @@ function render(s){
   $("progress").style.width = rec.elapsed_s && rec.planned_s ? Math.min(100, 100*rec.elapsed_s/rec.planned_s)+"%" : "0";
   $("error").hidden = !s.error; $("error").textContent = s.error || "";
   $("before").hidden = !(st=="ready" || st=="done" || st=="failed");
+  $("orphan").hidden = $("stoporphan").hidden = !s.orphan;
+  if(s.orphan) $("orphan").textContent = "A recording an earlier panel started is still running, in " + s.orphan.folder +
+    " (its window was closed; the recording went on). Stop it, or wait for it to end, before starting another.";
   $("checks").innerHTML = s.checks.map(c => "<li>"+tag(c.level=="block"?"stops the start":c.level=="warn"?"warning":"ok",
     c.level=="block"?"bad":c.level=="warn"?"warn":"ok")+" "+esc(c.text)+"</li>").join("");
   if(!$("experiment").dataset.set){ $("experiment").value = s.fields.experiment||""; $("ids").value = s.fields.animal_ids||""; $("experiment").dataset.set=1; }
@@ -147,6 +151,9 @@ $("stop").onclick = async () => {
   const e = await post("/stop", {now: !!stopArmed}); stopArmed = 0; if(e) alert(e); tick(); };
 $("mark").onclick = async () => { const e = await post("/bookmark", {note:$("note").value}); $("markerr").textContent = e || ""; if(!e) $("note").value = ""; tick(); };
 $("note").addEventListener("keydown", ev => { if(ev.key=="Enter") $("mark").click(); });
+let orphanArmed = 0;
+$("stoporphan").onclick = async () => { const e = await post("/stop-orphan", {now: !!orphanArmed});
+  if(e) alert(e); else if(!orphanArmed){ orphanArmed = 1; $("stoporphan").textContent = "Stop now, without closing"; setTimeout(() => { orphanArmed = 0; $("stoporphan").textContent = "Stop that recording"; }, 5000); } tick(); };
 $("viewer").onclick = async () => { const e = await post("/viewer"); if(e) alert(e); };
 tick(); setInterval(tick, 1000); setInterval(images, 1000);
 </script></body></html>
