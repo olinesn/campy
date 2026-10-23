@@ -280,7 +280,8 @@ def ResolveClargs(clargs):
 			sources[key] = Source(Source.DEFAULT, note="one per camera, from numCams")
 	params = FillCameraLists(params)
 
-	for check in (lambda p: ValidateCameraLists(p, sources, notes), ValidateColorRange, ValidateGamma):
+	for check in (lambda p: ValidateCameraLists(p, sources, notes), ValidateColorRange, ValidateGamma,
+			ValidateExperiment):
 		try:
 			check(params)
 		except ValueError as e:
@@ -294,7 +295,10 @@ def ResolveClargs(clargs):
 			problems.append(str(e))
 	if problems:
 		raise ConfigError(problems)
-	return Resolved(params, sources, [os.path.abspath(path) for path, _, _ in chain], notes, sections, section_sources)
+	global _last
+	_last = Resolved(params, sources, [os.path.abspath(path) for path, _, _ in chain], notes, sections, section_sources)
+	_last.config = clargs.config # as given
+	return _last
 
 
 def ConfigureCamParams(systems, params, n_cam):
@@ -317,7 +321,7 @@ def ConfigureCamParams(systems, params, n_cam):
 
 
 # Lists that are not one value per camera
-NON_CAMERA_LISTS = ("digitalPins", "ratcamPorts")
+NON_CAMERA_LISTS = ("digitalPins", "ratcamPorts", "animalIds")
 # Lists that need a value for every camera: one name or index cannot be shared
 EVERY_CAMERA_LISTS = ("cameraNames", "cameraSelection")
 
@@ -596,6 +600,14 @@ def SettingError(setting, item):
 			return GammaSetting(item), None
 		except ValueError as e:
 			return item, str(e)
+	if setting.kind is configschema.ID:
+		if isinstance(item, bool) or not isinstance(item, (str, int, float)):
+			return item, "{!r} is not an ID (text or a number)".format(item)
+		return str(item), None
+	if setting.kind is configschema.MAPPING:
+		if not isinstance(item, dict):
+			return item, "{!r} is not a mapping, e.g. {{cage: B3, condition: saline}}".format(item)
+		return item, None
 	if setting.kind is configschema.TEXT:
 		if setting.name == "preflight" and item is False:
 			return item, None # preflight: off, unquoted: YAML's False, which preflight reads as off
@@ -647,7 +659,7 @@ def CheckValues(values, where):
 				problems.append("{}: {} takes one value for the whole rig, not a list ({!r})".format(
 					where(key), key, value))
 				continue
-			if not value:
+			if not value and setting.per_camera != configschema.LIST: # a list of IDs may be empty
 				problems.append("{}: {} is an empty list".format(where(key), key))
 				continue
 			items = [SettingError(setting, item) for item in value]
@@ -673,6 +685,26 @@ def ReadCheckedConfig(config_path):
 	for note in notes:
 		Say(note)
 	return values
+
+
+# The last config resolved in this process (ResolveClargs), for Sources and ConfigPath
+FROM_DEFAULT, FROM_FILE, FROM_COMMAND_LINE = Source.DEFAULT, Source.FILE, Source.COMMAND_LINE
+_last = None
+
+
+def Sources():
+	"""
+	{key: "default", "file" or "command line"}: where each of the last
+	config's values came from, for session.json. A disableGamma read as
+	cameraGamma counts as cameraGamma's; cameraNames and cameraSelection made
+	from numCams are defaults. Resolved.sources has the file and line too.
+	"""
+	return {key: source.kind for key, source in _last.sources.items()} if _last else {}
+
+
+def ConfigPath():
+	# The last config file read, as given (Resolved.chain has the files it extends)
+	return _last.config if _last else None
 
 
 # What each kind of override value is called in an error
@@ -719,6 +751,26 @@ def GammaValue(text):
 		raise ArgumentTypeError(str(e))
 
 
+def YamlValue(text):
+	# A value as YAML reads it, of any kind: CheckValues checks it
+	try:
+		return yaml.safe_load(text)
+	except yaml.YAMLError as e:
+		raise ArgumentTypeError("{!r} is not a value campy can read ({})".format(text, getattr(e, "problem", e)))
+
+
+def ValidateExperiment(params):
+	# animalIds as session.json keeps it, a list of text (one ID alone is a
+	# list of one), and defaultsVersion a version
+	ids = params.get("animalIds", [])
+	params["animalIds"] = [str(i) for i in (ids if isinstance(ids, list) else [ids])]
+	from campy import defaults
+	version = str(params.get("defaultsVersion", "None"))
+	if version != "None" and defaults.VersionKey(version) is None:
+		raise ValueError('defaultsVersion is a campy version, e.g. "2.1.0", not {!r}.'.format(version))
+	params["defaultsVersion"] = version
+
+
 def TextValue(text):
 	# Paths, and words YAML would change (preflight's off is not False), are taken
 	# as typed, so C:\ffmpeg\bin\ffmpeg.exe keeps its backslashes. One pair of
@@ -736,6 +788,8 @@ def OptionType(setting):
 		return TextValue
 	if setting.kind is configschema.GAMMA:
 		return GammaValue
+	if setting.kind in (configschema.ID, configschema.MAPPING):
+		return YamlValue # checked as the config's values are (CheckValues)
 	return ConfigValue(setting.kind, setting.words, lists=setting.per_camera != configschema.ONE)
 
 

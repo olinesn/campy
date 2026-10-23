@@ -10,6 +10,16 @@ import pytest
 from campy import configurator, configtool, sweep
 
 
+@pytest.fixture(autouse=True)
+def home_elsewhere(tmp_path_factory, monkeypatch):
+	# Messages show a path in the home folder as ~...: put the home folder
+	# beside the tests' files, not around them (on Windows the temp folder is
+	# in the home folder), so the messages name them in full
+	home = str(tmp_path_factory.mktemp("home"))
+	monkeypatch.setenv("HOME", home)
+	monkeypatch.setenv("USERPROFILE", home)
+
+
 @pytest.fixture
 def profiles(tmp_path, monkeypatch):
 	# This computer's rig profile folder (CAMPY_CONFIG_DIR), with one profile
@@ -204,3 +214,11 @@ def test_sections_for_other_programs(tmp_path, profiles):
 	with pytest.raises(configurator.ConfigError, match='unknown key "lives". Did you mean "live"?'):
 		configurator.Resolve(write(tmp_path / "bad.yaml", "lives:\n  animals: 3\n"))
 	assert "live.animals" not in configurator.ReadCheckedConfig(exp) and "live" not in configurator.ReadCheckedConfig(exp)
+
+
+def test_paths_in_the_home_folder_are_shown_with_a_tilde(tmp_path, monkeypatch):
+	monkeypatch.setenv("HOME", str(tmp_path))
+	monkeypatch.setenv("USERPROFILE", str(tmp_path))
+	inside = os.path.join(str(tmp_path), ".campy", "configs", "rig.yaml")
+	assert configurator.Shown(inside) == os.path.join("~", ".campy", "configs", "rig.yaml")
+	assert configurator.Shown("exp.yaml") == "exp.yaml" # as given

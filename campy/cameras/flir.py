@@ -85,6 +85,23 @@ def GetModelName(camera):
 	return device_model_name
 
 
+def GetFirmwareVersion(camera):
+	# The camera's firmware (DeviceFirmwareVersion; the transport layer's
+	# DeviceVersion where the camera has none), for metadata.csv and
+	# session.json; "None" where neither can be read
+	for nodemap, name in ((camera.GetNodeMap, "DeviceFirmwareVersion"), (camera.GetTLDeviceNodeMap, "DeviceVersion")):
+		try:
+			node = nodemap().GetNode(name)
+			if node is None:
+				continue
+			node = PySpin.CStringPtr(node)
+			if PySpin.IsAvailable(node) and PySpin.IsReadable(node):
+				return str(node.GetValue())
+		except Exception:
+			pass
+	return "None"
+
+
 def GigeDiscovery(system):
 	# Whether Spinnaker searches the network interfaces for GigE cameras each
 	# time it starts (EnumerateGEVInterfaces; campy-flir-reset --gige turns it
@@ -131,6 +148,7 @@ def OpenCamera(cam_params):
 	# Print device information
 	PrintDeviceInfo(nodemap_tldevice, cam_params)
 	cam_params['cameraModel'] = GetModelName(camera)
+	cam_params['cameraFirmware'] = GetFirmwareVersion(camera)
 
 	# Load camera settings
 	cam_params = LoadSettings(camera, cam_params)

@@ -15,6 +15,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIGS = sorted(glob.glob(os.path.join(HERE, "..", "configs", "*.yaml")))
 
 
+@pytest.fixture(autouse=True)
+def home_elsewhere(tmp_path_factory, monkeypatch):
+	# Messages show a path in the home folder as ~...: put the home folder
+	# beside the tests' files, not around them (on Windows the temp folder is
+	# in the home folder), so the messages name them in full
+	home = str(tmp_path_factory.mktemp("home"))
+	monkeypatch.setenv("HOME", home)
+	monkeypatch.setenv("USERPROFILE", home)
+
+
 def resolve(tmp_path, text, *argv):
 	# campy-acquire c.yaml argv..., for a config written as text
 	path = tmp_path / "c.yaml"
