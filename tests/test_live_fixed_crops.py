@@ -429,9 +429,13 @@ def test_compile_cache_survives_restarts(monkeypatch, tmp_path):
 	monkeypatch.setattr(torch, "compile", lambda fn, **k: fn)
 	engine = live.FixedEngine.__new__(live.FixedEngine)
 	engine.torch, engine.fp16, engine.name = torch, False, "centroid"
-	monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising=False)
+	# started without it: ours, even once inductor has written its own default into it
+	monkeypatch.setattr(live, "_INDUCTOR_DIR", None)
+	monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", "/tmp/torchinductor_someone")
 	engine.Compile(torch.nn.Identity(), str(tmp_path))
 	assert live.os.environ["TORCHINDUCTOR_CACHE_DIR"] == str(tmp_path / "inductor")
+	# started with it: the user's
+	monkeypatch.setattr(live, "_INDUCTOR_DIR", str(tmp_path / "mine"))
 	monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path / "mine"))
 	engine.Compile(torch.nn.Identity(), "")
 	assert live.os.environ["TORCHINDUCTOR_CACHE_DIR"] == str(tmp_path / "mine")

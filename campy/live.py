@@ -176,7 +176,7 @@ to 9 replays each, docs/live-tracking.md): EVO-X2 10.6 -> 5.9 ms a set
 (compile); RTX 2000 Ada 12.6 -> 5.8, RTX 4000 Ada 6.4 -> 3.4, RTX 6000 Ada
 2.7 -> 1.6 (tensorrt), tracking as close to the offline SLEAP predictions as
 before, and no more GPU memory. TensorRT's fp16 runs the whole network in
-half precision and moves 2.3% of the keypoints by over a pixel from torch's
+half precision and moves 2.0-2.3% of the keypoints by over a pixel from torch's
 fp16 (torch.compile 0.7%): the same animals, and the same 2D and 3D errors
 against offline SLEAP. The warm-up waits for the engines: the first time
 (another model, GPU, PyTorch or TensorRT) 13-35 s more, then 0-4 s. Both
@@ -219,6 +219,11 @@ import numpy as np
 from campy import children, cpus, livefeed, liveresults
 from campy import clock as hostclock # not clock: Run's clock is the GPU's
 from campy.frametimes import GrowingNpy, Writer
+
+# TORCHINDUCTOR_CACHE_DIR as campy-live was started with it: torch's inductor
+# writes its own default into it the first time it looks (cache_dir_utils),
+# so later it can't say whether the user set it (FixedEngine.Compile)
+_INDUCTOR_DIR = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
 
 # The random models: what bench/sleap_infer_bench.py's default pair is
 RANDOM_CENTROID = dict(scale=0.25, filters=16, max_stride=16, output_stride=4)
@@ -1324,11 +1329,11 @@ class FixedEngine:
 		self.PlainConfigs(model)
 		# inductor's own cache is the temp folder's torchinductor_<user>,
 		# which Linux empties at each restart (about 15 s more to start on the
-		# EVO-X2): kept with the TensorRT plans instead, unless
-		# TORCHINDUCTOR_CACHE_DIR says where. Its keys are the traced graph,
-		# PyTorch's version and the GPU (the weights are inputs), so another
-		# model or update compiles anew
-		if not os.environ.get("TORCHINDUCTOR_CACHE_DIR"):
+		# EVO-X2): kept with the TensorRT plans instead, unless campy-live was
+		# started with TORCHINDUCTOR_CACHE_DIR set. inductor reads it at each
+		# compile. Its keys are the traced graph, PyTorch's version and the
+		# GPU (the weights are inputs), so another model or update compiles anew
+		if not _INDUCTOR_DIR:
 			os.environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(self.CacheDir(cache), "inductor")
 		if self.name == "centroid":
 			print("campy-live: compiling the networks with torch.compile (their kernels kept in {}: up to about "
