@@ -218,7 +218,8 @@ def test_a_new_or_empty_folder_records_as_before(tmp_path, ratcams, made):
 	assert "already holds a recording" not in out
 	recorded(str(folder))
 	# Nothing else, and nothing left empty
-	expected = {os.path.join(name, file) for name in ("EyeA", "EyeB") for file in CAMERA_FILES} | {"trigger.json"}
+	expected = {os.path.join(name, file) for name in ("EyeA", "EyeB") for file in CAMERA_FILES} | {"trigger.json",
+		"session.json"}
 	assert set(snapshot(folder)) == expected
 
 
@@ -247,7 +248,7 @@ def test_a_second_recording_into_the_same_folder_stops_before_recording(tmp_path
 	assert snapshot(folder) == before
 	assert "Stopped before recording: {} already holds a recording, and campy never replaces one. These files are " \
 		"there:\n".format(folder) in out
-	assert "  trigger.json\n" in out
+	assert "  trigger.json, session.json\n" in out
 	for name in ("EyeA", "EyeB"):
 		assert "  {}{}{}\n".format(name, os.sep, ", ".join(CAMERA_FILES)) in out
 	assert "Record into a new folder (--videoFolder, or videoFolder in the config), or move this one away first.\n" in out
@@ -255,7 +256,8 @@ def test_a_second_recording_into_the_same_folder_stops_before_recording(tmp_path
 	assert "Launch check" not in out and "Opened" not in out
 
 
-@pytest.mark.parametrize("existing", [os.path.join("EyeB", file) for file in CAMERA_FILES] + ["trigger.json"])
+@pytest.mark.parametrize("existing", [os.path.join("EyeB", file) for file in CAMERA_FILES] +
+	["trigger.json", "session.json"])
 @pytest.mark.parametrize("preflight", ["error", "warn", "off"])
 def test_any_one_file_already_there_stops_the_recording(tmp_path, existing, preflight):
 	# Only that one file there, of an earlier recording; campy stops before
@@ -377,9 +379,10 @@ def test_a_camera_process_refuses_files_already_there(tmp_path, ratcams):
 	before = snapshot(folder)
 	code, out = acquire(tmp_path, config(tmp_path, folder), env=dict(PYTHONPATH=os.pathsep.join([str(hook), REPO])))
 	assert code == 1, out
-	# The old files as they were; only trigger.json is new, saying neither camera was ready
+	# The old files as they were; only trigger.json, saying neither camera was ready, and
+	# session.json are new
 	after = snapshot(folder)
-	assert set(after) == set(before) | {"trigger.json"} and {k: after[k] for k in before} == before
+	assert set(after) == set(before) | {"trigger.json", "session.json"} and {k: after[k] for k in before} == before
 	for name, file in (("EyeA", "metadata.csv"), ("EyeB", "0.mp4")):
 		assert "{}: not recording: {} already holds a recording, and campy never replaces one:\n  {}{}{}\n".format(
 			name, folder, name, os.sep, file) in out
