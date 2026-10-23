@@ -29,7 +29,7 @@ Each run records into a new folder inside the config's `videoFolder`, named by t
 | Command | What it does | Guide |
 |---|---|---|
 | `campy-acquire` | Record the cameras | [Recording](docs/acquire.md) |
-| `campy-config` | Check configs without recording; write the settings reference | [Configs](docs/configs.md) |
+| `campy-config` | Check, show and compare configs without recording (`check`, `show`, `diff`, `where`, `new`); rig profiles | [Configs](docs/configs.md) |
 | `campy-encode-sweep`, `campy-encode-quality` | Measure how many cameras each encoder keeps up with, and what each quality costs | [Video encoding](docs/encoding.md#scaling-the-number-of-cameras) |
 | `campy-flir-reset` | Reset FLIR cameras a restart left at USB 2 speed; turn Spinnaker's GigE search off | [FLIR cameras](docs/flir.md) |
 | `campy-align`, `campy-synctest` | Put every camera on the trigger's timeline; check that cameras expose together | [Triggering and synchronization](docs/sync.md) |
