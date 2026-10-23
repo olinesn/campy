@@ -278,7 +278,7 @@ Notes on the measurements:
   | Pro Max Slim | 1,195 / 2.3 / 2.5 | 3,597 / 5.5 / 5.7 / 7.7 / 8.4 | 1,792 / 5.5 / 5.7 / 8.7 / 9.5 |
   | Precision 7875 | 1,200 / 0.9 / 1.0 | 3,600 / 1.6 / 1.8 / 4.1 / 5.2 | 1,797 / 1.6 / 1.7 / 4.7 / 5.8 |
 
-  The runs were 20 s (1,200 frames) on the Windows machines and 30 s on the EVO-X2 with 1 camera, 60 s (3,600 frames) with 3 cameras, and 30 s (Windows) or 60 s (EVO-X2) replaying. At dev df15047, before pull request 183, the Windows machines had tracked about a second less of each run: 1,121–1,132 sets with 1 camera, 3,500–3,536 with 3 and 1,723–1,732 replaying. The EVO-X2 never had that late start: on Linux, the same questions about campy and the computer take only a few milliseconds. The replay's accuracy was unchanged: 2D median 3.8 px, 99.93% same identity, 2 switches.
+  The runs were 20 s (1,200 frames) on the Windows machines and 30 s on the EVO-X2 with 1 camera, 60 s (3,600 frames) with 3 cameras, and 30 s (Windows) or 60 s (EVO-X2) replaying. At dev df15047, before pull request 183, the Windows machines had tracked about a second less of each run: 1,121–1,132 sets with 1 camera, 3,500–3,536 with 3 and 1,723–1,732 replaying. The EVO-X2 never had that late start: it is a Linux machine with an AMD GPU, so nothing asks PowerShell or `nvidia-smi`, and its rig checks at df15047 had already tracked every set. The replay's accuracy was unchanged: 2D median 3.8 px, 99.93% same identity, 2 switches.
 
 ## Fixed crops (`--fixed-crops`, on by default with a GPU)
 
