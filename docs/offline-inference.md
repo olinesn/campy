@@ -9,6 +9,7 @@
 - **With channels-last memory layout, fp16 and campy's tied-peaks fix, sleap-nn's own code runs 7–8× faster** on the A100 and L40S (761–801 frames/s).
 - **campy-live's fixed-shape crops with TensorRT run 11–15× faster** (1,135 frames/s on the A100, 1,524 on the L40S). The whole 10-minute video takes 25 s on the A100, including loading the models and writing the `.slp`.
 - **On a benchtop PC the same approach gives 6–7×** (about 450 frames/s, a 10-minute camera video in 40 s), on both the GMKtec EVO-X2 (AMD, `torch.compile`) and the Dell Pro Max Slim FCS1250 (NVIDIA RTX 2000 Ada, TensorRT). **It runs just as fast while the PC records 3 cameras at 60 fps, and the recording dropped no frames.**
+- **`campy-infer` runs it for real batch jobs** ([How to run it](#how-to-run-it)): a 10-minute camera video, from decoding it to its saved `.slp`, in 25 s on the A100 (723–730 frames/s), and 43–45 s on the benchtop PCs (404–417 frames/s). With the bench's settings it gives the bench's predictions to the bit, and it is about as close to an exact fp32 reference as `sleap-nn track`: closer on two cameras of a session, a little further on the third.
 - Accuracy stays within the differences sleap-nn already has. sleap-nn's own output moves 2% of keypoints by more than a pixel because of its crop-size rounding bug, and fp16 with the tied-peaks fix moves 1.5–3.4%. fp16 *without* that fix loses 0.8% of the animals.
 
 ## The test
@@ -126,7 +127,7 @@ campy-infer <session folder> --centroid ... --instance ... --max-instances 5 --o
 - **Inputs:** videos, or folders. A folder stands for its own videos and its sub-folders' videos, so a campy session folder runs every camera (`Camera1/Camera1.mp4`, `Camera2/...`, in camera order).
 - **Outputs:** each video's `.slp` goes next to it as `<video name>.predictions.slp`, or into `--out`. `--name` sets the file name: `{stem}` is the video's name without its extension, and `{folder}` is the folder the video is in (for cameras whose videos are all called `0.mp4`: `--name "{folder}_{stem}.slp"`). Two videos can't write the same file: it stops before loading the models and says so.
 - **A stopped job starts again where it was.** A video whose `.slp` is already there is skipped, so the same command can be run again after a job is cut off. Each `.slp` is written under a temporary name and renamed when complete. `--overwrite` runs every video again.
-- **Settings:** `--max-instances` (required: every frame is given that many crops), `--peak-threshold` (0.2, for both models), `--batch` (16: on the A100 and the EVO-X2, 32 and 64 were no faster, and they need more GPU memory).
+- **Settings:** `--max-instances` (required: every frame is given that many crops), `--peak-threshold` (0.2, for both models), `--batch` (16: on the A100, the EVO-X2 and the Pro Max Slim, 32 and 64 were no faster, and they need more GPU memory).
 - **What it does by default:** on an NVIDIA GPU, the frames are decoded on the GPU (NVDEC, with `PyNvVideoCodec` installed), the models run as campy's fixed crops with TensorRT in fp16, with the tied-peaks fix. Elsewhere ffmpeg decodes on the CPU, and on an AMD GPU the networks run with `torch.compile`. If an engine can't be made, it says why and runs the networks in plain PyTorch; if NVDEC can't be used, it says why and ffmpeg decodes on the CPU. Each choice can be set: `--engine auto|tensorrt|compile|off`, `--decoder auto|nvdec|ffmpeg|pyav`, `--hwaccel` (ffmpeg's GPU decoder: `vaapi`, `cuda`, `qsv`, `d3d11va` or `none`), `--precision fp16|fp32`, `--strict-peaks`.
 - **Reference runs:** `--exact` runs sleap-nn's own top-down layer instead: fp32 without TF32, sleap-nn's own peak finding, the frames copied to the GPU first, and every crop cut at its true size. It is about twice as fast as `sleap-nn track`, not ten times. Compare a fast run with it using `python bench/offline_infer_bench.py compare --base <exact .slp> <fast .slp>`.
 - **Trying settings:** `--frames N` runs only each video's first N frames.
@@ -156,7 +157,7 @@ The same 10-minute, 18,000-frame video as above, the whole of it, from starting 
 |---|---:|---:|---|---:|
 | NVIDIA A100 40 GB (TensorRT, NVDEC) | **723–730 frames/s** | 24.7–24.9 s | 16.1 / 3.9–4.3 / 4.5–4.7 s | 78 frames/s, 3 min 51 s |
 | GMKtec EVO-X2 (`torch.compile`, ffmpeg on the CPU) | **414–417 frames/s** | 43.2–43.4 s | 38.1–38.3 / 2.0 / 3.1–3.2 s | 68 frames/s (bench) |
-| Dell Pro Max Slim FCS1250, RTX 2000 Ada (TensorRT, ffmpeg on the CPU), batches of 64 | **405 frames/s** (twice) | 44.5 s | 38.2 / 2.9 / 3.4 s | 67 frames/s (bench) |
+| Dell Pro Max Slim FCS1250, RTX 2000 Ada (TensorRT, ffmpeg on the CPU) | **404–406 frames/s** | 44.4–44.5 s | 38.1–38.3 / 2.9 / 3.4 s | 67 frames/s (bench) |
 
 The A100 ran on a cluster node; the benchtop PCs held their rig locks, and every run ended `RIG_CLEAN`. The models alone ran at 1,120 frames/s on the A100 and at 470 on the two benchtop PCs, as the bench measured (1,135, 453 and 447). The rest is making the labels and saving them, which the bench's own `--write-slp` run also spent (711 frames/s with batches of 64, against `campy-infer`'s 688–698).
 
@@ -172,6 +173,10 @@ On the A100, with batches of 64:
 On the EVO-X2, ffmpeg's GPU decoder (`--hwaccel vaapi`) made the whole video slower, 349 frames/s against 411: the same GPU decodes the video and runs the models. So `campy-infer` decodes on the CPU unless asked, using about 4 cores there. The Windows campy-live environments don't have `PyNvVideoCodec`, so the Pro Max Slim decoded on the CPU too; its ffmpeg (702 frames/s) is faster than its models.
 
 Against an `--exact` run (the first 6,000 frames, 29,320 mice): `campy-infer`'s default moved 3.1% of keypoints by more than a pixel, and `sleap-nn track` 2.1%. Matched through the `.slp` files, which keep no centroids, a mouse counts as found in one run only when the middle of its keypoints moved more than 10 px: 1.0% of mice for `campy-infer` and 0.8% for `sleap-nn track`. These are the same differences as in [Accuracy](#accuracy): fp16 and TensorRT, and sleap-nn's crop-size bug.
+
+On the session's other two cameras, against `--exact` runs of the whole video, `campy-infer` was closer to the reference than `sleap-nn track` (run by the lab's job script on an L40S): on the camera that sees fewer mice (3.1 a frame), 0.5% of mice in one run only and 2.6% of keypoints moved by more than a pixel, against 5.3% and 3.1% for `sleap-nn track`; on the other (4.6 mice a frame), 1.5% and 2.7%, against 2.3% and 4.4%. `sleap-nn track`'s crop-size bug cuts a whole batch's crops a pixel short, which `campy-infer` doesn't.
+
+A whole session in one job, through a Slurm script like the one above (3 cameras, 54,000 frames, an A100): 3 min 46 s from start to the last `.slp`. That included 60 s to load sleap-nn and PyTorch from network storage and 53 s to build the TensorRT engines the first time; each video then took 24–32 s.
 
 ## Running the bench
 
