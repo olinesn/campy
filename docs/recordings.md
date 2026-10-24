@@ -123,7 +123,14 @@ campy 2.2.0rc1 and earlier wrote them as bare words (`Infinity`, without quotes)
 
 `campy-live-export` copies `session.json` and the matching `campy-live-session.json` into the `.slp`'s provenance, with the animal IDs. It leaves the identities named "animal 1", "animal 2", …: campy-live numbers the animals in the order it first matches them, which says nothing about which animal ID each one is. When you pass `--calibration`, it checks that file against the one campy-live tracked with, and says so if their SHA-256s differ.
 
-LUC3D doesn't read `session.json` yet. It could take the frame rate (today it estimates it from the video), the camera order, the animal IDs, the experiment's notes and the calibration's SHA-256 from it.
+LUC3D reads both files when you open a campy recording's folder (Load Session Folder, or a session folder picked after File → Load SLP or Load Project):
+
+- **Frame rate**: from `session.json`, instead of an estimate from the video. You can still type another rate.
+- **Cameras**: the views appear in campy's camera order (`Camera10` after `Camera9`), each camera loads the video campy wrote for it, and without a calibration the views are named after campy's cameras.
+- **A Recording section** in the Session tab: the status (with a plain explanation when it isn't complete), the experiment's name, animal IDs, notes and other fields, the notes added afterwards, the frame rate, when it started, campy's version, and each camera's serial number and video.
+- **Calibration check**: it compares the calibration file it loads with the SHA-256 in `campy-live-session.json`, and warns on the status bar when campy-live's 3D was made with a different calibration.
+
+LUC3D only shows the animal IDs and never names identities after them, for the reason above. A folder without `session.json` loads as before.
 
 ## Defaults that changed: the startup warnings
 
