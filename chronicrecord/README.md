@@ -74,9 +74,9 @@ ssh falknerlab@10.241.0.176 python3 chronic_control.py stop
 - `plan` prints the session's timeline without touching the board.
 - `run` runs the session in the terminal. Ctrl-C there is `stop --now`.
 
-The log is `~/Documents/<date>/timestamps.txt`, as before. The program's own output goes to `~/.chronic_control/session.out`.
+The log is `~/Documents/<date>/timestamps.txt`, as before. The program's own output goes to `~/.chronic_control/session.out`. `status` reads `~/.chronic_control/status.json`, which the session rewrites as it runs. Like every JSON file campy writes, it is strict JSON: an infinite or NaN number would be the text `"Infinity"` or `"NaN"` ([Recording folders](../docs/recordings.md#infinity-and-nan-in-campys-json-files)).
 
-## Setting it up (not done yet)
+## Setting it up (the Pi's part done; the Nano's not yet)
 
 The board is the Nano ESP32 now on the ChronicRecord PC's COM9 (until now campy's trigger, `campy_config_chronicrecord_v02c_arduinoTrigger.yaml`). It goes on an Arduino [Nano Screw Terminal Adapter](https://store-usa.arduino.cc/products/nano-screw-terminal) and is plugged into the Pi.
 
@@ -100,7 +100,7 @@ The board is the Nano ESP32 now on the ChronicRecord PC's COM9 (until now campy'
    - Until they're fitted, don't reflash the Nano while the OneBox and LED controllers are on.
 4. **Voltage.** The Nano's outputs are 3.3 V, the same as the Pi's GPIO that drives these inputs today. The Blackfly S Line3 counts 2.6 V or more as high, so 3.3 V works, with a small margin. For more margin over long BNC cables, a 74AHCT125 buffer powered from 5 V (it fits on the prototyping area) would turn the 3.3 V outputs into 5 V ones. That's optional: today's 3.3 V works on this rig.
 5. **Plug the Nano into the Pi by USB.** It shows up as `/dev/serial/by-id/usb-Arduino_Nano_ESP32_...`, which `chronic_control.py` finds by itself. On the PC, `campy_config_chronicrecord_v02c_arduinoTrigger.yaml` (`startArduino: True`, COM9) no longer has a board. Record with a config that has `cameraTrigger: "Line3"`, `startArduino: False` and `frameRate: 60`.
-6. **Set up the Pi.**
+6. **Set up the Pi.** Done on 24 October 2026, ahead of steps 1–5: pyserial 3.5 was already installed and the user already in `dialout`; `chronic_control.py` was copied to `~`, `plan` gave the 12-bout timeline, and `status` says no session has run. The rig still runs on chronicControlv13.py until the cables move to the Nano. To set up another Pi:
    - `sudo apt install python3-serial`.
    - Copy `chronic_control.py` to `~`.
    - Check that the user is in the `dialout` group (`groups`).
