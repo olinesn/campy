@@ -22,7 +22,7 @@ Guides for recording with campy and tracking animals live while it records. The 
 | [3D poses](pose3d.md) | How `campy/pose3d.py` matches animals across cameras, keeps their identities and triangulates them, and how it was validated |
 | [Models](models.md) | Training lightweight sleap-nn models for live use, choosing one that keeps up, finding the frames a model gets wrong on a rig (`campy-live-flag`), labelling them in LUC3D for the next model (`campy-label-pack`, `campy-label-merge`), and measuring models against a rig's labelled test sets (`campy-model-eval`, `campy-model-fit`) |
 | [Closed-loop outputs](closed-loop.md) | `campy-rules`: TTL outputs from the live poses (regions, distances between animals, identities), photometry pulse trains locked to the frames, the outputs board, safety and latency |
-| [Offline inference](offline-inference.md) | Running SLEAP on recorded videos 6–15× faster than `sleap-nn track`, with `campy-infer`: where sleap-nn's time goes, what helps on cluster GPUs and benchtop PCs, the accuracy, and how to run `campy-infer` (also as a Slurm job) |
+| [Offline inference](offline-inference.md) | Running SLEAP on recorded videos 6–15× faster than `sleap-nn track`, with `campy-infer`: where sleap-nn's time goes, what helps on cluster GPUs, benchtop PCs and Macs, the accuracy, and how to run `campy-infer` (also as a Slurm job) |
 | [Calibration](calibration.md) | Camera placement, exposure and calibration |
 | [Troubleshooting](troubleshooting.md) | Problems seen so far, by what you see: the message campy prints, or what is wrong with the recording, with what to do and where to read more |
 | [Development](development.md) | Running the tests, timing tests on a shared machine (`bench/rig.py`), branches and releases |

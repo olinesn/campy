@@ -1,6 +1,6 @@
 # Offline inference: getting poses from recorded videos faster
 
-`campy-live` tracks animals while they are recorded. Most labs also run SLEAP afterwards on the recorded videos, with `sleap-nn track`, one video at a time, in batches. This page measures how fast that runs, where the time goes, and which of `campy-live`'s speed-ups also work there. The measurements were made on data-centre GPUs and on two benchtop PCs, with `bench/offline_infer_bench.py`. `campy-infer` runs the fastest of them for real batch jobs: see [How to run it](#how-to-run-it).
+`campy-live` tracks animals while they are recorded. Most labs also run SLEAP afterwards on the recorded videos, with `sleap-nn track`, one video at a time, in batches. This page measures how fast that runs, where the time goes, and which of `campy-live`'s speed-ups also work there. The measurements were made on data-centre GPUs and on two benchtop PCs, with `bench/offline_infer_bench.py`, and on a MacBook Pro ([On a Mac](#on-a-mac-apple-silicon)). `campy-infer` runs the fastest of them for real batch jobs: see [How to run it](#how-to-run-it).
 
 ## Summary
 
@@ -10,6 +10,7 @@
 - **campy-live's fixed-shape crops with TensorRT run 11–15× faster** (1,135 frames/s on the A100, 1,524 on the L40S). The whole 10-minute video takes 25 s on the A100, including loading the models and writing the `.slp`.
 - **On a benchtop PC the same approach gives 6–7×** (about 450 frames/s, a 10-minute camera video in 40 s), on both the GMKtec EVO-X2 (AMD, `torch.compile`) and the Dell Pro Max Slim FCS1250 (NVIDIA RTX 2000 Ada, TensorRT). **It runs just as fast while the PC records 3 cameras at 60 fps, and the recording dropped no frames.**
 - **`campy-infer` runs it for real batch jobs** ([How to run it](#how-to-run-it)): a 10-minute camera video, from decoding it to its saved `.slp`, in 25 s on the A100 (723–730 frames/s), and 43–45 s on the benchtop PCs (404–417 frames/s). With the bench's settings it gives the bench's predictions to the bit, and it is about as close to an exact fp32 reference as `sleap-nn track`: closer on two cameras of a session, a little further on the third.
+- **On a Mac (Apple M2 Pro), running the two networks with CoreML is 1.9–3.1× faster** than sleap-nn's PyTorch on the Mac's GPU: 53.5 → 104 frames/s with no change in results, up to 165 frames/s on the Neural Engine. Every setting was as accurate against human labels as today ([On a Mac](#on-a-mac-apple-silicon)). Neither campy nor sleap-nn has this yet; it is proposed upstream.
 - Accuracy stays within the differences sleap-nn already has. sleap-nn's own output moves 2% of keypoints by more than a pixel because of its crop-size rounding bug, and fp16 with the tied-peaks fix moves 1.5–3.4%; those keypoints move about 3 px (median), and the median keypoint moves under 0.02 px. fp16 *without* that fix loses 0.8% of the animals.
 
 ## The test
@@ -146,6 +147,68 @@ The typical keypoint barely moves: the median is under 0.02 px in every setup, a
 
 sleap-nn as-is moves 2% of keypoints because of its crop-size rounding bug ([Live tracking](live-tracking.md), `ExactCropSize`). The first animal in a batch sets the crop size for every crop in it, and that size can come out a pixel short, so sleap-nn's results also change with the batch size: batch 64 against batch 16 moved 3.2% of keypoints. Frames copied to the GPU first gave the same mice as sleap-nn as-is, with 90% of keypoints identical to the bit. The 0.8% of mice that fp16 loses without the tied-peaks fix are the ones whose peak is two pixels of equal value ([Live tracking](live-tracking.md)).
 
+## On a Mac (Apple silicon)
+
+**Setup:** a MacBook Pro with an Apple M2 Pro (8 performance and 4 efficiency cores, 32 GB) running macOS 26.7. The software was sleap-nn 0.3.5, PyTorch 2.10 and coremltools 9.0. The video and models are the same as above. Each number covers 960 frames at batch 16, decoded beforehand; OpenCV decodes this video at about 1,000 frames/s on this Mac, so decoding was never the limit. Background indexing and backups were paused. Every run was watched for other processes using the CPU, as the rig lock does on the benchtop PCs, and runs where something else got busy were repeated.
+
+On a Mac, sleap-nn runs its networks with PyTorch on the Mac's GPU through Apple's Metal (MPS), 8× faster than on its CPU (53.5 against 6.9 frames/s). The networks take most of the time: of 18.5 ms per frame, the instance network takes 10.7 ms and the centroid network 2.2. Centroid peak finding is next, at 3.0 ms.
+
+### Small changes in PyTorch
+
+Frames per second on the Mac's GPU; each row adds one change to the row above:
+
+| Change | frames/s |
+|---|---:|
+| sleap-nn as-is | 53.5 |
+| copy each batch to the GPU first | 57.5 |
+| centroid peaks found for the whole batch at once | 59.4 |
+| fp16 | 61.5 |
+| batches of 64 | 63.2 |
+
+- **Centroid peaks:** sleap-nn's centroid layer goes through the frames of a batch one at a time, and each step waits for the GPU. On the Mac's GPU that loop took 21 ms per batch, against 0.2 ms on its CPU. Doing it for the whole batch at once gave the same centroids to the bit, on every batch of the video.
+- **fp16 on its own**, without the batched peaks, gave 57.6 frames/s, no faster than without it.
+- **Channels-last made it 20% slower** on the Mac's GPU (44.1 frames/s), and made no difference on its CPU.
+- **Colour frames copied to the GPU first:** on the Mac's GPU, resizing a frame cut out of a batch of colour frames gives wrong pixels for every frame after the first; a copy of the frame is fine. This video is gray, so these runs weren't affected. It is one reason the upstream `--upload_batches` copies to CUDA GPUs only.
+
+### CoreML: the Mac's GPU and its Neural Engine
+
+CoreML is Apple's own engine for running networks. It can use the GPU, in fp32 or fp16, or the Neural Engine, Apple's chip for neural networks, which computes in fp16 only. Each network was converted with `coremltools` straight from PyTorch, which took 1–2 s per network. The conversion is for fixed shapes, 16 frames and 80 crops (5 mice × 16); smaller batches are padded. sleap-nn's own preprocessing and peak finding ran around the CoreML networks.
+
+The networks alone, in milliseconds per call:
+
+| Network | PyTorch, Mac's GPU, fp32 | PyTorch, fp16 | CoreML GPU, fp32 | CoreML GPU, fp16 | CoreML Neural Engine |
+|---|---:|---:|---:|---:|---:|
+| centroid, 16 frames | 35.5 | 47.6 | 22.1 | 20.0 | **11.7** |
+| centered-instance, 80 crops | 170.2 | 163.6 | 104.2 | 95.0 | **58.8** |
+
+The whole pipeline, with sleap-nn's other steps on the CPU. That was faster than keeping them on the Mac's GPU: 165 against 109 frames/s for the Neural Engine, because nothing has to move between the CPU and the GPU. The last three columns compare each setting with sleap-nn as-is on the same frames:
+
+| Setting | frames/s | × as-is | Mice changed (of 5,035) | Keypoints moved > 1 px | Median move |
+|---|---:|---:|---:|---:|---:|
+| sleap-nn as-is (PyTorch, Mac's GPU, fp32) | 53.5 | 1.0 | – | – | – |
+| **exact:** both networks fp32, CoreML on the GPU | 103.5 | 1.9 | 0 | 0.00% | 0 px |
+| **fast:** centroid network fp32 on the GPU, instance network on the Neural Engine | 148.0 | 2.8 | 0 | 1.34% | 0.005 px |
+| **fastest:** both networks on the Neural Engine | 165.1 | 3.1 | 13 | 4.29% | 0.029 px |
+| *for comparison:* both networks fp16, CoreML on the GPU | 109.3 | 2.0 | 2 | 1.29% | 0.005 px |
+
+"Mice changed" are mice found in only one of the two runs, or moved by more than 10 px. In the exact setting, 92% of keypoints are identical to the bit.
+
+- **The fast setting keeps the centroid network in fp32 on purpose.** With the centroid network on the Neural Engine and the instance network in fp32, 13 mice still changed and 3.0% of keypoints moved. With it the other way round, no mice changed. A centroid that moves slightly shifts the whole crop the instance network sees.
+- **Both devices at once:** the Neural Engine and the GPU run in parallel only from separate processes; coremltools holds Python's interpreter lock during each prediction, so two threads gained nothing. Two processes, one on each device, each working on its own frames, reached about 260 frames/s together (Neural Engine 154.6, GPU 104.4).
+
+**Against human labels,** every setting was as accurate as sleap-nn as-is. These are the instance model's 100 labelled validation frames, 293 mice with 12 body parts each. Each labelled mouse is matched to the nearest prediction:
+
+| Setting | Labelled mice missed | Median error | 90th percentile | 95th percentile | Within 5 px |
+|---|---:|---:|---:|---:|---:|
+| sleap-nn as-is | 8 | 3.81 px | 12.24 px | 19.32 px | 63.9% |
+| exact | 8 | 3.81 px | 12.24 px | 19.32 px | 63.9% |
+| fast | 8 | 3.81 px | 12.21 px | 19.10 px | 63.9% |
+| fastest | 8 | 3.82 px | 12.23 px | 19.10 px | 63.8% |
+
+The model's own error, a median of 3.8 px from where a person clicked, is about 100 times the differences fp16 makes (0.005–0.03 px). The keypoints that move by more than a pixel are mostly ones the model is unsure of, and they move either way.
+
+CoreML isn't in campy (`campy-infer`, `campy-live`) or in sleap-nn yet. These runs used a small CoreML stand-in for sleap-nn's PyTorch backend. The proposal for sleap-nn, with the three settings and `exact` as the default, is [talmolab/sleap-nn discussion 807](https://github.com/talmolab/sleap-nn/discussions/807).
+
 ## What to use
 
 1. **Copy frames to the GPU before predicting.** It's the cheapest change: 2.2× with no new packages.
@@ -153,6 +216,7 @@ sleap-nn as-is moves 2% of keypoints because of its crop-size rounding bug ([Liv
 3. **Fix the crop-size rounding.** It costs no time, and the results stop depending on the batch size.
 4. **For the most speed, use campy's fixed crops with a compiled engine** (TensorRT on NVIDIA, `torch.compile` on AMD) and a GPU video decoder: 11–15× on data-centre GPUs, 6–7× on a benchtop PC. On AMD it also avoids slow first runs.
 5. **Skip** sleap-nn's `use_compile`, CUDA graphs and extra decoder processes.
+6. **On a Mac, the lever is CoreML,** not changes inside PyTorch: 1.9× with no change in results, and up to 3.1× on the Neural Engine ([On a Mac](#on-a-mac-apple-silicon)). Neither campy nor sleap-nn has it yet. Don't use channels-last on a Mac.
 
 ## How to run it
 
