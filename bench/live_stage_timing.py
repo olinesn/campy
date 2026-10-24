@@ -92,7 +92,7 @@ import argparse, json, os, sys, time, atexit
 
 import numpy as np
 
-from campy import live
+from campy import live, strictjson
 
 ORDER = ["read", "upload", "cen_pre", "cen_norm", "cen_copyin", "cen_fwd", "cen_net", "cen_peaks", "sizematch", "crop",
 	"ins_pre", "ins_norm", "ins_copyin", "ins_fwd", "ins_net", "ins_peaks", "between", "replay",
@@ -492,13 +492,13 @@ def Save(a, st):
 	log = a.stages + ".json" # campy-live's summary, when --out is the same
 	try:
 		with open(log) as f:
-			s = json.load(f)
+			s = strictjson.load(f)
 		summary["campy_live"] = {k: s.get(k) for k in ("sets", "skipped", "inference_ms", "pose3d_ms",
 			"latency_from_last_frame_ms", "latency_to_3d_from_last_frame_ms", "cuda_graphs")}
 	except (OSError, ValueError):
 		pass
 	with open(a.stages + ".stages.json", "w") as f:
-		json.dump(summary, f, indent=1)
+		strictjson.dump(summary, f, indent=1)
 	print("stage times in {}.stages.json".format(a.stages), file=sys.stderr)
 
 
@@ -648,7 +648,7 @@ def Kernels(a):
 	result = {"gpu_copy_GB_s": bw, "gpu_fp16_matmul_TFLOP_s": tf, "sets": a.sets, "forward_gpu_ms_per_set": whole,
 		"layers": rows, "top_kernels": kernels[:40]}
 	with open(a.out, "w") as f:
-		json.dump(result, f, indent=1)
+		strictjson.dump(result, f, indent=1)
 	print("forward GPU ms per set:", {k: round(v, 3) for k, v in whole.items()})
 	print("{:<58} {:>7} {:>7} {:>8} {:>7} {:>6} {:>6}".format("layer", "ms/set", "MB/set", "GFLOP", "GB/s", "TF/s", "F/B"))
 	for r in rows[:30]:

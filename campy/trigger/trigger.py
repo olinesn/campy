@@ -3,7 +3,7 @@ Trigger nexus
 """
 
 import json, logging, os
-from campy import configurator, newfiles
+from campy import configurator, newfiles, strictjson
 from campy.utils.utils import Say
 from campy.trigger.arduino import TriggerError, TriggerInterrupted
 
@@ -65,7 +65,7 @@ def SaveStart(params, ready, missing, startedNs):
 	os.makedirs(params["videoFolder"], exist_ok=True)
 	path = os.path.join(params["videoFolder"], newfiles.TRIGGER_FILE)
 	with newfiles.Open(path, "w") as f: # never over another recording's
-		json.dump(record, f, indent=2)
+		strictjson.dump(record, f, indent=2)
 	return path
 
 

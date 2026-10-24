@@ -45,7 +45,7 @@ recording, it watches on to its end).
 
 import argparse, collections, json, os, sys, time
 
-from campy import children, livefeed, livehealth, liveresults, notify, stopfile
+from campy import children, livefeed, livehealth, liveresults, notify, stopfile, strictjson
 
 OFFSET_HOLD_S = 10.0
 COUNTS_HOLD_S = 30.0
@@ -273,7 +273,7 @@ def RecordingFolder(readers):
 	folders = set()
 	for reader in readers:
 		try:
-			folder = json.loads(reader.Description() or "{}").get("folder")
+			folder = strictjson.loads(reader.Description() or "{}").get("folder")
 		except (ValueError, AttributeError):
 			folder = None
 		if not folder:

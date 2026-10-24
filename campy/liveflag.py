@@ -93,7 +93,7 @@ import argparse, csv, json, os, sys
 
 import numpy as np
 
-from campy import liveexport, pose3d
+from campy import liveexport, pose3d, strictjson
 
 REASONS = ("missed", "swap", "jump", "unmatched", "disagree", "extra", "fewer", "low_score")
 NEEDS_3D = ("missed", "swap", "jump", "unmatched", "disagree")
@@ -570,7 +570,7 @@ def Run(s):
 	WriteEvents(os.path.join(out, "events.csv"), logs, events, picked)
 	sample = SampleJson(logs, flags, events, picked, s)
 	with open(os.path.join(out, "sample.json"), "w") as f:
-		json.dump(sample, f, indent=1)
+		strictjson.dump(sample, f, indent=1)
 	Report(logs, flags, events, picked, s)
 	Say("Written: {}".format(out))
 	return sample

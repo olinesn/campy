@@ -37,7 +37,7 @@ import os, re, sys, json, time, shutil, argparse, tempfile, subprocess, contextl
 
 import numpy as np
 
-from campy import writer, sweep
+from campy import writer, sweep, strictjson
 
 
 # ------------------------------------------------------------------ the clip
@@ -263,7 +263,7 @@ def Main(argv=None):
 	print("\nenc fps is one stream on its own; campy-encode-sweep measures streams running together.")
 	if args.json:
 		with open(args.json, "w") as f:
-			json.dump({"source": source, "width": w, "height": h, "fps": fps, "frames": len(frames),
+			strictjson.dump({"source": source, "width": w, "height": h, "fps": fps, "frames": len(frames),
 				"rows": rows}, f, indent=1)
 		print("Saved to {}.".format(args.json))
 

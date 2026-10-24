@@ -241,7 +241,8 @@ def test_infinity_and_nan_are_written_as_strict_json(tmp_path, monkeypatch):
 	# The text gives the number back, to Python as to JavaScript's Number()
 	assert float(data["inf"]) == np.inf and float(data["minus"]) == -np.inf and np.isnan(float(data["nan"]))
 	# A number Strict missed fails the write (and so a test), not a reader
-	monkeypatch.setattr(manifest, "Strict", lambda data: data)
+	from campy import strictjson
+	monkeypatch.setattr(strictjson, "Strict", lambda data: data)
 	with pytest.raises(ValueError, match="JSON compliant"):
 		f.Update(lambda old: {"missed": float("inf")})
 	assert strict_json(path.read_text()) == data
@@ -512,7 +513,7 @@ def test_campy_live_writes_its_session_into_the_recording(tmp_path, monkeypatch)
 	assert data["options"]["--fixed-crops"]["defaultChanged"]["in"] == "2.1.0"
 	assert data["feed"]["cameras"] == ["Camera0", "Camera1", "Camera2"]
 	assert data["end"]["log"] == out + ".npy" and data["end"]["sets"] > 0
-	assert json.loads(open(out + ".json").read())["session"] == str(recording / "campy-live-session.json")
+	assert strict_json(open(out + ".json").read())["session"] == str(recording / "campy-live-session.json")
 	# A second campy-live on the same recording gets a file of its own
 	assert manifest.LiveSession.Place(str(recording), out).endswith("campy-live-session_2.json")
 	found = manifest.Read(str(recording))
@@ -541,8 +542,24 @@ def test_campy_live_tracks_from_the_first_frame_while_its_session_is_written(tmp
 	assert data["options"]["--wait-sec"] == {"value": 30.0, "source": "command line"}
 	assert data["status"] == "complete" and data["campy"]["path"].endswith("campy")
 	assert data["host"]["packages"]["numpy"] and data["models"] == {} and data["end"]["sets"] == len(rows)
-	assert json.loads(open(out + ".json").read())["session"] == out + ".session.json"
+	assert strict_json(open(out + ".json").read())["session"] == out + ".session.json"
 	assert "How this run is made" in capsys.readouterr().out
+
+
+def test_campy_live_writes_its_summary_as_strict_json(tmp_path, monkeypatch):
+	# campy-live's summary (<log>.json) as its session file: a NaN or an
+	# infinity in it (a timing, the feed's frame rate) is written as text
+	import test_livefeed
+	from campy import live
+	summary = live.Log.Summary
+	monkeypatch.setattr(live.Log, "Summary", lambda self, since=0: dict(summary(self, since),
+		inference_ms={"p50": float("nan"), "max": np.float32("inf")}))
+	out = str(tmp_path / "live")
+	assert test_livefeed.run_live(test_livefeed.name(), out, ["--model", "none", "--report-sec", "0",
+		"--engine", "off"], frames=30) == 0
+	data = strict_json(open(out + ".json").read())
+	assert data["inference_ms"] == {"p50": "NaN", "max": "Infinity"} and data["sets"] > 0
+	assert strict_json(open(out + ".session.json").read())["end"]["inference_ms"] == {"p50": "NaN", "max": "Infinity"}
 
 
 def test_campy_live_without_a_recording_folder_writes_beside_its_log(tmp_path):

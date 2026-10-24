@@ -49,6 +49,8 @@ import argparse, json, os, sys, tempfile
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
+from campy import strictjson
+
 ANCHOR = "Trunk"
 
 
@@ -353,7 +355,7 @@ def Main(argv=None):
 	Table(results)
 	if args.out:
 		with open(args.out, "w") as f:
-			json.dump(dict(test=os.path.abspath(args.test), pairs={n: list(f_) for n, f_ in pairs},
+			strictjson.dump(dict(test=os.path.abspath(args.test), pairs={n: list(f_) for n, f_ in pairs},
 				live_args=args.live_args, match_px=args.match_px, wrong_px=args.wrong_px, results=results), f, indent=1)
 		Say("Written: {}".format(args.out))
 	return 0

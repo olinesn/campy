@@ -20,7 +20,7 @@ GPU (CUDA or ROCm) and sleap-nn.
 """
 import argparse, json, sys, time
 
-from campy import live
+from campy import live, strictjson
 
 p = argparse.ArgumentParser()
 p.add_argument("--pools", required=True, choices=["shared", "separate", "eager"])
@@ -99,7 +99,7 @@ result = dict(
     ms_p50=round(float(np.percentile(ms, 50)), 3), ms_p99=round(float(np.percentile(ms, 99)), 3),
     ms_mean=round(float(ms.mean()), 3), ms_max=round(float(ms.max()), 3),
     gpu_clock=clock.Describe() if clock else None)
-print(json.dumps(result, indent=1))
+print(strictjson.dumps(result, indent=1))
 if a.json:
     with open(a.json, "w") as f:
-        json.dump(result, f, indent=1)
+        strictjson.dump(result, f, indent=1)

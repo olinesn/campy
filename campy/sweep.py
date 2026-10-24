@@ -23,7 +23,7 @@ import os, sys, json, time, queue, socket, shutil, platform, argparse, datetime,
 import multiprocessing as mp
 import numpy as np
 
-from campy import writer, configurator
+from campy import writer, configurator, strictjson
 
 
 ENCODER_MAKES = ("cpu", "vaapi", "nvidia", "intel", "amd")
@@ -349,7 +349,7 @@ def SaveEntries(path, entries, host):
 	table = None
 	try:
 		with open(path) as f:
-			table = json.load(f)
+			table = strictjson.load(f)
 	except (OSError, ValueError):
 		pass
 	if not table or table.get("host", {}).get("hostname") != host["hostname"]:
@@ -366,7 +366,7 @@ def SaveEntries(path, entries, host):
 	table["entries"] = kept + entries
 	os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
 	with open(path, "w") as f:
-		json.dump(table, f, indent=1)
+		strictjson.dump(table, f, indent=1)
 	return table
 
 

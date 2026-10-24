@@ -31,7 +31,7 @@ FAILs; "warn" reports and records anyway; "off" skips the check.
 import os, re, sys, json, shlex, shutil, socket, tempfile, subprocess
 from collections import OrderedDict
 
-from campy import writer, configurator
+from campy import writer, configurator, strictjson
 from campy.cameras import ratcam, unicam
 
 
@@ -419,7 +419,7 @@ def CapacityPath(params):
 def LoadCapacity(path):
 	try:
 		with open(path) as f:
-			return json.load(f)
+			return strictjson.load(f)
 	except (OSError, ValueError):
 		return None
 

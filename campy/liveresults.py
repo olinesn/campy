@@ -34,7 +34,7 @@ import json
 
 import numpy as np
 
-from campy import livefeed
+from campy import livefeed, strictjson
 
 KIND, VERSION = "campy-live results", 1
 DEFAULT_SLOTS = 64 # 2 s of rows at 30 sets a second
@@ -60,7 +60,7 @@ class Publisher:
 		self.rows_type = np.dtype(rows_type)
 		self.count = 0 # rows written
 		self.writer = None
-		text = json.dumps(dict(kind=KIND, version=VERSION, row=np.lib.format.dtype_to_descr(self.rows_type),
+		text = strictjson.dumps(dict(kind=KIND, version=VERSION, row=np.lib.format.dtype_to_descr(self.rows_type),
 			**description), separators=(",", ":"))
 		try:
 			self.writer = livefeed.RingWriter(name, (1, self.rows_type.itemsize, 1), np.uint8, slots,
@@ -101,7 +101,7 @@ class Results:
 		self.name = name
 		self.reader = livefeed.RingReader(name)
 		try:
-			description = json.loads(self.reader.Description() or "{}")
+			description = strictjson.loads(self.reader.Description() or "{}")
 			if description.get("kind") != KIND:
 				raise ValueError("{} is not campy-live's results".format(name))
 			if description.get("version") != VERSION:

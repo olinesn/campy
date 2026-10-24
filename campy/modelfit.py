@@ -47,6 +47,8 @@ import argparse, hashlib, json, os, sys
 
 import numpy as np
 
+from campy import strictjson
+
 SATURATED = 250
 NEAR_PX = 10
 QUANTILES = (5, 50, 95)
@@ -216,7 +218,7 @@ def ReadStats(path):
 		raise FitError("no image stats at {}: make them with campy-model-fit stats <training package> --out {}"
 			.format(path, path))
 	with open(path) as f:
-		return json.load(f)
+		return strictjson.load(f)
 
 
 def Main(argv=None):
@@ -245,7 +247,7 @@ def Main(argv=None):
 			doc = dict(kind="campy-model-fit stats", package=os.path.basename(args.package), gamma=args.gamma,
 				encoded=args.encoded, stats=stats)
 			with open(out, "w") as f:
-				json.dump(doc, f, indent=1)
+				strictjson.dump(doc, f, indent=1)
 			Say("{} frames: mean brightness {p5:.0f}-{p95:.0f} (5th-95th percentile), animals {a}. Written: {o}".format(
 				stats["frames"], a="{:.0f}".format(stats["animal"]["p50"]) if stats["animal"] else "-", o=out,
 				**stats["mean"]))
@@ -256,10 +258,10 @@ def Main(argv=None):
 				data = {}
 				if os.path.isfile(card):
 					with open(card) as f:
-						data = json.load(f)
+						data = strictjson.load(f)
 				data.update(id=mid, image_stats="image_stats.json", training_package=os.path.basename(args.package))
 				with open(card, "w") as f:
-					json.dump(data, f, indent=1)
+					strictjson.dump(data, f, indent=1)
 				Say("Model id {} (model.json).".format(mid))
 			return 0
 		train = ReadStats(args.model)
@@ -281,7 +283,7 @@ def Main(argv=None):
 		bad += bool(warn)
 	if args.out:
 		with open(args.out, "w") as f:
-			json.dump(dict(training=train, cameras=result), f, indent=1)
+			strictjson.dump(dict(training=train, cameras=result), f, indent=1)
 	return 1 if bad else 0
 
 

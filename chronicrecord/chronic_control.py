@@ -25,7 +25,7 @@ Needs pyserial (sudo apt install python3-serial) and the user in the dialout
 group; no sudo, no GPIO on the Pi.
 """
 
-import argparse, glob, json, os, signal, subprocess, sys, time
+import argparse, glob, json, math, os, signal, subprocess, sys, time
 from datetime import datetime
 
 # --- Timing settings (USER EDITABLE), as in chronicControlv13.py ---
@@ -82,6 +82,31 @@ def Settings(overrides=()):
 
 def Us(seconds):
 	return int(round(seconds * 1e6))
+
+
+# status.json is strict JSON, as every JSON file campy writes (campy/strictjson.py,
+# not imported here: the Pi has no campy). JSON has no infinity or NaN; Python's
+# json writes them as bare words other readers refuse, so they are the text
+# "Infinity", "-Infinity" or "NaN", and read back as the numbers.
+NON_FINITE = {"Infinity": math.inf, "-Infinity": -math.inf, "NaN": math.nan}
+
+
+def StrictJson(data):
+	if isinstance(data, dict):
+		return {k: StrictJson(v) for k, v in data.items()}
+	if isinstance(data, (list, tuple)):
+		return [StrictJson(v) for v in data]
+	if isinstance(data, float) and not math.isfinite(data):
+		return "NaN" if data != data else "Infinity" if data > 0 else "-Infinity"
+	return data
+
+
+def FromStrictJson(data):
+	if isinstance(data, dict):
+		return {k: FromStrictJson(v) for k, v in data.items()}
+	if isinstance(data, list):
+		return [FromStrictJson(v) for v in data]
+	return NON_FINITE.get(data, data) if isinstance(data, str) else data
 
 
 def Rise(start, k, rate_mhz):
@@ -278,7 +303,7 @@ class Session:
 			end_requested=self.end_requested, end_sent=self.end_sent is not None, pulses=self.pulses, done=self.done, error=self.error)
 		path = os.path.join(self.state_dir, "status.json")
 		with open(path + ".new", "w") as f:
-			json.dump(status, f)
+			json.dump(StrictJson(status), f, allow_nan=False)
 		os.replace(path + ".new", path)
 
 	# --- what the board reports ---
@@ -435,7 +460,7 @@ class Session:
 def ReadStatus(state_dir):
 	try:
 		with open(os.path.join(state_dir, "status.json")) as f:
-			return json.load(f)
+			return FromStrictJson(json.load(f))
 	except (OSError, ValueError):
 		return None
 

@@ -38,7 +38,7 @@ import argparse, itertools, json, math, sys, time, warnings
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from campy import pose3d
+from campy import pose3d, strictjson
 
 
 def BestGroupings(kp, scores, cams, animals, min_score):
@@ -141,7 +141,7 @@ def Main(argv=None):
 	args = p.parse_args(argv)
 	r = np.load(args.log)
 	with open(args.log[:-4] + ".json") as f:
-		summary = json.load(f)
+		summary = strictjson.load(f)
 	cams = pose3d.LoadCalibration(args.calibration, summary["cameras"])
 	kp, scores = r["keypoints"].astype(float), r["peak_vals"].astype(float)
 	animals = r["members"].shape[1] if "members" in r.dtype.names else kp.shape[2]

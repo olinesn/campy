@@ -47,7 +47,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from campy import bookmarks, children, clock, livefeed, livehealth, liveresults, session, stopfile
+from campy import bookmarks, children, clock, livefeed, livehealth, liveresults, session, stopfile, strictjson
 
 PORT = 8765
 THUMB_WIDTH = 192 # px, each camera's thumbnail
@@ -239,7 +239,7 @@ def RecordingStatus(folder):
 		if time.time() - os.path.getmtime(path) > STATUS_FRESH_S:
 			return None
 		with open(path) as f:
-			status = json.load(f)
+			status = strictjson.load(f)
 	except (OSError, ValueError):
 		return None
 	where = (status.get("session") or {}).get("folder")
@@ -259,7 +259,7 @@ def Alerts(folder, keep=200):
 			continue
 		for line in lines:
 			try:
-				event = json.loads(line)
+				event = strictjson.loads(line)
 			except ValueError:
 				continue
 			key = event.get("key")
@@ -282,7 +282,7 @@ def Orphan():
 	"""
 	try:
 		with open(os.path.join(session.CampyFolder(), "status", "launcher.json")) as f:
-			status = json.load(f)
+			status = strictjson.load(f)
 	except (OSError, ValueError):
 		return None
 	acquire = (status.get("parts") or {}).get("acquire") or {}
@@ -386,7 +386,7 @@ class Panel:
 			args += ["--experiment", experiment]
 		ids = [a.strip() for a in str(fields.get("animal_ids") or "").replace(";", ",").split(",") if a.strip()]
 		if ids:
-			args += ["--animalIds", json.dumps(ids)]
+			args += ["--animalIds", strictjson.dumps(ids)]
 		notes = " ".join(str(fields.get("notes") or "").split())
 		if notes:
 			args += ["--notes", notes]
@@ -490,7 +490,7 @@ class Panel:
 					panel.token)
 
 			def Send(self, code, body, kind="application/json"):
-				data = body if isinstance(body, bytes) else json.dumps(body).encode()
+				data = body if isinstance(body, bytes) else strictjson.dumps(body).encode()
 				self.send_response(code)
 				self.send_header("Content-Type", kind)
 				self.send_header("Content-Length", str(len(data)))

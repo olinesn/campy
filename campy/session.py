@@ -70,7 +70,7 @@ from datetime import datetime
 
 import yaml
 
-from campy import children, newfiles, stopfile
+from campy import children, newfiles, stopfile, strictjson
 
 SCHEMA = 1 # launcher.json's: bumped when a field changes meaning
 VERSION = "campy-launcher/{}".format(SCHEMA)
@@ -306,7 +306,7 @@ def LivePython(live):
 		return os.environ["CAMPY_LIVE_PYTHON"], "CAMPY_LIVE_PYTHON"
 	try:
 		with open(EnvsFile()) as f:
-			registered = json.load(f)["live"]["python"]
+			registered = strictjson.load(f)["live"]["python"]
 		return registered, "registered in {}".format(EnvsFile())
 	except (OSError, ValueError, KeyError, TypeError):
 		pass
@@ -335,7 +335,7 @@ def Register(argv=None):
 	os.makedirs(CampyFolder(), exist_ok=True)
 	try:
 		with open(EnvsFile()) as f:
-			envs = json.load(f)
+			envs = strictjson.load(f)
 	except (OSError, ValueError):
 		envs = {}
 	envs["live"] = {"python": sys.executable, "campy": here,
@@ -353,7 +353,7 @@ def WriteJson(path, value):
 	# In one step: written beside it, then moved into place (retried a moment on Windows, where a reader has it open)
 	tmp = "{}.{}.tmp".format(path, os.getpid())
 	with open(tmp, "w") as f:
-		json.dump(value, f, indent=1)
+		strictjson.dump(value, f, indent=1)
 	for attempt in range(20):
 		try:
 			os.replace(tmp, path)
@@ -537,7 +537,7 @@ def LastAlert(path, key):
 		return None
 	for line in reversed(lines):
 		try:
-			event = json.loads(line)
+			event = strictjson.loads(line)
 		except ValueError:
 			continue
 		if event.get("key") == key:

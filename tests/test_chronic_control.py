@@ -19,6 +19,24 @@ SHORT = ["TOTAL_BASELINE=1", "CAMERA_LEAD_IN=0.5", "STANDARD_STIM_DURATION=1", "
 	"INTERVAL=3.5", "TOTAL_DURATION=7"]
 
 
+def test_status_json_is_strict_json_and_reads_back_as_numbers(tmp_path):
+	# As every JSON file campy writes (campy/strictjson.py): an infinite or NaN
+	# number is the text, and the status command gets the number back
+	import json, math
+	status = {"state": "running", "session_s": math.nan, "ends_s": math.inf, "bouts": [1.5, -math.inf], "pid": 7}
+	(tmp_path / "status.json").write_text(json.dumps(cc.StrictJson(status), allow_nan=False))
+	def refuse(word):
+		raise ValueError("not JSON: " + word)
+	written = json.loads((tmp_path / "status.json").read_text(), parse_constant=refuse)
+	assert written["session_s"] == "NaN" and written["ends_s"] == "Infinity" and written["bouts"] == [1.5, "-Infinity"]
+	back = cc.ReadStatus(str(tmp_path))
+	assert math.isnan(back["session_s"]) and back["ends_s"] == math.inf and back["bouts"] == [1.5, -math.inf]
+	assert back["state"] == "running" and back["pid"] == 7
+	# One written before (bare words) reads the same
+	(tmp_path / "status.json").write_text('{"ends_s": Infinity}')
+	assert cc.ReadStatus(str(tmp_path))["ends_s"] == math.inf
+
+
 def test_the_plan_is_chronic_control_v13s_session():
 	s = cc.Settings()
 	bouts, trains, edges = cc.Plan(s)

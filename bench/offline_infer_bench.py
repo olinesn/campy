@@ -81,6 +81,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from campy import strictjson  # noqa: E402
 
 
 # ---------------------------------------------------------------- decoding
@@ -861,16 +862,16 @@ def Main(argv=None):
 	args = p.parse_args(argv)
 	if args.cmd == "compare":
 		for run in args.runs:
-			print(json.dumps({"run": os.path.basename(run), **Compare(args.base, run)}))
+			print(strictjson.dumps({"run": os.path.basename(run), **Compare(args.base, run)}))
 		return
 	os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
 	Watchdog(args.stall)
 	report = Run(args)
 	with open(args.out + ".json", "w") as f:
-		json.dump(report, f, indent=1, default=str)
+		strictjson.dump(report, f, indent=1, default=str)
 	short = {k: report.get(k) for k in ("fps", "end_to_end_fps", "decode_wait_s", "loop_s", "cpu_cores_used",
 		"gpu_sampled", "stages_s", "found", "to_labels_s", "save_s", "path_text")}
-	print("RESULT", os.path.basename(args.out), json.dumps(short, default=str), flush=True)
+	print("RESULT", os.path.basename(args.out), strictjson.dumps(short, default=str), flush=True)
 
 
 if __name__ == "__main__":

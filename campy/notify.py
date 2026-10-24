@@ -67,6 +67,8 @@ imports this too.
 import argparse, collections, datetime, json, os, re, sys, threading, time, queue
 import urllib.error, urllib.request
 
+from campy import strictjson
+
 INFO, WARNING, CRITICAL = "info", "warning", "critical"
 LEVELS = {INFO: 0, WARNING: 1, CRITICAL: 2}
 
@@ -135,7 +137,7 @@ def LoadSettings(path=None, say=None):
 def Post(url, body=None, headers=None, timeout=TIMEOUT_S):
 	# One HTTP request: POST JSON (or form-less POST with body None); returns (status, text). An error status
 	# raises SendError, with Retry-After when the service gave one
-	data = json.dumps(body).encode() if body is not None else b""
+	data = strictjson.dumps(body).encode() if body is not None else b""
 	request = urllib.request.Request(url, data=data, method="POST", headers=dict(headers or {}))
 	if body is not None:
 		request.add_header("Content-Type", "application/json; charset=utf-8")
@@ -554,7 +556,7 @@ class Notifier:
 			"text": re.sub(r"^:[a-z_]+: (\*[^*]*\*: )?", "", body) if body else None}
 		try:
 			with open(self.log, "a", encoding="utf-8") as f:
-				f.write(json.dumps(line) + "\n")
+				f.write(strictjson.dumps(line) + "\n")
 		except OSError:
 			pass
 
@@ -565,7 +567,7 @@ class Notifier:
 			return
 		try:
 			with open(self.state, encoding="utf-8") as f:
-				saved = json.load(f)
+				saved = strictjson.load(f)
 			for key, a in saved.get("alerts", {}).items():
 				alert = Alert(key, a["text"], a["severity"], a["since"])
 				alert.said, alert.reminded = a.get("said"), a.get("reminded", a["since"])
@@ -585,7 +587,7 @@ class Notifier:
 		try:
 			os.makedirs(os.path.dirname(os.path.abspath(self.state)), exist_ok=True)
 			with open(self.state + ".tmp", "w", encoding="utf-8") as f:
-				json.dump(saved, f)
+				strictjson.dump(saved, f)
 			os.replace(self.state + ".tmp", self.state)
 		except OSError as e:
 			self.say("Alerts: could not save {}: {}".format(self.state, e))

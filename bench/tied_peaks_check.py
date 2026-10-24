@@ -221,8 +221,9 @@ def main():
                                        for g, v in same.items()},
                "fp16_strict_run_twice": {"animals": again[0], "keypoints_differ": again[1], "largest_px": again[2]},
                "modes": {m: c.summary() for m, c in cmp.items()}}
+    from campy import strictjson
     with open(args.json, "w") as f:
-        json.dump(results, f, indent=1)
+        strictjson.dump(results, f, indent=1)
     print("{} sets ({} images), {} centroids in fp32 (sleap-nn's peaks)".format(sets, results["images"], reference_total))
     for m, c in results["modes"].items():
         print("  {:12s} missed {:4d}  extra {:4d}  centroid shift p50/p99 {}/{} px  keypoint shift p50/p99 {}/{} px".format(

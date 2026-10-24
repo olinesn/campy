@@ -796,7 +796,7 @@ def main():
 
     def save():
         with open(json_path, "w") as f:
-            json.dump(results, f, indent=1, default=str)
+            f.write(sib.strict_json_dumps(results, indent=1, default=str))
 
     # Every engine runs on one stream of torch's own, which the timer waits on. Not the
     # default stream: on ROCm that is the null stream (handle 0), and MIGraphX's

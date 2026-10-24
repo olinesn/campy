@@ -27,7 +27,7 @@ Needs an NVIDIA GPU (cuda) and sleap-nn. Exit status 0: passed.
 """
 import argparse, json, sys, threading, time
 
-from campy import live
+from campy import live, strictjson
 
 p = argparse.ArgumentParser()
 p.add_argument("--frames", type=int, default=3, help="Cameras: frames per set.")
@@ -90,9 +90,9 @@ result = dict(
 passed = (error is None and not thread_errors and len(rounds) == a.rounds
     and all(r["spins"] > 0 and r["max_abs_diff"] <= 1e-2 for r in rounds))
 result["passed"] = passed
-print(json.dumps({k: v for k, v in result.items() if k != "rounds"}, indent=1))
+print(strictjson.dumps({k: v for k, v in result.items() if k != "rounds"}, indent=1))
 if a.json:
     with open(a.json, "w") as f:
-        json.dump(result, f, indent=1)
+        strictjson.dump(result, f, indent=1)
 print("PASSED" if passed else "FAILED")
 sys.exit(0 if passed else 1)

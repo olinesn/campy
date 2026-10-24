@@ -3,6 +3,7 @@
 import PySpin
 from campy.cameras import unicam
 from campy.utils.utils import Say
+from campy import strictjson
 import os, io, sys, json, time, logging, contextlib
 
 
@@ -1308,7 +1309,7 @@ def ReadFrameRateNote(path):
 		return None
 	try:
 		with open(path) as f:
-			note = json.load(f)
+			note = strictjson.load(f)
 		return {key: note[key] for key in ("enabled", "rate", "auto")}
 	except (OSError, ValueError, KeyError, TypeError) as e:
 		logging.error("Caught error at cameras/flir.py ReadFrameRateNote, reading {}: {}".format(path, e))
@@ -1324,7 +1325,7 @@ def WriteFrameRateNote(path, cam_params, found):
 		os.makedirs(NOTE_FOLDER, exist_ok=True)
 		# Whole or not at all: a note cut short by a crash would be no note
 		with open(path + ".tmp", "w") as f:
-			json.dump(note, f, indent=1)
+			strictjson.dump(note, f, indent=1)
 		os.replace(path + ".tmp", path)
 	except OSError as e:
 		Say("{}: could not write {} ({}). If campy stops without closing this camera, it keeps its frame "

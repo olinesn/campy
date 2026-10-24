@@ -26,7 +26,7 @@ Run it on the rig through its lock.
 """
 import argparse, json, subprocess, sys, time
 import numpy as np
-from campy import live
+from campy import live, strictjson
 
 
 def Frames(videos, shape):
@@ -248,7 +248,7 @@ def Main(argv=None):
 		"time_ms_by_animals_found": {str(k): {m: Ms(v) for m, v in d.items()} | {"sets": len(d["default"])}
 			for k, d in sorted(by_found.items())},
 	}
-	text = json.dumps(summary, indent=2)
+	text = strictjson.dumps(summary, indent=2)
 	print(text)
 	if a.out:
 		with open(a.out, "w") as f:

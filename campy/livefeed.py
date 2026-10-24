@@ -93,6 +93,8 @@ import json, os, sys, time
 import numpy as np
 from multiprocessing import shared_memory
 
+from campy import strictjson
+
 MAGIC = b"CAMPYLV1"
 VERSION = 1
 HEADER_BYTES = 4096
@@ -506,7 +508,7 @@ def Processes(readers):
 	pids = set()
 	for reader in readers:
 		try:
-			d = json.loads(reader.Description() or "{}")
+			d = strictjson.loads(reader.Description() or "{}")
 			pids.update(int(d[k]) for k in ("pid", "parent_pid") if d.get(k))
 		except (ValueError, TypeError, AttributeError):
 			continue
@@ -549,7 +551,7 @@ class Feed:
 		description = {"kind": CAMERA_KIND, "pid": os.getpid(), "parent_pid": os.getppid()}
 		if self.folder and len(self.folder.encode("utf-8")) < DESCRIPTION_BYTES - 200:
 			description["folder"] = self.folder # a path of over 3 kB: said nowhere rather than cut
-		return json.dumps(description)
+		return strictjson.dumps(description)
 
 	def _Make(self, shape, dtype):
 		self.Close()
@@ -595,7 +597,7 @@ def RecordingFolder(readers):
 	folders = set()
 	for reader in readers:
 		try:
-			folder = json.loads(reader.Description() or "{}").get("folder")
+			folder = strictjson.loads(reader.Description() or "{}").get("folder")
 		except (ValueError, AttributeError):
 			folder = None
 		if not folder:
