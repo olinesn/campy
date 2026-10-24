@@ -81,6 +81,14 @@ def test_slp_has_every_frame_in_order(random_model, tmp_path):
 	assert [lf.frame_idx for lf in frames] == list(range(N))
 	assert all(len(lf.instances) == ANIMALS for lf in frames)
 	assert labels.provenance["campy_infer"]["engine"] == "eager"
+	# sleap-nn's provenance fields, and its system_info's, made without
+	# importing the packages sleap-nn only looks up to drop (wandb, Lightning)
+	prov = labels.provenance
+	assert {"sleap_nn_version", "sleap_io_version", "model_type", "source_file", "inference_config"} <= set(prov)
+	assert prov["frame_selection"]["frames_processed"] == N
+	assert set(prov["system_info"]) >= {"python_version", "platform", "pytorch_version", "cuda_version", "accelerator",
+		"gpu_count"}
+	assert prov["system_info"]["accelerator"] in ("cpu", "cuda", "mps")
 	# the keypoints are the models' on that frame: the same frames run again,
 	# read by ffmpeg, give them (frame i's own picture, not a neighbour's)
 	from campy import videoread
@@ -105,3 +113,31 @@ def test_the_last_short_batch_is_not_padded_into_the_slp(random_model, tmp_path)
 	infer.RunVideo(model, video, out, args)
 	labels = sio.load_slp(out, open_videos=False)
 	assert sorted(lf.frame_idx for lf in labels.labeled_frames) == list(range(40))
+
+
+def test_provenance_imports_no_unused_packages():
+	# sleap-nn's own system info imports each of 8 packages to find its
+	# folder, about 750 modules: seconds on network storage, every job
+	import subprocess, sys
+	pytest.importorskip("torch")
+	pytest.importorskip("sleap_nn")
+	code = """
+import sys, datetime
+sys.path[:0] = {path!r}
+from campy import infer
+class A: peak_threshold, max_instances = 0.2, 3
+class P:
+	model_paths, device = ["c", "i"], "cpu"
+m = infer.Model.__new__(infer.Model)
+import torch
+import sleap_nn.inference.provenance # loaded with the models, in a real run
+m.torch, m.args, m.B, m.predictor, m.layer = torch, A, 16, P, object()
+before = set(sys.modules)
+prov = m.Provenance("v.mp4", datetime.datetime.now(), datetime.datetime.now(), 10, {{}})
+new = set(sys.modules) - before
+assert "system_info" in prov, prov
+print(sorted(n for n in new if n.split(".")[0] in ("wandb", "pytorch_lightning", "lightning", "kornia")))
+""".format(path=[os.path.dirname(os.path.dirname(os.path.abspath(__file__)))])
+	r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+	assert r.returncode == 0, r.stderr[-2000:]
+	assert r.stdout.strip().splitlines()[-1] == "[]"

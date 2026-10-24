@@ -252,11 +252,14 @@ class Model:
 		"""The video's Labels, as sleap-nn track makes them: every frame read,
 		with its predicted instances (none where no animal), the provenance."""
 		labels = self.predictor.to_labels(outputs, videos=[SlpVideo(path)], keep_empty_frames=True)
+		params = {"peak_threshold": self.args.peak_threshold, "max_instances": self.args.max_instances,
+			"batch_size": self.B}
 		try:
-			prov = self.predictor._build_inference_provenance(source=path, start_time=started, end_time=ended,
-				n_frames=len(labels.labeled_frames), inference_params={"peak_threshold": self.args.peak_threshold,
-				"max_instances": self.args.max_instances, "batch_size": self.B,
-				**self.predictor._preprocess_provenance_params()})
+			params.update(self.predictor._preprocess_provenance_params())
+		except Exception:
+			pass
+		try:
+			prov = self.Provenance(path, started, ended, len(labels.labeled_frames), params)
 		except Exception:
 			prov = {}
 		from campy import manifest
@@ -267,6 +270,35 @@ class Model:
 			"engine": self.engine, "notes": list(self.notes)}
 		labels.provenance = prov
 		return labels
+
+	def Provenance(self, path, started, ended, frames, params):
+		"""
+		The provenance sleap-nn's predictor gives its Labels, the same fields.
+		Its system_info is made here, once per run, from the 7 values sleap-nn
+		keeps: sleap-nn's own way first reads 8 packages' details, which it
+		then drops, importing each package to find its folder. On a cluster
+		that was about 750 modules (wandb, PyTorch Lightning) read from
+		network storage: 3.5 s, or 14 s on a node that hadn't read them yet,
+		on the first video of every job.
+		"""
+		from sleap_nn.inference.provenance import build_inference_provenance
+		torch = self.torch
+		prov = build_inference_provenance(model_paths=self.predictor.model_paths, model_type=type(self.layer).__name__,
+			device=self.predictor.device, start_time=started, end_time=ended, input_path=path, frames_processed=frames,
+			inference_params=params, include_system_info=False)
+		if not hasattr(self, "systemInfo"):
+			import platform
+			cuda = torch.cuda.is_available()
+			mps = not cuda and hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+			info = {"python_version": sys.version.split()[0], "platform": platform.platform(),
+				"pytorch_version": torch.__version__, "cuda_version": torch.version.cuda if cuda else None,
+				"accelerator": "cuda" if cuda else "mps" if mps else "cpu",
+				"gpu_count": torch.cuda.device_count() if cuda else 1 if mps else 0}
+			if cuda and info["gpu_count"]:
+				info["gpus"] = [torch.cuda.get_device_name(i) for i in range(info["gpu_count"])]
+			self.systemInfo = info
+		prov["system_info"] = dict(self.systemInfo)
+		return prov
 
 
 def SlpVideo(path):
