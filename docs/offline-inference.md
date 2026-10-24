@@ -10,7 +10,7 @@
 - **campy-live's fixed-shape crops with TensorRT run 11–15× faster** (1,135 frames/s on the A100, 1,524 on the L40S). The whole 10-minute video takes 25 s on the A100, including loading the models and writing the `.slp`.
 - **On a benchtop PC the same approach gives 6–7×** (about 450 frames/s, a 10-minute camera video in 40 s), on both the GMKtec EVO-X2 (AMD, `torch.compile`) and the Dell Pro Max Slim FCS1250 (NVIDIA RTX 2000 Ada, TensorRT). **It runs just as fast while the PC records 3 cameras at 60 fps, and the recording dropped no frames.**
 - **`campy-infer` runs it for real batch jobs** ([How to run it](#how-to-run-it)): a 10-minute camera video, from decoding it to its saved `.slp`, in 25 s on the A100 (723–730 frames/s), and 43–45 s on the benchtop PCs (404–417 frames/s). With the bench's settings it gives the bench's predictions to the bit, and it is about as close to an exact fp32 reference as `sleap-nn track`: closer on two cameras of a session, a little further on the third.
-- Accuracy stays within the differences sleap-nn already has. sleap-nn's own output moves 2% of keypoints by more than a pixel because of its crop-size rounding bug, and fp16 with the tied-peaks fix moves 1.5–3.4%. fp16 *without* that fix loses 0.8% of the animals.
+- Accuracy stays within the differences sleap-nn already has. sleap-nn's own output moves 2% of keypoints by more than a pixel because of its crop-size rounding bug, and fp16 with the tied-peaks fix moves 1.5–3.4%; those keypoints move about 3 px (median), and the median keypoint moves under 0.02 px. fp16 *without* that fix loses 0.8% of the animals.
 
 ## The test
 
@@ -131,16 +131,18 @@ All four found the same 29,318 mice.
 
 Each run against an exact reference: fp32, every crop cut at its true size. A100, 6,000 frames, 29,322 mice. Mice are matched frame by frame by their centroids.
 
-| Setup | Mice found in only one run | Keypoints moved > 1 px |
-|---|---:|---:|
-| sleap-nn as-is | 0 | 2.07% |
-| campy fixed crops, fp32 | 0 | 0.01% |
-| fp32 on another GPU (RTX 2000 Ada, EVO-X2), same settings | 18–23 | 0.65% |
-| fp16 without the tied-peaks fix | 235 lost | 2.9% |
-| fp16 + tied peaks, fixed crops | 26 | 1.5% |
-| fp16 + tied peaks + channels-last, sleap-nn's layer (with its crop bug) | 26 | 3.5% |
-| TensorRT fp16 (A100 / RTX 2000 Ada) | 55 / 51 | 3.3% / 3.4% |
-| `torch.compile` fp16, batch 64 (EVO-X2) | 47 | 2.5% |
+| Setup | Mice found in only one run | Keypoints moved > 1 px | Median keypoint move | Median move of those > 1 px |
+|---|---:|---:|---:|---:|
+| sleap-nn as-is | 0 | 2.07% | 0 px | 3.4 px |
+| campy fixed crops, fp32 | 0 | 0.01% | 0 px | 3.2 px |
+| fp32 on another GPU (RTX 2000 Ada, EVO-X2), same settings | 18–23 | 0.65% | 0.004 px | 3.3 px |
+| fp16 without the tied-peaks fix | 235 lost | 2.9% | 0.007 px | 3.3 px |
+| fp16 + tied peaks, fixed crops | 26 | 1.5% | 0.006 px | 3.2 px |
+| fp16 + tied peaks + channels-last, sleap-nn's layer (with its crop bug) | 26 | 3.5% | 0.007 px | 3.3 px |
+| TensorRT fp16 (A100 / RTX 2000 Ada) | 55 / 51 | 3.3% / 3.4% | 0.015 / 0.016 px | 3.3 px |
+| `torch.compile` fp16, batch 64 (EVO-X2) | 47 | 2.5% | 0.014 px | 3.3 px |
+
+The typical keypoint barely moves: the median is under 0.02 px in every setup, and 0 for sleap-nn as-is and campy's fp32 fixed crops, whose keypoints are mostly identical to the reference's to the bit. The keypoints that do move more than a pixel move about 3 px (median), in every setup, sleap-nn as-is included. The 99th percentile is 3.0–3.7 px for the fp16 rows and 3.4 px for sleap-nn as-is. A few keypoints move much further (up to about 270 px, already in sleap-nn as-is). `compare` reports the median and the 99th percentile as `kp_p50` and `kp_p99`; the last column uses the same matched keypoints.
 
 sleap-nn as-is moves 2% of keypoints because of its crop-size rounding bug ([Live tracking](live-tracking.md), `ExactCropSize`). The first animal in a batch sets the crop size for every crop in it, and that size can come out a pixel short, so sleap-nn's results also change with the batch size: batch 64 against batch 16 moved 3.2% of keypoints. Frames copied to the GPU first gave the same mice as sleap-nn as-is, with 90% of keypoints identical to the bit. The 0.8% of mice that fp16 loses without the tied-peaks fix are the ones whose peak is two pixels of equal value ([Live tracking](live-tracking.md)).
 
