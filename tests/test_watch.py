@@ -120,6 +120,10 @@ class Rig:
 class Serial:
 	def __init__(self):
 		self.gone = None
+		self.closed = False
+
+	def close(self):
+		self.closed = True
 
 	@property
 	def in_waiting(self):
@@ -318,6 +322,40 @@ def test_the_trigger_port_is_gone(monkeypatch, tmp_path):
 	assert rig.Sent()[-1] == (":red_circle: *Test rig*: The trigger Arduino on COM3 is gone ([Errno 6] Device not "
 		"configured): it sends no more trigger pulses, so the cameras get no frames. Replug it; campy does not "
 		"restart the trigger mid-recording.")
+
+
+def test_the_trigger_port_comes_back(monkeypatch, tmp_path):
+	# As on the EVO-X2: the port's device file goes with it. Its connection is closed, so that a replug brings it
+	# back under the same name (Linux gives a port still held open's replug the next name, /dev/ttyACM1)
+	serial = Serial()
+	rig = Rig(monkeypatch, tmp_path, systems={"serial": serial}, serialPort="/dev/ttyACM0").Start()
+	gone = {"now": None}
+	rig.watch.port_gone = lambda port: gone["now"]
+	rig.Run(10)
+	serial.gone, gone["now"] = "[Errno 5] Input/output error", "/dev/ttyACM0 is gone"
+	rig.Run(watch.SERIAL_EVERY_S + watch.EVERY_S)
+	assert serial.closed
+	assert rig.Sent()[-1].startswith(":red_circle: *Test rig*: The trigger Arduino on /dev/ttyACM0 is gone ([Errno 5]")
+	gone["now"] = None # replugged
+	rig.Run(watch.SERIAL_EVERY_S + watch.EVERY_S)
+	assert rig.Sent()[-1].endswith(": The trigger Arduino's port /dev/ttyACM0 is back. campy does not restart the "
+		"trigger: the cameras get frames again in the next recording.")
+
+
+def test_problems_still_open_as_a_stopped_recording_ends(monkeypatch, tmp_path):
+	# Stopped (Ctrl-C, its stop file) while a camera had no frames: it ended as asked, but did not record
+	rig = Rig(monkeypatch, tmp_path, names=["Camera0", "Camera1"]).Start()
+	rig.Run(10)
+	rig.Run(30, cameras=[0])
+	assert rig.Sent()[-1] == ":red_circle: *Test rig*: Camera1: no frame for 12 s, since frame 300"
+	rig.stopping = True
+	rig.Run(5, cameras=[0])
+	rig.watch.Stop({})
+	assert rig.Sent()[-1].startswith(":red_circle: *Test rig*: Recording 2026-10-23_01-00-00 ended after 45 s, with "
+		"problems still open:\n- Camera0: 1350 frames\n- Camera1: 300 frames\nStill open as it ended:\n- Camera1: no "
+		"frame for ")
+	with open(watch.StatusPath()) as f:
+		assert json.load(f)["state"] == "failed"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="device files: Linux and macOS")

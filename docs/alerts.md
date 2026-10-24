@@ -68,14 +68,14 @@ Every recording is watched, however it was started: a thread in `campy-acquire`'
 | No first frame | none 10 s after the trigger Arduino started; with an external trigger (`startArduino: False`), after 10 minutes of waiting | critical; warning for an external trigger | the first frames |
 | Dropped frames | frames dropped because more than `writeQueueMaxSec` of frames were waiting for ffmpeg | warning; critical above 1 % of the last minute's frames | none dropped for 2 minutes |
 | Writing stalls | the frames waiting for ffmpeg reach a quarter of `writeQueueMaxSec` (critical at three quarters): the disk or the encoder has stopped keeping up, and frames are dropped once it is full. The EVO-X2's SSD stopped taking writes for 10 to 16 s at a time | warning, then critical | below a tenth, for 30 s |
-| A camera's recording ends early | ffmpeg stopped; the camera is gone (unplugged, or its USB link lost); its camera thread or process died; it did not start grabbing | critical, sent once, no reminders | (it has ended) |
+| A camera's recording ends early | ffmpeg stopped; the camera is gone (unplugged, or its USB link lost: a FLIR camera says so within a second); its camera thread or process died; it did not start grabbing | critical, sent once, no reminders | (it has ended) |
 | Disk space | less than `alertDiskFreeGB` (20 GB) free on a video folder's disk | warning | more than 10 % above it |
 | Disk running out | at the rate it filled over the last 5 minutes, it would be down to `stopAtFreeGB` before `recTimeInSec` ends | critical | it will last |
 | Disk nearly full | below `stopAtFreeGB` (2 GB): campy **stops the recording, cleanly**, as at Ctrl-C | critical | (stopped) |
-| The trigger's port | the trigger Arduino's serial port is gone (unplugged, or it reset), checked every 5 s without sending it anything | critical, once | the port is back |
+| The trigger's port | the trigger Arduino's serial port is gone (unplugged, or it reset), checked every 5 s without sending it anything | critical, once | the port is back. campy lets go of the lost port, so a replug brings it back under the same name, but it does not restart the trigger: the cameras get frames again in the next recording |
 | USB 2 | Linux: a USB 3 camera is now on a USB 2 link (read from sysfs every minute, as the launch check does) | critical | back on USB 3 |
 
-A message also says when a recording starts (its cameras, frame rate, length and free space: `info`, so only channels with `min_severity: info` get it) and how it ended (each camera's frames, dropped frames and what went wrong; `warning` with dropped frames, `critical` when a camera did not record to the end). Ctrl-C is not an alert: cameras that end because you stopped them are what you asked for.
+A message also says when a recording starts (its cameras, frame rate, length and free space: `info`, so only channels with `min_severity: info` get it) and how it ended (each camera's frames, dropped frames, what went wrong, and the problems still open as it ended; `warning` with dropped frames, `critical` when a camera did not record to the end or a critical problem was still open). Ctrl-C is not an alert: cameras that end because you stopped them are what you asked for. But a recording stopped while a camera had no frames, or with the trigger unplugged, did not record what it should have, and its summary says so.
 
 ### The one thing it does: a clean stop before the disk is full
 
@@ -101,9 +101,9 @@ campy-watch --cameras 3
 | Frames lost, missing from the feed, or late | in every check for 30 s (counted over the last 10 s, as campy-live-view does) | warning |
 | A camera slower than the others | for 30 s | warning |
 | Tracking | good 3D for fewer animals than campy-live's `--animals`, for 70 % of the last 3 minutes | warning |
-| campy-live stopped | no new result for 30 s while the cameras record (it has stopped or hangs); or it ended while they record | critical (warning) |
+| campy-live stopped | no new result for 30 s while every camera records (it has stopped or hangs); or it ended while they record | critical (warning) |
 
-`campy-session` starts it for you beside `campy-live` (`live.watch`, on by default), and restarts a `campy-live` that `campy-watch` reports as making no results ([Live tracking](live-tracking.md#in-one-command-campy-session)). With `--stop-file` and `--launcher-pid`, as `campy-session` starts it, it also stops at its stop file, and stops waiting if `campy-session` ended before the recording began. A camera with no frames is left to `campy-acquire`, which says it already. `campy-watch` waits for the feed, and ends when the recording does. `--name` is campy's `liveFeedName` (default `campy-live`), `--bad-px` the 3D error that counts as bad, as in campy-live-view. What it finds goes into `alerts-live.log` in the recording's folder, in `alerts.log`'s format (campy-acquire writes `alerts.log`; each file has one writer), whether or not the alerts file names a channel.
+`campy-session` starts it for you beside `campy-live` (`live.watch`, on by default), and restarts a `campy-live` that `campy-watch` reports as making no results ([Live tracking](live-tracking.md#in-one-command-campy-session)). With `--stop-file` and `--launcher-pid`, as `campy-session` starts it, it also stops at its stop file, and stops waiting if `campy-session` ended before the recording began. A camera with no frames is left to `campy-acquire`, which says it already. That camera also stops campy-live's results, as campy-live waits for a frame from each camera, so campy-live is not called hung then, and `campy-session` does not restart it for it. `campy-watch` waits for the feed, and ends when the recording does. `--name` is campy's `liveFeedName` (default `campy-live`), `--bad-px` the 3D error that counts as bad, as in campy-live-view. What it finds goes into `alerts-live.log` in the recording's folder, in `alerts.log`'s format (campy-acquire writes `alerts.log`; each file has one writer), whether or not the alerts file names a channel.
 
 ### Settings
 
@@ -115,6 +115,28 @@ campy-watch --cameras 3
 | `stopAtFreeGB` | `2` | free space below which the recording stops, cleanly; `0` = never |
 
 Each can also be given on the command line (`--stopAtFreeGB 5`).
+
+## Tested on a rig, with cables pulled by hand
+
+On 23 October 2026 the alerts were checked on the GMKtec EVO-X2 (Ubuntu 24.04): two FLIR Blackfly S (BFS-U3-13Y3M) on USB 3 at 60 fps, triggered by its Arduino Nano ESP32, recording with the rig's own config, the live feed on, `campy-live` and `campy-watch` beside it, and the messages going to a Slack direct message on a phone. Each 5-minute recording had a camera's USB cable pulled, then the trigger's. The times are from the kernel's log (the cable) and `alerts.log` (the message sent). Every message also showed on the phone within the same minute (Slack shows minutes).
+
+The first recording, with campy 2.2.0rc1, found four things that did not work as this page said. They are fixed, and the second recording, with the fixes, shows each one working:
+
+| What was done | 2.2.0rc1 | With the fixes |
+|---|---|---|
+| A camera's cable pulled | "Camera1: no frame for 10 s", 10 s later: Spinnaker's error ("Camera has been removed from the list and is no longer valid", -1024) did not count as the camera being gone | "Camera1: the camera is gone ... after frame 2901", about 1 s later. Its video was closed, whole, at once |
+| The trigger's cable pulled | "The trigger Arduino on /dev/ttyACM0 is gone", about 1 s later | the same, 2 s later (the port is checked every 5 s) |
+| The camera still plugged in, without trigger pulses | "Camera0: no frame for 10 s", 10 s after its last frame | the same |
+| The trigger plugged back in | no message: campy still held the lost port open, so Linux gave the Arduino the next name, /dev/ttyACM1. The next recording would not have found it on /dev/ttyACM0 either, until it was replugged once more | back as /dev/ttyACM0, and "resolved: The trigger Arduino's port /dev/ttyACM0 is back", 2 s later |
+| `campy-watch` | "campy-live has made no result for 31 s, while the cameras record: it has stopped or hangs", then "resolved" a second later. campy-live was fine: it was waiting for the unplugged camera. `campy-session` would have restarted it for that | no message |
+| The end | no message: the summary was sent as `info`, because the recording was stopped (its stop file), as at Ctrl-C | ":red_circle: Recording ... ended after 5 min 35 s, 1 of 2 cameras not to the end", with each camera's frames and "Still open as it ended: Camera0: no frame for 231 s" |
+
+In both recordings, every frame each camera grabbed was in its video, which decoded without an error (7733 and 6037 frames; 5791 and 2901), with `frametimes.npy`, `hosttimes.npy` and `metadata.csv` beside it. `alerts.log` had one JSON line for each problem and one for each message sent, and no token. `recording.json` ended as `failed` (the fixes; `ended` before them), with each camera's state (`lost`, `ended`) and the problems still open.
+
+What this means for an unattended recording:
+
+- **A recording with no trigger pulses does not end at `recTimeInSec`.** campy counts frames, and none come. It goes on until it is stopped: Ctrl-C, its stop file, or `campy-session`'s stop. The alerts say so within seconds.
+- **Replugging a camera or the trigger does not resume the recording.** Stop it, and start a new one.
 
 ## How messages behave
 

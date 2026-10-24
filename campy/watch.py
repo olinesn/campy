@@ -160,6 +160,7 @@ class Watch:
 		self.stopped = None # why the watch stopped the recording, if it did
 		self.diskState = {} # folder: {path, free_gb, projected_full_at}, for recording.json
 		self.usbSpeed = {} # camera: its link's Mb/s, as last read
+		self.serialClosed = False # the trigger's port was gone, and its connection closed (CheckSerial)
 		self.lastError = None
 		self.errors = set()
 		self.done = threading.Event()
@@ -189,7 +190,7 @@ class Watch:
 			self.Ended(failures or {})
 		except Exception as e:
 			self.say("Watch: could not say how the recording ended: {}".format(ErrorText(e)))
-		self.WriteStatus("failed" if failures or self.stopped else "ended")
+		self.WriteStatus("failed" if failures or self.stopped or self.StillOpen(notify.CRITICAL) else "ended")
 		self.notifier.Pause()
 		self.notifier.Flush(timeout)
 
@@ -467,16 +468,29 @@ class Watch:
 			return
 		port = str(self.params.get("serialPort"))
 		why = None
-		try:
-			connection.in_waiting # asks the driver how much it has read: fails once the device is gone
-		except Exception as e:
-			why = ErrorText(e)
-		if why is None:
-			why = self.port_gone(port)
+		if not self.serialClosed:
+			try:
+				connection.in_waiting # asks the driver how much it has read: fails once the device is gone
+			except Exception as e:
+				why = ErrorText(e)
+		gone = self.port_gone(port)
+		if gone and not self.serialClosed:
+			# The device is gone: let go of it. On Linux a port still held open keeps its name, so a replug came
+			# back as the next one (/dev/ttyACM1, on the EVO-X2): neither this check nor the next recording would
+			# find it. The trigger is not restarted, and campy's own stop at the end finds the port closed.
+			self.serialClosed = True
+			try:
+				connection.close()
+			except Exception as e:
+				self.say("Watch: could not close the lost trigger port {}: {}".format(port, ErrorText(e)))
+		why = why or gone
 		if why:
 			self.Raise("trigger/serial", notify.CRITICAL, "The trigger Arduino on {} is gone ({}): it sends no more "
 				"trigger pulses, so the cameras get no frames. Replug it; campy does not restart the trigger "
 				"mid-recording.".format(port, why), remind=False)
+		elif self.serialClosed:
+			self.Clear("trigger/serial", "The trigger Arduino's port {} is back. campy does not restart the trigger: "
+				"the cameras get frames again in the next recording.".format(port), now)
 		else:
 			self.Clear("trigger/serial", None, now)
 
@@ -563,6 +577,13 @@ class Watch:
 			" and ".join(frees) or "Unknown space"))
 		self.notifier.Heartbeat()
 
+	def StillOpen(self, severity=notify.WARNING):
+		# The problems open as the recording ends, at least this bad, oldest first. A camera that ended is left
+		# out (Ended says it on that camera's line), and so is the disk stop (its first line). A recording stopped (Ctrl-C, its stop file) while a camera
+		# had no frames, or with the trigger unplugged, ends as asked, but did not record what it should have.
+		return [p for key, p in self.problems.items() if p.clearSince is None and not key.endswith("/ended") and
+			key != "disk/stop" and notify.LEVELS[p.severity] >= notify.LEVELS[severity]]
+
 	def Ended(self, failures):
 		lines = []
 		dropped = 0
@@ -576,14 +597,23 @@ class Watch:
 				text += ": " + "; ".join(failures[name])
 			lines.append("- " + text)
 		took = notify.Duration(self.clock() - self.started) if self.started is not None else "?"
+		still = self.StillOpen()
+		if still:
+			lines += ["Still open as it ended:"] + ["- " + p.text for p in still]
 		if self.stopped:
 			head, severity = "Recording {} stopped by campy after {}: {}.".format(self.Session(), took, self.stopped), \
 				notify.CRITICAL
 		elif failures:
 			head, severity = "Recording {} ended after {}, {} of {} cameras not to the end:".format(self.Session(), took,
 				len(failures), len(self.names)), notify.CRITICAL
+		elif self.StillOpen(notify.CRITICAL):
+			head, severity = "Recording {} ended after {}, with problems still open:".format(self.Session(), took), \
+				notify.CRITICAL
 		elif dropped:
 			head, severity = "Recording {} ended after {}, with dropped frames:".format(self.Session(), took), \
+				notify.WARNING
+		elif still:
+			head, severity = "Recording {} ended after {}, with problems still open:".format(self.Session(), took), \
 				notify.WARNING
 		else:
 			head, severity = "Recording {} ended after {}:".format(self.Session(), took), notify.INFO

@@ -521,3 +521,31 @@ def test_buffer_size_is_the_count_set(flir, buffers):
 	assert cam["bufferSize"] == buffers == stream.nodes["StreamBufferCountManual"].value
 	assert cam["bufferMode"] == "OldestFirst" and stream.nodes["StreamBufferHandlingMode"].value == 0
 	assert stream.nodes["StreamBufferCountMode"].value == 0 # Manual
+
+
+# ------------------------------------------------------------------ an unplugged camera
+
+class Unplugged(FakeCamera):
+	# What a Blackfly S unplugged mid-recording gave on the EVO-X2 (October 2026): this error on every
+	# GetNextImage, while IsValid did not say False
+	def GetNextImage(self, timeout):
+		e = SpinError("Spinnaker: Camera has been removed from the list and is no longer valid. [-1024]")
+		e.errorcode = -1024
+		raise e
+
+
+def test_an_unplugged_camera_is_lost(flir, monkeypatch):
+	monkeypatch.setattr(flir.PySpin, "SPINNAKER_ERR_INVALID_CAMERA", -1024, raising=False)
+	with pytest.raises(unicam.CameraLost, match="no longer valid"):
+		flir.GrabFrame(Unplugged(), 6037)
+
+
+def test_a_timeout_is_not_a_lost_camera(flir, monkeypatch):
+	# A triggered camera waiting for its trigger: GetNextImage times out (-1011), for as long as that takes
+	monkeypatch.setattr(flir.PySpin, "SPINNAKER_ERR_INVALID_CAMERA", -1024, raising=False)
+	e = SpinError("Spinnaker: Failed waiting for EventData on NEW_BUFFER_DATA event. [-1011]")
+	e.errorcode = -1011
+	camera = FakeCamera()
+	camera.GetNextImage = lambda timeout: (_ for _ in ()).throw(e)
+	with pytest.raises(SpinError):
+		flir.GrabFrame(camera, 0)

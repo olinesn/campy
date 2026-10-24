@@ -20,9 +20,11 @@ campy-live-view reads, read-only, with campy-live-view's own checks
   tracking         good 3D for fewer animals than campy-live's --animals, for
                    COLLAPSE_SHARE (70 %) of the last COLLAPSE_S (3 min): a
                    warning
-  campy-live       no new row for STALL_S (30 s) while the cameras record:
+  campy-live       no new row for STALL_S (30 s) while every camera records:
                    critical (it stopped or hangs); its results ended while
-                   they record: a warning
+                   they record: a warning. A camera without frames stops
+                   campy-live's sets too (it waits for a frame from each),
+                   which is campy-acquire's alert, not this one
 
 NO FRAMES is left to campy-acquire's watch, which says it already. What it
 finds goes into alerts-live.log in the recording's folder (the cameras'
@@ -49,7 +51,7 @@ OFFSET_HOLD_S = 10.0
 COUNTS_HOLD_S = 30.0
 COLLAPSE_S, COLLAPSE_SHARE = 180.0, 0.7
 STALL_S = 30.0
-MOVING_S = 3.0 # the cameras record: a camera's newest frame changed this recently
+MOVING_S = 3.0 # a camera records: its newest frame changed this recently
 ENDED_HOLD_S = 5.0
 CHECK_S = 1.0 # how often problems are checked (the rings' slots are read more often: Rig.Every)
 ATTACH_S = 1.0
@@ -80,7 +82,7 @@ class LiveWatch:
 		self.raised = set()
 		self.collapse = collections.deque() # (t, fewer animals than wanted)
 		self.rows = None # (t, rows taken) of the last new row
-		self.frames = None # (t, the newest frame number of any camera) as it last changed
+		self.frames = None # per camera: (t, its newest frame number) as it last changed
 		self.resultsEnded = False
 
 	def Problem(self, key, severity, text, now, hold):
@@ -150,16 +152,20 @@ class LiveWatch:
 		key = "live/campy-live"
 		if self.rows is None or self.frames is None:
 			return
-		cameras_moving = now - self.frames[0] < MOVING_S
-		if self.resultsEnded and cameras_moving:
+		moving = [now - t < MOVING_S for t, _ in self.frames]
+		if self.resultsEnded and any(moving):
 			self.Problem(key + "/ended", notify.WARNING, "campy-live has ended, while the cameras still record", now,
 				ENDED_HOLD_S)
-		elif now - self.rows[0] >= STALL_S and cameras_moving:
+		elif now - self.rows[0] >= STALL_S and all(moving):
 			self.Problem(key, notify.CRITICAL, "campy-live has made no result for {}, while the cameras record: it has "
 				"stopped or hangs".format(notify.Duration(now - self.rows[0])), now, 0)
 		else:
-			self.Gone(key, "campy-live: results again")
-			if not cameras_moving:
+			if now - self.rows[0] < STALL_S:
+				self.Gone(key, "campy-live: results again")
+			else:
+				self.Gone(key, "campy-live: not hung after all: a camera has stopped sending frames, and campy-live "
+					"waits for a frame from each (campy-acquire's alert says which)")
+			if not any(moving):
 				self.Gone(key + "/ended")
 
 	def Rows(self, taken, now):
@@ -167,8 +173,12 @@ class LiveWatch:
 			self.rows = (now, taken)
 
 	def Frames(self, newest, now):
-		if self.frames is None or newest != self.frames[1]:
-			self.frames = (now, newest)
+		# newest: each camera's newest frame number (or one number for them all)
+		newest = list(newest) if isinstance(newest, (list, tuple)) else [newest]
+		if self.frames is None or len(self.frames) != len(newest):
+			self.frames = [(now, n) for n in newest]
+			return
+		self.frames = [(now, n) if n != last else (t, last) for (t, last), n in zip(self.frames, newest)]
 
 
 def Run(args, notifier=None, say=print):
@@ -227,7 +237,7 @@ def Run(args, notifier=None, say=print):
 			if readers is not None and now - sampled >= w.rig.Every():
 				sampled = now
 				w.rig.Sample(readers)
-				w.Frames(max(r.Latest() for r in readers), now)
+				w.Frames([r.Latest() for r in readers], now)
 			if results is not None:
 				if results.Ended():
 					w.resultsEnded = True
