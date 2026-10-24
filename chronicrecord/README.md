@@ -54,18 +54,18 @@ python3 chronic_control.py start --set TOTAL_DURATION=1800 --set PULSE_WIDTH_C=0
 
 ## Running it
 
-From any computer:
+From any computer that can reach the Pi over SSH (put in the Pi's user name and address):
 
 ```bash
-ssh falknerlab@10.241.0.176 python3 chronic_control.py start
+ssh <user>@<pi-address> python3 chronic_control.py start
 ```
 
 ```bash
-ssh falknerlab@10.241.0.176 python3 chronic_control.py status
+ssh <user>@<pi-address> python3 chronic_control.py status
 ```
 
 ```bash
-ssh falknerlab@10.241.0.176 python3 chronic_control.py stop
+ssh <user>@<pi-address> python3 chronic_control.py stop
 ```
 
 - `start` checks that the Nano answers, loads the session, starts it, and returns. The session keeps running in the background after SSH disconnects.
