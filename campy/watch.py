@@ -69,7 +69,7 @@ only reads. An error in a check is said, and the others go on.
 
 import collections, datetime, json, math, os, shutil, sys, threading, time
 
-from campy import notify, status as camstatus
+from campy import notify, strictjson, status as camstatus
 from campy.utils.utils import Say, ErrorText
 
 EVERY_S = 2.0 # how often the cameras are checked
@@ -549,7 +549,7 @@ class Watch:
 			path = StatusPath()
 			os.makedirs(os.path.dirname(path), exist_ok=True)
 			with open(path + ".tmp", "w", encoding="utf-8") as f:
-				json.dump(self.Status(state), f, indent=1)
+				strictjson.dump(self.Status(state), f, indent=1)
 			os.replace(path + ".tmp", path)
 		except Exception as e:
 			if "status" not in self.errors:

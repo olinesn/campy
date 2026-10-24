@@ -31,7 +31,7 @@ campy-config: look at campy configs without starting any camera.
 
 import os, sys, json, argparse
 from argparse import ArgumentParser
-from campy import configurator, configschema
+from campy import configurator, configschema, strictjson
 from campy.configurator import Source, Shown
 
 
@@ -187,7 +187,7 @@ def Main(argv=None):
 		if args.command == "show":
 			result = configurator.Resolve(args.config, options)
 			if args.json:
-				print(json.dumps({"chain": result.chain,
+				print(strictjson.dumps({"chain": result.chain,
 					"settings": result.Effective(), "notes": result.notes}, indent=1))
 			elif args.yaml:
 				sys.stdout.write(result.ToYaml())

@@ -131,5 +131,6 @@ res = dict(
     cuda_graph_capture_internal_diff=max(cnet.max_abs_diff, inet.max_abs_diff),
     errors=errors, rows=rows,
 )
-json.dump(res, open(a.json, "w"), indent=1)
-print(json.dumps({k: v for k, v in res.items() if k != "rows"}, indent=1))
+with open(a.json, "w") as f:
+    f.write(sib.strict_json_dumps(res, indent=1))
+print(sib.strict_json_dumps({k: v for k, v in res.items() if k != "rows"}, indent=1))

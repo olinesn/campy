@@ -61,7 +61,7 @@ import argparse, contextlib, csv, hashlib, io, json, os, shutil, sys, tempfile
 
 import numpy as np
 
-from campy import liveexport
+from campy import liveexport, strictjson
 
 TEST_SHARE = 1 / 3
 
@@ -85,7 +85,7 @@ def IsTest(recording, time_s, share=TEST_SHARE):
 
 def ReadSample(path):
 	with open(path) as f:
-		sample = json.load(f)
+		sample = strictjson.load(f)
 	if sample.get("kind") != "campy-live-flag sample":
 		raise PackError("{} is not campy-live-flag's sample.json".format(path))
 	return sample

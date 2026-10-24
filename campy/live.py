@@ -233,7 +233,7 @@ and its first.
 import argparse, json, math, os, queue, signal, sys, threading, time
 from datetime import datetime
 import numpy as np
-from campy import children, cpus, defaults, livefeed, liveresults, manifest, stopfile
+from campy import children, cpus, defaults, livefeed, liveresults, manifest, stopfile, strictjson
 from campy import clock as hostclock # not clock: Run's clock is the GPU's
 from campy.frametimes import GrowingNpy, Writer
 
@@ -1629,7 +1629,7 @@ class GpuClock:
 	def Load(self):
 		try:
 			with open(self.memory) as f:
-				known = json.load(f)
+				known = strictjson.load(f)
 			return known if isinstance(known, dict) else {}
 		except Exception: # none yet, or unreadable: nothing remembered
 			return {}
@@ -1659,7 +1659,7 @@ class GpuClock:
 			os.makedirs(folder, exist_ok=True)
 			part = "{}.{}.part".format(self.memory, os.getpid())
 			with open(part, "w") as f:
-				json.dump(known, f, indent=1)
+				strictjson.dump(known, f, indent=1)
 			os.replace(part, self.memory)
 		except Exception: # a folder not written: remembered for this run only
 			pass
@@ -2374,7 +2374,7 @@ def Ready(path):
 	try:
 		os.makedirs(os.path.dirname(path), exist_ok=True)
 		with open(tmp, "w") as f:
-			json.dump({"pid": os.getpid(), "time": datetime.now().astimezone().isoformat(timespec="milliseconds")}, f)
+			strictjson.dump({"pid": os.getpid(), "time": datetime.now().astimezone().isoformat(timespec="milliseconds")}, f)
 		os.replace(tmp, path)
 	except OSError as e:
 		Say("Could not write the ready file (--ready-file) {}: {}".format(path, e))
@@ -2494,9 +2494,9 @@ def Run(args):
 			ended="stopped (Ctrl-C)" if stop() else "the recording ended")
 		summary["session"] = session.Path() if session else None
 		with open(out + ".json", "x") as f:
-			# Strict JSON, as campy-live-session.json: an infinite or NaN number as
-			# the text "Infinity", "-Infinity" or "NaN" (manifest.Strict)
-			json.dump(manifest.Strict(summary), f, indent=2, allow_nan=False)
+			# Strict JSON: an infinite or NaN number as the text "Infinity",
+			# "-Infinity" or "NaN" (campy/strictjson.py)
+			strictjson.dump(summary, f, indent=2)
 		Say("Done, {}: {}".format(summary["ended"], Line(summary, log)))
 		Say("Summary in {}.json.".format(out))
 		if session is not None:

@@ -46,9 +46,10 @@ campy.manifest note <folder> "text") adds {"at", "text"} to session.json's
 
 Both are strict JSON, which any program can read. JSON has no infinity or
 NaN: an infinite or NaN number is written as the text "Infinity",
-"-Infinity" or "NaN" (Strict), which Python's float() and JavaScript's
-Number() both read back as the number. campy-live's --wait-sec, whose
-default is infinity (wait for the feed for ever), is one: "Infinity".
+"-Infinity" or "NaN" (campy/strictjson.py), which Python's float() and
+JavaScript's Number() both read back as the number. campy-live's
+--wait-sec, whose default is infinity (wait for the feed for ever), is
+one: "Infinity". Read keeps the text.
 
 Each write replaces the whole file at once (a new file, renamed over the
 old), so a reader never finds half of one; a lock file (session.json.lock)
@@ -62,8 +63,11 @@ is one, for a model's training config): campy-live, in an environment of
 its own, uses it too.
 """
 
-import os, sys, json, math, numbers, time, socket, shlex, hashlib, platform, subprocess, threading, shutil, csv, ast, argparse
+import os, sys, json, time, socket, shlex, hashlib, platform, subprocess, threading, shutil, csv, ast, argparse
 from datetime import datetime
+
+from campy import strictjson
+from campy.strictjson import Strict
 
 SCHEMA = "campy-session/1"
 LIVE_SCHEMA = "campy-live-session/1"
@@ -431,31 +435,6 @@ class Probe:
 
 # ------------------------------------------------------------------ the file
 
-def NonFinite(x):
-	# An infinite or NaN number as the manifests write it
-	return "NaN" if x != x else "Infinity" if x > 0 else "-Infinity"
-
-
-def Strict(data):
-	"""
-	data with each infinite or NaN number (Python's or numpy's) as the text
-	"Infinity", "-Infinity" or "NaN". Python's json writes them as the bare
-	words Infinity and NaN, which are not JSON: JavaScript's JSON.parse, jq,
-	Go and Rust refuse the whole file over one (campy-live's --wait-sec,
-	whose default is infinity, was in every campy-live-session.json). The
-	text keeps what it was: float("Infinity") and Number("Infinity") both
-	give infinity back.
-	"""
-	if isinstance(data, dict):
-		return {NonFinite(k) if isinstance(k, float) and not math.isfinite(k) else k: Strict(v)
-			for k, v in data.items()}
-	if isinstance(data, (list, tuple)):
-		return [Strict(v) for v in data]
-	if isinstance(data, numbers.Real) and not isinstance(data, numbers.Integral) and not math.isfinite(data):
-		return NonFinite(data)
-	return data
-
-
 class WouldReplace(Exception):
 	"""The manifest's file holds something this program did not write."""
 
@@ -518,8 +497,7 @@ class JsonFile:
 	REPLACE_TRIES, REPLACE_WAIT_S = 50, 0.1
 
 	def Replace(self, data):
-		# allow_nan=False: a number Strict missed fails here, not in a reader
-		text = json.dumps(Strict(data), indent=2, default=str, ensure_ascii=False, allow_nan=False) + "\n"
+		text = strictjson.dumps(data, indent=2, default=str, ensure_ascii=False) + "\n"
 		temp = "{}.{}.partial".format(self.path, os.getpid())
 		try:
 			with open(temp, "w", encoding="utf-8") as f:

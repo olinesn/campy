@@ -32,6 +32,8 @@ folder, and prints a summary.
 import argparse, ast, csv, json, os, sys
 import numpy as np
 
+from campy import strictjson
+
 
 IRREGULAR = 0.25   # a step this far from a whole number of periods is not a clean trigger step
 NOT_PERIODIC = 0.2 # more irregular steps than this share: not a periodic trigger
@@ -144,7 +146,7 @@ def ReadTriggerStart(folder):
 	"""
 	try:
 		with open(os.path.join(folder, "trigger.json")) as f:
-			record = json.load(f)
+			record = strictjson.load(f)
 	except (OSError, ValueError):
 		return None
 	if not record.get("triggerStarted"):
@@ -458,7 +460,7 @@ def Run(folder, log=print):
 		if c["usable"]:
 			WriteAligned(c)
 	with open(os.path.join(folder, "alignment.json"), "w") as f:
-		json.dump(summary, f, indent=2)
+		strictjson.dump(summary, f, indent=2)
 
 	if any(c["usable"] and c.get("ready") for c in cams):
 		log("Trigger period {:.4f} ms ({:.4f} Hz). Trigger 1 is the trigger's first pulse: campy started it "

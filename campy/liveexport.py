@@ -105,7 +105,7 @@ not depend on it.
 
 import argparse, json, os, re, sys
 import numpy as np
-from campy import manifest
+from campy import manifest, strictjson
 
 SLP = "campy-live.slp"
 CALIBRATION = "calibration.toml"
@@ -140,7 +140,7 @@ def ReadLog(path):
 	summary = None
 	if os.path.isfile(path[:-4] + ".json"):
 		with open(path[:-4] + ".json") as f:
-			summary = json.load(f)
+			summary = strictjson.load(f)
 	return rows, summary
 
 
@@ -415,7 +415,7 @@ def StartSlp(path, labels, frames, instances, nodes, groups=None):
 		session = json.loads(f["sessions_json"][0])
 		session["fg_end"] = frame_groups
 		del f["sessions_json"]
-		f.create_dataset("sessions_json", data=[np.bytes_(json.dumps(session, separators=(",", ":")))],
+		f.create_dataset("sessions_json", data=[np.bytes_(strictjson.dumps(session, separators=(",", ":")))],
 			maxshape=(None,))
 		f["metadata"].attrs["format_id"] = max(float(f["metadata"].attrs["format_id"]), 2.8)
 	return f
@@ -501,7 +501,7 @@ def Write3D(f, rows, place, layout):
 		grp["frame_groups"][a:a + len(at)] = fg
 		grp["instance_groups"][done_groups:done_groups + n] = ig
 		grp["instance_group_members"][done_members:done_members + len(g)] = mem
-		grp["instance_group_meta"][done_groups:done_groups + n] = [json.dumps({"lucid": {"identityId": int(i)}},
+		grp["instance_group_meta"][done_groups:done_groups + n] = [strictjson.dumps({"lucid": {"identityId": int(i)}},
 			separators=(",", ":")) for i in k]
 		grp["points_3d"][done_groups * nodes:(done_groups + n) * nodes] = \
 			block["points3d"][r, k].astype(np.float64).reshape(-1, 3)

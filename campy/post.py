@@ -44,6 +44,8 @@ their last second.
 import argparse, csv, glob, json, os, re, shlex, shutil, struct, subprocess, sys, time
 from datetime import datetime
 
+from campy import strictjson
+
 POST_LOG, POST_JSON = "post.log", "post.json"
 STEPS = ("remux", "export", "copy", "run")
 VIDEO_EXTENSIONS = (".mp4", ".m4v", ".mov")
@@ -85,7 +87,7 @@ def CleanStop(folder):
 	if os.path.isfile(launcher):
 		try:
 			with open(launcher) as f:
-				status = json.load(f)
+				status = strictjson.load(f)
 		except (OSError, ValueError) as e:
 			return False, "its launcher.json cannot be read ({})".format(e)
 		acquire = (status.get("parts") or {}).get("acquire") or {}
@@ -304,7 +306,7 @@ def JoinLogs(logs, out):
 	for path in logs:
 		try:
 			with open(path[:-4] + ".json") as f:
-				summaries.append(json.load(f))
+				summaries.append(strictjson.load(f))
 		except (OSError, ValueError):
 			pass
 	if summaries:
@@ -312,7 +314,7 @@ def JoinLogs(logs, out):
 		summary["sets"] = total
 		summary["parts"] = [os.path.basename(p) for p in logs]
 		with open(out[:-4] + ".json", "w") as f:
-			json.dump(summary, f, indent=2)
+			strictjson.dump(summary, f, indent=2)
 	return total, bool(summaries)
 
 
@@ -433,7 +435,7 @@ def StepRun(folder, settings, log, stop=None):
 def Load(folder):
 	try:
 		with open(os.path.join(folder, "logs", POST_JSON)) as f:
-			return json.load(f)
+			return strictjson.load(f)
 	except (OSError, ValueError):
 		return {"schema": 1, "steps": {}}
 
@@ -442,7 +444,7 @@ def Save(folder, state):
 	path = os.path.join(folder, "logs", POST_JSON)
 	tmp = path + ".tmp"
 	with open(tmp, "w") as f:
-		json.dump(state, f, indent=1)
+		strictjson.dump(state, f, indent=1)
 	os.replace(tmp, path)
 
 

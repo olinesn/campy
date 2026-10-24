@@ -114,7 +114,7 @@ from datetime import datetime
 
 import numpy as np
 
-from campy import clock, liveresults
+from campy import clock, liveresults, strictjson
 from campy.frametimes import GrowingNpy
 
 
@@ -723,7 +723,7 @@ class Runner:
 	def Event(self, record):
 		with self.lock:
 			if self.events is not None:
-				self.events.write(json.dumps(record, separators=(",", ":")) + "\n")
+				self.events.write(strictjson.dumps(record, separators=(",", ":")) + "\n")
 
 	def Listen(self, kind, fields, heard_ns, line):
 		if kind == "answer":
@@ -870,7 +870,7 @@ class Runner:
 			if boardlog is not None:
 				boardlog.close()
 			with open(out + ".json", "x") as f:
-				json.dump(summary, f, indent=2)
+				strictjson.dump(summary, f, indent=2)
 			self.Report(summary)
 			self.say("campy-rules: summary in {}.json.".format(out))
 		return 0
@@ -986,7 +986,7 @@ def Replay(args, config, say=print):
 	description = {}
 	if os.path.exists(summary_path):
 		with open(summary_path) as f:
-			description = json.load(f)
+			description = strictjson.load(f)
 	else:
 		say("campy-rules: no summary {}: nodes by index only, cameras by index.".format(summary_path))
 		description = dict(cameras=list(range(rows.dtype["host_ns"].shape[0])))
@@ -1010,7 +1010,7 @@ def Replay(args, config, say=print):
 				elif not rule.holding and rule.name in since:
 					held_ns[rule.name] += t - since.pop(rule.name)
 			for rule, o, action, text, framed in commands:
-				events.write(json.dumps(dict(kind="command", rule=rule.name if rule else None, output=o.name,
+				events.write(strictjson.dumps(dict(kind="command", rule=rule.name if rule else None, output=o.name,
 					action=action, command=text, frame=int(row["frame"]), row_ns=t), separators=(",", ":")) + "\n")
 	end = RowNs(rows[-1]) if len(rows) else 0
 	for name, t in since.items():

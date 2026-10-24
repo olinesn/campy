@@ -226,6 +226,26 @@ SWEEP_INSTANCE = [
 ]
 
 
+def strict_json(data):
+    # campy/strictjson.py's Strict (campy is not imported here): each infinite
+    # or NaN number as the text "Infinity", "-Infinity" or "NaN", so the file
+    # is JSON any program reads (Python's json writes bare words that are not)
+    if isinstance(data, dict):
+        return {k: strict_json(v) for k, v in data.items()}
+    if isinstance(data, (list, tuple)):
+        return [strict_json(v) for v in data]
+    if isinstance(data, float) and not math.isfinite(data):
+        return "NaN" if data != data else "Infinity" if data > 0 else "-Infinity"
+    return data
+
+
+def strict_json_dumps(data, **kw):
+    default = kw.get("default")
+    if default is not None:
+        kw["default"] = lambda o: strict_json(default(o))
+    return json.dumps(strict_json(data), allow_nan=False, **kw)
+
+
 # --------------------------------------------------------------------------
 # Models
 # --------------------------------------------------------------------------
@@ -1096,7 +1116,7 @@ def main():
 
     out_path = args.json or f"sleap_infer_bench_{device}_{datetime.now():%Y%m%d_%H%M%S}.json"
     with open(out_path, "w") as f:
-        json.dump({"header": header, "results": results}, f, indent=2)
+        f.write(strict_json_dumps({"header": header, "results": results}, indent=2))
     print(f"wrote {out_path}")
 
 

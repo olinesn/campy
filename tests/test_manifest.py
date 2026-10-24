@@ -241,7 +241,8 @@ def test_infinity_and_nan_are_written_as_strict_json(tmp_path, monkeypatch):
 	# The text gives the number back, to Python as to JavaScript's Number()
 	assert float(data["inf"]) == np.inf and float(data["minus"]) == -np.inf and np.isnan(float(data["nan"]))
 	# A number Strict missed fails the write (and so a test), not a reader
-	monkeypatch.setattr(manifest, "Strict", lambda data: data)
+	from campy import strictjson
+	monkeypatch.setattr(strictjson, "Strict", lambda data: data)
 	with pytest.raises(ValueError, match="JSON compliant"):
 		f.Update(lambda old: {"missed": float("inf")})
 	assert strict_json(path.read_text()) == data

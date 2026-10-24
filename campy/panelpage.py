@@ -85,7 +85,7 @@ async function post(path, body){
   const r = await fetch(q(path), {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body||{})});
   const j = await r.json().catch(() => ({})); return j.error || null;
 }
-function hms(s){ if(s==null) return "-"; s=Math.max(0,Math.round(s)); return Math.floor(s/3600)+":"+String(Math.floor(s/60)%60).padStart(2,"0")+":"+String(s%60).padStart(2,"0"); }
+function hms(s){ if(s==null) return "-"; s=Number(s); if(!isFinite(s)) return s>0 ? "\u221e" : "-"; s=Math.max(0,Math.round(s)); return Math.floor(s/3600)+":"+String(Math.floor(s/60)%60).padStart(2,"0")+":"+String(s%60).padStart(2,"0"); }
 function esc(t){ return String(t==null?"":t).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 function tag(text, kind){ return '<span class="tag '+kind+'">'+esc(text)+'</span>'; }
 function render(s){

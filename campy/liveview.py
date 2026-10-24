@@ -179,7 +179,7 @@ from datetime import datetime
 import numpy as np
 import cv2
 
-from campy import clock, cpus, livefeed, livehealth, liveresults
+from campy import clock, cpus, livefeed, livehealth, liveresults, strictjson
 from campy.bookmarks import BOOKMARKS, RECENT, Bookmarks, Existing, MarkText # moved there: campy-session's panel writes them too
 
 TITLE = "campy-live view"
@@ -2619,7 +2619,7 @@ def Finish(viewer, seconds, args):
 		Say("{} bookmarks, in {}.".format(summary["bookmarks"], ", ".join(summary["bookmark_files"])))
 	if args.summary:
 		with open(args.summary, "w") as f:
-			json.dump(summary, f, indent=2)
+			strictjson.dump(summary, f, indent=2)
 	return 0
 
 

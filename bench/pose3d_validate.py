@@ -35,7 +35,7 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from campy import pose3d
+from campy import pose3d, strictjson
 
 
 def CameraNames(session):
@@ -93,7 +93,7 @@ def LoadReference(session, cache, xy, count, animals, luc3d):
 			tvec=c["translation"], size=c["size"])
 			for c in (toml[k] for k in sorted((k for k in toml if k.startswith("cam_")), key=lambda k: int(k[4:])))]
 		with open(os.path.join(cache, "meta.json"), "w") as f:
-			json.dump(dict(shape=list(xy.shape), cams=cams), f)
+			strictjson.dump(dict(shape=list(xy.shape), cams=cams), f)
 		script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pose3d_luc3d_ref.mjs")
 		subprocess.run(["node", script, cache, str(animals), luc3d], check=True)
 		for name in ("xy.f64", "count.i32"):
@@ -236,7 +236,7 @@ def Main(argv=None):
 		print(Line(label, r), flush=True)
 	tag = hashlib.md5(json.dumps(options, sort_keys=True).encode()).hexdigest()[:8]
 	with open(os.path.join(cache, "results_{}.json".format(tag)), "w") as f:
-		json.dump(dict(options=options, results=results), f, indent=1)
+		strictjson.dump(dict(options=options, results=results), f, indent=1)
 	return results
 
 

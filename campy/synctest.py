@@ -31,7 +31,7 @@ to tie each frame to its trigger, and so writes that tool's files too.
 import argparse, json, os, sys
 import numpy as np
 
-from campy import align, newfiles
+from campy import align, newfiles, strictjson
 
 BLOCK_S = 2.0              # seconds per sine fit
 MIN_BLOCKS = 3
@@ -163,7 +163,7 @@ def Wrap(x, period):
 def ReadBlinkHz(folder):
 	try:
 		with open(os.path.join(folder, "trigger.json")) as f:
-			return json.load(f).get("blinkHz")
+			return strictjson.load(f).get("blinkHz")
 	except (OSError, ValueError):
 		return None
 
@@ -255,7 +255,7 @@ def Analyze(folder, blink_hz=None, reference=None, rois=None, tolerance_us=TOLER
 		"tolerance_us": tolerance_us, "block_s": block_s, "cameras": results, "pairs": pairs,
 		"warnings": warnings, "verdict": verdict}
 	with open(os.path.join(folder, "synctest.json"), "w") as f:
-		json.dump(report, f, indent=2)
+		strictjson.dump(report, f, indent=2)
 	return report
 
 
