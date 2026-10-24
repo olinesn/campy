@@ -117,6 +117,8 @@ Both files are strict JSON, so any JSON reader takes them as they are: JavaScrip
 
 Others appear only when something is set that way: a campy-live option given as `inf` or `nan`, a config value written as YAML's `.inf` or `.nan` (for example in `sessionFields`), or `inf` or `nan` in a camera's `metadata.csv`. Python's `float("Infinity")` and JavaScript's `Number("Infinity")` both turn the text back into the number, so `--wait-sec` still reads as "no limit".
 
+`campy-live`'s summary (`<log>.json`, next to its log) is written the same way: an infinite or NaN timing or frame rate in it is the same text.
+
 campy 2.2.0rc1 and earlier wrote them as bare words (`Infinity`, without quotes), which strict JSON readers reject, refusing the whole file. Python's `json` module reads them anyway, and campy's own reader (`campy.manifest.Read`, which `campy-live-export` uses) turns them into the same text new files have, so a `.slp` made from an older recording holds valid JSON too. LUC3D reads both forms.
 
 ## In campy-live-export and LUC3D

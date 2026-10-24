@@ -60,7 +60,9 @@ Output
 also while campy-live runs), and <out>.json, the summary, which also says the
 model's nodes and edges, and with --calibration the calibration's path, its
 cameras' names and the number of animals: what campy-live-export
-(campy/liveexport.py) needs to write the results as files LUC3D opens.
+(campy/liveexport.py) needs to write the results as files LUC3D opens. It is
+strict JSON: an infinite or NaN number is the text "Infinity", "-Infinity"
+or "NaN", as in campy-live-session.json.
 And campy-live-session.json in the recording's folder (beside the log,
 <out>.session.json, when the feed does not say where the recording is): how
 this run was made, for the recording to keep (campy/manifest.py): campy-
@@ -2492,7 +2494,9 @@ def Run(args):
 			ended="stopped (Ctrl-C)" if stop() else "the recording ended")
 		summary["session"] = session.Path() if session else None
 		with open(out + ".json", "x") as f:
-			json.dump(summary, f, indent=2)
+			# Strict JSON, as campy-live-session.json: an infinite or NaN number as
+			# the text "Infinity", "-Infinity" or "NaN" (manifest.Strict)
+			json.dump(manifest.Strict(summary), f, indent=2, allow_nan=False)
 		Say("Done, {}: {}".format(summary["ended"], Line(summary, log)))
 		Say("Summary in {}.json.".format(out))
 		if session is not None:
