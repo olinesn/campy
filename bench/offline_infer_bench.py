@@ -18,12 +18,13 @@ utilization, and the predictions (an .npz) to compare with a baseline run.
 run
 ---
 --path sleapnn   sleap-nn 0.3.3's own TopDownLayer.predict on each batch, as
-                 sleap-nn track runs it (Predictor.from_model_paths, then
-                 layer.predict per batch, its filter pipeline, to_labels).
+                 sleap-nn predict runs it (Predictor.from_model_paths, then
+                 layer.predict per batch, its filter pipeline, to_labels);
+                 sleap-nn track runs sleap-nn's older pipeline
   --upload host  the batch as sleap-nn's VideoProvider gives it, a numpy
                  array: sleap-nn then resizes the frames and cuts the crops on
-                 the CPU, and only the models run on the GPU (sleap-nn track's
-                 behaviour)
+                 the CPU, and only the models run on the GPU (sleap-nn
+                 predict's behaviour)
   --upload gpu   the uint8 batch copied to the GPU first (pinned memory), so
                  resizing, cropping and peak finding run there
   --exact-crop   campy's crop-size fix (talmolab/sleap-nn#778): sleap-nn cuts
