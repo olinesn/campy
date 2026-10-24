@@ -219,6 +219,79 @@ def test_a_reader_holding_the_file_open(tmp_path, monkeypatch):
 	assert sorted(p.name for p in tmp_path.iterdir()) == ["session.json"] # no .partial, no .lock
 
 
+def strict_json(text):
+	# As a strict reader (JavaScript's JSON.parse, jq) reads it: Python's
+	# json takes the bare words Infinity and NaN, which are not JSON
+	def refuse(word):
+		raise ValueError("not JSON: " + word)
+	return json.loads(text, parse_constant=refuse)
+
+
+def test_infinity_and_nan_are_written_as_strict_json(tmp_path, monkeypatch):
+	path = tmp_path / "campy-live-session.json"
+	f = manifest.JsonFile(str(path))
+	f.Update(manifest.Fresh(lambda old: {"inf": float("inf"), "minus": -float("inf"), "nan": float("nan"),
+		"numpy": [np.float64("inf"), np.float32("nan"), np.float32(0.5)], "nested": {"z": (-np.inf, np.inf)},
+		"finite": 2.5, "int": 3, "flag": True, "none": None, "text": "NaN", "string": "Infinity"}))
+	data = strict_json(path.read_text())
+	assert data["inf"] == "Infinity" and data["minus"] == "-Infinity" and data["nan"] == "NaN"
+	assert data["numpy"][:2] == ["Infinity", "NaN"] and data["nested"] == {"z": ["-Infinity", "Infinity"]}
+	assert data["finite"] == 2.5 and data["int"] == 3 and data["flag"] is True and data["none"] is None
+	assert f.Read() == data
+	# The text gives the number back, to Python as to JavaScript's Number()
+	assert float(data["inf"]) == np.inf and float(data["minus"]) == -np.inf and np.isnan(float(data["nan"]))
+	# A number Strict missed fails the write (and so a test), not a reader
+	monkeypatch.setattr(manifest, "Strict", lambda data: data)
+	with pytest.raises(ValueError, match="JSON compliant"):
+		f.Update(lambda old: {"missed": float("inf")})
+	assert strict_json(path.read_text()) == data
+
+
+def test_a_manifest_from_before_reads_as_a_new_one(tmp_path):
+	# campy 2.2.0rc1 and before wrote the bare words: read as the text a new
+	# file has, so what copies it (campy-live-export's .slp provenance) is
+	# strict JSON too
+	(tmp_path / "session.json").write_text('{"schema": "campy-session/1", "x": NaN}')
+	(tmp_path / "campy-live-session.json").write_text('{"schema": "campy-live-session/1", "options": '
+		'{"--wait-sec": {"value": Infinity, "source": "default"}, "--z": {"value": [-Infinity, 1.5]}}}')
+	found = manifest.Read(str(tmp_path))
+	assert found["session"]["x"] == "NaN"
+	assert found["live"][0]["options"]["--wait-sec"]["value"] == "Infinity"
+	assert found["live"][0]["options"]["--z"]["value"] == ["-Infinity", 1.5]
+	strict_json(json.dumps(found, allow_nan=False))
+	# A note rewrites the old file as strict JSON
+	manifest.AddNote(str(tmp_path), "checked")
+	assert strict_json((tmp_path / "session.json").read_text())["x"] == "NaN"
+
+
+def test_wait_sec_still_means_wait_for_ever(tmp_path):
+	# --wait-sec's default is infinity: written "Infinity", read back it is
+	# the same number campy-live waits for
+	from campy import live
+	parser = live.Parser()
+	for n, (argv, value) in enumerate((([], "Infinity"), (["--wait-sec", "30"], 30),
+			(["--wait-sec", "inf"], "Infinity"))):
+		args = parser.parse_args(argv)
+		path = tmp_path / "live{}.session.json".format(n)
+		session = manifest.LiveSession(str(path))
+		session.Start(args, parser, argv, None, {}, None, [], facts={"campy": {}, "host": {}})
+		session.End({"sets": 0, "latency_ms": {"p50": float("nan")}}, None)
+		data = strict_json(path.read_text())
+		assert data["status"] == "complete", data
+		assert data["options"]["--wait-sec"]["value"] == value
+		assert float(data["options"]["--wait-sec"]["value"]) == args.wait_sec
+		assert data["end"]["latency_ms"] == {"p50": "NaN"}
+	assert parser.parse_args([]).wait_sec == float("inf")
+
+
+def test_metadata_csvs_inf_and_nan_are_numbers(tmp_path):
+	path = tmp_path / "metadata.csv"
+	path.write_text("resultingFrameRate,nan\ngain,inf\ncameraModel,Blackfly S\nframeWidth,1440\n")
+	meta = manifest.ReadMetadata(str(path))
+	assert np.isnan(meta["resultingFrameRate"]) and meta["gain"] == np.inf
+	assert meta["cameraModel"] == "Blackfly S" and meta["frameWidth"] == 1440
+
+
 def test_a_linux_gpu_is_named_from_lspci():
 	# lspci -mm on the EVO-X2: options between the quoted fields
 	line = 'c6:00.0 "Display controller" "Advanced Micro Devices, Inc. [AMD/ATI]" "Device 1586" -rc1 -p00 ' \
@@ -338,9 +411,9 @@ def record(tmp_path, cams=("Camera0", "Camera1"), seconds=2, extra=(), argv=(), 
 
 def test_a_recording_says_how_it_was_made(tmp_path):
 	proc, out, folder = record(tmp_path, extra=['experiment: "social"', "animalIds: [M1, M2]",
-		"sessionFields: {cage: B3}"], argv=["--notes", "new bedding", "--quality", "23"])
+		"sessionFields: {cage: B3, weight: .nan}"], argv=["--notes", "new bedding", "--quality", "23"])
 	assert proc.returncode == 0, out
-	data = json.loads((folder / "session.json").read_text())
+	data = strict_json((folder / "session.json").read_text()) # YAML's .nan, as the text "NaN"
 	assert data["schema"] == "campy-session/1" and data["status"] == "complete"
 	assert set(data["written"]) == {"start", "recording", "end"}
 	assert data["campy"]["version"] and data["host"]["name"] and data["host"]["ffmpeg"]["version"]
@@ -357,7 +430,7 @@ def test_a_recording_says_how_it_was_made(tmp_path):
 	assert config["defaultWarnings"] and all(out.count(line) == 1 for line in config["defaultWarnings"]), out
 	assert out.count("This run relies on") == 1
 	assert data["experiment"] == {"name": "social", "animalIds": ["M1", "M2"], "notes": "new bedding",
-		"fields": {"cage": "B3"}}
+		"fields": {"cage": "B3", "weight": "NaN"}}
 	# The cameras: serials as campy found them, and what they opened as
 	assert [c["serial"] for c in data["cameras"]] == ["emu0", "emu1"]
 	assert [c["video"] for c in data["cameras"]] == ["Camera0/emuclip.mp4", "Camera1/emuclip.mp4"]
@@ -376,7 +449,7 @@ def test_a_recording_says_how_it_was_made(tmp_path):
 	done = subprocess.run([sys.executable, "-m", "campy.manifest", "note", str(folder), "M2 sleeping"],
 		capture_output=True, text=True, env=dict(os.environ, PYTHONPATH=REPO))
 	assert done.returncode == 0, done.stderr
-	data2 = json.loads((folder / "session.json").read_text())
+	data2 = strict_json((folder / "session.json").read_text())
 	assert data2["annotations"][0]["text"] == "M2 sleeping"
 	assert {k: v for k, v in data2.items() if k != "annotations"} == {k: v for k, v in data.items() if k != "annotations"}
 
@@ -428,9 +501,10 @@ def test_campy_live_writes_its_session_into_the_recording(tmp_path, monkeypatch)
 	(tmp_path / "calibration.toml").write_text("") # its hash only: no 3D here
 	out = str(tmp_path / "live")
 	code = test_livefeed.run_live(test_livefeed.name(), out, ["--model", "none", "--report-sec", "0",
-		"--wait-sec", "30", "--engine", "off"], frames=60)
+		"--engine", "off"], frames=60)
 	assert code == 0
-	data = json.loads((recording / "campy-live-session.json").read_text())
+	data = strict_json((recording / "campy-live-session.json").read_text())
+	assert data["options"]["--wait-sec"] == {"value": "Infinity", "source": "default"}
 	assert data["schema"] == "campy-live-session/1" and data["status"] == "complete"
 	assert data["recording"] == str(recording) and data["session"] == "session.json"
 	assert data["options"]["--engine"] == {"value": "off", "source": "command line"}
@@ -463,7 +537,8 @@ def test_campy_live_tracks_from_the_first_frame_while_its_session_is_written(tmp
 	rows = np.load(out + ".npy")
 	assert rows["frame"][0] <= 3 and rows["frame"][-1] == 120
 	# The file is the same as when written before the first set
-	data = json.loads(open(out + ".session.json").read())
+	data = strict_json(open(out + ".session.json").read())
+	assert data["options"]["--wait-sec"] == {"value": 30.0, "source": "command line"}
 	assert data["status"] == "complete" and data["campy"]["path"].endswith("campy")
 	assert data["host"]["packages"]["numpy"] and data["models"] == {} and data["end"]["sets"] == len(rows)
 	assert json.loads(open(out + ".json").read())["session"] == out + ".session.json"

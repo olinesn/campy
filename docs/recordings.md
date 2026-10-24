@@ -22,7 +22,7 @@ Each run of `campy-acquire` records into a new folder inside `videoFolder`, name
 
 ## session.json
 
-`metadata.csv` already listed each camera's settings, but a folder did not say which campy made it, on which computer and drivers, from which config, or what the experiment was. The same config can make different recordings on different campy versions: in 2.1.0, FLIR cameras went from no gamma to gamma 0.6 by default, so the same config gave brighter videos. `session.json` records all of it, in one JSON file any program can read. Its schema is `"campy-session/1"`.
+`metadata.csv` already listed each camera's settings, but a folder did not say which campy made it, on which computer and drivers, from which config, or what the experiment was. The same config can make different recordings on different campy versions: in 2.1.0, FLIR cameras went from no gamma to gamma 0.6 by default, so the same config gave brighter videos. `session.json` records all of it, in one JSON file any program can read (strict JSON: see [Infinity and NaN](#infinity-and-nan-in-these-files)). Its schema is `"campy-session/1"`.
 
 campy writes it three times during a recording. Each write adds sections and never changes what an earlier one said, except `status`:
 
@@ -106,6 +106,18 @@ It holds:
 `campy-live`'s summary (`<log>.json`) has the path to it under `session`.
 
 `campy-live` gathers what this file says about campy, the computer and the models while its models load: hashing `best.ckpt` and asking git, `nvidia-smi` and Windows take a second or more. It writes the file in the background once the feed appears, so tracking starts with the recording's first frames and never waits for it.
+
+## Infinity and NaN in these files
+
+Both files are strict JSON, so any JSON reader takes them as they are: JavaScript's `JSON.parse`, `jq`, and the JSON readers in Go, Rust or R. JSON has no way to write infinity or "not a number", so campy writes those as the text `"Infinity"`, `"-Infinity"` and `"NaN"`. Every `campy-live-session.json` has one: `--wait-sec`, whose default is to wait for the live feed as long as it takes.
+
+```json
+"--wait-sec": {"value": "Infinity", "source": "default"}
+```
+
+Others appear only when something is set that way: a campy-live option given as `inf` or `nan`, a config value written as YAML's `.inf` or `.nan` (for example in `sessionFields`), or `inf` or `nan` in a camera's `metadata.csv`. Python's `float("Infinity")` and JavaScript's `Number("Infinity")` both turn the text back into the number, so `--wait-sec` still reads as "no limit".
+
+campy 2.2.0rc1 and earlier wrote them as bare words (`Infinity`, without quotes), which strict JSON readers reject, refusing the whole file. Python's `json` module reads them anyway, and campy's own reader (`campy.manifest.Read`, which `campy-live-export` uses) turns them into the same text new files have, so a `.slp` made from an older recording holds valid JSON too. LUC3D reads both forms.
 
 ## In campy-live-export and LUC3D
 
