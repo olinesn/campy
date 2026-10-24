@@ -290,6 +290,15 @@ Notes on the measurements:
   | Precision 7875 | 1,200 / 1 / 0.9 / 1.0 | 3,600 / 1 / 1.6 / 1.7 / 4.1 / 5.2 | 1,798 / 3 / 1.6 / 1.7 / 4.7 / 5.8 |
 
   The replay's accuracy on the EVO-X2 was unchanged too: 2D median 3.8 px, 3D median 4.2 mm, 99.93% same identity, 2 switches.
+- Later that evening the three rigs moved to the `v2.2.0rc1` pre-release itself (d094e43). It adds pull requests 187 (`campy-session` also starts `campy-watch`) and 189 (fixes from unplugging a camera and the trigger mid-recording), neither of which changes tracking. Both environments on each rig report campy 2.2.0rc1. The rig checks were all `RIG_CLEAN`, with nothing skipped or misaligned and every camera keeping all its frames, and their times matched the table above to within 0.1 ms:
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | EVO-X2 | 1,800 / 3.0 / 3.1 | 3,600 / 5.6 / 5.8 / 7.6 / 8.4 | 3,600 / 5.5 / 5.6 / 7.1 / 8.0 |
+  | Pro Max Slim | 1,197 / 2.3 / 2.5 | 3,597 / 5.5 / 5.7 / 7.8 / 8.6 | 1,792 / 5.5 / 5.7 / 8.7 / 9.5 |
+  | Precision 7875 | 1,200 / 0.9 / 1.0 | 3,600 / 1.6 / 1.7 / 4.1 / 5.3 | 1,797 / 1.6 / 1.7 / 4.6 / 5.7 |
+
+  The replay's accuracy on the EVO-X2 was again 2D median 3.8 px and 3D median 4.2 mm, with 2 identity switches.
 
 ## Fixed crops (`--fixed-crops`, on by default with a GPU)
 

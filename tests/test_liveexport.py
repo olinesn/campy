@@ -329,6 +329,11 @@ def tables(path):
 	return out
 
 
+def text(array):
+	# A dataset of strings as a list of str, whether stored fixed-width or variable-length
+	return [x.decode() if isinstance(x, bytes) else str(x) for x in np.asarray(array).ravel()]
+
+
 @pytest.mark.parametrize("which", ["campy-live.slp", "Camera2/campy-live.slp"])
 def test_sleap_io_would_write_the_same_files(recording, tmp_path, which):
 	# campy-live-export writes the big tables itself; sleap-io, given what it
@@ -344,6 +349,12 @@ def test_sleap_io_would_write_the_same_files(recording, tmp_path, which):
 		assert "session_data/frame_groups" in big
 		big += ["sessions_json", "tracks_json", "identity/name"]
 	for name in big:
+		if a[name].dtype.kind in "SOU" and b[name].dtype.kind in "SOU":
+			# Rows of JSON text: sleap-io 0.9.3 and older store them zero-padded to
+			# a fixed width, 0.9.4 as variable-length strings (the same SLP 2.8
+			# format), so the text is compared, not how wide it is stored
+			assert a[name].shape == b[name].shape and text(a[name]) == text(b[name]), name
+			continue
 		assert a[name].dtype == b[name].dtype and a[name].shape == b[name].shape, name
 		if a[name].dtype.names:
 			for field in a[name].dtype.names:
