@@ -290,7 +290,7 @@ def test_connected_flir_devices(flirreset, tmp_path):
 
 @pytest.fixture
 def user(reset, monkeypatch):
-	monkeypatch.setattr(reset.getpass, "getuser", lambda: "falknerlab")
+	monkeypatch.setattr(reset.getpass, "getuser", lambda: "labuser")
 	return reset
 
 
@@ -302,7 +302,7 @@ def test_gige_off(user, capsys):
 	assert system.gige.value is False
 	assert system.updates == 0 and cam.inits == 0
 	out = capsys.readouterr().out
-	assert "Spinnaker's search for GigE cameras is off for user falknerlab" in out
+	assert "Spinnaker's search for GigE cameras is off for user labuser" in out
 	assert "no program this user runs finds a GigE camera, SpinView included, until campy-flir-reset --gige on." in out
 
 
@@ -310,14 +310,14 @@ def test_gige_on(user, capsys):
 	system = FakeSystem([], gige=Flag(False))
 	assert user.SetGige(system, True) == 0
 	assert system.gige.value is True
-	assert "Spinnaker's search for GigE cameras is on again for user falknerlab: programs find GigE cameras" \
+	assert "Spinnaker's search for GigE cameras is on again for user labuser: programs find GigE cameras" \
 		in capsys.readouterr().out
 
 
 def test_gige_already_as_asked(user, capsys):
 	system = FakeSystem([], gige=Flag(False, writable=False))
 	assert user.SetGige(system, False) == 0 # not even set: a node that is read only here is no matter
-	assert "Spinnaker's search for GigE cameras was already off for user falknerlab." in capsys.readouterr().out
+	assert "Spinnaker's search for GigE cameras was already off for user labuser." in capsys.readouterr().out
 
 
 def test_gige_spinnaker_without_the_setting(user, capsys):
