@@ -70,9 +70,12 @@ slot n % slots:
 A frame is whole when end == begin == n, read in this order: end, then the
 frame, then begin. The writer sets begin, copies the frame, then sets end, so
 a frame read while it was being replaced has begin > n (RingReader.Read does
-this). That relies on the CPU keeping stores in order, as x86 does; it holds
-on the ARM CPUs campy runs on in practice, where numpy's copy and the stores
-around it are separate calls, but is not guaranteed there.
+this). Both sides put a memory fence between those steps (_Release when
+writing, _Acquire when reading), so other processes see them in that order on
+any CPU: x86 keeps them in order anyway, but ARM (Apple Silicon, NVIDIA
+Jetson) may make stores visible, and do loads, in another order. A reader of
+its own must do the same, or it may take a frame being replaced for a whole
+one (a mix of two frames; never in the recording, only in what it reads).
 
 Reading one camera's newest frame from plain numpy (Linux, Python 3.13+;
 before 3.13 see Attach for the resource tracker):
@@ -89,7 +92,7 @@ before 3.13 see Attach for the resource tracker):
         .reshape(height, width, channels).copy()
 """
 
-import json, os, sys, time
+import ctypes, ctypes.util, json, os, platform, sys, threading, time
 import numpy as np
 from multiprocessing import shared_memory
 
@@ -120,6 +123,49 @@ DESCRIPTION_BYTES = HEADER_BYTES - _DESCRIPTION_AT
 # Slot fields, as int64 words (the camera timestamp is a float64 in word 4)
 BEGIN, END, FRAME, HOST, STAMP, WRITTEN = range(6)
 CAMERA_KIND = "campy camera" # a camera's ring's description says so
+
+
+def _Fences():
+	"""
+	The memory fences around a slot's frame: (release, acquire, what they are).
+	A release fence keeps the stores before it visible to other cores before
+	the stores after it (begin before the frame, the frame before end); an
+	acquire fence keeps the loads before it done before the loads after it
+	(end before the frame, the frame before begin). Python and numpy have no
+	fence of their own, so this calls C's atomic_thread_fence through ctypes,
+	from the C library already there: macOS's libSystem, or libatomic on Linux
+	(GCC's runtime, package libatomic1; nothing to compile). Called with the
+	GIL held (PyDLL): about 0.1 us a call. On x86 the CPU keeps these in order
+	itself (each fence is no instruction there), and a call into C is enough
+	to keep the compiler from moving them, so no fence is called at all.
+	Elsewhere without atomic_thread_fence (Windows on ARM, Linux without
+	libatomic), taking and letting go of a lock of this process's own stands
+	in: it is an atomic read-modify-write each way, which orders memory on the
+	CPUs we know of, though C promises less for one no other thread takes.
+	"""
+	if platform.machine().lower() in ("x86_64", "amd64", "i386", "i486", "i586", "i686", "x86"):
+		return _Nothing, _Nothing, "none needed (x86)"
+	for path in (None, ctypes.util.find_library("atomic"), "libatomic.so.1"):
+		try:
+			fence = ctypes.PyDLL(path).atomic_thread_fence
+		except (OSError, AttributeError, TypeError):
+			continue
+		fence.argtypes, fence.restype = [ctypes.c_int], None
+		release, acquire = 3, 2 # C's memory_order_release, memory_order_acquire
+		return (lambda: fence(release)), (lambda: fence(acquire)), "atomic_thread_fence ({})".format(path or "C library")
+	lock = threading.Lock()
+
+	def Fence():
+		lock.acquire()
+		lock.release()
+	return Fence, Fence, "a lock (no atomic_thread_fence found)"
+
+
+def _Nothing():
+	pass
+
+
+_Release, _Acquire, FENCE = _Fences()
 
 
 def RingName(prefix, n_cam):
@@ -344,11 +390,13 @@ class RingWriter:
 		s = n % ring.slots
 		fields = ring.slotFields[s]
 		fields[BEGIN] = n
+		_Release() # begin is seen to change before the frame does
 		np.copyto(ring.frames[s], img.reshape(ring.shape))
 		fields[FRAME] = n
 		fields[HOST] = int(hostTime)
 		ring.stamps[s] = timeStamp
 		fields[WRITTEN] = time.perf_counter_ns()
+		_Release() # and the frame and its fields before end
 		fields[END] = n
 		ring.Set("latest", n)
 		self.written += 1
@@ -449,11 +497,14 @@ class RingReader:
 		(campy/livehealth.py).
 		"""
 		ring = self.ring
+		end = ring.slotFields[:, END].copy()
+		_Acquire() # end read before the fields
 		fields = ring.slotFields.copy()
 		stamps = ring.stamps.copy()
+		_Acquire() # and them before begin
 		begin = ring.slotFields[:, BEGIN].copy() # again: a slot the writer began on since is left out
 		n = fields[:, FRAME]
-		whole = (n > 0) & (fields[:, BEGIN] == n) & (fields[:, END] == n) & (begin == n)
+		whole = (n > 0) & (end == n) & (fields[:, BEGIN] == n) & (begin == n)
 		order = np.argsort(n[whole], kind="stable")
 		return n[whole][order], fields[whole, HOST][order], stamps[whole][order], fields[whole, WRITTEN][order]
 
@@ -463,7 +514,9 @@ class RingReader:
 		fields = self.ring.slotFields[n % self.ring.slots]
 		if fields[END] != n:
 			return None
+		_Acquire()
 		hostTime = int(fields[HOST])
+		_Acquire()
 		return hostTime if fields[BEGIN] == n else None
 
 	def Read(self, frameNumber, out=None):
@@ -478,11 +531,13 @@ class RingReader:
 		fields = ring.slotFields[s]
 		if fields[END] != n:
 			return None
+		_Acquire() # end read before the frame and its fields
 		frameNumber, hostTime, written = int(fields[FRAME]), int(fields[HOST]), int(fields[WRITTEN])
 		timeStamp = float(ring.stamps[s])
 		if out is None:
 			out = np.empty(ring.shape, ring.dtype)
 		np.copyto(out, ring.frames[s])
+		_Acquire() # and them before begin
 		if fields[BEGIN] != n:
 			return None # the writer started on this slot again as it was copied
 		return Frame(out, frameNumber, hostTime, timeStamp, written)

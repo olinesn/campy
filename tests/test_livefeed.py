@@ -4,7 +4,7 @@ memory, which campy never waits on, and campy-live's reading of them. No
 camera, torch or sleap-nn needed (campy-live runs here with --model none).
 """
 
-import csv, itertools, json, multiprocessing as mp, os, threading, time, types
+import csv, itertools, json, multiprocessing as mp, os, sys, threading, time, types
 from argparse import ArgumentParser
 from collections import deque
 
@@ -210,25 +210,28 @@ def _read_once(ring):
 	r.Close()
 
 
-def _write_fast(ring, frames, ready):
-	w = livefeed.RingWriter(ring, (128, 160), np.uint8, slots=3)
+def _write_fast(ring, frames, ready, shape=(128, 160)):
+	w = livefeed.RingWriter(ring, shape, np.uint8, slots=3)
 	ready.set()
 	try:
 		for n in range(1, frames + 1):
-			w.Write(np.full((128, 160), n % 251, np.uint8), n, n)
+			w.Write(np.full(shape, n % 251, np.uint8), n, n)
 	finally:
 		time.sleep(0.2)
 		w.Close()
 
 
-def test_another_process_never_reads_a_torn_frame():
-	# A writer in its own process, as fast as it can, into 3 slots, and a
-	# reader taking its newest frames: every frame read whole is all one value
+def _read_against_a_fast_writer(frames, shape=(128, 160)):
+	# A writer in its own process (so on another core), as fast as it can,
+	# into 3 slots, and a reader here taking its newest frames. Returns the
+	# frames read whole, the ones refused, and the torn ones: read whole but
+	# not all one value, or with another frame's fields
 	ring = name()
 	ctx = mp.get_context("spawn")
 	ready = ctx.Event()
-	p = ctx.Process(target=_write_fast, args=(ring, 20000, ready))
+	p = ctx.Process(target=_write_fast, args=(ring, frames, ready, shape))
 	p.start()
+	torn = []
 	try:
 		assert ready.wait(60)
 		r = None
@@ -252,14 +255,48 @@ def test_another_process_never_reads_a_torn_frame():
 						refused += 1
 						continue
 					read += 1
-					assert f.frameNumber == k
-					assert out.min() == out.max() == k % 251, "frame {} read torn".format(k)
+					if not (f.frameNumber == f.hostTime == k and out.min() == out.max() == k % 251):
+						torn.append(k)
 		finally:
 			r.Close()
-		assert read > 100
 	finally:
-		p.join(60)
+		p.join(600)
 	assert p.exitcode == 0
+	return read, refused, torn
+
+
+def test_another_process_never_reads_a_torn_frame():
+	read, refused, torn = _read_against_a_fast_writer(20000)
+	assert not torn, "frames read torn: {}".format(torn[:10])
+	assert read > 100
+
+
+def test_the_feed_fences_memory_where_the_cpu_may_reorder_it():
+	# x86 keeps stores and loads in order; ARM does not, so there the writer
+	# and reader call C's atomic_thread_fence (macOS, and Linux with libatomic)
+	import platform
+	machine = platform.machine().lower()
+	if machine in ("x86_64", "amd64", "i386", "i686"):
+		assert livefeed.FENCE == "none needed (x86)"
+	elif machine in ("arm64", "aarch64") and sys.platform in ("darwin", "linux"):
+		assert livefeed.FENCE.startswith("atomic_thread_fence"), livefeed.FENCE
+	livefeed._Release()
+	livefeed._Acquire()
+
+
+@pytest.mark.skipif(not os.environ.get("CAMPY_LIVEFEED_STRESS"),
+	reason="long: set CAMPY_LIVEFEED_STRESS to a number of frames (e.g. 2000000)")
+@pytest.mark.parametrize("shape", [(4, 16), (128, 160)], ids=["64B", "20kB"])
+def test_another_process_never_reads_a_torn_frame_stress(shape):
+	# The same, for millions of frames: small frames give the reader more
+	# chances to catch one as it is replaced
+	frames = int(os.environ["CAMPY_LIVEFEED_STRESS"])
+	t = time.monotonic()
+	read, refused, torn = _read_against_a_fast_writer(frames, shape)
+	print("{} frames of {}x{} in {:.0f} s: {} read whole, {} refused, {} torn".format(
+		frames, *shape, time.monotonic() - t, read, refused, len(torn)))
+	assert not torn, "{} frames read torn, of {} read: {}".format(len(torn), read, torn[:10])
+	assert read > 100
 
 
 # -------------------------------------------------------------- in campy

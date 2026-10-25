@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   pytest:
-    name: Python ${{ matrix.python }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
+    name: Python ${{ matrix.python }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}${{ matrix.os == 'ubuntu-24.04-arm' && ' on ARM' || '' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -28,6 +28,10 @@ jobs:
         include:
           # Windows rigs, at the Python docs/install.md installs
           - os: windows-latest
+            python: "3.12"
+          # ARM64 (as on an NVIDIA Jetson), where the CPU may reorder memory: the live
+          # feed's fences (campy/livefeed.py) are tested there
+          - os: ubuntu-24.04-arm
             python: "3.12"
     defaults:
       run:
