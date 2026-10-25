@@ -228,7 +228,7 @@ def test_a_stop_file_stops_the_recording_as_ctrl_c_does(tmp_path):
 	assert "Stop requested (stopFile {})".format(stop) in out
 	assert not stop.exists()
 	assert (session / "logs" / "launcher.log").read_text() == "the launcher's own\n"
-	assert [d.name for d in (tmp_path / "clips").iterdir() if d.is_dir()] == NAMES # no date folder made there
+	assert sorted(d.name for d in (tmp_path / "clips").iterdir() if d.is_dir()) == NAMES # no date folder made there (in any order: the filesystem's)
 	counts = []
 	for name in NAMES:
 		host = np.load(str(session / name / "hosttimes.npy"))
