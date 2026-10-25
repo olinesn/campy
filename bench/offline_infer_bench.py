@@ -43,6 +43,8 @@ Both paths:
                            centroid whose top is two equal pixels (fp16 drops
                            them otherwise; talmolab/sleap-nn#782)
   --memory-format nchw|channels_last
+  --tf32 default|on|off    TF32 in cuDNN's convolutions and in matrix products;
+                           default: PyTorch's own (convolutions yes, matmul no)
   --decoder sleapio|opencv|pyav|ffmpeg|nvdec  --decode-threads N  --decode-workers N
            sleapio: sleap-nn's own VideoProvider (sleap-io, OpenCV, one
            thread, frame by frame, RGB then channel 0); opencv: one
@@ -555,12 +557,16 @@ def Progress():
 def Run(args):
 	import torch
 	torch.backends.cudnn.benchmark = args.cudnn_benchmark
+	if args.tf32 != "default":
+		torch.backends.cudnn.allow_tf32 = args.tf32 == "on"
+		torch.backends.cuda.matmul.allow_tf32 = args.tf32 == "on"
 	n, H, W = VideoInfo(args.video)
 	start = args.start
 	stop = n if not args.frames else min(n, start + args.frames)
 	B = args.batch
 	report = {"args": vars(args), "video_frames": n, "frame_hw": [H, W], "gpu": None, "host": platform.node(),
-		"torch": torch.__version__, "cpus": len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()}
+		"torch": torch.__version__, "cpus": len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
+		"tf32_cudnn_matmul": [torch.backends.cudnn.allow_tf32, torch.backends.cuda.matmul.allow_tf32]}
 	if args.decode_only:
 		return DecodeOnly(args, start, stop, B, report)
 	report["gpu"] = torch.cuda.get_device_name(0)
@@ -844,6 +850,7 @@ def Main(argv=None):
 	r.add_argument("--engine-cache", default="")
 	r.add_argument("--cuda-graphs", choices=("on", "off"), default="off")
 	r.add_argument("--cudnn-benchmark", action="store_true")
+	r.add_argument("--tf32", choices=("default", "on", "off"), default="default")
 	r.add_argument("--decoder", choices=("sleapio", "opencv", "pyav", "ffmpeg", "nvdec"), default="sleapio")
 	r.add_argument("--ffmpeg", default="ffmpeg", help="--decoder ffmpeg: the ffmpeg to run")
 	r.add_argument("--hwaccel", choices=("none", "vaapi", "cuda", "qsv", "d3d11va"), default="none")

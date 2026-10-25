@@ -51,6 +51,8 @@ A100, frames per second; each row adds one change to the row above:
 
 Channels-last matters on NVIDIA: its fast convolution kernels want the channels last, and sleap-nn's models are channels-first, so every layer was converted back and forth. On AMD (ROCm) it made no difference. Bigger batches only help once the networks are fast: in fp32 without channels-last, batch 64 was slower (190 frames/s).
 
+Most of channels-last's gain is TF32. On the A100 (and other NVIDIA GPUs since Ampere), PyTorch lets cuDNN run fp32 convolutions in TF32 by default, which uses the tensor cores, so every fp32 row above used it. With TF32 off (`--tf32 off`), the A100 ran 191 frames/s in the default layout and 251 channels-last. Channels-last also changes the results a little ([Accuracy](#accuracy)).
+
 Tried, and didn't help:
 
 | | frames/s | Why |
@@ -130,13 +132,15 @@ All four found the same 29,318 mice.
 
 ## Accuracy
 
-Each run against an exact reference: fp32, every crop cut at its true size. A100, 6,000 frames, 29,322 mice. Mice are matched frame by frame by their centroids.
+Each run against an exact reference: fp32 (with PyTorch's default TF32 in cuDNN's convolutions), every crop cut at its true size. A100, 6,000 frames, 29,322 mice. Mice are matched frame by frame by their centroids.
 
 | Setup | Mice found in only one run | Keypoints moved > 1 px | Median keypoint move | Median move of those > 1 px |
 |---|---:|---:|---:|---:|
 | sleap-nn as-is | 0 | 2.07% | 0 px | 3.4 px |
 | campy fixed crops, fp32 | 0 | 0.01% | 0 px | 3.2 px |
 | fp32 on another GPU (RTX 2000 Ada, EVO-X2), same settings | 18–23 | 0.65% | 0.004 px | 3.3 px |
+| channels-last fp32, sleap-nn's layer (with its crop bug) | 35 | 2.8% | 0.006 px | 3.4 px |
+| fp32 with TF32 off, sleap-nn's layer, either layout | 42–44 | 2.3–2.4% | 0.004 px | 3.4 px |
 | fp16 without the tied-peaks fix | 235 lost | 2.9% | 0.007 px | 3.3 px |
 | fp16 + tied peaks, fixed crops | 26 | 1.5% | 0.006 px | 3.2 px |
 | fp16 + tied peaks + channels-last, sleap-nn's layer (with its crop bug) | 26 | 3.5% | 0.007 px | 3.3 px |
@@ -146,6 +150,8 @@ Each run against an exact reference: fp32, every crop cut at its true size. A100
 The typical keypoint barely moves: the median is under 0.02 px in every setup, and 0 for sleap-nn as-is and campy's fp32 fixed crops, whose keypoints are mostly identical to the reference's to the bit. The keypoints that do move more than a pixel move about 3 px (median), in every setup, sleap-nn as-is included. The 99th percentile is 3.0–3.7 px for the fp16 rows and 3.4 px for sleap-nn as-is. A few keypoints move much further (up to about 270 px, already in sleap-nn as-is). `compare` reports the median and the 99th percentile as `kp_p50` and `kp_p99`; the last column uses the same matched keypoints.
 
 sleap-nn as-is moves 2% of keypoints because of its crop-size rounding bug ([Live tracking](live-tracking.md), `ExactCropSize`). The first animal in a batch sets the crop size for every crop in it, and that size can come out a pixel short, so sleap-nn's results also change with the batch size: batch 64 against batch 16 moved 3.2% of keypoints. Frames copied to the GPU first gave the same mice as sleap-nn as-is, with 90% of keypoints identical to the bit. The 0.8% of mice that fp16 loses without the tied-peaks fix are the ones whose peak is two pixels of equal value ([Live tracking](live-tracking.md)).
+
+**Channels-last changes results as much as TF32 does.** Against the same run in the default layout (batch on the GPU, fp32), channels-last lost 18 of the 29,322 mice, found 17 others, and moved 3.7% of keypoints by more than a pixel; no keypoint was identical to the bit. Turning TF32 off in the default layout changed it as much (22 mice, 3.7%). With TF32 off in both, channels-last came much closer to the default layout (1 mouse, 0.18% of keypoints, 78% identical to the bit), but nothing makes it identical: with TF32 off, even batch 64 against batch 16 moved 1.8% of keypoints. None of it changes accuracy: on 100 hand-labelled frames, both layouts, with TF32 on or off, had a median error of 3.81–3.83 px and missed the same 8 mice. `NVIDIA_TF32_OVERRIDE=0`, an NVIDIA library setting, turns TF32 off without changing any code (for `sleap-nn predict`, for example): on the A100 it ran as fast as `--tf32 off`, with 99% of keypoints identical to it.
 
 ## On a Mac (Apple silicon)
 
