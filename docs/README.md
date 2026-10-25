@@ -16,6 +16,7 @@ Guides for recording with campy and tracking animals live while it records. The 
 | [Triggering and synchronization](sync.md) | Arduino, Teensy and external triggers, `campy-align` and `campy-synctest` |
 | [RatCam cameras](ratcam.md) | nir-eye-cam's NIR eye cameras, alongside the others and on the same timeline |
 | [Hardware](hardware.md) | What to buy for live recording + SLEAP + 3D, and the measurements behind it |
+| [Jetson AGX Orin](jetson.md) | Bringing up a Jetson AGX Orin as a stand-alone rig: setting it up (JetPack 7.2.1, the video disk, power mode, USB, the two venvs), checking it (`bench/jetson_setup_check.py`), and whether its hardware encoder keeps up with three cameras (`bench/jetson_encode_bench.py`) |
 | [Recording a session from the desktop](recording-a-session.md) | For labmates who don't use a terminal: the desktop icon, the panel in the browser, Start, bookmarks, Stop, and what the warnings mean (`campy-session shortcut`, `campy-session panel`) |
 | [Live tracking](live-tracking.md) | Setting up and running `campy-acquire`, `campy-live` and `campy-live-view` (in one command with `campy-session`) on Linux (AMD/ROCm) and Windows (NVIDIA/CUDA), and opening the results in LUC3D (`campy-live-export`) |
 | [Watching it live](live-view.md) | `campy-live-view`: the cameras with the tracking drawn on them, a 3D view, warnings at a glance, bookmarks |
