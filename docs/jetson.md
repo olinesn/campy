@@ -21,19 +21,20 @@ The target: JetPack 7.2.1 (Jetson Linux 39.2.1: Ubuntu 24.04, Python 3.12, CUDA 
    sudo apt install ffmpeg gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
    ```
 6. **FLIR Spinnaker 4.4** for ARM64 / Ubuntu 24.04 (`install_spinnaker_arm.sh`, which also offers the `flirimaging` group and the USB memory setting), and the matching PySpin wheel for Python 3.12 (cp312, aarch64). The PySpin wheel must match the Spinnaker version exactly. SpinView should list all three cameras.
-7. **Two venvs**, with the system Python 3.12, as on the other Linux rig:
+7. **Two venvs**, with the system Python 3.12, as on the other Linux rig. PyQt5 comes first, from Ubuntu: campy needs it, and PyPI has no PyQt5 wheel for aarch64, so a plain `pip install -e ~/campy` tries to build PyQt5 from source and fails. Install Ubuntu's, and make both venvs with `--system-site-packages` so they see it (the ARM test runner in campy's CI installs it this way):
+   ```
+   sudo apt install python3-pyqt5 python3-venv
+   ```
    - **campy**, for `campy-acquire` and `campy-live-view`:
      ```
      git clone https://github.com/olinesn/campy ~/campy && cd ~/campy && git checkout dev
-     python3 -m venv ~/campy/.venv && . ~/campy/.venv/bin/activate
+     python3 -m venv --system-site-packages ~/campy/.venv && . ~/campy/.venv/bin/activate
      pip install -e ~/campy
      pip install <the PySpin cp312 aarch64 wheel>
-     pip install PyQt5
      ```
-     If pip has no PyQt5 wheel for aarch64, install it from Ubuntu instead (`sudo apt install python3-pyqt5`) and make the venv with `python3 -m venv --system-site-packages ~/campy/.venv`.
-   - **sleap**, for `campy-live`. Install torch first, from PyTorch's CUDA 13.2 wheels (sleap-nn's own CUDA torch source is for x86 PCs only); a warning that `sm_87` isn't in torch's build list is harmless:
+   - **sleap**, for `campy-live`. Install torch before sleap-nn and campy, from PyTorch's CUDA 13.2 wheels (sleap-nn's own CUDA torch source is for x86 PCs only); a warning that `sm_87` isn't in torch's build list is harmless:
      ```
-     python3 -m venv ~/venvs/sleap && . ~/venvs/sleap/bin/activate
+     python3 -m venv --system-site-packages ~/venvs/sleap && . ~/venvs/sleap/bin/activate
      pip install torch torchvision --index-url https://download.pytorch.org/whl/cu132
      pip install sleap-nn
      pip install -e ~/campy

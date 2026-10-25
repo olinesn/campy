@@ -33,11 +33,13 @@ How to set up the Orin (the full version is docs/jetson.md)
    gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
 6. FLIR: Spinnaker 4.4 for ARM64 / Ubuntu 24.04 (install_spinnaker_arm.sh)
    and the matching PySpin wheel for Python 3.12 (cp312, aarch64).
-7. Two venvs, with the system Python 3.12:
-   - campy: python3 -m venv ~/campy/.venv; pip install -e ~/campy; the PySpin
-     wheel; PyQt5 (if pip has no aarch64 wheel: sudo apt install python3-pyqt5
-     and make the venv with --system-site-packages)
-   - sleap: python3 -m venv ~/venvs/sleap;
+7. Two venvs, with the system Python 3.12. PyQt5 first, from Ubuntu: PyPI
+   has no aarch64 wheel, so pip install -e ~/campy fails building it.
+   sudo apt install python3-pyqt5, and make both venvs with
+   --system-site-packages so they see it:
+   - campy: python3 -m venv --system-site-packages ~/campy/.venv;
+     pip install -e ~/campy; then the PySpin wheel
+   - sleap: python3 -m venv --system-site-packages ~/venvs/sleap;
      pip install torch torchvision --index-url https://download.pytorch.org/whl/cu132;
      then pip install sleap-nn; then pip install -e ~/campy
      (torch first: sleap-nn's own CUDA torch source is x86 only. A warning
@@ -293,7 +295,8 @@ def check_pyspin(rep, venv, cameras, expected, lsusb_flir):
     py = venv_python(venv)
     if not os.path.exists(py):
         rep.add(FAIL, "PySpin (campy venv)", "no %s" % py,
-                "python3 -m venv %s, then pip install -e ~/campy and the PySpin cp312 aarch64 wheel" % venv)
+                "sudo apt install python3-pyqt5; python3 -m venv --system-site-packages %s; pip install -e ~/campy; "
+                "then the PySpin cp312 aarch64 wheel" % venv)
         return
     code_ = ("import PySpin, json; s = PySpin.System.GetInstance(); v = s.GetLibraryVersion(); "
              "n = None\n"
@@ -334,14 +337,14 @@ def check_campy_venv(rep, venv):
         rep.add(PASS, "PyQt5 (campy venv)", "PyQt %s, Qt %s" % tuple(out.split()[:2]))
     else:
         rep.add(FAIL, "PyQt5 (campy venv)", "won't import (campy-live-view needs it)",
-                "pip install PyQt5; if there's no aarch64 wheel: sudo apt install python3-pyqt5 and remake the venv with --system-site-packages")
+                "sudo apt install python3-pyqt5, and remake the venv with --system-site-packages (PyPI has no aarch64 PyQt5 wheel)")
 
 
 def check_sleap_venv(rep, venv):
     py = venv_python(venv)
     if not os.path.exists(py):
         rep.add(FAIL, "torch + sleap-nn (sleap venv)", "no %s" % py,
-                "python3 -m venv %s; pip install torch torchvision --index-url https://download.pytorch.org/whl/cu132; pip install sleap-nn" % venv)
+                "python3 -m venv --system-site-packages %s; pip install torch torchvision --index-url https://download.pytorch.org/whl/cu132; pip install sleap-nn" % venv)
         return
     code_ = ("import json, warnings; warnings.simplefilter('ignore'); import torch\n"
              "from importlib.metadata import version\n"
