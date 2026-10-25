@@ -44,10 +44,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        if: matrix.os != 'ubuntu-24.04-arm'
         with:
           python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: setup.py
+      - name: PyQt5 from Ubuntu (ARM)
+        # PyPI has no PyQt5 wheel for ARM Linux, and building one takes too long. As on
+        # a Jetson: Ubuntu's PyQt5, for its own Python 3.12, in a venv that
+        # sees it
+        if: matrix.os == 'ubuntu-24.04-arm'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pyqt5 python3-venv
+          python3 -m venv --system-site-packages "$RUNNER_TEMP/venv"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
       - name: Install campy
         # OpenCV (headless) for campy-live-view's tests: it is installed in campy-live's
         # environment, not campy's
