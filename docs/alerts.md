@@ -110,6 +110,13 @@ sudo usermod -aG adm $USER
 
 Check it with `journalctl -k -n 5`, which should show the kernel's last lines without sudo. `alertGpuLog: False` turns the reading off. On Windows, macOS, and Linux without an AMD GPU, it does nothing.
 
+**Tested on the EVO-X2** (26 October 2026, Ubuntu 24.04, kernel 6.17). The rig check's smoke test was used: 3 emulated cameras recorded at 60 fps with VA-API H.264, and `campy-live` tracked them in 3D for 60 s. It ran once with the reading on and once with it off.
+
+- With it on, journalctl ran as campy-acquire's child and used 0.00 s of CPU in the minute. campy-acquire's own process used 2.97 s, against 2.94 s with the reading off.
+- `campy-live` kept up the same way in both runs: 3600 of 3600 sets, none skipped, inference p50 5.6 / p99 5.8 ms, to 3D 7.6 / 8.5 and 7.6 / 8.4 ms, as in the rig check's baseline.
+- No journalctl was left running after either recording.
+- A third run swapped journalctl for a script that printed made-up stall, hang and ring-reset lines in the driver's formats. Each alert was said and sent within the watch's 2-second check: the stall warning at the third stall, then the hang warning and the critical reset.
+
 ### The recording's state now: `recording.json`
 
 Every 4 seconds, and as it ends, the watch also writes the recording's state to `~/.campy/status/recording.json` (`%USERPROFILE%\.campy\status\recording.json` on Windows), for a control panel to show: the state (`recording`, `stopping`, `ended`, `failed`), the session folder, its start, how long it has run and is planned to; for each camera its frame rate (set and measured), frames, dropped frames, seconds of frames waiting for ffmpeg, USB link speed (Linux) and state; each disk's free space and when it would be full at the present rate; the problems open now; the last critical one; and, on Linux with an AMD GPU, `gpu_log`: how the kernel log is read (`journalctl`, `/dev/kmsg`, or why it isn't), and the firmware stalls, hung jobs and resets so far, with each ring's count. Only campy-acquire writes it, and whole each time. `python -m pydoc campy.watch` lists the fields.
