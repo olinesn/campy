@@ -313,6 +313,15 @@ Notes on the measurements:
   | Precision 7875 | 1,200 / 1 / 0.9 / 1.0 | 3,600 / 1 / 1.6 / 1.7 / 4.1 / 5.2 | 1,797 / 4 / 1.6 / 1.7 / 4.7 / 5.8 |
 
   The replay's accuracy on the EVO-X2 was unchanged: 2D median 3.8 px, 3D median 4.2 mm, 2 switches.
+- On 26 October the three rigs moved to the `v2.2.0` release (12ba9ad). It adds pull requests 197 (memory fences in the live feed for ARM processors) and 201–205 (docs, and the version). Both environments on each rig report campy 2.2.0. The rig checks were all `RIG_CLEAN` and matched the table above to within 0.1 ms, with nothing skipped or misaligned and every camera keeping all its frames. The Pro Max Slim's replay was run twice: the first run had the same times, but was marked `RIG_CONTAMINATED` because the computer's security software read 482 MB/s of disk during it. These checks still use 3 emulated cameras, on all three machines.
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | EVO-X2 | 1,800 / 3.0 / 3.1 | 3,600 / 5.6 / 5.8 / 7.5 / 8.4 | 3,600 / 5.5 / 5.6 / 7.0 / 7.9 |
+  | Pro Max Slim | 1,198 / 2.3 / 2.5 | 3,598 / 5.5 / 5.7 / 7.8 / 8.6 | 1,790 / 5.5 / 5.7 / 8.7 / 9.5 |
+  | Precision 7875 | 1,200 / 0.9 / 1.1 | 3,600 / 1.6 / 1.7 / 4.1 / 5.2 | 1,797 / 1.6 / 1.7 / 4.7 / 5.6 |
+
+  The replay's accuracy on the EVO-X2 was again 2D median 3.8 px, 3D median 4.2 mm, 2 switches.
 
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
