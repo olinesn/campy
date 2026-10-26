@@ -1050,11 +1050,16 @@ def test_campy_ends_and_says_which_camera_failed(tmp_path):
 		with open(tmp_path / "rec" / name / "metadata.csv") as f:
 			return dict(csv.reader(f))
 
-	# EyeB: closed, with what ffmpeg was given
+	# EyeB: closed, with what its video holds (counted from the file: ffmpeg writes a fragment a second, so a
+	# second in, it may hold none of the frames it was given)
 	sent, meta = int(said.group(1)), metadata("EyeB")
-	assert meta["framesWritten"] == str(sent) and int(meta["totalFrames"]) < 150
+	held = int(meta["framesWritten"])
+	assert held <= sent and int(meta["totalFrames"]) < 150
+	assert meta["framesLostInEncoder"] == str(sent + 1 - held) # and the frame it failed on
 	assert meta["videoError"].startswith("ffmpeg stopped after taking {} frames".format(sent))
-	assert np.load(tmp_path / "rec" / "EyeB" / "frametimes.npy").shape == (2, sent)
+	assert np.load(tmp_path / "rec" / "EyeB" / "frametimes.npy").shape == (2, held)
+	if held:
+		assert imageio_ffmpeg.count_frames_and_secs(str(tmp_path / "rec" / "EyeB" / "0.mp4"))[0] == held
 	# EyeC: the whole recording
 	meta = metadata("EyeC")
 	assert meta["totalFrames"] == meta["framesWritten"] == "150" and "videoError" not in meta
