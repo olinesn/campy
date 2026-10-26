@@ -35,8 +35,12 @@ and checks:
                    never stopped
   trigger port     the trigger Arduino's serial port gone (unplugged, or it
                    reset), every 5 s, without sending it anything
-  USB              Linux: a USB 3 camera on a USB 2 link, every 60 s
-                   (preflight's sysfs reading; not on Windows or macOS)
+  USB              a USB 3 camera on a USB 2 link, every 60 s (preflight's
+                   reading: Linux's sysfs, or on Windows the camera's hub,
+                   campy/usbwin.py, about 1.5 ms; not on macOS). A camera
+                   whose link falls back to USB 2 leaves and comes back on
+                   the port's USB 2 side, so this follows its "the camera is
+                   gone": it says why, and what to replace
 
 and says when the recording started and how it ended. With a healthchecks.io
 check in the alerts file, it pings it every minute and pauses it at the end
@@ -56,7 +60,7 @@ another folder), for a control panel to show (campy-session's):
   state        recording, stopping, ended or failed
   session      {folder, started_at, elapsed_s, planned_s}
   cameras      [{name, serial, make, fps_target, fps_measured, frames,
-               dropped, write_queue_s, usb_speed (Mb/s, Linux), state}]
+               dropped, write_queue_s, usb_speed (Mb/s; Linux, Windows), state}]
   disk         [{path, free_gb, projected_full_at (ISO, or null)}]
   open         [{key, severity, text}]: the problems open now
   last_error   {time, text} of the last critical problem, or null
@@ -498,15 +502,15 @@ class Watch:
 		if not self.cams:
 			return
 		from campy import preflight
-		if not os.path.isdir(os.path.join(self.sysfs_root, "bus", "usb", "devices")):
+		devices = preflight.UsbDevices(self.sysfs_root) # (Windows: an OSError is said once, as the check's error)
+		if devices is None:
 			return
-		devices = preflight.ListUsbDevices(self.sysfs_root)
 		for cam in self.cams:
 			if cam.get("cameraMake") not in preflight.USB3_MAKES or cam.get("cameraSerialNo") is None:
 				continue
 			device = preflight.FindCameraDevice(devices, cam)
-			if device is None:
-				continue # not on the bus: unplugged, which the camera says itself
+			if device is None or device["speed"] is None:
+				continue # not on the bus: unplugged, which the camera says itself; or its hub could not say
 			key = "{}/usb".format(cam["cameraName"])
 			self.usbSpeed[cam["cameraName"]] = device["speed"]
 			if device["speed"] < 5000:

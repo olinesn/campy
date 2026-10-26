@@ -18,7 +18,10 @@ FAILs; "warn" reports and records anyway; "off" skips the check.
   capacity  cameras per encoder and GPU, against the table campy-encode-sweep
             measured on this computer (capacityFile). It FAILs only from a
             count the sweep found too slow; a count it did not try is a WARN
-  usb       camera data per USB bus, against a budget (Linux: read from sysfs)
+  usb       each USB3 camera on a USB 3 link, and camera data per USB bus
+            against a budget (Linux: read from sysfs; Windows: from each
+            camera's hub, campy/usbwin.py, where a bus over budget is only
+            a WARN: Windows doesn't say how fast a controller is)
   disk      free space for the recording, when the sweep measured a bitrate
   gige      (FLIR) Spinnaker searches for GigE cameras, about a second at
             each start, although every FLIR camera is USB3
@@ -686,6 +689,22 @@ def SerialsMatch(camera_serial, usb_serial):
 		return False
 
 
+WINDOWS = sys.platform == "win32" # (tests set it: a made-up Windows device tree)
+
+
+def UsbDevices(sysfs_root="/sys"):
+	"""
+	Every USB device, from Linux's sysfs (ListUsbDevices) or Windows' hubs
+	(usbwin.ListUsbDevices, which can raise OSError); None elsewhere (macOS).
+	"""
+	if os.path.isdir(os.path.join(sysfs_root, "bus", "usb", "devices")):
+		return ListUsbDevices(sysfs_root)
+	if WINDOWS:
+		from campy import usbwin
+		return usbwin.ListUsbDevices()
+	return None
+
+
 def FindCameraDevice(devices, cam):
 	vendors = USB_VENDOR_IDS.get(cam["cameraMake"], ())
 	for device in devices:
@@ -709,12 +728,15 @@ def CheckUsb(cams, params, report, sysfs_root="/sys"):
 	usb_cams = [cam for cam in cams if cam["cameraMake"] in USB_VENDOR_IDS]
 	if not usb_cams:
 		return
-	base = os.path.join(sysfs_root, "bus", "usb", "devices")
-	if not os.path.isdir(base):
-		report.add(WARN, "usb", "USB bandwidth not checked: it is read from Linux's sysfs.")
+	try:
+		devices = UsbDevices(sysfs_root)
+	except OSError as e:
+		report.add(WARN, "usb", "USB links not checked: {}.".format(e))
+		return
+	if devices is None:
+		report.add(WARN, "usb", "USB bandwidth not checked: it is read from Linux's sysfs, or from Windows' USB hubs.")
 		return
 
-	devices = ListUsbDevices(sysfs_root)
 	buses = OrderedDict()
 	for cam in usb_cams:
 		if cam.get("cameraSerialNo") is None:
@@ -723,6 +745,10 @@ def CheckUsb(cams, params, report, sysfs_root="/sys"):
 		if device is None:
 			report.add(WARN, "usb", "{} (serial {}) is not on the USB bus: a GigE camera, or its USB "
 				"serial is written differently.".format(cam["cameraName"], cam.get("cameraSerialNo")))
+			continue
+		if device["speed"] is None:
+			report.add(WARN, "usb", "{}: its USB link speed could not be read ({}).".format(cam["cameraName"],
+				device.get("error")))
 			continue
 		rate = CameraBytesPerSec(cam)
 		if rate is None:
@@ -735,7 +761,8 @@ def CheckUsb(cams, params, report, sysfs_root="/sys"):
 		elif cam["cameraMake"] not in USB3_MAKES:
 			CheckUsbLink(cam, device, rate, params, report)
 		bus = buses.setdefault((device["controller"], device["bus"]),
-			{"speed": device["bus_speed"], "cams": [], "rate": 0.0})
+			{"speed": device["bus_speed"], "known": device.get("bus_speed_known", True),
+			"name": device.get("controller_name", device["controller"]), "cams": [], "rate": 0.0})
 		bus["cams"].append(cam)
 		bus["rate"] += rate
 
@@ -745,10 +772,18 @@ def CheckUsb(cams, params, report, sysfs_root="/sys"):
 		budget = UsbBudget(bus["speed"], params)
 		load = bus["rate"] / 1e6
 		share = load / budget if budget else float("inf")
-		text = "bus {} ({:g} Gb/s, controller {}): {} send {:.{p}f} of {:.0f} MB/s ({:.0%})".format(
-			busnum, bus["speed"] / 1000, controller, Names(bus["cams"]), load, budget, share,
-			p=0 if load >= 10 else 1)
-		if share > 1:
+		if bus["known"]:
+			where = "bus {} ({:g} Gb/s, controller {})".format(busnum, bus["speed"] / 1000, controller)
+		else: # Windows: each link's speed, not the controller's
+			where = "controller {}, its USB {} links".format(bus["name"], 3 if busnum == "usb3" else 2)
+		text = "{}: {} send {:.{p}f} of {:.0f} MB/s ({:.0%})".format(where, Names(bus["cams"]), load, budget,
+			share, p=0 if load >= 10 else 1)
+		measured = str(params.get("usbBudgetMBps", "None")) != "None" and bus["speed"] >= 5000
+		if share > WARN_FRACTION and not bus["known"] and not measured:
+			# Over budget, or close to it, is only a WARN: the controller may be faster than its fastest link
+			report.add(WARN, "usb", text + ". Windows doesn't say how fast a USB controller is, so this budget is "
+				"for its fastest link ({:g} Gb/s); set usbBudgetMBps to what it carries.".format(bus["speed"] / 1000))
+		elif share > 1:
 			report.add(FAIL, "usb", text + ". Move cameras to another controller.")
 		elif share > WARN_FRACTION:
 			report.add(WARN, "usb", text)
