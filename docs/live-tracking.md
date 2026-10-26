@@ -299,6 +299,15 @@ Notes on the measurements:
   | Precision 7875 | 1,200 / 0.9 / 1.0 | 3,600 / 1.6 / 1.7 / 4.1 / 5.3 | 1,797 / 1.6 / 1.7 / 4.6 / 5.7 |
 
   The replay's accuracy on the EVO-X2 was again 2D median 3.8 px and 3D median 4.2 mm, with 2 identity switches.
+- On 24 October the three rigs moved on to dev 54e981a (pull request 200). It adds pull requests 190–200: strict-JSON manifests (192, 194), a faster first video in `campy-infer` (193), the Jetson scripts (198), and benchmark and docs changes. None of them changes tracking, and the version is still 2.2.0rc1 in both environments on each rig. The rig checks were all `RIG_CLEAN`, with nothing skipped or misaligned and every camera keeping all its frames. Their times matched the v2.2.0rc1 table to within 0.1 ms at the median and 0.4 ms at the 99th percentile, and every `.json` file they wrote (`campy-live`'s summaries and `campy-live-session.json`) is strict JSON:
+
+  | Machine | 1 camera, sets / first frame / time per set p50 / p99 | 3 cameras, sets / first frame / time per set / frame to 3D p50 / p99 | Replay, sets / first frame / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | EVO-X2 | 1,800 / 1 / 3.0 / 3.1 | 3,600 / 1 / 5.6 / 5.8 / 7.5 / 8.5 | 3,600 / 1 / 5.5 / 5.6 / 7.0 / 7.9 |
+  | Pro Max Slim | 1,195 / 6 / 2.3 / 2.5 | 3,597 / 4 / 5.5 / 5.7 / 7.7 / 8.6 | 1,792 / 9 / 5.5 / 5.8 / 8.8 / 9.9 |
+  | Precision 7875 | 1,200 / 1 / 0.9 / 1.0 | 3,600 / 1 / 1.6 / 1.7 / 4.1 / 5.2 | 1,797 / 4 / 1.6 / 1.7 / 4.7 / 5.8 |
+
+  The replay's accuracy on the EVO-X2 was unchanged: 2D median 3.8 px, 3D median 4.2 mm, 2 switches.
 
 ## Fixed crops (`--fixed-crops`, on by default with a GPU)
 
