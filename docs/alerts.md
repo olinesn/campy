@@ -133,6 +133,23 @@ The first recording, with campy 2.2.0rc1, found four things that did not work as
 
 In both recordings, every frame each camera grabbed was in its video, which decoded without an error (7733 and 6037 frames; 5791 and 2901), with `frametimes.npy`, `hosttimes.npy` and `metadata.csv` beside it. `alerts.log` had one JSON line for each problem and one for each message sent, and no token. `recording.json` ended as `failed` (the fixes; `ended` before them), with each camera's state (`lost`, `ended`) and the problems still open.
 
+### On Windows
+
+On 26 October 2026 the same test ran on the Dell Pro Max Slim FCS1250 (Windows 11), with the fixes above (campy 2.2.0rc1 at dev 27830d2): three FLIR Blackfly S (BFS-U3-13Y3M) on USB 3 at 30 fps, triggered on Line3 by its Arduino Nano ESP32 on COM9, recording with the rig's own profile (Quick Sync H.265), the live feed on, `campy-live` and `campy-watch` beside it, and the messages going to the same Slack direct message. One 5-minute recording had a camera's USB cable pulled, then the trigger's, and the trigger plugged back in. The cable times are from Windows' device records (each device's last arrival and removal) and from the cameras' last frames; the message times are from `alerts.log`, which keeps whole seconds.
+
+Everything worked as on Linux. The trigger's messages came a little later than there only because of where the 5-second port check happened to fall:
+
+| What was done | What was sent |
+|---|---|
+| A camera's cable pulled | "Camera2: the camera is gone ... after frame 2253", about 2 s later. Spinnaker on Windows gives the same error as on Linux (-1024, "Camera has been removed from the list and is no longer valid"). Its video was closed, whole, at once; the other two cameras went on |
+| The trigger's cable pulled | "The trigger Arduino on COM9 is gone", about 4 s later (the port is checked every 5 s). The reason Windows gives is "ClearCommError failed ... The device does not recognize the command" |
+| The two cameras still plugged in, without trigger pulses | "No camera has had a frame for 10 s: all 2 stopped together, so the trigger has stopped", 10 s after their last frame |
+| The trigger plugged back in | "resolved, after 1 min 12 s: The trigger Arduino's port COM9 is back", about 4 s later. Windows keeps a device's COM number, so it came back as COM9 |
+| `campy-watch` | no message, although `campy-live` stopped making results once the unplugged camera's frames stopped (it waits for every camera's frame of a set) |
+| The end | ":red_circle: Recording ... ended after 5 min 36 s, 1 of 3 cameras not to the end", with each camera's frames and "Still open as it ended: No camera has had a frame for 203 s ... the trigger has stopped" |
+
+Every frame each camera grabbed was in its video, which decoded without an error (3771, 3771 and 2253 frames), with `frametimes.npy`, `hosttimes.npy` and `metadata.csv` beside it and one host time per frame. `alerts.log` had one JSON line for each problem and one for each message sent, Slack accepted every message, and the file holds no token. `recording.json` ended as `failed`, with each camera's state (`ended`, `ended`, `lost`) and the two problems still open. Its `usb_speed` is empty on Windows: the USB link check is Linux only. The recording's start message, `info`, went only to the log, as the alerts file asks for `warning` and up.
+
 What this means for an unattended recording:
 
 - **A recording with no trigger pulses does not end at `recTimeInSec`.** campy counts frames, and none come. It goes on until it is stopped: Ctrl-C, its stop file, or `campy-session`'s stop. The alerts say so within seconds.
