@@ -73,9 +73,15 @@ Every recording is watched, however it was started: a thread in `campy-acquire`'
 | Disk running out | at the rate it filled over the last 5 minutes, it would be down to `stopAtFreeGB` before `recTimeInSec` ends | critical | it will last |
 | Disk nearly full | below `stopAtFreeGB` (2 GB): campy **stops the recording, cleanly**, as at Ctrl-C | critical | (stopped) |
 | The trigger's port | the trigger Arduino's serial port is gone (unplugged, or it reset), checked every 5 s without sending it anything | critical, once | the port is back. campy lets go of the lost port, so a replug brings it back under the same name, but it does not restart the trigger: the cameras get frames again in the next recording |
-| USB 2 | Linux: a USB 3 camera is now on a USB 2 link (read from sysfs every minute, as the launch check does) | critical | back on USB 3 |
+| USB 2 | a USB 3 camera is now on a USB 2 link, checked every minute as the launch check does: on Linux in sysfs, on Windows by asking the camera's USB hub ([below](#a-camera-on-a-usb-2-link)) | critical | back on USB 3 |
 
 A message also says when a recording starts (its cameras, frame rate, length and free space: `info`, so only channels with `min_severity: info` get it) and how it ended (each camera's frames, dropped frames, what went wrong, and the problems still open as it ended; `warning` with dropped frames, `critical` when a camera did not record to the end or a critical problem was still open). Ctrl-C is not an alert: cameras that end because you stopped them are what you asked for. But a recording stopped while a camera had no frames, or with the trigger unplugged, did not record what it should have, and its summary says so.
+
+### A camera on a USB 2 link
+
+A USB 3 camera on a USB 2 link gets less than a sixth of the bandwidth it needs, so it loses frames. Its link can't slow down while it stays connected, though: when a cable or port fails, the camera leaves and comes back on the port's USB 2 half. campy has lost it by then, so this alert comes right after "the camera is gone", and tells you why it went and what to replace: the cable, a hub, or the port. It also catches a camera that was on USB 2 from the start, when `preflight` is `"warn"` or `"off"`. Otherwise the launch check stops such a recording before it starts.
+
+On Linux the watch reads each link's speed in sysfs, as `lsusb -t` does. On Windows it asks each camera's USB hub what speed its port runs at, as Microsoft's USBView does: it opens nothing but the hub, needs no administrator rights, and reads every USB device in about 1 ms (the Dell Pro Max Slim FCS1250, 12 devices). Both run in `campy-acquire`'s main process, never in a camera's. Windows names a FLIR camera by its serial number in hex (`USB\VID_1E10&PID_4000\01524401` is camera 22168577), which campy matches. On macOS the link isn't checked.
 
 ### The one thing it does: a clean stop before the disk is full
 
@@ -85,7 +91,7 @@ Apart from that stop, the watch only reads. It never restarts a camera, ffmpeg o
 
 ### The recording's state now: `recording.json`
 
-Every 4 seconds, and as it ends, the watch also writes the recording's state to `~/.campy/status/recording.json` (`%USERPROFILE%\.campy\status\recording.json` on Windows), for a control panel to show: the state (`recording`, `stopping`, `ended`, `failed`), the session folder, its start, how long it has run and is planned to; for each camera its frame rate (set and measured), frames, dropped frames, seconds of frames waiting for ffmpeg, USB link speed (Linux) and state; each disk's free space and when it would be full at the present rate; the problems open now; and the last critical one. Only campy-acquire writes it, and whole each time. `python -m pydoc campy.watch` lists the fields.
+Every 4 seconds, and as it ends, the watch also writes the recording's state to `~/.campy/status/recording.json` (`%USERPROFILE%\.campy\status\recording.json` on Windows), for a control panel to show: the state (`recording`, `stopping`, `ended`, `failed`), the session folder, its start, how long it has run and is planned to; for each camera its frame rate (set and measured), frames, dropped frames, seconds of frames waiting for ffmpeg, USB link speed (Linux and Windows) and state; each disk's free space and when it would be full at the present rate; the problems open now; and the last critical one. Only campy-acquire writes it, and whole each time. `python -m pydoc campy.watch` lists the fields.
 
 ### Beside campy-live: `campy-watch`
 
@@ -148,7 +154,7 @@ Everything worked as on Linux. The trigger's messages came a little later than t
 | `campy-watch` | no message, although `campy-live` stopped making results once the unplugged camera's frames stopped (it waits for every camera's frame of a set) |
 | The end | ":red_circle: Recording ... ended after 5 min 36 s, 1 of 3 cameras not to the end", with each camera's frames and "Still open as it ended: No camera has had a frame for 203 s ... the trigger has stopped" |
 
-Every frame each camera grabbed was in its video, which decoded without an error (3771, 3771 and 2253 frames), with `frametimes.npy`, `hosttimes.npy` and `metadata.csv` beside it and one host time per frame. `alerts.log` had one JSON line for each problem and one for each message sent, Slack accepted every message, and the file holds no token. `recording.json` ended as `failed`, with each camera's state (`ended`, `ended`, `lost`) and the two problems still open. Its `usb_speed` is empty on Windows: the USB link check is Linux only. The recording's start message, `info`, went only to the log, as the alerts file asks for `warning` and up.
+Every frame each camera grabbed was in its video, which decoded without an error (3771, 3771 and 2253 frames), with `frametimes.npy`, `hosttimes.npy` and `metadata.csv` beside it and one host time per frame. `alerts.log` had one JSON line for each problem and one for each message sent, Slack accepted every message, and the file holds no token. `recording.json` ended as `failed`, with each camera's state (`ended`, `ended`, `lost`) and the two problems still open. Its `usb_speed` was empty on Windows then, as the USB link check was Linux only; it is read on Windows too now ([A camera on a USB 2 link](#a-camera-on-a-usb-2-link)). The recording's start message, `info`, went only to the log, as the alerts file asks for `warning` and up.
 
 What this means for an unattended recording:
 

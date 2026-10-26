@@ -159,7 +159,7 @@ def test_usb_on_windows(tmp_path, monkeypatch):
 
 def test_usb_over_budget_on_windows_is_a_warning(tmp_path, monkeypatch):
 	# 4 cameras at 60 fps on one controller: 315 MB/s, over the 300 MB/s of a 5 Gb/s link, but the controller may
-	# carry more (the Pro Max Slim's carries about 380): Windows doesn't say, so a WARN, not a FAIL
+	# run at 10 or 20 Gb/s: Windows doesn't say, so a WARN, not a FAIL
 	from test_usbwin import FakeWindows, ROOT, CONTROLLER, SS, camera
 	windows = FakeWindows(dict([(ROOT, (CONTROLLER, 0, None))] +
 		[(camera("{:08X}".format(i)), (ROOT, 16 + i, SS)) for i in range(1, 5)]))
