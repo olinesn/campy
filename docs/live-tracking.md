@@ -342,7 +342,7 @@ What changes with a camera more:
 - **A new calibration** with all four cameras: `campy-live` matches the calibration's cameras to the feed's by name, and stops if one is missing.
 - **`--cameras 4`** for `campy-live`, `campy-live-view` and `campy-watch` run by hand (3 by default). `campy-session` passes `numCams` itself.
 - **New TensorRT plans**, built once at the first start (below).
-- **USB**: the launch check reads USB bandwidth only on Linux. On Windows, add it up yourself: four 1280 × 1024 Mono8 cameras at 30 fps are about 157 MB/s, well inside one USB 3 controller.
+- **USB**: the launch check adds up the cameras' data on each USB controller, on Windows too: four 1280 × 1024 Mono8 cameras at 30 fps are about 157 MB/s, 52 % of the 300 MB/s it gives a controller whose cameras link at 5 Gb/s. At 60 fps (315 MB/s) it warns, as Windows doesn't say whether the controller runs at 5 Gb/s or faster: stream every camera at once at the full rate (SpinView) and set `usbBudgetMBps` to what it carried.
 
 ## Fixed crops (`--fixed-crops`, on by default with a GPU)
 
