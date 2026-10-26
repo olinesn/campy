@@ -3,7 +3,8 @@ campy-acquire's recording watch (campy/watch.py), check by check, on made-up
 counters and a made-up clock: a camera with no frames, all of them at once
 (the trigger), the first frame late, dropped frames, a stalled writer, a
 camera that ends, the disk filling (and the clean stop before it is full),
-the trigger's port gone, a camera on USB 2; and the messages as the
+the trigger's port gone, a camera on USB 2, the GPU's kernel log (firmware
+stalls, hung jobs, resets); and the messages as the
 recording starts and ends. tests/test_watch_acquire.py runs it in
 campy-acquire, with emulated cameras and injected faults.
 """
@@ -17,7 +18,7 @@ import types
 import pytest
 
 
-from campy import configurator, notify, status, watch
+from campy import configurator, gpulog, notify, status, watch
 
 from test_preflight import make_sysfs
 
@@ -58,7 +59,7 @@ class Rig:
 	"""A watch over made-up cameras: rig.Frame(c) gives camera c a frame now, rig.Tick(s) moves the clock."""
 
 	def __init__(self, monkeypatch, tmp_path, names=("Camera0", "Camera1", "Camera2"), systems=None, free=500e9,
-			cams=None, sysfs_root=None, **values):
+			cams=None, sysfs_root=None, gpu_log=None, **values):
 		self.clock = Clock()
 		monkeypatch.setattr(status, "Now", lambda: int(self.clock.now * 1e9))
 		self.names = list(names)
@@ -80,7 +81,7 @@ class Rig:
 			self.counters, folder=str(tmp_path / "2026-10-23_01-00-00"), notifier=self.notifier, cams=cams,
 			clock=self.clock, disk_usage=self.disk, sysfs_root=sysfs_root or str(tmp_path / "nosys"),
 			say=self.said.append, stopping=lambda: self.stopping, request_stop=self.stops.append,
-			port_gone=lambda port: None)
+			port_gone=lambda port: None, gpu_log=gpu_log)
 		self.grabbed = [0] * len(names)
 		self.dropped = [0] * len(names)
 		for row in self.rows:
@@ -426,3 +427,194 @@ def test_recording_json(monkeypatch, tmp_path):
 	log = [json.loads(line) for line in (tmp_path / "2026-10-23_01-00-00" / "alerts.log").read_text().splitlines()]
 	assert [(l["key"], l["event"], l["state"]) for l in log if l["status"] == "queued"] == [(None, "note", None),
 		("Camera1/no-frames", "problem", "open"), ("Camera1/no-frames", "resolved", "resolved"), (None, "note", None)]
+
+
+# ---------------------------------------------------------------------- the GPU's kernel log
+
+
+class KernelLog:
+	"""A made-up gpulog.Reader: Feed(line) is a line the kernel logged."""
+
+	def __init__(self, source="journalctl", why=None):
+		self.source, self.why = source, why
+		self.events, self.notes = [], []
+		self.stopped = False
+
+	def Feed(self, *lines):
+		for line in lines:
+			found = gpulog.Classify(line)
+			if found is not None:
+				self.events.append(found + (line,))
+
+	def Take(self):
+		taken, self.events = self.events, []
+		return taken
+
+	def Notes(self):
+		taken, self.notes = self.notes, []
+		return taken
+
+	def Stop(self):
+		self.stopped = True
+
+
+DEV = "amdgpu 0000:c5:00.0: amdgpu: "
+STALL = DEV + "Fence fallback timer expired on ring comp_1.0.0"
+
+
+def test_firmware_stalls_above_the_threshold(monkeypatch, tmp_path):
+	log = KernelLog()
+	rig = Rig(monkeypatch, tmp_path, gpu_log=log).Start()
+	rig.Run(10)
+	log.Feed(STALL, DEV + "amdgpu: Freeing queue vital buffer 0x7f1c3e400000, queue evicted")
+	rig.Run(120)
+	log.Feed(DEV + "Fence fallback timer expired on ring vcn_unified_0")
+	rig.Run(120)
+	assert len(rig.Sent()) == 1 # 2 in 10 min: not yet
+	log.Feed(STALL)
+	rig.Run(watch.EVERY_S)
+	assert rig.Sent()[-1] == (":large_orange_circle: *Test rig*: GPU: 3 firmware stalls in the last 10 min (1 in "
+		"the last minute), on comp_1.0.0 (compute: campy-live, and Mesa's copies into tiled video surfaces) \u00d72, "
+		"vcn_unified_0 (video encoder: the cameras' VA-API encoders) \u00d71. Each held that engine up for about half "
+		"a second; on a camera's encoder it shows as frames waiting for ffmpeg, and in campy-live as a late set. Last: "
+		+ STALL)
+	log.Feed(STALL, STALL)
+	rig.Run(60)
+	assert len(rig.Sent()) == 2 # still the same problem: nothing more
+	rig.Run(watch.GPU_WINDOW_S - 60 - watch.EVERY_S)
+	assert len(rig.Sent()) == 2 # some still within 10 min
+	rig.Run(watch.EVERY_S * 3)
+	assert rig.Sent()[-1].startswith(":white_check_mark: *Test rig*: resolved, after 10 min")
+	assert rig.Sent()[-1].endswith("GPU: no firmware stall for 10 min (5 in all)")
+
+
+def test_stalls_far_apart_are_no_alert(monkeypatch, tmp_path):
+	log = KernelLog()
+	rig = Rig(monkeypatch, tmp_path, gpu_log=log, alertGpuStalls=3).Start()
+	for _ in range(6): # one every 6 minutes: at most 2 within 10
+		log.Feed(STALL)
+		rig.Run(360)
+	assert len(rig.Sent()) == 1
+	rig.watch.Stop({})
+	assert rig.Sent()[-1].endswith("- GPU kernel log: 6 firmware stalls, no GPU reset (comp_1.0.0 \u00d76)")
+
+
+def test_a_lower_threshold(monkeypatch, tmp_path):
+	log = KernelLog()
+	rig = Rig(monkeypatch, tmp_path, gpu_log=log, alertGpuStalls=1).Start()
+	log.Feed(STALL)
+	rig.Run(watch.EVERY_S)
+	assert rig.Sent()[-1].startswith(":large_orange_circle: *Test rig*: GPU: 1 firmware stalls in the last 10 min")
+
+
+def test_a_hung_gpu_job(monkeypatch, tmp_path):
+	log = KernelLog()
+	rig = Rig(monkeypatch, tmp_path, gpu_log=log).Start()
+	rig.Run(10)
+	line = DEV + "ring comp_1.1.0 timeout, signaled seq=40917, emitted seq=40919"
+	log.Feed(line)
+	rig.Run(watch.EVERY_S)
+	assert rig.Sent()[-1] == (":large_orange_circle: *Test rig*: GPU: a job on the GPU hung (1 in the last 10 min, "
+		"on comp_1.1.0 (compute: campy-live, and Mesa's copies into tiled video surfaces) \u00d71): the encoders or "
+		"campy-live on it waited. A GPU reset may follow. Last: " + line)
+	rig.Run(watch.GPU_WINDOW_S + watch.EVERY_S)
+	assert rig.Sent()[-1].endswith("GPU: no hung GPU job for 10 min")
+
+
+def test_a_gpu_reset_is_critical(monkeypatch, tmp_path):
+	log = KernelLog()
+	rig = Rig(monkeypatch, tmp_path, gpu_log=log).Start()
+	rig.Run(10)
+	log.Feed(DEV + "ring comp_1.0.0 timeout, signaled seq=1, emitted seq=3", DEV + "Starting comp_1.0.0 ring reset",
+		DEV + "Ring comp_1.0.0 reset succeeded")
+	rig.Run(watch.EVERY_S)
+	sent = rig.Sent()[1:]
+	assert sent[0].startswith(":large_orange_circle: *Test rig*: GPU: a job on the GPU hung")
+	assert sent[1] == (":red_circle: *Test rig*: GPU: the driver reset the GPU's comp_1.0.0 (compute: campy-live, and "
+		"Mesa's copies into tiled video surfaces) \u00d71. A reset ends what was running there: expect the cameras' "
+		"VA-API encoders (ffmpeg) or campy-live to fail; the camera alerts say which. Last: " + DEV + "Ring comp_1.0.0 "
+		"reset succeeded")
+	# A whole-GPU reset, later: the same problem, its text now this one's
+	log.Feed(DEV + "GPU reset(2) succeeded!")
+	rig.Run(watch.EVERY_S)
+	assert rig.watch.problems["gpu/reset"].text.endswith("Last: " + DEV + "GPU reset(2) succeeded!")
+	rig.watch.Stop({})
+	end = rig.Sent()[-1]
+	assert end.startswith(":red_circle: *Test rig*: Recording 2026-10-23_01-00-00 ended after 14 s, with problems "
+		"still open:")
+	assert "- GPU kernel log: 1 hung GPU job, 2 GPU resets (comp_1.0.0 \u00d72)" in end
+	assert "Still open as it ended:\n- GPU: a job on the GPU hung" in end and "- GPU: the driver reset" in end
+	assert log.stopped
+
+
+def test_the_gpu_reset_resolves_once_quiet(monkeypatch, tmp_path):
+	log = KernelLog()
+	rig = Rig(monkeypatch, tmp_path, gpu_log=log).Start()
+	log.Feed(DEV + "GPU reset(1) succeeded!")
+	rig.Run(watch.EVERY_S)
+	rig.Run(watch.GPU_WINDOW_S + watch.EVERY_S)
+	assert rig.Sent()[-1].endswith("GPU: no GPU reset for 10 min (1 in all)")
+
+
+def test_a_kernel_log_it_can_not_read_is_said_once(monkeypatch, tmp_path):
+	log = KernelLog(source=None, why="journalctl can't read the kernel log")
+	rig = Rig(monkeypatch, tmp_path, gpu_log=log).Start()
+	log.notes.append(("Watch: can't read the kernel log (journalctl ...), so GPU firmware stalls and resets are not "
+		"watched in this recording. " + gpulog.FIX, True))
+	rig.Run(30)
+	assert [s for s in rig.said if "kernel log" in s] == [log.Notes() or "Watch: can't read the kernel log (journalctl "
+		"...), so GPU firmware stalls and resets are not watched in this recording. " + gpulog.FIX]
+	logged = [json.loads(line) for line in (tmp_path / "2026-10-23_01-00-00" / "alerts.log").read_text().splitlines()]
+	assert any("can't read the kernel log" in (l["text"] or "") for l in logged)
+	assert len(rig.Sent()) == 2 and rig.Sent()[1].startswith(":information_source:") # info: only info channels
+	assert rig.watch.Status("recording")["gpu_log"]["not_read"] == "journalctl can't read the kernel log"
+
+
+def test_reading_the_kernel_log_is_said_on_the_console_only(monkeypatch, tmp_path):
+	log = KernelLog()
+	rig = Rig(monkeypatch, tmp_path, gpu_log=log).Start()
+	log.notes.append(("Watch: reading the kernel log (journalctl) for GPU errors.", False))
+	rig.Run(10)
+	assert "Watch: reading the kernel log (journalctl) for GPU errors." in rig.said
+	assert len(rig.Sent()) == 1
+
+
+def test_recording_json_gpu_log(monkeypatch, tmp_path):
+	monkeypatch.setenv("CAMPY_STATUS_DIR", str(tmp_path / "status"))
+	log = KernelLog()
+	rig = Rig(monkeypatch, tmp_path, gpu_log=log).Start()
+	path = tmp_path / "status" / "recording.json"
+	assert json.loads(path.read_text())["gpu_log"] == {"read_with": "journalctl", "not_read": None, "stalls": 0,
+		"hangs": 0, "resets": 0, "stalls_last_minute": 0, "rings": {}}
+	log.Feed(STALL, STALL, DEV + "Fence fallback timer expired on ring vcn_unified_0")
+	rig.Run(90)
+	log.Feed(STALL)
+	rig.Run(10)
+	assert json.loads(path.read_text())["gpu_log"] == {"read_with": "journalctl", "not_read": None, "stalls": 4,
+		"hangs": 0, "resets": 0, "stalls_last_minute": 1, "rings": {"comp_1.0.0": 3, "vcn_unified_0": 1}}
+	# Elsewhere (not Linux, no AMD GPU, alertGpuLog False): null, and no line at the end
+	(tmp_path / "plain").mkdir()
+	plain = Rig(monkeypatch, tmp_path / "plain").Start()
+	assert plain.watch.Status("recording")["gpu_log"] is None
+	plain.watch.Stop({})
+	assert "GPU" not in plain.Sent()[-1]
+
+
+def test_start_reads_the_kernel_log_only_where_it_should(monkeypatch, tmp_path):
+	started = []
+
+	class Reader:
+		def Start(self):
+			started.append(self)
+			return self
+
+	monkeypatch.setattr(gpulog, "Reader", Reader)
+	for wanted, on, reads in ((False, True, False), (True, False, False), (True, True, True)):
+		monkeypatch.setattr(gpulog, "Wanted", lambda root, wanted=wanted: wanted)
+		rig = Rig(monkeypatch, tmp_path, alertGpuLog=on)
+		rig.watch.Run = lambda: None # no thread checking
+		rig.watch.Start()
+		assert (rig.watch.gpuLog is not None) == reads
+		rig.watch.gpuLog = None
+		rig.watch.Stop({}, timeout=0)
+	assert len(started) == 1
