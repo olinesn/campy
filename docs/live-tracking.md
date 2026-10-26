@@ -309,6 +309,27 @@ Notes on the measurements:
 
   The replay's accuracy on the EVO-X2 was unchanged: 2D median 3.8 px, 3D median 4.2 mm, 2 switches.
 
+## Four cameras on the Pro Max Slim (26 October 2026)
+
+A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice, with 3 mice in the cage, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
+
+| 4 cameras, 30 fps, 3 mice (run 3: 5) | Sets tracked | Inference | Frame to 3D | 3D alone |
+|---|---|---|---|---|
+| Run 1 (`RIG_CLEAN`) | 17,999 of 18,000 (1 skipped at the start) | 5.2 / 6.7 | 8.2 / 10.3 | 1.2 / 2.1 |
+| Run 2 | 18,000 of 18,000 | 5.2 / 6.7 | 8.3 / 10.4 | 1.3 / 2.2 |
+| Run 3, 5 mice (a load sighting only after the recording, in the remux) | 18,000 of 18,000 | 7.3 / 8.9 | 10.9 / 13.0 | 1.7 / 2.5 |
+| 4 emulated cameras, 60 fps, 5 mice (`RIG_CLEAN`) | 3,593 of 3,600 (4 skipped in the first 10 s) | 7.2 / 7.9 | 10.0 / 11.2 | 1.2 / 1.9 |
+
+With 5 mice, each camera found all 5 in 80–90% of its frames, and 5 mice had a 3D pose in 92.7% of the sets, 4 in 7.1%; with 3 mice, all 3 had one in 99.6–99.7%. In runs 1 and 2, where the 2D allowed a sure match in all four cameras, `campy-live` grouped the same detections into each mouse 99.4% of the time (`bench/pose3d_live_log.py`). Its 3D poses reprojected within 3.3–3.8 px at the median. The 60 fps row records 4 emulated cameras with Quick Sync, playing a 5-mouse recording. With 3 cameras the same check gives 5.5 / 5.7 and 7.7 / 8.6 ms.
+
+What changes with a camera more:
+
+- **campy's config**: `numCams: 4`, and per-camera lists such as `cameraGain` need a fourth value. campy picks cameras by their place in the FLIR driver's list (`cameraSelection`), not by serial, so check with `campy-config show <config> --cameras`, or with campy-acquire's "Opened Camera0 ... serial#" lines, that the older cameras kept their names. Their calibration is matched by name.
+- **A new calibration** with all four cameras: `campy-live` matches the calibration's cameras to the feed's by name, and stops if one is missing.
+- **`--cameras 4`** for `campy-live`, `campy-live-view` and `campy-watch` run by hand (3 by default). `campy-session` passes `numCams` itself.
+- **New TensorRT plans**, built once at the first start (below).
+- **USB**: the launch check reads USB bandwidth only on Linux. On Windows, add it up yourself: four 1280 × 1024 Mono8 cameras at 30 fps are about 157 MB/s, well inside one USB 3 controller.
+
 ## Fixed crops (`--fixed-crops`, on by default with a GPU)
 
 Normally `campy-live` runs the centroid model, waits for the GPU to say how many animals it found, and only then cuts that many crops for the instance model. That wait in the middle of every set costs time, and it is why `--cuda-graphs` needs a separate graph for every number of animals. With `--fixed-crops`, every frame always gets `--max-instances` crops. When fewer animals are there, the missing ones get a padding crop whose keypoints are thrown away. Nothing in a set then depends on how many animals were found, so:
@@ -426,7 +447,7 @@ An engine is made while `campy-live` warms up, before it prints `Waiting for the
 | RTX 4000 Ada (TensorRT) | 6.4 s | 28.3 s | 6.5 s |
 | `--engine compile` on Windows | | 40.7–41.7 s | 7.4–9.8 s |
 
-- **TensorRT** keeps its engines (*plans*) in `--engine-cache`, by default `~/.cache/campy/engines` (on Windows `C:\Users\<you>\.cache\campy\engines`). A plan's name comes from the network's weights, the input size, the precision, the GPU, and the TensorRT and PyTorch versions. So another model, a retrained one, another GPU or an update gets a new plan, built once, and an old plan is never used by mistake. Old plans stay in the folder; delete them to free the space (35–45 MB per model pair).
+- **TensorRT** keeps its engines (*plans*) in `--engine-cache`, by default `~/.cache/campy/engines` (on Windows `C:\Users\<you>\.cache\campy\engines`). A plan's name comes from the network's weights, the input size (the centroid network's batch is the number of cameras, the centered-instance network's the cameras × `--max-instances`, so another camera or animal count builds new plans), the precision, the GPU, and the TensorRT and PyTorch versions. So another model, a retrained one, another GPU or an update gets a new plan, built once, and an old plan is never used by mistake. Old plans stay in the folder; delete them to free the space (35–45 MB per model pair).
 - **`torch.compile`** keeps its compiled kernels in the same folder, under `inductor/`. On Linux its own default is the temp folder, which is emptied at every restart. On the EVO-X2 that would mean a 17 s start after every reboot, so `campy-live` keeps them with the TensorRT plans. If `TORCHINDUCTOR_CACHE_DIR` is set, that folder is used instead. PyTorch names what it keeps by the traced network, its own version and the GPU. The weights are inputs, so a retrained model of the same size reuses the kernels, and another architecture or a PyTorch update compiles anew.
 - `campy-live` says when it is making them: `building the centroid network's TensorRT engine ... once (kept in ...)`, or `compiling the networks with torch.compile (their kernels kept in ...)`.
 
