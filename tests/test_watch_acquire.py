@@ -221,3 +221,52 @@ def test_a_disk_that_fills_stops_the_recording_cleanly(tmp_path, service):
 		assert 30 < written < 30 * 10, meta # stopped after seconds, not the minute
 		assert np.load(str(folder / "frametimes.npy")).shape == (2, written)
 		assert imageio_ffmpeg.count_frames_and_secs(str(folder / "emuclip.mp4"))[0] == written
+
+
+def test_ffmpeg_killed_and_restarted(tmp_path, service):
+	# restartFfmpeg: Camera1's ffmpeg killed mid-recording, and a new one takes over. The camera never stops, the
+	# recording ends as planned, and every frame is accounted for: in one of its two files, or lost in the old ffmpeg
+	import imageio_ffmpeg
+	from campy import segments
+	proc = Start(tmp_path, service, rec=8, restartFfmpeg=True)
+	ffmpegs = Ffmpegs(proc)
+	time.sleep(2.5)
+	ffmpegs["Camera1"].kill()
+	code, out = Finish(proc)
+	assert code == 0, out # nothing failed
+	texts = Texts(service)
+	(restarted,) = [t for t in texts if t.startswith("Camera1: ffmpeg stopped, and campy started a new one")]
+	assert restarted == "Camera1: ffmpeg stopped, and campy started a new one (restartFfmpeg; restart 1 of the " \
+		"recording). The camera never stopped: its video goes on in a new file, emuclip.part2.mp4. The frames inside " \
+		"the stopped ffmpeg, about a second, are lost; segments.csv in its folder will say which."
+	(counted,) = [t for t in texts if t.startswith("Camera1: the stopped ffmpeg's file is counted")]
+	lost = int(re.search(r"counted: (\d+) frames? given to it", counted).group(1))
+	assert not any("Camera1/ended" in t or "ffmpeg stopped after taking" in t for t in texts), texts
+	assert texts[-1] == "Recording {} ended after {}, with ffmpeg restarted:\n- Camera0: 240 frames\n- Camera1: 240 " \
+		"frames, in 2 video files: 1 ffmpeg restart, {} frame{} lost".format(Session(tmp_path).name,
+		texts[-1].split("ended after ")[1].split(",")[0], lost, "" if lost == 1 else "s"), texts[-1]
+	assert service.Texts()[-1].startswith(":large_orange_circle:")
+
+	folder = Session(tmp_path) / "Camera1"
+	rows = segments.Read(str(folder))
+	assert [r["file"] for r in rows] == ["emuclip.mp4", "emuclip.part2.mp4"]
+	assert rows[0]["lost"] == lost, texts
+	assert rows[1]["last_frame"] == 240 and rows[1]["lost"] == 0
+	assert rows[1]["first_frame"] == rows[0]["last_frame"] + 1
+	gone = segments.ParseRanges(rows[0]["lost_frames"])
+	with open(folder / "metadata.csv") as f:
+		meta = dict(csv.reader(f))
+	held = [imageio_ffmpeg.count_frames_and_secs(str(folder / r["file"]))[0] for r in rows]
+	assert held == [r["frames"] for r in rows]
+	assert meta["framesWritten"] == str(sum(held)) == str(240 - lost) and meta["framesLostInEncoder"] == str(lost)
+	frames = np.load(str(folder / "frametimes.npy"))
+	assert [int(n) for n in frames[0]] == [n for n in range(1, 241) if n not in set(gone)]
+	assert not (Session(tmp_path) / "Camera0" / "segments.csv").exists() # the other camera: as ever
+	# session.json and recording.json say it too
+	session = json.load(open(Session(tmp_path) / "session.json"))
+	(end,) = [c for c in session["end"]["cameras"] if c["name"] == "Camera1"]
+	assert end["ffmpegRestarts"] == 1 and end["videoFiles"] == ["emuclip.mp4", "emuclip.part2.mp4"]
+	assert end["framesLostInEncoder"] == lost and session["status"] == "complete"
+	status = json.load(open(os.path.join(os.environ["CAMPY_STATUS_DIR"], "recording.json")))
+	assert [(c["name"], c["ffmpeg_restarts"], c["frames_lost_in_encoder"]) for c in status["cameras"]] == [
+		("Camera0", 0, 0), ("Camera1", 1, lost)]

@@ -29,6 +29,8 @@ import os, queue, re, shutil, subprocess, sys, threading
 
 import numpy as np
 
+from campy import segments
+
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".avi")
 
 
@@ -499,15 +501,23 @@ def FindVideos(inputs):
 	"""
 	The videos to run, in order: each input a video file, or a folder: a
 	session folder's camera folders' videos (Camera1/Camera1.mp4, ...,
-	Camera10/..., in the cameras' number order), or the videos in it.
+	Camera10/..., in the cameras' number order), or the videos in it. A
+	camera's video in several files (an ffmpeg restart) counts once, joined,
+	when campy-session post has joined them.
 	"""
 	def Natural(name):
 		return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
 
 	def VideosIn(folder):
-		return [os.path.join(folder, f) for f in sorted(os.listdir(folder), key=Natural)
-			if f.lower().endswith(VIDEO_EXTENSIONS) and not f.startswith(".") and
-			os.path.isfile(os.path.join(folder, f))]
+		names = [f for f in sorted(os.listdir(folder), key=Natural) if f.lower().endswith(VIDEO_EXTENSIONS) and
+			not f.startswith(".") and ".join-tmp" not in f and os.path.isfile(os.path.join(folder, f))]
+		# A camera whose ffmpeg was restarted (restartFfmpeg) has its video in
+		# several files: once they are joined into one (campy-session post),
+		# that one only, else each of them
+		parts = segments.Files(folder)
+		if len(parts) > 1 and segments.JoinedName(parts[0]) in names:
+			names = [f for f in names if f not in parts]
+		return [os.path.join(folder, f) for f in names]
 	videos = []
 	for item in inputs:
 		if os.path.isdir(item):

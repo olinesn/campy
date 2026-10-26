@@ -102,6 +102,8 @@ VIEW = {
 POST = {
 	"remux": ((bool, str), True, "fragmented MP4s to plain ones, checked packet by packet: true, keep (the fragmented "
 		"one stays beside it) or false"),
+	"join": ((bool,), True, "a camera's video files after an ffmpeg restart (restartFfmpeg) joined into one, "
+		"without re-encoding, checked packet by packet"),
 	"export": ((bool,), True, "campy-live-export, when campy-live ran"),
 	"copy": ((dict, str), {}, "copy the recording to copy.to/<its folder's name> (robocopy or rsync); nothing deleted"),
 	"run": ((list,), [], "your own commands, {folder} replaced by the recording's folder"),

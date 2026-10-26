@@ -68,20 +68,45 @@ Every recording is watched, however it was started: a thread in `campy-acquire`'
 | No first frame | none 10 s after the trigger Arduino started; with an external trigger (`startArduino: False`), after 10 minutes of waiting | critical; warning for an external trigger | the first frames |
 | Dropped frames | frames dropped because more than `writeQueueMaxSec` of frames were waiting for ffmpeg | warning; critical above 1 % of the last minute's frames | none dropped for 2 minutes |
 | Writing stalls | the frames waiting for ffmpeg reach a quarter of `writeQueueMaxSec` (critical at three quarters): the disk or the encoder has stopped keeping up, and frames are dropped once it is full. The EVO-X2's SSD stopped taking writes for 10 to 16 s at a time | warning, then critical | below a tenth, for 30 s |
-| A camera's recording ends early | ffmpeg stopped; the camera is gone (unplugged, or its USB link lost: a FLIR camera says so within a second); its camera thread or process died; it did not start grabbing | critical, sent once, no reminders | (it has ended) |
+| A camera's recording ends early | ffmpeg stopped (and was not restarted); the camera is gone (unplugged, or its USB link lost: a FLIR camera says so within a second); its camera thread or process died; it did not start grabbing | critical, sent once, no reminders | (it has ended) |
+| ffmpeg restarted | with `restartFfmpeg: True`, a camera's ffmpeg stopped and a new one took over: said once, then again with the frames lost once the stopped ffmpeg's file is counted ([below](#restarting-a-stopped-ffmpeg-restartffmpeg)) | warning, sent once each, no reminders | (nothing stays open) |
 | Disk space | less than `alertDiskFreeGB` (20 GB) free on a video folder's disk | warning | more than 10 % above it |
 | Disk running out | at the rate it filled over the last 5 minutes, it would be down to `stopAtFreeGB` before `recTimeInSec` ends | critical | it will last |
 | Disk nearly full | below `stopAtFreeGB` (2 GB): campy **stops the recording, cleanly**, as at Ctrl-C | critical | (stopped) |
 | The trigger's port | the trigger Arduino's serial port is gone (unplugged, or it reset), checked every 5 s without sending it anything | critical, once | the port is back. campy lets go of the lost port, so a replug brings it back under the same name, but it does not restart the trigger: the cameras get frames again in the next recording |
 | USB 2 | Linux: a USB 3 camera is now on a USB 2 link (read from sysfs every minute, as the launch check does) | critical | back on USB 3 |
 
-A message also says when a recording starts (its cameras, frame rate, length and free space: `info`, so only channels with `min_severity: info` get it) and how it ended (each camera's frames, dropped frames, what went wrong, and the problems still open as it ended; `warning` with dropped frames, `critical` when a camera did not record to the end or a critical problem was still open). Ctrl-C is not an alert: cameras that end because you stopped them are what you asked for. But a recording stopped while a camera had no frames, or with the trigger unplugged, did not record what it should have, and its summary says so.
+A message also says when a recording starts (its cameras, frame rate, length and free space: `info`, so only channels with `min_severity: info` get it) and how it ended (each camera's frames, dropped frames, ffmpeg restarts and the frames they lost, what went wrong, and the problems still open as it ended; `warning` with dropped frames or an ffmpeg restart, `critical` when a camera did not record to the end or a critical problem was still open). Ctrl-C is not an alert: cameras that end because you stopped them are what you asked for. But a recording stopped while a camera had no frames, or with the trigger unplugged, did not record what it should have, and its summary says so.
 
 ### The one thing it does: a clean stop before the disk is full
 
 A disk that fills stops every camera's ffmpeg at the same moment, and leaves no room for the end of each video, `frametimes.npy` or `metadata.csv`. So below `stopAtFreeGB` (2 GB) of free space, campy stops the recording itself, as Ctrl-C does: every camera stops grabbing, its ffmpeg finishes the frames it has, and its files are saved whole. campy then exits with code 1, saying each camera "stopped early: only 1.95 GB free on the disk with ...". `stopAtFreeGB: 0` turns this off.
 
-Apart from that stop, the watch only reads. It never restarts a camera, ffmpeg or the trigger, never deletes anything and never changes a setting mid-recording: a camera unplugged mid-recording needs a replug and a new recording, and a restarted trigger could resume on the wrong device. An error inside one of its checks is said once, and the other checks go on.
+Apart from that stop, the watch only reads. It never restarts a camera or the trigger, never deletes anything and never changes a setting mid-recording: a camera unplugged mid-recording needs a replug and a new recording, and a restarted trigger could resume on the wrong device. A stopped ffmpeg is restarted only when you turn that on (`restartFfmpeg`, below); the camera's own process does it, and the watch says so. An error inside one of its checks is said once, and the other checks go on.
+
+### Restarting a stopped ffmpeg (`restartFfmpeg`)
+
+Off by default. Each camera's frames go to an ffmpeg of its own, which encodes them and writes the video. When that ffmpeg stops mid-recording (killed, crashed, or an encoder error), campy normally stops that camera: its video ends there, and the other cameras go on. With `restartFfmpeg: True`, campy starts a new ffmpeg instead, and the camera never stops:
+
+1. The camera keeps grabbing. Its frames wait in memory, as they do whenever the encoder is slow (up to `writeQueueMaxSec`, past which they are dropped and counted). A new ffmpeg takes a fraction of a second to start.
+2. The stopped ffmpeg is waited for (and killed, if it hangs on its way out), so that its file is closed.
+3. The new ffmpeg writes a new file next to the first, with the same settings: `0.mp4`, then `0.part2.mp4`, `0.part3.mp4`. Frame numbers go on from one file to the next.
+4. The frames that were inside the stopped ffmpeg, given to it but not yet in its file, are lost: about a second (its last fragment, and the frames inside the encoder). In the background, campy reads which frames the old file holds, from its packets' timestamps (without decoding it, at low priority), and names the lost ones.
+5. `segments.csv`, in the camera's folder, says which frames each file holds, and which were lost ([Recording folders](recordings.md#what-is-in-the-folder)). "frametimes.npy" and "hosttimes.npy" have no row for a lost frame, as for a dropped one: their rows are the files' frames, read one after the other.
+6. After the recording, `campy-session post`'s `join` step joins the files into one, `0.joined.mp4`, without re-encoding, for the tools that read one video per camera ([Live tracking](live-tracking.md#in-one-command-campy-session)). For a recording made with `campy-acquire` alone: `campy-session post <recording folder> --only join`.
+
+Two messages say it: as it happens, "Camera1: ffmpeg stopped, and campy started a new one (restartFfmpeg; restart 1 of the recording). The camera never stopped: its video goes on in a new file, 0.part2.mp4. ...", and seconds later, once the old file is counted, "Camera1: the stopped ffmpeg's file is counted: 27 frames given to it are not in it, and lost." Both are warnings. The end's summary says "Camera1: 14400 frames, in 2 video files: 1 ffmpeg restart, 27 frames lost". The recording counts as whole: campy exits with 0, and `campy-session`'s post steps run.
+
+It does not restart, and the camera stops as without it (a critical alert, which says why it was not restarted):
+
+- after 3 restarts of that camera within the last hour;
+- when the disk is the cause: less free space than `stopAtFreeGB` (or than 1 GB, if that is less), or ffmpeg's error says the disk is full, failed or read-only. A new ffmpeg would only fail again, and the disk stop above ends the recording cleanly;
+- for a calibration video, which is short and watched, and which calibration tools read as one file;
+- when campy is stopping the recording (its stop file, or the disk stop).
+
+A new ffmpeg that does not start counts as one of the 3 and is tried again a second later. The first ffmpeg not starting at all is a settings or driver problem, and is not retried.
+
+What it does not cover: an ffmpeg that hangs without exiting. The real stalls seen so far were of that kind (the EVO-X2's SSD not taking writes for 10 to 16 s, a GPU's video firmware stalling), and they show as frames waiting for ffmpeg, then dropped frames (the table above). Restarting a hung ffmpeg would mean killing it on a guess, so it is alert-only. No ffmpeg has exited mid-recording on the rigs campy has been tested on so far, so this is a safety net for something rare, and it has been tested with emulated cameras only (ffmpeg killed mid-recording, frame by frame: every frame is in its file or named as lost).
 
 ### The recording's state now: `recording.json`
 
@@ -113,6 +138,7 @@ campy-watch --cameras 3
 | `alertNoFramesSec` | `10` | seconds without a frame before a camera is an alert |
 | `alertDiskFreeGB` | `20` | free space below which a disk is an alert |
 | `stopAtFreeGB` | `2` | free space below which the recording stops, cleanly; `0` = never |
+| `restartFfmpeg` | `False` | restart a camera's ffmpeg that stops mid-recording, into a new file ([above](#restarting-a-stopped-ffmpeg-restartffmpeg)) |
 
 Each can also be given on the command line (`--stopAtFreeGB 5`).
 

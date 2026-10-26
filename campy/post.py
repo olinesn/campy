@@ -20,6 +20,19 @@ remux    each fragmented MP4 (fragmentedVideo, campy's default: readable after
          (remux: keep). A check that fails leaves the original as it was.
          Each needs free space for one more copy of the video it remuxes;
          without it, that video is skipped, and said.
+join     each camera whose ffmpeg was restarted during the recording
+         (restartFfmpeg: its video in several files, 0.mp4, 0.part2.mp4,
+         ..., and a segments.csv) gets them joined into one plain MP4,
+         0.joined.mp4, without re-encoding (ffmpeg's concat demuxer, -c
+         copy, +faststart; auto_convert off, which would otherwise put the
+         codec header into the first packet), for the tools that read one video per camera
+         (campy-live-export, so LUC3D; campy-label-pack, campy-synctest).
+         Checked before it is kept: every packet of the joined video is the
+         files' packets in order (ffmpeg's framemd5: same size and hash),
+         and their number is frametimes.npy's rows. Files whose codec
+         headers differ are not joined (a lossless join keeps the first's
+         only), and a file that holds no frame is left out. The files stay
+         as they are. Needs free space for one more copy of the files.
 export   campy-live-export, in campy-live's environment, when campy-live ran
          (campy-live.npy in the folder). A campy-live started again during
          the recording (campy-session's live.restart) left one log per run
@@ -44,10 +57,10 @@ their last second.
 import argparse, csv, glob, json, os, re, shlex, shutil, struct, subprocess, sys, time
 from datetime import datetime
 
-from campy import strictjson
+from campy import segments, strictjson
 
 POST_LOG, POST_JSON = "post.log", "post.json"
-STEPS = ("remux", "export", "copy", "run")
+STEPS = ("remux", "join", "export", "copy", "run")
 VIDEO_EXTENSIONS = (".mp4", ".m4v", ".mov")
 SPARE_BYTES = 200 * 1024 ** 2 # left free on the disk besides the remuxed copy
 
@@ -166,7 +179,7 @@ def Videos(folder):
 			for path in sorted(glob.glob(os.path.join(folder, camera, sub, "*"))):
 				name = os.path.basename(path)
 				if os.path.isfile(path) and name.lower().endswith(VIDEO_EXTENSIONS) and ".fragmented." not in name \
-						and ".remux-tmp" not in name:
+						and ".remux-tmp" not in name and ".join-tmp" not in name:
 					videos.append(path)
 	return videos
 
@@ -316,6 +329,121 @@ def JoinLogs(logs, out):
 		with open(out[:-4] + ".json", "w") as f:
 			strictjson.dump(summary, f, indent=2)
 	return total, bool(summaries)
+
+
+# ------------------------------------------------------------------ join
+
+def PacketList(ffmpeg, path):
+	"""(the codec header's line, [(size, hash) of each video packet]), from ffmpeg's framemd5 of the video stream."""
+	out = subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-i", path, "-map", "0:v:0", "-c", "copy", "-f",
+		"framemd5", "-"], capture_output=True, text=True)
+	if out.returncode != 0:
+		raise PostError("ffmpeg could not read {}: {}".format(path, out.stderr.strip()[-500:]))
+	header, packets = None, []
+	for line in out.stdout.splitlines():
+		if line.startswith("#extradata 0"): # "#extradata 0,   44, <md5>": its size and hash
+			header = " ".join(line.split(",", 1)[1].split())
+		elif line and not line.startswith("#"):
+			fields = [f.strip() for f in line.split(",")]
+			packets.append((fields[4], fields[5]))
+	return header, packets
+
+
+def Join(camera, ffmpeg, log=None):
+	"""
+	Joins one camera folder's video files (segments.csv) into one, checked.
+	Returns what it did, in a sentence. Raises PostError when it could not
+	(nothing is then changed).
+	"""
+	rows = segments.Read(camera)
+	files = [r["file"] for r in rows if r["frames"] != 0] # a file that holds no frame cannot be read
+	joined = os.path.join(camera, segments.JoinedName(rows[0]["file"]))
+	stem, ext = os.path.splitext(joined)
+	tmp, listing = "{}.join-tmp{}".format(stem, ext), "{}.join-list.txt".format(stem)
+	paths = [os.path.join(camera, f) for f in files]
+	missing = [f for f, p in zip(files, paths) if not os.path.isfile(p)]
+	if missing:
+		raise PostError("{}: {} not there".format(camera, ", ".join(missing)))
+	size = sum(os.path.getsize(p) for p in paths)
+	free = shutil.disk_usage(camera).free
+	if free < size + SPARE_BYTES:
+		raise PostError("not enough free space to join {}'s video files ({:.1f} GB needed, {:.1f} GB free): "
+			"skipped".format(camera, (size + SPARE_BYTES) / 1e9, free / 1e9))
+	parts = [PacketList(ffmpeg, p) for p in paths]
+	headers = set(h for h, _ in parts)
+	if len(headers) > 1:
+		raise PostError("{}: its video files' codec headers differ ({}), and a join without re-encoding keeps only "
+			"the first's: not joined. Each file is whole on its own".format(camera, " against ".join(sorted(
+			str(h) for h in headers))))
+	expected = [packet for _, packets in parts for packet in packets]
+	rows_npy = os.path.join(camera, "frametimes.npy")
+	if os.path.isfile(rows_npy):
+		import numpy as np
+		frames = np.load(rows_npy)[0]
+		kept = int(segments.KeepRows(frames, segments.LostFrames(camera)).sum())
+		if kept != len(expected):
+			raise PostError("{}: its video files hold {} frames, and frametimes.npy has {} rows for them: not "
+				"joined".format(camera, len(expected), kept))
+	for path in (tmp, listing):
+		if os.path.exists(path):
+			os.remove(path) # left by a join that was stopped: never a video file
+	t0 = time.monotonic()
+	try:
+		with open(listing, "w", encoding="utf-8") as f:
+			for p in paths:
+				f.write("file '{}'\n".format(os.path.abspath(p).replace("'", "'\\''")))
+		fmt = "mov" if ext.lower() == ".mov" else "mp4"
+		out = subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-f", "concat", "-safe", "0", "-auto_convert", "0",
+			"-i", listing, "-map", "0", "-c", "copy", "-movflags", "+faststart", "-f", fmt, tmp], capture_output=True,
+			text=True)
+		if out.returncode != 0:
+			raise PostError("ffmpeg could not join {}'s video files: {}".format(camera, out.stderr.strip()[-500:]))
+		header, packets = PacketList(ffmpeg, tmp)
+		if packets != expected or header not in headers:
+			first = next((i for i, (a, b) in enumerate(zip(expected, packets)) if a != b), min(len(expected),
+				len(packets)))
+			raise PostError("{}: the joined video is not its files' packets (from packet {}: {} against {}): not "
+				"kept".format(camera, first + 1, len(packets), len(expected)))
+		os.replace(tmp, joined)
+	finally:
+		for path in (tmp, listing):
+			if os.path.exists(path):
+				try:
+					os.remove(path)
+				except OSError:
+					pass
+	return "{}: {} files joined into {}, {} frames, the same packets, {:.1f} s".format(os.path.basename(camera),
+		len(files), os.path.basename(joined), len(expected), time.monotonic() - t0)
+
+
+def StepJoin(folder, settings, log, ffmpeg=None, stop=None):
+	if settings.get("join", True) is False:
+		return "skipped", "join is off"
+	ffmpeg = Ffmpeg(ffmpeg or settings.get("ffmpeg"))
+	cameras = [os.path.dirname(meta) for meta in Cameras(folder).values()]
+	todo = [c for c in cameras if len(segments.Read(c)) > 1]
+	if not todo:
+		return "done", "no camera's video is in more than one file"
+	failed, done = [], 0
+	for camera in todo:
+		if stop and stop():
+			return "failed", "stopped (Ctrl-C) before {} of {} cameras".format(len(todo) - todo.index(camera), len(todo))
+		joined = os.path.join(camera, segments.JoinedName(segments.Files(camera)[0]))
+		if os.path.isfile(joined):
+			log.Say("{}: joined already ({})".format(os.path.basename(camera), os.path.basename(joined)))
+			done += 1
+			continue
+		try:
+			log.Say(Join(camera, ffmpeg, log=log))
+			done += 1
+		except PostError as e:
+			log.Say(str(e))
+			failed.append(os.path.basename(camera))
+	if failed:
+		return "failed", "{} of {} cameras' video files not joined ({}); each file is whole on its own".format(
+			len(failed), len(todo), ", ".join(failed))
+	return "done", "{} video files joined into one, checked packet by packet".format("1 camera's" if done == 1 else
+		"{} cameras'".format(done))
 
 
 def StepExport(folder, settings, log, live_python=None, force=False, stop=None):
@@ -483,6 +611,8 @@ def Run(folder, settings, live_python=None, only=None, force=False, ffmpeg=None,
 		try:
 			if step == "remux":
 				result = StepRemux(folder, settings, log, ffmpeg=ffmpeg, stop=stop)
+			elif step == "join":
+				result = StepJoin(folder, settings, log, ffmpeg=ffmpeg, stop=stop)
 			elif step == "export":
 				result = StepExport(folder, settings, log, live_python=live_python, force=force or bool(before), stop=stop)
 			elif step == "copy":
@@ -503,7 +633,7 @@ def Main(argv=None):
 	"""campy-session post <folder>: the post-steps again, by hand."""
 	from campy import session
 	p = argparse.ArgumentParser(prog="campy-session post", description="Run the steps after a recording (remux, "
-		"export, copy, run) on its folder, those not done yet; python -m pydoc campy.post says what each does.")
+		"join, export, copy, run) on its folder, those not done yet; python -m pydoc campy.post says what each does.")
 	p.add_argument("folder", help="the recording's folder")
 	p.add_argument("--config", default="", help="the config whose post: section to use (default: the one "
 		"campy-session ran, logs/session-config.yaml; else remux and export)")

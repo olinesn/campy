@@ -22,8 +22,9 @@ three times, each time adding to it, never changing what it said before
              the cameras): "recording": trigger.json's record, and each
              camera's model, firmware and frame size, from its metadata.csv.
   end        when the cameras have stopped: "end": how each camera ended
-             (frames grabbed, written, dropped, lost, seconds, errors), the
-             exit code. status "complete", "interrupted" (Ctrl-C) or "failed".
+             (frames grabbed, written, dropped, lost, seconds, errors; after
+             an ffmpeg restart its video files, the restarts and the frames
+             lost in the stopped ffmpegs), the exit code. status "complete", "interrupted" (Ctrl-C) or "failed".
 
 A campy that is killed, or a computer that loses power, leaves status
 "recording": the recording did not end as campy meant it to.
@@ -613,7 +614,9 @@ OPENED_KEYS = ("cameraModel", "cameraFirmware", "cameraSerialNo", "frameWidth", 
 TOTAL_KEYS = (("framesGrabbed", "totalFrames"), ("seconds", "totalTime"), ("framesWritten", "framesWritten"),
 	("framesDropped", "framesDropped"), ("framesLost", "flirFramesLost"), ("framesLost", "ratcamFramesLost"),
 	("framesIncomplete", "flirFramesIncomplete"),
-	("cameraError", "cameraError"), ("videoError", "videoError"))
+	("cameraError", "cameraError"), ("videoError", "videoError"),
+	# restartFfmpeg: the video in several files (campy/segments.py), and the frames lost in stopped ffmpegs
+	("ffmpegRestarts", "ffmpegRestarts"), ("videoFiles", "videoFiles"), ("framesLostInEncoder", "framesLostInEncoder"))
 
 
 def SdkVersions(systems):
@@ -805,7 +808,8 @@ class Session:
 						totals[name] = meta[key]
 				video = os.path.join(self.folder, data["cameras"][n]["video"]) if data.get("cameras") else None
 				if video and os.path.exists(video):
-					totals["videoBytes"] = os.path.getsize(video)
+					files = [os.path.join(os.path.dirname(video), f) for f in totals.get("videoFiles") or []] or [video]
+					totals["videoBytes"] = sum(os.path.getsize(f) for f in files if os.path.exists(f))
 				# opened late, after the recording write: its model and firmware
 				if data.get("recording") and n < len(data["recording"]["cameras"]):
 					opened = data["recording"]["cameras"][n]

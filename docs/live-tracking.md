@@ -86,6 +86,7 @@ Each program's output is shown in the terminal, each line marked `[acquire]`, `[
 ```yaml
 post:
   remux: true          # true (the default), keep, or false
+  join: true           # a camera's video files after an ffmpeg restart, joined into one (the default)
   export: true         # campy-live-export, when campy-live ran (the default)
   copy: "\\\\nas\\share\\recordings"   # optional: copies the recording's folder into this one
   run: ["python C:\\tools\\notify.py {folder}"]   # optional: your own commands
@@ -96,6 +97,9 @@ post:
   - With `remux: keep`, the fragmented file stays beside it as `<name>.fragmented.mp4`.
   - If the check fails, or the disk has no room for one more copy of the video, the original stays as it was, and the log says why.
   - A 30 s video of 3 cameras takes a fraction of a second.
+- **join** is for a camera whose ffmpeg was restarted during the recording (`restartFfmpeg`), so that its video is in more than one file (`0.mp4`, `0.part2.mp4`, ...). It joins them into one plain MP4, `0.joined.mp4`, without re-encoding, for the tools that read one video per camera: `campy-live-export` (and so LUC3D), `campy-label-pack`, `campy-model-fit` and `campy-synctest`, which say to run it when it hasn't. The files stay as they are.
+  - Before it is kept, every packet of the joined video must be the files' packets, in order (ffmpeg's packet checksums), and there must be as many as "frametimes.npy" has rows. Files whose codec headers differ are not joined, since a join without re-encoding keeps only the first file's; each is whole on its own.
+  - A file that holds no frame (its ffmpeg stopped before it wrote its first fragment) is left out. A recording without a restart has nothing to join.
 - **export** runs `campy-live-export` in the inference environment, so the recording opens in LUC3D with the tracking on it (below). If `campy-live` was started again during the recording, its logs are joined first, in order.
 - **copy** copies the whole recording folder into `copy.to`: with robocopy on Windows, with rsync on Linux and macOS (rsync also takes `user@host:/path`). Then it checks every file's size. **Nothing is deleted**, on either side.
 - **run** runs your own commands in a shell, with `{folder}` replaced by the recording's folder. One that fails is logged, and the next one still runs.
@@ -105,6 +109,7 @@ After a crash, or when a camera didn't record to the end, none of them run, and 
 ```
 campy-session post <recording folder>                 # the steps not done yet
 campy-session post <recording folder> --only remux    # one step
+campy-session post <recording folder> --only join     # after an ffmpeg restart, before campy-live-export by hand
 campy-session post <recording folder> --force         # after a crash, or again
 ```
 

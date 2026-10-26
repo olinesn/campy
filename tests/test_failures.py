@@ -293,7 +293,7 @@ def test_a_killed_ffmpeg_stops_its_camera_and_is_said(tmp_path, monkeypatch, cap
 	monkeypatch.setattr(writer, "FfmpegProcess", lambda w: found.append(real(w)) or found[-1])
 
 	def kill(n):
-		if n == 30:
+		if n == 250: # 2.5 s: its first fragments (a second each) are in the file
 			while not found:
 				time.sleep(0.01)
 			found[0].kill()
@@ -305,7 +305,7 @@ def test_a_killed_ffmpeg_stops_its_camera_and_is_said(tmp_path, monkeypatch, cap
 	said = re.search(r"Camera0: ffmpeg stopped after taking (\d+) frames, with exit code (\S+)[^\n]*: (.*)\. "
 		r"Stopping Camera0\. Its video can be read up to its last fragment, and its metadata\.csv and frametimes\.npy "
 		r"count only "
-		r"the frames ffmpeg was given\. ffmpegLogLevel is \"quiet\", so ffmpeg did not say why: \"warning\" shows "
+		r"the frames in it\. ffmpegLogLevel is \"quiet\", so ffmpeg did not say why: \"warning\" shows "
 		r"its errors\.\n", out)
 	assert said, out
 	sent = int(said.group(1))
@@ -315,11 +315,24 @@ def test_a_killed_ffmpeg_stops_its_camera_and_is_said(tmp_path, monkeypatch, cap
 	meta = run.Metadata()
 	assert meta["videoError"] == run.recording.videoError and meta["videoError"].startswith(
 		"ffmpeg stopped after taking {} frames".format(sent))
-	# Only the frames ffmpeg was given: one row each in frametimes.npy
-	assert meta["framesWritten"] == str(sent) and run.FrameTimes().shape == (2, sent)
-	assert sent <= int(meta["totalFrames"]) < 200 # it stopped, rather than grab 6000
+	# Only the frames its video holds, counted from its file: one row each in
+	# frametimes.npy. The frames ffmpeg was given but had not written yet (it
+	# writes a fragment a second) are left out, and named.
+	held = run.VideoFrames()
+	assert 100 <= held < sent
+	assert meta["framesWritten"] == str(held) and run.FrameTimes().shape == (2, held)
+	assert list(run.FrameTimes()[0]) == list(range(1, held + 1))
+	assert meta["framesLostInEncoder"] == str(sent + 1 - held) # and the frame it failed on
+	assert "Camera0: 0.mp4 holds {} of the {} frames given to its ffmpeg. Lost with that ffmpeg: {} frames ({}-{})." \
+		"\n".format(held, sent + 1, sent + 1 - held, held + 1, sent + 1) in out
+	assert sent <= int(meta["totalFrames"]) < 400 # it stopped, rather than grab 6000
 	assert "Camera0 grabbed {} frames at".format(meta["totalFrames"]) in out
-	assert "ffmpeg was given {} of them before it stopped.".format(sent) in out
+	assert "Its video holds {} of them: its ffmpeg stopped.".format(held) in out
+	assert not os.path.exists(os.path.join(run.Folder(), "segments.csv")) # one file: no table
+
+
+def Uncountable(path, frame_rate, given, **kwargs):
+	raise writer.segments.Uncounted("a stand-in ffmpeg")
 
 
 def fake_write_frames(fail_at=None, sent=None):
@@ -345,6 +358,8 @@ def test_ffmpeg_failing_after_the_camera_has_stopped(tmp_path, monkeypatch, caps
 	# is giving ffmpeg the rest when it fails: metadata.csv, saved once the
 	# writer is done, counts only the frames it took
 	monkeypatch.setattr(writer, "write_frames", fake_write_frames(fail_at=30))
+	# The stand-in writes no file to count: taken to hold the frames it took, as campy took it before it counted
+	monkeypatch.setattr(writer.segments, "CountFrames", Uncountable)
 	camera = FakeCamera(frameRate=10000) # far faster than the writer
 	run = CameraProcess(monkeypatch, params(tmp_path, frameRate=10000, recTimeInSec=0.005, writeQueueMaxSec="None"),
 		camera)
@@ -354,8 +369,10 @@ def test_ffmpeg_failing_after_the_camera_has_stopped(tmp_path, monkeypatch, caps
 		"its last fragment" in out
 	assert "Stopping Camera0" not in out # it already had
 	meta = run.Metadata()
-	assert meta["totalFrames"] == "50" and meta["framesWritten"] == "30"
+	assert meta["totalFrames"] == "50" and meta["framesWritten"] == "30" and meta["framesLostInEncoder"] == "1"
 	assert meta["videoError"] == "ffmpeg stopped after taking 30 frames: [Errno 32] Broken pipe"
+	assert "Camera0: could not count the frames in 0.mp4 (a stand-in ffmpeg); taken to hold the 30 its ffmpeg took. " \
+		"Lost with that ffmpeg: 1 frame (31).\n" in out
 	frames = run.FrameTimes()
 	assert list(frames[0]) == list(range(1, 31)) and len(np.load(os.path.join(run.Folder(), "hosttimes.npy"))) == 30
 

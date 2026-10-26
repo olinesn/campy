@@ -24,6 +24,10 @@ and checks:
                    writes for 10-16 s at a time
   camera ended     ffmpeg stopped, the camera is gone (unplugged), its
                    thread or its process died: critical, no reminders
+  ffmpeg restarted with restartFfmpeg, a camera's ffmpeg stopped and a new
+                   one took over, the camera never stopping (writer.py): a
+                   warning, once; and another once the stopped ffmpeg's
+                   file is counted, with the frames lost in it
   disk             free space on each video folder's disk, every 10 s: a
                    warning below alertDiskFreeGB (20 GB); critical when, at
                    the rate it has been filling over the last 5 min, it
@@ -56,7 +60,8 @@ another folder), for a control panel to show (campy-session's):
   state        recording, stopping, ended or failed
   session      {folder, started_at, elapsed_s, planned_s}
   cameras      [{name, serial, make, fps_target, fps_measured, frames,
-               dropped, write_queue_s, usb_speed (Mb/s, Linux), state}]
+               dropped, write_queue_s, usb_speed (Mb/s, Linux), state,
+               ffmpeg_restarts, frames_lost_in_encoder}]
   disk         [{path, free_gb, projected_full_at (ISO, or null)}]
   open         [{key, severity, text}]: the problems open now
   last_error   {time, text} of the last critical problem, or null
@@ -69,7 +74,7 @@ only reads. An error in a check is said, and the others go on.
 
 import collections, datetime, json, math, os, shutil, sys, threading, time
 
-from campy import notify, strictjson, status as camstatus
+from campy import notify, segments, strictjson, status as camstatus
 from campy.utils.utils import Say, ErrorText
 
 EVERY_S = 2.0 # how often the cameras are checked
@@ -88,6 +93,7 @@ FIRST_FRAME_S = 10.0 # after the trigger Arduino started
 EXTERNAL_WAIT_S = 600.0 # an external trigger (startArduino False): waiting this long is said
 TOGETHER_S = 1.0 # cameras whose last frames are this close stopped together: the trigger
 SENT_WINDOW_S = 10.0
+RESTARTS_PER_HOUR = 3 # as writer.RESTARTS_PER_HOUR (a test checks), which this module does not import
 DiskUsage = shutil.disk_usage # (tests replace it: a disk that fills)
 STATUS_EVERY_S = 4.0 # recording.json, written this often
 STATUS_SCHEMA = 1
@@ -161,6 +167,9 @@ class Watch:
 		self.diskState = {} # folder: {path, free_gb, projected_full_at}, for recording.json
 		self.usbSpeed = {} # camera: its link's Mb/s, as last read
 		self.serialClosed = False # the trigger's port was gone, and its connection closed (CheckSerial)
+		self.restartsSaid = collections.defaultdict(int) # camera: ffmpeg restarts said
+		self.countedSaid = collections.defaultdict(int) # camera: stopped ffmpegs' files counted, as said
+		self.lostSaid = collections.defaultdict(int) # camera: frames lost in them, as said
 		self.lastError = None
 		self.errors = set()
 		self.done = threading.Event()
@@ -249,10 +258,12 @@ class Watch:
 	# ------------------------------------------------------------------ the cameras
 
 	def CheckCameras(self, now):
+		rows = [self.counters.Row(c) for c in range(len(self.names))]
+		for c, (name, row) in enumerate(zip(self.names, rows)):
+			self.CheckRestarts(c, name, row)
 		if self.stopping():
 			return # Ctrl-C: the cameras are ending, as asked
 		ns = camstatus.Now()
-		rows = [self.counters.Row(c) for c in range(len(self.names))]
 		gaps = {} # camera: (seconds without a frame, its last frame's ns), of those grabbing that have sent frames
 		failures = self.Failures()
 		for c, (name, row) in enumerate(zip(self.names, rows)):
@@ -286,9 +297,13 @@ class Watch:
 				"lost) after frame {}. Its recording has ended there; the other cameras go on. It needs a replug, and "
 				"a new recording.".format(name, row["grabbed"]), remind=False)
 		elif state == camstatus.VIDEO_FAILED:
+			again = ""
+			if row["restarts"]:
+				again = " It had been restarted {} time{}, and was not again (at most {} an hour, never when the disk " \
+					"is the cause).".format(row["restarts"], "" if row["restarts"] == 1 else "s", RESTARTS_PER_HOUR)
 			self.Raise("{}/ended".format(name), notify.CRITICAL, "{}: ffmpeg stopped after taking {} frames, and the "
-				"camera has stopped. Its video can be read up to its last fragment; the other cameras go on.".format(
-				name, row["sent"]), remind=False)
+				"camera has stopped. Its video can be read up to its last fragment; the other cameras go on.{}".format(
+				name, row["sent"], again), remind=False)
 		elif state == camstatus.CAMERA_FAILED:
 			self.Raise("{}/ended".format(name), notify.CRITICAL, "{}: the camera thread stopped with an error after "
 				"frame {}; the other cameras go on.".format(name, row["grabbed"]), remind=False)
@@ -299,6 +314,35 @@ class Watch:
 			# Its process ended without saying how (killed, crashed), or said what went wrong
 			self.Raise("{}/ended".format(name), notify.CRITICAL, "{}: {}. The other cameras go on.".format(
 				name, "; ".join(failures[name])), remind=False)
+
+	def VideoName(self, c, part):
+		# The camera's video file of that part (0.part2.mp4)
+		cam = self.cams[c] if self.cams and c < len(self.cams) else {}
+		video = cam.get("videoFilename") or self.params.get("videoFilename", "0.mp4")
+		if isinstance(video, (list, tuple)):
+			video = video[c] if c < len(video) else video[0]
+		return segments.PartName(os.path.basename(str(video)), part)
+
+	def CheckRestarts(self, c, name, row):
+		# restartFfmpeg: each restart said once, as it happens, and then the frames it lost, once counted
+		while self.restartsSaid[c] < row["restarts"]:
+			self.restartsSaid[c] += 1
+			k = self.restartsSaid[c]
+			text = "{}: ffmpeg stopped, and campy started a new one (restartFfmpeg; restart {} of the recording). The " \
+				"camera never stopped: its video goes on in a new file, {}. The frames inside the stopped ffmpeg, " \
+				"about a second, are lost; segments.csv in its folder will say which.".format(name, k,
+				self.VideoName(c, k + 1))
+			self.say("Alert: {}".format(text))
+			self.notifier.Note(text, notify.WARNING)
+		if row["counted"] > self.countedSaid[c] and self.restartsSaid[c]:
+			lost = row["lost"] - self.lostSaid[c]
+			text = "{}: the stopped ffmpeg's file is counted: {} frame{} given to it {} not in it, and lost{}.".format(
+				name, lost, "" if lost == 1 else "s", "is" if lost == 1 else "are",
+				" ({} in all)".format(row["lost"]) if row["lost"] != lost else "")
+			self.say("Alert: {}".format(text))
+			self.notifier.Note(text, notify.WARNING)
+		if row["counted"] > self.countedSaid[c]:
+			self.countedSaid[c], self.lostSaid[c] = row["counted"], row["lost"]
 
 	def CheckQuiet(self, rows, gaps, now):
 		# Cameras with no frame for noFramesSec. When every camera stopped together (their last frames within
@@ -534,7 +578,8 @@ class Watch:
 			cameras.append({"name": name, "serial": cam.get("cameraSerialNo"), "make": cam.get("cameraMake"),
 				"fps_target": self.frameRate, "fps_measured": fps, "frames": row["grabbed"], "dropped": row["dropped"],
 				"write_queue_s": round(row["queued"] / self.frameRate, 2), "usb_speed": self.usbSpeed.get(name),
-				"state": STATE_NAMES.get(row["state"], str(row["state"]))})
+				"state": STATE_NAMES.get(row["state"], str(row["state"])), "ffmpeg_restarts": row["restarts"],
+				"frames_lost_in_encoder": row["lost"]})
 		return {"schema": STATUS_SCHEMA, "updated_at": Wall(), "host_model": self.notifier.source or None,
 			"campy_version": CampyVersion(), "state": state,
 			"session": {"folder": self.folder, "started_at": self.startedAt,
@@ -586,13 +631,18 @@ class Watch:
 
 	def Ended(self, failures):
 		lines = []
-		dropped = 0
+		dropped = restarts = 0
 		for c, name in enumerate(self.names):
 			row = self.counters.Row(c)
+			self.CheckRestarts(c, name, row) # one in its last seconds
 			dropped += row["dropped"]
+			restarts += row["restarts"]
 			text = "{}: {} frames".format(name, row["grabbed"])
 			if row["dropped"]:
 				text += ", {} dropped".format(row["dropped"])
+			if row["restarts"]:
+				text += ", in {} video files: {} ffmpeg restart{}, {} frame{} lost".format(row["restarts"] + 1,
+					row["restarts"], "" if row["restarts"] == 1 else "s", row["lost"], "" if row["lost"] == 1 else "s")
 			if name in failures:
 				text += ": " + "; ".join(failures[name])
 			lines.append("- " + text)
@@ -611,6 +661,9 @@ class Watch:
 				notify.CRITICAL
 		elif dropped:
 			head, severity = "Recording {} ended after {}, with dropped frames:".format(self.Session(), took), \
+				notify.WARNING
+		elif restarts:
+			head, severity = "Recording {} ended after {}, with ffmpeg restarted:".format(self.Session(), took), \
 				notify.WARNING
 		elif still:
 			head, severity = "Recording {} ended after {}, with problems still open:".format(self.Session(), took), \
