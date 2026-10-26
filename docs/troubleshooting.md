@@ -12,6 +12,8 @@ Before recording, campy checks the config and the computer, and most problems sh
 
 **Spinnaker doesn't see a FLIR camera that is plugged in, on Linux.** The user who records needs the camera access Spinnaker's installer sets up (group `flirimaging`); log out and in after joining it ([FLIR cameras](flir.md#flir-cameras-at-43-mbs-after-a-restart)).
 
+**`campy-align` or `campy-synctest` stops without a word on Windows, exit code `-1066598273` (`0xC06D007F`).** NumPy's line fit crashed Python. In that environment NumPy does its linear algebra with Intel's MKL, and conda-forge's MKL 2026.1 calls two functions (`__atomic_compare_exchange`, `__atomic_load`) that the OpenMP library it comes with (`llvm-openmp` 23) doesn't provide. Recording isn't affected: only the fits after it. To check: `python -c "import numpy as np; print(np.polyfit([0, 1, 2], [1, 3, 5], 1))"` prints nothing. To fix it, switch the environment's NumPy to OpenBLAS: `conda install -n campy -c conda-forge "libblas=*=*openblas" "libcblas=*=*openblas" "liblapack=*=*openblas"`. This swaps three small packages that only tell NumPy which library to use, and adds OpenBLAS (5 MB). NumPy and everything else stay as they are. Seen on the Dell Pro Max Slim FCS1250 in October 2026. After the switch, `campy-align` ran there and wrote exactly the same files as in an environment that never had the problem, and recording with live tracking was as fast as before.
+
 **The launch check FAILs a camera's `cameraSelection`.** It picks a camera that wasn't found: with three FLIR cameras connected, they are 0, 1 and 2, so `cameraSelection` 3 fails ([Scaling the number of cameras](encoding.md#scaling-the-number-of-cameras)).
 
 ## Encoding and ffmpeg
