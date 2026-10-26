@@ -115,7 +115,7 @@ Check it with `journalctl -k -n 5`, which should show the kernel's last lines wi
 - With it on, journalctl ran as campy-acquire's child and used 0.00 s of CPU in the minute. campy-acquire's own process used 2.97 s, against 2.94 s with the reading off.
 - `campy-live` kept up the same way in both runs: 3600 of 3600 sets, none skipped, inference p50 5.6 / p99 5.8 ms, to 3D 7.6 / 8.5 and 7.6 / 8.4 ms, as in the rig check's baseline.
 - No journalctl was left running after either recording.
-- A third run swapped journalctl for a script that printed made-up stall, hang and ring-reset lines in the driver's formats. Each alert was said and sent within the watch's 2-second check: the stall warning at the third stall, then the hang warning and the critical reset.
+- A third run swapped journalctl for a script that printed made-up stall, hang and ring-reset lines in the driver's formats. Each alert was said and sent within the watch's 2-second check, and reached the phone as a Slack direct message: the stall warning at the third stall, then the hang warning and the critical reset.
 
 ### The recording's state now: `recording.json`
 
