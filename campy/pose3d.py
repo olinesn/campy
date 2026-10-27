@@ -62,6 +62,24 @@ over reproj_threshold (50 px) loses the view that disagrees (down to 2) or, with
 2 views, is dropped, so one camera's misplaced node does not pull the animal's
 3D off (LUC3D keeps every view: reproj_threshold=0).
 
+The cage (cage=, a Cage: optional). When one camera's detection is grouped
+with another animal's in the other cameras, their rays can still meet, far
+from both: with every camera on one side of the cage, often metres away,
+past it. On 6 recordings of 3 and 5 mice with 4 cameras (2026-10-26), 0.2 to
+1.1% of the animals triangulated more than 25 cm from the cage's middle. A
+Cage is the cage's floor and height in the calibration's world (made in
+campy-live-view, from its floor's corners clicked in 2 or more cameras), and
+with one:
+- an animal whose 3D middle (the median of its nodes) lands outside it is not
+  found that set: no 3D (NaN), no detections grouped (members -1, n_views
+  0), and poses.outside True. A node outside it, of an animal inside, is
+  dropped (NaN);
+- no new identity is started from a pair of detections whose 3D lands
+  outside it (no identity is taken by a wrong pair);
+- a target whose own 3D (what the next set is matched against) lands outside
+  it keeps the 3D it had.
+Outside means more than its margin (30 mm) past a wall, the floor or the top.
+
 Interface
 ---------
     from campy import pose3d
@@ -84,18 +102,24 @@ poses.points3d  (n_animals, nodes, 3) world units of the calibration (mm),
 poses.members   (n_animals, cameras) the instance used in each camera, -1 none
 poses.n_views   (n_animals,) cameras that saw the animal this set
 poses.reproj_px (n_animals, nodes) mean reprojection error, undistorted pixels
+poses.outside   (n_animals,) True: its 3D landed outside the cage, so it is not found
 poses.frame     the set's frame number
 
 An animal seen in fewer than 2 cameras this set has no 3D (its row is NaN),
 but keeps its identity. The Tracker holds per-camera state from set to set,
 so give it every set in order (skipping some is fine; say so with frame=).
 
+With the cage: pose3d.Tracker(cameras, n_animals=5, cage=pose3d.Cage.Load(path)),
+or tracker.cage = ... between sets (None: no cage).
+
 Lower level: Camera (Normalize: pixels -> undistorted normalized coordinates,
 Project: 3D -> pixels), Triangulate (DLT over views), ReprojectionErrors.
 """
 
 import ast
+import json
 import math
+import os
 import re
 import warnings
 
@@ -336,17 +360,192 @@ def TriangulateChecked(xy, cameras, weights=None, reproj_threshold=None, frame=N
 	return X, err, (w > 0).sum(0)
 
 
+# ---------------------------------------------------------------- the cage
+
+CAGE_KIND, CAGE_VERSION = "campy cage", 1
+CAGE_HEIGHT = 200.0     # mm above the floor, unless said
+CAGE_MARGIN = 30.0      # mm: how far past the walls, floor and top a point still counts as in
+CAGE_CHECK_PX = 10.0    # a cage whose corners land this much further from its clicks than when it was drawn is refused
+
+
+def CagePath(calibration):
+	"""Where a calibration's cage is kept: beside it, calibration4.toml -> calibration4.cage.json."""
+	return os.path.splitext(calibration)[0] + ".cage.json"
+
+
+class Cage:
+	"""
+	The cage, in the calibration's world: a floor polygon (its corners, in
+	order around it), the up direction, and how high it goes. A point is in
+	it when it is over the polygon, between the floor and the top, each
+	widened by margin (mm). Outside(X) says which points are not.
+
+	Made in campy-live-view from the floor's corners clicked in 2 or more
+	cameras (FromClicks), kept as JSON beside the calibration (Save, Load).
+	"""
+
+	def __init__(self, corners, up, height=CAGE_HEIGHT, margin=CAGE_MARGIN, clicks=None, reproj_px=None):
+		corners = np.asarray(corners, float)
+		if corners.ndim != 2 or corners.shape[1] != 3 or len(corners) < 3 or not np.isfinite(corners).all():
+			raise ValueError("a cage needs 3 or more corners, each x, y, z")
+		self.up = np.asarray(up, float) / np.linalg.norm(up)
+		self.height, self.margin = float(height), float(margin)
+		self.clicks = clicks or {}  # {camera name: [[x, y] or None per corner]}, pixels as clicked
+		self.reproj_px = reproj_px  # the corners' worst reprojection error when they were clicked
+		self.origin = corners.mean(0)
+		self.origin = self.origin - ((corners - self.origin) @ self.up).mean() * self.up   # on the floor's plane
+		# The floor's own directions, e1 along its first side
+		side = corners[1] - corners[0]
+		e1 = side - (side @ self.up) * self.up
+		e1 /= np.linalg.norm(e1)
+		self.basis = np.stack([e1, np.cross(self.up, e1)])                                  # (2, 3)
+		self.corners = corners - np.outer((corners - self.origin) @ self.up, self.up)       # flat on the floor
+		self.polygon = (self.corners - self.origin) @ self.basis.T                          # (K, 2)
+		a = self.polygon
+		b = np.roll(a, -1, 0)
+		self._a, self._ab = a, b - a
+		self._ab2 = np.maximum((self._ab ** 2).sum(-1), 1e-12)
+		self._frame = np.vstack([self.basis, self.up])                                      # world -> (e1, e2, up)
+		# A convex floor (a box's, as cages are): in it within margin where no side's outward distance is over
+		# margin (at a corner, a square's corner rather than a round one), one product for every point
+		turn = self._ab[:, 0] * np.roll(self._ab, -1, 0)[:, 1] - self._ab[:, 1] * np.roll(self._ab, -1, 0)[:, 0]
+		self.convex = bool((turn > 0).all() or (turn < 0).all())
+		if self.convex:
+			normal = np.stack([self._ab[:, 1], -self._ab[:, 0]], -1) * (1 if turn[0] > 0 else -1)
+			normal /= np.linalg.norm(normal, axis=-1, keepdims=True)
+			self._sides = np.hstack([normal, np.zeros((len(a), 1))])                          # (K, 3) in _frame's axes
+			self._offsets = (normal * a).sum(-1)
+
+	@classmethod
+	def FromClicks(cls, clicks, cameras, height=CAGE_HEIGHT, margin=CAGE_MARGIN):
+		"""
+		The cage whose floor corners were clicked in each camera: clicks
+		{camera index: [(x, y) pixels, or None where it does not see that
+		corner], ...}, the same corners in the same order in each. Each
+		corner needs 2 cameras. Up: the side of the floor the cameras are on.
+		Returns (cage, each corner's worst reprojection error, px).
+		"""
+		n = max((len(v) for v in clicks.values()), default=0)
+		xy = np.full((len(cameras), n, 2), np.nan)
+		for c, points in clicks.items():
+			for k, p in enumerate(points):
+				if p is not None:
+					xy[c, k] = p
+		views = np.isfinite(xy).all(-1).sum(0)
+		if n < 3 or (views < 2).any():
+			raise ValueError("each of 3 or more corners needs 2 cameras: corners {} have fewer".format(
+				", ".join(str(k + 1) for k in np.nonzero(views < 2)[0])) if n >= 3 else "click 3 or more corners")
+		norm = np.stack([cam.Normalize(xy[c]) for c, cam in enumerate(cameras)])
+		X = Triangulate(norm, cameras)
+		err = np.nanmax(ReprojectionErrors(X, norm, cameras), 0)
+		centres = np.array([cam.center for cam in cameras])
+		_, _, vt = np.linalg.svd(X - X.mean(0))
+		up = vt[2] * (1 if (centres.mean(0) - X.mean(0)) @ vt[2] >= 0 else -1)
+		named = {cameras[c].name: [None if p is None else [float(p[0]), float(p[1])] for p in points]
+			for c, points in clicks.items() if any(p is not None for p in points)}
+		return cls(X, up, height, margin, named, float(err.max())), err
+
+	def Outside(self, X):
+		"""Which of the points X (..., 3) are outside (False where a point is NaN: not judged)."""
+		X = np.asarray(X, float)
+		q = (X - self.origin) @ self._frame.T                                # (..., 3): along the floor, up
+		h = q[..., 2]
+		if self.convex:
+			with np.errstate(invalid="ignore"):
+				inside = ((q @ self._sides.T - self._offsets).max(-1) <= self.margin) & \
+					(h >= -self.margin) & (h <= self.height + self.margin)
+			return ~inside & np.isfinite(X).all(-1)
+		p = q[..., :2]
+		# Over the polygon (crossings), or within margin of one of its sides
+		a, ab = self._a, self._ab
+		px, py = p[..., None, 0], p[..., None, 1]
+		with np.errstate(invalid="ignore"):
+			crosses = ((a[:, 1] > py) != (a[:, 1] + ab[:, 1] > py)) & \
+				(px < a[:, 0] + (py - a[:, 1]) * ab[:, 0] / np.where(ab[:, 1] == 0, 1e-12, ab[:, 1]))
+			over = crosses.sum(-1) % 2 == 1
+			t = np.clip(((px - a[:, 0]) * ab[:, 0] + (py - a[:, 1]) * ab[:, 1]) / self._ab2, 0, 1)
+			near = (np.hypot(px - a[:, 0] - t * ab[:, 0], py - a[:, 1] - t * ab[:, 1]) <= self.margin).any(-1)
+			inside = (over | near) & (h >= -self.margin) & (h <= self.height + self.margin)
+		return ~inside & np.isfinite(X).all(-1)
+
+	def Edges(self):
+		"""The cage's edges, (E, 2, 3): the floor's, the top's and the uprights."""
+		top = self.corners + self.height * self.up
+		k = len(self.corners)
+		ring = [(i, (i + 1) % k) for i in range(k)]
+		return np.array([(self.corners[i], self.corners[j]) for i, j in ring] +
+			[(top[i], top[j]) for i, j in ring] + [(self.corners[i], top[i]) for i in range(k)])
+
+	def Check(self, cameras):
+		"""
+		None if the cage fits these cameras, else why not: its corners,
+		projected into each camera it was clicked in, land where they were
+		clicked (within CAGE_CHECK_PX of how well they did then). A cage
+		drawn on another calibration does not.
+		"""
+		worst = 0.0
+		for cam in cameras:
+			points = self.clicks.get(cam.name)
+			if not points:
+				continue
+			for k, p in enumerate(points[:len(self.corners)]):
+				if p is not None:
+					worst = max(worst, float(np.linalg.norm(cam.Project(self.corners[k]) - p)))
+		if worst > (self.reproj_px or 0.0) + CAGE_CHECK_PX:
+			return "its corners land {:.0f} px from where they were clicked: drawn on another calibration".format(worst)
+		return None
+
+	def ToJson(self, **more):
+		return dict(kind=CAGE_KIND, version=CAGE_VERSION, units="the calibration's (mm)",
+			corners=np.round(self.corners, 3).tolist(), up=np.round(self.up, 6).tolist(), height=self.height,
+			margin=self.margin, clicks=self.clicks, reproj_px=self.reproj_px, **more)
+
+	def Save(self, path, **more):
+		# Written whole, then put in place: campy-live never reads half of it
+		from campy import strictjson
+		text = strictjson.dumps(self.ToJson(**more), indent=1)
+		temporary = "{}.{}.tmp".format(path, os.getpid())
+		with open(temporary, "w", encoding="utf-8") as f:
+			f.write(text + "\n")
+		os.replace(temporary, path)
+		return text
+
+	@classmethod
+	def Load(cls, path):
+		with open(path, encoding="utf-8") as f:
+			d = json.load(f)
+		if d.get("kind") != CAGE_KIND:
+			raise ValueError("{} is not a campy cage".format(path))
+		return cls(d["corners"], d["up"], d.get("height", CAGE_HEIGHT), d.get("margin", CAGE_MARGIN),
+			d.get("clicks"), d.get("reproj_px"))
+
+	def __repr__(self):
+		return "Cage({} corners, {:g} mm high, margin {:g} mm)".format(len(self.corners), self.height, self.margin)
+
+
+def AnimalCentres(points3d):
+	# Each animal's middle, (..., 3): the median of its nodes, each axis (NaN without any). As
+	# np.nanmedian, in a tenth of its time: NaN sorts last
+	P = np.asarray(points3d, float)
+	s = np.sort(P, axis=-2)
+	n = np.isfinite(P).sum(-2, keepdims=True)                          # (..., 1, 3)
+	lo = np.take_along_axis(s, np.maximum(n - 1, 0) // 2, -2)
+	hi = np.take_along_axis(s, n // 2, -2) if P.shape[-2] else lo
+	return np.where(n > 0, (lo + np.where(n % 2, lo, hi)) / 2, np.nan)[..., 0, :]
+
+
 # ---------------------------------------------------------------- tracking
 
 class Poses:
 	"""One set's result: see the module docstring."""
 
-	def __init__(self, frame, points3d, members, n_views, reproj_px):
+	def __init__(self, frame, points3d, members, n_views, reproj_px, outside=None):
 		self.frame = frame
 		self.points3d = points3d
 		self.members = members
 		self.n_views = n_views
 		self.reproj_px = reproj_px
+		self.outside = np.zeros(len(n_views), bool) if outside is None else outside
 
 	def __repr__(self):
 		return "Poses(frame={}, animals with 3D: {})".format(self.frame, int((self.n_views >= 2).sum()))
@@ -375,12 +574,13 @@ class Tracker:
 	match_reproj        px: each target's own 3D, which the next set is matched against, keeps only nodes whose
 	                    views agree within it; a node over it loses its worst view (down to 2), then is dropped
 	                    (0: off, as LUC3D; 20 here: see the module docstring)
+	cage                a Cage, or None: an animal whose 3D lands outside it is not found (see the module docstring)
 	"""
 
 	def __init__(self, cameras, n_animals, corr2d=1.0, corr3d=6.0, velocity_threshold=10.0,
 			distance_threshold=25.0, time_penalty=0.1, stale=60, node_weights=None, min_nodes=0,
 			min_score=0.0, weighted=False, reproj_threshold=50.0, birth_threshold=0.0,
-			max_penalty=4.0, match_reproj=20.0):
+			max_penalty=4.0, match_reproj=20.0, cage=None):
 		self.cameras = list(cameras)
 		self.n_animals = int(n_animals)
 		self.corr2d, self.corr3d = float(corr2d), float(corr3d)
@@ -393,6 +593,7 @@ class Tracker:
 		self.birth_threshold = float(birth_threshold)
 		self.max_penalty = None if max_penalty is None else float(max_penalty)
 		self.match_reproj = float(match_reproj)
+		self.cage = cage
 		self.frame_of_cameras = _Frame(self.cameras)
 		self._f = np.array([c.f for c in self.cameras])[:, None, None]       # (C, 1, 1, 2)
 		self._c = np.array([c.c for c in self.cameras])[:, None, None]
@@ -501,6 +702,8 @@ class Tracker:
 				held[extra][..., None] * np.ones(N)]).transpose(1, 0, 2)
 		points3d = np.full((A, N, 3), np.nan)
 		reproj = np.full((A, N), np.nan)
+		outside = np.zeros(A, bool) # with the cage: the animals not found for it, and the nodes dropped
+		node = np.zeros((A, N), bool)
 		if vxy.shape[1]:
 			Xall = Triangulate(vxy, self.cameras, vw, self.frame_of_cameras)
 			k = len(out)
@@ -509,8 +712,6 @@ class Tracker:
 			if self.match_reproj > 0:
 				Xm, _, _ = TriangulateChecked(vxy, self.cameras, vw, self.match_reproj, self.frame_of_cameras, Xall)
 			reuse = touched[out] & same[out]
-			self.X[out[reuse]] = Xm[:k][reuse]
-			self.X[extra] = Xm[k:]
 			if k:
 				Xo, err, _ = TriangulateChecked(vxy[:, :k], self.cameras, None if vw is None else vw[:, :k],
 					self.reproj_threshold, self.frame_of_cameras, Xall[:k])
@@ -518,7 +719,31 @@ class Tracker:
 				with np.errstate(invalid="ignore"), warnings.catch_warnings():
 					warnings.simplefilter("ignore", RuntimeWarning)
 					reproj[out] = np.nanmean(err, 0)
-		return Poses(f, points3d, members, n_views, reproj)
+			keep = np.ones(len(Xm), bool)
+			if self.cage is not None:
+				# One test of every point: this set's animals' middles, the targets' own 3D's
+				# middles, this set's nodes
+				middles = AnimalCentres(np.concatenate([points3d[out], Xm]))
+				away = self.cage.Outside(np.concatenate([middles, points3d[out].reshape(-1, 3)]))
+				# An animal whose middle is outside is not found (nor its detections grouped); a
+				# node that is, of an animal that is not, is dropped
+				outside[out] = away[:k]
+				node = np.zeros((A, N), bool)
+				node[out] = away[k + len(Xm):].reshape(k, N)
+				# A target whose own 3D is outside keeps the 3D it had: a wrong match is not what
+				# the next set is matched against
+				keep = ~away[k:k + len(Xm)]
+			self.X[out[reuse & keep[:k]]] = Xm[:k][reuse & keep[:k]]
+			self.X[extra[keep[k:]]] = Xm[k:][keep[k:]]
+		if outside.any():
+			points3d[outside] = np.nan
+			reproj[outside] = np.nan
+			members[outside] = -1
+			n_views = np.where(outside, 0, n_views)
+		if node.any():
+			points3d[node] = np.nan
+			reproj[node] = np.nan
+		return Poses(f, points3d, members, n_views, reproj, outside)
 
 	# -- pieces
 
@@ -573,10 +798,14 @@ class Tracker:
 			if self.birth_threshold > 0 and not cost[i, j] <= self.birth_threshold:
 				continue
 			t = self.n_targets
+			pair = np.full(self.det_xy.shape[1:], np.nan)
+			pair[a], pair[b] = xy[a, La[i]], xy[b, Lb[j]]
+			X = TriangulateChecked(pair, self.cameras, None, self.match_reproj, self.frame_of_cameras)[0]
+			if self.cage is not None and self.cage.Outside(AnimalCentres(X)):
+				continue # two animals' detections, or one's and something else's: no identity for it
 			self._Take(t, a, La[i], xy[a, La[i]], w[a, La[i]], f)
 			self._Take(t, b, Lb[j], xy[b, Lb[j]], w[b, Lb[j]], f)
-			self.X[t] = TriangulateChecked(self.det_xy[t], self.cameras, None, self.match_reproj,
-				self.frame_of_cameras)[0]
+			self.X[t] = X
 			self.n_targets += 1
 			born += 1
 			usedA.add(i)

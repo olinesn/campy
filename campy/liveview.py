@@ -84,6 +84,28 @@ The panel lists each identity's cameras and reprojection error (campy-live's:
 mean over nodes and cameras, undistorted px), and how late the results and
 the view are.
 
+The cage (k)
+------------
+With a calibration, k (or the panel's "Draw the cage") draws the cage that
+campy-live (--cage auto, its default) sets aside any 3D outside of: click its
+floor's corners, in the same order, in 2 or more cameras' tiles. Each click
+lands where it is released without the mouse moving; a press that moves pans
+the tile (zoomed). A right click is a corner that camera does not see;
+Backspace takes back the last corner of the camera last clicked. Once a
+corner is in 2 cameras, a cross marks where it lands in every camera, and
+with 3 corners the cage (as high as [ and ] set, 10 mm a press) is drawn in
+yellow on every tile and in 3D. A corner's circle, its number or its cross
+can be dragged where it belongs (a cross dragged or clicked is that corner in
+that camera). A corner whose cameras disagree by more than 12 px is red in
+every camera; when 3 or more saw it, the camera that is off (the one without
+which the others agree) gets its cross where the others put it, and a line
+to it from its click. The panel says, in green, that Enter saves the cage,
+or, in red, what is missing. Enter saves it as JSON beside the calibration
+(<calibration>.cage.json, or campy-live's --cage file), x removes it (kept as
+.old), Esc or k stops without saving. The cage is then drawn on every tile
+and in 3D, in teal; campy-live uses it within a second, and the panel says
+which identities it set aside ("outside the cage: not found").
+
 Is the rig all right, and the tracking?
 ---------------------------------------
 So that a problem shows at a glance (campy/livehealth.py says how each is
@@ -199,9 +221,15 @@ WARN = (40, 40, 255) # what is wrong: red
 FINE = (90, 200, 90) # green
 FAIR = (0, 200, 230) # yellow
 NO_3D = (75, 75, 75)
+CAGE = (200, 200, 110) # the cage's edges (teal)
+CAGE_DRAFT = (0, 220, 255) # the cage being drawn, and its corners (yellow)
+CAGE_CLICK_PX = 12 # a corner whose cameras disagree by more than this (reprojection, px) is not saved
+CAGE_GRAB_PX = 12 # while drawing, a press this near a corner clicked (screen px) drags it
+CAGE_PAN_PX = 4 # while drawing, a press that moves this far (screen px) before its release pans, not a corner
+CAGE_EVERY_S = 1.0 # the cage file is looked at again this often
 KEYS = ("Keys: v one camera, g all (grid), arrows the previous or next camera, 1-{} that camera; wheel or + and - "
 	"zoom a camera (drag: move it), 0 the whole frame, shift 0 one pixel for one; p (or d) predictions, r reprojections (as LUC3D), "
-	"l lines{}; c campy-live on the fast CPUs or not; z window to the view; m bookmark (Shift+1-9: event 1-9); space pause, s save, q quit")
+	"l lines{}; k draw the cage; c campy-live on the fast CPUs or not; z window to the view; m bookmark (Shift+1-9: event 1-9); space pause, s save, q quit")
 SHIFT = 4 # cv2's subpixel bits
 RADIUS_2D, RADIUS_3D = 4, 2 # px: a detection's open circles, a 3D node's dot
 FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -277,6 +305,29 @@ def Project(camera, X):
 		depth = X @ camera.R[2] + camera.t[2]
 	px[~(depth > 0)] = np.nan
 	return px
+
+
+def DrawWorld(img, camera, segments, scale, color, thickness=1, origin=(0, 0), steps=16):
+	"""
+	World segments (E, 2, 3) on a camera's tile, through its lens: each cut
+	into steps, so the lens's bend shows; left out where behind the camera.
+	"""
+	segments = np.asarray(segments, float)
+	if not len(segments):
+		return
+	t = np.linspace(0, 1, steps + 1)[None, :, None]
+	X = segments[:, :1] + t * (segments[:, 1:] - segments[:, :1])           # (E, steps + 1, 3)
+	px = Project(camera, X.reshape(-1, 3)).reshape(len(X), steps + 1, 2)
+	for line in px:
+		ok, q = Points(line, scale, origin)
+		run = []
+		for good, p in zip(ok, q):
+			if good:
+				run.append(p)
+			elif run:
+				break
+		if len(run) > 1:
+			cv2.polylines(img, [np.array(run, np.int32)], False, color, thickness, cv2.LINE_AA, SHIFT)
 
 
 def Place(px, scale, origin=(0, 0)):
@@ -1067,6 +1118,7 @@ class Scene:
 		n = 4 * int(np.ceil(1.2 * self.reach / self.spacing)) # cells a quarter of the grid's, past it
 		self.occupancy = Occupancy(self.FloorBasis(), self.spacing / 4, n, heat_minutes)
 		self.heatStamp, self.heatAt = 0, None # the occupancy drawn: changed when it is drawn again
+		self.cage = self.cageDraft = None # the cage's edges, (E, 2, 3), and the one being drawn's
 
 	def FloorBasis(self):
 		# The occupancy's: the floor under what the cameras look at, which moves only with up (the cage's
@@ -1378,6 +1430,9 @@ class Scene:
 		view = self.View(img.shape)
 		if trails:
 			self.DrawTrails(img, view)
+		for segments, color in ((self.cage, CAGE), (self.cageDraft, CAGE_DRAFT)): # the cage under the animals
+			if segments is not None:
+				self.Lines(img, view, segments, color)
 		if row is None or not Has3D(row):
 			return
 		if bad is None:
@@ -1519,12 +1574,25 @@ class Viewer:
 		self.recording = None # the recording's folder, as the cameras' feeds say: kept once it ends
 		self.flashUntil = 0.0 # a bookmark's outline, drawn until then
 		self.flashDrawn = False # in the last view drawn
+		# The cage (k): its file, what campy-live does with it, and the one being drawn
+		self.cagePath = None # where it is kept: campy-live's --cage, or beside the calibration
+		self.cageUsed = None # campy-live uses that file: True, False (its --cage is off or another file), None (not said)
+		self.cage = None # pose3d.Cage, as last read (CAGE_EVERY_S)
+		self.cageSeen = self.cageAt = None # the file's (mtime, size) as last read, and when it was looked at
+		self.cageRefused = None # why the file is not used (another calibration's), or None
+		self.drawing = None # drawing the cage: {camera: [frame pixel (x, y), or None where it does not see that corner]}
+		self.drawCamera = None # the camera last clicked in, while drawing (Backspace takes its last corner)
+		self.cageHeight = 200.0 # mm: the cage drawn's
+		self.draft = None # while drawing: (corners (K, 3), NaN where fewer than 2 cameras; worst px each; Cage or None;
+		# {corner: (the camera that is off, where the others put the corner, px)})
+		self.cageSaid = None # why Enter did not save the cage, shown in red until the next change
 
 	# -- the shared memory
 
 	def Check(self):
 		# Attaches what has come, lets go of what ended
 		self.checked = time.monotonic()
+		self.WatchCage()
 		if self.results is not None and self.results.Ended():
 			self.results.Close()
 			self.results = None
@@ -1595,12 +1663,348 @@ class Viewer:
 			else:
 				self.scene = Scene(self.calibration, d.get("cameras") or names, self.args.up, self.args.trail_seconds,
 					self.args.heat_minutes)
+		# The cage: campy-live's (its --cage), else where campy-live's auto would look, beside the calibration
+		from campy import pose3d
+		said = d.get("cage") if "cage" in d else None
+		self.cagePath = said or (pose3d.CagePath(path) if path else None)
+		self.cageUsed = None if "cage" not in d else bool(said)
+		self.cage, self.cageSeen, self.cageAt, self.cageRefused, self.drawing, self.draft = None, None, None, None, None, None
+		self.WatchCage()
 		self.tracking = livehealth.Tracking(d.get("animals"), d.get("frame_rate"), self.args.bad_px) \
 			if self.calibration else None
 		self.cameraTrails.Clear() # another campy-live's rows
 		self.cameraTrails.fps = d.get("frame_rate") or self.cameraTrails.fps
 		Say("campy-live's results: {} cameras, {} nodes, {}.".format(len(rings), len(d.get("nodes") or []) or "?",
 			"3D of {} animals".format(d.get("animals")) if self.calibration else "2D only"))
+
+	# -- the cage
+
+	def WatchCage(self, now=None):
+		# The cage file, read again when it changed (looked at once a second): drawn on the tiles and in 3D
+		if self.cagePath is None or not self.calibration:
+			return
+		now = time.monotonic() if now is None else now
+		if self.cageAt is not None and now - self.cageAt < CAGE_EVERY_S:
+			return
+		self.cageAt = now
+		try:
+			stat = os.stat(self.cagePath)
+			seen = (stat.st_mtime_ns, stat.st_size)
+		except OSError:
+			seen = None
+		if seen == self.cageSeen:
+			return
+		self.cageSeen = seen
+		from campy import pose3d
+		self.cage, self.cageRefused = None, None
+		if seen is not None:
+			try:
+				self.cage = pose3d.Cage.Load(self.cagePath)
+				self.cageRefused = self.cage.Check(self.calibration)
+			except (OSError, ValueError, KeyError, TypeError) as e:
+				self.cage, self.cageRefused = None, str(e)
+			if self.cageRefused:
+				Say("The cage {} is not used: {}.".format(self.cagePath, self.cageRefused))
+				self.cage = None
+		if self.scene is not None:
+			self.scene.cage = self.cage.Edges() if self.cage is not None else None
+			self.moved = True
+		self.panned = True # drawn again, paused too
+
+	def StartCage(self):
+		# k: drawing the cage begins (its height from the cage there is), or ends, nothing saved
+		if self.drawing is not None:
+			self.StopCage("The cage: nothing saved.")
+			return
+		if not self.calibration:
+			Say("k: the cage needs campy-live's calibration (3D).")
+			return
+		self.drawing, self.drawCamera, self.draft = {}, None, None
+		if self.cage is not None:
+			self.cageHeight = self.cage.height
+		Say("Drawing the cage: click its floor's corners, in the same order, in 2 or more cameras (right click: a corner "
+			"this camera does not see); Backspace undoes the last, [ and ] its height ({:g} mm), Enter saves it to {}, "
+			"x removes the cage, Esc or k stops. Space pauses the frames.".format(self.cageHeight, self.cagePath))
+		self.panned = True
+
+	def StopCage(self, text=None):
+		self.drawing = self.draft = self.cageSaid = None
+		if self.scene is not None:
+			self.scene.cageDraft = None
+			self.moved = True
+		self.panned = True
+		if text:
+			Say(text)
+
+	def FramePixel(self, cell, x, y):
+		# Where (x, y) of the view is on the frame of the camera tile cell (Place's inverse), or None
+		c, y0, x0, h, w = cell
+		if self.layout is None or self.frameShape is None:
+			return None
+		scale, origin = self.ZoomOf(c).Window(self.frameShape, self.layout.tile, self.layout.scale)
+		return tuple(float(v) for v in (np.array([x - x0, y - y0], float) + 0.5) / scale - 0.5 + origin)
+
+	def GrabCorner(self, x, y):
+		# While drawing: a press on a corner clicked in the tile at (x, y), or on its number, picks it up (Move drags
+		# it, as far from the mouse as it was). True if one was
+		cell = self.CellAt(x, y)
+		if cell is None or self.layout is None or self.frameShape is None:
+			return False
+		c, y0, x0, h, w = cell
+		points = self.drawing.get(c, [])
+		scale, origin = self.ZoomOf(c).Window(self.frameShape, self.layout.tile, self.layout.scale)
+		best, near, at, cross = None, CAGE_GRAB_PX, None, False
+		for k, point in enumerate(points):
+			if point is None:
+				continue
+			p = Place(np.asarray(point, float), scale, origin) + [x0, y0]
+			d = float(np.linalg.norm(p - [x, y]))
+			# its number, as DrawCage puts it: from 7 px right of the corner, its baseline 7 px above it
+			(tw, th), _ = cv2.getTextSize(str(k + 1), FONT, 0.5, 1)
+			if p[0] + 4 <= x <= p[0] + 10 + tw and p[1] - 10 - th <= y <= p[1] - 4:
+				d = min(d, CAGE_GRAB_PX - 1e-3)
+			if d <= near:
+				best, near, at, cross = k, d, p, False
+		# Or a corner's cross (where the other cameras put it): dragged, or clicked, it is that corner here
+		corners = self.Crosses(c)
+		if len(corners):
+			crosses = Place(Project(self.calibration[c], corners), scale, origin) + [x0, y0]
+			for k, p in enumerate(crosses):
+				d = float(np.linalg.norm(p - [x, y])) + 0.5 # a click's circle or number first
+				if np.isfinite(d) and d <= near:
+					best, near, at, cross = k, d, p, True
+		if best is None:
+			return False
+		# (a cross's: where it was pressed, for a click that does not move it)
+		self.drag = ("corner", c, best, tuple(at - [x, y]), (x, y) if cross else None)
+		self.current = self.drawCamera = c
+		return True
+
+	def Crosses(self, c):
+		# Where each corner is for camera c's crosses: triangulated, or, in a camera that is off, where the others put it
+		if self.draft is None:
+			return np.zeros((0, 3))
+		corners = self.draft[0].copy()
+		for k, (camera, X, _) in self.draft[3].items():
+			if camera == c:
+				corners[k] = X
+		return corners
+
+	def CageClick(self, x, y, seen=True):
+		# While drawing: the next corner, in the camera whose tile is at (x, y) (seen False: it does not see it)
+		cell = self.CellAt(x, y)
+		if cell is None:
+			return False
+		point = self.FramePixel(cell, x, y) if seen else None
+		if seen and point is None:
+			return False
+		self.drawing.setdefault(cell[0], []).append(point)
+		self.current = self.drawCamera = cell[0]
+		self.Draft()
+		return True
+
+	def Draft(self):
+		# The corners clicked so far, triangulated where 2 cameras have them, and the cage they make
+		from campy import pose3d
+		n = max((len(v) for v in self.drawing.values()), default=0)
+		corners, worst = np.full((n, 3), np.nan), np.full(n, np.nan)
+		odd = {} # corner: (the camera that is off, the corner where the others put it, px between them there)
+		for k in range(n):
+			views = {c: v[k] for c, v in self.drawing.items() if k < len(v) and v[k] is not None}
+			if len(views) >= 2:
+				cams = [self.calibration[c] for c in views]
+				norm = np.stack([cam.Normalize(np.asarray(views[c], float)) for c, cam in zip(views, cams)])
+				corners[k] = pose3d.Triangulate(norm, cams)
+				worst[k] = np.nanmax(pose3d.ReprojectionErrors(corners[k], norm, cams))
+				if worst[k] > CAGE_CLICK_PX and len(views) > 2:
+					# Which camera is off: the one without which the others agree best (the triangulation spreads
+					# one camera's error over all of them, so the largest error is not always its)
+					best = None
+					for leave, c in enumerate(views):
+						keep = [i for i in range(len(views)) if i != leave]
+						X = pose3d.Triangulate(norm[keep], [cams[i] for i in keep])
+						rest = float(np.nanmax(pose3d.ReprojectionErrors(X, norm[keep], [cams[i] for i in keep])))
+						if best is None or rest < best[0]:
+							best = (rest, c, X)
+					rest, c, X = best
+					if rest <= CAGE_CLICK_PX:
+						odd[k] = (c, X, float(np.linalg.norm(self.calibration[c].Project(X) - views[c])))
+		cage = None
+		try:
+			cage = pose3d.Cage.FromClicks(self.drawing, self.calibration, self.cageHeight)[0]
+		except (ValueError, np.linalg.LinAlgError):
+			pass
+		self.draft = (corners, worst, cage, odd)
+		self.cageSaid = None # what Enter said, until the next change
+		if self.scene is not None:
+			self.scene.cageDraft = cage.Edges() if cage is not None else None
+			self.moved = True
+		self.panned = True
+
+	def CageKey(self, key):
+		# A key while drawing the cage: True if it was the cage's
+		if key in (27, ord("k")):
+			self.StopCage("The cage: nothing saved.")
+		elif key in (8, 127): # Backspace (Delete on macOS)
+			points = self.drawing.get(self.drawCamera)
+			if points:
+				points.pop()
+				self.Draft()
+		elif key in (ord("["), ord("]")):
+			self.cageHeight = max(10.0, self.cageHeight + (10 if key == ord("]") else -10))
+			Say("The cage's height: {:g} mm.".format(self.cageHeight))
+			self.Draft()
+		elif key in (13, 10):
+			self.SaveCage()
+		elif key == ord("x"):
+			self.RemoveCage()
+		else:
+			return False
+		return True
+
+	def SaveCage(self):
+		from campy import pose3d
+		try:
+			cage, err = pose3d.Cage.FromClicks(self.drawing, self.calibration, self.cageHeight)
+		except (ValueError, np.linalg.LinAlgError) as e:
+			self.cageSaid = "Not saved: {}".format(e)
+			Say(self.cageSaid + ".")
+			self.panned = True
+			return False
+		if err.max() > CAGE_CLICK_PX:
+			k = int(np.argmax(err))
+			self.cageSaid = "Not saved: corner {}'s cameras disagree by {:.0f} px (at most {:g}): drag the red circle onto " \
+				"its cross, or Backspace".format(k + 1, err[k], CAGE_CLICK_PX)
+			Say(self.cageSaid + ".")
+			self.panned = True
+			return False
+		try:
+			cage.Save(self.cagePath, calibration=self.description.get("calibration") or self.args.calibration,
+				made=datetime.now().isoformat(" ", "seconds"), by="campy-live-view")
+		except OSError as e:
+			Say("The cage could not be saved to {}: {}.".format(self.cagePath, e))
+			return False
+		self.StopCage("The cage saved to {}: {}, its corners within {:.1f} px. {}".format(self.cagePath, cage,
+			float(err.max()), "campy-live uses it within a second." if self.cageUsed else
+			"campy-live does not use it (its --cage is off, or another file)." if self.cageUsed is False else
+			"campy-live (with --cage auto, its default) uses it within a second."))
+		self.cageAt = None
+		self.WatchCage()
+		return True
+
+	def RemoveCage(self):
+		# x while drawing: no cage (its file kept as .old)
+		if self.cagePath and os.path.exists(self.cagePath):
+			try:
+				os.replace(self.cagePath, self.cagePath + ".old")
+			except OSError as e:
+				Say("The cage could not be removed: {}.".format(e))
+				return
+			self.StopCage("The cage removed (kept as {}.old): every 3D position is kept.".format(self.cagePath))
+		else:
+			self.StopCage("No cage to remove.")
+		self.cageAt = None
+		self.WatchCage()
+
+	def DrawCage(self, tile, c, scale, origin, words=None):
+		# Camera c's tile: the cage, and while drawing, the corners clicked and the cage they make
+		camera = self.calibration[c] if self.calibration else None
+		if camera is None:
+			return
+		if self.cage is not None and self.drawing is None:
+			DrawWorld(tile, camera, self.cage.Edges(), scale, CAGE, 1, origin)
+		if self.drawing is None:
+			return
+		corners, worst, cage, odd = self.draft if self.draft is not None else (np.zeros((0, 3)), np.zeros(0), None, {})
+		if cage is not None:
+			DrawWorld(tile, camera, cage.Edges(), scale, CAGE_DRAFT, 1, origin)
+		# A corner whose cameras disagree is red in every camera; in the one that is off (when 3 or more say which),
+		# its cross is where the others put it, and a line goes to it from the click
+		bad = [bool(worst[k] > CAGE_CLICK_PX) for k in range(len(corners))]
+		crosses = self.Crosses(c)
+		ok, q = Points(Project(camera, crosses), scale, origin) if len(crosses) else ([], [])
+		for k, (good, p) in enumerate(zip(ok, q)): # each corner triangulated so far, as it lands here
+			if good:
+				x, y = p[0] >> SHIFT, p[1] >> SHIFT
+				color = WARN if bad[k] else CAGE_DRAFT
+				cv2.line(tile, (x - 6, y - 6), (x + 6, y + 6), color, 2 if bad[k] else 1, cv2.LINE_AA)
+				cv2.line(tile, (x - 6, y + 6), (x + 6, y - 6), color, 2 if bad[k] else 1, cv2.LINE_AA)
+		for k, point in enumerate(self.drawing.get(c, [])): # the clicks here
+			if point is None:
+				continue
+			wrong = k < len(bad) and bad[k]
+			color = WARN if wrong else CAGE_DRAFT
+			ok1, q1 = Points(np.array([point], float), scale, origin)
+			if wrong:
+				ok2, q2 = Points(Project(camera, crosses[k:k + 1]), scale, origin)
+				if ok1[0] and ok2[0]:
+					cv2.line(tile, q1[0], q2[0], OUTLINE, 3, cv2.LINE_AA, SHIFT)
+					cv2.line(tile, q1[0], q2[0], WARN, 1, cv2.LINE_AA, SHIFT)
+			if ok1[0]:
+				cv2.circle(tile, q1[0], 5 << SHIFT, OUTLINE, 3, cv2.LINE_AA, SHIFT)
+				cv2.circle(tile, q1[0], 5 << SHIFT, color, 2 if wrong else 1, cv2.LINE_AA, SHIFT)
+				Text(tile, str(k + 1), ((q1[0][0] >> SHIFT) + 7, (q1[0][1] >> SHIFT) - 7), color, 0.5, words=words)
+
+	def CageText(self):
+		# The panel's lines about the cage, (text, colour)
+		if not self.calibration:
+			return []
+		if self.drawing is not None:
+			lines = [("Drawing the cage: click its floor's corners in the same order in 2 or more cameras (right click: "
+				"not seen here); Backspace undo, [ ] height {:g} mm, Enter save, x remove the cage, Esc or k stop; "
+				"space pauses".format(self.cageHeight), CAGE_DRAFT)]
+			lines += self.CageStatus()
+			return lines
+		if self.cageRefused:
+			return [("Cage not used: {} (k draws it again)".format(self.cageRefused), WARN)]
+		if self.cage is None:
+			return [("No cage: every 3D position is kept (k draws one)", DIM)]
+		used = "" if self.cageUsed is not False else " (campy-live's --cage is off or another file: not used)"
+		return [("Cage: {}{}; an animal outside it is not found (k draws it again)".format(self.cage, used), DIM)]
+
+	def CameraName(self, c):
+		names = self.description.get("cameras") or []
+		return names[c] if c < len(names) else self.calibration[c].name
+
+	def CageStatus(self):
+		"""
+		While drawing: whether Enter saves the cage, in green, or what is
+		missing, in red; then each corner's line (green: its cameras agree,
+		red: one is off, yellow: it needs another camera); and what Enter last
+		said, in red.
+		"""
+		corners, worst, cage, odd = self.draft if self.draft is not None else (np.zeros((0, 3)), [], None, {})
+		n = len(corners)
+		problems, each = [], []
+		for k in range(n):
+			views = [c for c, v in self.drawing.items() if k < len(v) and v[k] is not None]
+			if len(views) < 2:
+				text = "Corner {}: in {} camera{}: click it in {}".format(k + 1, len(views), "" if len(views) == 1 else "s",
+					"another" if views else "2 cameras")
+				problems.append(text)
+				each.append((text, CAGE_DRAFT))
+			elif worst[k] > CAGE_CLICK_PX:
+				if k in odd:
+					text = "Corner {}: {} is {:.0f} px from where the others put it: drag its red circle onto its cross " \
+						"there".format(k + 1, self.CameraName(odd[k][0]), odd[k][2])
+				else:
+					text = "Corner {}: its cameras ({}) disagree by {:.0f} px (at most {:g}): is it the same corner in " \
+						"each? Drag a red circle where it belongs".format(k + 1, ", ".join(self.CameraName(c) for c in views),
+						worst[k], CAGE_CLICK_PX)
+				problems.append(text)
+				each.append((text, WARN))
+			else:
+				each.append(("Corner {}: {} cameras agree within {:.1f} px".format(k + 1, len(views), worst[k]), FINE))
+		if n < 3:
+			problems.insert(0, "{} corner{} so far: a cage needs 3 or more".format(n, "" if n == 1 else "s"))
+		if problems:
+			lines = [("Not ready, Enter does not save yet: " + problems[0], WARN)]
+		else:
+			lines = [("Ready: Enter saves the cage ({} corners, {:g} mm high)".format(n, self.cageHeight), FINE)]
+		lines += each
+		if self.cageSaid:
+			lines.append((self.cageSaid, WARN))
+		return lines
 
 	def Close(self):
 		for r in self.readers or ():
@@ -1771,6 +2175,8 @@ class Viewer:
 			badge = self.Badge(c, rig, tile.shape[1], header, words)
 			healthS += time.perf_counter() - health
 			taken = [header] + ([badge[-1]] if badge is not None else [])
+			if self.calibration and (self.cage is not None or self.drawing is not None):
+				self.DrawCage(tile, c, scale, origin, words)
 			if row is not None:
 				if self.trails and self.cameraTrails.seconds > 0: # under the skeletons
 					trailStart = time.perf_counter()
@@ -1827,6 +2233,8 @@ class Viewer:
 		text = "{}  {}  {}".format(c + 1, name, FrameText(frame.frameNumber, self.FrameTime(c, frame, rig)))
 		if row is not None:
 			text += "  found {}".format(int(row["found"][c]))
+		if self.drawing is not None:
+			text += "  cage: click corner {}".format(len(self.drawing.get(c, [])) + 1)
 		if self.selected is not None: # single view: which of how many (as LUC3D)
 			text += "  ({}/{})".format(c + 1, len(self.readers) if self.readers else len(self.ringNames))
 		if zoom.Zoomed():
@@ -1954,6 +2362,19 @@ class Viewer:
 		(zoomed); in the 3D tile, left drags turn it, right or middle drags
 		move it.
 		"""
+		if self.drawing is not None and button in ("left", "right"):
+			key = self.Click(x, y) if button == "left" else None
+			if key is not None:
+				return key
+			if button == "left" and self.GrabCorner(x, y):
+				return None
+			if button == "left" and self.CellAt(x, y) is not None:
+				# A corner where it is released, unless the mouse moves first: then it moves the picture (zoomed)
+				self.drag = ("press", (x, y), self.CellAt(x, y)[0])
+				self.current = self.drag[2]
+				return None
+			if self.CageClick(x, y, seen=False):
+				return None
 		if button == "left":
 			key = self.Click(x, y)
 			if key is not None:
@@ -1973,7 +2394,28 @@ class Viewer:
 		self.mouseAt = (x, y)
 		if self.sceneCell is None: # hidden while dragged
 			self.drag = None
-		if self.drag is not None and self.drag[0] == "pan":
+		if self.drag is not None and self.drag[0] == "press":
+			# Drawing the cage: a press that moves is a drag of the picture, not a corner
+			_, (x0, y0), camera = self.drag
+			if max(abs(x - x0), abs(y - y0)) > CAGE_PAN_PX:
+				self.drag = ("pan", (x0, y0), camera)
+		if self.drag is not None and self.drag[0] == "corner":
+			# A corner of the cage being drawn, with the mouse (on its own camera's tile)
+			_, c, k, (dx, dy), _ = self.drag
+			cell = [cell for cell in self.cells if cell[0] == c]
+			if self.drawing is None or not cell:
+				self.drag = None
+				return
+			c0, y0, x0, h, w = cell[0]
+			x, y = x + dx, y + dy
+			point = self.FramePixel(cell[0], min(max(x, x0), x0 + w - 1), min(max(y, y0), y0 + h - 1))
+			points = self.drawing.setdefault(c, [])
+			if point is not None and (k >= len(points) or point != points[k]):
+				points.extend([None] * (k + 1 - len(points))) # a cross dragged: this camera's corner k
+				points[k] = point
+				self.drag = self.drag[:4] + (None,) # moved: not a click
+				self.Draft()
+		elif self.drag is not None and self.drag[0] == "pan":
 			# A camera's picture, zoomed, with the mouse (while its tile is shown)
 			button, (x0, y0), camera = self.drag
 			zoom = self.ZoomOf(camera)
@@ -1983,7 +2425,7 @@ class Viewer:
 				zoom.Pan(x - x0, y - y0, self.frameShape, self.layout.tile, self.layout.scale)
 				self.drag = (button, (x, y), camera)
 				self.panned = True
-		elif self.drag is not None:
+		elif self.drag is not None and self.drag[0] in ("turn", "move"):
 			button, (x0, y0) = self.drag
 			if button == "turn":
 				self.scene.Orbit(x - x0, y - y0)
@@ -1993,6 +2435,18 @@ class Viewer:
 			self.moved = True
 
 	def Release(self):
+		if self.drag is not None and self.drag[0] == "press" and self.drawing is not None:
+			self.CageClick(*self.drag[1]) # pressed and released without moving: a corner
+		elif self.drag is not None and self.drag[0] == "corner" and self.drag[4] is not None and self.drawing is not None:
+			# A cross clicked without moving it: that corner, where it was clicked
+			_, c, k, _, (x, y) = self.drag
+			cell = [cell for cell in self.cells if cell[0] == c]
+			point = self.FramePixel(cell[0], x, y) if cell else None
+			if point is not None:
+				points = self.drawing.setdefault(c, [])
+				points.extend([None] * (k + 1 - len(points)))
+				points[k] = point
+				self.Draft()
 		self.drag = None
 
 	def Wheel(self, steps, x=None, y=None):
@@ -2015,7 +2469,7 @@ class Viewer:
 		if self.In3D(x, y):
 			self.scene.Reset()
 			self.moved = True
-		else:
+		elif self.drawing is None: # while drawing the cage, each click is a corner
 			camera = self.CameraAt(x, y)
 			if camera is not None:
 				self.current = camera
@@ -2046,7 +2500,8 @@ class Viewer:
 			("Lines (l)", ord("l"), self.lines)]
 		if self.scene is not None:
 			buttons.append(("3D view (\\)", ord("\\"), self.showScene))
-			buttons += [("Trails (t)", ord("t"), self.trails), ("Occupancy (o)", ord("o"), self.occupancy)]
+			buttons += [("Trails (t)", ord("t"), self.trails), ("Occupancy (o)", ord("o"), self.occupancy),
+				("Draw the cage (k)", ord("k"), self.drawing is not None)]
 		fast = self.CpusOn()
 		if fast is not None:
 			buttons.append(("Fast CPUs (c)", ord("c"), fast))
@@ -2195,7 +2650,7 @@ class Viewer:
 
 	def PanelText(self, row):
 		# The panel's lines, (text, colour): the rig, the row drawn, campy-live, and the keys
-		lines = []
+		lines = self.CageText()
 		rig = self.RigText()
 		if rig is not None:
 			lines.append(rig)
@@ -2216,6 +2671,9 @@ class Viewer:
 							text += "; median over {:g} s {:.0f} px: above {:g} px, drawn dimmed, not to trust".format(
 								livehealth.DIM_S, bad[a], self.args.bad_px)
 							color = WARN
+					elif "outside_cage" in row.dtype.names and row["outside_cage"][a]:
+						text = "#{}: outside the cage: not found".format(a)
+						color = WARN
 					else:
 						text = "#{}: no 3D ({} camera{})".format(a, views, "" if views == 1 else "s")
 					lines.append((text, color))
@@ -2308,6 +2766,8 @@ class Viewer:
 		v shows), \\ the 3D view on or off (it stays beside a single view).
 		"""
 		n = len(self.readers) if self.readers else len(self.ringNames)
+		if self.drawing is not None and isinstance(key, int) and self.CageKey(key):
+			return True
 		if key in (ord("q"), 27):
 			return False
 		if key in ("left", "right", "up", "down"):
@@ -2344,6 +2804,8 @@ class Viewer:
 			self.moved = True
 		elif key == ord("c"):
 			self.ToggleCpus()
+		elif key == ord("k"):
+			self.StartCage()
 		return True
 
 	def Mark(self, event, note=""):

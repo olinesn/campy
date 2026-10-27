@@ -54,6 +54,18 @@ found in the calibration by campy's camera names (the feed's), or by
 model runs on the next set: a set takes the longer of the two, not their sum.
 A set's row is logged once its 3D is made.
 
+The cage (--cage, auto by default): when one camera's detection is grouped
+with another animal's in the other cameras, their rays can meet far from
+both, often metres past the cage, and campy-rules would act on that place
+as if an animal were there. With a cage (its floor's corners clicked in 2
+or more cameras in campy-live-view, k: <calibration>.cage.json beside the
+calibration), an animal whose 3D lands outside it is not found that set: no
+3D, no detections grouped (members -1, n_views 0), outside_cage 1, and it
+starts no new identity. campy-live looks at the file again once a second, so
+a cage drawn mid-recording is used from then on; the summary's "cage" says
+each cage used and from which frame, and "outside_cage" how many animals it
+set aside. Without the file (or with --cage off) every 3D position is kept.
+
 Output
 ------
 <out>.npy, one row per set processed (a structured array; np.load reads it,
@@ -97,6 +109,8 @@ and with --calibration:
                  is (an index into keypoints), -1 none
   n_views        per animal: how many cameras saw it
   reproj_px      per animal, per node: mean reprojection error, pixels
+  outside_cage   per animal: 1 when its 3D landed outside the cage, so it
+                 is not found (its points3d NaN, members -1, n_views 0)
 
 Speed
 -----
@@ -2148,6 +2162,9 @@ MODELS = {"random": RandomTopDown, "sleap": TrainedTopDown, "none": NoModel}
 
 # ---------------------------------------------------------------- 3D
 
+CAGE_EVERY_S = 1.0 # the cage file is looked at again this often
+
+
 class Pose3D:
 	"""
 	campy/pose3d.py's Tracker on each set's keypoints (--calibration): which
@@ -2165,9 +2182,64 @@ class Pose3D:
 		self.tracker = pose3d.Tracker(self.cameras, n_animals=self.animals)
 		self.text = "{} animals, cameras {} of {}".format(self.animals, ", ".join(names), args.calibration)
 		Say("3D: {}.".format(self.text))
+		# The cage (--cage): its file, looked at again once a second (Watch)
+		cage = args.cage.strip()
+		self.cagePath = None if cage.lower() == "off" else os.path.abspath(
+			pose3d.CagePath(args.calibration) if cage.lower() == "auto" else cage)
+		self.cageSeen = self.cageAt = None # the file's (mtime, size) as last read; when it was looked at
+		self.cages = [] # each change of cage, from which frame: the summary's "cage"
+		if self.cagePath is not None:
+			self.text += ", cage {}".format(self.cagePath)
+		self.Watch(None)
 
 	def Update(self, keypoints, scores, frame):
+		self.Watch(frame)
 		return self.tracker.Update(keypoints, scores, frame=frame)
+
+	def Watch(self, frame):
+		"""
+		The cage file, looked at again at most once a second (a stat, a few
+		microseconds): a cage drawn, changed or removed (campy-live-view) is
+		used from this set on. One drawn for another calibration (its
+		corners do not land where they were clicked) is not.
+		"""
+		if self.cagePath is None:
+			return
+		now = time.monotonic()
+		if self.cageAt is not None and now - self.cageAt < CAGE_EVERY_S:
+			return
+		self.cageAt = now
+		try:
+			stat = os.stat(self.cagePath)
+			seen = (stat.st_mtime_ns, stat.st_size)
+		except OSError:
+			seen = None
+		if seen == self.cageSeen and self.cages:
+			return
+		self.cageSeen = seen
+		from campy import pose3d
+		cage = refused = None
+		if seen is not None:
+			try:
+				cage = pose3d.Cage.Load(self.cagePath)
+				refused = cage.Check(self.cameras)
+			except (OSError, ValueError, KeyError, TypeError) as e:
+				refused = str(e)
+			if refused:
+				cage = None
+		before = self.tracker.cage
+		self.tracker.cage = cage
+		self.cages.append({"from_frame": frame, "path": self.cagePath, "cage": cage.ToJson() if cage else None,
+			"refused": refused})
+		when = "" if frame is None else " from frame {}".format(frame)
+		if cage is not None:
+			Say("Cage{}: {} ({}): an animal whose 3D lands outside it is not found.".format(when, cage, self.cagePath))
+		elif refused:
+			Say("Cage {} not used: {}. Every 3D position is kept{}.".format(self.cagePath, refused, when))
+		elif before is not None:
+			Say("Cage {} removed: every 3D position is kept{}.".format(self.cagePath, when))
+		else:
+			Say("No cage yet ({}: campy-live-view's k draws one): every 3D position is kept.".format(self.cagePath))
 
 	def Describe(self):
 		return self.text
@@ -2182,7 +2254,7 @@ class Pose3DThread:
 	"""
 
 	def __init__(self, tracker, log, queued=8):
-		self.tracker, self.log = tracker, log
+		self.tracker, self.log = tracker, log # tracker: a Pose3D, or anything with Update
 		self.sets = queue.Queue(maxsize=queued) # (row, frames, inference ns); None stops it
 		self.error = None
 		self.thread = threading.Thread(target=self.Run, daemon=True, name="campy-live 3D")
@@ -2235,7 +2307,7 @@ def RowType(n_cameras, instances, nodes, animals3d=0):
 	if animals3d:
 		a = animals3d
 		fields += [("pose3d_ns", "<i8"), ("points3d", "<f4", (a, n, 3)), ("members", "<i2", (a, c)),
-			("n_views", "<i1", (a,)), ("reproj_px", "<f4", (a, n))]
+			("n_views", "<i1", (a,)), ("reproj_px", "<f4", (a, n)), ("outside_cage", "<i1", (a,))]
 	return np.dtype(fields)
 
 
@@ -2263,6 +2335,7 @@ class Log:
 		self.rows_type = RowType(n_cameras, instances, nodes, animals3d)
 		self.file = GrowingNpy(path, self.rows_type, header_bytes=1024)
 		self.latency_3d, self.pose3d = [], []
+		self.outside = 0 # animals not found because their 3D was outside the cage, over every set
 		self.writer = Writer("campy-live log", path)
 		self.error = None # a write that failed, said when closing and in the summary (log_error)
 		self.closed = False
@@ -2300,6 +2373,10 @@ class Log:
 			row["members"] = poses.members
 			row["n_views"] = poses.n_views
 			row["reproj_px"] = poses.reproj_px
+			outside = getattr(poses, "outside", None)
+			if outside is not None:
+				row["outside_cage"] = outside
+				self.outside += int(np.count_nonzero(outside))
 		if self.results is not None:
 			self.results.Write(row)
 		read_ns, done_ns, skipped = int(row["read_ns"]), int(row["done_ns"]), int(row["skipped"])
@@ -2349,6 +2426,7 @@ class Log:
 			"wait_and_read_ms": Ms(self.read), "inference_ms": Ms(self.predict), # upload, model, results back
 			"host_time_spread_ms": Ms(self.spread),
 			"latency_to_3d_from_last_frame_ms": Ms(self.latency_3d), "pose3d_ms": Ms(self.pose3d),
+			"outside_cage": self.outside,
 			**({"log_error": self.error} if self.error else {})}
 
 	def Close(self):
@@ -2464,7 +2542,7 @@ def Run(args):
 			tracker.animals if tracker else 0)
 		if args.results_feed == "on":
 			log.results = Publish(args, log, names, cameras, model, tracker, frameRate, interrupts)
-		worker = Pose3DThread(tracker.tracker, log) if tracker else None
+		worker = Pose3DThread(tracker, log) if tracker else None
 		Say("Logging to {}.npy.".format(out))
 		reported, since = time.monotonic(), 0
 		while True:
@@ -2496,6 +2574,7 @@ def Run(args):
 			edges=getattr(model, "edges", None), pose3d=tracker.Describe() if tracker else None,
 			calibration=os.path.abspath(args.calibration) if tracker else None,
 			calibration_names=tracker.names if tracker else None, animals=tracker.animals if tracker else 0,
+			cage=tracker.cages if tracker else None,
 			cameras=[r.cameraName for r in cameras.readers],
 			rings=names, frame_shape=list(shape), frame_rate=frameRate, log=out + ".npy", cpus=placed,
 			cuda_graphs=model.DescribeGraphs() if hasattr(model, "DescribeGraphs") else None,
@@ -2573,8 +2652,12 @@ class SessionFacts:
 		return self.facts
 
 
-def RunContext(model):
-	# What the default changes apply to (defaults.Relied): a GPU, and ROCm
+def RunContext(model, args=None):
+	# What the default changes apply to (defaults.Relied): a GPU, ROCm, and a cage drawn beside the calibration
+	cage = False
+	if args is not None and getattr(args, "calibration", ""):
+		from campy import pose3d
+		cage = os.path.exists(pose3d.CagePath(args.calibration))
 	device = str(getattr(model, "device", "cpu"))
 	gpu = device.startswith("cuda") and not isinstance(model, NoModel)
 	rocm = False
@@ -2584,7 +2667,7 @@ def RunContext(model):
 			rocm = bool(getattr(torch.version, "hip", None))
 		except ImportError:
 			pass
-	return {"gpu": gpu, "rocm": rocm}
+	return {"gpu": gpu, "rocm": rocm, "cage": cage}
 
 
 def DefaultWarnings(args, model):
@@ -2595,7 +2678,7 @@ def DefaultWarnings(args, model):
 	try:
 		sources, _ = manifest.OptionSources(Parser(), getattr(args, "argv", None) or [])
 		known = None if args.defaults_version in ("", "None") else args.defaults_version
-		warnings = defaults.Warnings(vars(args), sources, RunContext(model), program="campy-live", known=known,
+		warnings = defaults.Warnings(vars(args), sources, RunContext(model, args), program="campy-live", known=known,
 			enabled=args.default_warnings == "on")
 	except ValueError as e: # a --defaults-version that is not a version
 		Say(str(e))
@@ -2626,7 +2709,8 @@ class SessionFile:
 					"frameShape": list(reader.shape), "frameRate": reader.Info("frameRate")},
 				"model": {"kind": args.model, "description": model.Describe(), "device": str(getattr(model, "device", "")),
 					"engine": describe("DescribeEngine"), "nodes": getattr(model, "nodeNames", None)},
-				"pose3d": {"animals": tracker.animals, "description": tracker.Describe()} if tracker else None,
+				"pose3d": {"animals": tracker.animals, "description": tracker.Describe(), "cage": tracker.cagePath}
+					if tracker else None,
 				"log": os.path.abspath(out + ".npy"),
 				"cpus": {"placed": placed, "gpuInterrupts": interrupts},
 				}
@@ -2677,7 +2761,7 @@ def Publish(args, log, names, cameras, model, tracker, frameRate, interrupts=Non
 		rings=names, nodes=getattr(model, "nodeNames", None), edges=getattr(model, "edges", None),
 		calibration=os.path.abspath(args.calibration) if tracker else None,
 		calibration_names=tracker.names if tracker else None, animals=tracker.animals if tracker else 0,
-		frame_rate=frameRate, pid=os.getpid(), gpu_interrupt_cpus=(interrupts or {}).get("cpus", []))
+		cage=tracker.cagePath if tracker else None, frame_rate=frameRate, pid=os.getpid(), gpu_interrupt_cpus=(interrupts or {}).get("cpus", []))
 	if results.writer is not None:
 		Say("Results in shared memory {} too, for campy-live-view.".format(name))
 	return results
@@ -2903,6 +2987,10 @@ def Parser():
 		cameras and triangulate them each set (campy/pose3d.py). Default: 2D only.")
 	p.add_argument("--calibration-names", default="", help="With --calibration: the cameras' names in it, \
 		comma-separated, in feed order (default: campy's cameraNames, as the feed gives them).")
+	p.add_argument("--cage", default="auto", help="With --calibration: the cage (a .cage.json, drawn in \
+		campy-live-view with k), or auto: <calibration>.cage.json beside the calibration, if there is one; or off. \
+		An animal whose 3D lands outside it is not found (campy/pose3d.py). The file is looked at again once \
+		a second: a cage drawn, changed or removed while campy-live runs is used from then on.")
 	p.add_argument("--nodes", type=int, default=15, help="--model random: nodes per animal.")
 	p.add_argument("--centroid-scale", type=float, default=RANDOM_CENTROID["scale"])
 	p.add_argument("--centroid-filters", type=int, default=RANDOM_CENTROID["filters"])

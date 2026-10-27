@@ -314,14 +314,18 @@ def test_the_panel_warns_in_red_and_shows_the_tracking_strip(qt, window):
 
 
 def test_without_qt_the_window_is_opencvs(qt, monkeypatch, capsys):
-	# --gui auto without PyQt5: OpenCV's window (here, headless OpenCV has none: it says so)
+	# --gui auto without PyQt5: OpenCV's window. A headless OpenCV has none, and says so; an OpenCV with window
+	# support is made to answer as one, so no real window opens (on macOS one waited on the screen for a feed)
 	import campy
 	monkeypatch.setitem(sys.modules, "campy.liveviewqt", None)
 	monkeypatch.delattr(campy, "liveviewqt", raising=False)
+	def Headless(*a, **k):
+		raise liveview.cv2.error("The function is not implemented (a headless OpenCV)")
+	monkeypatch.setattr(liveview.cv2, "namedWindow", Headless)
 	code = liveview.Run(liveview.ParseArgs(["--name", name(), "--priority", "normal", "--seconds", "0.2"]))
 	said = capsys.readouterr().out
-	assert "No Qt here" in said
-	assert code in (0, 1) # 1: this OpenCV has no window support
+	assert "No Qt here" in said and "Cannot open a window" in said
+	assert code == 1
 	assert liveview.Run(liveview.ParseArgs(["--name", name(), "--priority", "normal", "--seconds", "0.2",
 		"--gui", "qt"])) == 1 and "Qt cannot be loaded" in capsys.readouterr().out
 
