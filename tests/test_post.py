@@ -272,7 +272,7 @@ def test_campy_session_post_by_hand(tmp_path):
 	out = campy_session("--only", "remux")
 	assert "remux: done already" in out.stdout
 	out = campy_session("--only", "rmux")
-	assert out.returncode == 1 and "--only takes remux, export, copy, run" in out.stderr
+	assert out.returncode == 1 and "--only takes remux, join, export, copy, run" in out.stderr
 
 	crashed = recording(tmp_path / "crashed", clean=False, launcher_code=None)
 	out = subprocess.run([sys.executable, "-m", "campy.session", "post", str(crashed)], capture_output=True, text=True,

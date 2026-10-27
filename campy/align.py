@@ -32,7 +32,7 @@ folder, and prints a summary.
 import argparse, ast, csv, json, os, sys
 import numpy as np
 
-from campy import strictjson
+from campy import segments, strictjson
 
 
 IRREGULAR = 0.25   # a step this far from a whole number of periods is not a clean trigger step
@@ -84,6 +84,16 @@ def LoadCamera(folder):
 	cam["t"] = frametimes[1].astype(float) # seconds on the camera's clock, from its first frame
 	path = os.path.join(folder, "hosttimes.npy")
 	cam["host_ns"] = np.load(path).astype(np.int64) if os.path.exists(path) else None
+	# Frames lost in a stopped ffmpeg (restartFfmpeg) are in no video: campy
+	# takes their rows out as the recording ends, and segments.csv names them
+	# for a recording cut short before it did
+	keep = segments.KeepRows(cam["frame"], segments.LostFrames(folder))
+	if not keep.all():
+		cam["warnings"].append("{} frames lost in a stopped ffmpeg still had rows (the recording stopped without "
+			"closing?), and are left out".format(int((~keep).sum())))
+		if cam["host_ns"] is not None and len(cam["host_ns"]) == len(keep):
+			cam["host_ns"] = cam["host_ns"][keep]
+		cam["frame"], cam["t"] = cam["frame"][keep], cam["t"][keep]
 	cam["ratcam"] = cam["make"] == "ratcam"
 	cam["triggered"] = not cam["ratcam"] and str(meta.get("cameraTrigger", "None")) != "None"
 	if cam["host_ns"] is not None and len(cam["host_ns"]) != len(cam["frame"]):
