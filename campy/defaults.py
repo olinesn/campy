@@ -116,7 +116,7 @@ CHANGES = [
 	Change("--cage", NEXT, "none", "auto",
 		"A cage drawn in campy-live-view (<calibration>.cage.json, beside the calibration) is used: an animal whose 3D "
 		"lands outside it is not found (no 3D, no detections grouped, outside_cage 1). --cage off keeps every 3D "
-		"position.", lambda context: bool(context.get("cage")), program="campy-live", pr=None),
+		"position.", lambda context: bool(context.get("cage")), program="campy-live", pr=222),
 	]
 
 
