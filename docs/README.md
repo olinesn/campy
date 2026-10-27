@@ -27,6 +27,7 @@ Guides for recording with campy and tracking animals live while it records. The 
 | [Calibration](calibration.md) | Camera placement, exposure and calibration |
 | [Troubleshooting](troubleshooting.md) | Problems seen so far, by what you see: the message campy prints, or what is wrong with the recording, with what to do and where to read more |
 | [Development](development.md) | Running the tests, timing tests on a shared machine (`bench/rig.py`), branches and releases |
+| [Rig fleet design](design/rig-fleet.md) | A proposal, on hold and not built: rig checks for pull requests run from a Mac instead of self-hosted GitHub runners (the repository is public), one-command release updates on every rig, a rig dashboard and nightly checks against each rig's baseline, with diagrams |
 
 ## Keeping these pages current
 
