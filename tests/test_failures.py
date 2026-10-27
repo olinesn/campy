@@ -499,6 +499,22 @@ def test_an_ffmpeg_that_wrote_something_is_not_started_again(tmp_path, monkeypat
 	assert "ffmpegRetries" not in run.Metadata()
 
 
+def test_with_restartFfmpeg_an_encoder_that_never_opens_goes_on_in_a_new_file(tmp_path, monkeypatch, capsys):
+	# The retries on the empty file come first; then restartFfmpeg's new file
+	received = []
+	fake = opening_write_frames(1 + writer.OPEN_RETRIES, received)
+	monkeypatch.setattr(writer, "write_frames", fake)
+	run = CameraProcess(monkeypatch, params(tmp_path, restartFfmpeg=True), FakeCamera())
+	run.Run()
+	out = capsys.readouterr().out
+	assert [os.path.basename(p) for p in fake.opens] == ["0.mp4"] * 4 + ["0.part2.mp4"], fake.opens
+	assert "(retry 3 of 3)" in out and "ffmpeg restarted" in out
+	with open(os.path.join(run.Folder(), "segments.csv")) as f:
+		assert "libx264 did not open in 4 tries" in f.read() # why the first file ended
+	assert run.recording.videoError is None and run.recording.restarts == 1 and run.recording.ffmpegRetries == 3
+	assert received and received == list(range(received[0], 51)) # from the restart on, every frame
+
+
 def test_frames_are_held_only_until_the_video_holds_something(tmp_path):
 	p = params(tmp_path)
 	os.makedirs(os.path.dirname(writer.newfiles.VideoPath(p)), exist_ok=True)
