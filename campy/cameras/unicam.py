@@ -296,6 +296,7 @@ class Recording:
 	def __init__(self):
 		self.framesSent = 0 # frames the writer has given ffmpeg
 		self.videoError = None # why the video stopped taking frames, or None
+		self.ffmpegRetries = 0 # times ffmpeg was started again, its encoder not having opened (writer.FirstFrames)
 		self.cameraError = None # why the camera stopped before the end, or None
 		self.written = threading.Event() # the writer is done: framesSent and videoError are final
 
@@ -701,6 +702,8 @@ def SaveMetadata(cam_params, grabdata, recording=None):
 			cam_params["cameraError"] = recording.cameraError
 		if recording.videoError:
 			cam_params["videoError"] = recording.videoError
+		if recording.ffmpegRetries:
+			cam_params["ffmpegRetries"] = recording.ffmpegRetries
 		if not times.count:
 			Say("{} saved no frames.".format(name))
 			if not recording.Failures():

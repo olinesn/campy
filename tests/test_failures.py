@@ -396,6 +396,113 @@ def test_the_ffmpeg_process_is_found():
 	assert writer.FfmpegProcess(fake_write_frames()("x", (16, 16))) is None
 
 
+# ------------------------------------------------------------------ an encoder that does not open
+
+def opening_write_frames(fail_opens, received, write_first=False):
+	# Stands in for imageio-ffmpeg's write_frames: the first fail_opens
+	# ffmpegs started take 2 frames and break their pipe, writing nothing
+	# (an encoder that would not open), or, with write_first, having written
+	# their first frame; the next ones write each frame into the video. The
+	# frames that reach a video: received (each frame's value, its grab's
+	# number).
+	opens = []
+
+	def write_frames(path, size, **kwargs):
+		opens.append(path)
+		failing = len(opens) <= fail_opens
+		count = 0
+		while True:
+			frame = yield
+			if frame is None:
+				continue
+			if failing and count >= 2:
+				raise IOError("[Errno 32] Broken pipe\n\nFFMPEG COMMAND:\nffmpeg ...")
+			count += 1
+			if not failing or (write_first and count == 1):
+				received.append(int(frame[0, 0]))
+				with open(path, "ab") as f:
+					f.write(b"x")
+			time.sleep(0.001)
+
+	write_frames.opens = opens
+	return write_frames
+
+
+def test_an_encoder_that_does_not_open_at_first_is_started_again_with_no_frame_lost(tmp_path, monkeypatch, capsys):
+	# Quick Sync on Windows refused to open for every camera as Remote Desktop
+	# moved campy's session to another computer: ffmpeg took 2 frames, wrote
+	# nothing and stopped, and the recording ended 7 s in
+	received = []
+	fake = opening_write_frames(2, received)
+	monkeypatch.setattr(writer, "write_frames", fake)
+	camera = FakeCamera()
+	run = CameraProcess(monkeypatch, params(tmp_path), camera)
+	run.Run()
+	out = capsys.readouterr().out
+	assert "Camera0: ffmpeg stopped after taking 2 frames: [Errno 32] Broken pipe, and wrote nothing: its encoder " \
+		"did not open. Starting ffmpeg again in 1 s (retry 1 of 3), with the same 2 frames; the camera goes on." in out
+	assert "(retry 2 of 3)" in out and "Camera0: ffmpeg started again (retry 2); no frame lost." in out
+	assert len(fake.opens) == 3 and len(set(fake.opens)) == 1 # the same file each time
+	# Every frame grabbed is in the video, in order, once; nothing failed
+	assert received == list(range(1, 51))
+	assert run.recording.videoError is None and run.recording.framesSent == 50
+	meta = run.Metadata()
+	assert "videoError" not in meta and meta["ffmpegRetries"] == "2"
+	assert meta["totalFrames"] == "50" and meta["framesWritten"] == "50"
+	assert list(run.FrameTimes()[0]) == list(range(1, 51))
+
+
+def test_an_encoder_that_never_opens_stops_the_camera_after_its_retries(tmp_path, monkeypatch, capsys):
+	received = []
+	fake = opening_write_frames(100, received)
+	monkeypatch.setattr(writer, "write_frames", fake)
+	camera = FakeCamera()
+	run = CameraProcess(monkeypatch, params(tmp_path, recTimeInSec=60), camera)
+	assert run.Run() < 15
+	out = capsys.readouterr().out
+	assert len(fake.opens) == 1 + writer.OPEN_RETRIES and received == []
+	why = run.recording.videoError
+	assert why.startswith("libx264 did not open in 4 tries, 1 s apart (ffmpeg wrote nothing): ffmpeg stopped ") \
+		and why.endswith(": [Errno 32] Broken pipe"), why
+	assert "Camera0: {}. Stopping Camera0.".format(why) in out
+	assert camera.closed and int(run.Metadata()["totalFrames"]) < 200
+	assert run.Metadata()["ffmpegRetries"] == "3"
+
+
+def test_an_ffmpeg_that_wrote_something_is_not_started_again(tmp_path, monkeypatch, capsys):
+	# Its video holds frames: a new ffmpeg would replace them
+	received = []
+	fake = opening_write_frames(1, received, write_first=True)
+	monkeypatch.setattr(writer, "write_frames", fake)
+	run = CameraProcess(monkeypatch, params(tmp_path, recTimeInSec=60), FakeCamera())
+	run.Run()
+	out = capsys.readouterr().out
+	assert len(fake.opens) == 1 and "started again" not in out and "Starting ffmpeg again" not in out
+	assert run.recording.videoError == "ffmpeg stopped after taking 2 frames: [Errno 32] Broken pipe"
+	assert "ffmpegRetries" not in run.Metadata()
+
+
+def test_frames_are_held_only_until_the_video_holds_something(tmp_path):
+	p = params(tmp_path)
+	os.makedirs(os.path.dirname(writer.newfiles.VideoPath(p)), exist_ok=True)
+	first = writer.FirstFrames(p)
+	frame = np.zeros((16, 16), np.uint8)
+	first.Sent(frame)
+	frame[:] = 7 # a held frame is a copy: the camera's buffer may be reused
+	assert len(first.frames) == 1 and first.frames[0].max() == 0 and first.Empty()
+	with open(first.path, "wb") as f:
+		f.write(b"x")
+	first.Sent(frame)
+	assert first.frames is None and not first.Empty()
+	# and for OPEN_HOLD_FRAMES frames at most
+	other = writer.FirstFrames(params(tmp_path, cameraName="Camera1"))
+	for _ in range(writer.OPEN_HOLD_FRAMES):
+		other.Sent(frame)
+	assert len(other.frames) == writer.OPEN_HOLD_FRAMES
+	other.Sent(frame)
+	assert other.frames is None
+
+
 # ------------------------------------------------------------------ the camera modules
 
 class SpinError(Exception):

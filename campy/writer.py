@@ -453,6 +453,76 @@ def VideoFailed(cam_params, recording, stopReadQueue, why, stopping=True):
 	Say(said)
 
 
+# An ffmpeg whose encoder will not open stops at the first frame and writes
+# nothing: on Windows, Quick Sync refused to open for all four cameras of
+# the Dell Pro Max Slim FCS1250 as Remote Desktop moved the session campy
+# ran in to another computer, and opened 40 s later. Its file is then still
+# empty, so a new ffmpeg on it replaces nothing: it is started again, up to
+# OPEN_RETRIES times OPEN_RETRY_S apart, and given the same frames, the
+# camera never stopping. Frames are held for that until the video holds
+# something, or for OPEN_HOLD_FRAMES frames at most.
+OPEN_HOLD_FRAMES = 24
+OPEN_RETRIES = 3
+OPEN_RETRY_S = 1.0
+
+
+class FirstFrames:
+	"""
+	The frames given to a camera's ffmpeg while its video is still empty,
+	to give a new ffmpeg (Reopen) if this one stops before it wrote anything.
+	"""
+
+	def __init__(self, cam_params):
+		self.cam_params = cam_params
+		self.path = newfiles.VideoPath(cam_params)
+		self.frames = [] # None once the video holds something, or past OPEN_HOLD_FRAMES
+		self.retries = 0
+
+	def Sent(self, frame):
+		# A frame ffmpeg took
+		if self.frames is None:
+			return
+		self.frames.append(frame.copy() if hasattr(frame, "copy") else frame) # may outlive the camera's buffer
+		if len(self.frames) > OPEN_HOLD_FRAMES or newfiles.Size(self.path):
+			self.frames = None # its encoder opened: nothing more is held
+
+	def Empty(self):
+		# Its ffmpeg has stopped, and wrote nothing
+		return self.frames is not None and not newfiles.Size(self.path)
+
+	def Reopen(self, why, stopReadQueue):
+		"""
+		After ffmpeg stopped (why): a new ffmpeg on the same, empty file, given
+		the frames held. Returns its writer, or None: the video holds
+		something, or OPEN_RETRIES tries have been made.
+		"""
+		name = self.cam_params["cameraName"]
+		while self.Empty() and self.retries < OPEN_RETRIES:
+			self.retries += 1
+			Say("{}: {}, and wrote nothing: its encoder did not open. Starting ffmpeg again in {:g} s "
+				"(retry {} of {}), with the same {} frames; the camera goes on.".format(
+				name, why, OPEN_RETRY_S, self.retries, OPEN_RETRIES, len(self.frames)))
+			time.sleep(OPEN_RETRY_S)
+			if not self.Empty():
+				return None
+			try:
+				writer, _, _ = OpenWriter(self.cam_params, stopReadQueue, new=True) # the empty file is this process's
+				for frame in self.frames:
+					writer.send(frame)
+			except Exception as e:
+				why = "ffmpeg stopped again: {}".format(ErrorText(e).splitlines()[0])
+				continue
+			return writer
+		return None
+
+	def Failed(self, why):
+		# Why the video failed, when it never opened
+		if not self.Empty():
+			return why
+		return "{} did not open in {} tries, {:g} s apart (ffmpeg wrote nothing): {}".format(
+			EncoderArgs(self.cam_params)["codec"], self.retries + 1, OPEN_RETRY_S, why)
+
+
 def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=None, recording=None):
 	# recording: what the writer and the camera thread tell each other
 	# (unicam.Recording): how many frames ffmpeg was given, and why the video
@@ -498,25 +568,46 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 				unicam.TellMain(("ffmpeg", ffmpeg.pid))
 
 			# Write until interrupted and/or stop message received
-			try:
-				while(writing):
-					if writeQueue:
-						writer.send(writeQueue.popleft())
-						recording.framesSent += 1
-						mine.Sent(recording.framesSent)
-					else:
-						# Once queue is depleted and grabber stops, then stop writing
-						if stopWriteQueue:
-							writing = False
-						# Otherwise continue writing
-						time.sleep(0.01)
-			except Exception as e:
-				# ffmpeg has stopped (killed, crashed, or an encoder error), and the
-				# frames still queued will not reach the video. The camera is
-				# stopped, unless it already has (stopWriteQueue).
-				VideoFailed(cam_params, recording, stopReadQueue, FfmpegStopped(ffmpeg, e, recording.framesSent),
-					stopping=not stopWriteQueue)
-				return
+			first = FirstFrames(cam_params)
+			frame = None # the next frame for ffmpeg
+			while(writing):
+				if frame is None and writeQueue:
+					frame = writeQueue.popleft()
+				if frame is not None:
+					try:
+						writer.send(frame)
+					except Exception as e:
+						why = FfmpegStopped(ffmpeg, e, recording.framesSent)
+						# Stopped before it wrote anything: a new ffmpeg, given the
+						# same frames, then this one
+						reopened = first.Reopen(why, stopReadQueue)
+						if reopened is not None:
+							writer, ffmpeg = reopened, FfmpegProcess(reopened)
+							if ffmpeg is not None:
+								unicam.TellMain(("ffmpeg", ffmpeg.pid))
+							recording.framesSent = len(first.frames)
+							recording.ffmpegRetries = first.retries
+							mine.Sent(recording.framesSent)
+							Say("{}: ffmpeg started again (retry {}); no frame lost.".format(
+								cam_params["cameraName"], first.retries))
+							continue
+						# ffmpeg has stopped (killed, crashed, or an encoder error), and
+						# the frames still queued will not reach the video. The camera
+						# is stopped, unless it already has (stopWriteQueue).
+						recording.ffmpegRetries = first.retries
+						VideoFailed(cam_params, recording, stopReadQueue, first.Failed(why),
+							stopping=not stopWriteQueue)
+						return
+					first.Sent(frame)
+					frame = None
+					recording.framesSent += 1
+					mine.Sent(recording.framesSent)
+				else:
+					# Once queue is depleted and grabber stops, then stop writing
+					if stopWriteQueue:
+						writing = False
+					# Otherwise continue writing
+					time.sleep(0.01)
 
 		# Close up...
 		Say("Closing video writer for {}. Please wait...".format(cam_params["cameraName"]))
