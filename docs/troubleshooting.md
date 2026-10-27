@@ -135,6 +135,8 @@ The view puts a red label on a camera's tile when something is wrong with it ([W
 
 **LUC3D's tab runs out of memory opening a long recording.** File ▸ Load SLP reads the whole file at once; an hour was too much. Export the stretch you want with `campy-live-export --frames FIRST:LAST`, or open the whole recording with File ▸ Load Project or Load Session Folder ([Opening a tracked recording in LUC3D](live-tracking.md#opening-a-tracked-recording-in-luc3d)).
 
+**LUC3D shows no video on Windows: "HEVC (H.265) video, which this browser cannot decode".** Chrome and Edge on Windows decode H.265 only on a GPU, and have no fallback without one. A Windows virtual machine with no GPU passed through to it is the usual case: chrome://gpu, or the graphics adapter in Device Manager, shows "Microsoft Basic Render Driver". Give the machine a GPU with an H.265 decoder (NVIDIA GTX 950/960 or newer, AMD from about 2015, Intel 6th generation or newer) and install its maker's driver; Chrome needs no add-on. Over Remote Desktop, also turn on the Group Policy "Use hardware graphics adapters for all Remote Desktop Services sessions" if Chrome still doesn't use the GPU. Without a GPU, open the session on a Mac, where Chrome and Safari decode H.265, or make H.264 copies that keep every frame: `ffmpeg -i 0.mp4 -c:v libx264 -crf 18 -pix_fmt yuv420p -fps_mode passthrough -an h264/0.mp4`.
+
 **LUC3D can't open folders, in Brave.** Brave turns off the file access LUC3D uses. Use Chrome or Edge, or turn on brave://flags/#file-system-access-api.
 
 ## Timing tests
