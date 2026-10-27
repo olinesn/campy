@@ -337,7 +337,7 @@ Notes on the measurements:
   | Precision 7875 | 1,200 / 0.9 / 1.2 | 3,600 / 1.6 / 1.8 / 4.1 / 5.3 | 1,797 / 1.6 / 1.7 / 4.6 / 5.6 |
 
   The replay's accuracy on the EVO-X2 was again 2D median 3.8 px, 3D median 4.2 mm, identity 0.9993, 2 switches.
-- Later on 27 October the three rigs moved to dev `4cb0e3a`. It adds pull request 209 (an optional automatic restart of a camera's ffmpeg that stops mid-recording, `restartFfmpeg`, off by default: [Alerts](alerts.md#restarting-a-stopped-ffmpeg-restartffmpeg)), plus docs. Nothing in it changes live tracking. Both environments on each rig report campy 2.2.0. None of the rig profiles turns `restartFfmpeg` on.
+- Later on 27 October the three rigs moved to dev `4cb0e3a`. It adds pull request 209 (an optional automatic restart of a camera's ffmpeg that stops mid-recording, `restartFfmpeg`, off by default: [Alerts](alerts.md#restarting-a-stopped-ffmpeg-restartffmpeg)), plus docs. Nothing in it changes live tracking. Both environments on each rig report campy 2.2.0. After the rig checks, `restartFfmpeg: True` went into each rig's profile, so their recordings now restart a camera's ffmpeg that stops (`campy-config show` names the profile as its source on each).
 
   All nine rig checks were `RIG_CLEAN`, with nothing skipped or misaligned, and every camera kept all its frames. They matched the 7f6983b table above, to within 0.1 ms, but for two runs:
 
