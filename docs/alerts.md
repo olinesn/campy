@@ -135,6 +135,23 @@ In both recordings:
 
 The second recording's join needed `--force`, since a camera did not record to the end.
 
+#### On Windows
+
+On 26 October 2026 the same two recordings ran on the Dell Pro Max Slim FCS1250 (Windows 11), with its own config: four FLIR Blackfly S (BFS-U3-13Y3M) at 30 fps, triggered on Line3 by its Arduino Nano ESP32 on COM9, Quick Sync H.265 in full range with `keyframeInterval: 0.5`, and real Slack direct messages. Windows has no gentle stop for ffmpeg like Linux's SIGTERM, so every stop was a kill (`Stop-Process -Force`, which Windows reports as exit code 0xFFFFFFFF). ffmpeg's pipe then failed with `[Errno 32] Broken pipe` or `[Errno 22] Invalid argument`, and both were restarted.
+
+| Recording | What was done | Result |
+|---|---|---|
+| 5 min, 9000 frames per camera | Camera0's ffmpeg killed at 60 s and 180 s, Camera1's at 120 s, Camera3's at 150 s; Camera2's left alone | Every camera recorded to the end, and campy exited with 0. Camera0 ended in 3 files with 8978 frames, Camera1 and Camera3 in 2 files with 8980 and 8992; Camera2 had all 9000 in one. Each kill lost 8 to 20 frames (0.3 to 0.7 s) |
+| 2.5 min, 4500 frames per camera | Camera2's ffmpeg killed at 20, 40, 60 and 80 s | Restarted 3 times. At the fourth kill Camera2 stopped, with the critical alert. The other three cameras recorded all 4500 frames. Camera2's 4 files held 2265 of its 2326 frames |
+
+Every check above passed here too:
+
+- Every file decoded to its `segments.csv` count.
+- The frame times matched the files.
+- Frames grabbed equalled frames written plus frames lost.
+- The joins took 0.2 s each and were identical to the files, frame for frame. Quick Sync's restarted ffmpeg writes the same codec header, so its files join without re-encoding.
+- Slack accepted all 18 messages.
+
 What it does not cover: an ffmpeg that hangs without exiting. The real stalls seen so far were of that kind (the EVO-X2's SSD not taking writes for 10 to 16 s, a GPU's video firmware stalling), and they show as frames waiting for ffmpeg, then dropped frames (the table above). Restarting a hung ffmpeg would mean killing it on a guess, so it is alert-only. No ffmpeg has exited mid-recording on its own on the rigs campy has been tested on so far, so this is a safety net for something rare. Besides the rig test above, it is tested with emulated cameras (ffmpeg killed mid-recording; every frame checked to be in its file or named as lost).
 
 ### The GPU's kernel log (AMD, on Linux)
