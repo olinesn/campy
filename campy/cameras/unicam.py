@@ -309,6 +309,7 @@ class Recording:
 		self.lostRows = []
 		self.framesLost = 0 # frames given to an ffmpeg that stopped, but not in its file
 		self.restarts = 0 # times ffmpeg was restarted (restartFfmpeg)
+		self.ffmpegRetries = 0 # times ffmpeg was started again on its empty file, its encoder not having opened (writer.FirstFrames)
 		self.videoFiles = [] # the video's files, when it is in more than one
 
 	def Failures(self):
@@ -720,6 +721,8 @@ def SaveMetadata(cam_params, grabdata, recording=None):
 			cam_params["cameraError"] = recording.cameraError
 		if recording.videoError:
 			cam_params["videoError"] = recording.videoError
+		if recording.ffmpegRetries:
+			cam_params["ffmpegRetries"] = recording.ffmpegRetries
 		if recording.restarts:
 			cam_params["ffmpegRestarts"] = recording.restarts
 			cam_params["videoFiles"] = list(recording.videoFiles)
