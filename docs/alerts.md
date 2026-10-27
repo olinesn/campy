@@ -152,6 +152,12 @@ Every check above passed here too:
 - The joins took 0.2 s each and were identical to the files, frame for frame. Quick Sync's restarted ffmpeg writes the same codec header, so its files join without re-encoding.
 - Slack accepted all 18 messages.
 
+On 27 October 2026 the same two recordings ran on the Dell Precision 7875 (Windows 11) for NVIDIA's encoder. No camera is attached there, so three emulated cameras played recorded clips at 60 fps, through the same campy-acquire. They were recorded with NVENC H.265 on its RTX 4000 Ada and `keyframeInterval: 0.5`, with real Slack direct messages.
+
+- **The 5-minute recording.** It had 4 restarts. Every camera recorded all 18000 frames, campy exited with 0, and each kill lost 6 to 26 frames.
+- **The 2.5-minute recording.** It had 3 restarts, then the critical stop at the fourth kill. The other two cameras recorded all 9000 frames.
+- **The checks.** Every check above passed, and the joins were identical to the files, frame for frame. A restarted NVENC ffmpeg writes the same codec header too.
+
 What it does not cover: an ffmpeg that hangs without exiting. The real stalls seen so far were of that kind (the EVO-X2's SSD not taking writes for 10 to 16 s, a GPU's video firmware stalling), and they show as frames waiting for ffmpeg, then dropped frames (the table above). Restarting a hung ffmpeg would mean killing it on a guess, so it is alert-only. No ffmpeg has exited mid-recording on its own on the rigs campy has been tested on so far, so this is a safety net for something rare. Besides the rig test above, it is tested with emulated cameras (ffmpeg killed mid-recording; every frame checked to be in its file or named as lost).
 
 ### The GPU's kernel log (AMD, on Linux)
