@@ -162,9 +162,11 @@ class Picture(QtWidgets.QWidget):
 			self.window_.Changed()
 
 	def mouseMoveEvent(self, event):
-		self.window_.viewer.Move(*self.At(event))
-		if self.window_.viewer.panned and self.window_.paused:
-			self.window_.Redraw() # a camera's picture, moved
+		viewer = self.window_.viewer
+		viewer.Move(*self.At(event))
+		corner = viewer.drag is not None and viewer.drag[0] == "corner"
+		if viewer.panned and (self.window_.paused or corner):
+			self.window_.Redraw() # a camera's picture, or the cage's corner being drawn, moved
 
 	def mouseReleaseEvent(self, event):
 		self.window_.viewer.Release()
@@ -271,6 +273,14 @@ class Window(QtWidgets.QWidget):
 		self.grid.setCheckable(True)
 		self.single.setCheckable(True)
 		column.addLayout(views)
+		# The cage (k): its floor's corners clicked in the cameras' tiles; the keys while drawing in the panel's text
+		self.cage = QtWidgets.QPushButton("Draw the cage (k)")
+		self.cage.setToolTip("Click the cage floor's corners, in the same order, in 2 or more cameras; Enter saves it. "
+			"campy-live then sets aside any 3D outside it")
+		self.cage.setCheckable(True)
+		self.cage.setFocusPolicy(Qt.NoFocus)
+		self.cage.clicked.connect(lambda checked: self.Key(ord("k")))
+		column.addWidget(self.cage)
 		self.alerts = QtWidgets.QLabel() # what is wrong, in red; hidden when nothing is
 		self.alerts.setWordWrap(True)
 		self.alerts.setTextFormat(Qt.RichText)
@@ -433,6 +443,8 @@ class Window(QtWidgets.QWidget):
 			widget.setVisible(viewer.scene is not None)
 		self.grid.setChecked(viewer.selected is None)
 		self.single.setChecked(viewer.selected is not None)
+		self.cage.setChecked(viewer.drawing is not None)
+		self.cage.setVisible(viewer.scene is not None)
 
 	def Trails(self):
 		# The cameras' trails' length or shade, picked

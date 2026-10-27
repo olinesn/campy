@@ -112,7 +112,7 @@ Before recording, campy checks the config and the computer, and most problems sh
 
 **Latencies in steps of 15–16 ms on Windows.** That recording was made before campy took its host times from Windows' precise clock (pull request 118). The steps are the old clock's. A program that writes frames into the live feed itself must stamp them with `campy.clock.HostNs` ([On Windows](live-tracking.md#on-windows-nvidia-cuda)).
 
-**3D poses are wrong, or mice swap between cameras.** Check the calibration first (the lines in `campy-live-view`: [Calibration](calibration.md#calibrating)). If it is good, look at the 2D. False detections outside the cage, or a camera that often misses a mouse, pull wrong pairings into the 3D. A model trained on another rig does this more often, and retraining on the rig's own frames helps most.
+**3D poses are wrong, or mice swap between cameras.** Check the calibration first (the lines in `campy-live-view`: [Calibration](calibration.md#calibrating)). If it is good, look at the 2D. False detections outside the cage, or a camera that often misses a mouse, pull wrong pairings into the 3D. A wrong pairing whose 3D lands outside the cage (often metres past it, along the cameras' line of sight) is set aside once the cage is drawn (`k` in `campy-live-view`; [The cage](live-tracking.md#the-cage-3d-outside-it-is-not-found---cage)). A model trained on another rig does this more often, and retraining on the rig's own frames helps most.
 
 ## campy-live-view's warnings
 

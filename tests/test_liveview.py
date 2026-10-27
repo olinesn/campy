@@ -769,7 +769,7 @@ def test_the_3d_tile_shows_the_row_the_cameras_show():
 	assert (tile[50:] == drawn(other)).all() and (tile[50:] != drawn(row)).any()
 	# \\ (or its button) hides it: the cameras alone, and no 3D drawn
 	keys = [b[4] for b in viewer.buttons]
-	assert keys == [ord("p"), ord("r"), ord("l"), ord("\\"), ord("t"), ord("o")]
+	assert keys == [ord("p"), ord("r"), ord("l"), ord("\\"), ord("t"), ord("o"), ord("k")]
 	x0, y0, x1, y1, _ = viewer.buttons[3]
 	viewer.Key(viewer.Mouse(liveview.cv2.EVENT_LBUTTONDOWN, (x0 + x1) // 2, (y0 + y1) // 2, 0))
 	assert not viewer.showScene

@@ -24,5 +24,6 @@ Calibration holds only as long as focus and zoom stay put, so set the lenses fir
 2. **Calibrate** with an anipose-compatible tool (sleap-anipose, or a tool that writes the same `calibration.toml`).
 3. **Use it live**: `campy-live --calibration calibration.toml`. The cameras are matched by campy's camera names (`cameraNames`). If the calibration names them differently, give `--calibration-names`, in the feed's camera order.
 4. **Check it** in `campy-live-view`. Each detection is joined by a line to its animal's 3D pose projected back into that camera, with the distance in pixels. Short lines on every camera mean a good calibration and good matching. To check a logged recording afterwards, `python bench/pose3d_live_log.py <campy-live log>.npy calibration.toml` scores the 3D against the best grouping the 2D allows.
+5. **Draw the cage** in `campy-live-view` (`k`): its floor's corners clicked in 2 or more cameras. It is kept beside the calibration (`calibration.cage.json`), and campy-live sets aside any 3D outside it ([The cage](live-tracking.md#the-cage-3d-outside-it-is-not-found---cage)). After calibrating again, draw it again: a cage made for another calibration is not used.
 
 Problems and their fixes are in [Troubleshooting](troubleshooting.md).
