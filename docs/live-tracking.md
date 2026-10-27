@@ -356,16 +356,19 @@ Notes on the measurements:
 
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
-A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice, with 3 mice in the cage, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
+A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
 
-| 4 cameras, 30 fps, 3 mice (run 3: 5) | Sets tracked | Inference | Frame to 3D | 3D alone |
+| 4 cameras, 30 fps, 10 min | Sets tracked | Inference | Frame to 3D | 3D alone |
 |---|---|---|---|---|
-| Run 1 (`RIG_CLEAN`) | 17,999 of 18,000 (1 skipped at the start) | 5.2 / 6.7 | 8.2 / 10.3 | 1.2 / 2.1 |
-| Run 2 | 18,000 of 18,000 | 5.2 / 6.7 | 8.3 / 10.4 | 1.3 / 2.2 |
+| Run 1, 3 mice (`RIG_CLEAN`) | 17,999 of 18,000 (1 skipped at the start) | 5.2 / 6.7 | 8.2 / 10.3 | 1.2 / 2.1 |
+| Run 2, 3 mice | 18,000 of 18,000 | 5.2 / 6.7 | 8.3 / 10.4 | 1.3 / 2.2 |
 | Run 3, 5 mice (a load sighting only after the recording, in the remux) | 18,000 of 18,000 | 7.3 / 8.9 | 10.9 / 13.0 | 1.7 / 2.5 |
+| Run 4, 5 mice (the same) | 18,000 of 18,000 | 7.3 / 9.3 | 11.0 / 13.2 | 1.7 / 2.5 |
+| Run 5, 5 mice (another program wrote up to 442 MB/s to disk for a minute) | 18,000 of 18,000 | 7.3 / 8.8 | 10.9 / 12.9 | 1.7 / 2.5 |
+| Run 6, 5 mice (other programs used 2–3 CPU cores twice) | 18,000 of 18,000 | 7.3 / 13.3 | 11.4 / 17.6 | 2.1 / 2.8 |
 | 4 emulated cameras, 60 fps, 5 mice (`RIG_CLEAN`) | 3,593 of 3,600 (4 skipped in the first 10 s) | 7.2 / 7.9 | 10.0 / 11.2 | 1.2 / 1.9 |
 
-With 5 mice, each camera found all 5 in 80–90% of its frames, and 5 mice had a 3D pose in 92.7% of the sets, 4 in 7.1%; with 3 mice, all 3 had one in 99.6–99.7%. In runs 1 and 2, where the 2D allowed a sure match in all four cameras, `campy-live` grouped the same detections into each mouse 99.4% of the time (`bench/pose3d_live_log.py`). Its 3D poses reprojected within 3.3–3.8 px at the median. The 60 fps row records 4 emulated cameras with Quick Sync, playing a 5-mouse recording. With 3 cameras the same check gives 5.5 / 5.7 and 7.7 / 8.6 ms.
+With 5 mice, each camera found all 5 in 69–92% of its frames, and all 5 had a 3D pose in 92.7–95.4% of the sets, 4 in 4.6–7.1%, and never fewer than 3 (at most 0.3% of the sets); with 3 mice, all 3 had one in 99.6–99.7%. A mouse needs only two of the four cameras for its 3D pose, which is how 3D finds all 5 more often than any one camera does. Run 6 shows what other programs on the computer cost: its 99th percentile rose by about 4.5 ms while its median moved 0.5 ms, and nothing was skipped. One more start, between runs 5 and 6, failed in its first seconds: every camera's Quick Sync encoder refused to open, and 40 s later the next start worked. Since pull request 217, campy starts such an ffmpeg again on its own ([Troubleshooting](troubleshooting.md)). In runs 1 and 2, where the 2D allowed a sure match in all four cameras, `campy-live` grouped the same detections into each mouse 99.4% of the time (`bench/pose3d_live_log.py`). Its 3D poses reprojected within 3.3–3.8 px at the median. The 60 fps row records 4 emulated cameras with Quick Sync, playing a 5-mouse recording. With 3 cameras the same check gives 5.5 / 5.7 and 7.7 / 8.6 ms.
 
 What changes with a camera more:
 
