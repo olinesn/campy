@@ -659,7 +659,24 @@ With `--calibration <calibration.toml>` (anipose's), `campy-live` also turns eac
 ```
 campy-live --cameras 3 --model sleap --centroid <folder> --instance <folder> --animals 3 --calibration calibration.toml
 ```
-Each row then also has `points3d` (per animal and node, x, y, z in the calibration's units, mm), `members` (which detection in each camera is that animal), `n_views` and `reproj_px`, and the summary gives the latency from frames to 3D.
+Each row then also has `points3d` (per animal and node, x, y, z in the calibration's units, mm), `members` (which detection in each camera is that animal), `n_views`, `reproj_px` and `outside_cage`, and the summary gives the latency from frames to 3D.
+
+#### The cage: 3D outside it is not found (`--cage`)
+
+Sometimes one camera's detection of a mouse is grouped with another mouse's detections in the other cameras. Their lines of sight can still meet, but far from both mice. On the Dell Pro Max Slim FCS1250's 4-camera rig, whose cameras all look at the cage from one side, that place is often below the cage floor or above the cage, sometimes metres away. On six 4-camera recordings of 3 and 5 mice (26 October 2026), 0.2 to 1.1% of the 3D positions landed more than 25 cm from the cage's middle. A closed-loop rule ("mouse in region X", [campy-rules](closed-loop.md)) would act on such a position as if a mouse were there.
+
+So you can draw the cage, once per calibration: in `campy-live-view`, press `k` and click the cage floor's corners, in the same order, in 2 or more cameras, then press Enter ([Watching it live](live-view.md)). campy keeps it beside the calibration, as `<calibration>.cage.json` (`calibration4.toml` → `calibration4.cage.json`): the floor's corners in 3D, its height (200 mm unless you change it) and a 30 mm margin. From then on, `campy-live` (`--cage auto`, the default) treats a mouse whose 3D lands outside the cage as **not found** that frame:
+- its `points3d` and `reproj_px` are NaN, its `members` -1 (none of its detections are grouped) and `n_views` 0, and the row's `outside_cage` is 1 for it. `campy-rules`, `campy-live-export` and `campy-live-view` then all treat it as not seen.
+- a pair of detections whose 3D lands outside the cage doesn't start a new identity, so no identity number is taken by a wrong pair.
+- a mouse whose own 3D (what the next frame is matched against) lands outside keeps the 3D it had, so a wrong grouping isn't what the next frame is matched to.
+- a single body point outside the cage, of a mouse inside it, is dropped.
+
+`campy-live` looks at the file once a second. A cage drawn, changed or removed while it runs is used from then on, and the summary (`campy-live.json`) lists each cage it used and from which frame (`cage`), and how many mouse-frames it set aside (`outside_cage`). A cage drawn for another calibration is refused, and said so: its corners no longer land where they were clicked. `--cage off` keeps every 3D position, and `--cage <file>` uses another file. In a `campy-session` config, pass it in `live.args`, for example `args: ["--cage", "off"]`.
+
+On the six recordings, replayed through the same code with the cage clicked on one of them, every position more than 25 cm from the middle was gone. The positions set aside were 0.04–0.07% with 3 mice and 0.3–1.7% with 5, almost all below the floor or above the top, not past a wall. They were often from 2 cameras (31–66%, against 0–3% of the positions kept), with a median reprojection error of 17–21 px (4–7 px for those kept). Without a cage, the replay gives the logged 3D back exactly. The 3D step took 0.04–0.05 ms more per frame, on its own thread beside inference: that is about 0.5% of the 10 ms from frame to 3D on the Pro Max Slim, and doesn't slow the frame rate. The details, and what it did to identities, are in [3D poses](pose3d.md#the-cage). To see what a cage does to a recording of your own:
+```
+python bench/pose3d_cage_replay.py <recording folder> --cage <calibration>.cage.json
+```
 
 ### Opening a tracked recording in LUC3D (campy-live-export)
 

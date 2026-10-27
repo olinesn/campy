@@ -502,7 +502,8 @@ class Cage:
 
 	def Save(self, path, **more):
 		# Written whole, then put in place: campy-live never reads half of it
-		text = json.dumps(self.ToJson(**more), indent=1)
+		from campy import strictjson
+		text = strictjson.dumps(self.ToJson(**more), indent=1)
 		temporary = "{}.{}.tmp".format(path, os.getpid())
 		with open(temporary, "w", encoding="utf-8") as f:
 			f.write(text + "\n")
