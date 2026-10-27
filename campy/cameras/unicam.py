@@ -735,8 +735,8 @@ def SaveMetadata(cam_params, grabdata, recording=None):
 		time_count = times.last or 0
 		fps_count = int(round(frame_count/time_count)) if time_count > 0 else 0
 		if recording.videoError and times.count:
-			Say("{} grabbed {} frames at {} fps. Its video holds {} of them: its ffmpeg stopped.".format(
-				name, frame_count, fps_count, times.count))
+			Say("{} grabbed {} frames at {} fps. Its video{} {} of them: its ffmpeg stopped.".format(
+				name, frame_count, fps_count, " files hold" if recording.restarts else " holds", times.count))
 		elif times.count:
 			Say('{} saved {} frames at {} fps.'.format(name, frame_count, fps_count))
 		if grabdata["framesDropped"]:

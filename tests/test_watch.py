@@ -254,6 +254,14 @@ def test_cameras_that_end(monkeypatch, tmp_path):
 		"crashed. The other cameras go on."]
 	rig.Run(notify.REMIND_S + 60, cameras=[3])
 	assert len(rig.Sent()) == 4 # no reminders: once is enough
+	# restartFfmpeg: a camera whose ffmpeg was restarted, and then stopped once too often
+	rig.rows[3].Restarted(3)
+	rig.rows[3].State(status.VIDEO_FAILED)
+	rig.Run(watch.EVERY_S, cameras=[])
+	assert rig.Sent()[-1] == ":red_circle: *Test rig*: Camera3: ffmpeg stopped again, in 0.part4.mp4, and the camera " \
+		"has stopped, after frame {}. It had been restarted 3 times, and was not again (at most 3 an hour, never when " \
+		"the disk is the cause). Its video files can be read up to their last fragments; the other cameras go " \
+		"on.".format(status.Reader(rig.counters, 4).Row(3)["grabbed"]), rig.Sent()[-4:]
 	rig.watch.Stop(dict(rig.cameras.failures, Camera0=["the camera is gone"], Camera1=["ffmpeg stopped"]))
 	assert rig.Sent()[-1].startswith(":red_circle: *Test rig*: Recording 2026-10-23_01-00-00 ended after 31 min, 3 of "
 		"4 cameras not to the end:\n- Camera0: 300 frames: the camera is gone\n")

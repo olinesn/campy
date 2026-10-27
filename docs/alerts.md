@@ -117,7 +117,25 @@ It does not restart, and the camera stops as without it (a critical alert, which
 
 A new ffmpeg that does not start counts as one of the 3 and is tried again a second later. The first ffmpeg not starting at all is a settings or driver problem, and is not retried.
 
-What it does not cover: an ffmpeg that hangs without exiting. The real stalls seen so far were of that kind (the EVO-X2's SSD not taking writes for 10 to 16 s, a GPU's video firmware stalling), and they show as frames waiting for ffmpeg, then dropped frames (the table above). Restarting a hung ffmpeg would mean killing it on a guess, so it is alert-only. No ffmpeg has exited mid-recording on the rigs campy has been tested on so far, so this is a safety net for something rare, and it has been tested with emulated cameras only (ffmpeg killed mid-recording, frame by frame: every frame is in its file or named as lost).
+#### Tested on the GMKtec EVO-X2
+
+On 26 October 2026 the GMKtec EVO-X2 (Ubuntu 24.04) recorded with its own config and `restartFfmpeg: True`: three FLIR Blackfly S (BFS-U3-13Y3M) at 60 fps, triggered by its Arduino Nano ESP32, VA-API H.264 with `keyframeInterval: 0.5`, and real Slack direct messages. A script stopped the cameras' ffmpegs on a schedule. Afterwards every file was decoded and counted, and `campy-session post --only join` joined each camera's files.
+
+| Recording | What was done | Result |
+|---|---|---|
+| 5 min, 18000 frames per camera | Camera0's ffmpeg killed (kill -9) at 60 s and 180 s, Camera1's at 120 s; Camera2's stopped with SIGTERM at 150 s | Every camera recorded to the end, and campy exited with 0. Each new ffmpeg was writing within about a second. Camera0 ended in 3 files with 17945 frames, Camera1 and Camera2 in 2 files with 17977 and 17998. Each killed ffmpeg lost 23 to 32 frames (0.4 to 0.5 s); the one stopped with SIGTERM finished its file, and lost 2 |
+| 2.5 min, 9000 frames per camera | Camera2's ffmpeg killed at 20, 40, 60 and 80 s | Restarted 3 times. At the fourth kill Camera2 stopped, with a critical alert saying it had been restarted 3 times. Camera0 and Camera1 recorded all 9000 frames. Camera2's 4 files held 4530 of its 4608 frames, and 78 were lost (77 inside the stopped ffmpegs, and the one it failed on) |
+
+In both recordings:
+
+- Every file decoded to exactly the frames `segments.csv` gives it.
+- "frametimes.npy" and "hosttimes.npy" had one row per frame of the files, and none for a lost frame. Frames grabbed equalled frames written plus frames lost.
+- The joined videos, made in under a second each, decoded to the files' frames, frame for frame (decoded-frame checksums). `campy-live-export`'s reader found each frame number at its place in them.
+- Slack accepted all 18 messages.
+
+The second recording's join needed `--force`, since a camera did not record to the end.
+
+What it does not cover: an ffmpeg that hangs without exiting. The real stalls seen so far were of that kind (the EVO-X2's SSD not taking writes for 10 to 16 s, a GPU's video firmware stalling), and they show as frames waiting for ffmpeg, then dropped frames (the table above). Restarting a hung ffmpeg would mean killing it on a guess, so it is alert-only. No ffmpeg has exited mid-recording on its own on the rigs campy has been tested on so far, so this is a safety net for something rare. Besides the rig test above, it is tested with emulated cameras (ffmpeg killed mid-recording; every frame checked to be in its file or named as lost).
 
 ### The GPU's kernel log (AMD, on Linux)
 

@@ -421,15 +421,16 @@ def FfmpegProcess(writer):
 	return process if hasattr(process, "poll") else None
 
 
-def FfmpegStopped(ffmpeg, error, frames):
-	# Why the video took no more frames, with ffmpeg's exit code where it can be read
+def FfmpegStopped(ffmpeg, error, frames, into=None):
+	# Why the video took no more frames, with ffmpeg's exit code where it can be read. into: the file it was
+	# writing, after a restart (its frames are that file's, not the camera's)
 	code = None
 	if ffmpeg is not None:
 		try:
 			code = ffmpeg.wait(timeout=5) # imageio-ffmpeg has already waited for it, or killed it
 		except Exception:
 			code = ffmpeg.poll()
-	why = "ffmpeg stopped after taking {} frames".format(frames)
+	why = "ffmpeg stopped after taking {} frames{}".format(frames, " into {}".format(into) if into else "")
 	if code is not None:
 		why += ", with {}".format(ExitCodeText(code))
 	return "{}: {}".format(why, ErrorText(error).splitlines()[0])
@@ -723,7 +724,7 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 						# (Parts.Restart), the camera never stopping. Otherwise the
 						# frames still queued will not reach the video, and the camera
 						# is stopped, unless it already has (stopWriteQueue).
-						why = FfmpegStopped(ffmpeg, e, part.sent)
+						why = FfmpegStopped(ffmpeg, e, part.sent, part.name if part.number > 1 else None)
 						part.ended = why
 						restarted, whynot = parts.Restart(ErrorText(e))
 						if restarted is None:

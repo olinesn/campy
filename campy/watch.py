@@ -330,14 +330,16 @@ class Watch:
 			self.Raise("{}/ended".format(name), notify.CRITICAL, "{}: the camera is gone (unplugged, or its USB link "
 				"lost) after frame {}. Its recording has ended there; the other cameras go on. It needs a replug, and "
 				"a new recording.".format(name, row["grabbed"]), remind=False)
+		elif state == camstatus.VIDEO_FAILED and row["restarts"]:
+			self.Raise("{}/ended".format(name), notify.CRITICAL, "{}: ffmpeg stopped again, in {}, and the camera "
+				"has stopped, after frame {}. It had been restarted {} time{}, and was not again (at most {} an hour, "
+				"never when the disk is the cause). Its video files can be read up to their last fragments; the other "
+				"cameras go on.".format(name, self.VideoName(c, row["restarts"] + 1), row["grabbed"], row["restarts"],
+				"" if row["restarts"] == 1 else "s", RESTARTS_PER_HOUR), remind=False)
 		elif state == camstatus.VIDEO_FAILED:
-			again = ""
-			if row["restarts"]:
-				again = " It had been restarted {} time{}, and was not again (at most {} an hour, never when the disk " \
-					"is the cause).".format(row["restarts"], "" if row["restarts"] == 1 else "s", RESTARTS_PER_HOUR)
 			self.Raise("{}/ended".format(name), notify.CRITICAL, "{}: ffmpeg stopped after taking {} frames, and the "
-				"camera has stopped. Its video can be read up to its last fragment; the other cameras go on.{}".format(
-				name, row["sent"], again), remind=False)
+				"camera has stopped. Its video can be read up to its last fragment; the other cameras go on.".format(
+				name, row["sent"]), remind=False)
 		elif state == camstatus.CAMERA_FAILED:
 			self.Raise("{}/ended".format(name), notify.CRITICAL, "{}: the camera thread stopped with an error after "
 				"frame {}; the other cameras go on.".format(name, row["grabbed"]), remind=False)
