@@ -91,6 +91,7 @@ Every key a campy config file can have, and its command-line option (`--key valu
 | `stopAtFreeGB` | `2` | a number, 0 or more | one for the rig | Below this much free space on a video folder's disk, campy stops the recording, cleanly, as at Ctrl-C, so that every video and its metadata are whole: a full disk stops every ffmpeg at once and leaves no room for them (default: 2; 0 = never). |
 | `alertGpuLog` | `True` | True or False | one for the rig | Linux with an AMD GPU: read the kernel log while recording, for the GPU's firmware stalls, hung jobs and resets (default: True). It needs the adm or systemd-journal group; without it, campy says so once and records without it. |
 | `alertGpuStalls` | `3` | a whole number, 1 or more | one for the rig | This many GPU firmware stalls ('Fence fallback timer expired on ring ...' in the kernel log) within 10 minutes are an alert (default: 3). |
+| `restartFfmpeg` | `False` | True or False | one for the rig | When a camera's ffmpeg stops mid-recording (killed, crashed, an encoder error), start a new one instead of stopping that camera (default: False). The camera never stops; its video goes on in a new file (0.part2.mp4, ...), and segments.csv in its folder says which frames each file holds. The frames inside the stopped ffmpeg (about a second) are lost. At most 3 restarts per camera an hour, never when the disk is the cause, and never for a calibration video. campy-session post's join step joins the files into one. See docs/alerts.md. |
 
 ## Launch check
 

@@ -297,7 +297,19 @@ class Recording:
 		self.framesSent = 0 # frames the writer has given ffmpeg
 		self.videoError = None # why the video stopped taking frames, or None
 		self.cameraError = None # why the camera stopped before the end, or None
-		self.written = threading.Event() # the writer is done: framesSent and videoError are final
+		self.written = threading.Event() # the writer is done: everything below is final
+		# The frame number of each frame in the write queue, in its order: the
+		# camera thread adds a frame's number here before the frame, and the
+		# writer takes it with the frame (segments.csv names frames by number)
+		self.queuedFrames = deque()
+		# frametimes.npy's rows, as the writer leaves them: keep the first
+		# keepRows (None: all), and leave out lostRows (given to an ffmpeg
+		# that stopped, but not in its file)
+		self.keepRows = None
+		self.lostRows = []
+		self.framesLost = 0 # frames given to an ffmpeg that stopped, but not in its file
+		self.restarts = 0 # times ffmpeg was restarted (restartFfmpeg)
+		self.videoFiles = [] # the video's files, when it is in more than one
 
 	def Failures(self):
 		return [why for why in (self.cameraError, self.videoError) if why]
@@ -598,6 +610,8 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 				# unless the writer is writeQueueMaxSec behind
 				queued = maxQueue is None or len(writeQueue) < maxQueue
 				if queued:
+					if withWriter:
+						recording.queuedFrames.append(frameNumber) # before the frame: the writer takes both
 					writeQueue.append(img)
 
 				# Into the live feed's shared memory too: one copy, never waiting.
@@ -693,14 +707,24 @@ def SaveMetadata(cam_params, grabdata, recording=None):
 		recording = Recording()
 
 	try:
-		# The last frames into frametimes.npy and hosttimes.npy. When ffmpeg
-		# stopped, only the frames it was given: frametimes.npy keeps one row
-		# per frame sent to the video, and the frames queued after are left out.
-		times.Close(keep=recording.framesSent if recording.videoError else None)
+		# The last frames into frametimes.npy and hosttimes.npy, one row per
+		# frame in the video. When ffmpeg stopped, only the frames its file
+		# holds: the frames queued after it stopped are left out (keepRows),
+		# and so are those it was given but had not written yet (lostRows,
+		# counted from the file: writer.CountPart), as when it was restarted.
+		keep = recording.keepRows
+		if keep is None and recording.videoError:
+			keep = recording.framesSent # its ffmpeg did not start, or failed as it closed: the frames it took
+		times.Close(keep=keep, drop=recording.lostRows)
 		if recording.cameraError:
 			cam_params["cameraError"] = recording.cameraError
 		if recording.videoError:
 			cam_params["videoError"] = recording.videoError
+		if recording.restarts:
+			cam_params["ffmpegRestarts"] = recording.restarts
+			cam_params["videoFiles"] = list(recording.videoFiles)
+		if recording.restarts or recording.videoError:
+			cam_params["framesLostInEncoder"] = recording.framesLost
 		if not times.count:
 			Say("{} saved no frames.".format(name))
 			if not recording.Failures():
@@ -711,8 +735,8 @@ def SaveMetadata(cam_params, grabdata, recording=None):
 		time_count = times.last or 0
 		fps_count = int(round(frame_count/time_count)) if time_count > 0 else 0
 		if recording.videoError and times.count:
-			Say("{} grabbed {} frames at {} fps. ffmpeg was given {} of them before it stopped.".format(
-				name, frame_count, fps_count, times.count))
+			Say("{} grabbed {} frames at {} fps. Its video{} {} of them: its ffmpeg stopped.".format(
+				name, frame_count, fps_count, " files hold" if recording.restarts else " holds", times.count))
 		elif times.count:
 			Say('{} saved {} frames at {} fps.'.format(name, frame_count, fps_count))
 		if grabdata["framesDropped"]:

@@ -56,7 +56,12 @@ frames from a video (it fell writeQueueMaxSec behind; metadata.csv's
 framesDropped). Then that camera's video runs behind the others from there
 on: its 2D still go on its own right frames, a group (3D) keeps only the
 cameras whose videos agree on the frame, and campy-live-export says from
-which frame each such video is behind. hosttimes.npy confirms the match: each
+which frame each such video is behind. A camera whose ffmpeg was restarted
+during the recording (restartFfmpeg) has its video in several files: it is
+read from them joined into one (campy-session post's join step, which must
+have run), whose frames are frametimes.npy's rows, one for one; the frames
+lost in the stopped ffmpeg have no row, and so no prediction, as dropped
+frames. hosttimes.npy confirms the match: each
 row's host_ns is the same clock reading as the frame's in hosttimes.npy, so a
 log of another recording is refused.
 
@@ -105,7 +110,7 @@ not depend on it.
 
 import argparse, json, os, re, sys
 import numpy as np
-from campy import manifest, strictjson
+from campy import manifest, segments, strictjson
 
 SLP = "campy-live.slp"
 CALIBRATION = "calibration.toml"
@@ -216,13 +221,25 @@ class Camera:
 				raise ExportError("{}: {} videos ({}); which one is the recording's?".format(
 					self.folder, len(videos), ", ".join(videos) or "none"))
 			video = videos[0]
-		self.video = video
+		# A video in several files, its ffmpeg restarted during the recording
+		# (restartFfmpeg): the files joined into one (campy-session post's join)
+		try:
+			self.video = segments.VideoFor(self.folder, video)
+		except segments.NeedsJoin as e:
+			raise ExportError(str(e))
 		path = os.path.join(self.folder, "frametimes.npy")
 		if not os.path.isfile(path):
 			raise ExportError("{} has no frametimes.npy: campy's frame numbers of its video".format(self.folder))
 		self.frames = np.load(path)[0].astype(np.int64) # campy's frame number of each video frame
 		path = os.path.join(self.folder, "hosttimes.npy")
 		self.host = np.load(path).astype(np.int64) if os.path.isfile(path) else None
+		# Frames lost in a stopped ffmpeg still have rows when campy was cut
+		# short before it took them out (segments.csv names them)
+		keep = segments.KeepRows(self.frames, segments.LostFrames(self.folder))
+		if not keep.all():
+			self.frames = self.frames[keep]
+			if self.host is not None and len(self.host) == len(keep):
+				self.host = self.host[keep]
 
 	def Index(self, frames):
 		"""The video frame of each of campy's frames, -1 where the video lacks it."""

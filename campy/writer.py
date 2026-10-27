@@ -7,8 +7,8 @@ calls EncoderArgs() too, so the capacity it measures is for the same ffmpeg
 command a recording runs.
 """
 from imageio_ffmpeg import write_frames
-import os, re, sys, time, logging, functools, subprocess
-from campy import newfiles, status
+import os, re, sys, time, shutil, logging, functools, threading, subprocess, collections
+from campy import newfiles, status, segments
 from campy.cameras import unicam
 from campy.utils.utils import QueueKeyboardInterrupt, Say, ErrorText, ExitCodeText
 
@@ -340,17 +340,18 @@ def SetEnvironment(env):
 			os.environ[key] = value
 
 
-def OpenWriter(cam_params, queue, new=False):
+def OpenWriter(cam_params, queue, new=False, path=None):
 	# new: the video must be a new file (a recording's, WriteFrames). ffmpeg
 	# opens its output with -y (imageio-ffmpeg), and would replace a video
 	# already there: the file is made here first (newfiles.Take), or this
 	# raises newfiles.WouldOverwrite. campy-encode-sweep and
-	# campy-encode-quality write into folders of their own.
+	# campy-encode-quality write into folders of their own. path: another
+	# file than videoFilename (a part after a restart: segments.PartName).
 	try:
 		writing = False
 		# The camera's folder, or in a calibration session its calibration_images
 		folder_name = newfiles.VideoFolder(cam_params)
-		full_file_name = newfiles.VideoPath(cam_params)
+		full_file_name = path or newfiles.VideoPath(cam_params)
 
 		if not os.path.isdir(folder_name):
 			os.makedirs(folder_name, exist_ok=True) # the grab thread may make it too (metadata.csv)
@@ -420,15 +421,16 @@ def FfmpegProcess(writer):
 	return process if hasattr(process, "poll") else None
 
 
-def FfmpegStopped(ffmpeg, error, frames):
-	# Why the video took no more frames, with ffmpeg's exit code where it can be read
+def FfmpegStopped(ffmpeg, error, frames, into=None):
+	# Why the video took no more frames, with ffmpeg's exit code where it can be read. into: the file it was
+	# writing, after a restart (its frames are that file's, not the camera's)
 	code = None
 	if ffmpeg is not None:
 		try:
 			code = ffmpeg.wait(timeout=5) # imageio-ffmpeg has already waited for it, or killed it
 		except Exception:
 			code = ffmpeg.poll()
-	why = "ffmpeg stopped after taking {} frames".format(frames)
+	why = "ffmpeg stopped after taking {} frames{}".format(frames, " into {}".format(into) if into else "")
 	if code is not None:
 		why += ", with {}".format(ExitCodeText(code))
 	return "{}: {}".format(why, ErrorText(error).splitlines()[0])
@@ -447,10 +449,217 @@ def VideoFailed(cam_params, recording, stopReadQueue, why, stopping=True):
 	# plain MP4 only once ffmpeg has closed it (writes its index)
 	kept = "can be read up to its last fragment" if Fragmented(cam_params) else "may be unreadable"
 	said = "{}: {}. {}Its video {}, and its metadata.csv and frametimes.npy count only the frames " \
-		"ffmpeg was given.".format(name, why, "Stopping {}. ".format(name) if stopping else "", kept)
+		"in it.".format(name, why, "Stopping {}. ".format(name) if stopping else "", kept)
 	if str(cam_params.get("ffmpegLogLevel")) == "quiet":
 		said += " ffmpegLogLevel is \"quiet\", so ffmpeg did not say why: \"warning\" shows its errors."
 	Say(said)
+
+
+# Restarting a camera's ffmpeg that stops mid-recording (restartFfmpeg, off
+# by default): at most RESTARTS_PER_HOUR times per camera within an hour, and
+# never when the disk is the cause
+RESTARTS_PER_HOUR = 3
+RESTART_WINDOW_S = 3600.0
+RESTART_DISK_MIN_GB = 1.0 # less free than this (or stopAtFreeGB, if more): the disk is taken to be the cause
+DISK_ERRORS = ("no space left", "input/output error", "read-only file system", "disk quota", "file too large")
+RESTART_RETRY_S = 1.0 # between tries, when a new ffmpeg does not start
+COUNT_WAIT_S = 900.0 # how long the end waits for the stopped files' frames to be counted
+
+
+class Part:
+	"""
+	One file of a camera's video, and its ffmpeg: the frames given to it, by
+	frame number, and, once its ffmpeg has stopped and the file is counted
+	(Parts.CountNow), the ones the file holds.
+	"""
+
+	def __init__(self, number, name, path, first_row):
+		self.number, self.name, self.path = number, name, path
+		self.firstRow = first_row # frametimes.npy's row of its first frame
+		self.frames = segments.FrameRuns() # the frame number of each frame given to its ffmpeg
+		self.sent = 0 # frames its ffmpeg took (the last one given may not have reached it)
+		self.ended = None # why its ffmpeg stopped
+		self.closed = False # its ffmpeg was closed as the recording ended
+		self.held = None # once counted: one byte per frame given to its ffmpeg, 1 where its file holds it
+		self.uncounted = None # why they could not be counted
+		self.counting = None # the thread counting them
+
+	def Lost(self):
+		# The places of the frames given to its ffmpeg that its file does not hold
+		if self.held is not None:
+			return segments.Missing(self.held)
+		if self.ended is not None:
+			# Not counted: the file is taken to hold the frames ffmpeg took, as campy took it to before it counted
+			return list(range(self.sent, self.frames.count))
+		return []
+
+	def Row(self):
+		# Its row of segments.csv
+		row = {"file": self.name, "first_frame": self.frames.first, "last_frame": self.frames.last,
+			"ended": self.ended or ""}
+		if self.closed:
+			row.update(frames=self.frames.count, lost=0, lost_frames="", ended=self.ended or "the recording ended")
+		elif self.ended is not None and (self.held is not None or self.uncounted is not None):
+			lost = self.Lost()
+			row.update(frames=self.frames.count - len(lost) if self.held is not None else None, lost=len(lost),
+				lost_frames=segments.Ranges(self.frames.Number(i) for i in lost))
+			if self.uncounted is not None:
+				row["ended"] += "; its frames could not be counted ({}), so it is taken to hold the {} ffmpeg " \
+					"took".format(self.uncounted, self.sent)
+		elif self.ended is not None:
+			row["ended"] += "; counting its frames"
+		return row
+
+
+class Parts:
+	"""
+	A camera's video files (Part), and its segments.csv once there is more
+	than one. The writer thread and the threads counting stopped files'
+	frames both update it, under its lock.
+	"""
+
+	def __init__(self, cam_params, recording):
+		self.cam_params, self.recording = cam_params, recording
+		self.name = cam_params["cameraName"]
+		self.items = []
+		self.restarts = collections.deque() # when each restart was (time.monotonic)
+		self.lock = threading.Lock()
+		self.counted = 0 # stopped files counted (status: for the watch's message)
+
+	def Add(self, number, name, path):
+		first = self.items[-1].firstRow + self.items[-1].frames.count if self.items else 0
+		part = Part(number, name, path, first)
+		self.items.append(part)
+		self.Write()
+		return part
+
+	def Count(self, part, wait=False):
+		# Counts the frames in a stopped ffmpeg's file: in a thread of its own,
+		# at low priority, while the camera records on; or now (wait), as the
+		# recording ends
+		if wait:
+			self.CountNow(part)
+		else:
+			part.counting = threading.Thread(target=self.CountNow, args=(part,), daemon=True,
+				name="count " + part.name)
+			part.counting.start()
+
+	def CountNow(self, part):
+		try:
+			part.held = segments.CountFrames(part.path, self.cam_params["frameRate"], part.frames.count)
+		except Exception as e:
+			part.uncounted = ErrorText(e)
+		with self.lock:
+			self.counted += 1
+			lost = part.Lost()
+			status.This().Counted(self.counted, sum(len(p.Lost()) for p in self.items if p.ended is not None))
+		if part.held is not None:
+			said = "{}: {} holds {} of the {} frames given to its ffmpeg".format(self.name, part.name,
+				part.frames.count - len(lost), part.frames.count)
+		else:
+			said = "{}: could not count the frames in {} ({}); taken to hold the {} its ffmpeg took".format(
+				self.name, part.name, part.uncounted, part.sent)
+		if lost:
+			said += ". Lost with that ffmpeg: {} frame{} ({})".format(len(lost), "" if len(lost) == 1 else "s",
+				segments.Ranges(part.frames.Number(i) for i in lost))
+		Say(said + ".")
+		self.Write()
+
+	def Write(self):
+		# segments.csv, when the video is in more than one file
+		with self.lock:
+			if len(self.items) < 2:
+				return
+			try:
+				segments.Write(newfiles.CameraFolder(self.cam_params), [p.Row() for p in self.items],
+					open_file=newfiles.Open)
+			except Exception as e:
+				logging.error("Could not write {}'s segments.csv: {}".format(self.name, e))
+
+	def Finish(self, failed):
+		"""
+		Waits for the counts still running, and tells the camera thread which
+		of frametimes.npy's rows the videos hold (recording.keepRows,
+		lostRows). failed: the last ffmpeg stopped, and was not restarted.
+		"""
+		deadline = time.monotonic() + COUNT_WAIT_S
+		for part in self.items:
+			if part.counting is not None:
+				part.counting.join(max(0.0, deadline - time.monotonic()))
+				if part.counting.is_alive():
+					part.uncounted = "still counting after {:g} s".format(COUNT_WAIT_S)
+		recording = self.recording
+		recording.lostRows = [p.firstRow + i for p in self.items for i in p.Lost()]
+		recording.framesLost = len(recording.lostRows)
+		if failed and self.items:
+			# The frames still queued when it stopped reached no video
+			recording.keepRows = self.items[-1].firstRow + self.items[-1].frames.count
+		if len(self.items) > 1:
+			recording.videoFiles = [p.name for p in self.items]
+		self.Write()
+
+	def NoRestart(self, error_text):
+		"""Why a stopped ffmpeg is not restarted: "" when restartFfmpeg is off, None when it is restarted."""
+		cam_params = self.cam_params
+		if not cam_params.get("restartFfmpeg", False):
+			return ""
+		if newfiles.Calibration(cam_params):
+			return "a calibration video is not restarted"
+		if unicam.StopRequested():
+			return "campy is stopping the recording"
+		text = error_text.lower()
+		for words in DISK_ERRORS:
+			if words in text:
+				return "the disk is the cause (\"{}\")".format(words)
+		try:
+			free = shutil.disk_usage(newfiles.VideoFolder(cam_params)).free
+		except Exception as e:
+			return "could not read the disk's free space ({})".format(ErrorText(e))
+		limit = max(float(cam_params.get("stopAtFreeGB", 2) or 0), RESTART_DISK_MIN_GB)
+		if free < limit * 1e9:
+			return "the disk is nearly full ({:.2f} GB free)".format(free / 1e9)
+		now = time.monotonic()
+		while self.restarts and now - self.restarts[0] >= RESTART_WINDOW_S:
+			self.restarts.popleft()
+		if len(self.restarts) >= RESTARTS_PER_HOUR:
+			return "it was restarted {} times in the last hour, the most allowed".format(len(self.restarts))
+		return None
+
+	def Restart(self, error_text):
+		"""
+		After the last part's ffmpeg stopped: a new ffmpeg, on the next file.
+		Returns (writer, ffmpeg, part), or None and why not.
+		"""
+		old = self.items[-1]
+		video = os.path.basename(str(self.cam_params["videoFilename"]))
+		while True:
+			why = self.NoRestart(error_text)
+			if why is not None:
+				return None, why
+			if old.counting is None:
+				self.Count(old) # in the background: the camera records on
+			self.restarts.append(time.monotonic()) # every try counts towards the hour's
+			name = segments.PartName(video, old.number + 1)
+			path = os.path.join(newfiles.VideoFolder(self.cam_params), name)
+			try:
+				writer, _, _ = OpenWriter(self.cam_params, None, new=True, path=path)
+			except Exception as e:
+				error_text = "ffmpeg did not start again: {}".format(ErrorText(e))
+				Say("{}: {}".format(self.name, error_text))
+				try:
+					if os.path.isfile(path) and not os.path.getsize(path):
+						os.remove(path) # the empty file made for it (newfiles.Take): tried again, or not
+				except OSError:
+					pass
+				time.sleep(RESTART_RETRY_S)
+				continue
+			part = self.Add(old.number + 1, name, path)
+			self.recording.restarts += 1
+			status.This().Restarted(self.recording.restarts)
+			Say("{}: ffmpeg restarted (restart {} of {} allowed in an hour). The camera never stopped; its video goes "
+				"on in {}, from frame {}.".format(self.name, len(self.restarts), RESTARTS_PER_HOUR, name,
+				old.frames.last + 1 if old.frames.last is not None else 1))
+			return (writer, FfmpegProcess(writer), part), None
 
 
 def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=None, recording=None):
@@ -462,6 +671,8 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 		recording = unicam.Recording()
 	mine = status.This() # this camera's counters, for campy's recording watch (campy/watch.py)
 	ffmpeg = None
+	parts = Parts(cam_params, recording)
+	failed = False
 	try:
 		# Ctrl-C from here on stops the camera (stopReadQueue), which then stops
 		# the writer, instead of ending the camera process
@@ -491,6 +702,7 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 			except Exception as e:
 				VideoFailed(cam_params, recording, stopReadQueue, "ffmpeg did not start: {}".format(ErrorText(e)))
 				return
+			part = parts.Add(1, os.path.basename(str(cam_params["videoFilename"])), newfiles.VideoPath(cam_params))
 			ffmpeg = FfmpegProcess(writer)
 			if ffmpeg is not None:
 				# campy's main process says it, if it has to stop this process at a
@@ -498,38 +710,68 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 				unicam.TellMain(("ffmpeg", ffmpeg.pid))
 
 			# Write until interrupted and/or stop message received
-			try:
-				while(writing):
-					if writeQueue:
-						writer.send(writeQueue.popleft())
-						recording.framesSent += 1
-						mine.Sent(recording.framesSent)
-					else:
-						# Once queue is depleted and grabber stops, then stop writing
-						if stopWriteQueue:
-							writing = False
-						# Otherwise continue writing
-						time.sleep(0.01)
-			except Exception as e:
-				# ffmpeg has stopped (killed, crashed, or an encoder error), and the
-				# frames still queued will not reach the video. The camera is
-				# stopped, unless it already has (stopWriteQueue).
-				VideoFailed(cam_params, recording, stopReadQueue, FfmpegStopped(ffmpeg, e, recording.framesSent),
-					stopping=not stopWriteQueue)
-				return
+			number = 0 # the frame's number (the camera thread's, in recording.queuedFrames)
+			while(writing):
+				if writeQueue:
+					frame = writeQueue.popleft()
+					number = recording.queuedFrames.popleft() if recording.queuedFrames else number + 1
+					part.frames.Add(number)
+					try:
+						writer.send(frame)
+					except Exception as e:
+						# ffmpeg has stopped (killed, crashed, or an encoder error). With
+						# restartFfmpeg, a new one goes on into the next file
+						# (Parts.Restart), the camera never stopping. Otherwise the
+						# frames still queued will not reach the video, and the camera
+						# is stopped, unless it already has (stopWriteQueue).
+						why = FfmpegStopped(ffmpeg, e, part.sent, part.name if part.number > 1 else None)
+						part.ended = why
+						restarted, whynot = parts.Restart(ErrorText(e))
+						if restarted is None:
+							if whynot:
+								why += ". It was not restarted: {}".format(whynot)
+							VideoFailed(cam_params, recording, stopReadQueue, why, stopping=not stopWriteQueue)
+							failed = True
+							break
+						writer, ffmpeg, part = restarted
+						if ffmpeg is not None:
+							unicam.TellMain(("ffmpeg", ffmpeg.pid))
+						continue
+					part.sent += 1
+					recording.framesSent += 1
+					mine.Sent(recording.framesSent)
+				else:
+					# Once queue is depleted and grabber stops, then stop writing
+					if stopWriteQueue:
+						writing = False
+					# Otherwise continue writing
+					time.sleep(0.01)
+
+		if failed:
+			# What its file holds, now its ffmpeg has gone: frametimes.npy then
+			# keeps only those frames' rows (Parts.Finish). Counted in the
+			# background already, when it was to be restarted, but not.
+			if part.counting is None:
+				parts.Count(part, wait=True)
+			return
 
 		# Close up...
 		Say("Closing video writer for {}. Please wait...".format(cam_params["cameraName"]))
 		time.sleep(1)
 		writer.close()
+		part.closed = True
 
 		# ffmpeg finishes the video as it closes: an error there can leave it unfinished
 		code = ffmpeg.returncode if ffmpeg is not None else None
 		if code:
-			VideoFailed(cam_params, recording, stopReadQueue,
-				"ffmpeg ended with {} as it finished the video".format(ExitCodeText(code)), stopping=False)
+			part.ended = "ffmpeg ended with {} as it finished the video".format(ExitCodeText(code))
+			VideoFailed(cam_params, recording, stopReadQueue, part.ended, stopping=False)
 
 	finally:
+		try:
+			parts.Finish(failed)
+		except Exception as e:
+			logging.error("Caught exception at writer.py WriteFrames, counting the video's frames: {}".format(e))
 		if ffmpeg is not None:
 			unicam.TellMain(("ffmpeg", None))
 		recording.written.set()

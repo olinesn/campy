@@ -249,6 +249,13 @@ SETTINGS = [
 	Setting("alertGpuStalls", 3, int, section=ALERTS, per_camera=ONE, low=1,
 		help="This many GPU firmware stalls ('Fence fallback timer expired on ring ...' in the kernel log) \
 			within 10 minutes are an alert (default: 3)."),
+	Setting("restartFfmpeg", False, bool, section=ALERTS, per_camera=ONE,
+		help="When a camera's ffmpeg stops mid-recording (killed, crashed, an encoder error), start a new \
+			one instead of stopping that camera (default: False). The camera never stops; its video goes \
+			on in a new file (0.part2.mp4, ...), and segments.csv in its folder says which frames each \
+			file holds. The frames inside the stopped ffmpeg (about a second) are lost. At most 3 restarts \
+			per camera an hour, never when the disk is the cause, and never for a calibration video. \
+			campy-session post's join step joins the files into one. See docs/alerts.md."),
 
 	# Live feed
 	Setting("liveFeed", False, bool, section=LIVE,

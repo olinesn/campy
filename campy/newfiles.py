@@ -16,9 +16,10 @@ files stay in <cameraName>/.
 
 A recording writes, for each camera, into <videoFolder>/<cameraName>/: its
 video (videoFilename), frametimes.npy, hosttimes.npy, frametimes.mat and
-metadata.csv, and for a RatCam ratcam_frames.csv and ratcam_sync.csv; and
-trigger.json, session.json (campy/manifest.py) and alerts.log (campy/watch.py)
-into videoFolder.
+metadata.csv, and for a RatCam ratcam_frames.csv and ratcam_sync.csv; after
+an ffmpeg restart (restartFfmpeg) also segments.csv and the video's later
+parts (0.part2.mp4, ...: campy/segments.py); and trigger.json, session.json
+(campy/manifest.py) and alerts.log (campy/watch.py) into videoFolder.
 imageio-ffmpeg starts ffmpeg with -y, and campy opened the others with "w",
 so a second recording into the same
 videoFolder replaced the first one's files without a word (the ChronicRecord

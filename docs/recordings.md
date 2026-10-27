@@ -18,6 +18,19 @@ Each run of `campy-acquire` records into a new folder inside `videoFolder`, name
   Camera1/ ...
 ```
 
+A camera whose ffmpeg was restarted during the recording (`restartFfmpeg`, see [Restarting a stopped ffmpeg](alerts.md#restarting-a-stopped-ffmpeg-restartffmpeg)) has its video in more than one file, and a table of them:
+
+```
+  Camera1/
+    0.mp4                     the video, until its ffmpeg stopped
+    0.part2.mp4               the video after the restart (then 0.part3.mp4, ...)
+    segments.csv              which frames each file holds, and which were lost
+    0.joined.mp4              the files joined into one (campy-session post's join step)
+    frametimes.npy ...        one row per frame of the files, read one after the other
+```
+
+`segments.csv` has one row per file: `file`, `first_frame` and `last_frame` (campy's frame numbers of the first and last frames given to that file's ffmpeg), `frames` (the frames in the file), `lost` and `lost_frames` (the frames given to that ffmpeg that are not in its file, as ranges such as `3991-4017`), and `ended` (why the file ended). Frame numbers go on from one file to the next, because the camera never stopped. "frametimes.npy" and "hosttimes.npy" have no row for a lost frame, as for a dropped one, so their rows are the frames of the files read in order, and of `0.joined.mp4` one for one. A recording cut short before campy closed it (campy killed, a power cut) can still have rows for the lost frames: `campy-align` and `campy-live-export` leave out the frames `segments.csv` names. "metadata.csv" adds `ffmpegRestarts`, `videoFiles` and `framesLostInEncoder`. A recording without a restart has no `segments.csv`, and its folder is as above.
+
 `campy-live-export` later adds `campy-live.slp`, `skeleton.json`, `calibration.toml` and `points3d.h5` (see [Live tracking](live-tracking.md)).
 
 ## session.json
@@ -34,7 +47,7 @@ campy writes it three times during a recording. Each write adds sections and nev
    - `cameras`: each camera's name, make, serial number, folder and video, and its settings file with a SHA-256 (Basler `.pfs`).
    - `trigger`: the controller, whether campy drives it, the serial port, the pins and the frame rate.
 2. **Once the trigger has started** (or campy has stopped waiting for the cameras): `recording` has `trigger.json`'s record, and each camera's model, firmware, frame size, exposure, gain and gamma as the camera reported them, and whether it was ready.
-3. **When the cameras stop**: `end` has the exit code, the cameras that did not record to the end and why, and each camera's frames grabbed, written, dropped and lost, its seconds, its errors and its video's size.
+3. **When the cameras stop**: `end` has the exit code, the cameras that did not record to the end and why, and each camera's frames grabbed, written, dropped and lost, its seconds, its errors and its video's size. After an ffmpeg restart, also its `videoFiles`, `ffmpegRestarts` and `framesLostInEncoder`, and `videoBytes` adds up the files.
 
 `status` is `"recording"` from the start, then `"complete"`, `"interrupted"` (stopped with Ctrl-C) or `"failed"` (a camera did not record to the end, or campy stopped on an error). A `status` still `"recording"` means campy never reached its end: it was killed, or the computer lost power. The videos and frame times are still there up to their last second, but `end` is missing.
 

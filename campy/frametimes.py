@@ -41,7 +41,7 @@ class GrowingNpy:
 	def __init__(self, path, dtype, rows=None, header_bytes=HEADER_BYTES):
 		self.dtype, self.rows, self.count = np.dtype(dtype), rows, 0
 		self.header_bytes = header_bytes # a multiple of 64, with room for the shape to grow
-		self.file = newfiles.Open(path, "wb") # never over a recording's file
+		self.file = newfiles.Open(path, "w+b") # never over a recording's file; read back by Drop
 		self.WriteHeader()
 
 	def WriteHeader(self):
@@ -67,6 +67,24 @@ class GrowingNpy:
 		# Keeps the first count values (or columns), and drops the rest
 		self.count = min(self.count, max(0, int(count)))
 		self.file.truncate(self.header_bytes + self.count * self.dtype.itemsize * (self.rows or 1))
+		self.WriteHeader()
+		self.file.flush()
+
+	def Drop(self, places):
+		# Leaves out the values (or columns) at these places, 0 = the first:
+		# the file is rewritten in place, from the first one left out
+		places = sorted(set(int(p) for p in places if 0 <= int(p) < self.count))
+		if not places:
+			return
+		width = self.dtype.itemsize * (self.rows or 1)
+		start = places[0]
+		self.file.seek(self.header_bytes + start * width)
+		tail = np.frombuffer(self.file.read((self.count - start) * width), self.dtype).reshape(self.count - start, -1)
+		tail = np.delete(tail, [p - start for p in places], axis=0)
+		self.file.seek(self.header_bytes + start * width)
+		self.file.write(tail.tobytes())
+		self.count -= len(places)
+		self.file.truncate(self.header_bytes + self.count * width)
 		self.WriteHeader()
 		self.file.flush()
 
@@ -172,10 +190,12 @@ class FrameTimes:
 		# Until every batch handed to the writer is in the files
 		self.writer.Wait()
 
-	def Close(self, keep=None):
+	def Close(self, keep=None, drop=()):
 		# keep: how many frames to keep, from the first, when the video took
 		# fewer than were added (its ffmpeg stopped). The rest are dropped from
-		# both files. None keeps them all.
+		# both files. None keeps them all. drop: the places (0 = the first
+		# frame added) of frames to leave out besides, that an ffmpeg was
+		# given but its file does not hold (segments.py).
 		self.Write()
 		try:
 			self.writer.Close()
@@ -184,6 +204,11 @@ class FrameTimes:
 				if self.files is not None:
 					for f in self.files:
 						f.Truncate(self.count)
+			drop = [p for p in drop or () if 0 <= p < self.count]
+			if drop and self.files is not None:
+				for f in self.files:
+					f.Drop(drop)
+				self.count = self.files[0].count
 		finally:
 			if self.files is not None:
 				for f in self.files:

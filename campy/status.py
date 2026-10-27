@@ -17,8 +17,8 @@ This() is a Camera whose stores do nothing.
 from campy import clock
 
 # A camera's row: its fields, in this order
-FIELDS = ("grabbed", "queued", "sent", "dropped", "frameNs", "sentNs", "state")
-GRABBED, QUEUED, SENT, DROPPED, FRAME_NS, SENT_NS, STATE = range(len(FIELDS))
+FIELDS = ("grabbed", "queued", "sent", "dropped", "frameNs", "sentNs", "state", "restarts", "counted", "lost")
+GRABBED, QUEUED, SENT, DROPPED, FRAME_NS, SENT_NS, STATE, RESTARTS, COUNTED, LOST_FRAMES = range(len(FIELDS))
 WIDTH = 16 # words per camera: room for more fields
 
 # state
@@ -66,6 +66,17 @@ class Camera:
 		if self.a is not None:
 			self.a[self.o + SENT] = count
 			self.a[self.o + SENT_NS] = Now()
+
+	def Restarted(self, count):
+		# Times its ffmpeg was restarted (restartFfmpeg)
+		if self.a is not None:
+			self.a[self.o + RESTARTS] = count
+
+	def Counted(self, counted, lost):
+		# Files of a stopped ffmpeg counted so far, and the frames given to those ffmpegs not in their files
+		if self.a is not None:
+			self.a[self.o + LOST_FRAMES] = lost
+			self.a[self.o + COUNTED] = counted # last: the watch reads lost once counted has changed
 
 	def State(self, state, only_from=None):
 		# only_from: change it only from these states (an end does not hide a failure said before it)
