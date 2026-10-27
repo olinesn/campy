@@ -89,6 +89,8 @@ Every key a campy config file can have, and its command-line option (`--key valu
 | `alertNoFramesSec` | `10` | a number above 0 | one for the rig | A camera that has sent frames and sends none for this many seconds is an alert (default: 10). |
 | `alertDiskFreeGB` | `20` | a number, 0 or more | one for the rig | Less free space than this on a video folder's disk is an alert (default: 20). |
 | `stopAtFreeGB` | `2` | a number, 0 or more | one for the rig | Below this much free space on a video folder's disk, campy stops the recording, cleanly, as at Ctrl-C, so that every video and its metadata are whole: a full disk stops every ffmpeg at once and leaves no room for them (default: 2; 0 = never). |
+| `alertGpuLog` | `True` | True or False | one for the rig | Linux with an AMD GPU: read the kernel log while recording, for the GPU's firmware stalls, hung jobs and resets (default: True). It needs the adm or systemd-journal group; without it, campy says so once and records without it. |
+| `alertGpuStalls` | `3` | a whole number, 1 or more | one for the rig | This many GPU firmware stalls ('Fence fallback timer expired on ring ...' in the kernel log) within 10 minutes are an alert (default: 3). |
 
 ## Launch check
 

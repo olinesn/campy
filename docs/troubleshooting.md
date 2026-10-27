@@ -30,7 +30,7 @@ Before recording, campy checks the config and the computer, and most problems sh
 
 **VA-API: the device can't be opened, or `vainfo` lists no encoder.** Install `mesa-va-drivers` (AMD) or Intel's media driver, add the user to the `render` group and log out and in, and set `vaapiDevice` if the GPU isn't `renderD128` ([Helpful tips](encoding.md#helpful-tips)).
 
-**On an AMD Ryzen AI Max, a camera's encoder stalls for half a second at a time, and `journalctl -k` shows `amdgpu: Fence fallback timer expired on ring comp_...`.** Mesa's tiled video surfaces use the GPU's compute engine, which misses interrupts on that chip. campy's default, `vaapiLinearSurfaces: True`, avoids it; check that a config doesn't turn it off ([Helpful tips](encoding.md#helpful-tips)).
+**On an AMD Ryzen AI Max, a camera's encoder stalls for half a second at a time, and `journalctl -k` shows `amdgpu: Fence fallback timer expired on ring comp_...`.** Mesa's tiled video surfaces use the GPU's compute engine, which misses interrupts on that chip. campy's default, `vaapiLinearSurfaces: True`, avoids it; check that a config doesn't turn it off ([Helpful tips](encoding.md#helpful-tips)). `campy-acquire` sends an alert when they come back: 3 within 10 minutes ([Alerts](alerts.md#the-gpus-kernel-log-amd-on-linux)).
 
 **The launch check's capacity line FAILs or WARNs.** The cameras on an encoder are more than `campy-encode-sweep` measured it keeping up with on this computer, or more than it tried. A WARN says which `--streams` to measure; a missing table (`no encoder capacity table`) only means the sweep hasn't been run here ([Scaling the number of cameras](encoding.md#scaling-the-number-of-cameras)).
 

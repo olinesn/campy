@@ -242,6 +242,13 @@ SETTINGS = [
 		help="Below this much free space on a video folder's disk, campy stops the recording, cleanly, as \
 			at Ctrl-C, so that every video and its metadata are whole: a full disk stops every ffmpeg at \
 			once and leaves no room for them (default: 2; 0 = never)."),
+	Setting("alertGpuLog", True, bool, section=ALERTS, per_camera=ONE,
+		help="Linux with an AMD GPU: read the kernel log while recording, for the GPU's firmware stalls, hung \
+			jobs and resets (default: True). It needs the adm or systemd-journal group; without it, campy \
+			says so once and records without it."),
+	Setting("alertGpuStalls", 3, int, section=ALERTS, per_camera=ONE, low=1,
+		help="This many GPU firmware stalls ('Fence fallback timer expired on ring ...' in the kernel log) \
+			within 10 minutes are an alert (default: 3)."),
 
 	# Live feed
 	Setting("liveFeed", False, bool, section=LIVE,

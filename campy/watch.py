@@ -41,6 +41,14 @@ and checks:
                    whose link falls back to USB 2 leaves and comes back on
                    the port's USB 2 side, so this follows its "the camera is
                    gone": it says why, and what to replace
+  GPU              Linux with an AMD GPU: the kernel log's amdgpu errors
+                   (campy/gpulog.py, read on a thread of its own). Firmware
+                   stalls ("Fence fallback timer expired on ring ..."): a
+                   warning at alertGpuStalls (3) within 10 min; a hung GPU
+                   job (a ring timeout, the firmware scheduler not
+                   answering, a page fault): a warning; a GPU or ring reset:
+                   critical. Each resolved after 10 min without another.
+                   alertGpuLog False: not read
 
 and says when the recording started and how it ended. With a healthchecks.io
 check in the alerts file, it pings it every minute and pauses it at the end
@@ -64,6 +72,10 @@ another folder), for a control panel to show (campy-session's):
   disk         [{path, free_gb, projected_full_at (ISO, or null)}]
   open         [{key, severity, text}]: the problems open now
   last_error   {time, text} of the last critical problem, or null
+  gpu_log      null (not Linux with an AMD GPU, or alertGpuLog False), or
+               {read_with ("journalctl", "/dev/kmsg" or null), not_read
+               (why not, or null), stalls, hangs, resets (counts so far),
+               stalls_last_minute, rings ({ring: messages})}
 
 written whole each time (a .tmp file, then replaced), by campy-acquire only.
 
@@ -73,7 +85,7 @@ only reads. An error in a check is said, and the others go on.
 
 import collections, datetime, json, math, os, shutil, sys, threading, time
 
-from campy import notify, strictjson, status as camstatus
+from campy import gpulog, notify, strictjson, status as camstatus
 from campy.utils.utils import Say, ErrorText
 
 EVERY_S = 2.0 # how often the cameras are checked
@@ -96,6 +108,8 @@ DiskUsage = shutil.disk_usage # (tests replace it: a disk that fills)
 STATUS_EVERY_S = 4.0 # recording.json, written this often
 STATUS_SCHEMA = 1
 STATUS_ENV = "CAMPY_STATUS_DIR" # where recording.json goes, instead of ~/.campy/status
+GPU_WINDOW_S = 600.0 # firmware stalls counted over this long; each GPU problem resolved after this long without
+GPU_KINDS = {gpulog.STALL: "firmware stall", gpulog.HANG: "hung GPU job", gpulog.RESET: "GPU reset"}
 
 
 def DiskText(n):
@@ -128,7 +142,7 @@ class Watch:
 
 	def __init__(self, params, systems, cameras, counters, folder=None, notifier=None, cams=None,
 			clock=time.monotonic, disk_usage=None, sysfs_root="/sys", say=Say, stopping=None, request_stop=None,
-			port_gone=None):
+			port_gone=None, gpu_log=None):
 		self.params, self.systems, self.cameras = params, systems, cameras
 		self.names = list(cameras.names)
 		self.counters = camstatus.Reader(counters, len(self.names))
@@ -138,6 +152,12 @@ class Watch:
 		self.stopping = stopping or (lambda: False)
 		self.request_stop = request_stop # stops the recording as Ctrl-C does (campy.Main's StopRequested)
 		self.port_gone = port_gone or PortGone # (tests: a port that is there)
+		self.gpuLog = gpu_log # a gpulog.Reader (Start makes one on Linux with an AMD GPU; tests pass their own)
+		self.gpuStalls = int(params.get("alertGpuStalls", 3))
+		self.gpuEvents = collections.defaultdict(collections.deque) # kind: (t, ring), the last GPU_WINDOW_S
+		self.gpuCounts = collections.Counter() # kind: messages counted, since the start
+		self.gpuRings = collections.Counter() # ring: its messages, since the start
+		self.gpuLast = {} # kind: its last message
 		if notifier is None:
 			if params.get("alerts", True):
 				notifier = notify.Notifier(say=say)
@@ -175,6 +195,11 @@ class Watch:
 	def Start(self):
 		self.started = self.clock()
 		self.startedAt = Wall()
+		if self.gpuLog is None and self.params.get("alertGpuLog", True) and gpulog.Wanted(self.sysfs_root):
+			try:
+				self.gpuLog = gpulog.Reader().Start() # from this thread (the main one), which outlives the reading
+			except Exception as e:
+				self.say("Watch: could not read the kernel log: {}".format(ErrorText(e)))
 		self.Begun()
 		self.WriteStatus("recording")
 		self.thread = threading.Thread(target=self.Run, name="campy watch", daemon=True)
@@ -190,6 +215,11 @@ class Watch:
 		self.done.set()
 		if self.thread is not None:
 			self.thread.join(5)
+		if self.gpuLog is not None:
+			try:
+				self.gpuLog.Stop()
+			except Exception as e:
+				self.say("Watch: could not stop reading the kernel log: {}".format(ErrorText(e)))
 		try:
 			self.Ended(failures or {})
 		except Exception as e:
@@ -202,7 +232,7 @@ class Watch:
 		"""Every check, once (the thread calls it every EVERY_S)."""
 		now = self.clock() if now is None else now
 		for name, check, every in (("cameras", self.CheckCameras, 0), ("disk", self.CheckDisk, DISK_EVERY_S),
-				("serial", self.CheckSerial, SERIAL_EVERY_S), ("usb", self.CheckUsb, USB_EVERY_S),
+				("serial", self.CheckSerial, SERIAL_EVERY_S), ("usb", self.CheckUsb, USB_EVERY_S), ("gpu", self.CheckGpu, 0),
 				("status", lambda now: self.WriteStatus("stopping" if self.stopping() else "recording"),
 				STATUS_EVERY_S)):
 			if every and self.at[name] is not None and now - self.at[name] < every:
@@ -520,6 +550,87 @@ class Watch:
 			else:
 				self.Clear(key, "{} is back on USB 3 ({:g} Mb/s)".format(cam["cameraName"], device["speed"]), now)
 
+	# ------------------------------------------------------------------ the GPU's kernel log
+
+	def CheckGpu(self, now):
+		if self.gpuLog is None:
+			return
+		for note, logged in self.gpuLog.Notes():
+			self.say(note)
+			if logged:
+				self.notifier.Note(note) # info: alerts.log, and channels that take info
+		new = collections.Counter()
+		for kind, ring, counted, line in self.gpuLog.Take():
+			new[kind] += 1
+			self.gpuLast[kind] = line
+			if counted:
+				self.gpuEvents[kind].append((now, ring))
+				self.gpuCounts[kind] += 1
+				if ring:
+					self.gpuRings[ring] += 1
+			elif not self.gpuEvents[kind]: # a reset's first line: open it, though its outcome's line counts it
+				self.gpuEvents[kind].append((now, None))
+		for events in self.gpuEvents.values():
+			while events and events[0][0] < now - GPU_WINDOW_S:
+				events.popleft()
+		stalls = self.gpuEvents[gpulog.STALL]
+		if len(stalls) >= self.gpuStalls:
+			self.Raise("gpu/stalls", notify.WARNING, "GPU: {} firmware stalls in the last {} ({} in the last minute), "
+				"on {}. Each held that engine up for about half a second; on a camera's encoder it shows as frames "
+				"waiting for ffmpeg, and in campy-live as a late set.{} Last: {}".format(len(stalls),
+				notify.Duration(GPU_WINDOW_S), sum(1 for t, _ in stalls if t >= now - 60), self.RingsText(stalls),
+				" Is vaapiLinearSurfaces off?" if not self.params.get("vaapiLinearSurfaces", True) else "",
+				self.gpuLast[gpulog.STALL]))
+		elif not stalls:
+			self.Clear("gpu/stalls", "GPU: no firmware stall for {} ({} in all)".format(
+				notify.Duration(GPU_WINDOW_S), self.gpuCounts[gpulog.STALL]), now)
+		hangs = self.gpuEvents[gpulog.HANG]
+		if new[gpulog.HANG]:
+			self.Raise("gpu/hang", notify.WARNING, "GPU: a job on the GPU hung ({} in the last {}{}): the encoders or "
+				"campy-live on it waited. A GPU reset may follow. Last: {}".format(len(hangs),
+				notify.Duration(GPU_WINDOW_S), ", on " + self.RingsText(hangs) if any(r for _, r in hangs) else "",
+				self.gpuLast[gpulog.HANG]))
+		elif not hangs:
+			self.Clear("gpu/hang", "GPU: no hung GPU job for {}".format(notify.Duration(GPU_WINDOW_S)), now)
+		resets = self.gpuEvents[gpulog.RESET]
+		if new[gpulog.RESET]:
+			self.Raise("gpu/reset", notify.CRITICAL, "GPU: the driver reset {}. A reset ends what was running there: "
+				"expect the cameras' VA-API encoders (ffmpeg) or campy-live to fail; the camera alerts say which. "
+				"Last: {}".format("the GPU's " + self.RingsText(resets) if any(r for _, r in resets) else "the GPU",
+				self.gpuLast[gpulog.RESET]))
+		elif not resets:
+			self.Clear("gpu/reset", "GPU: no GPU reset for {} ({} in all)".format(notify.Duration(GPU_WINDOW_S),
+				self.gpuCounts[gpulog.RESET]), now)
+
+	@staticmethod
+	def RingsText(events):
+		# "comp_1.0.0 (compute: ...) x4, vcn_unified_0 (video encoder: ...) x1", most first
+		rings = collections.Counter(ring for _, ring in events if ring)
+		return ", ".join("{} \u00d7{}".format(gpulog.RingText(ring), n) for ring, n in rings.most_common()) or \
+			"the GPU"
+
+	def GpuStatus(self):
+		if self.gpuLog is None:
+			return None
+		stalls = self.gpuEvents.get(gpulog.STALL) or ()
+		now = self.clock()
+		return {"read_with": self.gpuLog.source, "not_read": None if self.gpuLog.source else self.gpuLog.why,
+			"stalls": self.gpuCounts[gpulog.STALL], "hangs": self.gpuCounts[gpulog.HANG],
+			"resets": self.gpuCounts[gpulog.RESET], "stalls_last_minute": sum(1 for t, _ in stalls if t >= now - 60),
+			"rings": dict(self.gpuRings)}
+
+	def GpuText(self):
+		# The end summary's line, when the GPU logged anything
+		if self.gpuLog is None or not sum(self.gpuCounts.values()):
+			return None
+		parts = []
+		for kind in (gpulog.STALL, gpulog.HANG, gpulog.RESET):
+			n = self.gpuCounts[kind]
+			if n or kind == gpulog.RESET:
+				parts.append("{} {}{}".format(n or "no", GPU_KINDS[kind], "" if n <= 1 else "s"))
+		rings = ", ".join("{} \u00d7{}".format(ring, n) for ring, n in self.gpuRings.most_common())
+		return "GPU kernel log: {}{}".format(", ".join(parts), " ({})".format(rings) if rings else "")
+
 	# ------------------------------------------------------------------ recording.json
 
 	def Status(self, state):
@@ -546,7 +657,7 @@ class Watch:
 				"planned_s": self.recTime},
 			"cameras": cameras, "disk": list(self.diskState.values()),
 			"open": [{"key": k, "severity": p.severity, "text": p.text} for k, p in self.problems.items()],
-			"last_error": self.lastError}
+			"last_error": self.lastError, "gpu_log": self.GpuStatus()}
 
 	def WriteStatus(self, state):
 		try:
@@ -601,6 +712,9 @@ class Watch:
 				text += ": " + "; ".join(failures[name])
 			lines.append("- " + text)
 		took = notify.Duration(self.clock() - self.started) if self.started is not None else "?"
+		gpu = self.GpuText()
+		if gpu:
+			lines.append("- " + gpu)
 		still = self.StillOpen()
 		if still:
 			lines += ["Still open as it ended:"] + ["- " + p.text for p in still]
