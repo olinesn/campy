@@ -75,6 +75,9 @@ Every recording is watched, however it was started: a thread in `campy-acquire`'
 | Disk nearly full | below `stopAtFreeGB` (2 GB): campy **stops the recording, cleanly**, as at Ctrl-C | critical | (stopped) |
 | The trigger's port | the trigger Arduino's serial port is gone (unplugged, or it reset), checked every 5 s without sending it anything | critical, once | the port is back. campy lets go of the lost port, so a replug brings it back under the same name, but it does not restart the trigger: the cameras get frames again in the next recording |
 | USB 2 | a USB 3 camera is now on a USB 2 link, checked every minute as the launch check does: on Linux in sysfs, on Windows by asking the camera's USB hub ([below](#a-camera-on-a-usb-2-link)) | critical | back on USB 3 |
+| GPU firmware stalls | Linux with an AMD GPU: `alertGpuStalls` (3) or more `Fence fallback timer expired on ring ...` in the kernel log within 10 minutes ([below](#the-gpus-kernel-log-amd-on-linux)) | warning | none for 10 minutes |
+| A GPU job hung | a ring timeout, the GPU's firmware scheduler not answering, a queue that would not stop, a GPU page fault | warning | none for 10 minutes |
+| GPU reset | the driver reset a ring of the GPU, or the whole GPU | critical | none for 10 minutes |
 
 A message also says when a recording starts (its cameras, frame rate, length and free space: `info`, so only channels with `min_severity: info` get it) and how it ended (each camera's frames, dropped frames, ffmpeg restarts and the frames they lost, what went wrong, and the problems still open as it ended; `warning` with dropped frames or an ffmpeg restart, `critical` when a camera did not record to the end or a critical problem was still open). Ctrl-C is not an alert: cameras that end because you stopped them are what you asked for. But a recording stopped while a camera had no frames, or with the trigger unplugged, did not record what it should have, and its summary says so.
 
@@ -116,9 +119,40 @@ A new ffmpeg that does not start counts as one of the 3 and is tried again a sec
 
 What it does not cover: an ffmpeg that hangs without exiting. The real stalls seen so far were of that kind (the EVO-X2's SSD not taking writes for 10 to 16 s, a GPU's video firmware stalling), and they show as frames waiting for ffmpeg, then dropped frames (the table above). Restarting a hung ffmpeg would mean killing it on a guess, so it is alert-only. No ffmpeg has exited mid-recording on the rigs campy has been tested on so far, so this is a safety net for something rare, and it has been tested with emulated cameras only (ffmpeg killed mid-recording, frame by frame: every frame is in its file or named as lost).
 
+### The GPU's kernel log (AMD, on Linux)
+
+On a computer with an AMD Ryzen AI Max (Strix Halo), such as the GMKtec EVO-X2, the GPU's engines can miss an interrupt. The driver then waits for a fallback timer, and the kernel log says `amdgpu: Fence fallback timer expired on ring comp_1.0.0`. Whatever ran on that engine stalled for about half a second: a camera's VA-API encoder, or `campy-live`, which uses the same GPU. Before `vaapiLinearSurfaces` ([Encoding](encoding.md#helpful-tips)) this happened 20 to 70 times an hour with 8 cameras. A job that hangs for longer times out (`ring ... timeout`), and the driver then resets that ring or the whole GPU, which ends what was running on it. Otherwise the watch only sees these as frames waiting for ffmpeg ("Writing stalls" above).
+
+So on Linux with an AMD GPU, `campy-acquire` reads the kernel log while it records and sends what the GPU's driver logs:
+
+- **Firmware stalls**: a warning at `alertGpuStalls` (3) within 10 minutes. A single stall now and then is no alert, but the old rate is. The message gives how many came in the last minute and the last 10 minutes, and each ring with its count, for example `comp_1.0.0 (compute: campy-live, and Mesa's copies into tiled video surfaces) ×4, vcn_unified_0 (video encoder: the cameras' VA-API encoders) ×1`, and the last line itself.
+- **A hung GPU job** (`ring ... timeout`, `MES failed to respond`, `Queue preemption failed`, a GPU page fault): a warning at the first.
+- **A GPU reset** (`Ring ... reset succeeded` or `failed`, `GPU reset(...) succeeded!`, `GPU Recovery Failed`, `VRAM is lost due to GPU reset`): critical. A reset ends the work on the GPU, so expect the cameras' VA-API encoders or `campy-live` to fail; the camera alerts say which.
+
+Each is over once 10 minutes pass without another. The summary at the end has a line for them when there were any, such as "GPU kernel log: 5 firmware stalls, no GPU reset (comp_1.0.0 ×5)". The kernel log is the whole computer's, so stalls in `campy-live`'s work show up here too.
+
+Some of the driver's messages are not problems and are left out. The main one is `Freeing queue vital buffer ..., queue evicted`, which it logs whenever a GPU program (`campy-live`, a benchmark) exits. On the EVO-X2, 10 days of recordings, live tracking and benchmarks (16 to 26 October 2026, kernel 6.17) logged 54 of those, and no stall, hang or reset at all: linear surfaces took the stalls away.
+
+**How it reads the log.** It runs `journalctl -k -f -n 0 -o cat`, which prints only the kernel's new messages, as a process tied to `campy-acquire`, so it ends when campy does. A thread of its own in campy-acquire's main process reads it. It waits on journalctl without using the CPU, since the kernel logs a few lines an hour, and the cameras never wait for it. Where journalctl isn't there, it reads `/dev/kmsg`.
+
+**Permission.** journalctl shows the kernel log to users in the `adm` or `systemd-journal` group (on Ubuntu, the first user is in `adm`). `/dev/kmsg` is root's only on Ubuntu (`kernel.dmesg_restrict` is 1). If it can read neither, campy says so once, on the console and in `alerts.log`, and records without it. `recording.json`'s `gpu_log` says why too. To let it read the log, type this in a terminal and then log out and back in:
+
+```bash
+sudo usermod -aG adm $USER
+```
+
+Check it with `journalctl -k -n 5`, which should show the kernel's last lines without sudo. `alertGpuLog: False` turns the reading off. On Windows, macOS, and Linux without an AMD GPU, it does nothing.
+
+**Tested on the EVO-X2** (26 October 2026, Ubuntu 24.04, kernel 6.17). The rig check's smoke test was used: 3 emulated cameras recorded at 60 fps with VA-API H.264, and `campy-live` tracked them in 3D for 60 s. It ran once with the reading on and once with it off.
+
+- With it on, journalctl ran as campy-acquire's child and used 0.00 s of CPU in the minute. campy-acquire's own process used 2.97 s, against 2.94 s with the reading off.
+- `campy-live` kept up the same way in both runs: 3600 of 3600 sets, none skipped, inference p50 5.6 / p99 5.8 ms, to 3D 7.6 / 8.5 and 7.6 / 8.4 ms, as in the rig check's baseline.
+- No journalctl was left running after either recording.
+- A third run swapped journalctl for a script that printed made-up stall, hang and ring-reset lines in the driver's formats. Each alert was said and sent within the watch's 2-second check, and reached the phone as a Slack direct message: the stall warning at the third stall, then the hang warning and the critical reset.
+
 ### The recording's state now: `recording.json`
 
-Every 4 seconds, and as it ends, the watch also writes the recording's state to `~/.campy/status/recording.json` (`%USERPROFILE%\.campy\status\recording.json` on Windows), for a control panel to show: the state (`recording`, `stopping`, `ended`, `failed`), the session folder, its start, how long it has run and is planned to; for each camera its frame rate (set and measured), frames, dropped frames, seconds of frames waiting for ffmpeg, USB link speed (Linux and Windows) and state; each disk's free space and when it would be full at the present rate; the problems open now; and the last critical one. Only campy-acquire writes it, and whole each time. `python -m pydoc campy.watch` lists the fields.
+Every 4 seconds, and as it ends, the watch also writes the recording's state to `~/.campy/status/recording.json` (`%USERPROFILE%\.campy\status\recording.json` on Windows), for a control panel to show: the state (`recording`, `stopping`, `ended`, `failed`), the session folder, its start, how long it has run and is planned to; for each camera its frame rate (set and measured), frames, dropped frames, seconds of frames waiting for ffmpeg, USB link speed (Linux and Windows) and state; each disk's free space and when it would be full at the present rate; the problems open now; the last critical one; and, on Linux with an AMD GPU, `gpu_log`: how the kernel log is read (`journalctl`, `/dev/kmsg`, or why it isn't), and the firmware stalls, hung jobs and resets so far, with each ring's count. Only campy-acquire writes it, and whole each time. `python -m pydoc campy.watch` lists the fields.
 
 ### Beside campy-live: `campy-watch`
 
@@ -147,6 +181,8 @@ campy-watch --cameras 3
 | `alertDiskFreeGB` | `20` | free space below which a disk is an alert |
 | `stopAtFreeGB` | `2` | free space below which the recording stops, cleanly; `0` = never |
 | `restartFfmpeg` | `False` | restart a camera's ffmpeg that stops mid-recording, into a new file ([above](#restarting-a-stopped-ffmpeg-restartffmpeg)) |
+| `alertGpuLog` | `True` | Linux with an AMD GPU: read the kernel log for the GPU's firmware stalls, hung jobs and resets |
+| `alertGpuStalls` | `3` | firmware stalls within 10 minutes that are an alert |
 
 Each can also be given on the command line (`--stopAtFreeGB 5`).
 
