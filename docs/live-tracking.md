@@ -317,6 +317,12 @@ Notes on the measurements:
   | Precision 7875 | 1,200 / 0.9 / 1.1 | 3,600 / 1.6 / 1.7 / 4.1 / 5.2 | 1,797 / 1.6 / 1.7 / 4.7 / 5.6 |
 
   The replay's accuracy on the EVO-X2 was again 2D median 3.8 px, 3D median 4.2 mm, 2 switches.
+- Later on 26 October the EVO-X2 alone moved on to dev 78c252a. It adds pull requests 207 (the USB 2 alert and the launch check's USB check on Windows) and 208 (alerts for the AMD GPU's firmware stalls, hung jobs and resets, from the kernel log: [Alerts](alerts.md#the-gpus-kernel-log-amd-on-linux)). Neither changes tracking, and the version is still 2.2.0 in both environments. The Windows rigs were not updated. The rig checks were all `RIG_CLEAN`, with nothing skipped or misaligned, every camera keeping all its frames and `campy-live` starting at frame 1, and they matched the v2.2.0 row above to within 0.1 ms:
+  - 1 camera: 1,800 sets, 3.0 / 3.1 ms per set
+  - 3 cameras: 3,600 sets, 5.6 / 5.8 ms per set, frame to 3D 7.6 / 8.5 ms
+  - replay: 3,600 sets, 5.5 / 5.6 ms per set, frame to 3D 7.0 / 8.0 ms, with 2D median 3.8 px, 3D median 4.2 mm and 2 switches
+
+  In both recordings, `campy-acquire` read the kernel log through journalctl, without sudo, and found no GPU error.
 - On 27 October the three rigs moved to dev `7f6983b`. It adds pull requests 207 (Windows: an alert when a USB 3 camera comes back on a USB 2 link), 208 (the EVO-X2's GPU kernel-log alert) and 212 (Windows: `campy-live` keeps off its GPU's interrupt CPU), plus docs. Both environments on each rig report campy 2.2.0 (the version number didn't change). All nine rig checks were `RIG_CLEAN`, with nothing skipped or misaligned, and matched the v2.2.0 table above: to within 0.1 ms on the EVO-X2 and the Precision 7875, and within 0.3 ms on the Pro Max Slim (its 1-camera p99 2.8 against 2.5 ms; the rest within 0.2). On the Windows rigs `campy-live` now names its GPU's interrupt CPU when it starts and leaves it out: CPU 0 for the Precision's RTX 6000 Ada (it runs on CPUs 1–47), CPU 1 for the Pro Max Slim's RTX 2000 Ada (it runs on the performance cores but CPU 1). spock's campy copy, which `campy-infer` uses, moved to the same commit.
 
   | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
