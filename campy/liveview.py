@@ -2257,7 +2257,7 @@ class Viewer:
 	def Placement(self):
 		# Who to move: campy-live (its results say its process) and campy-acquire (its feeds say its processes)
 		return cpus.Placement(live=self.description.get("pid") if self.results is not None else None,
-			campy=livefeed.Processes(self.readers or []))
+			campy=livefeed.Processes(self.readers or []), avoid=self.description.get("gpu_interrupt_cpus") or ())
 
 	def CpusOn(self):
 		# True: campy-live on the performance cores; False: not; None: can't be told or changed here
@@ -2281,9 +2281,11 @@ class Viewer:
 		on = self.CpusOn()
 		if on is None:
 			return None if speed is None else (speed[0].upper() + speed[1:], DIM)
-		cores = cpus.Hybrid()
+		cores, avoid = cpus.Hybrid(), self.description.get("gpu_interrupt_cpus") or ()
+		but = " but CPU {}, its GPU's interrupt CPU,".format(cpus.Text(avoid)) if avoid else ""
 		where = "campy-live on the performance cores ({}) at high priority, campy-acquire on the efficiency cores".format(
-			cpus.Text(cores["performance"])) if on else "campy-live and campy-acquire on any CPU, normal priority"
+			cpus.Text(cpus.Avoiding(cores["performance"], avoid))) if on else \
+			"campy-live and campy-acquire on any CPU{} at normal priority".format(but)
 		text = "CPUs (c): {}{}".format(where, "; " + speed if speed else "")
 		return text, TEXT
 

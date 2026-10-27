@@ -1,7 +1,7 @@
 """
 Which CPUs a program runs on, and at what priority: for campy-live (--cpus,
 --priority, --campy-cpus) and campy-live-view's c key, with nothing but the
-standard library.
+standard library (and torch, only to find a GPU's interrupt CPU).
 
 Intel's hybrid CPUs (12th generation Core on, Core Ultra) have performance
 cores (P-cores) and efficiency cores (E-cores). Windows numbers them in no
@@ -13,12 +13,26 @@ cores' efficiency class) or Linux (/sys/devices/cpu_core and cpu_atom).
 
 says them, with the affinity masks Windows' start /affinity takes.
 
+On Windows nearly every GPU kernel ends with an interrupt from the GPU, which
+Windows handles on one fixed CPU per GPU, about 20 us of work each (an
+interrupt and a DPC). A program launching kernels from that CPU waits for
+them: on a Precision 7875 the RTX 4000 Ada's go to CPU 2, and a thread there
+took 27-31 us per launch instead of 7, so each set twice as long.
+GpuInterruptCpus finds a GPU's: it counts each CPU's interrupts and DPCs
+(NtQuerySystemInformation) while the GPU runs a few thousand tiny kernels,
+and against as long a time without. campy-live's --cpus auto leaves that CPU
+out, and
+
+	python -m campy.cpus --gpu 1
+
+says it for GPU 1 (as torch numbers them).
+
 Pinning a process (Pin) puts all its threads on those CPUs, and the programs
 it starts after inherit it (on Windows and Linux): campy-acquire's camera
 processes and their ffmpeg encoders follow campy-acquire.
 """
 
-import functools, os, struct, sys
+import functools, os, struct, sys, time
 
 PRIORITIES = ("normal", "above_normal", "high")
 
@@ -181,6 +195,110 @@ def Resolve(text):
 	if not cores["efficiency"]:
 		raise ValueError("this CPU's cores are all of one kind: no {} cores to choose".format(kind))
 	return cores[kind]
+
+
+# ---------------------------------------------------------------- a GPU's interrupt CPU (Windows)
+
+# NtQuerySystemInformation's classes, and the size of each CPU's entry:
+# SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION (Idle, Kernel, User, Dpc and
+# Interrupt times, then InterruptCount at byte 40) and SYSTEM_INTERRUPT_
+# INFORMATION (ContextSwitches, then DpcCount at byte 4)
+_PERFORMANCE_INFORMATION, _PERFORMANCE_SIZE = 8, 48
+_INTERRUPT_INFORMATION, _INTERRUPT_SIZE = 23, 24
+
+
+def _ParseCounts(performance, interrupts):
+	# Each CPU's interrupts plus DPCs so far
+	n = min(len(performance) // _PERFORMANCE_SIZE, len(interrupts) // _INTERRUPT_SIZE)
+	return [struct.unpack_from("<I", performance, _PERFORMANCE_SIZE * i + 40)[0]
+		+ struct.unpack_from("<I", interrupts, _INTERRUPT_SIZE * i + 4)[0] for i in range(n)]
+
+
+def InterruptCounts():
+	"""
+	Windows: each CPU's interrupts plus DPCs so far, in the order of the
+	affinity masks (the CPUs of this program's processor group: up to 64)
+	"""
+	import ctypes
+	ntdll = ctypes.WinDLL("ntdll")
+	ntdll.NtQuerySystemInformation.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong,
+		ctypes.POINTER(ctypes.c_ulong)]
+	ntdll.NtQuerySystemInformation.restype = ctypes.c_long
+
+	def Query(kind, size):
+		buffer, length = ctypes.create_string_buffer(64 * size), ctypes.c_ulong(0)
+		status = ntdll.NtQuerySystemInformation(kind, buffer, len(buffer), ctypes.byref(length))
+		if status < 0:
+			raise OSError("NtQuerySystemInformation({}): status {:#010x}".format(kind, status & 0xFFFFFFFF))
+		return buffer.raw[:length.value]
+	return _ParseCounts(Query(_PERFORMANCE_INFORMATION, _PERFORMANCE_SIZE),
+		Query(_INTERRUPT_INFORMATION, _INTERRUPT_SIZE))
+
+
+def _Since(before, after):
+	# The counts are 32 bits, and wrap
+	return [(a - b) % (1 << 32) for b, a in zip(before, after)]
+
+
+def InterruptCpus(during, idle, launches):
+	"""
+	Which CPUs took a GPU's interrupts: during and idle are each CPU's
+	interrupts plus DPCs in a burst of launches on it and in as long a time
+	without. A dict: cpus (each took a quarter or more of the burst's extra
+	ones), share (of the extra ones they took), extra (per launch); cpus
+	empty, with a reason, when the burst made too few or no CPU stood out.
+	"""
+	extra = [max(0, d - i) for d, i in zip(during, idle)]
+	total = sum(extra)
+	found = {"cpus": [], "share": None, "extra": round(total / max(launches, 1), 2), "launches": launches}
+	if total < 0.2 * launches:
+		found["reason"] = "{} launches made only {} more interrupts and DPCs than no launches".format(launches, total)
+		return found
+	chosen = [c for c, e in enumerate(extra) if e >= 0.25 * total]
+	share = sum(extra[c] for c in chosen) / total
+	found["share"] = round(share, 3)
+	if share < 0.5:
+		found["reason"] = "their interrupts and DPCs were spread over the CPUs (none took a quarter)" if not chosen \
+			else "CPUs {} took only {:.0%} of them".format(Text(chosen), share)
+		return found
+	found["cpus"] = chosen
+	return found
+
+
+def GpuInterruptCpus(launch, wait, launches=4000, every=50):
+	"""
+	Windows: which CPUs handle a GPU's interrupts (InterruptCpus' dict), from
+	launches tiny kernels on it, launch() starting one and wait() waiting
+	for them, every so many. About 0.1 s. None elsewhere.
+	"""
+	if sys.platform != "win32":
+		return None
+	launch()
+	wait()
+	start, t = InterruptCounts(), time.perf_counter()
+	for i in range(launches):
+		launch()
+		if i % every == every - 1:
+			wait()
+	wait()
+	burst, t = InterruptCounts(), time.perf_counter() - t
+	time.sleep(t)
+	idle = InterruptCounts()
+	return InterruptCpus(_Since(start, burst), _Since(burst, idle), launches)
+
+
+def TorchLaunches(device):
+	"""launch and wait for GpuInterruptCpus, on a torch CUDA device such as 'cuda:1'"""
+	import torch
+	x = torch.zeros(16, device=device)
+	stream = torch.cuda.current_stream(x.device)
+	return (lambda: x.add_(1)), stream.synchronize
+
+
+def Avoiding(chosen, avoid):
+	"""chosen without the CPUs in avoid; chosen as it is if that would leave none"""
+	left = [c for c in chosen if c not in set(avoid or ())]
+	return left or list(chosen)
 
 
 # ---------------------------------------------------------------- processes
@@ -346,11 +464,13 @@ class Placement:
 	or both on every CPU at normal priority: On(False). For campy-live-view's
 	c key; campy-live starts this way itself (its --cpus auto). live: campy-
 	live's process id; campy: campy-acquire's (its main process and its
-	camera processes, as their feeds say them).
+	camera processes, as their feeds say them); avoid: CPUs campy-live is
+	kept off either way (its GPU's interrupt CPUs, which its results say).
 	"""
 
-	def __init__(self, live=None, campy=()):
+	def __init__(self, live=None, campy=(), avoid=()):
 		self.live, self.campy = live, sorted(set(int(p) for p in campy if p))
+		self.avoid = sorted(set(int(c) for c in avoid or ()))
 		self.cores = Hybrid()
 
 	def Available(self):
@@ -359,7 +479,7 @@ class Placement:
 	def IsOn(self):
 		# campy-live on just the performance cores
 		try:
-			return Affinity(self.live) == self.cores["performance"]
+			return Affinity(self.live) == Avoiding(self.cores["performance"], self.avoid)
 		except (OSError, TypeError):
 			return None
 
@@ -368,6 +488,7 @@ class Placement:
 		if self.cores is None:
 			return "No efficiency cores on this computer's CPU: nothing to move."
 		live_cpus, campy_cpus = (self.cores["performance"], self.cores["efficiency"]) if on else (All(), All())
+		live_cpus = Avoiding(live_cpus, self.avoid)
 		priority = "high" if on else "normal"
 		done, failed = [], []
 		if self.live is not None:
@@ -415,5 +536,24 @@ def Describe():
 	return "\n".join(lines)
 
 
+def DescribeGpu(index):
+	"""Which CPU handles GPU index's interrupts (python -m campy.cpus --gpu index)"""
+	if sys.platform != "win32":
+		return "Only Windows is measured: elsewhere a GPU's interrupts don't land on one CPU this way."
+	import torch
+	name = torch.cuda.get_device_name(index)
+	found = GpuInterruptCpus(*TorchLaunches("cuda:{}".format(index)))
+	if not found["cpus"]:
+		return "GPU {} ({}): no CPU stands out: {}.".format(index, name, found["reason"])
+	return ("GPU {} ({}): CPU {} handles its interrupts ({:.0%} of the extra interrupts and DPCs in {} launches, "
+		"{:.1f} per launch). campy-live's --cpus auto leaves it out; with a list, leave it out too.").format(
+		index, name, Text(found["cpus"]), found["share"], found["launches"], found["extra"])
+
+
 if __name__ == "__main__":
-	print(Describe())
+	if len(sys.argv) == 3 and sys.argv[1] == "--gpu":
+		print(DescribeGpu(int(sys.argv[2])))
+	elif len(sys.argv) > 1:
+		raise SystemExit("python -m campy.cpus [--gpu N]")
+	else:
+		print(Describe())

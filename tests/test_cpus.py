@@ -92,3 +92,86 @@ def test_placement_moves_campy_live_and_campy_acquire(monkeypatch):
 	assert placement.IsOn() is False and set(map(tuple, affinity.values())) == {(0, 1, 2, 3)}
 	assert priority == {10: "normal"}
 	assert not cpus.Placement(live=None).Available()
+
+
+# ---------------------------------------------------------------- a GPU's interrupt CPU
+
+def _Entries(values, size, at):
+	# NtQuerySystemInformation's per-CPU entries, with values at byte at
+	data = bytearray(size * len(values))
+	for i, v in enumerate(values):
+		struct.pack_into("<I", data, size * i + at, v)
+	return bytes(data)
+
+
+def test_interrupt_counts_parse_both_classes():
+	performance = _Entries([10, 20, 30], 48, 40) # InterruptCount
+	interrupts = _Entries([1, 2, 3], 24, 4) # DpcCount
+	assert cpus._ParseCounts(performance, interrupts) == [11, 22, 33]
+	assert cpus._Since([2 ** 32 - 5, 7], [3, 9]) == [8, 2] # the counts wrap
+
+
+def test_the_cpu_that_took_the_burst_is_found():
+	# The Precision 7875's RTX 4000 Ada: ~1 interrupt and ~1 DPC per launch on CPU 2
+	idle = [40, 10, 12, 8, 9, 7]
+	during = [42, 11, 8000 + 12, 9, 10, 8]
+	found = cpus.InterruptCpus(during, idle, 4000)
+	assert found["cpus"] == [2] and found["share"] > 0.99 and found["extra"] == 2.0 and found["launches"] == 4000
+	assert "reason" not in found
+
+
+def test_two_cpus_sharing_the_interrupts_are_both_left_out():
+	found = cpus.InterruptCpus([5, 3000, 3000, 5], [5, 0, 0, 5], 3000)
+	assert found["cpus"] == [1, 2] and found["share"] == 1.0
+
+
+def test_no_cpu_when_the_burst_made_too_few_or_spread_them():
+	few = cpus.InterruptCpus([10, 30, 10], [10, 10, 10], 4000)
+	assert few["cpus"] == [] and "only 20 more" in few["reason"]
+	spread = cpus.InterruptCpus([1000] * 8, [0] * 8, 4000) # each 1/8: none stands out
+	assert spread["cpus"] == [] and "spread" in spread["reason"]
+	# Below the idle count: no negative share
+	assert cpus.InterruptCpus([0, 5000], [100, 0], 4000)["cpus"] == [1]
+
+
+def test_burst_counts_launches_and_waits(monkeypatch):
+	monkeypatch.setattr(cpus.sys, "platform", "win32")
+	counts = iter([[0, 0, 0], [5, 4100, 5], [10, 4110, 10]])
+	monkeypatch.setattr(cpus, "InterruptCounts", lambda: next(counts))
+	monkeypatch.setattr(cpus.time, "sleep", lambda s: None)
+	calls = {"launch": 0, "wait": 0}
+	launch = lambda: calls.__setitem__("launch", calls["launch"] + 1)
+	wait = lambda: calls.__setitem__("wait", calls["wait"] + 1)
+	found = cpus.GpuInterruptCpus(launch, wait, launches=200, every=50)
+	assert calls == {"launch": 201, "wait": 6} # one to start, 4 every 50, one at the end
+	assert found["cpus"] == [1]
+	monkeypatch.setattr(cpus.sys, "platform", "linux")
+	assert cpus.GpuInterruptCpus(launch, wait) is None
+
+
+def test_avoiding_never_leaves_none():
+	assert cpus.Avoiding([0, 1, 2, 3], [2]) == [0, 1, 3]
+	assert cpus.Avoiding([0, 1], [5]) == [0, 1]
+	assert cpus.Avoiding([2], [2]) == [2]
+	assert cpus.Avoiding([0, 1], None) == [0, 1]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' counters")
+def test_interrupt_counts_on_windows():
+	counts = cpus.InterruptCounts()
+	assert len(counts) == min(os.cpu_count(), 64) and sum(counts) > 0
+
+
+def test_placement_keeps_campy_live_off_the_interrupt_cpu(monkeypatch):
+	affinity = {}
+	monkeypatch.setattr(cpus, "Hybrid", lambda: {"performance": [0, 1, 2], "efficiency": [3, 4]})
+	monkeypatch.setattr(cpus, "Cores", lambda: {"performance": [0, 1, 2], "efficiency": [3, 4]})
+	monkeypatch.setattr(cpus, "Pin", lambda c, pid=None: affinity.__setitem__(pid, list(c)))
+	monkeypatch.setattr(cpus, "Affinity", lambda pid=None: affinity.get(pid, [0, 1, 2, 3, 4]))
+	monkeypatch.setattr(cpus, "SetPriority", lambda name, pid=None: None)
+	monkeypatch.setattr(cpus, "Tree", lambda pids: sorted(pids))
+	placement = cpus.Placement(live=10, campy=[20], avoid=[1])
+	placement.Set(True)
+	assert affinity == {10: [0, 2], 20: [3, 4]} and placement.IsOn() is True
+	placement.Set(False)
+	assert affinity == {10: [0, 2, 3, 4], 20: [0, 1, 2, 3, 4]} and placement.IsOn() is False

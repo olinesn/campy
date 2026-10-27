@@ -101,6 +101,7 @@ It holds:
 - `calibration`: the path, its SHA-256 and the camera names used in it.
 - `options`: every option's value and whether it was given on the command line or left at its default. A default that has changed says when and what it was.
 - `feed`, `model` (the device, the engine that ran) and `pose3d`.
+- `cpus`: where `campy-live` put itself (`placed`, as its startup line says it) and, on Windows with `--cpus auto`, `gpuInterrupts`: the GPU, the CPUs that handle its interrupts (`cpus`, left out of campy-live's CPUs), their share of the interrupts and DPCs a short test made, and the reason when no CPU stood out.
 - `end`: sets tracked and skipped, inference and latency times, and the paths to its log and summary.
 
 `campy-live`'s summary (`<log>.json`) has the path to it under `session`.

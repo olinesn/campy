@@ -141,6 +141,17 @@ then never waits for campy's. python -m campy.cpus says which cores are
 which; --cpus none --campy-cpus none leaves both as they were started, and
 campy-live-view's c key moves them back and forth while they run.
 
+On Windows --cpus auto also keeps campy-live off the CPU that handles its
+GPU's interrupts. Nearly every GPU kernel ends with an interrupt, which
+Windows handles on one fixed CPU per GPU, about 20 us each; launching
+kernels from that CPU, each launch waits for them (on a Precision 7875's RTX
+4000 Ada, CPU 2: 27-31 us per launch instead of 7, every set about twice as
+long). Before loading the model, campy-live runs about 0.1 s of tiny kernels
+on its GPU and counts each CPU's interrupts and DPCs (cpus.GpuInterruptCpus);
+the CPU that took them is left out, and the startup line and
+campy-live-session.json (cpus) say which. python -m campy.cpus --gpu N says
+it for any GPU.
+
 --cuda-graphs records each model's GPU work once per input shape and then
 replays it in one go (a CUDA graph), instead of launching its hundred or so
 GPU operations one by one, each costing the CPU some microseconds: the
@@ -2389,7 +2400,7 @@ def Run(args):
 	# campy-live without a console (campy-session)
 	stopWatch = stopfile.Watch(os.path.abspath(args.stop_file), lambda level: stopping.append(level)).Start() \
 		if args.stop_file else None
-	placed = PlaceSelf(args)
+	placed, interrupts = PlaceSelf(args)
 	if args.nice:
 		try:
 			os.nice(args.nice)
@@ -2448,11 +2459,11 @@ def Run(args):
 		out = args.out or "campy-live_{}".format(datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 		# campy-live-session.json, from a thread of its own: the first set is
 		# taken without waiting for its write
-		session = SessionFile(args, model, tracker, cameras, facts, out, warnings)
+		session = SessionFile(args, model, tracker, cameras, facts, out, warnings, placed, interrupts)
 		log = Log(out + ".npy", len(names), model.instances, model.nodes or args.nodes, frameRate,
 			tracker.animals if tracker else 0)
 		if args.results_feed == "on":
-			log.results = Publish(args, log, names, cameras, model, tracker, frameRate)
+			log.results = Publish(args, log, names, cameras, model, tracker, frameRate, interrupts)
 		worker = Pose3DThread(tracker.tracker, log) if tracker else None
 		Say("Logging to {}.npy.".format(out))
 		reported, since = time.monotonic(), 0
@@ -2603,7 +2614,7 @@ class SessionFile:
 	stops campy-live: what fails is said, and the run goes on without it.
 	"""
 
-	def __init__(self, args, model, tracker, cameras, facts, out, warnings):
+	def __init__(self, args, model, tracker, cameras, facts, out, warnings, placed=None, interrupts=None):
 		self.session = None
 		try:
 			# What the feed and the model say, now, on campy-live's own thread
@@ -2617,6 +2628,7 @@ class SessionFile:
 					"engine": describe("DescribeEngine"), "nodes": getattr(model, "nodeNames", None)},
 				"pose3d": {"animals": tracker.animals, "description": tracker.Describe()} if tracker else None,
 				"log": os.path.abspath(out + ".npy"),
+				"cpus": {"placed": placed, "gpuInterrupts": interrupts},
 				}
 			names = tracker.names if tracker is not None else None
 		except Exception as e:
@@ -2658,14 +2670,14 @@ class SessionFile:
 			session.End(summary, log, stopped=stopped, error=error)
 
 
-def Publish(args, log, names, cameras, model, tracker, frameRate):
+def Publish(args, log, names, cameras, model, tracker, frameRate, interrupts=None):
 	# The rows into shared memory too, with what campy-live-view needs to draw them
 	name = liveresults.RingName(args.name)
 	results = liveresults.Publisher(name, log.rows_type, say=Say, cameras=[r.cameraName for r in cameras.readers],
 		rings=names, nodes=getattr(model, "nodeNames", None), edges=getattr(model, "edges", None),
 		calibration=os.path.abspath(args.calibration) if tracker else None,
 		calibration_names=tracker.names if tracker else None, animals=tracker.animals if tracker else 0,
-		frame_rate=frameRate, pid=os.getpid())
+		frame_rate=frameRate, pid=os.getpid(), gpu_interrupt_cpus=(interrupts or {}).get("cpus", []))
 	if results.writer is not None:
 		Say("Results in shared memory {} too, for campy-live-view.".format(name))
 	return results
@@ -2675,26 +2687,41 @@ def PlaceSelf(args):
 	"""
 	campy-live onto --cpus at --priority. auto: on a CPU with performance and
 	efficiency cores, the performance ones, at high priority; elsewhere as it
-	is. Returns what it did, as text, or None.
+	is. On Windows auto also leaves out the CPU that handles the GPU's
+	interrupts (GpuInterrupts). Returns what it did, as text, or None, and
+	what GpuInterrupts found (or None).
 	"""
 	choice, priority = args.cpus.strip().lower(), args.priority
+	cores = interrupts = None
+	why = ""
 	if choice == "none":
 		chosen = None
 	elif choice == "auto":
 		cores = cpus.Hybrid()
 		chosen = cores["performance"] if cores else None
+		why = " (the performance cores)" if cores else ""
+		interrupts = GpuInterrupts(args)
+		avoid = [c for c in (interrupts or {}).get("cpus", []) if c in (chosen or cpus.All())]
+		if avoid:
+			base = chosen or cpus.All()
+			left = cpus.Avoiding(base, avoid)
+			if left != base:
+				chosen = left
+				why = " ({} but CPU {}, which handles the {}'s interrupts)".format("the performance cores" if cores
+					else "all", cpus.Text(avoid), interrupts.get("gpu") or "GPU")
 	else:
 		try:
 			chosen = cpus.Resolve(args.cpus)
 		except ValueError as e:
 			raise SystemExit("--cpus {}: {}".format(args.cpus, e))
 	if priority == "auto":
-		priority = "high" if chosen is not None and choice != "none" else "normal"
+		# High on the performance cores or the CPUs given; all but an interrupt CPU is still everywhere: normal
+		priority = "high" if chosen is not None and (choice != "auto" or cores is not None) else "normal"
 	done = []
 	if chosen is not None:
 		try:
 			cpus.Pin(chosen)
-			done.append("CPUs {}".format(cpus.Text(chosen)) + (" (the performance cores)" if choice == "auto" else ""))
+			done.append("CPUs {}".format(cpus.Text(chosen)) + why)
 		except OSError as e:
 			Say("Could not pin campy-live to CPUs {} (--cpus): {}".format(cpus.Text(chosen), e))
 	if priority != "normal":
@@ -2704,9 +2731,44 @@ def PlaceSelf(args):
 		except OSError as e:
 			Say("Could not give campy-live {} priority (--priority): {}".format(priority, e))
 	if not done:
-		return None
+		return None, interrupts
 	Say("campy-live on {}.".format(" at ".join(done)))
-	return " at ".join(done)
+	return " at ".join(done), interrupts
+
+
+def GpuInterrupts(args):
+	"""
+	Windows, a model on an NVIDIA GPU: which CPU handles the GPU's interrupts
+	(cpus.GpuInterruptCpus, about 0.1 s of tiny kernels on it), for --cpus
+	auto to leave out: a thread launching kernels from that CPU waits for
+	them, about 20 us each. What it found, as a dict (session.json's
+	cpus.gpuInterrupts), said; None where it isn't looked for.
+	"""
+	if sys.platform != "win32" or args.model == "none":
+		return None
+	gpu = None
+	try:
+		import torch
+		device = ResolveDevice(args.device)
+		if not device.startswith("cuda") or getattr(torch.version, "hip", None):
+			return None
+		index = torch.device(device).index
+		index = torch.cuda.current_device() if index is None else index
+		gpu = torch.cuda.get_device_name(index)
+		found = cpus.GpuInterruptCpus(*cpus.TorchLaunches("cuda:{}".format(index)))
+	except Exception as e:
+		Say("Could not tell which CPU handles the GPU's interrupts: {}. --cpus auto pins as if it were none "
+			"(python -m campy.cpus --gpu N says it).".format(e))
+		return {"gpu": gpu, "cpus": [], "reason": str(e)}
+	if found is None:
+		return None
+	found["gpu"] = gpu
+	if found["cpus"]:
+		Say("The {}'s interrupts: CPU {} ({:.0%} of the extra interrupts and DPCs in {} tiny kernels, {:.1f} per "
+			"kernel).".format(gpu, cpus.Text(found["cpus"]), found["share"], found["launches"], found["extra"]))
+	else:
+		Say("The {}'s interrupts: no one CPU takes them ({}).".format(gpu, found["reason"]))
+	return found
 
 
 def PlaceCampy(args, readers):
@@ -2866,8 +2928,9 @@ def Parser():
 	p.add_argument("--report-sec", type=float, default=10, help="Say how it goes this often; 0: only at the end.")
 	p.add_argument("--nice", type=int, default=0, help="Lower this program's CPU priority by this much (POSIX).")
 	p.add_argument("--cpus", default="auto", help="The CPUs campy-live runs on: auto (on a CPU with performance and \
-		efficiency cores, the performance cores; elsewhere all), performance, efficiency, all, none (as it is \
-		started), or a list such as 0,1,10-13. python -m campy.cpus says which are which.")
+		efficiency cores, the performance cores; elsewhere all; on Windows less the CPU that handles the GPU's \
+		interrupts), performance, efficiency, all, none (as it is started), or a list such as 0,1,10-13. python -m \
+		campy.cpus says which are which, and python -m campy.cpus --gpu N which CPU handles GPU N's interrupts.")
 	p.add_argument("--priority", default="auto", choices=("auto",) + cpus.PRIORITIES, help="campy-live's priority: \
 		auto is high when --cpus auto put it on the performance cores, else normal. Above normal needs root on Linux.")
 	p.add_argument("--campy-cpus", default="auto", help="The CPUs campy-acquire (its camera processes and \

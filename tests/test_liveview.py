@@ -1482,8 +1482,9 @@ def test_the_c_key_moves_campy_live_on_and_off_the_performance_cores(monkeypatch
 	class Placement:
 		on = False
 
-		def __init__(self, live=None, campy=()):
+		def __init__(self, live=None, campy=(), avoid=()):
 			self.live, self.campy, self.cores = live, campy, {"performance": [0, 1], "efficiency": [2, 3]}
+			self.avoid = avoid
 
 		def Available(self):
 			return self.live is not None
@@ -1510,6 +1511,12 @@ def test_the_c_key_moves_campy_live_on_and_off_the_performance_cores(monkeypatch
 	assert "inference p50 12.0" in text
 	Placement.on = True
 	assert "on the performance cores (0-1) at high priority" in viewer.CpusText()[0]
+	# campy-live's results say its GPU's interrupt CPU: kept off it both ways
+	viewer.description = {"pid": 1234, "gpu_interrupt_cpus": [1]}
+	assert viewer.Placement().avoid == [1]
+	assert "on the performance cores (0) at high priority" in viewer.CpusText()[0]
+	Placement.on = False
+	assert "on any CPU but CPU 1, its GPU's interrupt CPU, at normal priority" in viewer.CpusText()[0]
 
 
 def test_a_trails_colour_is_luc3ds_shade_of_its_identitys():
