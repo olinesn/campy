@@ -1029,8 +1029,9 @@ def test_campy_live_goes_on_the_performance_cores_by_default(monkeypatch, capsys
 	monkeypatch.setattr(cpus, "Pin", lambda c, pid=None: pinned.append((pid, list(c))))
 	monkeypatch.setattr(cpus, "SetPriority", lambda name, pid=None: priority.append((pid, name)))
 	monkeypatch.setattr(cpus, "Tree", lambda pids: sorted(set(pids) | {99}))
+	monkeypatch.setattr(live, "GpuInterrupts", lambda args: None) # tests/test_live_cpus.py has those
 	args = live.ParseArgs([])
-	assert live.PlaceSelf(args) == "CPUs 0-1,10 (the performance cores) at high priority"
+	assert live.PlaceSelf(args)[0] == "CPUs 0-1,10 (the performance cores) at high priority"
 	assert pinned == [(None, [0, 1, 10])] and priority == [(None, "high")]
 	readers = [types.SimpleNamespace(Description=lambda pid=pid: json.dumps({"kind": livefeed.CAMERA_KIND,
 		"pid": pid, "parent_pid": 7})) for pid in (11, 12)]
@@ -1040,12 +1041,12 @@ def test_campy_live_goes_on_the_performance_cores_by_default(monkeypatch, capsys
 	# Asked not to: as it is
 	pinned.clear(), priority.clear()
 	args = live.ParseArgs(["--cpus", "none", "--campy-cpus", "none"])
-	assert live.PlaceSelf(args) is None
+	assert live.PlaceSelf(args) == (None, None)
 	live.PlaceCampy(args, readers)
 	assert pinned == [] and priority == []
 	# A list, at the priority asked
 	args = live.ParseArgs(["--cpus", "4-5", "--priority", "above_normal"])
-	assert live.PlaceSelf(args) == "CPUs 4-5 at above normal priority"
+	assert live.PlaceSelf(args)[0] == "CPUs 4-5 at above normal priority"
 
 
 def test_a_cpu_of_one_kind_is_left_as_it_is(monkeypatch):
@@ -1053,8 +1054,9 @@ def test_a_cpu_of_one_kind_is_left_as_it_is(monkeypatch):
 	monkeypatch.setattr(cpus, "Hybrid", lambda: None)
 	monkeypatch.setattr(cpus, "Pin", lambda *a, **k: pytest.fail("pinned"))
 	monkeypatch.setattr(cpus, "SetPriority", lambda *a, **k: pytest.fail("priority changed"))
+	monkeypatch.setattr(live, "GpuInterrupts", lambda args: None) # not Windows, or no CPU stood out
 	args = live.ParseArgs([])
-	assert live.PlaceSelf(args) is None
+	assert live.PlaceSelf(args) == (None, None)
 	live.PlaceCampy(args, [])
 
 
