@@ -458,7 +458,10 @@ def test_an_encoder_that_does_not_open_at_first_is_started_again_with_no_frame_l
 	out = capsys.readouterr().out
 	assert "Camera0: ffmpeg stopped after taking 2 frames: [Errno 32] Broken pipe, and wrote nothing: its encoder " \
 		"did not open. Starting ffmpeg again in 1 s (retry 1 of 3), with the same 2 frames; the camera goes on." in out
-	assert "(retry 2 of 3)" in out and "Camera0: ffmpeg started again (retry 2); no frame lost." in out
+	assert "(retry 2 of 3)" in out and "Camera0: ffmpeg started again (retry 2), and given the same 2 frames." in out
+	# Said once the video holds frames, not before
+	assert out.count("no frame lost") == 1 and \
+		"Camera0: its encoder opened on retry 2, and its video holds every frame from the first: no frame lost." in out
 	assert len(fake.opens) == 3 and len(set(fake.opens)) == 1 # the same file each time
 	# Every frame grabbed is in the video, in order, once; nothing failed
 	assert received == list(range(1, 51))
@@ -508,7 +511,7 @@ def test_with_restartFfmpeg_an_encoder_that_never_opens_goes_on_in_a_new_file(tm
 	run.Run()
 	out = capsys.readouterr().out
 	assert [os.path.basename(p) for p in fake.opens] == ["0.mp4"] * 4 + ["0.part2.mp4"], fake.opens
-	assert "(retry 3 of 3)" in out and "ffmpeg restarted" in out
+	assert "(retry 3 of 3)" in out and "ffmpeg restarted" in out and "no frame lost" not in out
 	with open(os.path.join(run.Folder(), "segments.csv")) as f:
 		assert "libx264 did not open in 4 tries" in f.read() # why the first file ended
 	assert run.recording.videoError is None and run.recording.restarts == 1 and run.recording.ffmpegRetries == 3

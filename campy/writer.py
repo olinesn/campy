@@ -496,8 +496,15 @@ class FirstFrames:
 		if self.frames is None:
 			return
 		self.frames.append(frame.copy() if hasattr(frame, "copy") else frame) # may outlive the camera's buffer
-		if len(self.frames) > OPEN_HOLD_FRAMES or newfiles.Size(self.path):
-			self.frames = None # its encoder opened: nothing more is held
+		if newfiles.Size(self.path):
+			# Its encoder opened: nothing more is held. After a retry, only now
+			# is it known that no frame was lost
+			if self.retries:
+				Say("{}: its encoder opened on retry {}, and its video holds every frame from the first: no frame "
+					"lost.".format(self.cam_params["cameraName"], self.retries))
+			self.frames = None
+		elif len(self.frames) > OPEN_HOLD_FRAMES:
+			self.frames = None
 
 	def Empty(self):
 		# Its ffmpeg has stopped, and wrote nothing
@@ -802,8 +809,8 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 							writer, ffmpeg = reopened, FfmpegProcess(reopened)
 							if ffmpeg is not None:
 								unicam.TellMain(("ffmpeg", ffmpeg.pid))
-							Say("{}: ffmpeg started again (retry {}); no frame lost.".format(
-								cam_params["cameraName"], first.retries))
+							Say("{}: ffmpeg started again (retry {}), and given the same {} frames.".format(
+								cam_params["cameraName"], first.retries, len(first.frames)))
 							continue
 						# ffmpeg has stopped (killed, crashed, or an encoder error). With
 						# restartFfmpeg, a new one goes on into the next file
