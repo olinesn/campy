@@ -337,6 +337,22 @@ Notes on the measurements:
   | Precision 7875 | 1,200 / 0.9 / 1.2 | 3,600 / 1.6 / 1.8 / 4.1 / 5.3 | 1,797 / 1.6 / 1.7 / 4.6 / 5.6 |
 
   The replay's accuracy on the EVO-X2 was again 2D median 3.8 px, 3D median 4.2 mm, identity 0.9993, 2 switches.
+- Later on 27 October the three rigs moved to dev `4cb0e3a`. It adds pull request 209 (an optional automatic restart of a camera's ffmpeg that stops mid-recording, `restartFfmpeg`, off by default: [Alerts](alerts.md#restarting-a-stopped-ffmpeg-restartffmpeg)), plus docs. Nothing in it changes live tracking. Both environments on each rig report campy 2.2.0. After the rig checks, `restartFfmpeg: True` went into each rig's profile, so their recordings now restart a camera's ffmpeg that stops (`campy-config show` names the profile as its source on each).
+
+  All nine rig checks were `RIG_CLEAN`, with nothing skipped or misaligned, and every camera kept all its frames. They matched the 7f6983b table above, to within 0.1 ms, but for two runs:
+
+  - The Pro Max Slim's 1-camera p99 was 2.5 ms, back to v2.2.0's, against 2.8 ms.
+  - The Precision 7875's first 1-camera run had one slow stretch (p99 4.7 ms, p50 0.9). Its rerun a few minutes later gave p99 1.1 ms, which is the number below.
+
+  spock's campy copy, which `campy-infer` uses, moved to the same commit.
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | EVO-X2 | 1,800 / 3.0 / 3.1 | 3,600 / 5.6 / 5.8 / 7.6 / 8.5 | 3,600 / 5.5 / 5.6 / 7.1 / 8.1 |
+  | Pro Max Slim | 1,198 / 2.3 / 2.5 | 3,595 / 5.5 / 5.7 / 7.8 / 8.5 | 1,791 / 5.5 / 5.7 / 8.7 / 9.5 |
+  | Precision 7875 | 1,200 / 0.9 / 1.1 | 3,600 / 1.6 / 1.7 / 4.1 / 5.3 | 1,797 / 1.6 / 1.7 / 4.6 / 5.7 |
+
+  The replay's accuracy on the EVO-X2 was again 2D median 3.8 px, 3D median 4.2 mm, identity 0.9993, 2 switches.
 
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
