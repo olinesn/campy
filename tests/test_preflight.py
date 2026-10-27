@@ -127,11 +127,71 @@ def test_usb_bus_over_budget(tmp_path):
 	assert [s for s, _ in lines(report, "usb")] == [OK]
 
 
-def test_usb_check_needs_sysfs(tmp_path):
+def test_usb_check_needs_sysfs_or_windows(tmp_path, monkeypatch):
+	monkeypatch.setattr(preflight, "WINDOWS", False) # macOS
 	p, cams = cameras(["1"])
 	report = preflight.Report()
 	preflight.CheckUsb(cams, p, report, str(tmp_path / "nothing"))
-	assert lines(report) == [(WARN, "USB bandwidth not checked: it is read from Linux's sysfs.")]
+	assert lines(report) == [(WARN, "USB bandwidth not checked: it is read from Linux's sysfs, or from Windows' "
+		"USB hubs.")]
+
+
+def on_windows(monkeypatch, windows):
+	from campy import usbwin
+	monkeypatch.setattr(preflight, "WINDOWS", True)
+	monkeypatch.setattr(usbwin, "Api", lambda: windows)
+
+
+def test_usb_on_windows(tmp_path, monkeypatch):
+	# The Dell Pro Max Slim FCS1250's two cameras on USB 3, and a third on a USB 2 link
+	from test_usbwin import slim, HS
+	windows = slim(**{"0171ED30": HS})
+	on_windows(monkeypatch, windows)
+	p, cams = cameras(["22168577", "24243504", "99"], frameRate=30)
+	report = preflight.Report()
+	preflight.CheckUsb(cams, p, report, str(tmp_path / "no-sysfs"))
+	assert lines(report, "usb") == [
+		(FAIL, "Camera1 is connected at 480 Mb/s, not USB 3, and needs 39 MB/s. Check its cable and port."),
+		(WARN, "Camera2 (serial 99) is not on the USB bus: a GigE camera, or its USB serial is written differently."),
+		(OK, "controller 8086:7f6e, its USB 3 links: Camera0 send 39 of 300 MB/s (13%)"),
+		]
+
+
+def test_usb_over_budget_on_windows_is_a_warning(tmp_path, monkeypatch):
+	# 4 cameras at 60 fps on one controller: 315 MB/s, over the 300 MB/s of a 5 Gb/s link, but the controller may
+	# run at 10 or 20 Gb/s: Windows doesn't say, so a WARN, not a FAIL
+	from test_usbwin import FakeWindows, ROOT, CONTROLLER, SS, camera
+	windows = FakeWindows(dict([(ROOT, (CONTROLLER, 0, None))] +
+		[(camera("{:08X}".format(i)), (ROOT, 16 + i, SS)) for i in range(1, 5)]))
+	on_windows(monkeypatch, windows)
+	p, cams = cameras(["1", "2", "3", "4"])
+	report = preflight.Report()
+	preflight.CheckUsb(cams, p, report, str(tmp_path / "no-sysfs"))
+	(status, text), = lines(report, "usb")
+	assert status == WARN
+	assert text.startswith("controller 8086:7f6e, its USB 3 links: Camera0, Camera1, Camera2, Camera3 send 315 of "
+		"300 MB/s (105%). Windows doesn't say how fast a USB controller is")
+
+	p["usbBudgetMBps"] = 250 # measured on this rig: then over it is a FAIL, as on Linux
+	report = preflight.Report()
+	preflight.CheckUsb(cams, p, report, str(tmp_path / "no-sysfs"))
+	assert [s for s, _ in lines(report, "usb")] == [FAIL]
+
+
+def test_usb_on_windows_unreadable(tmp_path, monkeypatch):
+	from test_usbwin import FakeWindows, slim
+	p, cams = cameras(["22168577", "24243504"])
+	on_windows(monkeypatch, slim(**{"0171ED30": OSError("Opening hub X: Windows error 5")}))
+	report = preflight.Report()
+	preflight.CheckUsb(cams, p, report, str(tmp_path / "no-sysfs"))
+	assert (WARN, "Camera1: its USB link speed could not be read (Opening hub X: Windows error 5).") in \
+		lines(report, "usb")
+	assert any(s == OK and "Camera0 send " in t for s, t in lines(report, "usb"))
+
+	on_windows(monkeypatch, FakeWindows({}, gone="Listing USB devices failed (CONFIGRET 0x3)"))
+	report = preflight.Report()
+	preflight.CheckUsb(cams, p, report, str(tmp_path / "no-sysfs"))
+	assert lines(report, "usb") == [(WARN, "USB links not checked: Listing USB devices failed (CONFIGRET 0x3).")]
 
 
 TABLE = {

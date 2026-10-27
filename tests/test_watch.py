@@ -381,6 +381,44 @@ def test_a_camera_drops_to_usb_2(monkeypatch, tmp_path):
 		"can't carry its frames, so expect lost frames. Check its cable and port.")
 
 
+def test_a_camera_drops_to_usb_2_on_windows(monkeypatch, tmp_path):
+	# Its cable or port fails: it leaves (the camera says that itself) and comes back on the port's USB 2 side
+	from campy import preflight, usbwin
+	from test_usbwin import slim, camera, ROOT, HS
+	windows = slim()
+	monkeypatch.setattr(preflight, "WINDOWS", True)
+	monkeypatch.setattr(usbwin, "Api", lambda: windows)
+	p = configurator.DefaultParams()
+	p.update(numCams=1, cameraMake="flir")
+	cam = configurator.CameraParams(configurator.FillCameraLists(p), 0)
+	cam["cameraSerialNo"] = "24243504" # 0171ED30 in hex, as Windows' device list writes it
+	rig = Rig(monkeypatch, tmp_path, names=["Camera0"], cams=[cam]).Start()
+	rig.Run(watch.USB_EVERY_S)
+	assert len(rig.Sent()) == 1
+	assert rig.watch.Status("recording")["cameras"][0]["usb_speed"] == 5000
+	del windows.devices[camera("0171ED30")]
+	rig.Run(watch.USB_EVERY_S) # gone: nothing said here
+	windows.Plug(camera("0171ED30"), ROOT, 4, HS)
+	rig.Run(watch.USB_EVERY_S)
+	assert rig.Sent()[-1] == (":red_circle: *Test rig*: Camera0 is now on a USB 2 link (480 Mb/s), not USB 3: it "
+		"can't carry its frames, so expect lost frames. Check its cable and port.")
+	assert rig.watch.Status("recording")["cameras"][0]["usb_speed"] == 480
+
+
+def test_windows_usb_check_failing_is_said_once(monkeypatch, tmp_path):
+	from campy import preflight, usbwin
+	from test_usbwin import FakeWindows
+	monkeypatch.setattr(preflight, "WINDOWS", True)
+	monkeypatch.setattr(usbwin, "Api", lambda: FakeWindows({}, gone="Listing USB devices failed (CONFIGRET 0x3)"))
+	p = configurator.DefaultParams()
+	p.update(numCams=1, cameraMake="flir")
+	cam = configurator.CameraParams(configurator.FillCameraLists(p), 0)
+	cam["cameraSerialNo"] = "24243504"
+	rig = Rig(monkeypatch, tmp_path, names=["Camera0"], cams=[cam]).Start()
+	rig.Run(watch.USB_EVERY_S * 3)
+	assert rig.said.count("Watch: the usb check failed: Listing USB devices failed (CONFIGRET 0x3)") == 1
+
+
 def test_a_failing_check_is_said_once_and_the_others_go_on(monkeypatch, tmp_path):
 	rig = Rig(monkeypatch, tmp_path).Start()
 
