@@ -220,7 +220,22 @@ Mono 1.3 MP cameras. It is used mainly for experiments, so it gets stricter rule
 - anyone at the machine can see a test is running and stop it with one click;
 - after a stop, the fleet leaves the machine alone until they hand it back.
 
-![On the Dell Pro Tower Plus the Mac starts a test only when nobody is active, nothing records, the hour is allowed and tests aren't paused. A banner in every session shows the running test with a Stop button; one click writes STOP and PAUSE files, rig.py ends the job within 2 s, and PAUSE keeps new tests away. Starting campy or SpinView, or opening a camera, also stops the job.](rig-fleet/06-experiment-machine-stop.svg)
+It runs **Windows 11 with one shared lab account**, and has no SSH server yet. What that means here:
+- **One session at a time.** Windows 11 (unlike Windows Server) has one interactive session. Connecting with Remote
+  Desktop takes over the session at the screen, and the person at the screen is logged off it. So the banner has one
+  session to show in. A Remote Desktop takeover is also someone arriving: it counts as a stop (below). On the Dell
+  Pro Max Slim, a Remote Desktop takeover has already stopped a Quick Sync encoder as it started (2026-10-26). A test
+  would not survive one anyway.
+- **"Who stopped it" can't name a person**: everyone is the same account. The log and the Slack note say how it was
+  stopped (the banner, the shortcut, a camera opened, a Remote Desktop takeover) and when. The banner can offer an
+  optional "your name" box.
+- **Tests run as the lab account too**, since SSH logs in as it. The STOP file needs no special permissions, and the
+  test's processes are the user's own in Task Manager. Nothing about a test is hidden from the person at the machine.
+- **SSH has to be set up first** (stage 6). OpenSSH Server is an optional feature of Windows 11. It needs an
+  administrator once: install it, start it automatically, add the Mac's key, and limit its firewall rule to the lab
+  network and VPN addresses, as on the Precision 7875. Until then, nothing in this section can run there.
+
+![On the Dell Pro Tower Plus the Mac starts a test only when nobody is active, nothing records, the hour is allowed and tests aren't paused. A banner on screen shows the running test with a Stop button; one click writes STOP and PAUSE files, rig.py ends the job within 2 s, and PAUSE keeps new tests away. Starting campy or SpinView, or opening a camera, also stops the job.](rig-fleet/06-experiment-machine-stop.svg)
 
 *How a person at the machine takes it back. Every path to "stopped" takes about 2 s and needs no rights over the test's
 processes: the STOP file is the only thing the banner touches.*
@@ -228,16 +243,17 @@ processes: the STOP file is the only thing the banner touches.*
 ### When a test may start there
 
 The Mac starts a test on the Tower only when all of these hold:
-- **Nobody is using it.** Every console and Remote Desktop session is locked, logged off, or has had no keyboard or
-  mouse input for 15 minutes. `quser` gives each session's idle time; it's a small program, not PowerShell or WMI.
+- **Nobody is using it.** The lab account's session is locked, disconnected or logged off, or has had no keyboard or
+  mouse input for 15 minutes. `quser` gives the session's state and idle time; it's a small program, not PowerShell
+  or WMI.
 - **No camera or recording in use**, checked the same way as on the other rigs.
 - **The hour is inside the machine's allowed window**, e.g. nights and weekends only. You set it.
 - **Tests aren't paused** (see below).
 
 ### Seeing that a test is running
 
-- **A banner at the top of the screen in every logged-in session**, console and Remote Desktop alike, in a colour that
-  stands out:
+- **A banner at the top of the screen** of the lab account's session, at the machine or over Remote Desktop, in a colour
+  that stands out:
 
   `campy test running: nightly rig check (replay3), about 3 min left. [Stop test]`
 
@@ -245,10 +261,10 @@ The Mac starts a test on the Tower only when all of these hold:
   first thing anyone sees on unlocking or logging in.
 - **The same notice in the campy-session panel** (the browser page lab members use to record), with the same Stop
   button, so it's there even when the banner is hidden behind a full-screen program.
-- **A tray icon** while a test runs, and a short history of the last tests (what, when, who stopped them).
+- **A tray icon** while a test runs, and a short history of the last tests (what, when, how they were stopped).
 
-How the banner works: a small PowerShell + Windows Forms script started at each user's logon by a Task Scheduler task
-("at log on of any user", running as that user). It watches the rig's lock file with a file watcher, so it doesn't
+How the banner works: a small PowerShell + Windows Forms script started when the lab account logs on, by a Task Scheduler
+task running as that account. It watches the rig's lock file with a file watcher, so it doesn't
 poll. It is **not Python** on purpose: rig.py counts every python.exe as a GPU user, so a Python banner would block
 every test and spoil every timing.
 
@@ -257,15 +273,17 @@ every test and spoil every timing.
 - **One click on "Stop test"** (banner, panel, or a desktop shortcut "Stop campy test" for when neither is in view).
   It writes a STOP file in the rig folder, which every user may write. rig.py looks for it every 2 s alongside its
   other checks, ends **every process of the job** (it already runs each job in a Windows job object), frees the lock,
-  and logs `RIG_STOPPED by <user>`. The banner then says "Stopped. The machine is yours." No admin rights are needed,
+  and logs `RIG_STOPPED` with how it was stopped. The banner then says "Stopped. The machine is yours." No admin rights are needed,
   and the user never has to find or kill a process.
 - **Automatically, when someone starts working:** opening a camera, or starting campy-acquire, campy-session or SpinView,
   stops the test the same way (rig.py's `--yield`, section 1). Optionally, any keyboard or mouse input at the
   console stops it too (question 9).
+- **When someone connects with Remote Desktop or unlocks the screen.** The banner script hears Windows' session
+  events (unlock, Remote Desktop connect) and writes STOP itself. The test ends as the person arrives, not after.
 - **Taking control lasts.** A stop also writes a PAUSE file: no new tests on that machine until the user clicks "Resume
   campy tests" or the pause runs out. The banner offers 2 hours, until tomorrow morning (the default), or until I
-  resume. The Mac reads PAUSE before every start, and the dashboard shows "paused by <user> until <time>".
-- A stopped test is reported to you (Slack, through campy.notify) as "stopped by <user>". It's not a failure and not a
+  resume. The Mac reads PAUSE before every start, and the dashboard shows "paused until <time>" and how it was stopped.
+- A stopped test is reported to you (Slack, through campy.notify) as "stopped at the machine" with how. It's not a failure and not a
   drift.
 
 ### What tests do on an experiment machine
@@ -301,7 +319,7 @@ dashboard's per-camera USB speed and campy's own USB check show it.
 | 3 | **`campy-fleet ci`** (label-gated PR checks, comment + statuses) | A test PR labelled `rig-check`; a fork/unlabelled PR must be ignored |
 | 4 | **Dashboard** (`status --html`, snapshot in fleet jobs) | Page from all 3 rigs, incl. one held by another session (must show "held", touch nothing) |
 | 5 | **Nightly + drift alerts** (campy.notify) | One night on each rig you allow; a forced drift (lowered limit) must alert |
-| 6 | **Experiment-machine mode** (section 5): idle and pause checks before every start, STOP/PAUSE in rig.py, the banner and its logon task, shortcuts, the panel notice | On the Dell Pro Tower Plus with your OK: a test stopped from the banner, from the shortcut and by opening a camera, each within 2 s, from both the console and Remote Desktop; no new test while paused |
+| 6 | **Experiment-machine mode** (section 5), after SSH is set up on the Tower: idle and pause checks before every start, STOP/PAUSE in rig.py, the banner and its logon task, shortcuts, the panel notice | On the Dell Pro Tower Plus with your OK: a test stopped from the banner, from the shortcut and by opening a camera, by unlocking and by a Remote Desktop connect, each within 2 s; no new test while paused |
 
 docs/: a new page `docs/rig-fleet.md` (how to update, run checks, read the dashboard), linked from docs/README.md;
 live-tracking.md's "after each update" steps point to it. Nothing public about hosts/paths.
@@ -320,10 +338,10 @@ live-tracking.md's "after each update" steps point to it. Nothing public about h
    rig follows the usual free-rig steps, and I'd ask you per rig.)
 6. **Dashboard: static page first (A), artifact later (C)?**
 7. The drift limits in section 4: fine as a start?
-8. **Dell Pro Tower Plus:** which Windows version, and which accounts log in there (one shared lab account, or one per
-   person)? Is SSH set up on it yet? Its allowed test hours?
-9. **Should any keyboard or mouse input at the Tower stop a test by itself**, or only the Stop button, opening a
-   camera and starting campy?
+8. **Dell Pro Tower Plus:** which hours may tests run there? (Answered 2026-10-28: Windows 11, one shared lab account,
+   no SSH yet.)
+9. **Should any keyboard or mouse input at the Tower stop a test by itself**, or only the Stop button, unlocking,
+   Remote Desktop, opening a camera and starting campy?
 10. **Default pause after a stop:** until the next morning, or something else?
 
 Once you OK the design, stage 1 is the first PR. Nothing gets installed on any rig without your OK for that rig.
