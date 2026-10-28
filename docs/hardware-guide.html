@@ -482,7 +482,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     <li><b>The first set with a new camera count is slow once.</b> TensorRT builds an engine for each batch size it hasn't seen, 4 cameras' frames or 3 mice × 4 cameras' crops, in 14–28 s, and keeps it. Run 1 built one and skipped its first set; run 2 warmed up in 0.5 s.</li>
     <li><b>Live tracking was as good as SLEAP afterwards; the misses come from the views.</b> SLEAP run again on the same videos (fp32, same models) found the same mice and put every mouse in 3D in as many sets, within 0.6 points. The misses are mice piled together, where three of the four cameras often see one mouse instead of two. All four cameras look in from the same side, 11–41° apart as seen from the cage, so two mice along nearly the same line of sight look alike to all of them. Then 0.2–1.1% of the mice's 3D poses land far outside the cage. Counting those as not found, every mouse had a 3D pose in 87.6–94.4% of the sets with 5 mice. Details in campy's <code>docs/live-tracking.md</code>, "How well those runs tracked".</li>
     <li><b>A 2.3 s pause of the trigger went unreported.</b> In one 5-mouse run, every camera's own clock shows a 2.3 s gap between two frames, 7 minutes in, with no frame lost: the trigger stopped sending pulses for that long. No alert or log said so.</li>
-    <li><b>campy now reports a trigger pause.</b> Since pull request NNN, the recording watch counts, from each camera's own timestamps, the trigger pulses it got no frame for, and warns when every camera missed the same ones ("The trigger paused: all 4 cameras got no frame for the same 68 pulses (2.27 s) ..."), or when one camera missed pulses the others got. <code>campy-session</code> also runs <code>campy-align</code> after each recording, which lists the pauses in <code>alignment.json</code> and gives every frame its real time.</li>
+    <li><b>campy now reports a trigger pause.</b> Since pull request 224, the recording watch counts, from each camera's own timestamps, the trigger pulses it got no frame for, and warns when every camera missed the same ones ("The trigger paused: all 4 cameras got no frame for the same 68 pulses (2.27 s) ..."), or when one camera missed pulses the others got. <code>campy-session</code> also runs <code>campy-align</code> after each recording, which lists the pauses in <code>alignment.json</code> and gives every frame its real time.</li>
     <li><b>How "grouped" is scored.</b> In each set, every way of matching the cameras' detections into mice is tried, and the best-fitting one is the reference. Where it fits well in all four cameras (90–93% of the mice), <code>campy-live</code>'s own matching was the same 99.4% of the time (<code>bench/pose3d_live_log.py</code>).</li>
   </ul>
 </section>
@@ -645,7 +645,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 
 <footer>
   <p>Measured 18–22 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
-  <p class="meta">Version 54 · updated 28 October 2026 · reflects campy changes through pull request NNN · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p class="meta">Version 54 · updated 28 October 2026 · reflects campy changes through pull request 224 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 
