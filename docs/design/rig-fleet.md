@@ -3,8 +3,9 @@
 > **Status: a proposal, on hold since 2026-10-23.** Nothing in it has been built or installed. It is kept, with its open
 > questions, for when the work is picked up. The diagrams are SVG files in `rig-fleet/` next to this page.
 
-Goal: releases, health checks and rig checks on the three rigs (EVO-X2, Dell Pro Max Slim FCS1250,
-Precision 7875) stop being hand work, without ever disturbing a recording or another session's locked run.
+Goal: releases, health checks and rig checks on the rigs (EVO-X2, Dell Pro Max Slim FCS1250, Precision 7875, and since
+2026-10-28 the Dell Pro Tower Plus, an experiment machine: section 5) stop being hand work, without ever disturbing a
+recording or another session's locked run.
 
 Nothing has been changed on any rig. I only copied the existing rig-check scripts, READMEs and update scripts to my
 scratchpad with scp (a file read). On 2026-10-23 at 06:45 the EVO-X2 was held by another session (a long batch job); both Windows rigs were free.
@@ -211,6 +212,86 @@ every unattended job (diagram 3):
 
 ---
 
+## 5. An experiment machine in the fleet: the Dell Pro Tower Plus
+
+Added 2026-10-28: a Dell Pro Tower Plus with an Intel Core Ultra 9 285, an NVIDIA RTX A2000 and 8 FLIR Blackfly S
+Mono 1.3 MP cameras. It is used mainly for experiments, so it gets stricter rules than the other rigs:
+- tests run there only when nobody is using it;
+- anyone at the machine can see a test is running and stop it with one click;
+- after a stop, the fleet leaves the machine alone until they hand it back.
+
+![On the Dell Pro Tower Plus the Mac starts a test only when nobody is active, nothing records, the hour is allowed and tests aren't paused. A banner in every session shows the running test with a Stop button; one click writes STOP and PAUSE files, rig.py ends the job within 2 s, and PAUSE keeps new tests away. Starting campy or SpinView, or opening a camera, also stops the job.](rig-fleet/06-experiment-machine-stop.svg)
+
+*How a person at the machine takes it back. Every path to "stopped" takes about 2 s and needs no rights over the test's
+processes: the STOP file is the only thing the banner touches.*
+
+### When a test may start there
+
+The Mac starts a test on the Tower only when all of these hold:
+- **Nobody is using it.** Every console and Remote Desktop session is locked, logged off, or has had no keyboard or
+  mouse input for 15 minutes. `quser` gives each session's idle time; it's a small program, not PowerShell or WMI.
+- **No camera or recording in use**, checked the same way as on the other rigs.
+- **The hour is inside the machine's allowed window**, e.g. nights and weekends only. You set it.
+- **Tests aren't paused** (see below).
+
+### Seeing that a test is running
+
+- **A banner at the top of the screen in every logged-in session**, console and Remote Desktop alike, in a colour that
+  stands out:
+
+  `campy test running: nightly rig check (replay3), about 3 min left. [Stop test]`
+
+  It stays on top of other windows and hides itself when the test ends. A locked screen can't show it, but it is the
+  first thing anyone sees on unlocking or logging in.
+- **The same notice in the campy-session panel** (the browser page lab members use to record), with the same Stop
+  button, so it's there even when the banner is hidden behind a full-screen program.
+- **A tray icon** while a test runs, and a short history of the last tests (what, when, who stopped them).
+
+How the banner works: a small PowerShell + Windows Forms script started at each user's logon by a Task Scheduler task
+("at log on of any user", running as that user). It watches the rig's lock file with a file watcher, so it doesn't
+poll. It is **not Python** on purpose: rig.py counts every python.exe as a GPU user, so a Python banner would block
+every test and spoil every timing.
+
+### Stopping a test and taking over
+
+- **One click on "Stop test"** (banner, panel, or a desktop shortcut "Stop campy test" for when neither is in view).
+  It writes a STOP file in the rig folder, which every user may write. rig.py looks for it every 2 s alongside its
+  other checks, ends **every process of the job** (it already runs each job in a Windows job object), frees the lock,
+  and logs `RIG_STOPPED by <user>`. The banner then says "Stopped. The machine is yours." No admin rights are needed,
+  and the user never has to find or kill a process.
+- **Automatically, when someone starts working:** opening a camera, or starting campy-acquire, campy-session or SpinView,
+  stops the test the same way (rig.py's `--yield`, section 1). Optionally, any keyboard or mouse input at the
+  console stops it too (question 9).
+- **Taking control lasts.** A stop also writes a PAUSE file: no new tests on that machine until the user clicks "Resume
+  campy tests" or the pause runs out. The banner offers 2 hours, until tomorrow morning (the default), or until I
+  resume. The Mac reads PAUSE before every start, and the dashboard shows "paused by <user> until <time>".
+- A stopped test is reported to you (Slack, through campy.notify) as "stopped by <user>". It's not a failure and not a
+  drift.
+
+### What tests do on an experiment machine
+
+- **Never the real cameras.** Rig checks there use emulated cameras and recorded replays only. The status probe reads
+  which FLIR cameras are plugged in from Windows' device list, never through Spinnaker, so it can't reset or claim a
+  camera. The cameras' USB speed is read from Spinnaker only when you ask, with nobody recording.
+- Test recordings go to their own folder and are deleted afterwards, as now. The rig check prints the free disk space
+  before it starts.
+- Everything that changes the machine needs your OK for that machine: the logon task, the banner script, the shortcuts,
+  and the rig.py with STOP/PAUSE and `--yield`.
+
+### The GPU: measure 8 cameras before deciding on an upgrade
+
+The Tower has the same CPU as the Dell Pro Max Slim (Core Ultra 9 285), so the Slim's settings are the starting point:
+Quick Sync (`hevc_qsv`) on the CPU's built-in GPU records, and the NVIDIA card tracks. Its RTX A2000 (Ampere, 70 W) is
+an older and slower card than the Slim's RTX 2000 Ada. docs/hardware.md says "what 8 cameras need hasn't been measured
+since the models were compiled", and the Slim's 4-camera run (30 fps, 3 mice) had its 3D poses 8.3 ms after the frames at the median. 8 cameras is
+about twice the work per set, on a slower card. So 30 fps looks likely, and 60 fps with 5 mice is in doubt. The first
+job on the Tower, once you allow it, is a rig check with **8 emulated cameras** (recording + campy-live, 3D) at 30 and
+60 fps. If it doesn't keep up, the numbers say how much faster a card needs to be, and the Tower's power supply and slot
+space decide which one fits. Also worth checking there: 8 USB 3 cameras need enough separate USB controllers. The
+dashboard's per-camera USB speed and campy's own USB check show it.
+
+---
+
 ## Stages (each a PR against dev, with docs)
 
 | # | PR | Verified how |
@@ -219,7 +300,8 @@ every unattended job (diagram 3):
 | 2 | **`campy-fleet update` + `status`** (Mac CLI, standard library only, `bench/fleet/`), rig_update.sh/.ps1, fleet.toml example | Dry run, then the next release or a dev update applied to all 3 rigs with it |
 | 3 | **`campy-fleet ci`** (label-gated PR checks, comment + statuses) | A test PR labelled `rig-check`; a fork/unlabelled PR must be ignored |
 | 4 | **Dashboard** (`status --html`, snapshot in fleet jobs) | Page from all 3 rigs, incl. one held by another session (must show "held", touch nothing) |
-| 5 | **Nightly + drift alerts** (needs the alerts interface) | One night on each rig you allow; a forced drift (lowered limit) must alert |
+| 5 | **Nightly + drift alerts** (campy.notify) | One night on each rig you allow; a forced drift (lowered limit) must alert |
+| 6 | **Experiment-machine mode** (section 5): idle and pause checks before every start, STOP/PAUSE in rig.py, the banner and its logon task, shortcuts, the panel notice | On the Dell Pro Tower Plus with your OK: a test stopped from the banner, from the shortcut and by opening a camera, each within 2 s, from both the console and Remote Desktop; no new test while paused |
 
 docs/: a new page `docs/rig-fleet.md` (how to update, run checks, read the dashboard), linked from docs/README.md;
 live-tracking.md's "after each update" steps point to it. Nothing public about hosts/paths.
@@ -238,5 +320,10 @@ live-tracking.md's "after each update" steps point to it. Nothing public about h
    rig follows the usual free-rig steps, and I'd ask you per rig.)
 6. **Dashboard: static page first (A), artifact later (C)?**
 7. The drift limits in section 4: fine as a start?
+8. **Dell Pro Tower Plus:** which Windows version, and which accounts log in there (one shared lab account, or one per
+   person)? Is SSH set up on it yet? Its allowed test hours?
+9. **Should any keyboard or mouse input at the Tower stop a test by itself**, or only the Stop button, opening a
+   camera and starting campy?
+10. **Default pause after a stop:** until the next morning, or something else?
 
 Once you OK the design, stage 1 is the first PR. Nothing gets installed on any rig without your OK for that rig.
