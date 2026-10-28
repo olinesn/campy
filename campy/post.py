@@ -33,6 +33,15 @@ join     each camera whose ffmpeg was restarted during the recording
          headers differ are not joined (a lossless join keeps the first's
          only), and a file that holds no frame is left out. The files stay
          as they are. Needs free space for one more copy of the files.
+align    campy-align (campy/align.py): every camera on the trigger's
+         timeline, aligned.csv in each camera's folder and alignment.json
+         in the recording's. It says where the trigger paused (no camera
+         has a frame for some pulses: every frame after is later than its
+         number says) and which camera missed pulses the others got.
+         Skipped with no triggered camera and no RatCam (nothing to align
+         to). Done is done even when the trigger paused: it is said, here
+         and in alignment.json, and the recording watch said it as it
+         happened.
 export   campy-live-export, in campy-live's environment, when campy-live ran
          (campy-live.npy in the folder). A campy-live started again during
          the recording (campy-session's live.restart) left one log per run
@@ -57,10 +66,10 @@ their last second.
 import argparse, csv, glob, json, os, re, shlex, shutil, struct, subprocess, sys, time
 from datetime import datetime
 
-from campy import segments, strictjson
+from campy import align, segments, strictjson
 
 POST_LOG, POST_JSON = "post.log", "post.json"
-STEPS = ("remux", "join", "export", "copy", "run")
+STEPS = ("remux", "join", "align", "export", "copy", "run")
 VIDEO_EXTENSIONS = (".mp4", ".m4v", ".mov")
 SPARE_BYTES = 200 * 1024 ** 2 # left free on the disk besides the remuxed copy
 
@@ -446,6 +455,31 @@ def StepJoin(folder, settings, log, ffmpeg=None, stop=None):
 		"{} cameras'".format(done))
 
 
+def StepAlign(folder, settings, log, stop=None):
+	if settings.get("align", True) is False:
+		return "skipped", "align is off"
+	try:
+		summary = align.Run(folder, log=lambda text: log.Say(text))
+	except align.AlignError as e:
+		return "skipped", "nothing to align: {}".format(e)
+	cams = summary["cameras"]
+	aligned = [name for name, c in cams.items() if c.get("aligned")]
+	if not aligned:
+		return "failed", "no camera could be put on the trigger's timeline"
+	pauses = summary.get("trigger_pauses") or []
+	missed = {name: c["missed_by_camera"] for name, c in cams.items() if c.get("missed_by_camera")}
+	text = "{} of {} cameras on the trigger's timeline (alignment.json, aligned.csv)".format(len(aligned), len(cams))
+	if pauses:
+		n = sum(p["triggers"] for p in pauses)
+		text += "; the trigger paused {} time{}, {} pulses ({:.2f} s) with no frame in any camera".format(len(pauses),
+			"" if len(pauses) == 1 else "s", n, sum(p["seconds"] for p in pauses))
+	if missed:
+		text += "; pulses missed by one camera: {}".format(", ".join("{} {}".format(k, v) for k, v in missed.items()))
+	if not pauses and not missed:
+		text += "; no trigger pulse without a frame"
+	return "done", text
+
+
 def StepExport(folder, settings, log, live_python=None, force=False, stop=None):
 	if not settings.get("export", True):
 		return "skipped", "export is off"
@@ -613,6 +647,8 @@ def Run(folder, settings, live_python=None, only=None, force=False, ffmpeg=None,
 				result = StepRemux(folder, settings, log, ffmpeg=ffmpeg, stop=stop)
 			elif step == "join":
 				result = StepJoin(folder, settings, log, ffmpeg=ffmpeg, stop=stop)
+			elif step == "align":
+				result = StepAlign(folder, settings, log, stop=stop)
 			elif step == "export":
 				result = StepExport(folder, settings, log, live_python=live_python, force=force or bool(before), stop=stop)
 			elif step == "copy":
@@ -633,7 +669,7 @@ def Main(argv=None):
 	"""campy-session post <folder>: the post-steps again, by hand."""
 	from campy import session
 	p = argparse.ArgumentParser(prog="campy-session post", description="Run the steps after a recording (remux, "
-		"join, export, copy, run) on its folder, those not done yet; python -m pydoc campy.post says what each does.")
+		"join, align, export, copy, run) on its folder, those not done yet; python -m pydoc campy.post says what each does.")
 	p.add_argument("folder", help="the recording's folder")
 	p.add_argument("--config", default="", help="the config whose post: section to use (default: the one "
 		"campy-session ran, logs/session-config.yaml; else remux and export)")

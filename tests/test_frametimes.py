@@ -263,3 +263,27 @@ def test_a_closed_recording_has_every_file(tmp_path, monkeypatch):
 	assert np.issubdtype(mat["frameNumber"].dtype, np.integer) # integers, as before
 	assert mat["frameNumber"].shape == mat["timeStamp"].shape == (1, 300)
 	assert np.array_equal(mat["frameNumber"][0], frames[0]) and np.array_equal(mat["timeStamp"][0], frames[1])
+
+
+def test_trigger_gaps_counts_pulses_without_a_frame():
+	gaps = frametimes.TriggerGaps()
+	period = 1 / 30 * (1 + 50e-6) # the camera's clock, a little off the trigger's
+	t = [k * period for k in range(1, 401) if k not in (5, 200, 201, 202) and not 300 <= k < 368]
+	new, frames = [], []
+	for n, x in enumerate(t, start=1):
+		new.append(gaps.Add(x, n))
+		frames.append(gaps.frame)
+	# A gap before the period was known (pulse 5) is counted once it is, with the frame just after it: frame 5
+	assert gaps.period == pytest.approx(period)
+	assert new[30] == 1 and frames[30] == 5 and sum(new[:30]) == 0
+	assert sum(new) == gaps.missed == 1 + 3 + 68
+	assert new[t.index(203 * period)] == 3 and new[t.index(368 * period)] == 68
+	assert frames[-1] == t.index(368 * period) + 1
+
+
+def test_trigger_gaps_learns_a_trigger_at_another_rate():
+	# frameRate 60 in the config, the trigger at 30: the camera's own period, so no gap at every step
+	gaps = frametimes.TriggerGaps()
+	for k in range(100):
+		assert gaps.Add(k / 30, k + 1) == 0
+	assert gaps.Add(102 / 30, 101) == 2 and gaps.missed == 2 and gaps.frame == 101

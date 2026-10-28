@@ -1,5 +1,5 @@
 """
-The steps after a recording (campy/post.py): remux, export, copy, run, after
+The steps after a recording (campy/post.py): remux, align, export, copy, run, after
 a clean stop only, and again by hand (campy-session post).
 """
 
@@ -168,6 +168,45 @@ def test_running_again_does_only_what_is_not_done(tmp_path, capsys):
 	assert "remux: done already" in log and "ended with exit code 3" in log
 
 
+# ------------------------------------------------------------------ align
+
+def frame_times(folder, missed=(), frames=12, rate=20):
+	# frametimes.npy for frames triggers apart from the missed ones, and arrival times, as campy writes them
+	k = np.array([k for k in range(1, frames + 1 + len(missed)) if k not in missed])
+	np.save(str(folder / "frametimes.npy"), np.array([np.arange(1, len(k) + 1), (k - 1) / rate]))
+	np.save(str(folder / "hosttimes.npy"), (10 ** 12 + (k - 1) * 10 ** 9 // rate + 5 * 10 ** 6).astype(np.int64))
+
+
+def test_align_says_where_the_trigger_paused(tmp_path):
+	folder = recording(tmp_path)
+	for name in CAMERAS:
+		write_metadata(folder / name / "metadata.csv", framesWritten=40, cameraTrigger="Line3", cameraMake="flir")
+		frame_times(folder / name, missed=range(20, 25), frames=40)
+	(folder / "trigger.json").write_text(json.dumps({"triggerStarted": True, "readyBeforeTrigger": CAMERAS}))
+	results = post.Run(str(folder), {"remux": False}, only=["align"])
+	assert results["align"] == ("done", "2 of 2 cameras on the trigger's timeline (alignment.json, aligned.csv); the "
+		"trigger paused 1 time, 5 pulses (0.25 s) with no frame in any camera")
+	summary = json.loads((folder / "alignment.json").read_text())
+	assert summary["trigger_pauses"] == [{"first_trigger": 20, "triggers": 5, "seconds": 0.25, "at_s": 0.95}]
+	assert (folder / "Camera0" / "aligned.csv").is_file()
+	assert "The trigger paused 1 time" in (folder / "logs" / "post.log").read_text()
+
+
+def test_align_with_nothing_wrong_and_with_nothing_to_align(tmp_path):
+	folder = recording(tmp_path)
+	for name in CAMERAS:
+		write_metadata(folder / name / "metadata.csv", framesWritten=40, cameraTrigger="Line3", cameraMake="flir")
+		frame_times(folder / name, frames=40)
+	assert post.Run(str(folder), {}, only=["align"])["align"] == ("done", "2 of 2 cameras on the trigger's timeline "
+		"(alignment.json, aligned.csv); no trigger pulse without a frame")
+	free = recording(tmp_path / "free") # free-running cameras: no trigger to align to
+	for name in CAMERAS:
+		frame_times(free / name)
+	state, message = post.Run(str(free), {}, only=["align"])["align"]
+	assert state == "skipped" and message.startswith("nothing to align: ")
+	assert post.Run(str(free), {"align": False}, only=["align"])["align"] == ("skipped", "align is off")
+
+
 # ------------------------------------------------------------------ export
 
 def live_log(path, frames, with_summary=True, cameras=2):
@@ -272,7 +311,7 @@ def test_campy_session_post_by_hand(tmp_path):
 	out = campy_session("--only", "remux")
 	assert "remux: done already" in out.stdout
 	out = campy_session("--only", "rmux")
-	assert out.returncode == 1 and "--only takes remux, join, export, copy, run" in out.stderr
+	assert out.returncode == 1 and "--only takes remux, join, align, export, copy, run" in out.stderr
 
 	crashed = recording(tmp_path / "crashed", clean=False, launcher_code=None)
 	out = subprocess.run([sys.executable, "-m", "campy.session", "post", str(crashed)], capture_output=True, text=True,

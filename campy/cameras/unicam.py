@@ -485,6 +485,11 @@ def GrabData(cam_params):
 	return grabdata
 
 
+def Triggered(cam_params):
+	# A camera that takes a frame at each trigger pulse (a RatCam runs on its own clock)
+	return str(cam_params.get("cameraTrigger", "None")) != "None" and cam_params.get("cameraMake") != "ratcam"
+
+
 def MaxQueueFrames(cam_params):
 	# writeQueueMaxSec as a number of frames; None = unbounded
 	max_sec = cam_params.get("writeQueueMaxSec", "None")
@@ -566,6 +571,7 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 	maxQueue = MaxQueueFrames(cam_params)
 	watch = FrameWatch(cam_params)
 	mine = status.This() # this camera's counters, for campy's recording watch (campy/watch.py)
+	gaps = frametimes.TriggerGaps() if Triggered(cam_params) else None # trigger pulses without a frame
 	feed = livefeed.Feed(cam_params, say=Say) # liveFeed: every frame into shared memory too
 	frameNumber = 0
 
@@ -606,6 +612,8 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 				img = cam.GetImageArray(grabResult)
 				frameNumber += 1 # first frame = 1
 				timeStamp = cam.GetTimeStamp(grabResult)
+				if gaps is not None and gaps.Add(timeStamp, frameNumber):
+					mine.Missed(gaps.missed, gaps.frame)
 
 				# Queue the frame for the writer, with its frameNumber and timeStamp,
 				# unless the writer is writeQueueMaxSec behind

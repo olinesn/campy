@@ -104,6 +104,8 @@ POST = {
 		"one stays beside it) or false"),
 	"join": ((bool,), True, "a camera's video files after an ffmpeg restart (restartFfmpeg) joined into one, "
 		"without re-encoding, checked packet by packet"),
+	"align": ((bool,), True, "campy-align: every camera on the trigger's timeline (aligned.csv, alignment.json), and "
+		"where the trigger paused"),
 	"export": ((bool,), True, "campy-live-export, when campy-live ran"),
 	"copy": ((dict, str), {}, "copy the recording to copy.to/<its folder's name> (robocopy or rsync); nothing deleted"),
 	"run": ((list,), [], "your own commands, {folder} replaced by the recording's folder"),

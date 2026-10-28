@@ -1,7 +1,8 @@
 """
 campy-acquire's recording watch (campy/watch.py), check by check, on made-up
 counters and a made-up clock: a camera with no frames, all of them at once
-(the trigger), the first frame late, dropped frames, a stalled writer, a
+(the trigger), the trigger pausing, a camera missing trigger pulses, the first
+frame late, dropped frames, a stalled writer, a
 camera that ends, the disk filling (and the clean stop before it is full),
 the trigger's port gone, a camera on USB 2, the GPU's kernel log (firmware
 stalls, hung jobs, resets); and the messages as the
@@ -84,6 +85,7 @@ class Rig:
 			port_gone=lambda port: None, gpu_log=gpu_log)
 		self.grabbed = [0] * len(names)
 		self.dropped = [0] * len(names)
+		self.missed = [0] * len(names)
 		for row in self.rows:
 			row.State(status.GRABBING)
 
@@ -98,6 +100,12 @@ class Rig:
 		self.grabbed[c] += n
 		self.rows[c].Frame(self.grabbed[c], queued)
 		self.rows[c].Sent(self.grabbed[c] - queued if sent is None else sent)
+
+	def Pause(self, c, pulses):
+		# Camera c's next frame comes after pulses trigger pulses without a frame (frametimes.TriggerGaps)
+		self.missed[c] += pulses
+		self.Frame(c)
+		self.rows[c].Missed(self.missed[c], self.grabbed[c])
 
 	def Run(self, seconds, cameras=None, every=1.0 / 30, queued=0):
 		# seconds of frames from these cameras (default: all), the watch checking every EVERY_S
@@ -664,3 +672,83 @@ def test_start_reads_the_kernel_log_only_where_it_should(monkeypatch, tmp_path):
 		rig.watch.gpuLog = None
 		rig.watch.Stop({}, timeout=0)
 	assert len(started) == 1
+
+
+def test_the_trigger_pauses(monkeypatch, tmp_path):
+	rig = Rig(monkeypatch, tmp_path, cameraTrigger="Line3").Start()
+	rig.Run(20)
+	rig.Pause(0, 68)
+	rig.watch.Check() # Camera0's next frame came; the others' are a few ms behind: not said yet
+	assert len(rig.Sent()) == 1
+	rig.clock.now += 0.004
+	rig.Pause(1, 68)
+	rig.Pause(2, 68)
+	rig.Run(watch.EVERY_S)
+	# One warning, not one per camera
+	assert rig.Sent()[1:] == [":large_orange_circle: *Test rig*: The trigger paused: all 3 cameras got no frame for the "
+		"same 68 pulses (2.27 s), just before frame 601, about 22 s in. No frame was lost, but from there on the frames "
+		"are 2.27 s later than their numbers say at 30 fps; frametimes.npy has each one's time."]
+	rig.Run(30)
+	for c in range(3):
+		rig.Pause(c, 10)
+	rig.Run(watch.EVERY_S) # a second one, within 2 min: the same alert, its text changed
+	assert len(rig.Sent()) == 2
+	assert rig.watch.Open()["trigger/paused"].text.endswith(" Pause 2 of the recording.")
+	status = rig.watch.Status("recording")
+	assert status["trigger_pauses"] == [{"pulses": 68, "seconds": 2.267, "before_frame": 601},
+		{"pulses": 10, "seconds": 0.333, "before_frame": 1562}]
+	assert [c["trigger_pulses_without_frame"] for c in status["cameras"]] == [78, 78, 78]
+	rig.Run(watch.MISSED_CLEAR_S + watch.EVERY_S)
+	assert rig.Sent()[-1].endswith("Trigger: no pause for 2 min (2 in all)")
+	rig.watch.Stop()
+	assert rig.Sent()[-1].startswith(":large_orange_circle: *Test rig*: Recording 2026-10-23_01-00-00 ended after ")
+	assert rig.Sent()[-1].split("\n")[0].endswith(", with the trigger paused:")
+	assert rig.Sent()[-1].endswith("\n- The trigger paused 2 times: 78 pulses without a frame in every camera "
+		"(2.60 s), the first just before frame 601. From each pause on, the frames are later than their numbers say; "
+		"frametimes.npy has each one's time.")
+
+
+def test_a_camera_misses_trigger_pulses(monkeypatch, tmp_path):
+	rig = Rig(monkeypatch, tmp_path, cameraTrigger="Line3").Start()
+	rig.Run(20)
+	rig.Pause(1, 3)
+	rig.Run(watch.EVERY_S)
+	assert rig.Sent()[1:] == [":large_orange_circle: *Test rig*: Camera1: no frame for 3 trigger pulses (0.10 s) that "
+		"the other cameras got, just before its frame 601. Counted from the start, its frames are out of step with "
+		"theirs from there on; campy-align puts every camera on the trigger's timeline."]
+	# The trigger pausing as Camera1 also misses a pulse: the pause, and Camera1's one more
+	rig.Pause(0, 30)
+	rig.Pause(1, 31)
+	rig.Pause(2, 30)
+	rig.Run(watch.EVERY_S)
+	assert rig.Sent()[-1].startswith(":large_orange_circle: *Test rig*: The trigger paused: all 3 cameras got no frame "
+		"for the same 30 pulses (1.00 s)")
+	assert rig.watch.Open()["Camera1/missed"].text.startswith("Camera1: no frame for 1 trigger pulse (0.03 s) that "
+		"the other cameras got, just before its frame 662 (4 in all).")
+	rig.watch.Stop()
+	lines = rig.Sent()[-1].split("\n")
+	assert lines[0].endswith(", with the trigger paused:")
+	assert lines[2].startswith("- Camera1: 722 frames, no frame for 4 trigger pulses the other cameras got")
+	assert lines[1] == "- Camera0: 721 frames" # (Camera1 had one more: its first pause's frame)
+
+
+def test_untriggered_cameras_have_no_pulses_to_miss(monkeypatch, tmp_path):
+	rig = Rig(monkeypatch, tmp_path).Start() # cameraTrigger "None": free-running
+	rig.Run(20)
+	for c in range(3):
+		rig.Pause(c, 68)
+	rig.Run(watch.EVERY_S)
+	rig.watch.Stop()
+	assert len(rig.Sent()) == 2 and "paused" not in rig.Sent()[-1]
+
+
+def test_a_lone_triggered_camera_can_not_tell_a_pause(monkeypatch, tmp_path):
+	rig = Rig(monkeypatch, tmp_path, names=["Camera0"], cameraTrigger="Line3").Start()
+	rig.Run(20)
+	rig.Pause(0, 15)
+	rig.Run(watch.EVERY_S)
+	assert rig.Sent()[-1] == ":large_orange_circle: *Test rig*: Camera0: no frame for 15 trigger pulses (0.50 s), just " \
+		"before frame 601: the trigger paused, or the camera missed them. From there on its frames are later than " \
+		"their numbers say; frametimes.npy has each one's time."
+	rig.watch.Stop()
+	assert "- Camera0: 661 frames, no frame for 15 trigger pulses" in rig.Sent()[-1]

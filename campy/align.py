@@ -14,6 +14,10 @@ What it works out, for every camera:
   n periods between two frames means n - 1 triggers left no frame: campy
   dropped some itself (a gap in frametimes.npy's frame numbers, when the
   encoder fell behind) and the camera missed the rest;
+- where the trigger paused: triggers that no triggered camera has a frame
+  for, with two cameras or more. No frame is lost there, but every frame
+  after is later than its number says. A camera's "missed" triggers leave
+  those out;
 - for a RatCam, each frame's fractional trigger, between the pulses around it;
 - where the camera started. When campy starts the trigger itself
   (startArduino), it waits until every camera is grabbing, and trigger.json
@@ -217,8 +221,13 @@ def CountTriggers(cam, nominal):
 	cam["period"] = OwnPeriod(cam["t"], nominal)
 	cam["k"], steps, cam["irregular"] = Steps(cam["t"], cam["period"])
 	cam["without_frame"] = int(np.sum(steps[steps > 1] - 1))
-	cam["dropped"] = int(np.sum(np.diff(cam["frame"]) - 1))
+	numbers = np.diff(cam["frame"])
+	cam["dropped"] = int(np.sum(numbers - 1))
 	cam["missed"] = cam["without_frame"] - cam["dropped"]
+	# Where the camera sent no frame (more triggers than frame numbers between two rows): the triggers between, from
+	# 0 as k. Campy's own drops alone are none of them; a gap with both is taken whole.
+	at = np.nonzero(steps > numbers)[0]
+	cam["gaps"] = [(int(cam["k"][i]) + 1, int(cam["k"][i + 1]) - 1) for i in at]
 	if cam["irregular"]:
 		cam["warnings"].append("{} steps between frames are not a whole number of trigger periods"\
 			.format(cam["irregular"]))
@@ -385,6 +394,40 @@ def Align(cams, ready=None):
 	return period, ref
 
 
+def Pauses(cams):
+	"""
+	Where the trigger paused: [(first, last)] triggers (on the timeline, from
+	1) that no triggered camera has a frame for, each camera's gaps
+	overlapped. Needs two triggered cameras: one camera alone can't tell a
+	pause from pulses it missed. Each camera's in_pauses: how many of its
+	triggers without a frame were in them.
+	"""
+	cams = [c for c in cams if c["usable"] and not c["ratcam"]]
+	for c in cams:
+		c["in_pauses"] = 0
+	if len(cams) < 2:
+		return []
+	common = [(a + c0["start"] + 1, b + c0["start"] + 1) for c0 in cams[:1] for a, b in c0["gaps"]]
+	for c in cams[1:]:
+		gaps = [(a + c["start"] + 1, b + c["start"] + 1) for a, b in c["gaps"]]
+		common = [(max(a, x), min(b, y)) for a, b in common for x, y in gaps if max(a, x) <= min(b, y)]
+	for c in cams:
+		c["in_pauses"] = sum(b - a + 1 for a, b in common)
+		c["missed"] = max(0, c["missed"] - c["in_pauses"])
+	return common
+
+
+def PausesText(pauses, period):
+	if not pauses:
+		return None
+	n = sum(b - a + 1 for a, b in pauses)
+	where = "; ".join("{} trigger{} ({:.2f} s) from trigger {} ({:.2f} s in)".format(b - a + 1, "" if a == b else "s",
+		(b - a + 1) * period, a, (a - 1) * period) for a, b in pauses[:5])
+	return "The trigger paused {} time{}, {} triggers ({:.2f} s) in all, with no frame in any camera: {}{}. No frame " \
+		"is lost there, but each frame after is later than its number says; aligned.csv's t_s has the right time."\
+		.format(len(pauses), "" if len(pauses) == 1 else "s", n, n * period, where, "; ..." if len(pauses) > 5 else "")
+
+
 # ------------------------------------------------------------------ output
 
 def CameraSummary(c):
@@ -411,6 +454,7 @@ def CameraSummary(c):
 		s.update({
 			"triggers_without_frame": c["without_frame"],
 			"dropped_by_campy": c["dropped"],
+			"in_trigger_pauses": c.get("in_pauses", 0),
 			"missed_by_camera": c["missed"],
 			})
 		if "lag_ms" in c:
@@ -444,8 +488,9 @@ def Describe(c):
 	else:
 		text = "{} frames, triggers {}-{}".format(len(c["frame"]), c["trigger"][0], c["trigger"][-1])
 		if c["without_frame"]:
-			text += ": {} triggers without a frame ({} dropped by campy, {} missed by the camera)".format(
-				c["without_frame"], c["dropped"], c["missed"])
+			text += ": {} triggers without a frame ({} dropped by campy, {}{} missed by the camera)".format(
+				c["without_frame"], c["dropped"], "{} while the trigger paused, ".format(c["in_pauses"])
+				if c.get("in_pauses") else "", c["missed"])
 	if c["start_how"] == "assumed":
 		text += "; started at trigger {} (assumed: no arrival times)".format(c["start"] + 1)
 	elif c["start_how"] == "ready before the trigger":
@@ -459,11 +504,14 @@ def Run(folder, log=print):
 	cams = LoadRecording(folder)
 	ready = ReadTriggerStart(folder)
 	period, ref = Align(cams, ready)
+	pauses = Pauses(cams)
 	summary = {
 		"trigger_period_s": period,
 		"trigger_rate_hz": 1.0 / period,
 		"ready_before_trigger": sorted(ready) if ready is not None else None,
 		"starts_from": ref["name"] if ref else None,
+		"trigger_pauses": [{"first_trigger": a, "triggers": b - a + 1, "seconds": round((b - a + 1) * period, 6),
+			"at_s": round((a - 1) * period, 6)} for a, b in pauses],
 		"cameras": {c["name"]: CameraSummary(c) for c in cams},
 		}
 	for c in cams:
@@ -480,6 +528,8 @@ def Run(folder, log=print):
 			.format(period * 1e3, 1.0 / period, ", by arrival times" if ref else " (assumed: no arrival times)"))
 	else:
 		log("No camera could be put on a trigger timeline:")
+	if pauses:
+		log(PausesText(pauses, period))
 	width = max(len(c["name"]) for c in cams)
 	for c in cams:
 		log("  {:<{w}}  {:<6}  {}".format(c["name"], c["make"], Describe(c), w=width))
