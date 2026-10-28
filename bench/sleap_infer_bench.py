@@ -14,8 +14,9 @@ set of synchronized camera frames:
       -> centered-instance model + global peak finding (integral refinement)
 
 Compute time does not depend on the weights, so this can be used to pick
-model sizes before labelling and training. It is standalone: campy is not
-imported, and nothing here is installed with campy.
+model sizes before labelling and training. It is standalone: campy is
+imported only for --fixed-crops and --cpus (campy-live's own code, below),
+and nothing here is installed with campy.
 
 What is measured
 ----------------
@@ -230,6 +231,10 @@ import threading
 import time
 import warnings
 from datetime import datetime
+
+# Before torch: importing sleap-nn sets TORCHINDUCTOR_CACHE_DIR (the temp folder's), and campy-live keeps
+# torch.compile's kernels in --engine-cache unless it was set by whoever started it
+_INDUCTOR_DIR = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
 
 import numpy as np
 import torch
@@ -1144,6 +1149,9 @@ def main():
         why = _LIVE.FixedEngine.Pick(device)[1] if asked == "auto" else None
         if why:
             skipped.append(f"--engine auto: {why}; so the networks run in torch")
+        if args.engine == "compile" and not _INDUCTOR_DIR:
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(_LIVE.FixedEngine.CacheDir(args.engine_cache),
+                                                                 "inductor")
     if args.cpus != "none":
         placed, _ = _LIVE.PlaceSelf(argparse.Namespace(cpus=args.cpus, priority=args.priority, model="random",
                                                        device=device))
