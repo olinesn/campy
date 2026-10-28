@@ -106,7 +106,7 @@ Before recording, campy checks the config and the computer, and most problems sh
 
 **`campy-live` skips sets.** The model is too slow for this machine and frame rate. A few skipped in the first fraction of a second on CUDA are the first sets warming up. Skips throughout mean you need a lighter model ([Models](models.md#choosing-one-that-keeps-up)). On a Windows PC with an Intel hybrid CPU, see [Hardware](hardware.md) on pinning.
 
-**`campy-live` is slower than the measurements say.** Check that the GPU keeps its clock up (`--hold-gpu-clock`, on by default with NVIDIA and AMD GPUs), that no monitor is plugged into the inference GPU, and that nothing else uses the GPU ([On Windows](live-tracking.md#on-windows-nvidia-cuda)).
+**`campy-live` is slower than the measurements say.** Check that the GPU keeps its clock up (`--hold-gpu-clock`, on by default with NVIDIA and AMD GPUs), that `campy-live` isn't running on the CPU that handles the GPU's interrupts (it avoids that CPU by default on Windows, `--cpus auto`), and that nothing else uses the GPU ([On Windows](live-tracking.md#on-windows-nvidia-cuda)).
 
 **"misaligned" sets.** A set's frames reached the computer more than half a frame apart: one camera's frames came late, or a camera lost a frame (`flirFramesLost` in its `metadata.csv`) and numbers its frames one lower than the others ([Live pose estimation](live-tracking.md#live-pose-estimation-livefeed-campy-live)).
 

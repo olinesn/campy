@@ -113,9 +113,10 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
   <h2>Recommendations</h2>
   <ol class="recs">
     <li>
-      <h3>Buy a discrete NVIDIA GPU for inference, and plug no monitor into it.</h3>
-      <p>The RTX 6000 Ada met 60 fps at p99 in every one of 32 model-size combinations at 3 cameras and in 28 of 32 at 8 cameras. The RTX 2000 Ada met it in at most 6 of 32 when idle, and while recording in none unpinned and 8 of 32 with its CPU threads pinned (below). With its clock held up, the live pipeline's trained pair now runs in 13 ms on it, 60 fps included (below).</p>
-      <p class="why">The RTX 4000 Ada in the same workstation is good enough too, once inference stays off the CPU that handles its interrupts, which <code>campy-live</code> now does by default on Windows: with campy's benchmark pinned to other cores, 31 of 32 sizes fit 60 fps at 3 cameras and p99 sat 0.45 ms above the median. Unpinned, it had looked like an 18 ms p99 floor in every configuration, with or without a monitor (below, "One CPU core").</p>
+      <h3>For 3 cameras, every GPU tested is fast enough now; a discrete NVIDIA card leaves the most room.</h3>
+      <p>With the models compiled, as <code>campy-live</code> runs them by default since pull request 147, every GPU tested tracks 5 mice on 3 cameras at 60 fps with time to spare in the 16.7 ms between frames. While recording three emulated cameras, a set took 1.6 ms on the RTX 6000 Ada (p99 3.7), 5.9 ms on the Pro Max Slim's RTX 2000 Ada (p99 6.5) and 6.1 ms on the EVO-X2's integrated AMD GPU (p99 6.3); the RTX 4000 Ada took 3.4 ms on the 5-mouse replay (below). With four cameras at 60 fps the RTX 2000 Ada took 7.2 ms (p99 7.9; below, "Four cameras"). So the 70 W RTX 2000 Ada and the EVO-X2's built-in GPU are now about as fast as each other, and the larger NVIDIA cards leave room for more cameras or heavier models.</p>
+      <p class="why">Before compiled models the gap was much larger. In campy's 32-model-size benchmark, run in plain PyTorch, the RTX 6000 Ada met 60 fps at p99 in all 32 combinations at 3 cameras and in 28 of 32 at 8, and the RTX 2000 Ada in at most 6 of 32 idle (8 of 32 while recording, with its CPU threads pinned). That benchmark hasn't been run again with compiled models, and no 8-camera test has either, so what 8 cameras need now isn't known yet.</p>
+      <p class="why">Whatever the card, keep inference off the CPU that handles the GPU's interrupts, which <code>campy-live</code> does by default on Windows. Until it did, the RTX 4000 Ada looked like it had an 18 ms p99 floor in every configuration; with campy's benchmark pinned to other cores, 31 of 32 sizes fit 60 fps at 3 cameras and p99 sat 0.45 ms above the median. Unplugging its monitor made no difference (below, "One CPU core"), so the guide no longer advises against a monitor on the inference card.</p>
     </li>
     <li>
       <h3>Pick a CPU with fast cores, and at least 8 of them for 3 cameras plus inference.</h3>
@@ -170,7 +171,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     </li>
     <li>
       <h3>A Strix Halo mini-PC (EVO-X2) handles 3 cameras, but not 8.</h3>
-      <p>At 3 cameras it met 60 fps in 13–18 of 32 model combinations, recording included. With three real FLIR cameras triggered at 60 fps by an Arduino, 12–13 fit and the default pair ran at 9.2 ms median, 9.6 ms p99. With trained models it tracked every set of a 12-minute 3-camera recording from the first frame, none skipped, with 3D poses ready 13.2 ms after the last frame of a set arrived (p99 14.5 ms). With real footage of 5 mice replayed at 60 fps, the 160 px-crop model kept up with nothing skipped and 3D ready 16.8 ms after the frames (p99 19–20 ms). At 8 cameras its fastest pipeline needed 24 ms per set idle and 28 ms while recording 8 streams at 60 fps: about 35 fps. The recording itself held up: 8 × 72,000 frames over 20 minutes, none dropped, no GPU errors.</p>
+      <p>At 3 cameras it met 60 fps in 13–18 of 32 model combinations, recording included. With three real FLIR cameras triggered at 60 fps by an Arduino, 12–13 fit and the default pair ran at 9.2 ms median, 9.6 ms p99. With trained models it tracked every set of a 12-minute 3-camera recording from the first frame, none skipped, with 3D poses ready 13.2 ms after the last frame of a set arrived (p99 14.5 ms). With real footage of 5 mice replayed at 60 fps, the 160 px-crop model kept up with nothing skipped and 3D ready 16.8 ms after the frames (p99 19–20 ms). With the models compiled (<code>torch.compile</code>, the default since pull request 147), 5 mice on 3 cameras took 6.1 ms per set while recording, 3D ready 8.1 ms after the frames (below). At 8 cameras its fastest pipeline needed 24 ms per set idle and 28 ms while recording 8 streams at 60 fps: about 35 fps. That was before compiled models, and 8 cameras haven't been measured since. The recording itself held up: 8 × 72,000 frames over 20 minutes, none dropped, no GPU errors.</p>
     </li>
     <li>
       <h3>Triangulation and 3D tracking cost little, and no longer add to the time per set.</h3>
@@ -645,7 +646,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 
 <footer>
   <p>Measured 18–22 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
-  <p class="meta">Version 54 · updated 28 October 2026 · reflects campy changes through pull request 224 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p class="meta">Version 55 · updated 28 October 2026 · reflects campy changes through pull request NNN · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 
