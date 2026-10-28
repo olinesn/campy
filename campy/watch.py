@@ -12,6 +12,15 @@ and checks:
                    alertNoFramesSec (10 s): critical. Every camera at once
                    (their last frames within a second of each other): one
                    alert, the trigger has stopped
+  trigger pause    a triggered camera's own timestamps show trigger pulses
+                   it got no frame for (status.Camera.Missed, counted by
+                   frametimes.TriggerGaps). Every camera missing the same
+                   pulses, within a second of each other: the trigger
+                   paused, a warning once frames come again (the trigger that stops
+                   for good is "no frames" above). One camera only: it
+                   missed them, a warning. No frame is lost in a pause, but
+                   from there on the frames are later than their numbers
+                   say. Each resolved after 2 min without another
   first frame      no frame 10 s after the trigger Arduino started (an
                    external trigger: a warning after 10 min of waiting)
   dropped frames   frames dropped in the last minute, because more than
@@ -73,10 +82,12 @@ another folder), for a control panel to show (campy-session's):
   session      {folder, started_at, elapsed_s, planned_s}
   cameras      [{name, serial, make, fps_target, fps_measured, frames,
                dropped, write_queue_s, usb_speed (Mb/s; Linux, Windows), state,
-               ffmpeg_restarts, frames_lost_in_encoder}]
+               ffmpeg_restarts, frames_lost_in_encoder,
+               trigger_pulses_without_frame (pauses included)}]
   disk         [{path, free_gb, projected_full_at (ISO, or null)}]
   open         [{key, severity, text}]: the problems open now
   last_error   {time, text} of the last critical problem, or null
+  trigger_pauses [{pulses, seconds, before_frame}]: the trigger's pauses so far
   gpu_log      null (not Linux with an AMD GPU, or alertGpuLog False), or
                {read_with ("journalctl", "/dev/kmsg" or null), not_read
                (why not, or null), stalls, hangs, resets (counts so far),
@@ -108,6 +119,8 @@ STALL_CLEAR_S = 30.0
 FIRST_FRAME_S = 10.0 # after the trigger Arduino started
 EXTERNAL_WAIT_S = 600.0 # an external trigger (startArduino False): waiting this long is said
 TOGETHER_S = 1.0 # cameras whose last frames are this close stopped together: the trigger
+MISSED_SETTLE_S = 1.0 # pulses without a frame are looked at once this old: every camera that missed them has said so
+MISSED_CLEAR_S = 120.0 # a trigger pause, or a camera's missed pulses, are over once none came for this long
 SENT_WINDOW_S = 10.0
 RESTARTS_PER_HOUR = 3 # as writer.RESTARTS_PER_HOUR (a test checks), which this module does not import
 DiskUsage = shutil.disk_usage # (tests replace it: a disk that fills)
@@ -194,6 +207,9 @@ class Watch:
 		self.restartsSaid = collections.defaultdict(int) # camera: ffmpeg restarts said
 		self.countedSaid = collections.defaultdict(int) # camera: stopped ffmpegs' files counted, as said
 		self.lostSaid = collections.defaultdict(int) # camera: frames lost in them, as said
+		self.missedSaid = collections.defaultdict(int) # camera: trigger pulses without a frame, as said
+		self.pauses = [] # the trigger's pauses: (pulses, the frame after)
+		self.missedAlone = collections.defaultdict(int) # camera: pulses it missed that the others got
 		self.lastError = None
 		self.errors = set()
 		self.done = threading.Event()
@@ -295,9 +311,10 @@ class Watch:
 		rows = [self.counters.Row(c) for c in range(len(self.names))]
 		for c, (name, row) in enumerate(zip(self.names, rows)):
 			self.CheckRestarts(c, name, row)
+		ns = camstatus.Now()
+		self.CheckMissed(rows, ns, now)
 		if self.stopping():
 			return # Ctrl-C: the cameras are ending, as asked
-		ns = camstatus.Now()
 		gaps = {} # camera: (seconds without a frame, its last frame's ns), of those grabbing that have sent frames
 		failures = self.Failures()
 		for c, (name, row) in enumerate(zip(self.names, rows)):
@@ -401,6 +418,75 @@ class Watch:
 		for c in quiet:
 			self.Raise("{}/no-frames".format(self.names[c]), notify.CRITICAL, "{}: no frame for {:.0f} s, since frame "
 				"{}".format(self.names[c], gaps[c][0], rows[c]["grabbed"]))
+
+	def Triggered(self, c):
+		# Whether camera c takes a frame at each trigger pulse (as unicam.Triggered): its pulses without a frame count
+		cam = self.cams[c] if self.cams and c < len(self.cams) else self.params
+		return str(cam.get("cameraTrigger", self.params.get("cameraTrigger", "None"))) != "None" and \
+			cam.get("cameraMake", self.params.get("cameraMake")) != "ratcam"
+
+	def CheckMissed(self, rows, ns, now, final=False):
+		# Trigger pulses without a frame, new since the last check, once every camera that missed them has had its
+		# next frame (MISSED_SETTLE_S; final: now). Every camera at once: the trigger paused. Else each camera's own.
+		triggered = [c for c, row in enumerate(rows) if row["grabbed"] > 0 and self.Triggered(c) and
+			row["state"] in (camstatus.GRABBING, camstatus.ENDED)] # a camera that failed is said apart
+		new = {c: rows[c]["missed"] - self.missedSaid[c] for c in triggered if rows[c]["missed"] > self.missedSaid[c]}
+		if not new:
+			if self.pauses:
+				self.Clear("trigger/paused", "Trigger: no pause for {} ({} in all)".format(
+					notify.Duration(MISSED_CLEAR_S), len(self.pauses)), now)
+			for c, n in self.missedAlone.items():
+				self.Clear("{}/missed".format(self.names[c]), "{}: no trigger pulse missed for {} ({} in all)".format(
+					self.names[c], notify.Duration(MISSED_CLEAR_S), n), now)
+			return
+		if not final and (ns - max(rows[c]["missedNs"] for c in new)) / 1e9 < MISSED_SETTLE_S:
+			return
+		for c in new:
+			self.missedSaid[c] = rows[c]["missed"]
+		resumed = [rows[c]["missedNs"] for c in new]
+		if len(triggered) >= 2 and len(new) == len(triggered) and (max(resumed) - min(resumed)) / 1e9 <= TOGETHER_S:
+			n = min(new.values())
+			frame = min(rows[c]["missedFrame"] for c in new)
+			self.pauses.append((n, frame))
+			self.RaisePause(len(triggered), n, frame, now)
+			new = {c: k - n for c, k in new.items() if k > n} # more than the pause: missed by that camera too
+		for c, n in new.items():
+			name = self.names[c]
+			self.missedAlone[c] += n
+			if len(triggered) >= 2:
+				text = "{}: no frame for {} trigger pulse{} ({:.2f} s) that the other cameras got, just before its " \
+					"frame {}{}. Counted from the start, its frames are out of step with theirs from there on; " \
+					"campy-align puts every camera on the trigger's timeline.".format(name, n, "" if n == 1 else "s",
+					n / self.frameRate, rows[c]["missedFrame"], self.InAll(self.missedAlone[c], n))
+			else:
+				text = "{}: no frame for {} trigger pulse{} ({:.2f} s), just before frame {}{}: the trigger paused, " \
+					"or the camera missed them. From there on its frames are later than their numbers say; " \
+					"frametimes.npy has each one's time.".format(name, n, "" if n == 1 else "s", n / self.frameRate,
+					rows[c]["missedFrame"], self.InAll(self.missedAlone[c], n))
+			self.Raise("{}/missed".format(name), notify.WARNING, text, hold=MISSED_CLEAR_S)
+
+	def InAll(self, total, n):
+		return " ({} in all)".format(total) if total != n else ""
+
+	def RaisePause(self, cameras, n, frame, now):
+		total = sum(p for p, _ in self.pauses)
+		since = notify.Duration(now - self.started) if self.started is not None else "?"
+		text = "The trigger paused: all {} cameras got no frame for the same {} pulse{} ({:.2f} s), just before frame " \
+			"{}, about {} in. No frame was lost, but from there on the frames are {:.2f} s later than their numbers " \
+			"say at {:g} fps; frametimes.npy has each one's time.".format(cameras, n, "" if n == 1 else "s",
+			n / self.frameRate, frame, since, total / self.frameRate, self.frameRate)
+		if len(self.pauses) > 1:
+			text += " Pause {} of the recording.".format(len(self.pauses))
+		self.Raise("trigger/paused", notify.WARNING, text, hold=MISSED_CLEAR_S)
+
+	def PausesText(self):
+		if not self.pauses:
+			return None
+		total = sum(n for n, _ in self.pauses)
+		return "The trigger paused {} time{}: {} pulse{} without a frame in every camera ({:.2f} s), the first just " \
+			"before frame {}. From each pause on, the frames are later than their numbers say; frametimes.npy has " \
+			"each one's time.".format(len(self.pauses), "" if len(self.pauses) == 1 else "s", total,
+			"" if total == 1 else "s", total / self.frameRate, self.pauses[0][1])
 
 	def TriggerText(self):
 		if self.external:
@@ -696,7 +782,7 @@ class Watch:
 				"fps_target": self.frameRate, "fps_measured": fps, "frames": row["grabbed"], "dropped": row["dropped"],
 				"write_queue_s": round(row["queued"] / self.frameRate, 2), "usb_speed": self.usbSpeed.get(name),
 				"state": STATE_NAMES.get(row["state"], str(row["state"])), "ffmpeg_restarts": row["restarts"],
-				"frames_lost_in_encoder": row["lost"]})
+				"frames_lost_in_encoder": row["lost"], "trigger_pulses_without_frame": row["missed"]})
 		return {"schema": STATUS_SCHEMA, "updated_at": Wall(), "host_model": self.notifier.source or None,
 			"campy_version": CampyVersion(), "state": state,
 			"session": {"folder": self.folder, "started_at": self.startedAt,
@@ -704,7 +790,9 @@ class Watch:
 				"planned_s": self.recTime},
 			"cameras": cameras, "disk": list(self.diskState.values()),
 			"open": [{"key": k, "severity": p.severity, "text": p.text} for k, p in self.problems.items()],
-			"last_error": self.lastError, "gpu_log": self.GpuStatus()}
+			"last_error": self.lastError, "gpu_log": self.GpuStatus(),
+			"trigger_pauses": [{"pulses": n, "seconds": round(n / self.frameRate, 3), "before_frame": f}
+				for n, f in self.pauses]}
 
 	def WriteStatus(self, state):
 		try:
@@ -741,16 +829,23 @@ class Watch:
 
 	def StillOpen(self, severity=notify.WARNING):
 		# The problems open as the recording ends, at least this bad, oldest first. A camera that ended is left
-		# out (Ended says it on that camera's line), and so is the disk stop (its first line). A recording stopped (Ctrl-C, its stop file) while a camera
+		# out (Ended says it on that camera's line), and so is the disk stop (its first line), and so are trigger
+		# pauses and missed pulses (lines of their own). A recording stopped (Ctrl-C, its stop file) while a camera
 		# had no frames, or with the trigger unplugged, ends as asked, but did not record what it should have.
 		return [p for key, p in self.problems.items() if p.clearSince is None and not key.endswith("/ended") and
-			key != "disk/stop" and notify.LEVELS[p.severity] >= notify.LEVELS[severity]]
+			not key.endswith("/missed") and key not in ("disk/stop", "trigger/paused") and
+			notify.LEVELS[p.severity] >= notify.LEVELS[severity]]
 
 	def Ended(self, failures):
 		lines = []
 		dropped = restarts = 0
+		rows = [self.counters.Row(c) for c in range(len(self.names))]
+		try:
+			self.CheckMissed(rows, camstatus.Now(), self.clock(), final=True) # in its last seconds
+		except Exception as e:
+			self.say("Watch: could not count the trigger's pulses without a frame: {}".format(ErrorText(e)))
 		for c, name in enumerate(self.names):
-			row = self.counters.Row(c)
+			row = rows[c]
 			self.CheckRestarts(c, name, row) # one in its last seconds
 			dropped += row["dropped"]
 			restarts += row["restarts"]
@@ -760,9 +855,16 @@ class Watch:
 			if row["restarts"]:
 				text += ", in {} video files: {} ffmpeg restart{}, {} frame{} lost".format(row["restarts"] + 1,
 					row["restarts"], "" if row["restarts"] == 1 else "s", row["lost"], "" if row["lost"] == 1 else "s")
+			if self.missedAlone[c]:
+				text += ", no frame for {} trigger pulse{} the other cameras got".format(self.missedAlone[c],
+					"" if self.missedAlone[c] == 1 else "s") if len(self.names) > 1 else \
+					", no frame for {} trigger pulse{}".format(self.missedAlone[c], "" if self.missedAlone[c] == 1 else "s")
 			if name in failures:
 				text += ": " + "; ".join(failures[name])
 			lines.append("- " + text)
+		pauses = self.PausesText()
+		if pauses:
+			lines.append("- " + pauses)
 		took = notify.Duration(self.clock() - self.started) if self.started is not None else "?"
 		gpu = self.GpuText()
 		if gpu:
@@ -784,6 +886,12 @@ class Watch:
 				notify.WARNING
 		elif restarts:
 			head, severity = "Recording {} ended after {}, with ffmpeg restarted:".format(self.Session(), took), \
+				notify.WARNING
+		elif self.pauses:
+			head, severity = "Recording {} ended after {}, with the trigger paused:".format(self.Session(), took), \
+				notify.WARNING
+		elif any(self.missedAlone.values()):
+			head, severity = "Recording {} ended after {}, with trigger pulses missed:".format(self.Session(), took), \
 				notify.WARNING
 		elif still:
 			head, severity = "Recording {} ended after {}, with problems still open:".format(self.Session(), took), \

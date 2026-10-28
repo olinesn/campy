@@ -198,6 +198,21 @@ def test_the_trigger_pauses(tmp_path, service):
 	assert not any("no frame for" in t for t in texts), texts # not one per camera
 
 
+def test_a_short_trigger_pause_is_said(tmp_path, service):
+	# Shorter than alertNoFramesSec: no "stopped", but the pause, from the cameras' own timestamps. At 10 fps, so that
+	# a frame a busy test machine grabs late is no pulse missed.
+	code, out = Finish(Start(tmp_path, service, names=("Camera0", "Camera1", "Camera2"), rec=6, frameRate=10,
+		cameraTrigger='"Line0"', faults="*:stall@20+0.8"))
+	assert code == 0, out
+	texts = Texts(service)
+	(pause,) = [t for t in texts if t.startswith("The trigger paused: ")]
+	assert re.match(r"The trigger paused: all 3 cameras got no frame for the same [78] pulses \(0\.[78]0 s\), just "
+		r"before frame 21, about \d+ s in\.", pause), pause
+	assert not any(t.startswith("No camera has had a frame") for t in texts), texts
+	assert texts[-1].split("\n")[0].endswith(", with the trigger paused:"), texts[-1]
+	assert "- The trigger paused 1 time: " in texts[-1], texts[-1]
+
+
 def test_a_disk_that_fills_stops_the_recording_cleanly(tmp_path, service):
 	proc = Start(tmp_path, service, rec=60, extra=FILLING_DISK)
 	code, out = Finish(proc)

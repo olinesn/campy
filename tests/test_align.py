@@ -422,3 +422,39 @@ def test_placements_the_rounding_already_got_right(tmp_path):
 	s = summary["cameras"]["CamB"]
 	assert (s["start_trigger"], s["start_from"], s["start_unsure"]) == (300, "arrival times", False)
 	assert {int(r["frame"]): int(r["trigger"]) for r in aligned(triggered, "CamB")} == b
+
+
+def test_a_trigger_pause_is_told_apart_from_a_camera_missing_pulses(tmp_path):
+	pause = set(range(300, 368)) # 68 pulses no camera got a frame for
+	a = triggered_camera(tmp_path, "CamA", 1, 900, missed=pause | {500}, dropped={600, 601})
+	b = triggered_camera(tmp_path, "CamB", 1, 900, missed=pause, ppm=-40, lag_ms=7, seed=2)
+	c = triggered_camera(tmp_path, "CamC", 1, 900, missed=pause | {350, 700}, seed=3) # 350: inside the pause anyway
+	summary, text = run(tmp_path)
+	for name, truth in (("CamA", a), ("CamB", b), ("CamC", c)):
+		assert {int(r["frame"]): int(r["trigger"]) for r in aligned(tmp_path, name)} == truth
+	(p,) = summary["trigger_pauses"]
+	assert (p["first_trigger"], p["triggers"]) == (300, 68)
+	assert p["seconds"] == pytest.approx(68 * summary["trigger_period_s"])
+	assert p["at_s"] == pytest.approx(299 * summary["trigger_period_s"])
+	got = {n: (s["triggers_without_frame"], s["dropped_by_campy"], s["in_trigger_pauses"], s["missed_by_camera"])
+		for n, s in summary["cameras"].items()}
+	assert got == {"CamA": (71, 2, 68, 1), "CamB": (68, 0, 68, 0), "CamC": (69, 0, 68, 1)}
+	assert "The trigger paused 1 time, 68 triggers (1.13 s) in all, with no frame in any camera: 68 triggers " \
+		"(1.13 s) from trigger 300 (4.98 s in)." in text
+	assert "71 triggers without a frame (2 dropped by campy, 68 while the trigger paused, 1 missed by the camera)" in text
+
+
+def test_frames_campy_dropped_in_every_camera_are_no_pause(tmp_path):
+	# The encoders fell behind together: the cameras sent those frames, so the trigger did not pause
+	for n, name in enumerate(("CamA", "CamB")):
+		triggered_camera(tmp_path, name, 1, 600, dropped=set(range(200, 230)), seed=n)
+	summary, text = run(tmp_path)
+	assert summary["trigger_pauses"] == [] and "paused" not in text
+	assert all(s["dropped_by_campy"] == 30 and s["missed_by_camera"] == 0 for s in summary["cameras"].values())
+
+
+def test_one_camera_can_not_tell_a_pause(tmp_path):
+	triggered_camera(tmp_path, "CamA", 1, 600, missed=set(range(300, 368)))
+	summary, text = run(tmp_path)
+	assert summary["trigger_pauses"] == []
+	assert summary["cameras"]["CamA"]["missed_by_camera"] == 68 and "paused" not in text

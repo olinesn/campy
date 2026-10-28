@@ -17,8 +17,10 @@ This() is a Camera whose stores do nothing.
 from campy import clock
 
 # A camera's row: its fields, in this order
-FIELDS = ("grabbed", "queued", "sent", "dropped", "frameNs", "sentNs", "state", "restarts", "counted", "lost")
-GRABBED, QUEUED, SENT, DROPPED, FRAME_NS, SENT_NS, STATE, RESTARTS, COUNTED, LOST_FRAMES = range(len(FIELDS))
+FIELDS = ("grabbed", "queued", "sent", "dropped", "frameNs", "sentNs", "state", "restarts", "counted", "lost",
+	"missed", "missedNs", "missedFrame")
+GRABBED, QUEUED, SENT, DROPPED, FRAME_NS, SENT_NS, STATE, RESTARTS, COUNTED, LOST_FRAMES, MISSED, MISSED_NS, \
+	MISSED_FRAME = range(len(FIELDS))
 WIDTH = 16 # words per camera: room for more fields
 
 # state
@@ -77,6 +79,14 @@ class Camera:
 		if self.a is not None:
 			self.a[self.o + LOST_FRAMES] = lost
 			self.a[self.o + COUNTED] = counted # last: the watch reads lost once counted has changed
+
+	def Missed(self, missed, frame):
+		# Trigger pulses without a frame so far (frametimes.TriggerGaps), the latest just before this frame
+		if self.a is not None:
+			o = self.o
+			self.a[o + MISSED_NS] = Now()
+			self.a[o + MISSED_FRAME] = frame
+			self.a[o + MISSED] = missed # last: the watch reads the others once missed has changed
 
 	def State(self, state, only_from=None):
 		# only_from: change it only from these states (an end does not hide a failure said before it)

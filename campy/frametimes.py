@@ -213,3 +213,56 @@ class FrameTimes:
 			if self.files is not None:
 				for f in self.files:
 					f.Close()
+
+
+class TriggerGaps:
+	"""
+	The trigger pulses a triggered camera got no frame for, counted as it
+	records, from its own timestamps: a step of n periods between two frames
+	is n - 1 pulses without a frame (the camera missed them, or the trigger
+	paused). Every frame the camera sent counts, those campy dropped too, so
+	campy's own drops are not counted here. The period is the camera's own:
+	the median of its first LEARN steps, so a trigger running at another rate
+	than frameRate is no gap, and the frames before it is known are counted
+	once it is. campy-align does the same over frametimes.npy afterwards.
+	"""
+
+	LEARN = 30
+	GAP = 1.5 # a step longer than this many periods has pulses without a frame
+
+	def __init__(self):
+		self.period = None
+		self.first = [] # the first LEARN + 1 timestamps, until the period is known
+		self.last = None
+		self.missed = 0 # pulses without a frame so far
+		self.frame = None # the frame just after the latest of them
+
+	def Add(self, timeStamp, frameNumber):
+		"""A frame's timestamp (s, the camera's clock) and number: returns the pulses without a frame found now."""
+		if self.period is None:
+			self.first.append((timeStamp, frameNumber))
+			if len(self.first) <= self.LEARN:
+				return 0
+			steps = sorted(b[0] - a[0] for a, b in zip(self.first, self.first[1:]) if b[0] > a[0])
+			if not steps:
+				self.first = [(timeStamp, frameNumber)]
+				return 0
+			self.period = steps[len(steps) // 2]
+			first, self.first, self.last = self.first, [], timeStamp
+			new = 0
+			for a, b in zip(first, first[1:]):
+				n = self.Count(a[0], b[0])
+				if n:
+					new, self.frame = new + n, b[1]
+			self.missed += new
+			return new
+		new = self.Count(self.last, timeStamp)
+		self.last = timeStamp
+		if new:
+			self.missed += new
+			self.frame = frameNumber
+		return new
+
+	def Count(self, a, b):
+		steps = (b - a) / self.period
+		return int(round(steps)) - 1 if steps > self.GAP else 0
