@@ -349,8 +349,11 @@ What changes because it's a VM:
   - memory ballooning off, so the 32 GB is always there;
   - the B50 attached as PCI Express (the PCI device's "PCI-Express" box), as Proxmox advises for graphics cards on
     its q35 machine type, and Resizable BAR on in the server's firmware, as Intel requires for Arc cards;
-  - a VirtIO network adapter instead of the emulated Intel E1000 (after installing the VirtIO drivers in Windows),
-    so copying test clips and models isn't held to the E1000's 1 Gbit/s.
+  - a VirtIO network adapter instead of the emulated Intel E1000 (after installing the VirtIO drivers in Windows).
+  Both the PCI Express setting and the VirtIO adapter were set on 2026-10-29. The server's own network link is 1 Gbit/s
+  (940 Mbit/s measured from the VM, about 110 MB/s), with 10 Gbit/s possible later. That is plenty for compressed
+  recordings: the 8-camera, 60-second test clips total 188 MB, about 3 MB/s for all 8 cameras. It only slows copying
+  large folders of raw video or training data.
   8 threads and 32 GB are enough for these jobs. More threads only help if tracking ends up on the CPU.
 - **Same lock, same rules for jobs.** It runs rig.py like every rig, so the fleet starts jobs on it the same way. rig.py
   asks nvidia-smi which programs use the GPU, and the VM has no NVIDIA card. Windows itself counts every program's GPU
