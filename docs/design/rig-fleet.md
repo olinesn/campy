@@ -343,7 +343,9 @@ What changes because it's a VM:
 - **Settings in Proxmox that make runs repeatable** (my recommendation, your call):
   - processor type `host`, so Windows and ffmpeg see the real i9-14900 and its instructions (already set);
   - pin the 8 threads to performance cores (Proxmox's CPU affinity). The i9-14900 has 8 performance cores (16
-    threads) and 16 efficiency cores; threads that move between them would make every timing vary;
+    threads) and 16 efficiency cores; threads that move between them would make every timing vary. Only the server's root account can set affinity
+    (`qm set <vm> --affinity <cores>`), so it's a request to whoever runs the server. Until it's set, every result
+    from the VM records that its threads weren't pinned;
   - memory ballooning off, so the 32 GB is always there;
   - the B50 attached as PCI Express (the PCI device's "PCI-Express" box), as Proxmox advises for graphics cards on
     its q35 machine type, and Resizable BAR on in the server's firmware, as Intel requires for Arc cards;
