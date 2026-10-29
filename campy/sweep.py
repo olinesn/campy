@@ -23,7 +23,7 @@ import os, sys, json, time, queue, socket, shutil, platform, argparse, datetime,
 import multiprocessing as mp
 import numpy as np
 
-from campy import writer, configurator, strictjson
+from campy import writer, configurator, configschema, strictjson
 
 
 ENCODER_MAKES = ("cpu", "vaapi", "nvidia", "intel", "amd")
@@ -382,7 +382,8 @@ def ParseArgs(argv=None):
 	parser.add_argument("--frameRate", type=float)
 	parser.add_argument("--pixelFormatInput", help="default: gray")
 	parser.add_argument("--pixelFormatOutput", help="default: yuv420p")
-	parser.add_argument("--codec")
+	# The config's names only: anything else (e.g. "hevc") would reach ffmpeg as a CPU encoder.
+	parser.add_argument("--codec", choices=configschema.BY_NAME["codec"].choices)
 	parser.add_argument("--quality", type=int)
 	parser.add_argument("--keyframeInterval", type=float)
 	parser.add_argument("--ffmpegPath")

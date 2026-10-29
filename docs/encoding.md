@@ -76,7 +76,7 @@ Whether a computer keeps up with the cameras depends on its encoders and its USB
 ```
 campy-encode-sweep --config ./configs/campy_config_flir_usb3.yaml --encoder vaapi --encoder cpu:veryfast --streams 1,2,4,6,8
 ```
-It runs 1, 2, 4... encoders at once, with campy's own ffmpeg settings, on synthetic frames, and saves how many each one keeps up with to `~/.campy/capacity.json`. The bitrates it reports come from those synthetic frames and are only a rough guide.
+It runs 1, 2, 4... encoders at once, with campy's own ffmpeg settings, on synthetic frames, and saves how many each one keeps up with to `~/.campy/capacity.json`. The bitrates it reports come from those synthetic frames and are only a rough guide. Its `--codec`, like `campy-encode-quality`'s, takes the config's names only: `h264`, `h265` or `av1`. campy 2.2.0 and older passed another name, such as `hevc`, to ffmpeg as it was, which then encoded on the CPU even with `--encoder intel` or `nvidia`. Its row then showed `hevc/...` instead of `hevc_qsv/...` or `hevc_nvenc/...`.
 
 `quality` means different things to different encoders. libx264 and libx265 take it as a CRF, which adapts to the picture. NVENC, VA-API, AMF and Quick Sync take it as a constant quantizer (for AV1, a quantizer index from 0 to 255), which spends bits on everything, sensor noise included. On a GMKtec EVO-X2 (1280x1024 mono, 60 fps), quality 21 gave about 1.5 Mbit/s per camera on libx264 and 36.7 Mbit/s on VA-API: 132 GB per hour for 8 cameras. Measure what each setting costs before recording:
 ```
