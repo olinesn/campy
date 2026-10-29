@@ -328,6 +328,21 @@ no cameras and nobody records on it. It does jobs the rigs shouldn't, plus one n
   That is the path the Dell Pro Max Slim and the Dell Pro Tower Plus can use on their processors' built-in GPUs, so the
   VM tests it without borrowing either machine. Quick Sync needs an ffmpeg built with oneVPL (docs/encoding.md:
   conda-forge's Windows ffmpeg has none), so the VM also checks that campy finds and uses such an ffmpeg.
+  First measurement, 2026-10-29: `campy-encode-sweep` with `--encoder intel` at 1280x1024 mono, 80 fps and the
+  sweep's 1.25x headroom (each camera must reach 100 fps). It ran under rig.py, which marked the run clean
+  (RIG_CLEAN), with BtbN's ffmpeg 8.1, campy 2.2.0, Arc Pro B50 driver 32.0.101.8976 and the full 16 GB memory
+  window. H.264 and H.265 (quality 24) and AV1 (quality 88) each kept up with **8 cameras**. At 12 cameras the
+  slowest reached 95-96 fps. That 8 is the VM's limit, not the card's: from 4 cameras on, the VM's 8 processor
+  threads were 96-99% busy feeding frames, and the total fell from 1,460-1,540 frames/s at 2 cameras to about 1,290
+  at 12.
+  The card itself is probably close to its own limit near 1,500 frames/s. At 1-2 cameras its busiest encoding
+  engine was already 83-113% busy (Windows' "GPU Engine" counters; Intel encodes on the engines Windows calls Video
+  Decode). That is about 15 cameras at 80 fps with the headroom. With more cameras the counters stopped reporting, so
+  the card's own ceiling isn't pinned down. For comparison (docs/encoding.md): the Core Ultra 9 285's built-in GPU
+  kept up with 16 or more cameras, the RTX 2000 Ada with 12 and the RTX 4000 Ada with 28. A first run 9 minutes
+  earlier gave the same result except that H.264 just passed at 12 (100.3 fps). rig.py flagged that run, because
+  something outside the test read the disk at 91 MB/s, so 12 cameras is at the edge. Under this section's rule for the VM's numbers, this is one
+  run: these numbers reach the hardware guide only once a run on another day agrees, labelled as measured in the VM.
 - **Tracking on an Intel GPU, untried.** PyTorch runs on Intel GPUs on Windows (device `xpu`). Whether sleap-nn and
   campy-live work on it hasn't been tried. The first trial: campy-live with 1 and 3 emulated cameras on the B50, and
   the same models on the CPU if it doesn't run. If it works, the B50 is a new kind of GPU for the hardware guide.
