@@ -361,8 +361,18 @@ What changes because it's a VM:
     root account (sizing the card's memory window on the server before the VM starts).
     It matters most for moving data to the card, so for tracking more than for encoding. Every B50 number records
     whether it was on;
-  - a VirtIO network adapter instead of the emulated Intel E1000 (after installing the VirtIO drivers in Windows).
-  Both the PCI Express setting and the VirtIO adapter were set on 2026-10-29. The server's own network link is 1 Gbit/s
+  - a VirtIO network adapter instead of the emulated Intel E1000 (after installing the VirtIO drivers in Windows),
+    but only once the server's network port has been fixed. On 2026-10-29 the VirtIO adapter took the whole server
+    off the network three times in one day. With it, the VM hands the server large blocks of data that the server's
+    built-in Intel I219-LM network port (Linux driver e1000e) has to cut into packets itself. That hits a known bug:
+    the port stops sending and stays dead until someone switches the server off and on. Every VM on the server goes
+    offline with it, and so does the server's own web page. The server's log showed none of these hangs in the two
+    months before. The fix is work for the server's root account: turn off that cutting-up on the port
+    (`ethtool -K <port> tso off gso off`, kept across restarts with a `post-up` line in `/etc/network/interfaces`).
+    Until then the VM uses the E1000 adapter, as it did before. The server also has an unused 25 Gbit/s card;
+    moving its network to that card would avoid the built-in port altogether.
+  The PCI Express setting was made on 2026-10-29. The VirtIO adapter was tried that day and then switched back to
+  E1000 after the hangs. The server's own network link is 1 Gbit/s
   (940 Mbit/s measured from the VM, about 110 MB/s), with 10 Gbit/s possible later. That is plenty for compressed
   recordings: the 8-camera, 60-second test clips total 188 MB, about 3 MB/s for all 8 cameras. It only slows copying
   large folders of raw video or training data.
