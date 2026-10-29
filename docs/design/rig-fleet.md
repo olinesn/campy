@@ -313,8 +313,11 @@ since the models were compiled", and the Slim's 4-camera run (30 fps, 3 mice) ha
 about twice the work per set, on a slower card. So 30 fps looks likely, and 60 fps with 5 mice is in doubt. **Measured
 2026-10-29** (docs/live-tracking.md, PR #230): with 8 emulated cameras, recording and 3D tracking 5 mice on the A2000,
 30 fps kept up (every set tracked, 21.5 ms per set at the median) and 60 fps didn't (about 25 ms per set, 40% of sets
-skipped). The card's 70 W limit holds its clock down. So 60 fps at 8 cameras needs a lighter model or a faster card,
-and the Tower's power supply and slot space decide which card fits. Also worth checking there: 8 USB 3 cameras need enough separate USB controllers. The
+skipped). The card's 70 W limit holds its clock down. With the recording moved to Quick Sync, 60 fps took 20.0 ms per
+set and 25% of sets were skipped, so about 45 sets a second were tracked. So 60 fps at 8 cameras needs a lighter model
+or a faster card, and the Tower's power supply and slot space decide which card fits. **Decided 2026-10-29:** the
+cameras stay at 60 fps and tracking runs at what the A2000 manages, about 45 Hz, for now; a lighter model or a new card
+can come later. Also worth checking there: 8 USB 3 cameras need enough separate USB controllers. The
 dashboard's per-camera USB speed and campy's own USB check show it.
 
 ## 6. A Windows virtual machine with an Intel Arc Pro B50: checks, trial runs, Intel GPU numbers
