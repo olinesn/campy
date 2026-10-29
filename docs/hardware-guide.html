@@ -105,7 +105,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 <header>
   <div class="eyebrow">Live pose tracking · October 2026</div>
   <h1>What to buy for live campy + SLEAP + triangulation</h1>
-  <p class="lede col">Three machines, with four GPUs between them, were measured running campy recordings and sleap-nn top-down inference (centroid + centered-instance) at the same time, at 3 and 8 cameras. The deciding factors were the inference GPU, CPU speed, and the operating system. Memory channels didn't matter. The full live pipeline, with trained models and 3D tracking of 5 mice, was then run on all three. On 28 October the model-size benchmark was run again on every GPU, timing each set the way <code>campy-live</code> now runs it, with the models compiled.</p>
+  <p class="lede col">Three machines, with four GPUs between them, were measured running campy recordings and sleap-nn top-down inference (centroid + centered-instance) at the same time, at 3 and 8 cameras. The deciding factors were the inference GPU, CPU speed, and the operating system. Memory channels didn't matter. The full live pipeline, with trained models and 3D tracking of 5 mice, was then run on all three. On 28 October the model-size benchmark was run again on every GPU, timing each set the way <code>campy-live</code> now runs it, with the models compiled. On 29 October a fourth machine was measured the same way: a Dell Pro Tower Plus with a 70 W RTX A2000, a generation older than the other NVIDIA cards, which also tracked 8 cameras live.</p>
   <div class="budgets"><span>Frame budget at <b>60 fps</b>: 16.7 ms per synchronized set</span><span>at <b>30 fps</b>: 33.3 ms</span><span>Pass = p99 under budget</span></div>
 </header>
 
@@ -116,6 +116,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
       <h3>Every GPU tested handles 3 cameras with room to spare. For 8 cameras at 60 fps, take a larger NVIDIA card, or a lighter model.</h3>
       <p>campy's model-size benchmark now times a set the way <code>campy-live</code> runs it by default: a fixed number of crops, one CUDA graph for the whole set, and the two networks compiled (TensorRT on NVIDIA, <code>torch.compile</code> on the EVO-X2; pull requests 147 and 227). Run that way on 28 October, all 32 model sizes fit 60 fps at 3 cameras on every GPU tested, idle and while recording 3 emulated cameras. The default size took 1.1 ms per set on the RTX 6000 Ada (p99 1.2), 2.3 ms on the RTX 4000 Ada (p99 2.3), 3.4 ms on the EVO-X2's integrated AMD GPU (p99 3.5) and 3.8 ms on the Pro Max Slim's RTX 2000 Ada (p99 3.9). Live, with the trained 5-mouse pair on 3 cameras, <code>campy-live</code> took 1.6 ms per set on the RTX 6000 Ada, 3.4 ms on the RTX 4000 Ada and 5.5–5.6 ms on the other two (below). With four cameras at 60 fps the RTX 2000 Ada took 7.2 ms (p99 7.9; below, "Four cameras").</p>
       <p class="why">At 8 cameras the cards separate. The RTX 6000 Ada fit all 32 sizes at 60 fps, idle and while recording 8 emulated cameras (default size 2.4 ms idle, 2.5 ms recording), and took 3.2 ms per set with the trained pair. The RTX 4000 Ada fit 28 of 32 idle (default size 5.9 ms, trained pair 8.7 ms). The RTX 2000 Ada fit 8 of 32, idle and while recording, and the EVO-X2 9 idle and 8 while recording; both fit every size at 30 fps, except one on the EVO-X2 while recording. On those two the trained 5-mouse pair took 14–16 ms per set at 8 cameras: 15.4 ms (p99 15.8) on the RTX 2000 Ada, and 15.8 ms (p99 16.2) on the EVO-X2 while recording. That is under the 16.7 ms of 60 fps, but with almost nothing to spare. So for 8 cameras at 60 fps with models this size, take a larger NVIDIA card; on the smaller GPUs, use a lighter model or 30 fps.</p>
+      <p class="why">The Dell Pro Tower Plus's RTX A2000 (29 October) is the slowest card tested: a 70 W card of NVIDIA's Ampere generation, one older than the Ada cards, which sat at its power limit through every 8-camera run. At 3 cameras all 32 sizes still fit 60 fps (default size 4.8 ms, p99 5.1; trained pair 6.9 ms). At 8 cameras 5 of 32 fit 60 fps and 24 of 32 fit 30 fps; the default size took 13.0 ms (p99 13.4) and the trained 5-mouse pair 20.9 ms (p99 21.4), too slow for 60 fps. Live with 8 emulated cameras and 5 mice, <code>campy-live</code> tracked every set at 30 fps and about three quarters of them at 60 (below, "Eight cameras on one RTX A2000"). Where the inference card would also encode the video, as the A2000's NVENC did there, record with the CPU's integrated GPU instead (Quick Sync): that took a live set from 21.5 to 17.7 ms at 30 fps.</p>
       <p class="why">Before compiled models the gap was larger. Timing sleap-nn's own top-down layer in plain PyTorch, the same benchmark found the RTX 6000 Ada fit all 32 sizes at 3 cameras and 28 of 32 at 8, the RTX 2000 Ada at most 6 of 32 idle (8 while recording, with its CPU threads pinned), and the EVO-X2 18 of 32 at 3 cameras and none at 8. Those runs stay in the table below, marked "plain PyTorch".</p>
       <p class="why">Whatever the card, keep inference off the CPU that handles the GPU's interrupts, which <code>campy-live</code> does by default on Windows. Until it did, the RTX 4000 Ada looked like it had an 18 ms p99 floor in every configuration; with campy's benchmark pinned to other cores, 31 of 32 sizes fit 60 fps at 3 cameras and p99 sat 0.45 ms above the median. Unplugging its monitor made no difference (below, "One CPU core"), so the guide no longer advises against a monitor on the inference card.</p>
     </li>
@@ -173,7 +174,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     </li>
     <li>
       <h3>Linux or Windows: with compiled models both run steadily.</h3>
-      <p>In the 28 October benchmark, which times a set as <code>campy-live</code> runs it, p99 sat within 0.4 ms of the median for every model size on the RTX 2000 Ada and the RTX 4000 Ada (Windows), and within 0.3 ms on the RTX 6000 Ada. On the EVO-X2 (Linux) it was within 0.8 ms at 3 cameras and 1.2 ms at 8 cameras while recording. No set on the EVO-X2, the RTX 2000 Ada or the RTX 4000 Ada took more than 1.3 times its median. On the RTX 6000 Ada a few single sets of the lightest sizes took 2–4 times their 1.1–1.3 ms median, still under 7 ms. With 8 cameras recording on the RTX 6000 Ada, p99 sat within 0.6 ms of the median.</p>
+      <p>In the 28 October benchmark, which times a set as <code>campy-live</code> runs it, p99 sat within 0.4 ms of the median for every model size on the RTX 2000 Ada and the RTX 4000 Ada (Windows), and within 0.3 ms on the RTX 6000 Ada. On the EVO-X2 (Linux) it was within 0.8 ms at 3 cameras and 1.2 ms at 8 cameras while recording. No set on the EVO-X2, the RTX 2000 Ada or the RTX 4000 Ada took more than 1.3 times its median. On the RTX 6000 Ada a few single sets of the lightest sizes took 2–4 times their 1.1–1.3 ms median, still under 7 ms. With 8 cameras recording on the RTX 6000 Ada, p99 sat within 0.6 ms of the median. On the RTX A2000 (29 October) it sat within 0.8 ms, except one size at 2.2 ms in the 8-camera recording run that other programs disturbed, and no set took more than 1.4 times its median.</p>
       <p class="why">With sleap-nn's own layer and uncompiled models, Linux had looked steadier. In every EVO-X2 run (Linux, ROCm), recording included, no set took more than twice the median, and p99 stayed 0.4–1.0 ms above it. Every Windows GPU had occasional sets of twice the median or more, and the RTX 2000 and RTX 4000 Ada ran p99 3–7 ms above the median. The RTX 6000 Ada's p99 was as tight as the EVO-X2's, and so was the Pro Max Slim's once inference was pinned to its performance cores at High priority, and the RTX 4000 Ada's once inference was kept off the core that handles its interrupts. GPU vendor and OS differ between these machines, so this is a strong hint rather than a controlled result.</p>
     </li>
     <li>
@@ -198,6 +199,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
         <tr><td><b>GMKtec EVO-X2</b><br><span class="meta">mini-PC</span></td><td>Ryzen AI Max+ 395, 16 cores</td><td>Radeon 8060S iGPU (shares system memory)</td><td>VA-API, same GPU</td><td>64 GB LPDDR5X, 256-bit</td><td>Ubuntu 24.04, ROCm (torch 2.14.0+rocm10.1.0)</td></tr>
         <tr><td><b>Dell Pro Max Slim FCS1250</b></td><td>Core Ultra 9 285, 24 cores (8 performance + 16 efficiency)</td><td>RTX 2000 Ada, 16 GB</td><td>Quick Sync, Intel iGPU</td><td>2 × 32 GB DDR5-5600, dual-channel</td><td>Windows 11, CUDA (torch 2.14.1+cu130)</td></tr>
         <tr><td><b>Dell Precision 7875</b><br><span class="meta">tower workstation</span></td><td>Threadripper PRO 7965WX, 24 cores in 4 chiplets</td><td>RTX 6000 Ada, 48 GB <span class="meta">(RTX 4000 Ada, 20 GB, drives the monitor)</span></td><td>NVENC on the RTX 4000 Ada <span class="meta">(keeps up with 28 cameras at 80 fps, 32 at 60, H.264 or H.265)</span></td><td>8 × 16 GB DDR5-4800, 8-channel</td><td>Windows 11, CUDA (torch 2.14.1+cu130)</td></tr>
+        <tr><td><b>Dell Pro Tower Plus</b><br><span class="meta">tower, measured 29 October</span></td><td>Core Ultra 9 285, 24 cores (8 performance + 16 efficiency)</td><td>RTX A2000, 12 GB <span class="meta">(Ampere, 70 W)</span></td><td>Quick Sync, Intel iGPU <span class="meta">(keeps up with 40 cameras at 30 fps in AV1, H.265 or H.264; at 60 fps 24 in AV1, 28 in H.265, 20 in H.264)</span>; or NVENC on the A2000 <span class="meta">(14 cameras at 60 fps in H.265, 12 in H.264; no AV1)</span></td><td>64 GB</td><td>Windows 11, CUDA (torch 2.14.1+cu130)</td></tr>
       </tbody>
     </table>
   </div>
@@ -215,13 +217,13 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     <div class="chartwrap">
       <svg class="chart" id="chart" viewBox="0 0 900 560" role="img" aria-label="Latency per set for each machine and condition, median and 99th percentile, with the 16.7 millisecond budget line"></svg>
     </div>
-    <figcaption>¹ The Precision 7875's antivirus reacts to 8 camera processes starting, using up to 4.3 CPU cores for a few seconds. With the lock's usual limit of 2 cores of other CPU use, every try ended contaminated; this run allowed 4, and the only use over that came in the first 6–15 s, while the cameras started, before any set was timed. The plain-PyTorch RTX 2000 Ada and RTX 6000 Ada rows use channels-last memory layout (5–25% faster on NVIDIA). The EVO-X2 rows use the default layout, which is fastest on ROCm.</figcaption>
+    <figcaption>¹ The Precision 7875's antivirus reacts to 8 camera processes starting, using up to 4.3 CPU cores for a few seconds. With the lock's usual limit of 2 cores of other CPU use, every try ended contaminated; this run allowed 4, and the only use over that came in the first 6–15 s, while the cameras started, before any set was timed. ² The Pro Tower Plus recorded with Quick Sync AV1 on its CPU's integrated GPU, so the A2000 only ran the models. The plain-PyTorch RTX 2000 Ada and RTX 6000 Ada rows use channels-last memory layout (5–25% faster on NVIDIA). The EVO-X2 rows use the default layout, which is fastest on ROCm.</figcaption>
   </figure>
 </section>
 
 <section>
   <h2>How many model sizes fit</h2>
-  <p class="col">Out of 32 combinations (centroid scale 0.25 or 0.5, max stride 16 or 32, output stride 2 or 4; crops 192 or 256 px, max stride 16 or 32), how many kept p99 under the budget, with 5 animals per frame. "Compiled" rows (28 October) time each set as <code>campy-live</code> runs it by default: fixed crops, one CUDA graph per set, the networks compiled (TensorRT fp16 on NVIDIA, <code>torch.compile</code> on the EVO-X2), 60 sets a second with the clock held, on the CPUs <code>campy-live --cpus auto</code> picks. At 120 fps (8.3 ms) all 32 sizes fit on the RTX 6000 Ada at 3 and 8 cameras (recording 8 cameras included), on the RTX 4000 Ada at 3 cameras (8 of 32 at 8), and 24–30 of 32 at 3 cameras on the EVO-X2 and the RTX 2000 Ada. "Plain PyTorch" rows timed sleap-nn's own top-down layer, before compiled models; they are kept as history.</p>
+  <p class="col">Out of 32 combinations (centroid scale 0.25 or 0.5, max stride 16 or 32, output stride 2 or 4; crops 192 or 256 px, max stride 16 or 32), how many kept p99 under the budget, with 5 animals per frame. "Compiled" rows (28 October) time each set as <code>campy-live</code> runs it by default: fixed crops, one CUDA graph per set, the networks compiled (TensorRT fp16 on NVIDIA, <code>torch.compile</code> on the EVO-X2), 60 sets a second with the clock held, on the CPUs <code>campy-live --cpus auto</code> picks. At 120 fps (8.3 ms) all 32 sizes fit on the RTX 6000 Ada at 3 and 8 cameras (recording 8 cameras included), on the RTX 4000 Ada at 3 cameras (8 of 32 at 8), 24–30 of 32 at 3 cameras on the EVO-X2 and the RTX 2000 Ada, and 14 of 32 on the RTX A2000 (29 October). "Plain PyTorch" rows timed sleap-nn's own top-down layer, before compiled models; they are kept as history.</p>
   <div class="tablewrap">
     <table>
       <thead><tr><th>Machine</th><th>How</th><th>Condition</th><th class="num">Fit 60 fps</th><th class="num">Fit 30 fps</th><th class="num">Worst single set</th></tr></thead>
@@ -546,6 +548,29 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 </section>
 
 <section>
+  <h2>Eight cameras on one RTX A2000, on the Dell Pro Tower Plus</h2>
+  <p class="col">On 29 October the Dell Pro Tower Plus (Core Ultra 9 285, RTX A2000 12 GB), which records 8 FLIR cameras for experiments, recorded 8 emulated cameras playing all 8 views of the 5-mouse session while <code>campy-live</code> tracked them in 3D on the A2000 with the trained 5-mouse pair, compiled with TensorRT. The first runs encoded H.265 on the A2000's own NVENC; the later ones encoded AV1 with Quick Sync on the CPU's integrated GPU, leaving the A2000 only the models.</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>8 emulated cameras, 5 mice</th><th>Sets tracked</th><th>Inference, median / p99</th><th>Frame to 3D pose, median / p99</th><th>Frames recorded</th></tr></thead>
+      <tbody>
+        <tr><td>30 fps, 120 s, recording H.265 on the A2000 (NVENC)</td><td class="mono">3,600 of 3,600</td><td class="mono">21.5 / 23.1 ms</td><td class="mono">26.2 / 30.5 ms</td><td class="mono">3,600 of 3,600 per camera</td></tr>
+        <tr><td>30 fps, 120 s, recording AV1 on the iGPU (Quick Sync)</td><td class="mono">3,596 of 3,600 (4 skipped in the first second)</td><td class="mono">17.7 / 19.0 ms</td><td class="mono"><b>22.3 / 26.0 ms</b></td><td class="mono">3,600 of 3,600 per camera</td></tr>
+        <tr><td>60 fps, 60 s, recording H.265 on the A2000 (NVENC)</td><td class="mono">2,173 of 3,600</td><td class="mono">25.3 / 28.5 ms</td><td class="mono">39.3 / 50.9 ms</td><td class="mono">3,600 of 3,600 per camera</td></tr>
+        <tr><td>60 fps, 60 s, recording AV1 on the iGPU (Quick Sync)</td><td class="mono">2,689 of 3,600</td><td class="mono">20.0 / 20.6 ms</td><td class="mono"><b>33.7 / 44.3 ms</b></td><td class="mono">3,600 of 3,600 per camera</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <ul class="plain col">
+    <li><b>30 fps fits; 60 fps doesn't with this model.</b> A set needs about 18–20 ms of the A2000 with 8 cameras and 5 mice, more than the 16.7 ms between frames at 60 fps, so <code>campy-live</code> skips the sets it can't reach. In the benchmark only the lightest model sizes fit 8 cameras at 60 fps on this card (5 of 32: centroid at 0.25 scale with output stride 4, 192 px crops; the default size took 13.0 ms, p99 13.4).</li>
+    <li><b>Moving the encoding off the A2000 saves 4–5 ms a set.</b> NVENC is a separate part of the chip, but encoding 8 streams there slowed the models: inference took 21.5 ms at 30 fps with NVENC and 17.7 ms with Quick Sync, 25.3 and 20.0 ms at 60 fps. In the benchmark, recording 8 cameras on the iGPU changed the A2000's median time per set by 0.35 ms at most, for any model size.</li>
+    <li><b>The A2000 is held back by its power limit.</b> At 8 cameras it ran at its 70 W cap, at about 1,090–1,330 MHz in the benchmark and 1,280–1,310 MHz live at 60 fps, against about 1,800 MHz at 3 cameras with the clock held. Without <code>campy-live</code>'s clock hold it fell to 990 MHz at 3 cameras, and the default size took 6.9 ms instead of 4.8.</li>
+    <li><b>The A2000 can't encode AV1.</b> NVIDIA's encoders gained AV1 with the Ada generation; on the A2000 <code>av1_nvenc</code> reports that no capable device was found. The CPU's integrated GPU encodes it, with an ffmpeg built with Intel's oneVPL (campy's <code>docs/encoding.md</code>).</li>
+    <li><b>Other programs.</b> The 30 fps Quick Sync run ended <code>RIG_CLEAN</code>. The 60 fps one ended <code>RIG_CONTAMINATED</code> by other programs' CPU use only: Windows Search indexing the 30 fps recording just written, and the antivirus, as it started. The NVENC runs ended contaminated by other programs' CPU use too. Each run was measured once.</li>
+  </ul>
+</section>
+
+<section>
   <h2>Before and after the speed-ups of 22–23 October</h2>
   <p class="col">Each machine's own rig check, run with <code>campy-live</code>'s defaults and no options at each step, with the same scripts, models and 5-mouse clips: campy 2.1.0rc6 as it was on the morning of 22 October; 2.1.0 (fixed crops and one CUDA graph per set, pull requests 126 and 134, plus the EVO-X2's faster upsampling and clock hold, 138 and 141); pull request 147 (compiled networks by default); and dev on 23 October (the faster crop, 151, and the clock hold's fixes, 152). <i>Time per set</i> runs from the upload to the GPU to the 2D results being back on the CPU, and has to stay under 16.7 ms at 60 fps. <i>Frame to 3D pose</i> runs from the moment the last camera's frame reached the computer to the set's 3D poses. Every run was clean on the rig lock except the Pro Max Slim's last row of each table, which picked up one sighting of another test's disk use in its first second, before its first check started; a run a few minutes earlier gave the same times, and so did the Pro Max Slim's own clean rig checks after its update to dev on 23 October (5.5 / 5.7 ms per set recording or replaying, nothing skipped). More detail (p90, frame to 2D, the 3D step, accuracy, 1 camera) in campy's <code>docs/live-tracking.md</code>, "Before and after the speed-ups".</p>
   <div class="tablewrap">
@@ -630,6 +655,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
   <h2>How this was measured, and what it doesn't cover</h2>
   <ul class="plain">
     <li><b>The compiled sweep (28 October).</b> <code>bench/sleap_infer_bench.py --sweep --fixed-crops --cuda-graphs --engine auto --cpus auto --precision fp16 --pace 60 --hold-clock on</code> (pull request 227), on 3 or 8 uint8 1280 × 1024 frames per set, 5 crops per frame: each set is <code>campy-live</code>'s own code (<code>FixedCrops</code>: the frames uploaded, one CUDA graph, the results copied back once), with the networks as <code>campy-live --engine auto</code> builds them, 2,000 timed sets per size after 50 untimed ones, sets started 60 times a second, one GPU block spinning at the lowest priority to hold the clock. The engines were built beforehand in an untimed run, so build time isn't in the numbers. Software: on the Windows machines <code>campy-live</code>'s own environments (Precision 7875 torch 2.14.1+cu130, Pro Max Slim torch 2.11.0+cu128, both TensorRT 11.4), on the EVO-X2 torch 2.14.0+rocm10.1.0; sleap-nn 0.3.3 everywhere. "Recording" there means campy's emulated cameras playing the 5-mouse replay videos at 60 fps with the live feed on: VA-API H.264 on the EVO-X2, Quick Sync H.265 on the Pro Max Slim (campy on its efficiency cores), NVENC H.265 on the Precision 7875's RTX 4000 Ada while the RTX 6000 Ada ran the models. The trained pair is the 5-mouse one used live (centroid at scale 0.25, output stride 2; centered-instance on 320 px crops at half scale, max stride 32, 24 filters). Every run went through <code>bench/rig.py</code> and ended <code>RIG_CLEAN</code>, except the RTX 6000 Ada with 8 cameras recording. There the machine's antivirus used 1–4 CPU cores in each of four tries under the lock's usual limit of 2 cores of other CPU use, apparently reacting to the 8 camera processes; all 32 sizes still fit 60 fps every time and the medians matched within 0.2 ms. The numbers given are from a fifth run that allowed 4 cores of other CPU use (as for the encoder capacity below): its only sightings came in the first 6–15 s, while the cameras started, before any set was timed. Runs spoiled by other programs (the antivirus, Windows Update, a camera viewer opened on the Pro Max Slim, another session's jobs on the Precision 7875) were repeated until clean.</li>
+    <li><b>The Dell Pro Tower Plus (29 October)</b> ran the same compiled sweep with torch 2.14.1+cu130 and TensorRT 11.4, campy-acquire on its efficiency cores. "Recording" there means 3 or 8 emulated cameras encoded in AV1 with Quick Sync on the CPU's integrated GPU (BtbN's ffmpeg 8.1, quality 88), not on the A2000. Each 32-size condition ran in two halves of 16; every half ended <code>RIG_CLEAN</code> except the 8-camera recording of the larger half, which saw other programs (the antivirus, the print spooler, Windows Search) use 2–6.5 CPU cores four times; its medians match the idle run's within 0.35 ms for every size (p99 within 1.4 ms). Its first try, recording with NVENC on the A2000, was spoiled by Windows Search indexing the test recordings at up to 178 MB/s, so those rows were run again recording on the iGPU. The encoder capacities are from <code>campy-encode-sweep</code> (1280 × 1024 gray frames, keyframe every 0.5 s, 1.25 × headroom; Quick Sync preset faster, AV1 at quality 88 and H.264/H.265 at 24; NVENC preset fast, quality 24), with the antivirus and Windows Search using 2–4.5 CPU cores at times.</li>
     <li>Benchmark, plain PyTorch: <code>bench/sleap_infer_bench.py</code> in the campy repo, timing sleap-nn 0.3.3's <code>TopDownLayer.predict</code> on 3 or 8 uint8 1280 × 1024 frames per set, with a device sync after every set.</li>
     <li>Except in the end-to-end tests and the 5-mouse replay, models are untrained (random weights, built from sleap-nn configs). Run time doesn't depend on the weights; the centroid output is replaced with 5 peaks per frame so cropping always sees 5 animals.</li>
     <li>Most tests used one real FLIR camera; the other "cameras" were ffmpeg encoding a looped FLIR clip in real time with campy's encoder settings, which load the encoder and CPU but not USB. Those recordings ran at 80 fps (3 cameras) and 60 fps (8 cameras on the EVO-X2). Each condition was measured once.</li>
@@ -655,28 +681,32 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 </section>
 
 <footer>
-  <p>Measured 18–28 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
-  <p class="meta">Version 56 · updated 28 October 2026 · reflects campy changes through pull request 229 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p>Measured 18–29 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250, a Dell Precision 7875 and a Dell Pro Tower Plus.</p>
+  <p class="meta">Version 57 · updated 29 October 2026 · reflects campy changes through pull request 232 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 
 <script>
 // Rows for the chart: [group, label, sublabel, p50, p99]
 const rows = [
-  ["COMPILED, 3 CAMERAS (28 OCTOBER)", "Precision 7875 · RTX 6000 Ada", "idle", 1.1, 1.2],
+  ["COMPILED, 3 CAMERAS (28–29 OCTOBER)", "Precision 7875 · RTX 6000 Ada", "idle", 1.1, 1.2],
   [null, "Precision 7875 · RTX 6000 Ada", "3 emulated cameras recording", 1.2, 1.3],
   [null, "Precision 7875 · RTX 4000 Ada", "idle", 2.3, 2.3],
   [null, "EVO-X2 · Radeon 8060S", "idle", 3.4, 3.5],
   [null, "EVO-X2 · Radeon 8060S", "3 emulated cameras recording", 3.5, 3.6],
   [null, "Pro Max Slim · RTX 2000 Ada", "idle", 3.8, 3.9],
   [null, "Pro Max Slim · RTX 2000 Ada", "3 emulated cameras recording", 3.8, 3.9],
-  ["COMPILED, 8 CAMERAS (28 OCTOBER)", "Precision 7875 · RTX 6000 Ada", "idle", 2.4, 2.5],
+  [null, "Pro Tower Plus · RTX A2000", "idle", 4.8, 5.1],
+  [null, "Pro Tower Plus · RTX A2000", "3 emulated cameras recording (iGPU) ²", 4.8, 4.9],
+  ["COMPILED, 8 CAMERAS (28–29 OCTOBER)", "Precision 7875 · RTX 6000 Ada", "idle", 2.4, 2.5],
   [null, "Precision 7875 · RTX 6000 Ada", "8 emulated cameras recording ¹", 2.5, 2.7],
   [null, "Precision 7875 · RTX 4000 Ada", "idle", 5.9, 6.0],
   [null, "EVO-X2 · Radeon 8060S", "idle", 9.2, 9.4],
   [null, "EVO-X2 · Radeon 8060S", "8 emulated cameras recording", 10.8, 11.5],
   [null, "Pro Max Slim · RTX 2000 Ada", "idle", 10.7, 10.8],
   [null, "Pro Max Slim · RTX 2000 Ada", "8 emulated cameras recording", 10.7, 10.9],
+  [null, "Pro Tower Plus · RTX A2000", "idle", 13.0, 13.4],
+  [null, "Pro Tower Plus · RTX A2000", "8 emulated cameras recording (iGPU) ²", 13.0, 13.4],
   ["PLAIN PYTORCH, 3 CAMERAS", "Precision 7875 · RTX 6000 Ada", "idle, CUDA graphs", 5.2, 5.4],
   [null, "Precision 7875 · RTX 6000 Ada", "idle", 7.2, 7.7],
   [null, "Precision 7875 · RTX 6000 Ada", "3 fake cameras recording, CUDA graphs", 5.3, 6.4],
@@ -749,6 +779,10 @@ const fit = [
   ["Pro Max Slim · RTX 2000 Ada", C, "3 cameras, recording 3 emulated cameras at 60 fps", 32, 32, 32, "11.2 ms"],
   ["Pro Max Slim · RTX 2000 Ada", C, "8 cameras, idle", 8, 32, 32, "34.9 ms"],
   ["Pro Max Slim · RTX 2000 Ada", C, "8 cameras, recording 8 emulated cameras at 60 fps", 8, 32, 32, "32.5 ms"],
+  ["Pro Tower Plus · RTX A2000", C, "3 cameras, idle", 32, 32, 32, "16.3 ms"],
+  ["Pro Tower Plus · RTX A2000", C, "3 cameras, recording 3 emulated cameras at 60 fps on the iGPU", 32, 32, 32, "16.3 ms"],
+  ["Pro Tower Plus · RTX A2000", C, "8 cameras, idle", 5, 24, 32, "46.2 ms"],
+  ["Pro Tower Plus · RTX A2000", C, "8 cameras, recording 8 emulated cameras at 60 fps on the iGPU", 5, 24, 32, "45.0 ms"],
   ["Precision 7875 · RTX 6000 Ada", P, "3 cameras, idle, CUDA graphs", 32, 32, 32, "33 ms"],
   ["Precision 7875 · RTX 6000 Ada", P, "3 cameras, idle", 32, 32, 32, "16 ms"],
   ["Precision 7875 · RTX 6000 Ada", P, "3 cameras, recording 3 fake cameras at 60 fps, CUDA graphs", 32, 32, 32, null],
