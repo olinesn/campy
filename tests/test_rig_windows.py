@@ -521,3 +521,51 @@ def test_guard_ends_a_file_script_that_lacks_the_exit(run):
 		env=dict(run.env, RIG_OWNER="tester", RIG_PYTHON=sys.executable), capture_output=True, text=True, timeout=120)
 	body = [l for l in r.stdout.splitlines() if l.startswith("body")]
 	assert r.returncode == 5 and len(body) == 1 and body[0].startswith("body t2-"), r.stdout + r.stderr  # in the job, once
+
+
+@runs
+def test_a_hold_written_like_rig_hold_ps1_holds_while_its_window_runs(root):
+	# rig_hold.ps1 writes rig.py's own line, naming its PowerShell as rig.py, plus a note in brackets
+	note = " (held at the screen with rig_hold.ps1: training; it ends when that window closes)"
+	(root / "gpu.lock").write_text("user sleap-training since 2026-10-29 14:00:00 rigpid=%d rigstart=%d%s\n" % (
+		os.getpid(), rig.proc_start(os.getpid()), note))
+	lock = rig.FileLock()
+	assert lock.state() == ("held", (root / "gpu.lock").read_text().strip())
+	with pytest.raises(SystemExit) as e:
+		lock.acquire("s1", "t1", no_wait=True)
+	assert e.value.code == 75
+	(root / "gpu.lock").write_text("user sleap-training since 2026-10-29 14:00:00 rigpid=%d rigstart=1%s\n" % (dead_pid(), note))
+	assert lock.state()[0] == "stale"  # the window was closed
+
+
+@windows
+def test_rig_hold_ps1_holds_the_rig_until_it_ends(run):
+	for f in ("rig.py", "rig_windows.py", "rig_hold.ps1"):
+		(run.root / f).write_text(open(os.path.join(BENCH, f)).read())
+	ps = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(run.root / "rig_hold.ps1"),
+		"-Owner", "tester", "-Tag", "training", "-Why", "a test, job=1 pid=2", "-Root", str(run.root)]
+
+	def until_locked(p):
+		t0 = time.monotonic()
+		while not run.lock.exists() or "rigpid=" not in run.lock.read_text():
+			assert p.poll() is None and time.monotonic() - t0 < 60, p.stdout.read()
+			time.sleep(0.2)
+
+	held = subprocess.Popen(ps + ["-Seconds", "8"], env=run.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+	until_locked(held)
+	s = run("status")
+	assert s.stdout.startswith("rig held: tester training since"), s.stdout
+	assert "rig_hold.ps1: a test, job 1 pid 2;" in s.stdout, s.stdout  # nothing rig.py would read as a job
+	r = run("run", "--no-wait", "s2", "second", "--", sys.executable, "-c", "pass")
+	assert r.returncode == 75 and "tester training" in r.stdout, r.stdout
+	assert run("break").returncode != 0 and run.lock.exists()
+	assert held.wait(60) == 0, held.stdout.read()
+	assert not run.lock.exists()
+	assert "RELEASED" in (run.root / "rig_hold.log").read_text()
+	# Closing its window frees the rig too
+	closed = subprocess.Popen(ps + ["-Seconds", "300"], env=run.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+	until_locked(closed)
+	closed.kill()
+	closed.wait(60)
+	s = run("status")
+	assert s.stdout.startswith("rig free (stale gpu.lock cleared: tester training"), s.stdout
