@@ -13,6 +13,17 @@ For live use both have to be much smaller than the usual SLEAP models. The stand
 - About 1,000 labelled frames of 3 mice from several camera angles, 15 body parts.
 - The centered-instance models were trained on 12 body parts, without the three tail points, because a crop that holds the tail tip has to be much larger. sleap-nn 0.3.3 won't train on a subset of a skeleton's parts, so the tail points were removed from a copy of the labels file.
 - Batch size 4, the same augmentation for every model, a fixed random seed, so models differ only in the settings being compared.
+- Both models of a pair were trained with the cameras' frame size, 1024x1280, as `max_height` / `max_width`.
+
+### Check two settings when you reuse an old config
+
+The SLEAP GUI's "Reuse config" keeps two settings from the old model that its Training Configuration dialog doesn't show. Either one can spoil a model or stop the training.
+
+- **The frame size, `data_config.preprocessing.max_height` / `max_width`.** sleap-nn first fits every frame into this size, enlarging it and padding it with black if it's bigger than the frame, and only then applies the input scale. An old config keeps the frame size of the project it came from. Reused on 1024x1280 frames, a 1360x1680 setting enlarged every frame 1.31 times: the "0.13" input scale was really 0.17, and a 192 px crop held only 146 px of the frame. sleap-nn says so at the start of training, often many times: `Input image size (1024x1280, HxW) does not match the configured max_height/max_width (1360x1680); frames will be upscaled and padded on every call`. The cure is to set both to the cameras' frame size (or to `null`, for the largest video in the labels file). To keep what the model sees, multiply the input scale by the same factor: on these frames, 0.17 without the enlargement gives the same 176x224 model input as 0.13 with it.
+- **Use the same frame size in both models.** In top-down tracking, sleap-nn and `campy-live` cut the crops from frames sized for the centroid model. If the two models were trained with different frame sizes, the centered-instance model gets mice larger or smaller than the ones it learned on.
+- **The part names, `model_config.head_configs.centered_instance.confmaps.part_names`.** sleap-nn 0.3.3 takes only the skeleton's node names, all of them and in the same order, or `null` (the whole skeleton). A config from a project whose nodes had other names (`Shoulder_L` where the skeleton says `Shoulder_left`) stops the training at once: `part_names must exactly match the skeleton's node names (in order)`.
+
+For both, open a corrected config file instead of reusing the old model: in the Training Configuration dialog, choose "Select training config file..." from the configuration list and open a sleap-nn `.yaml` with `max_height`, `max_width` and `part_names` set as above.
 
 ## Settings that worked
 
