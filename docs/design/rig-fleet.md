@@ -348,7 +348,12 @@ What changes because it's a VM:
     from the VM records that its threads weren't pinned;
   - memory ballooning off, so the 32 GB is always there;
   - the B50 attached as PCI Express (the PCI device's "PCI-Express" box), as Proxmox advises for graphics cards on
-    its q35 machine type, and Resizable BAR on in the server's firmware, as Intel requires for Arc cards;
+    its q35 machine type;
+  - Resizable BAR, which Intel requires for Arc cards' full speed. On 2026-10-29 Intel's graphics software in the VM
+    reported it "Not Supported" (driver 32.0.101.8976). Turning it on is server work for whoever runs it: Resizable
+    BAR and Above 4G Decoding in the server's firmware, and possibly a larger 64-bit memory window for the VM's UEFI.
+    It matters most for moving data to the card, so for tracking more than for encoding. Every B50 number records
+    whether it was on;
   - a VirtIO network adapter instead of the emulated Intel E1000 (after installing the VirtIO drivers in Windows).
   Both the PCI Express setting and the VirtIO adapter were set on 2026-10-29. The server's own network link is 1 Gbit/s
   (940 Mbit/s measured from the VM, about 110 MB/s), with 10 Gbit/s possible later. That is plenty for compressed
