@@ -370,6 +370,20 @@ What changes because it's a VM:
 - **Reaching it from the Mac.** The VM needs an address on the lab network (a bridged network adapter), not one hidden
   behind the server (NAT). The SSH setup script lets SSH in only from the lab network and VPN, as on the other
   machines.
+- **The lab's network file share.** The VM has the lab's file server mapped as a drive. That's useful in two ways:
+  - **One home for test data.** The rig-check clips, models and calibrations (a few hundred MB per kit) can live in
+    one fleet folder on the share instead of being copied from the Mac to each machine. A job copies them to the local
+    disk before it starts timing, so the network never sits inside a measurement.
+  - **Recording to the share, as a check.** Whether campy keeps every frame when its output folder is on the network
+    share is a fair question for lab members, and a pass/fail check the VM can answer without a camera.
+
+  Two limits:
+  - **SSH logins can't open the share.** Windows' SSH server logs in with the Mac's key, and a key login carries no
+    password, so Windows has nothing to prove who it is to the file server. Jobs that need the share run in the
+    logged-on session through Task Scheduler, the same route as the GUI tests, where the share is already mapped.
+  - **The share holds everyone's data.** Fleet jobs read only from the fleet folder and write only to their own
+    result folder in it. They never delete anything on the share: the "delete the test's own recording" step that
+    rig checks end with refuses any path that isn't on the local disk.
 - **Its own account.** Unlike the Tower, nobody shares it, so the VM gets one account for the fleet (an administrator,
   so installs can be tried). Its password is in your password manager, never in the repo or on the Mac.
 
@@ -414,5 +428,7 @@ live-tracking.md's "after each update" steps point to it. Nothing public about h
     all adjustable; processor type `host`; its disk is on LVM-thin, which snapshots; its adapter is bridged onto the
     lab network.)
 12. **Should campy-fleet update always try the VM first**, or only when asked (`--canary`)?
+13. **The network share:** may the fleet have its own folder there for test kits and results? Do the rigs have the
+    share too (then they could read kits from it the same way)?
 
 Once you OK the design, stage 1 is the first PR. Nothing gets installed on any rig without your OK for that rig.
