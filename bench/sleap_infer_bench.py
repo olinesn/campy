@@ -14,8 +14,9 @@ set of synchronized camera frames:
       -> centered-instance model + global peak finding (integral refinement)
 
 Compute time does not depend on the weights, so this can be used to pick
-model sizes before labelling and training. It is standalone: campy is not
-imported, and nothing here is installed with campy.
+model sizes before labelling and training. It is standalone: campy is
+imported only for --fixed-crops and --cpus (campy-live's own code, below),
+and nothing here is installed with campy.
 
 What is measured
 ----------------
@@ -84,6 +85,37 @@ What is measured
   uint8 crop batch already on the device.
 * GFLOP per set for each model (torch.utils.flop_counter, 2 FLOP per MAC) and
   parameter counts.
+
+campy-live's own pipeline: --fixed-crops, --engine, --cpus
+----------------------------------------------------------
+By default each set is sleap-nn's TopDownLayer.predict, which waits for the
+centroid model before it crops. campy-live runs a set differently by
+default: --fixed-crops (campy/live.py, FixedCrops) always cuts
+max_instances crops per frame, finds the peaks with fixed shapes, and, with
+--cuda-graphs, records the whole set, upload to results, as one CUDA graph;
+--engine auto runs the two networks as compiled engines (FixedEngine:
+TensorRT fp16 on NVIDIA, torch.compile where only Triton is, as on ROCm);
+--cpus auto puts it on the performance cores at High priority and, on
+Windows, off the CPU that handles its GPU's interrupts. This script's
+--fixed-crops, --engine and --cpus time a set that way, with campy's own code
+(campy must be importable: installed, or its folder on PYTHONPATH):
+
+    python bench/sleap_infer_bench.py --sweep --fixed-crops --cuda-graphs --engine auto \
+        --cpus auto --precision fp16 --pace 60 --hold-clock on
+
+Each set is then live.FixedCrops' Upload and Predict: the frames into the
+graph's input, the graph, the results back into pinned memory, one wait.
+--crops-per-frame is then the layer's max_instances (each row's own), and the
+centroid model's output is used as it is: fixed crops cost the same whatever
+the model finds. --sweep then times the 32 pairs only (a stage alone isn't
+a set of campy-live's), and --sweep-rows picks some of them (0-31, in the
+order printed) to split a sweep into short jobs. Each model is made with
+the same random weights every run (--seed), so an engine built once is read
+back from --engine-cache (campy-live's own, ~/.cache/campy/engines, by
+default) by the next row or run with the same size and camera count: a
+TensorRT engine takes 10-40 s to build, timed as the row's first call.
+--trained CENTROID INSTANCE times trained sleap-nn model folders instead
+(with --fixed-crops), loaded as campy-live --model sleap loads them.
 
 How random weights are made to behave like a trained centroid model
 -------------------------------------------------------------------
@@ -185,6 +217,7 @@ HIP_*, ROCR_*, AMD_*, PYTORCH_*), so the two files say which run was which.
 """
 
 import argparse
+import gc
 import glob
 import itertools
 import json
@@ -198,6 +231,10 @@ import threading
 import time
 import warnings
 from datetime import datetime
+
+# Before torch: importing sleap-nn sets TORCHINDUCTOR_CACHE_DIR (the temp folder's), and campy-live keeps
+# torch.compile's kernels in --engine-cache unless it was set by whoever started it
+_INDUCTOR_DIR = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
 
 import numpy as np
 import torch
@@ -467,6 +504,7 @@ class CUDAGraphed(torch.nn.Module):
 
 
 _STREAMS = {}
+_LIVE = None  # campy.live, with --fixed-crops
 
 
 def fixed_stream(name, priority=0):
@@ -477,7 +515,11 @@ def fixed_stream(name, priority=0):
     and row) came round to the same one: once the capture stream was a
     spinner's, the spinner's event sync failed (CUDA_ERROR_CAPTURED_EVENT)
     and the capture was invalidated (cudaErrorStreamCaptureInvalidated).
+    With --fixed-crops, campy's FixedStream, which campy-live's graph is
+    recorded on: one set of streams for both, so they stay apart.
     """
+    if _LIVE is not None:
+        return _LIVE.FixedStream(name, priority)
     key = (name, priority, torch.cuda.current_device())
     if key not in _STREAMS:
         taken = {s.cuda_stream for s in _STREAMS.values()}
@@ -776,10 +818,14 @@ def make_layers(c, ci, args, device, precision, k, memory_format="nchw"):
     """Build fresh backends/layers (use_fp16/use_compile are construction-time)."""
     cm_h = math.ceil(FRAME_H * c["scale"] / c["max_stride"]) * c["max_stride"] // c["output_stride"]
     cm_w = math.ceil(FRAME_W * c["scale"] / c["max_stride"]) * c["max_stride"] // c["output_stride"]
-
+    fixed = args.fixed_crops
+    # The same weights for the same size every row and run, so --engine-cache
+    # holds one engine per size (the time doesn't depend on the weights)
+    torch.manual_seed(args.seed)
     centroid_module = build_centroid_module(
         args.in_channels, c["filters"], args.filters_rate, c["max_stride"], c["output_stride"]
     )
+    torch.manual_seed(args.seed + 1)
     instance_module = build_instance_module(
         args.in_channels, ci["filters"], args.filters_rate, ci["max_stride"],
         ci["output_stride"], args.nodes,
@@ -792,11 +838,14 @@ def make_layers(c, ci, args, device, precision, k, memory_format="nchw"):
     if memory_format == "channels_last":
         centroid_module.to(memory_format=torch.channels_last)
         instance_module.to(memory_format=torch.channels_last)
-    centroid_net = SyntheticCentroidPeaks(centroid_module, args.frames, cm_h, cm_w, k)
+    # --fixed-crops: the model as it is (FixedCrops cuts k crops per frame
+    # whatever it finds; a TensorRT engine is made from the model itself)
+    centroid_net = centroid_module if fixed else SyntheticCentroidPeaks(centroid_module, args.frames, cm_h, cm_w, k)
     instance_net = instance_module
     if precision == "fp16" and device == "mps":
         centroid_net, instance_net = MPSAutocast(centroid_net), MPSAutocast(instance_net)
-    graphed = args.cuda_graphs and device.startswith("cuda")
+    # --fixed-crops records its own graph, of the whole set
+    graphed = args.cuda_graphs and device.startswith("cuda") and not fixed
     if graphed:
         centroid_net = CUDAGraphed(centroid_net, precision == "fp16")
         instance_net = CUDAGraphed(instance_net, precision == "fp16")
@@ -813,14 +862,15 @@ def make_layers(c, ci, args, device, precision, k, memory_format="nchw"):
             use_compile=args.compile, compile_mode="reduce-overhead",
         )
 
+    most = k if fixed else args.max_instances  # --fixed-crops: k crops per frame
     centroid_layer = CentroidLayer(
         backend=centroid_backend,
         output_stride=c["output_stride"],
-        max_instances=args.max_instances,
+        max_instances=most,
         max_stride=c["max_stride"],
         preprocess_config=PreprocessConfig(scale=c["scale"]),
         postprocess_config=PostprocessConfig(
-            peak_threshold=0.2, refinement="integral", max_instances=args.max_instances
+            peak_threshold=0.2, refinement="integral", max_instances=most
         ),
     )
     instance_layer = CenteredInstanceLayer(
@@ -838,15 +888,46 @@ def make_layers(c, ci, args, device, precision, k, memory_format="nchw"):
     return topdown, centroid_layer, instance_layer, centroid_module, instance_module
 
 
+def trained_layers(c, ci, args, device, precision, k, memory_format="nchw"):
+    """--trained: the model folders' TopDownLayer, as campy-live --model sleap makes it (TrainedTopDown)."""
+    from sleap_nn.inference.predictor import Predictor
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        predictor = Predictor.from_model_paths([c["trained"], ci["trained"]], device=device, max_instances=k,
+                                               peak_threshold=[0.2, 0.2])
+    topdown = predictor.layer
+    backends = (topdown.centroid_layer.backend, topdown.centered_instance_layer.backend)
+    for backend in backends:
+        backend.use_fp16 = precision == "fp16" and device.startswith("cuda")
+        if memory_format == "channels_last":
+            backend.model.to(memory_format=torch.channels_last)
+    return (topdown, topdown.centroid_layer, topdown.centered_instance_layer) + tuple(b.model for b in backends)
+
+
+def run_fixed(topdown, args, device, k, frames_host):
+    """--fixed-crops: campy-live's FixedCrops on the layer, and a set as campy-live runs it."""
+    fixed = _LIVE.FixedCrops(topdown, args.frames, device, k, graph=args.cuda_graphs and device.startswith("cuda"),
+                             tiedPeaks=True, engine=args.engine, cache=args.engine_cache)
+
+    def fn():
+        return fixed.Predict(fixed.Upload(frames_host))
+    return fixed, fn
+
+
 def run_one(c, ci, args, device, precision, k, frames_host, what, memory_format="nchw",
             hold_clock=False, clock_log=None):
     """what: 'pipeline', 'centroid' or 'instance'. Returns a result dict."""
-    topdown, centroid_layer, instance_layer, centroid_module, instance_module = make_layers(
+    make = trained_layers if "trained" in c else make_layers
+    topdown, centroid_layer, instance_layer, centroid_module, instance_module = make(
         c, ci, args, device, precision, k, memory_format
     )
     n = args.frames
+    fixed = None
 
-    if what == "instance":
+    if args.fixed_crops:
+        fixed, fn = run_fixed(topdown, args, device, k, frames_host)
+    elif what == "instance":
         crops = torch.randint(0, 256, (n * k, 1, ci["crop"], ci["crop"]), dtype=torch.uint8).to(device)
 
         def fn():
@@ -883,16 +964,33 @@ def run_one(c, ci, args, device, precision, k, frames_host, what, memory_format=
         result["cuda_graphs"] = True
         result["cuda_graph_max_abs_diff"] = max(m.max_abs_diff for m in graphed)
 
-    # Check the shapes really were what we meant to time.
-    if what in ("pipeline", "centroid"):
-        n_centroids = int((~torch.isnan(out.pred_centroids).any(-1)).sum())
-        result["centroids_found"] = n_centroids
-        if n_centroids != n * k:
-            result["warning"] = f"expected {n * k} centroids, found {n_centroids}"
-    if what in ("pipeline", "instance"):
-        result["keypoints_shape"] = list(out.pred_keypoints.shape)
+    if fixed is not None:
+        # campy-live's set: its graph and engines as made, and the crops each set ran
+        result.update(fixed_crops=True, engine=fixed.engine, describe=fixed.Describe(),
+                      crops_per_set=int(out["found_mask"].size), keypoints_shape=list(out["keypoints"].shape))
+        if fixed.graph:
+            result["cuda_graphs"] = True
+            result["cuda_graph_max_abs_diff"] = fixed.max_abs_diff
+        if fixed.engines:
+            result["engines"] = [e.text for e in fixed.engines.values()]
+            result["engine_made_s"] = sum(e.seconds for e in fixed.engines.values())
+    else:
+        # Check the shapes really were what we meant to time.
+        if what in ("pipeline", "centroid"):
+            n_centroids = int((~torch.isnan(out.pred_centroids).any(-1)).sum())
+            result["centroids_found"] = n_centroids
+            if n_centroids != n * k:
+                result["warning"] = f"expected {n * k} centroids, found {n_centroids}"
+        if what in ("pipeline", "instance"):
+            result["keypoints_shape"] = list(out.pred_keypoints.shape)
 
-    del topdown, centroid_layer, instance_layer, centroid_module, instance_module
+    del topdown, centroid_layer, instance_layer, centroid_module, instance_module, fixed, fn, out
+    if args.fixed_crops:
+        if result.get("engine") == "compile":
+            torch._dynamo.reset()  # each row's networks are new ones: keep clear of dynamo's recompile limit
+        gc.collect()
+        if device.startswith("cuda"):
+            torch.cuda.empty_cache()  # the row's engines and graph pool, before the next row's
     return result
 
 
@@ -920,11 +1018,32 @@ def model_stats(c, ci, args, k):
 
 
 def centroid_label(c):
+    if "trained" in c:
+        return "trained " + os.path.basename(os.path.normpath(c["trained"]))
     return f"s{c['scale']:g} f{c['filters']} ms{c['max_stride']} os{c['output_stride']}"
 
 
 def instance_label(ci):
+    if "trained" in ci:
+        return "trained " + os.path.basename(os.path.normpath(ci["trained"]))
     return f"crop{ci['crop']} f{ci['filters']} ms{ci['max_stride']} os{ci['output_stride']}"
+
+
+def parse_rows(text, count):
+    """--sweep-rows '0-15' or '3,7,20-23' -> sorted pair indices, each under count."""
+    rows = set()
+    for part in str(text).replace(" ", "").split(","):
+        if not part:
+            continue
+        a, _, b = part.partition("-")
+        try:
+            first, last = int(a), int(b or a)
+        except ValueError:
+            sys.exit(f"--sweep-rows: not a list of rows: {text!r} (e.g. 0-15 or 3,7,20-23)")
+        if first < 0 or last < first or last >= count:
+            sys.exit(f"--sweep-rows: {part} is not within 0-{count - 1}")
+        rows.update(range(first, last + 1))
+    return sorted(rows)
 
 
 # --------------------------------------------------------------------------
@@ -956,6 +1075,21 @@ def parse_args():
                    help="don't log the GPU's clock (nvidia-smi / sysfs) through each row")
     p.add_argument("--compile", action="store_true",
                    help="experimental: TorchBackend(use_compile=True, compile_mode='reduce-overhead')")
+    p.add_argument("--fixed-crops", action="store_true",
+                   help="time campy-live's own set (campy/live.py FixedCrops): crops-per-frame crops per frame "
+                        "whatever is found, fixed-shape peaks, with --cuda-graphs one graph per set; needs campy")
+    p.add_argument("--engine", default="off", choices=["off", "auto", "compile", "tensorrt"],
+                   help="with --fixed-crops: the networks as compiled engines, as campy-live --engine (auto: "
+                        "TensorRT on NVIDIA, torch.compile where only Triton is)")
+    p.add_argument("--engine-cache", default="",
+                   help="--engine's built engines (default: campy-live's, ~/.cache/campy/engines)")
+    p.add_argument("--cpus", default="none",
+                   help="as campy-live --cpus (needs campy): auto puts this process on the performance cores and, "
+                        "on Windows, off its GPU's interrupt CPU; or a list, e.g. 4-11; none leaves it")
+    p.add_argument("--priority", default="auto", choices=["auto", "normal", "above_normal", "high"],
+                   help="with --cpus, as campy-live --priority")
+    p.add_argument("--trained", nargs=2, metavar=("CENTROID", "INSTANCE"), default=None,
+                   help="with --fixed-crops: time these trained sleap-nn model folders instead of random sizes")
     p.add_argument("--iters", type=int, default=2000, help="timed sets per measurement")
     p.add_argument("--warmup", type=int, default=50,
                    help="untimed sets after the first two calls of each shape")
@@ -984,14 +1118,43 @@ def parse_args():
                    help="also time each stage alone (implied by --sweep)")
     p.add_argument("--no-pipeline", action="store_true",
                    help="with --sweep: time stages only, skip the full pipeline for every pair")
+    p.add_argument("--sweep-rows", default=None,
+                   help="with --sweep: only these of the 32 pairs (0-31 in sweep order), e.g. 0-15")
     p.add_argument("--json", default=None, help="output JSON path (default: timestamped in cwd)")
     p.add_argument("--seed", type=int, default=0)
     return p.parse_args()
 
 
 def main():
+    global _LIVE
     args = parse_args()
     device = resolve_device(args.device)
+    if args.engine != "off" and not args.fixed_crops:
+        sys.exit("--engine: with --fixed-crops only (an engine is made for one input shape, as in campy-live)")
+    if args.trained and not args.fixed_crops:
+        sys.exit("--trained: with --fixed-crops only (a trained model's crop count follows the frames otherwise)")
+    if args.trained and args.sweep:
+        sys.exit("--trained or --sweep, not both")
+    if args.fixed_crops and args.compile:
+        sys.exit("--compile is sleap-nn's; with --fixed-crops use --engine compile")
+    placed, skipped = None, []
+    if args.fixed_crops or args.cpus != "none":
+        try:
+            from campy import live as _LIVE
+        except ImportError as e:
+            sys.exit(f"--fixed-crops and --cpus use campy's own code: campy must be importable ({e})")
+    if args.fixed_crops:
+        asked = args.engine
+        args.engine = _LIVE.FixedEngine.Choose(asked, device)  # eager, compile or tensorrt
+        why = _LIVE.FixedEngine.Pick(device)[1] if asked == "auto" else None
+        if why:
+            skipped.append(f"--engine auto: {why}; so the networks run in torch")
+        if args.engine == "compile" and not _INDUCTOR_DIR:
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(_LIVE.FixedEngine.CacheDir(args.engine_cache),
+                                                                 "inductor")
+    if args.cpus != "none":
+        placed, _ = _LIVE.PlaceSelf(argparse.Namespace(cpus=args.cpus, priority=args.priority, model="random",
+                                                       device=device))
     torch.manual_seed(args.seed)
     precisions = [s.strip() for s in args.precision.split(",") if s.strip()]
     for prec in precisions:
@@ -1003,7 +1166,6 @@ def main():
     for mf in memory_formats:
         if mf not in ("nchw", "channels_last"):
             sys.exit(f"--memory-format: unknown {mf!r} (use nchw and/or channels_last)")
-    skipped = []
     if device == "cpu" and "fp16" in precisions:
         precisions.remove("fp16")
         skipped.append("fp16 skipped on cpu")
@@ -1028,10 +1190,17 @@ def main():
     if max(ks) > args.max_instances:
         sys.exit("--crops-per-frame cannot exceed --max-instances")
 
-    if args.sweep:
+    pairs = None
+    if args.trained:
+        centroids, instances = [{"trained": args.trained[0]}], [{"trained": args.trained[1]}]
+        stages, pipeline = False, True
+    elif args.sweep:
         centroids = SWEEP_CENTROID
         instances = [dict(ci, output_stride=args.instance_output_stride) for ci in SWEEP_INSTANCE]
-        stages, pipeline = True, not args.no_pipeline
+        # --fixed-crops: the whole set only (a stage alone isn't one of campy-live's sets)
+        stages, pipeline = not args.fixed_crops, not args.no_pipeline
+        if args.sweep_rows is not None:
+            pairs = parse_rows(args.sweep_rows, len(centroids) * len(instances))
     else:
         centroids = [dict(scale=args.centroid_scale, filters=args.centroid_filters,
                           max_stride=args.centroid_max_stride,
@@ -1054,11 +1223,18 @@ def main():
         "device_name": device_description(device),
         "env": env,
         "args": vars(args),
-        "method": "sleap-nn TopDownLayer.predict (CentroidLayer + CenteredInstanceLayer on "
-                  "TorchBackend) with random-weight models built from sleap-nn configs; centroid "
-                  "confmaps replaced by K synthetic peaks per frame after the model runs, so the "
-                  "crop count is fixed; device synchronized after every set",
+        "method": ("campy-live's FixedCrops (campy/live.py) on sleap-nn's TopDownLayer: Upload and Predict, "
+                   "K crops per frame whatever the centroid model finds, one CUDA graph per set with "
+                   "--cuda-graphs, networks as --engine; results back in one copy and one wait"
+                   if args.fixed_crops else
+                   "sleap-nn TopDownLayer.predict (CentroidLayer + CenteredInstanceLayer on "
+                   "TorchBackend) with random-weight models built from sleap-nn configs; centroid "
+                   "confmaps replaced by K synthetic peaks per frame after the model runs, so the "
+                   "crop count is fixed; device synchronized after every set"),
         "notes": skipped,
+        "fixed_crops": args.fixed_crops,
+        "engine": args.engine if args.fixed_crops else None,
+        "cpus": placed,
     }
     print(f"sleap-nn {sleap_nn.__version__}, torch {torch.__version__}, device {device}: "
           f"{header['device_name']}")
@@ -1072,9 +1248,14 @@ def main():
           f"memory format {','.join(memory_formats)}, "
           f"hold clock {','.join('on' if h else 'off' for h in holds)}, "
           f"pace {f'{args.pace:g} sets/s' if args.pace else 'back to back'}, "
-          f"clock log {clock_log.__class__.__name__ if clock_log else 'off'}")
-    print("timing: sleap-nn TopDownLayer.predict; centroid confmaps -> K synthetic peaks/frame "
-          "(model still runs) so crops are fixed")
+          f"clock log {clock_log.__class__.__name__ if clock_log else 'off'}"
+          + (f", campy-live's fixed crops, engine {args.engine}" if args.fixed_crops else "")
+          + (f", {placed}" if placed else ""))
+    if args.fixed_crops:
+        print("timing: campy-live's FixedCrops (upload, the set, results back); K crops per frame whatever is found")
+    else:
+        print("timing: sleap-nn TopDownLayer.predict; centroid confmaps -> K synthetic peaks/frame "
+              "(model still runs) so crops are fixed")
 
     rng = np.random.default_rng(args.seed)
     frames_np = rng.integers(0, 256, (args.frames, FRAME_H, FRAME_W, 1), dtype=np.uint8)
@@ -1088,15 +1269,18 @@ def main():
         jobs += [("centroid", c, instances[0]) for c in centroids]
         jobs += [("instance", centroids[0], ci) for ci in instances]
     if pipeline:
-        jobs += [("pipeline", c, ci) for c in centroids for ci in instances]
+        every = [(c, ci) for c in centroids for ci in instances]
+        jobs += [("pipeline", c, ci) for i, (c, ci) in enumerate(every) if pairs is None or i in pairs]
 
-    results = []
+    results, failed = [], []
     stats_cache = {}
     t_start = time.perf_counter()
     for kind, c, ci in jobs:
         for k in ks:
             key = (centroid_label(c) if kind != "instance" else None,
                    instance_label(ci) if kind != "centroid" else None, k)
+            if key not in stats_cache and "trained" in c:
+                stats_cache[key] = {}
             if key not in stats_cache:
                 stats_cache[key] = model_stats(
                     c if kind != "instance" else None, ci if kind != "centroid" else None, args, k
@@ -1104,7 +1288,17 @@ def main():
             for prec in precisions:
                 for mf in memory_formats:
                     for hold in holds:
-                        r = run_one(c, ci, args, device, prec, k, frames_host, kind, mf, hold, clock_log)
+                        try:
+                            r = run_one(c, ci, args, device, prec, k, frames_host, kind, mf, hold, clock_log)
+                        except (Exception, SystemExit) as e:
+                            if not args.fixed_crops:
+                                raise
+                            # an engine that couldn't be made for this size: said, and the sweep goes on
+                            failed.append({"centroid": dict(c), "instance": dict(ci), "crops_per_frame": k,
+                                           "precision": prec, "error": f"{type(e).__name__}: {e}"})
+                            print(f"!! {centroid_label(c)} + {instance_label(ci)}: {failed[-1]['error']}",
+                                  flush=True)
+                            continue
                         r["centroid"] = dict(c) if kind != "instance" else None
                         r["instance"] = dict(ci) if kind != "centroid" else None
                         r.update(stats_cache[key])
@@ -1116,12 +1310,13 @@ def main():
 
     out_path = args.json or f"sleap_infer_bench_{device}_{datetime.now():%Y%m%d_%H%M%S}.json"
     with open(out_path, "w") as f:
-        f.write(strict_json_dumps({"header": header, "results": results}, indent=2))
+        f.write(strict_json_dumps({"header": header, "results": results, "failed": failed}, indent=2))
     print(f"wrote {out_path}")
 
 
 COLUMNS = [
-    ("stage", 8), ("centroid", 20), ("instance", 21), ("prec", 4), ("mem", 4), ("cg", 2), ("hc", 2), ("K", 2),
+    ("stage", 8), ("centroid", 20), ("instance", 21), ("prec", 4), ("mem", 4), ("cg", 2), ("eng", 3), ("hc", 2),
+    ("K", 2),
     ("GFLOP", 6), ("1st ms", 8), ("2nd ms", 7), ("p50", 7), ("p95", 7), ("p99", 7), ("max", 7), ("sets/s", 7),
     ("MHz", 5), ("W", 4), ("over", 4),
 ]
@@ -1137,6 +1332,7 @@ def row_cells(r):
         instance_label(r["instance"]) if r["instance"] else "-",
         r["precision"], "cl" if r.get("memory_format") == "channels_last" else "nchw",
         "y" if r.get("cuda_graphs") else "-",
+        {"tensorrt": "trt", "compile": "cmp", "eager": "fc"}.get(r.get("engine"), "-"),
         "y" if r.get("hold_clock") else "-",
         str(r["crops_per_frame"]), f"{gflop:.1f}",
         f"{r['first_call_ms']:.0f}", f"{r['second_call_ms']:.1f}",
@@ -1162,7 +1358,8 @@ def print_row(r, header_needed):
 
 def print_table(results):
     print("\nSummary (latency per set in ms; GFLOP per set; mem = memory format, cl = "
-          "channels_last; cg = CUDA graphs; hc = --hold-clock; K = crops per frame; 1st/2nd = "
+          "channels_last; cg = CUDA graphs; eng = --fixed-crops with an engine (trt TensorRT, cmp torch.compile) or "
+          "none (fc); hc = --hold-clock; K = crops per frame; 1st/2nd = "
           "first calls of the shape; MHz / W = median GPU clock and power over the timed sets; "
           "over = paced sets that ran over their slot):")
     print(format_row([name for name, _ in COLUMNS]))
