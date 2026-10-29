@@ -354,13 +354,19 @@ What changes because it's a VM:
   - memory ballooning off, so the 32 GB is always there;
   - the B50 attached as PCI Express (the PCI device's "PCI-Express" box), as Proxmox advises for graphics cards on
     its q35 machine type;
-  - Resizable BAR, which Intel requires for Arc cards' full speed. On 2026-10-29 Intel's graphics software in the VM
-    reported it "Not Supported" (driver 32.0.101.8976). Both were already on in the server's firmware (checked
-    2026-10-29), so the limit is in the passthrough: the hypervisor doesn't pass the card's Resizable BAR setting on,
-    and what counts is how large a window into the card's memory the VM is given. Enlarging it is server work for its
-    root account (sizing the card's memory window on the server before the VM starts).
-    It matters most for moving data to the card, so for tracking more than for encoding. Every B50 number records
-    whether it was on;
+  - Resizable BAR, which Intel requires for Arc cards' full speed. It is in effect, though Intel's software says
+    otherwise. Resizable BAR lets the processor see all of the card's memory at once through one large window
+    instead of a small one. The server's firmware already opens that window to the card's full 16 GB when the
+    server starts (the server's log, checked 2026-10-29). The VM is given the same 16 GB window: Windows' own list
+    of the card's resources shows a 16 GB memory range next to the card's 16 MB control range. Intel's graphics
+    software in the VM still reports Resizable BAR as "Not Supported" (driver 32.0.101.8976), most likely because
+    the hypervisor hides the card's resize control from the VM. Since the window is already as large as the card's
+    memory, there is nothing left to resize, and no server work is needed.
+    The window sits at a memory address above the range the server's IOMMU (the chip that lets devices write to
+    memory directly) can reach. The only cost is that other devices can't write straight into the card's memory.
+    Nothing in campy does that. It matters most for moving data to the card, so for tracking more than for
+    encoding. Every B50 number records the window size Windows reports, so a change after a firmware or server
+    update shows up;
   - a VirtIO network adapter instead of the emulated Intel E1000 (after installing the VirtIO drivers in Windows),
     but only once the server's network port has been fixed. On 2026-10-29 the VirtIO adapter took the whole server
     off the network three times in one day. With it, the VM hands the server large blocks of data that the server's
