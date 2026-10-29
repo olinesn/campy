@@ -4,7 +4,8 @@
 > questions, for when the work is picked up. The diagrams are SVG files in `rig-fleet/` next to this page.
 
 Goal: releases, health checks and rig checks on the rigs (EVO-X2, Dell Pro Max Slim FCS1250, Precision 7875, and since
-2026-10-28 the Dell Pro Tower Plus, an experiment machine: section 5) stop being hand work, without ever disturbing a
+2026-10-28 the Dell Pro Tower Plus, an experiment machine: section 5; and since 2026-10-29 a Windows 11 virtual machine
+with no cameras or GPU: section 6) stop being hand work, without ever disturbing a
 recording or another session's locked run.
 
 Nothing has been changed on any rig. I only copied the existing rig-check scripts, READMEs and update scripts to my
@@ -302,11 +303,51 @@ The Tower has the same CPU as the Dell Pro Max Slim (Core Ultra 9 285), so the S
 Quick Sync (`hevc_qsv`) on the CPU's built-in GPU records, and the NVIDIA card tracks. Its RTX A2000 (Ampere, 70 W) is
 an older and slower card than the Slim's RTX 2000 Ada. docs/hardware.md says "what 8 cameras need hasn't been measured
 since the models were compiled", and the Slim's 4-camera run (30 fps, 3 mice) had its 3D poses 8.3 ms after the frames at the median. 8 cameras is
-about twice the work per set, on a slower card. So 30 fps looks likely, and 60 fps with 5 mice is in doubt. The first
-job on the Tower, once you allow it, is a rig check with **8 emulated cameras** (recording + campy-live, 3D) at 30 and
-60 fps. If it doesn't keep up, the numbers say how much faster a card needs to be, and the Tower's power supply and slot
-space decide which one fits. Also worth checking there: 8 USB 3 cameras need enough separate USB controllers. The
+about twice the work per set, on a slower card. So 30 fps looks likely, and 60 fps with 5 mice is in doubt. **Measured
+2026-10-29** (docs/live-tracking.md, PR #230): with 8 emulated cameras, recording and 3D tracking 5 mice on the A2000,
+30 fps kept up (every set tracked, 21.5 ms per set at the median) and 60 fps didn't (about 25 ms per set, 40% of sets
+skipped). The card's 70 W limit holds its clock down. So 60 fps at 8 cameras needs a lighter model or a faster card,
+and the Tower's power supply and slot space decide which card fits. Also worth checking there: 8 USB 3 cameras need enough separate USB controllers. The
 dashboard's per-camera USB speed and campy's own USB check show it.
+
+## 6. A Windows virtual machine: checks and trial runs, no hardware
+
+Added 2026-10-29: a **Windows 11 virtual machine on a lab server**. It has no cameras and no NVIDIA GPU, and nobody
+records on it. It does three jobs the rigs shouldn't:
+- **Windows checks without hardware.** GitHub Actions already runs campy's unit tests on Windows, but not what the
+  rigs run: the lab's conda environments with conda's ffmpeg, the Spinnaker SDK installed with no camera, rig.py, and a
+  whole recording. The VM runs the rig check's smoke test there: emulated cameras, encoded on the CPU (libx264 and
+  libx265), campy-acquire to the end, frame counts and timestamps checked. campy-live runs on the CPU at one camera
+  and a low frame rate, to show it starts, loads models and writes its files.
+- **Trial runs of anything that changes a machine.** A new rig.py, the SSH setup script, a campy-fleet update or a new
+  conda environment is tried on the VM first. **campy-fleet update goes to the VM first and to the rigs only if the
+  VM's update and checks pass** (`--rigs` still picks rigs by hand). A failed trial costs nothing: the VM goes back to
+  a saved clean state (below).
+- **Playback and GUI tests.** campy-live-view, campy-session's panel, the launchers and Windows playback (the
+  deferred playback issues) run on the VM's screen, where they can't freeze anyone's Mac or interrupt a rig. Each test
+  saves a screenshot to its result folder.
+
+What changes because it's a VM:
+- **Its numbers are never timings.** It shares the server's CPUs with other virtual machines and has no GPU encoder.
+  Its results are pass or fail, with frame counts; no fps, latency or capacity figure from it goes into docs/ or a
+  baseline. The rig checks compare it only with its own earlier pass/fail results.
+- **Same lock, same rules for jobs.** It runs rig.py like every rig, so the fleet starts jobs on it the same way. rig.py
+  asks nvidia-smi which programs use the GPU. On the VM there's no nvidia-smi, so rig.py must treat "no NVIDIA driver"
+  as "no GPU users", not as an error (a small change, tested on the VM itself). None of section 5's experiment-machine
+  rules apply: no banner, no idle checks, tests at any hour.
+- **A clean state to go back to.** After setup (SSH, rig.py, the conda envs, Spinnaker SDK) you save a snapshot or
+  checkpoint in the server's hypervisor and call it `campy-clean`. Each trial run starts from it. The Mac can't revert
+  it unless it's given access to the hypervisor, which I don't propose: you revert it, or the trial undoes its own
+  changes (a fresh conda env each time, deleted afterwards). After each campy release you save a new `campy-clean`.
+- **GUI tests need someone logged on.** SSH gives no screen. Windows 11 has one screen session, so the VM keeps its
+  test account logged on to the hypervisor's console, and GUI tests run there through a Task Scheduler task set to
+  run only when that account is logged on. Connecting with Remote Desktop takes that session over, as on the Tower;
+  a GUI test that sees its session disconnect reports "interrupted", not "failed".
+- **Reaching it from the Mac.** The VM needs an address on the lab network (a bridged network adapter), not one hidden
+  behind the server (NAT). The SSH setup script lets SSH in only from the lab network and VPN, as on the other
+  machines.
+- **Its own account.** Unlike the Tower, nobody shares it, so the VM gets one account for the fleet (an administrator,
+  so installs can be tried). Its password is in your password manager, never in the repo or on the Mac.
 
 ---
 
@@ -320,6 +361,7 @@ dashboard's per-camera USB speed and campy's own USB check show it.
 | 4 | **Dashboard** (`status --html`, snapshot in fleet jobs) | Page from all 3 rigs, incl. one held by another session (must show "held", touch nothing) |
 | 5 | **Nightly + drift alerts** (campy.notify) | One night on each rig you allow; a forced drift (lowered limit) must alert |
 | 6 | **Experiment-machine mode** (section 5), after SSH is set up on the Tower: idle and pause checks before every start, STOP/PAUSE in rig.py, the banner and its logon task, shortcuts, the panel notice | On the Dell Pro Tower Plus with your OK: a test stopped from the banner, from the shortcut and by opening a camera, by unlocking and by a Remote Desktop connect, each within 2 s; no new test while paused |
+| 7 | **The virtual machine** (section 6), after SSH is set up on it: rig.py without nvidia-smi, the CPU smoke check, `campy-fleet update` trying the VM first, GUI tests in its logged-on session | rig.py's lock and verdicts on the VM; a smoke check passing there; an update stopping before the rigs when the VM's check is made to fail on purpose; a campy-live-view screenshot from the VM |
 
 docs/: a new page `docs/rig-fleet.md` (how to update, run checks, read the dashboard), linked from docs/README.md;
 live-tracking.md's "after each update" steps point to it. Nothing public about hosts/paths.
@@ -343,5 +385,9 @@ live-tracking.md's "after each update" steps point to it. Nothing public about h
 9. **Should any keyboard or mouse input at the Tower stop a test by itself**, or only the Stop button, unlocking,
    Remote Desktop, opening a camera and starting campy?
 10. **Default pause after a stop:** until the next morning, or something else?
+11. **The virtual machine:** which hypervisor runs it (Hyper-V, Proxmox, VMware), and can you save and revert a
+    snapshot yourself? How many CPU cores and how much memory does it have (my guess for campy-live on the CPU is 8 cores and
+    16 GB)? Is its network adapter bridged onto the lab network?
+12. **Should campy-fleet update always try the VM first**, or only when asked (`--canary`)?
 
 Once you OK the design, stage 1 is the first PR. Nothing gets installed on any rig without your OK for that rig.
