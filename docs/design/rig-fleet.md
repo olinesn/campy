@@ -112,6 +112,11 @@ live in one place.
 
 *The path every unattended rig job takes. The two exits at the top keep it off recordings and other sessions' runs: it never waits in line, and it gives way the moment a camera or encoder is opened.*
 
+**A person's hold counts as busy.** Since 2026-10-29 someone at a Windows rig can hold it with `bench/rig_hold.ps1`
+(PR #233), for example while training a model there: the lock then names them and their reason, as long as the hold's
+window stays open. "Look first" reads that like any other holder: the fleet skips the rig, reports "held by <who>: <why>"
+on the dashboard, and never breaks the lock. When the window closes, the hold ends by itself.
+
 ---
 
 ## 2. One-command release updates (priority 2): `campy-fleet update v2.1.1`
