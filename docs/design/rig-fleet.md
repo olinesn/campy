@@ -226,7 +226,7 @@ Mono 1.3 MP cameras. It is used mainly for experiments, so it gets stricter rule
 - anyone at the machine can see a test is running and stop it with one click;
 - after a stop, the fleet leaves the machine alone until they hand it back.
 
-It runs **Windows 11 with one shared lab account**, and has no SSH server yet. What that means here:
+It runs **Windows 11 with one shared lab account**, reached from the Mac over SSH since 2026-10-28. What that means here:
 - **One session at a time.** Windows 11 (unlike Windows Server) has one interactive session. Connecting with Remote
   Desktop takes over the session at the screen, and the person at the screen is logged off it. So the banner has one
   session to show in. A Remote Desktop takeover is also someone arriving: it counts as a stop (below). On the Dell
@@ -237,9 +237,11 @@ It runs **Windows 11 with one shared lab account**, and has no SSH server yet. W
   optional "your name" box.
 - **Tests run as the lab account too**, since SSH logs in as it. The STOP file needs no special permissions, and the
   test's processes are the user's own in Task Manager. Nothing about a test is hidden from the person at the machine.
-- **SSH has to be set up first** (stage 6). OpenSSH Server is an optional feature of Windows 11. It needs an
-  administrator once: install it, start it automatically, add the Mac's key, and limit its firewall rule to the lab
-  network and VPN addresses, as on the Precision 7875. Until then, nothing in this section can run there.
+- **SSH and rig.py are set up** (2026-10-28). An administrator ran the SSH setup script once at the machine: it
+  installed OpenSSH Server (an optional feature of Windows 11), started it automatically, added the Mac's key, turned
+  password logins off and limited the firewall rule to the lab network and VPN addresses, as on the Precision 7875.
+  rig.py and its lock were installed the same evening. What's still missing for this section is the experiment-machine
+  part of stage 6: the banner, STOP/PAUSE and the idle checks.
 
 ![On the Dell Pro Tower Plus the Mac starts a test only when nobody is active, nothing records, the hour is allowed and tests aren't paused. A banner on screen shows the running test with a Stop button; one click writes STOP and PAUSE files, rig.py ends the job within 2 s, and PAUSE keeps new tests away. Starting campy or SpinView, or opening a camera, also stops the job.](rig-fleet/06-experiment-machine-stop.svg)
 
@@ -451,8 +453,8 @@ What changes because it's a VM:
 | 3 | **`campy-fleet ci`** (label-gated PR checks, comment + statuses) | A test PR labelled `rig-check`; a fork/unlabelled PR must be ignored |
 | 4 | **Dashboard** (`status --html`, snapshot in fleet jobs) | Page from all 3 rigs, incl. one held by another session (must show "held", touch nothing) |
 | 5 | **Nightly + drift alerts** (campy.notify) | One night on each rig you allow; a forced drift (lowered limit) must alert |
-| 6 | **Experiment-machine mode** (section 5), after SSH is set up on the Tower: idle and pause checks before every start, STOP/PAUSE in rig.py, the banner and its logon task, shortcuts, the panel notice | On the Dell Pro Tower Plus with your OK: a test stopped from the banner, from the shortcut and by opening a camera, by unlocking and by a Remote Desktop connect, each within 2 s; no new test while paused |
-| 7 | **The virtual machine** (section 6), after SSH is set up on it: rig.py without nvidia-smi (GPU Engine counters), the smoke check with Quick Sync on the B50, a campy-live trial on the B50, `campy-fleet update` trying the VM first, GUI tests in its logged-on session | rig.py's lock and verdicts on the VM; a smoke check passing there; an update stopping before the rigs when the VM's check is made to fail on purpose; a campy-live-view screenshot from the VM |
+| 6 | **Experiment-machine mode** (section 5), on the Tower (SSH and rig.py set up 2026-10-28): idle and pause checks before every start, STOP/PAUSE in rig.py, the banner and its logon task, shortcuts, the panel notice | On the Dell Pro Tower Plus with your OK: a test stopped from the banner, from the shortcut and by opening a camera, by unlocking and by a Remote Desktop connect, each within 2 s; no new test while paused |
+| 7 | **The virtual machine** (section 6), on the VM (SSH, rig.py and campy set up 2026-10-29): rig.py without nvidia-smi (GPU Engine counters), the smoke check with Quick Sync on the B50, a campy-live trial on the B50, `campy-fleet update` trying the VM first, GUI tests in its logged-on session | rig.py's lock and verdicts on the VM; a smoke check passing there; an update stopping before the rigs when the VM's check is made to fail on purpose; a campy-live-view screenshot from the VM |
 
 docs/: a new page `docs/rig-fleet.md` (how to update, run checks, read the dashboard), linked from docs/README.md;
 live-tracking.md's "after each update" steps point to it. Nothing public about hosts/paths.
@@ -472,7 +474,7 @@ live-tracking.md's "after each update" steps point to it. Nothing public about h
 6. **Dashboard: static page first (A), artifact later (C)?**
 7. The drift limits in section 4: fine as a start?
 8. **Dell Pro Tower Plus:** which hours may tests run there? (Answered 2026-10-28: Windows 11, one shared lab account,
-   no SSH yet.)
+   no SSH yet. SSH was set up on 2026-10-28.)
 9. **Should any keyboard or mouse input at the Tower stop a test by itself**, or only the Stop button, unlocking,
    Remote Desktop, opening a camera and starting campy?
 10. **Default pause after a stop:** until the next morning, or something else?
