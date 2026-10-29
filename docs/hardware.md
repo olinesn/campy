@@ -1,5 +1,7 @@
 # Hardware for live tracking
 
+What to buy for a whole rig (cameras, lenses, cables, trigger, lights, computer, disk and calibration board, with prices) is the [shopping list](#what-to-buy) at the end of this page. The rest is about the computer.
+
 The full guide, with every measurement, is [hardware-guide.html](hardware-guide.html). GitHub shows that file as source code; to read it formatted, open the [published copy](https://claude.ai/artifact/1iFm1x157Wfw4rrHQf2FTk) or download the file and open it in a browser. It compares three machines running campy and sleap-nn together:
 
 - **GMKtec EVO-X2**: mini-PC, AMD Ryzen AI Max+ 395 with its Radeon 8060S integrated GPU, Ubuntu 24.04 and ROCm.
@@ -29,11 +31,79 @@ This list leaves the numbers to the guide, so it can't fall out of date with it.
 
 When the machine is shared, run every timing test through `bench/rig.py` (on Linux or Windows): it runs one test at a time, says whether anything else used the GPU, the cameras, the encoder, the trigger, the CPU or the disk during it (`RIG_CLEAN` or `RIG_CONTAMINATED`), and logs the GPU's clock. Compare only clean runs, at the same GPU clock: on the Dell Pro Max Slim FCS1250, overlapping runs took a model pair from 27.6 to 42.7 ms per set, and the GPU's clock alone made a factor of two (above). The [Development](development.md#timing-tests-on-a-shared-machine-benchrigpy) explains it.
 
-## Hardware/Software Recommendations
-- Basler and/or FLIR machine vision camera(s)
-- Windows, IOS, or Linux system
-- (Recommended) Server/workstation class CPUs with >=4 memory channels (e.g., AMD Threadripper 3955WX-9955WX, Intel i9-10900X, Xeon) can increase bandwidth over consumer CPUs with 2 memory channels (more cameras, higher resolution/frame rate).
-- (Recommended) High core count CPUs are not necessary, but generally >1 core per camera is recommended, as campy leverages one process per camera using multiprocessing for parallelism.
-- (Optional) USB expansion card with 1 host controller per camera (e.g., Basler USB 3.0, 4X PCIe, 4X HC, 4 Ports PN# 2000036233).
-- (Optional) Hardware encoder using AMD, Intel, or Nvidia GPU (see https://developer.nvidia.com/video-encode-decode-gpu-support-matrix).
-- (Optional) Arduino/Teensy/Pi microcontroller for syncing cameras and other devices.
+## What to buy
+
+Everything a campy rig needs, from the cameras to the calibration board. **(lab)** marks what the lab's own campy rigs use: three or four FLIR Blackfly S cameras triggered by an Arduino Nano ESP32, recorded by a GMKtec EVO-X2 (Ubuntu) or a Dell Pro Max Slim FCS1250 (Windows). Everything else is a suggestion, and the sellers are examples, not requirements.
+
+Prices were checked on 29 October 2026, in US dollars before tax and shipping, on the pages linked. They change often, and institutional and education prices differ. A price marked *about* comes from the seller's listing in search results, because its own page could not be read that day.
+
+### For each camera
+
+| Part | What to get | Price | Alternatives and notes |
+|---|---|---|---|
+| Camera | **FLIR Blackfly S BFS-U3-13Y3M-C** (lab): 1.3 MP mono, global shutter, 1280 × 1024, up to 170 fps, 1/2" sensor with 4.8 µm pixels, C-mount, USB 3 | $480 at [DigiKey](https://www.digikey.com/en/products/detail/flir-integrated-imaging-solutions-inc/BFS-U3-13Y3M-C/16528338) (none in stock, 4-week lead time); $720 at [FLIR's store](https://teledynevisionsolutions.com/products/blackfly-s-usb3/?model=BFS-U3-13Y3M-C) | Faster, smaller frames: BFS-U3-04S2M-C (720 × 540, 522 fps), $361 at [DigiKey](https://www.digikey.com/en/products/detail/flir-integrated-imaging-solutions-inc/BFS-U3-04S2M-C/16991251). More pixels: BFS-U3-28S5M-C (1936 × 1464, 130 fps, 2/3"), $1,473 at [FLIR](https://teledynevisionsolutions.com/products/blackfly-s-usb3); another lab's campy rig uses it. BFS-U3-16S2M-CS (1440 × 1080, 226 fps) is CS-mount, so a C-mount lens needs a 5 mm adapter; $371 at [DigiKey](https://www.digikey.com/en/products/detail/flir-integrated-imaging-solutions-inc/BFS-U3-16S2M-CS/16528335). Basler's acA1300-200um has the same sensor (203 fps), about $585 at [Edmund Optics](https://www.edmundoptics.com/p/basler-ace-aca1300-200um-monochrome-usb-30-camera/3418/) |
+| Lens | C-mount, fixed focal length, manual focus and iris, rated for 1/2" or larger. The lab's lens models are not recorded | about $112–300 | See [Choosing lenses](#choosing-lenses) |
+| USB 3 cable | FLIR's locking cable (Type-A to Micro-B, with screws): ACC-01-2300 (3 m) or ACC-01-2301 (5 m) | $24.60 / $37.50 at [FLIR](https://teledynevisionsolutions.com/products/usb-3.1-locking-cable) | Screw-lock cables from [Unibrain](https://store.unibrain.com/?p=3603), $16.50 (3 m) / $20.50 (5 m). Longer runs need an active cable: Unibrain's 10 m ($119, same page), or StarTech's 10 m active extension USB3AAEXT10M ($160.54 at [DigiKey](https://www.digikey.com/en/products/detail/startech-com/USB3AAEXT10M/22160297)) plus a short locking cable at the camera. Newnex FireNEX-uLINK active cables (8–16 m) are sold through distributors, price on request |
+| Trigger (GPIO) cable | FLIR ACC-01-3009: 1 m, 6-pin Hirose HR10 plug with bare wires, for the camera's GPIO. The lab's rigs trigger on Line3 | $37.50 at [FLIR](https://teledynevisionsolutions.com/products/hirose-hr10-6-pin-circular-connector) or [DigiKey](https://www.digikey.com/en/products/detail/flir-integrated-imaging-solutions-inc/ACC-01-3009/16528261) | ACC-01-3010 is the 4.5 m version ($43.90, FLIR). The product page has the Blackfly S pinout; check it before wiring |
+| IR-pass filter (for infrared light) | Midwest Optical LP830 (passes about 845 nm and longer, so it works with 850 or 940 nm lights), in the lens's filter thread size (25.5, 27 or 30.5 mm). The lab's filters are not recorded | $109–117 at Graftek ([LP830-30.5](https://graftek.com/product/lp830-30-5/), [LP830-27](https://graftek.com/product/lp830-27/)) | BP850 passes only 820–910 nm, so it also blocks 940 nm light ($121–130, [Graftek](https://graftek.com/product/bp850-30-5/)). See [Lighting](#lighting) |
+| Mount | Not recorded | $5–230 | 80/20's 1" × 1" aluminium extrusion (1010) at $0.45 an inch plus $3 a cut ([80/20](https://8020.net/1010.html)), with a 1/4"-20 T-nut (3382, $0.37, [80/20](https://8020.net/3382.html)) and a ball head such as the Manfrotto MH492-BHUS ($69.95, [Markertek](https://www.markertek.com/product/man-mh492-bhus/manfrotto-mh492-bhus-492-centre-ball-head-multipurpose-tripod-head-for-compact-system-cameras)). Or clamp-on: a Manfrotto 035 Super Clamp ($46.95, [Markertek](https://www.markertek.com/product/2915/manfrotto-035-super-clamp-without-stud); needs a 2908 stud) and a 244N variable-friction arm ($172.25, [Markertek](https://www.markertek.com/product/man-244n/manfrotto-244n-variable-friction-magic-arm-without-camera-bridge)) |
+
+### For the rig
+
+| Part | What to get | Price | Alternatives and notes |
+|---|---|---|---|
+| Trigger board | **Arduino Nano ESP32** (lab), ABX00083 (with headers). It runs campy's `trigger.ino`, and the lab's rigs trigger every camera's Line3 from it | $19.30 at [Arduino](https://store-usa.arduino.cc/products/nano-esp32-with-headers) or [DigiKey](https://www.digikey.com/en/products/detail/arduino/ABX00083/21219775) | `trigger.ino` also builds for the Teensy 4.0 ($23.80 at [SparkFun](https://www.sparkfun.com/teensy-4-0.html)) and the Arduino Uno R3 ($27.60 at [Arduino](https://store-usa.arduino.cc/products/arduino-uno-rev3)). The ESP32's pins are 3.3 V and not 5 V tolerant. Wiring: [Triggering and synchronization](sync.md) |
+| USB 3 card (more than about 3 cameras at 60 fps) | None: the lab's rigs use the computers' own ports. Take a card with one controller per port, such as StarTech PEXUSB3S44V (4 ports, 4 controllers, PCIe x4) | $145.79 at [DigiKey](https://www.digikey.com/en/products/detail/startech-com/PEXUSB3S44V/21397918) | FLIR's quad-channel card ACC-01-1205, $148 at [FLIR](https://www.teledynevisionsolutions.com/products/usb-3.1-host-controller-card). Not FLIR's ACC-01-1202, whose 4 ports share one controller. Basler's 4-controller card (2000036233) is discontinued. See [USB](#usb) |
+| Lights | Not recorded | $24–950 | 850 nm security-camera floodlights are cheap (Tendelux BI18, 18 W, about $50 at [Tendelux](https://tendelux.com/products/bi18-ir-illuminator-for-security-cameras-license-plate-recognition)), but they don't say how they are driven, and a light sensor switches them on only in the dark. Machine-vision lights state a constant-current driver and can be strobed from the trigger: Smart Vision Lights L300-850-W, a 306 mm 850 nm bar, $948 at [Graftek](https://graftek.com/product/smartvisionlights-l300-850-w-ir-850-nm-led-bar-light-306-x-70-5-x-33-2-l-x-w-x-h-mm-m12/). For white light, a panel dimmed without flicker, such as the amaran P60x (about $135–169, [Pictureline](https://pictureline.com/products/amaran-p60x-led-light)). See [Lighting](#lighting) |
+| Calibration board | **calib.io ChArUco, Coarse, 300 × 200 mm** (CCT300200C; lab): 14 × 9 squares of 20 mm, `DICT_5X5_1000`, aluminium | €120 (about $137) at [calib.io](https://calib.io/products/charuco-targets) | Other sizes from 200 × 150 to 800 × 600 mm (€116–273). Which to choose: LUC3D's [Choosing Cameras & Boards](https://talmolab.github.io/luc3d-docs/user-guide/cameras-and-boards/#calibration-boards). Using it: [Calibration](calibration.md) |
+| Sync check | An LED (red, or infrared behind IR-pass filters) and a 330 Ω resistor | under $1 | For `campy-synctest` ([Checking that cameras expose together](sync.md#checking-that-cameras-expose-together)) |
+| Closed-loop outputs (optional) | A second Arduino Nano ESP32, and a 10 kΩ pull-down resistor per output | $19.30 | For `campy-rules` ([Closed-loop outputs](closed-loop.md)) |
+| Recording computer | GMKtec EVO-X2 or Dell Pro Max Slim FCS1250 (lab) | about $2,200–3,650 | See [The recording computer](#the-recording-computer) |
+| Video disk | A second NVMe SSD, 4 TB: WD_BLACK SN850X or Samsung 990 Pro | about $630–800 ([prices compared](https://www.maxmybuild.com/storage/nvme-ssds/wd-black-sn850x/4tb)) | 4 TB holds about 280 camera-days at 30 fps, or about 100 at 60 fps, at the sizes in [The recording computer](#the-recording-computer) |
+
+A 3-camera rig like the lab's comes to about $5,100–5,900 before lights and mounts: three cameras ($480–720 each), lenses (about $140 each), FLIR cables (3 m USB and GPIO, $62), a Nano ESP32, the 300 × 200 calib.io board, an EVO-X2 with 64 GB and a 4 TB video disk.
+
+### Choosing lenses
+
+A lens's focal length sets how much of the arena a camera sees. On the BFS-U3-13Y3M (a 1/2" sensor, 6.14 mm wide), the width a camera sees is its distance × 6.14 / the focal length:
+
+| Focal length | Horizontal field of view | Width seen from 50 cm | From 1 m | Example lens |
+|---|---|---|---|---|
+| 3.5 mm | 83° | 88 cm | 176 cm | Kowa LM4NCL, about $120–144 ([Machine Vision Direct](https://machinevisiondirect.com/products/kowa-lm4ncl)); no filter thread |
+| 4 mm | 75° | 77 cm | 154 cm | Edmund Optics UC Series #33-300, about $299 ([Edmund Optics](https://www.edmundoptics.com/p/4mm-uc-series-fixed-focal-length-lens/2966/)) |
+| 6 mm | 54° | 51 cm | 102 cm | Kowa LM6NCL, about $121–186 ([Machine Vision Direct](https://machinevisiondirect.com/products/kowa-lm6ncl)); M25.5 filter thread |
+| 8 mm | 42° | 38 cm | 77 cm | Computar M0814-MP2, about $139 ([B&H](https://www.bhphotovideo.com/c/product/888985-REG/computar_M0814_MP2_2_3_Fixed_Lens.html)); M30.5 filter thread |
+| 12 mm | 29° | 26 cm | 51 cm | Computar M1214-MP2, about $133 ([B&H](https://www.bhphotovideo.com/c/product/888992-REG/computar_M1214_MP2_2_3_Fixed_Lens.html)); M30.5 filter thread |
+
+Lenses made for 2/3" sensors, such as the Computar MP2 series, fit the 1/2" sensor too. To screw an IR-pass filter on, the lens needs a filter thread. Most cameras on the 8-camera rigs LUC3D was tested on see 75–80° across (a 4 mm lens on this camera), with an 8 mm lens on a camera that stands farther back. Fit the arena to the frame with a little margin; pixels outside it are wasted. Take lenses rated for the sensor (1/2" or larger), with locking screws on focus and iris: a calibration holds only while they stay put ([Calibration](calibration.md#before-calibrating-lens-and-exposure)). Where to put the cameras, and how many to buy, is in [Calibration](calibration.md#placing-3-cameras) and in LUC3D's [Choosing Cameras & Boards](https://talmolab.github.io/luc3d-docs/user-guide/cameras-and-boards/#how-many-cameras).
+
+### USB
+
+A 1280 × 1024 mono camera sends 79 MB/s at 60 fps (223 MB/s at its full 170 fps). campy's launch check budgets 300 MB/s for each 5 Gb/s USB controller ([Scaling the number of cameras](encoding.md#scaling-the-number-of-cameras)), so one controller takes 3 such cameras at 60 fps, or 7 at 30 fps. The Pro Max Slim records its four at 30 fps (157 MB/s) on its one built-in controller. For more cameras, add a PCIe card with one controller per port. On Linux, give USB more buffer memory for FLIR cameras: `usbcore.usbfs_memory_mb=1000` on the kernel's command line (the default 16 MB drops frames; [Jetson AGX Orin](jetson.md) shows where to set it).
+
+USB 3 reaches about 5 m on a passive cable. Beyond that, use an active cable, and test each one with its camera at the full frame rate before relying on it.
+
+### Lighting
+
+Mice are often recorded under infrared (850 nm), which they barely see, so the light can stay on through their dark phase. A mono camera without an IR-cut filter sees 850 nm, though less well than visible light; an IR-pass filter on each lens then blocks the room lights, so the picture stays the same when they change. Whatever the light, it must not flicker: with the short exposures that keep moving animals sharp (the Pro Max Slim's rig uses 200 µs), a PWM-dimmed LED makes the brightness jump from frame to frame. Use lights driven by constant current, or dimmed by it. Aim for the brightness your pose model was trained on (an image mean of about 15–35 out of 255 for the lab's models, [Calibration](calibration.md#before-calibrating-lens-and-exposure)), and give every camera the same exposure, evening them out with gain.
+
+### The recording computer
+
+The machines measured above, with what each did ([hardware-guide.html](hardware-guide.html) has the numbers):
+
+| Machine | What it is | Live tracking measured | Fits | Price |
+|---|---|---|---|---|
+| **GMKtec EVO-X2** (the lab uses) | Mini-PC: AMD Ryzen AI Max+ 395, Radeon 8060S integrated GPU, 64 GB shared memory; Ubuntu 24.04, ROCm; VA-API encoding on the same GPU | 3 cameras at 60 fps with 5 mice; 8 cameras with a light model | A 3-camera rig. It has no PCIe slot for a USB card, so every camera shares its built-in USB ports: count the USB bandwidth (above) before going past 3 at 60 fps | About $2,200 with 64 GB and 1 TB ([GMKtec](https://www.gmktec.com/products/amd-ryzen%E2%84%A2-ai-max-395-evo-x2-ai-mini-pc)); about $3,650 with 128 GB and 2 TB ([Newegg](https://www.newegg.com/gmktec-barebone-systems-mini-pc-amd-ryzen-ai-max-395-evo-x2-128-2t/p/2SW-007C-00016)) |
+| **Dell Pro Max Slim FCS1250** (the lab uses) | Core Ultra 9 285 (Quick Sync encoding on its integrated GPU), NVIDIA RTX 2000 Ada 16 GB, 64 GB; Windows 11 | 3 cameras at 60 fps with 5 mice; 4 cameras at 30 fps with 3 mice | A 3–4-camera Windows rig | $2,088 with the Core Ultra 9 285 and no GPU ([Dell](https://www.dell.com/en-us/shop/desktop-computers/dell-pro-max-slim-desktop/spd/dell-pro-max-fcs1250-slim-desktop): from $1,598, plus $490). Dell no longer offers the RTX 2000 Ada in it; its RTX PRO 2000 Blackwell 16 GB adds $1,180 and has not been tested with campy. The RTX 2000 Ada alone is about $708–849 ([CDW](https://www.cdw.com/product/pny-nvidia-rtx-2000-ada-graphic-card-16-gb-gddr6/8111180), [B&H](https://www.bhphotovideo.com/c/product/1860617-REG/pny_vcnrtx2000ada_pb_nvidia_rtx_2000_ada.html)) |
+| **Dell Precision 7875** | Threadripper PRO 7965WX, NVIDIA RTX 6000 Ada 48 GB for inference + RTX 4000 Ada 20 GB for encoding, 128 GB; Windows 11 | Every one of the 32 model sizes at 8 cameras and 60 fps | 8 cameras at 60 fps, with room for USB cards | $6,392 with the 7965WX and no GPU ([Dell](https://www.dell.com/en-us/shop/desktop-computers/precision-7875-tower-workstation/spd/precision-t7875-workstation): from $4,802, plus $1,590), then about $9,100 for an RTX 6000 Ada and $1,660 for an RTX 4000 Ada ([CDW](https://www.cdw.com/product/nvidia-rtx-6000-ada-graphics-card-nvidia-rtx-6000-ada-48-gb/7817023)) |
+
+Not measured, but worth knowing: the Minisforum MS-S1 MAX has the EVO-X2's chip and a full-size PCIe slot for a USB card: about $2,599 with 64 GB, or $3,919 with 128 GB ([Minisforum](https://store.minisforum.com/products/minisforum-ms-s1-max-mini-pc); shipping late November).
+
+Recording alone needs much less than live tracking: the GPU's video encoder does the work. Measured with `campy-encode-sweep` at 1280 × 1024 (with 25% headroom): the Pro Max Slim's Intel Quick Sync kept up with 16 cameras at 80 fps, its RTX 2000 Ada's NVENC with 12, the EVO-X2's VA-API with 24 at 60 fps, and the Precision's RTX 4000 Ada with 28 at 80 fps ([Scaling the number of cameras](encoding.md#scaling-the-number-of-cameras)). An NVIDIA Jetson AGX Orin is being set up as a small stand-alone rig, but campy can't use its encoder yet ([Jetson AGX Orin](jetson.md)).
+
+Give the videos a disk of their own (see the short version above). For sizing it: at the Pro Max Slim's settings (H.265, quality 26, 30 fps, 1280 × 1024) a camera writes about 14 GB a day; 8-camera recordings at 60 fps (H.265, constant QP 24) wrote 3–4 Mbit/s per camera, about 30–40 GB a day.
+
+### Other cameras
+
+- **Basler** cameras record through Pylon and pypylon ([Installation](install.md)). The lab's rigs are FLIR, so what this page says about FLIR settings, USB limits and triggering was measured on FLIR cameras only.
+- **RatCam** ([nir-eye-cam](https://github.com/olinesn/nir-eye-cam)) NIR eye cameras record alongside the others ([RatCam cameras](ratcam.md)). They are prototypes: their parts are listed in that repository, not here.

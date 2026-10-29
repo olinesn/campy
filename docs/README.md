@@ -15,7 +15,7 @@ Guides for recording with campy and tracking animals live while it records. The 
 | [FLIR cameras](flir.md) | Cameras left at 43 MB/s by a restart (`campy-flir-reset`), Spinnaker's search for GigE cameras, gamma, and the frame rate, frame size and USB limit campy sets |
 | [Triggering and synchronization](sync.md) | Arduino, Teensy and external triggers, `campy-align` and `campy-synctest` |
 | [RatCam cameras](ratcam.md) | nir-eye-cam's NIR eye cameras, alongside the others and on the same timeline |
-| [Hardware](hardware.md) | What to buy for live recording + SLEAP + 3D, and the measurements behind it |
+| [Hardware](hardware.md) | What to buy for a whole rig, with prices (cameras, lenses, USB, trigger, lights, computer, disk, calibration board), and the computer measurements behind it |
 | [Jetson AGX Orin](jetson.md) | Bringing up a Jetson AGX Orin as a stand-alone rig: setting it up (JetPack 7.2.1, the video disk, power mode, USB, the two venvs), checking it (`bench/jetson_setup_check.py`), and whether its hardware encoder keeps up with three cameras (`bench/jetson_encode_bench.py`) |
 | [Recording a session from the desktop](recording-a-session.md) | For labmates who don't use a terminal: the desktop icon, the panel in the browser, Start, bookmarks, Stop, and what the warnings mean (`campy-session shortcut`, `campy-session panel`) |
 | [Live tracking](live-tracking.md) | Setting up and running `campy-acquire`, `campy-live` and `campy-live-view` (in one command with `campy-session`) on Linux (AMD/ROCm) and Windows (NVIDIA/CUDA), and opening the results in LUC3D (`campy-live-export`) |

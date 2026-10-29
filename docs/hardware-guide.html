@@ -106,6 +106,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
   <div class="eyebrow">Live pose tracking · October 2026</div>
   <h1>What to buy for live campy + SLEAP + triangulation</h1>
   <p class="lede col">Three machines, with four GPUs between them, were measured running campy recordings and sleap-nn top-down inference (centroid + centered-instance) at the same time, at 3 and 8 cameras. The deciding factors were the inference GPU, CPU speed, and the operating system. Memory channels didn't matter. The full live pipeline, with trained models and 3D tracking of 5 mice, was then run on all three. On 28 October the model-size benchmark was run again on every GPU, timing each set the way <code>campy-live</code> now runs it, with the models compiled.</p>
+  <p class="col">This guide is about the computer. The rest of the rig (cameras, lenses, USB cables and cards, the trigger, lights, the video disk and the calibration board) is on the <a href="https://github.com/olinesn/campy/blob/dev/docs/hardware.md#what-to-buy">shopping list in hardware.md</a>, with prices.</p>
   <div class="budgets"><span>Frame budget at <b>60 fps</b>: 16.7 ms per synchronized set</span><span>at <b>30 fps</b>: 33.3 ms</span><span>Pass = p99 under budget</span></div>
 </header>
 
@@ -656,7 +657,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 
 <footer>
   <p>Measured 18–28 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250 and a Dell Precision 7875.</p>
-  <p class="meta">Version 56 · updated 28 October 2026 · reflects campy changes through pull request 229 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p class="meta">Version 57 · updated 29 October 2026 · reflects campy changes through pull request 229 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 
