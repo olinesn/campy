@@ -369,10 +369,15 @@ What changes because it's a VM:
     offline with it, and so does the server's own web page. The server's log showed none of these hangs in the two
     months before. The fix is work for the server's root account: turn off that cutting-up on the port
     (`ethtool -K <port> tso off gso off`, kept across restarts with a `post-up` line in `/etc/network/interfaces`).
-    Until then the VM uses the E1000 adapter, as it did before. The server also has an unused 25 Gbit/s card;
-    moving its network to that card would avoid the built-in port altogether.
+    The VM uses the E1000 adapter, as it did before, and stays on it: the server fix isn't planned for now. The
+    server also has an unused 25 Gbit/s card; moving its network to that card would avoid the built-in port
+    altogether.
   The PCI Express setting was made on 2026-10-29. The VirtIO adapter was tried that day and then switched back to
-  E1000 after the hangs. The server's own network link is 1 Gbit/s
+  E1000 after the hangs. A test the same evening confirmed E1000 is safe. For 10 minutes the VM uploaded and
+  downloaded as fast as it could and copied 1 GB files to and from a Mac. It moved about 60 GB in all, with
+  downloads keeping the server's link full (about 916 Mbit/s). Neither the server nor the VM ever stopped
+  answering, and the server's log showed no hang. On VirtIO, one speed test or a 330 MB copy had been enough to
+  freeze the port. The server's own network link is 1 Gbit/s
   (940 Mbit/s measured from the VM, about 110 MB/s), with 10 Gbit/s possible later. That is plenty for compressed
   recordings: the 8-camera, 60-second test clips total 188 MB, about 3 MB/s for all 8 cameras. It only slows copying
   large folders of raw video or training data.
