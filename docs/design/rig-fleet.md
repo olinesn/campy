@@ -341,12 +341,14 @@ What changes because it's a VM:
   agree, and docs/ always says it was measured in a virtual machine and with how many threads. Pass or fail checks
   (frame counts, files, GUI) have no such limit.
 - **Settings in Proxmox that make runs repeatable** (my recommendation, your call):
-  - processor type `host`, so Windows and ffmpeg see the real i9-14900 and its instructions;
+  - processor type `host`, so Windows and ffmpeg see the real i9-14900 and its instructions (already set);
   - pin the 8 threads to performance cores (Proxmox's CPU affinity). The i9-14900 has 8 performance cores (16
     threads) and 16 efficiency cores; threads that move between them would make every timing vary;
   - memory ballooning off, so the 32 GB is always there;
-  - Resizable BAR on in the server's firmware, as Intel requires for Arc cards; Windows' Device Manager shows whether
-    the VM sees it.
+  - the B50 attached as PCI Express (the PCI device's "PCI-Express" box), as Proxmox advises for graphics cards on
+    its q35 machine type, and Resizable BAR on in the server's firmware, as Intel requires for Arc cards;
+  - a VirtIO network adapter instead of the emulated Intel E1000 (after installing the VirtIO drivers in Windows),
+    so copying test clips and models isn't held to the E1000's 1 Gbit/s.
   8 threads and 32 GB are enough for these jobs. More threads only help if tracking ends up on the CPU.
 - **Same lock, same rules for jobs.** It runs rig.py like every rig, so the fleet starts jobs on it the same way. rig.py
   asks nvidia-smi which programs use the GPU, and the VM has no NVIDIA card. Windows itself counts every program's GPU
@@ -407,10 +409,10 @@ live-tracking.md's "after each update" steps point to it. Nothing public about h
 9. **Should any keyboard or mouse input at the Tower stop a test by itself**, or only the Stop button, unlocking,
    Remote Desktop, opening a camera and starting campy?
 10. **Default pause after a stop:** until the next morning, or something else?
-11. **The virtual machine:** is its disk on snapshot-capable storage (ZFS, LVM-thin, qcow2)? Is its network adapter
-    bridged onto the lab network? Do you revert `campy-clean` yourself, or may the Mac have a Proxmox API token
-    limited to this one VM? (Answered 2026-10-29: Proxmox; Intel Arc Pro B50 passed through, 8 threads of an
-    i9-14900, 32 GB, all adjustable.)
+11. **The virtual machine:** do you revert `campy-clean` yourself, or may the Mac have a Proxmox API token limited to
+    this one VM? (Answered 2026-10-29: Proxmox; Intel Arc Pro B50 passed through, 8 threads of an i9-14900, 32 GB,
+    all adjustable; processor type `host`; its disk is on LVM-thin, which snapshots; its adapter is bridged onto the
+    lab network.)
 12. **Should campy-fleet update always try the VM first**, or only when asked (`--canary`)?
 
 Once you OK the design, stage 1 is the first PR. Nothing gets installed on any rig without your OK for that rig.
