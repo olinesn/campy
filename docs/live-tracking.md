@@ -405,6 +405,24 @@ What changes with a camera more:
 - **New TensorRT plans**, built once at the first start (below).
 - **USB**: the launch check adds up the cameras' data on each USB controller, on Windows too: four 1280 × 1024 Mono8 cameras at 30 fps are about 157 MB/s, 52 % of the 300 MB/s it gives a controller whose cameras link at 5 Gb/s. At 60 fps (315 MB/s) it warns, as Windows doesn't say whether the controller runs at 5 Gb/s or faster: stream every camera at once at the full rate (SpinView) and set `usbBudgetMBps` to what it carried.
 
+## Eight cameras on one RTX A2000 (29 October 2026)
+
+A Dell Pro Tower Plus (Intel Core Ultra 9 285, NVIDIA RTX A2000 12 GB, a 70 W card) records 8 FLIR cameras, and has one GPU for both jobs. To see whether it can also track all 8 live, campy 2.2.0 recorded 8 emulated cameras there, encoding H.265 on the A2000's NVENC, while `campy-live` tracked them in 3D on the same card. The cameras played all 8 views of the 60 s, 5-mouse recording whose 3 views the rig checks use, and 3D used that recording's own calibration. `campy-live` ran the rig checks' trained models with its defaults (fixed crops, CUDA graphs, TensorRT, the GPU clock held). No real camera was opened. Times in ms, median / p99:
+
+| 8 emulated cameras, 5 mice | Sets tracked | Inference | Frame to 3D | 3D alone |
+|---|---|---|---|---|
+| 30 fps, 120 s | 3,600 of 3,600 | 21.5 / 23.1 | 26.2 / 30.5 | 2.2 / 6.1 |
+| 60 fps, 60 s | 2,173 of 3,600 (1,427 skipped) | 25.3 / 28.5 | 39.3 / 50.9 | 2.8 / 7.2 |
+
+- **30 fps fits; 60 fps does not.** At 30 fps a set took 21.5 ms of the 33.3 ms between frames, nothing was skipped, and every 3D pose was ready within 30.5 ms at p99 (46.7 ms at most, in the first seconds). At 60 fps a set takes about 25 ms, longer than the 16.7 ms between frames, so `campy-live` tracked 36 sets a second and skipped the rest, as it does when it falls behind (it always takes the newest set).
+- **The card's power limit holds it back.** Its clock sat at about 1,450 MHz at 30 fps and 1,350 MHz at 60 (1,875 MHz while the models loaded), held down by its 70 W power cap most of the time, at up to 79 °C. Its encoder was 23% busy at 30 fps and 48% at 60, so the recording was not the limit ([Video encoding](encoding.md#nvidia-gpu-encoding-nvenc): this NVENC keeps up with 14 such cameras at 60 fps).
+- **The recording kept every frame**: each of the 8 cameras saved all 3,600 frames in both runs.
+- **3D**: in the 30 fps run all 5 mice had a 3D pose in 99.9% of the sets (4 in the rest), each seen by 8 cameras at the median, and the poses reprojected within 3.5 px at the median. Each camera found all 5 mice in 71–99% of its frames. Not checked: whether the right detections were grouped into each mouse (`bench/pose3d_live_log.py` cannot try every grouping of 5 animals in 8 cameras), and accuracy against offline SLEAP.
+- **Other programs.** Both runs ended `RIG_CONTAMINATED`, by other programs' CPU use only. At 30 fps the antivirus and Windows Search used 2–2.5 cores while the models loaded and as the cameras started; after the first 10 s, each 10 s report's p99 inference was 22.2–23.3 ms. At 60 fps Windows' app and device-enrollment services used 4–5 cores at times. Each run was measured once.
+- **Played at half speed.** The clips were recorded at 60 fps, so at 30 fps the mice moved half as fast as in life; that does not change the work per set.
+
+To track 8 cameras at 60 fps here, the A2000 would need a lighter model or a faster card: the guide's model-size sweep has what each GPU does with 8 cameras ([Hardware guide](hardware.md)).
+
 ## Fixed crops (`--fixed-crops`, on by default with a GPU)
 
 Normally `campy-live` runs the centroid model, waits for the GPU to say how many animals it found, and only then cuts that many crops for the instance model. That wait in the middle of every set costs time, and it is why `--cuda-graphs` needs a separate graph for every number of animals. With `--fixed-crops`, every frame always gets `--max-instances` crops. When fewer animals are there, the missing ones get a padding crop whose keypoints are thrown away. Nothing in a set then depends on how many animals were found, so:
