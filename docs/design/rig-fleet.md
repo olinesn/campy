@@ -5,7 +5,7 @@
 
 Goal: releases, health checks and rig checks on the rigs (EVO-X2, Dell Pro Max Slim FCS1250, Precision 7875, and since
 2026-10-28 the Dell Pro Tower Plus, an experiment machine: section 5; and since 2026-10-29 a Windows 11 virtual machine
-with no cameras or GPU: section 6) stop being hand work, without ever disturbing a
+with an Intel Arc Pro B50 and no cameras: section 6) stop being hand work, without ever disturbing a
 recording or another session's locked run.
 
 Nothing has been changed on any rig. I only copied the existing rig-check scripts, READMEs and update scripts to my
@@ -310,15 +310,22 @@ skipped). The card's 70 W limit holds its clock down. So 60 fps at 8 cameras nee
 and the Tower's power supply and slot space decide which card fits. Also worth checking there: 8 USB 3 cameras need enough separate USB controllers. The
 dashboard's per-camera USB speed and campy's own USB check show it.
 
-## 6. A Windows virtual machine: checks and trial runs, no hardware
+## 6. A Windows virtual machine with an Intel Arc Pro B50: checks, trial runs, Intel GPU numbers
 
-Added 2026-10-29: a **Windows 11 virtual machine on a lab server**. It has no cameras and no NVIDIA GPU, and nobody
-records on it. It does three jobs the rigs shouldn't:
-- **Windows checks without hardware.** GitHub Actions already runs campy's unit tests on Windows, but not what the
-  rigs run: the lab's conda environments with conda's ffmpeg, the Spinnaker SDK installed with no camera, rig.py, and a
-  whole recording. The VM runs the rig check's smoke test there: emulated cameras, encoded on the CPU (libx264 and
-  libx265), campy-acquire to the end, frame counts and timestamps checked. campy-live runs on the CPU at one camera
-  and a low frame rate, to show it starts, loads models and writes its files.
+Added 2026-10-29: a **Windows 11 virtual machine on a Proxmox server**, with an **Intel Arc Pro B50** passed through to
+it (16 GB, 70 W), 8 threads of an Intel Core i9-14900 and 32 GB of memory. All three can be changed from Proxmox. It has
+no cameras and nobody records on it. It does jobs the rigs shouldn't, plus one no rig can:
+- **Windows checks without camera hardware.** GitHub Actions already runs campy's unit tests on Windows, but not what
+  the rigs run: the lab's conda environments, the Spinnaker SDK installed with no camera, rig.py, and a whole recording.
+  The VM runs the rig check's smoke test there: emulated cameras, campy-acquire to the end, frame counts and timestamps
+  checked.
+- **The Intel encoder path on Windows.** The B50 encodes H.264, H.265 and AV1 with Quick Sync (`gpuMake: "intel"`).
+  That is the path the Dell Pro Max Slim and the Dell Pro Tower Plus can use on their processors' built-in GPUs, so the
+  VM tests it without borrowing either machine. Quick Sync needs an ffmpeg built with oneVPL (docs/encoding.md:
+  conda-forge's Windows ffmpeg has none), so the VM also checks that campy finds and uses such an ffmpeg.
+- **Tracking on an Intel GPU, untried.** PyTorch runs on Intel GPUs on Windows (device `xpu`). Whether sleap-nn and
+  campy-live work on it hasn't been tried. The first trial: campy-live with 1 and 3 emulated cameras on the B50, and
+  the same models on the CPU if it doesn't run. If it works, the B50 is a new kind of GPU for the hardware guide.
 - **Trial runs of anything that changes a machine.** A new rig.py, the SSH setup script, a campy-fleet update or a new
   conda environment is tried on the VM first. **campy-fleet update goes to the VM first and to the rigs only if the
   VM's update and checks pass** (`--rigs` still picks rigs by hand). A failed trial costs nothing: the VM goes back to
@@ -328,21 +335,36 @@ records on it. It does three jobs the rigs shouldn't:
   saves a screenshot to its result folder.
 
 What changes because it's a VM:
-- **Its numbers are never timings.** It shares the server's CPUs with other virtual machines and has no GPU encoder.
-  Its results are pass or fail, with frame counts; no fps, latency or capacity figure from it goes into docs/ or a
-  baseline. The rig checks compare it only with its own earlier pass/fail results.
+- **Which numbers count.** The B50 belongs to the VM alone, so its encoder and GPU numbers are its own. The CPU threads
+  are shared with the server's other virtual machines, so anything that leans on the CPU varies with what they do.
+  Rules: numbers from the VM are its own baseline; a number goes into docs/ only after two runs on different days
+  agree, and docs/ always says it was measured in a virtual machine and with how many threads. Pass or fail checks
+  (frame counts, files, GUI) have no such limit.
+- **Settings in Proxmox that make runs repeatable** (my recommendation, your call):
+  - processor type `host`, so Windows and ffmpeg see the real i9-14900 and its instructions;
+  - pin the 8 threads to performance cores (Proxmox's CPU affinity). The i9-14900 has 8 performance cores (16
+    threads) and 16 efficiency cores; threads that move between them would make every timing vary;
+  - memory ballooning off, so the 32 GB is always there;
+  - Resizable BAR on in the server's firmware, as Intel requires for Arc cards; Windows' Device Manager shows whether
+    the VM sees it.
+  8 threads and 32 GB are enough for these jobs. More threads only help if tracking ends up on the CPU.
 - **Same lock, same rules for jobs.** It runs rig.py like every rig, so the fleet starts jobs on it the same way. rig.py
-  asks nvidia-smi which programs use the GPU. On the VM there's no nvidia-smi, so rig.py must treat "no NVIDIA driver"
-  as "no GPU users", not as an error (a small change, tested on the VM itself). None of section 5's experiment-machine
-  rules apply: no banner, no idle checks, tests at any hour.
-- **A clean state to go back to.** After setup (SSH, rig.py, the conda envs, Spinnaker SDK) you save a snapshot or
-  checkpoint in the server's hypervisor and call it `campy-clean`. Each trial run starts from it. The Mac can't revert
-  it unless it's given access to the hypervisor, which I don't propose: you revert it, or the trial undoes its own
-  changes (a fresh conda env each time, deleted afterwards). After each campy release you save a new `campy-clean`.
+  asks nvidia-smi which programs use the GPU, and the VM has no NVIDIA card. Windows itself counts every program's GPU
+  use for any make of GPU (the "GPU Engine" performance counters, read with `typeperf`, a small program, not
+  PowerShell). rig.py would read those when nvidia-smi is missing, which also covers the Intel GPUs in the Slim and
+  the Tower. None of section 5's experiment-machine rules apply: no banner, no idle checks, tests at any hour.
+- **A clean state to go back to.** After setup (SSH, rig.py, the conda envs, the Spinnaker SDK, the Arc driver) you
+  take a Proxmox snapshot called `campy-clean`. Proxmox can't save the memory of a VM with a passed-through card, so the
+  snapshot is taken with the VM shut down (disks only), and it needs snapshot-capable storage (ZFS, LVM-thin, or qcow2
+  files). Each trial run starts from it, and after each campy release you take a new one. Who reverts it:
+  - you, from Proxmox (the default); or
+  - the Mac, with a Proxmox API token that can only snapshot, roll back, start and stop this one VM. A failed trial
+    then rolls itself back. It's narrow, but it's still access to the server, so it's question 11.
 - **GUI tests need someone logged on.** SSH gives no screen. Windows 11 has one screen session, so the VM keeps its
-  test account logged on to the hypervisor's console, and GUI tests run there through a Task Scheduler task set to
-  run only when that account is logged on. Connecting with Remote Desktop takes that session over, as on the Tower;
-  a GUI test that sees its session disconnect reports "interrupted", not "failed".
+  test account logged on, and GUI tests run there through a Task Scheduler task set to run only when that account is
+  logged on. With the B50 passed through, that screen is the B50's (seen through Remote Desktop or a monitor or dummy
+  plug on the card), not Proxmox's console. Connecting with Remote Desktop takes the session over, as on the Tower; a
+  GUI test that sees its session disconnect reports "interrupted", not "failed".
 - **Reaching it from the Mac.** The VM needs an address on the lab network (a bridged network adapter), not one hidden
   behind the server (NAT). The SSH setup script lets SSH in only from the lab network and VPN, as on the other
   machines.
@@ -361,7 +383,7 @@ What changes because it's a VM:
 | 4 | **Dashboard** (`status --html`, snapshot in fleet jobs) | Page from all 3 rigs, incl. one held by another session (must show "held", touch nothing) |
 | 5 | **Nightly + drift alerts** (campy.notify) | One night on each rig you allow; a forced drift (lowered limit) must alert |
 | 6 | **Experiment-machine mode** (section 5), after SSH is set up on the Tower: idle and pause checks before every start, STOP/PAUSE in rig.py, the banner and its logon task, shortcuts, the panel notice | On the Dell Pro Tower Plus with your OK: a test stopped from the banner, from the shortcut and by opening a camera, by unlocking and by a Remote Desktop connect, each within 2 s; no new test while paused |
-| 7 | **The virtual machine** (section 6), after SSH is set up on it: rig.py without nvidia-smi, the CPU smoke check, `campy-fleet update` trying the VM first, GUI tests in its logged-on session | rig.py's lock and verdicts on the VM; a smoke check passing there; an update stopping before the rigs when the VM's check is made to fail on purpose; a campy-live-view screenshot from the VM |
+| 7 | **The virtual machine** (section 6), after SSH is set up on it: rig.py without nvidia-smi (GPU Engine counters), the smoke check with Quick Sync on the B50, a campy-live trial on the B50, `campy-fleet update` trying the VM first, GUI tests in its logged-on session | rig.py's lock and verdicts on the VM; a smoke check passing there; an update stopping before the rigs when the VM's check is made to fail on purpose; a campy-live-view screenshot from the VM |
 
 docs/: a new page `docs/rig-fleet.md` (how to update, run checks, read the dashboard), linked from docs/README.md;
 live-tracking.md's "after each update" steps point to it. Nothing public about hosts/paths.
@@ -385,9 +407,10 @@ live-tracking.md's "after each update" steps point to it. Nothing public about h
 9. **Should any keyboard or mouse input at the Tower stop a test by itself**, or only the Stop button, unlocking,
    Remote Desktop, opening a camera and starting campy?
 10. **Default pause after a stop:** until the next morning, or something else?
-11. **The virtual machine:** which hypervisor runs it (Hyper-V, Proxmox, VMware), and can you save and revert a
-    snapshot yourself? How many CPU cores and how much memory does it have (my guess for campy-live on the CPU is 8 cores and
-    16 GB)? Is its network adapter bridged onto the lab network?
+11. **The virtual machine:** is its disk on snapshot-capable storage (ZFS, LVM-thin, qcow2)? Is its network adapter
+    bridged onto the lab network? Do you revert `campy-clean` yourself, or may the Mac have a Proxmox API token
+    limited to this one VM? (Answered 2026-10-29: Proxmox; Intel Arc Pro B50 passed through, 8 threads of an
+    i9-14900, 32 GB, all adjustable.)
 12. **Should campy-fleet update always try the VM first**, or only when asked (`--canary`)?
 
 Once you OK the design, stage 1 is the first PR. Nothing gets installed on any rig without your OK for that rig.
