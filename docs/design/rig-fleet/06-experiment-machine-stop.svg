@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 340" width="760" height="340" role="img" aria-label="On the Dell Pro Tower Plus, the Mac starts a test only when nobody has been active for 15 minutes, nothing records, the hour is allowed and tests aren't paused. While the rig.py job runs, its lock file makes a banner appear on screen, at the machine or over Remote Desktop, with a Stop test button. One click writes STOP and PAUSE files that any user may write; rig.py sees STOP within 2 seconds and ends the job, and PAUSE keeps the Mac from starting new tests. Starting campy or SpinView, or opening a camera, also stops the job within 2 seconds."><style>svg{--bg:#fbfaf7;--fg:#1f2328;--muted:#646b73;--line:#d5d2ca;--panel:#f1efe9;--accent:#1f6feb;--accent-bg:#e3edfd;--warn:#c2410c;--warn-bg:#fbe9df; color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}@media (prefers-color-scheme: dark){svg{--bg:#16181c;--fg:#e6e4df;--muted:#9aa0a8;--line:#3a3d44;--panel:#1f2227;--accent:#6ea8ff;--accent-bg:#1b2a44;--warn:#ff9a66;--warn-bg:#3a2418;}}.bg{fill:var(--bg)}
+.box { fill: var(--bg); stroke: currentColor; stroke-width: 1.3; }
+.box.acc { fill: var(--accent-bg); stroke: var(--accent); }
+.box.warn { fill: var(--warn-bg); stroke: var(--warn); }
+.box.soft { fill: var(--panel); stroke: var(--line); }
+.band { fill: var(--panel); stroke: none; }
+.edge { stroke: currentColor; stroke-width: 1.3; fill: none; }
+.edge.acc { stroke: var(--accent); }
+.edge.warn { stroke: var(--warn); }
+.edge.dash { stroke-dasharray: 5 4; }
+.sep { stroke: var(--line); stroke-width: 1; }
+.t { fill: currentColor; font-size: 13px; }
+.t.b { font-weight: 600; }
+.t.s { font-size: 11.5px; fill: var(--muted); }
+.t.acc { fill: var(--accent); }
+.t.warn { fill: var(--warn); }
+.t.h { font-size: 13px; font-weight: 700; fill: var(--muted); letter-spacing: .02em; }
+.head { fill: currentColor; }
+.head.acc { fill: var(--accent); }
+.head.warn { fill: var(--warn); }
+</style><defs><marker id="a6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker><marker id="a6w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="head warn"/></marker><marker id="a6a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="head acc"/></marker></defs>
+<rect class="bg" x="0" y="0" width="760" height="340"/>
+<rect class="box" x="10" y="30" width="180" height="150" rx="6"/>
+<text class="t b" x="100" y="54" text-anchor="middle">campy-fleet (Mac)</text>
+<text class="t s" x="100" y="74" text-anchor="middle">starts a test only if:</text>
+<text class="t s" x="24" y="98">· nobody active for 15 min</text>
+<text class="t s" x="24" y="118">· no camera in use</text>
+<text class="t s" x="24" y="138">· inside the allowed hours</text>
+<text class="t s" x="24" y="158">· not paused</text>
+<rect class="box" x="250" y="30" width="200" height="80" rx="6"/>
+<text class="t b" x="350" y="56" text-anchor="middle">rig.py job</text>
+<text class="t s" x="350" y="76" text-anchor="middle">emulated cameras and replays,</text>
+<text class="t s" x="350" y="94" text-anchor="middle">never the real cameras</text>
+<rect class="box soft" x="530" y="30" width="220" height="80" rx="6"/>
+<text class="t" x="640" y="62" text-anchor="middle">you start campy or SpinView,</text>
+<text class="t" x="640" y="82" text-anchor="middle">or open a camera</text>
+<rect class="box" x="250" y="150" width="200" height="44" rx="6"/>
+<text class="t" x="350" y="177" text-anchor="middle">lock file: what, ends when</text>
+<rect class="box warn" x="530" y="140" width="220" height="92" rx="6"/>
+<text class="t b" x="640" y="164" text-anchor="middle">banner on screen</text>
+<text class="t s" x="640" y="183" text-anchor="middle">at the machine or over RDP</text>
+<text class="t warn" x="640" y="204" text-anchor="middle">Test running · [Stop test]</text>
+<text class="t s" x="640" y="222" text-anchor="middle">PowerShell, no python</text>
+<rect class="box acc" x="250" y="250" width="200" height="50" rx="6"/>
+<text class="t b" x="350" y="271" text-anchor="middle">STOP + PAUSE files</text>
+<text class="t s" x="350" y="289" text-anchor="middle">any user may write them</text>
+<line class="edge" x1="190" y1="62" x2="248" y2="62" marker-end="url(#a6)"/>
+<text class="t s" x="219" y="54" text-anchor="middle">starts</text>
+<line class="edge" x1="530" y1="70" x2="452" y2="70" marker-end="url(#a6)"/>
+<text class="t s" x="491" y="62" text-anchor="middle">yield</text>
+<text class="t s" x="491" y="88" text-anchor="middle">≤ 2 s</text>
+<line class="edge" x1="350" y1="110" x2="350" y2="148" marker-end="url(#a6)"/>
+<text class="t s" x="358" y="134">writes</text>
+<line class="edge" x1="450" y1="172" x2="528" y2="172" marker-end="url(#a6)"/>
+<text class="t s" x="489" y="164" text-anchor="middle">shows</text>
+<polyline class="edge warn" points="640,232 640,275 452,275" marker-end="url(#a6w)"/>
+<text class="t s warn" x="546" y="268" text-anchor="middle">Stop test: one click</text>
+<polyline class="edge acc" points="250,265 225,265 225,92 248,92" marker-end="url(#a6a)"/>
+<polyline class="edge dash" points="250,290 100,290 100,182" marker-end="url(#a6)"/>
+<text class="t s" x="108" y="250">PAUSE:</text>
+<text class="t s" x="108" y="266">no new tests</text>
+<text class="t s" x="350" y="326" text-anchor="middle">rig.py checks for STOP every 2 s and ends every process of the job; the lock is freed and the banner says so</text>
+</svg>

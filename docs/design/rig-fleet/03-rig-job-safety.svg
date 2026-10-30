@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 300" width="760" height="300" role="img" aria-label="An unattended job first looks at the rig using file reads only. If the lock is held or a recording runs, it retries later or skips. If free, it launches rig.py run with no-wait and yield. If someone took the rig meanwhile, rig.py exits and the job retries later. While running, a recording starting stops the job within 2 seconds. A contaminated run is rerun once. A clean run writes a result compared with the baseline."><style>svg{--bg:#fbfaf7;--fg:#1f2328;--muted:#646b73;--line:#d5d2ca;--panel:#f1efe9;--accent:#1f6feb;--accent-bg:#e3edfd;--warn:#c2410c;--warn-bg:#fbe9df; color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}@media (prefers-color-scheme: dark){svg{--bg:#16181c;--fg:#e6e4df;--muted:#9aa0a8;--line:#3a3d44;--panel:#1f2227;--accent:#6ea8ff;--accent-bg:#1b2a44;--warn:#ff9a66;--warn-bg:#3a2418;}}.bg{fill:var(--bg)}
+.box { fill: var(--bg); stroke: currentColor; stroke-width: 1.3; }
+.box.acc { fill: var(--accent-bg); stroke: var(--accent); }
+.box.warn { fill: var(--warn-bg); stroke: var(--warn); }
+.box.soft { fill: var(--panel); stroke: var(--line); }
+.band { fill: var(--panel); stroke: none; }
+.edge { stroke: currentColor; stroke-width: 1.3; fill: none; }
+.edge.acc { stroke: var(--accent); }
+.edge.warn { stroke: var(--warn); }
+.edge.dash { stroke-dasharray: 5 4; }
+.sep { stroke: var(--line); stroke-width: 1; }
+.t { fill: currentColor; font-size: 13px; }
+.t.b { font-weight: 600; }
+.t.s { font-size: 11.5px; fill: var(--muted); }
+.t.acc { fill: var(--accent); }
+.t.warn { fill: var(--warn); }
+.t.h { font-size: 13px; font-weight: 700; fill: var(--muted); letter-spacing: .02em; }
+.head { fill: currentColor; }
+.head.acc { fill: var(--accent); }
+.head.warn { fill: var(--warn); }
+</style><rect class="bg" x="0" y="0" width="760" height="300"/>
+  <defs>
+    <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
+    <marker id="a3acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="head acc"/></marker>
+  </defs>
+  <rect class="box" x="10" y="120" width="150" height="56" rx="6"/>
+  <text class="t b" x="85" y="143" text-anchor="middle">look first</text>
+  <text class="t s" x="85" y="161" text-anchor="middle">lock file, process names</text>
+  <rect class="box soft" x="10" y="20" width="150" height="56" rx="6"/>
+  <text class="t" x="85" y="43" text-anchor="middle">busy: retry later</text>
+  <text class="t s" x="85" y="61" text-anchor="middle">(nightly: skip tonight)</text>
+  <rect class="box" x="210" y="120" width="160" height="56" rx="6"/>
+  <text class="t b" x="290" y="143" text-anchor="middle">launch detached</text>
+  <text class="t s" x="290" y="161" text-anchor="middle">rig.py run --no-wait --yield</text>
+  <rect class="box" x="420" y="120" width="130" height="56" rx="6"/>
+  <text class="t b" x="485" y="143" text-anchor="middle">running</text>
+  <text class="t s" x="485" y="161" text-anchor="middle">holds the lock</text>
+  <rect class="box warn" x="420" y="20" width="130" height="56" rx="6"/>
+  <text class="t" x="485" y="43" text-anchor="middle">yielded</text>
+  <text class="t s" x="485" y="61" text-anchor="middle">stopped within 2 s</text>
+  <rect class="box soft" x="420" y="228" width="130" height="56" rx="6"/>
+  <text class="t" x="485" y="251" text-anchor="middle">contaminated</text>
+  <text class="t s" x="485" y="269" text-anchor="middle">rerun once</text>
+  <rect class="box acc" x="600" y="120" width="150" height="56" rx="6"/>
+  <text class="t b" x="675" y="143" text-anchor="middle">RIG_CLEAN</text>
+  <text class="t s" x="675" y="161" text-anchor="middle">result vs baseline</text>
+
+  <line class="edge" x1="85" y1="120" x2="85" y2="78" marker-end="url(#a3)"/>
+  <text class="t s" x="93" y="104">held or recording</text>
+  <line class="edge" x1="160" y1="148" x2="208" y2="148" marker-end="url(#a3)"/>
+  <text class="t s" x="184" y="140" text-anchor="middle">free</text>
+  <polyline class="edge" points="290,120 290,48 162,48" marker-end="url(#a3)"/>
+  <text class="t s" x="298" y="92">taken meanwhile</text>
+  <text class="t s" x="298" y="106">(exit 75)</text>
+  <line class="edge" x1="370" y1="148" x2="418" y2="148" marker-end="url(#a3)"/>
+  <line class="edge" x1="485" y1="120" x2="485" y2="78" marker-end="url(#a3)"/>
+  <text class="t s" x="493" y="104">a recording starts</text>
+  <line class="edge acc" x1="550" y1="148" x2="598" y2="148" marker-end="url(#a3acc)"/>
+  <line class="edge" x1="485" y1="176" x2="485" y2="226" marker-end="url(#a3)"/>
+  <polyline class="edge dash" points="420,256 290,256 290,178" marker-end="url(#a3)"/>
+  <text class="t s" x="355" y="248" text-anchor="middle">rerun</text>
+</svg>
