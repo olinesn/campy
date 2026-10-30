@@ -291,6 +291,7 @@ def test_connected_flir_devices(flirreset, tmp_path):
 @pytest.fixture
 def user(reset, monkeypatch):
 	monkeypatch.setattr(reset.getpass, "getuser", lambda: "labuser")
+	monkeypatch.setattr(reset.sys, "platform", "linux") # Spinnaker keeps the setting per user there
 	return reset
 
 
@@ -304,6 +305,22 @@ def test_gige_off(user, capsys):
 	out = capsys.readouterr().out
 	assert "Spinnaker's search for GigE cameras is off for user labuser" in out
 	assert "no program this user runs finds a GigE camera, SpinView included, until campy-flir-reset --gige on." in out
+
+
+def test_gige_off_on_windows(user, monkeypatch, capsys):
+	# As on the Pro Max Slim and the Pro Tower Plus on 2026-10-29: Spinnaker keeps it in
+	# C:\ProgramData\Spinnaker\Shared, for every user of the computer
+	monkeypatch.setattr(user.sys, "platform", "win32")
+	system = FakeSystem([FakeCamera()], gige=Flag(True))
+	assert user.SetGige(system, False) == 0
+	out = capsys.readouterr().out
+	assert "Spinnaker's search for GigE cameras is off for every user of this computer" in out
+	assert "no program on this computer finds a GigE camera, SpinView included, until campy-flir-reset --gige on." in out
+	assert "labuser" not in out
+	system = FakeSystem([], gige=Flag(False, writable=False))
+	assert user.SetGige(system, False) == 0
+	assert "Spinnaker's search for GigE cameras was already off for every user of this computer." in \
+		capsys.readouterr().out
 
 
 def test_gige_on(user, capsys):
