@@ -5,6 +5,7 @@ import json
 import time
 
 import numpy as np
+import pytest
 
 from campy import configurator, sweep
 
@@ -35,6 +36,13 @@ def test_encoder_specs():
 	vaapi = sweep.EncoderParams(base, "vaapi")
 	assert (vaapi["gpuID"], vaapi["gpuMake"]) == (0, "vaapi")
 
+
+def test_codec_takes_the_configs_names_only(capsys):
+	assert sweep.ParseArgs(["--codec", "h265"]).codec == "h265"
+	# "hevc" isn't campy's name: it used to reach ffmpeg as its CPU encoder, even with --encoder intel.
+	with pytest.raises(SystemExit):
+		sweep.ParseArgs(["--codec", "hevc"])
+	assert "invalid choice: 'hevc'" in capsys.readouterr().err
 
 def test_small_sweep():
 	params = sweep.BaseParams(sweep.ParseArgs(["--width", "160", "--height", "128", "--frameRate", "30"]))

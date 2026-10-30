@@ -4,6 +4,7 @@ import json, math
 
 import imageio_ffmpeg
 import numpy as np
+import pytest
 
 from campy import quality, sweep
 
@@ -13,6 +14,12 @@ def test_default_settings_bracket_the_configs():
 	assert quality.Qualities(None, 3) == [0, 3, 6, 9] # never below 0
 	assert quality.Qualities("30,21", 21) == [30, 21] # as given
 
+
+def test_codec_takes_the_configs_names_only(capsys):
+	assert quality.ParseArgs(["--codec", "av1"]).codec == "av1"
+	with pytest.raises(SystemExit):
+		quality.ParseArgs(["--codec", "hevc"])
+	assert "invalid choice: 'hevc'" in capsys.readouterr().err
 
 def test_synthetic_frames(tmp_path, capsys):
 	out = tmp_path / "q.json"

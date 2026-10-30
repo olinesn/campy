@@ -37,7 +37,7 @@ import os, re, sys, json, time, shutil, argparse, tempfile, subprocess, contextl
 
 import numpy as np
 
-from campy import writer, sweep, strictjson
+from campy import writer, sweep, configschema, strictjson
 
 
 # ------------------------------------------------------------------ the clip
@@ -204,7 +204,8 @@ def ParseArgs(argv=None):
 	parser.add_argument("--width", type=int, dest="frameWidth")
 	parser.add_argument("--height", type=int, dest="frameHeight")
 	parser.add_argument("--frameRate", type=float)
-	parser.add_argument("--codec")
+	# The config's names only: anything else (e.g. "hevc") would reach ffmpeg as a CPU encoder.
+	parser.add_argument("--codec", choices=configschema.BY_NAME["codec"].choices)
 	parser.add_argument("--keyframeInterval", type=float)
 	parser.add_argument("--ffmpegPath")
 	parser.add_argument("--vaapiDevice")
