@@ -348,6 +348,21 @@ no cameras and nobody records on it. It does jobs the rigs shouldn't, plus one n
   earlier gave the same result except that H.264 just passed at 12 (100.3 fps). rig.py flagged that run, because
   something outside the test read the disk at 91 MB/s, so 12 cameras is at the edge. Under this section's rule for the VM's numbers, this is one
   run: these numbers reach the hardware guide only once a run on another day agrees, labelled as measured in the VM.
+  Second measurement, the same evening (9:25-10:09 PM): the same sweep at **30 and 60 fps**, as on the Dell Pro Tower
+  Plus (preset faster, keyframe every 0.5 s, 1.25x headroom, 1 to 40 cameras):
+
+  | 1280x1024 mono, in the VM | H.264 (quality 24) | H.265 (quality 24) | AV1 (quality 88) |
+  |---|---|---|---|
+  | 30 fps (each camera must reach 37.5) | 24 | 24 | 24 |
+  | 60 fps (each camera must reach 75) | 12 | 16 | 12 |
+
+  Again the VM's 8 threads were the limit: 95-99% busy from 4 cameras on, with 1,700-1,900 megapixels a second
+  encoded in all at every count from 2 cameras up, whatever the codec or frame rate. 32 cameras at 30 fps reached
+  26-27 fps at the slowest. rig.py marked the run RIG_CONTAMINATED: the antivirus and Windows itself used 2.1-2.6
+  processor cores outside the test throughout (12 sightings), so these counts may be a little low. The same settings
+  on the Pro Tower Plus's Core Ultra 9 285 (docs/encoding.md) gave 40 at 30 fps and 20-28 at 60. The 30, 60 and 80 fps
+  results are the VM's capacity table (`~\.campy\capacity.json` there). Like the 80 fps numbers, they wait for a run
+  on another day before they reach the hardware guide.
 - **Tracking on an Intel GPU, untried.** PyTorch runs on Intel GPUs on Windows (device `xpu`). Whether sleap-nn and
   campy-live work on it hasn't been tried. The first trial: campy-live with 1 and 3 emulated cameras on the B50, and
   the same models on the CPU if it doesn't run. If it works, the B50 is a new kind of GPU for the hardware guide.
