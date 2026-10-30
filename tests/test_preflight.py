@@ -899,7 +899,7 @@ def test_flir_discovery(monkeypatch):
 	assert preflight.FlirDiscovery({"flir": {"serials": ["a"]}}) is None
 
 
-def test_run_warns_of_the_gige_search(tmp_path, monkeypatch):
+def test_run_warns_of_the_gige_search(gige_on_linux, tmp_path, monkeypatch):
 	monkeypatch.setattr(preflight, "CheckEncoders", lambda cams, report: None)
 	monkeypatch.setattr(preflight, "FlirDiscovery", lambda systems: (True, ["USB3Vision"]))
 	p, _ = cameras(["24243505"], capacityFile=str(tmp_path / "none.json"), videoFolder=str(tmp_path))
