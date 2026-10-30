@@ -356,6 +356,21 @@ Notes on the measurements:
 
   The replay's accuracy on the EVO-X2 was again 2D median 3.8 px, 3D median 4.2 mm, identity 0.9993, 2 switches.
 
+- On 30 October, before the 2.3.0 release, the three rigs ran their checks again at dev `dcb349d`. It has all of 2.3.0's code, including pull requests 217 (the encoder retry), 222 (the cage) and 224 (the trigger-pause warning). These checks use no drawn cage, so the cage itself isn't tested here. Both environments on each rig report campy 2.2.0, the version before the release's own number.
+
+  In the runs below, every rig lock verdict was `RIG_CLEAN`, nothing was skipped or misaligned, and every camera kept all its frames. They matched the 4cb0e3a table above to within 0.3 ms, but for the Pro Max Slim's 1-camera p99 of 2.9 ms against 2.5. Three first tries were rerun:
+
+  - The Pro Max Slim's first 1-camera run skipped 3 sets near its start (worst set 38.3 ms). The rerun skipped none, and it's the number below. Its first run of the day had also skipped sets at start-up on 29 October (7 sets, and 9 in the 3-camera run after it), so this isn't a one-off. The cause isn't known yet.
+  - The Precision 7875's 1-camera and 3-camera runs were marked `RIG_CONTAMINATED` by antivirus load. Neither skipped a set, though the 1-camera run's p99 rose to 3.7 ms. The reruns were clean.
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | EVO-X2 | 1,800 / 3.0 / 3.1 | 3,600 / 5.6 / 5.8 / 7.6 / 8.5 | 3,600 / 5.5 / 5.6 / 7.1 / 8.0 |
+  | Pro Max Slim | 1,195 / 2.3 / 2.9 | 3,597 / 5.5 / 5.7 / 7.8 / 8.6 | 1,792 / 5.5 / 5.7 / 8.8 / 9.8 |
+  | Precision 7875 | 1,200 / 0.9 / 1.1 | 3,600 / 1.6 / 1.7 / 4.0 / 5.2 | 1,797 / 1.6 / 1.7 / 4.6 / 5.8 |
+
+  The replay's accuracy on the EVO-X2 was again 2D median 3.8 px, 3D median 4.2 mm, identity 0.9993, 2 switches.
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
