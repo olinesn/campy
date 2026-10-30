@@ -34,8 +34,8 @@ environment of its own, uses it too.
 
 import re
 
-# The version the next release is planned as, for changes made since 2.2.0
-NEXT = "2.2.1"
+# The version the next release is planned as, for changes made since 2.3.0
+NEXT = "2.3.1"
 
 
 class Change:
@@ -113,7 +113,7 @@ CHANGES = [
 	Change("--engine", "2.2.0", "eager", "auto",
 		"With --fixed-crops, the networks run as compiled engines: TensorRT on NVIDIA where it is installed "
 		"(fp16, keypoints a little less accurate), else torch.compile.", Gpu, program="campy-live", pr=147),
-	Change("--cage", NEXT, "none", "auto",
+	Change("--cage", "2.3.0", "none", "auto",
 		"A cage drawn in campy-live-view (<calibration>.cage.json, beside the calibration) is used: an animal whose 3D "
 		"lands outside it is not found (no 3D, no detections grouped, outside_cage 1). --cage off keeps every 3D "
 		"position.", lambda context: bool(context.get("cage")), program="campy-live", pr=222),

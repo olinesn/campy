@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
 	name='campy',
-	version='2.2.0',
+	version='2.3.0',
 	packages=find_packages(),
 	python_requires='>=3.9',
 	install_requires=[
