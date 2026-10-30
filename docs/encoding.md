@@ -38,7 +38,40 @@ For `preset`, `"fast"` (campy's default) works in every ffmpeg, and `p1` (fastes
 
 On a Core Ultra 9 285's integrated GPU (1280x1024 mono, 80 fps, 1.25x headroom), H.264, H.265 and AV1 (quality 88) each kept up with 16 or more cameras, more than the RTX 2000 Ada beside it. On another Core Ultra 9 285 (a Dell Pro Tower Plus, 29 October; preset faster, the same headroom), Quick Sync kept up with 40 cameras at 30 fps in AV1 (quality 88), H.265 and H.264 (quality 24), and at 60 fps with 24 in AV1, 28 in H.265 and 20 in H.264. With 48 at 30 fps, some streams never got going. The RTX A2000 beside it kept up with 14 cameras at 60 fps in H.265 and 12 in H.264, and has no AV1 encoder: it is an Ampere card, and `av1_nvenc` there reports "No capable devices found". Encoding on the integrated GPU also leaves the NVIDIA card to `campy-live`: with 8 cameras and 5 mice, its time per set fell from 21.5 to 17.7 ms at 30 fps when the recording moved from the A2000's NVENC to Quick Sync ([Hardware guide](hardware.md)). Quick Sync and NVENC are separate encoders, so a computer with both can split its cameras between them (`gpuMake` and `gpuID` per camera, with an ffmpeg that has both). The launch check notes that the sweep measured each encoder alone. `configs/campy_config_chronicrecord.yaml` records FLIR cameras with Quick Sync H.265 on that computer.
 
-AV1 needed 10-20% fewer bits than H.265 and H.264 for the same detail on a moving test scene, but it is harder to read back. SLEAP 1.6 reads video through OpenCV unless told otherwise. OpenCV's Linux wheels (4.13 and 5.0) cannot decode AV1 at all. Its Windows wheel reads AV1 at 60-100 frames/s, against about 400 for H.264 and H.265. SLEAP's PyAV reader decodes AV1 everywhere (`sleap-label --video-backend pyav`). LUCID reads it in Chrome and Firefox, while Safari plays AV1 only on Macs with Apple M3 or newer.
+AV1 needed 10-20% fewer bits than H.265 and H.264 for the same detail on a moving test scene, but it is harder to read back. SLEAP 1.6 reads video through OpenCV unless told otherwise. OpenCV's Linux wheels (4.13 and 5.0) cannot decode AV1 at all. Its Windows wheel reads AV1 at 60-100 frames/s, against about 400 for H.264 and H.265. SLEAP's PyAV reader decodes AV1 everywhere (`sleap-label --video-backend pyav`). LUC3D reads it in Chrome and Firefox on every computer tried, while Safari plays AV1 only on Macs with Apple M3 or newer ([AV1 in LUC3D](#av1-in-luc3d)).
+
+## AV1 in LUC3D
+
+LUC3D plays AV1 recordings in Chrome on every computer and GPU we tried, frame-exact, and in Firefox on a Mac. Safari on a Mac with an Apple M2 Pro can't play AV1 at all: LUC3D loads no video and says that Safari decodes AV1 only on Macs with Apple M3 or newer.
+
+The test, on 29 October with LUC3D's main branch of that day: two 8-camera AV1 recordings from a Dell Pro Tower Plus (Quick Sync on its Core Ultra 9 285, quality 88, 1280x1024 mono, a keyframe every 0.5 s; 3,600 frames per camera at 30 fps and at 60 fps), and for comparison the original H.265 videos of the same scene. A script loaded each recording into LUC3D in Chrome 156 (on the Windows PCs over Remote Desktop), once on each GPU, and checked it against ffmpeg's decode of the same files.
+
+| Computer | GPU that decoded the AV1 | Loads all 8 cameras, plays at 30 and 60 fps | Jump to a random frame |
+|---|---|---|---|
+| Dell Precision 7875 | RTX 6000 Ada or RTX 4000 Ada (hardware) | yes | about 0.1 s |
+| Dell Pro Max Slim FCS1250 | RTX 2000 Ada (hardware) | yes | about 0.1 s |
+| Dell Pro Max Slim FCS1250 and Dell Pro Tower Plus | the Core Ultra 9 285's integrated GPU (hardware) | yes | 0.2-0.25 s |
+| Dell Pro Tower Plus | RTX A2000 (hardware) | yes | about 0.1 s |
+| Windows 11 virtual machine | Intel Arc Pro B50 (hardware) | yes | 0.25-0.3 s |
+| Any of these, hardware video decode turned off, or no GPU | the processor (software) | yes | 0.05-0.4 s |
+| Mac with an Apple M2 Pro (Chrome and Firefox) | the processor (software) | yes | 0.1-0.15 s |
+
+What held everywhere AV1 played:
+
+- **Every frame was the right one.** For each recording, 15 jumps (to keyframes, the frames either side of them, and the first and last frames) landed on the frame ffmpeg gives that number in all 8 cameras, judged by the picture, and so did spot checks after 60 single steps and 10 more random jumps.
+- **Playback mostly showed the right frame number.** In 46 of 48 Chrome playbacks on Windows, and all of them on the Mac, the picture matched the frame number LUC3D showed. In the other two (both on an Intel GPU, one AV1 and one H.265 recording) LUC3D switched to its fallback way of drawing, the videos dropped about two thirds of their frames, and the picture was 1-4 frames off the number in 7 and 8 of 34 samples. Firefox's picture was sometimes one frame ahead of the number, with H.265 too.
+- **Gray levels were ffmpeg's.** Each pixel came within 1 level (of 255) of ffmpeg's decode, expanded from video's 16-235 to 0-255 as browsers show it, and on the Intel GPUs and in Chrome on the Mac exactly.
+- **Software decoding is fast enough.** Chrome's software AV1 decoder did 800-1,150 frames/s for one camera, and 1,900-5,800 for 8 cameras at once (the least on the virtual machine's 8 processor threads); 8 cameras at 60 fps need 480. A step to the next frame took 2-8 ms (about 40 ms with no GPU at all).
+
+Things to know:
+
+- **Chrome may pick the integrated GPU.** On the Pro Max Slim, Chrome chose the Intel GPU over the RTX 2000 Ada by itself; on the Pro Tower Plus and the Precision it chose the NVIDIA card. The RTX A2000 can't encode AV1, but it decodes it.
+- **Jumps depend on the keyframes, not the codec.** The H.265 originals have a keyframe every 250 frames and took 0.3-0.5 s per jump on the same GPUs. Set `keyframeInterval` (0.5 s here) for quick jumps in any codec.
+- **Without a GPU, only AV1 opens.** With Chrome's hardware video decode off, or on a computer without a GPU, the AV1 recordings played as above, but the H.265 originals didn't load at all: Chrome has no software H.265 decoder.
+- **Firefox steps more slowly.** On the Mac, Firefox stepped through AV1 at about 20 ms a frame and loaded a recording in 1-1.7 s (Chrome: 5-8 ms, 0.4 s). It can't decode H.265 frame by frame, so H.265 steps took about 0.2 s there.
+- **Remote Desktop shows about 30 pictures a second.** Playback over Remote Desktop kept the videos' speed, but the screen updated only ~32 times a second.
+
+Not tested: Linux, Microsoft Edge, Firefox on Windows, Safari on an M3 or newer Mac, and recordings longer than 2 minutes.
 
 ## Full-range video (colorRange)
 `colorRange: "full"` puts a camera's gray levels, 0-255, into the video as they are. With the default, `"limited"`, ffmpeg first squeezes them into video's usual 16-235, rescaling every pixel. Full range keeps all 256 levels and is marked in the file, so readers decode the camera's own levels back. Every reader tried gave each level of a 0-255 ramp back to within 0.2: OpenCV 4.6 and 4.12, PyAV, imageio-ffmpeg, sleap-io 0.5.3 (its OpenCV, FFMPEG and PyAV backends) and Chrome as LUCID decodes video, for H.264 and H.265 from Quick Sync and NVENC. VA-API's H.264, H.265 and AV1 were checked through ffmpeg's own gray decode only, which could not show that their colour was wrong (see below). Chrome was checked on a Mac, and on Windows with H.264 only: there it decodes H.265 on the GPU, which an SSH session cannot reach. OpenCV 4.9 and 5.0 and MATLAB R2023b's VideoReader on a Mac gave every level back exactly, for H.264 and H.265 from Quick Sync and from libx264 and libx265. MATLAB was not checked on Windows. On a Mac it opens H.265 only when the file tags it `hvc1`, as campy now does (see [H.265 on a Mac](#h265-on-a-mac-matlab-quicktime-safari)). The same ramp in limited range came back up to 2 levels darker through OpenCV and sleap-io, and up to 2 brighter through MATLAB.

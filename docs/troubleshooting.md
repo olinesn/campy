@@ -90,6 +90,10 @@ Before recording, campy checks the config and the computer, and most problems sh
 
 **An H.265 video won't open in MATLAB, QuickTime or Safari on a Mac ("Cannot Decode").** Apple's decoder needs the video tagged `hvc1`, which campy now does. A copy of an older video: `ffmpeg -i 0.mp4 -c copy -tag:v hvc1 0-hvc1.mp4` ([H.265 on a Mac](encoding.md#h265-on-a-mac-matlab-quicktime-safari)).
 
+**An AV1 recording won't play in LUC3D in Safari.** Safari decodes AV1 only on Macs with Apple M3 or newer. Open it in Chrome or Firefox, which decode it on any computer ([AV1 in LUC3D](encoding.md#av1-in-luc3d)).
+
+**H.265 videos won't load in LUC3D in Chrome on a computer without a GPU (or with hardware video decode off).** Chrome has no software H.265 decoder; AV1 recordings play there ([AV1 in LUC3D](encoding.md#av1-in-luc3d)).
+
 **An AV1 video won't open in OpenCV (or SLEAP) on Linux.** OpenCV's Linux wheels can't decode AV1. Use SLEAP's PyAV reader (`sleap-label --video-backend pyav`), or record H.264 or H.265 ([Intel GPU encoding](encoding.md#intel-gpu-encoding-quick-sync)).
 
 **Checking that cameras expose together.** `campy-synctest` measures it from a blinking LED that all cameras see ([Triggering and synchronization](sync.md#checking-that-cameras-expose-together)). `campy-align` puts every camera's frames on the trigger's timeline after recording.
