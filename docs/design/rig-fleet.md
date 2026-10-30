@@ -348,6 +348,15 @@ no cameras and nobody records on it. It does jobs the rigs shouldn't, plus one n
   earlier gave the same result except that H.264 just passed at 12 (100.3 fps). rig.py flagged that run, because
   something outside the test read the disk at 91 MB/s, so 12 cameras is at the edge. Under this section's rule for the VM's numbers, this is one
   run: these numbers reach the hardware guide only once a run on another day agrees, labelled as measured in the VM.
+  The next day, 2026-10-30 (12:01-12:50 AM), the same 80 fps sweep ran three times in a row, on a newer campy (dev)
+  with the same ffmpeg and no change to the encoding code. The results agree: every codec kept up with **8 cameras**
+  in all three. At 12 cameras H.265 and AV1 reached 91-99 fps at the slowest, and H.264 passed twice (100.1 and 100.2
+  fps) and failed once (96.2 fps), so 12 on H.264 stays at the edge. None of these three is a clean run: rig.py marked
+  each RIG_CONTAMINATED, for outside processor load only (1-3 sightings a run). The antivirus and Windows itself used
+  about 2 processor cores for a moment, on 8 threads the sweep was already keeping 95-99% busy, so a flagged run may
+  read a little low. Nothing else touched the GPU or the encoder. So 8 cameras at 80 fps has one clean run and four
+  flagged ones, on two days, and all five agree. Whether that is enough for the hardware guide is still open; the guide
+  has no numbers from the VM yet.
   Second measurement, the same evening (9:25-10:09 PM): the same sweep at **30 and 60 fps**, as on the Dell Pro Tower
   Plus (preset faster, keyframe every 0.5 s, 1.25x headroom, 1 to 40 cameras):
 
