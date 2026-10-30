@@ -820,12 +820,29 @@ def gige_report(found, serials=("24243505",), **values):
 	return lines(report)
 
 
-def test_gige_search_for_usb3_cameras():
+@pytest.fixture
+def gige_on_linux(monkeypatch):
+	# The GigE lines name whom Spinnaker keeps the setting for: the user on Linux
+	monkeypatch.setattr(preflight.sys, "platform", "linux")
+
+
+def test_gige_scope_on_windows(monkeypatch):
+	# Windows keeps it for the whole computer
+	monkeypatch.setattr(preflight.sys, "platform", "win32")
+	assert gige_report((True, ["USB3Vision"]))[0][1].endswith(
+		"To turn it off for this computer: campy-flir-reset --gige off")
+	_, _, cams = missing_camera(["1", "2", "3"])
+	report = preflight.Report()
+	preflight.CheckGige(cams, report, lambda: (False, ["USB3Vision"] * 3))
+	assert lines(report)[0][1].startswith("Spinnaker's search for GigE cameras is off for this computer, so")
+
+
+def test_gige_search_for_usb3_cameras(gige_on_linux):
 	# As the EVO-X2 was until 2026-10-18: the search on, one Blackfly S on USB3
 	assert gige_report((True, ["USB3Vision"])) == [GIGE_WARN]
 
 
-def test_gige_search_that_is_needed():
+def test_gige_search_that_is_needed(gige_on_linux):
 	# A GigE camera, or one Spinnaker cannot say: the search stays
 	assert gige_report((True, ["USB3Vision", "GigEVision"]), ["1", "2"]) == []
 	assert gige_report((True, [None])) == []
@@ -836,7 +853,7 @@ def test_gige_search_that_is_needed():
 	assert report.lines == []
 
 
-def test_gige_search_off():
+def test_gige_search_off(gige_on_linux):
 	assert gige_report((False, ["USB3Vision"])) == [
 		(OK, "Spinnaker does not search for GigE cameras (campy-flir-reset --gige off)")]
 	# Then a camera that was not found may be a GigE camera it did not look for
@@ -847,7 +864,7 @@ def test_gige_search_off():
 		"camera. If Camera3 is one, turn the search on: campy-flir-reset --gige on.")]
 
 
-def test_gige_not_checked():
+def test_gige_not_checked(gige_on_linux):
 	# No FLIR system, a Spinnaker without the setting, no FLIR camera in the config
 	assert gige_report(None) == []
 	assert gige_report((None, ["USB3Vision"])) == []
@@ -882,7 +899,7 @@ def test_flir_discovery(monkeypatch):
 	assert preflight.FlirDiscovery({"flir": {"serials": ["a"]}}) is None
 
 
-def test_run_warns_of_the_gige_search(tmp_path, monkeypatch):
+def test_run_warns_of_the_gige_search(gige_on_linux, tmp_path, monkeypatch):
 	monkeypatch.setattr(preflight, "CheckEncoders", lambda cams, report: None)
 	monkeypatch.setattr(preflight, "FlirDiscovery", lambda systems: (True, ["USB3Vision"]))
 	p, _ = cameras(["24243505"], capacityFile=str(tmp_path / "none.json"), videoFolder=str(tmp_path))

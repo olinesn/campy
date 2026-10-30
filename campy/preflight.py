@@ -189,6 +189,12 @@ def FlirDiscovery(systems):
 	return module.GigeDiscovery(flir["system"]), [module.DeviceType(devices[i]) for i in range(len(devices))]
 
 
+def GigeScope():
+	# Spinnaker keeps the search setting for the user on Linux, and on Windows
+	# for the whole computer (campy-flir-reset)
+	return "this computer" if sys.platform == "win32" else "this user"
+
+
 def CheckGige(cams, report, discover):
 	"""
 	Each time a program starts Spinnaker (System.GetInstance), Spinnaker
@@ -214,9 +220,9 @@ def CheckGige(cams, report, discover):
 	missing = [cam for cam in flir if cam["cameraSerialNo"] is None]
 	if not searches:
 		if missing:
-			report.add(WARN, "gige", "Spinnaker's search for GigE cameras is off for this user, so it finds no "
+			report.add(WARN, "gige", "Spinnaker's search for GigE cameras is off for {}, so it finds no "
 				"GigE camera. If {} {} one, turn the search on: campy-flir-reset --gige on.".format(
-				Names(missing), "is" if len(missing) == 1 else "are"))
+				GigeScope(), Names(missing), "is" if len(missing) == 1 else "are"))
 		else:
 			report.add(OK, "gige", "Spinnaker does not search for GigE cameras (campy-flir-reset --gige off)")
 		return
@@ -226,7 +232,7 @@ def CheckGige(cams, report, discover):
 	report.add(WARN, "gige", "every FLIR camera here is USB3 ({}), but Spinnaker searches each network "
 		"interface for GigE cameras as it starts, here and in each camera process: about 0.25 s per "
 		"interface. Without the search, campy was ready to trigger in 1.0 s instead of 2.9 on the EVO-X2. "
-		"To turn it off for this user: campy-flir-reset --gige off".format(Names(flir)))
+		"To turn it off for {}: campy-flir-reset --gige off".format(Names(flir), GigeScope()))
 
 
 # ------------------------------------------------------------------ encoders

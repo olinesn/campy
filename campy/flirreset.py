@@ -28,17 +28,19 @@ come back on USB 3 after its reset.
 
 	campy-flir-reset --gige off|on
 
-turns Spinnaker's search for GigE cameras off or on, for the user who runs
-it, and touches no camera. Each time a program starts Spinnaker
+turns Spinnaker's search for GigE cameras off or on (for the user who runs
+it; on Windows, for the whole computer), and touches no camera. Each time a program starts Spinnaker
 (System.GetInstance), Spinnaker broadcasts for GigE Vision cameras on every
 network interface and waits about 0.25 s on each, one after another: 0.95 s
 on the EVO-X2, with three, in campy-acquire and again in each camera process.
 A computer whose FLIR cameras are all USB3 spends that on cameras it does not
 have; with it off, campy-acquire was ready to trigger in 0.99 s instead of
 2.86. It is Spinnaker's own setting (EnumerateGEVInterfaces), which Spinnaker
-4.0 and newer keep for the user (on Linux, in
-~/.config/spinnaker/GenTLSysReg.ini). So while it is off, no program that user
-runs finds a GigE camera, SpinView included.
+4.0 and newer keep: on Linux for the user, in
+~/.config/spinnaker/GenTLSysReg.ini, and on Windows for every user of the
+computer, in C:\\ProgramData\\Spinnaker\\Shared\\GenTLSysReg.ini. So while it is
+off, no program that user runs (on Windows, no program on the computer) finds
+a GigE camera, SpinView included.
 """
 
 import argparse, getpass, os, sys, time
@@ -191,17 +193,27 @@ def Run(system):
 	return 1 if failed else 0
 
 
+def GigeScope(user):
+	# Whom the GigE search setting is kept for, and who then finds no GigE
+	# camera: Spinnaker keeps it for the user on Linux, and on Windows for the
+	# whole computer (C:\ProgramData\Spinnaker\Shared\GenTLSysReg.ini)
+	if sys.platform == "win32":
+		return "for every user of this computer", "no program on this computer"
+	return "for user {}".format(user), "no program this user runs"
+
+
 def SetGige(system, on):
-	# Turns Spinnaker's search for GigE cameras on or off, for this user: the
-	# System's node map holds it, and Spinnaker 4.0 and newer keep it
-	user = getpass.getuser()
+	# Turns Spinnaker's search for GigE cameras on or off, for this user (on
+	# Windows, this computer): the System's node map holds it, and Spinnaker
+	# 4.0 and newer keep it
+	scope, nobody = GigeScope(getpass.getuser())
 	node = system.GetTLNodeMap().GetNode(GIGE_NODE)
 	if node is None:
 		Say("This Spinnaker has no {} setting: 3.2 and newer have it.".format(GIGE_NODE))
 		return 1
 	node = PySpin.CBooleanPtr(node)
 	if PySpin.IsReadable(node) and node.GetValue() == on:
-		Say("Spinnaker's search for GigE cameras was already {} for user {}.".format("on" if on else "off", user))
+		Say("Spinnaker's search for GigE cameras was already {} {}.".format("on" if on else "off", scope))
 		return 0
 	if not PySpin.IsReadable(node) or not PySpin.IsWritable(node):
 		Say("Spinnaker's {} setting cannot be changed here.".format(GIGE_NODE))
@@ -211,12 +223,12 @@ def SetGige(system, on):
 		Say("Spinnaker did not take {} = {}.".format(GIGE_NODE, on))
 		return 1
 	if on:
-		Say("Spinnaker's search for GigE cameras is on again for user {}: programs find GigE cameras, and "
-			"Spinnaker takes about 0.25 s per network interface to start.".format(user))
+		Say("Spinnaker's search for GigE cameras is on again {}: programs find GigE cameras, and "
+			"Spinnaker takes about 0.25 s per network interface to start.".format(scope))
 	else:
-		Say("Spinnaker's search for GigE cameras is off for user {}: Spinnaker starts without waiting on each "
-			"network interface, and no program this user runs finds a GigE camera, SpinView included, until "
-			"campy-flir-reset --gige on.".format(user))
+		Say("Spinnaker's search for GigE cameras is off {}: Spinnaker starts without waiting on each "
+			"network interface, and {} finds a GigE camera, SpinView included, until "
+			"campy-flir-reset --gige on.".format(scope, nobody))
 	return 0
 
 
@@ -224,8 +236,9 @@ def Main(argv=None):
 	parser = argparse.ArgumentParser(prog="campy-flir-reset",
 		description="Reset FLIR USB3 cameras that a computer's restart left at their USB 2 throughput limit (43 MB/s).")
 	parser.add_argument("--gige", choices=("off", "on"),
-		help="instead, turn Spinnaker's search for GigE cameras off or on for this user (it costs about "
-		"0.25 s per network interface each time a program starts Spinnaker), and touch no camera")
+		help="instead, turn Spinnaker's search for GigE cameras off or on for this user, or on Windows for the "
+		"whole computer (it costs about 0.25 s per network interface each time a program starts Spinnaker), "
+		"and touch no camera")
 	args = parser.parse_args(argv)
 	system = PySpin.System.GetInstance()
 	try:
