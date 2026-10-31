@@ -222,7 +222,17 @@ After the first second, the time per set was the same with both: 2.3 ms per set 
 
 - **What a real recording loses.** With old code, at most about 0.35 s of slower sets and up to 12 sets skipped, at the very start, and only with cameras that have no trigger. Keypoints were late or missing for those sets, so `campy-rules` could not act on them. With a trigger, the feed appears well before the first frame: 3 real recordings on the Pro Max Slim (4 cameras, triggered, old code) ran at full speed from their first set, and 5 of them, 18,000 sets each, skipped 0 or 1 in total. Real cameras without a trigger were not tested.
 - **The cost.** The hold's roughly 20 W now also runs during the wait. It stops after 10 minutes with no feed, so a `campy-live` left waiting doesn't keep the GPU busy. If the feed comes after that, `campy-live` says so in one line and starts the hold, and the first sets behave as with old code: 2 skipped in the one run tested (a 620 s wait). The power was not measured again.
-- **Other computers.** The EVO-X2 doesn't have this problem: 15 runs of each code, with waits of 0, 6 and 20 s, skipped nothing, and its time per set stayed at 3.0 ms. The Precision 7875's older rig checks show the same slow first sets (7–22 ms where 1.0–1.7 is usual, 1 skipped in one run), but it wasn't tested with the change. The earlier tables here that list a few skips in the first seconds may have the same cause; they weren't run again.
+- **Other computers.** The EVO-X2 doesn't have this problem: 15 runs of each code, with waits of 0, 6 and 20 s, skipped nothing, and its time per set stayed at 3.0 ms. The Precision 7875 has it too, but mildly enough that nothing was skipped; see the table below. The earlier tables here that list a few skips in the first seconds may have the same cause; they weren't run again.
+- **The Precision 7875.** Old and new code in random order (31 October), 52 runs, all `RIG_CLEAN`, tracking on the RTX 6000 Ada, with NVENC on the RTX 4000 Ada. No run skipped a set, because even its slow sets mostly fit within a frame. The change removes the slow start here too, and the time per set afterwards stayed at 0.9 ms with 1 camera and 1.6 ms with 3:
+
+  | Run | Old code: slowest set in the first second | New: slowest set in the first second |
+  |---|---|---|
+  | No wait, 1 camera (5 runs each) | 1.1–3.9 ms | 1.0–1.2 ms |
+  | 3, 6 and 20 s wait, 1 camera (15 runs each) | 8.2–9.2 ms | 1.0–1.1 ms, and 3.1 ms in one run |
+  | 6 s wait, 3 cameras with 3D (3 runs each) | 16.6–18.5 ms | 1.7–2.6 ms |
+  | Replay, 3 cameras with 3D, no wait (3 runs each) | 1.7–1.9 ms | 1.7–2.0 ms |
+
+  The one 3.1 ms run had small bumps scattered through the whole run with the GPU at full clock, so it wasn't the slow start. The first frame analysed was 1 with both in the emulated-camera runs; in the replays it went from 4 to 2.
 - **Why it looked like idling.** It showed up as "the first run after the machine sat idle", in rig checks on two days. 3 runs after 30–45 minutes idle, each with one straight after it, were all clean, so idling alone doesn't do it. Those bad runs did wait longer (3–5 s from the warm-up to the feed, against about 2 s). Why the wait was longer that day wasn't found; it no longer matters with the hold running through it.
 
 ## Before and after the speed-ups of 22–23 October 2026
