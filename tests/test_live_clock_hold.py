@@ -71,3 +71,35 @@ def test_a_spin_is_2_ms_on_rocm_too(monkeypatch):
 	# 50 ms, and the feed's first set waited for one to end
 	assert clock(monkeypatch, "6.4", True).CYCLES == live.GpuClock.ROCM_CYCLES == 200000
 	assert clock(monkeypatch, None, False).CYCLES == live.GpuClock.CYCLES == 5000000
+
+
+def test_the_waiting_blocks_spin_from_start_till_the_wait_is_too_long(monkeypatch):
+	# Start comes as the warm-up ends, and the feed may be late or never come
+	c = clock(monkeypatch, None, False)
+	now = [1000.0]
+	monkeypatch.setattr(live.time, "monotonic", lambda: now[0])
+	c.started = now[0]
+	assert c.Spinning() == c.WAITING_BLOCKS
+	now[0] += c.WAITING_MOST_S - 1
+	assert c.Spinning() == c.WAITING_BLOCKS
+	now[0] += 1
+	assert c.Spinning() == 0
+	assert c.FeedCame() is True # said: nothing was spinning when it came
+	assert c.Spinning() == c.WAITING_BLOCKS # and they spin again, for the first frames
+	c.Busy()
+	assert c.Spinning() == c.busy
+	now[0] += c.WAITING_S
+	assert c.Spinning() == c.WAITING_BLOCKS # a pause in the frames: as before
+	assert c.Describe()["held_before_the_feed_s"] == c.WAITING_MOST_S
+
+
+def test_a_feed_in_time_keeps_the_blocks_spinning_past_the_limit(monkeypatch):
+	c = clock(monkeypatch, None, False)
+	now = [1000.0]
+	monkeypatch.setattr(live.time, "monotonic", lambda: now[0])
+	c.started = now[0]
+	now[0] += 5
+	assert c.FeedCame() is False
+	now[0] += 10 * c.WAITING_MOST_S
+	assert c.Spinning() == c.WAITING_BLOCKS
+	assert c.Describe()["held_before_the_feed_s"] == 5.0
