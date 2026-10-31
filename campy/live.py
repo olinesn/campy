@@ -120,7 +120,7 @@ Waiting for the feed, an RTX 2000 Ada dropped to its idle clock (210 MHz),
 so the first sets of a recording took 110-130 ms and the next ones were
 skipped; then it settled at 780 MHz of its 2500, and each set took 27 ms
 where 13 would do. The EVO-X2's AMD GPU ran light models at 2100 of its
-2900 MHz, 10% slower. So from the feed's coming to the end, campy-live
+2900 MHz, 10% slower. So from the warm-up's end to the end, campy-live
 keeps a few of the GPU's blocks spinning (torch.cuda._sleep), on streams of
 the lowest priority: 4 while it waits for frames, and while they come, 0 to
 2 (--hold-gpu-clock-blocks auto): it reads the GPU's clock every half
@@ -1565,7 +1565,12 @@ class GpuClock:
 	GPU keeps its full clock. While no set has come for WAITING_S (before
 	the recording's first frames), WAITING_BLOCKS spin: with one alone, an
 	RTX 2000 Ada still judged itself idle and fell to 1000 MHz, and the first
-	second's sets took 20 ms instead of 13. While sets come (Busy), blocks
+	second's sets took 20 ms instead of 13. Start comes as the warm-up ends,
+	not when the feed appears: cameras without a trigger send their first
+	frame as their ring is made, and a GPU idle by then (about 2 s after the
+	warm-up) takes 150-350 ms to get up to speed, the first sets 10 times
+	slower and 2-8 skipped. With no feed for WAITING_MOST_S none spin, till
+	FeedCame. While sets come (Busy), blocks
 	spin (--hold-gpu-clock-blocks): a number, or auto, from fewest to
 	MOST_BUSY as the GPU's clock needs (Adjust), read by a ClockReader:
 	fewest is 1 on an AMD integrated GPU (Fewest), else 0, or more where a
@@ -1581,6 +1586,7 @@ class GpuClock:
 	# spun, waited for one to end (17-57 ms, the next frames skipped)
 	ROCM_CYCLES = 200000 # 2 ms
 	WAITING_BLOCKS, WAITING_S = 4, 0.5
+	WAITING_MOST_S = 600.0 # with no feed: about 20 W, for nothing if none is coming
 	# auto, while sets come: at most 2 (in the benchmark, an RTX 2000 Ada that
 	# had fallen into its slow clock reached 1635 MHz with 1, 2295 with 2, and
 	# 8 left the model waiting, 37 ms a set instead of 12); 1 to begin with
@@ -1600,6 +1606,7 @@ class GpuClock:
 		self.threads = []
 		self.spins = 0
 		self.lastSet = 0.0 # time.monotonic() of the last set (Busy)
+		self.started = self.fed = None # time.monotonic() of Start, and of FeedCame
 		self.auto = blocks == "auto"
 		self.reader = (reader or ClockReader.For(device)) if self.auto else None
 		# auto's fewest while sets come; without the clock to read, it spins FIRST_BUSY
@@ -1695,9 +1702,24 @@ class GpuClock:
 	def Waiting(self):
 		return time.monotonic() - self.lastSet >= self.WAITING_S
 
+	def FeedCame(self):
+		# The feed is there: spin from now to Stop, even after a wait past
+		# WAITING_MOST_S. True if none was spinning when it came
+		self.fed = time.monotonic()
+		return self.started is not None and self.fed - self.started >= self.WAITING_MOST_S
+
+	def Spinning(self):
+		# How many blocks spin now
+		if not self.Waiting():
+			return self.busy
+		if self.fed is None and self.started is not None and time.monotonic() - self.started >= self.WAITING_MOST_S:
+			return 0
+		return self.WAITING_BLOCKS
+
 	def Start(self):
 		if not self.threads:
 			self.stop.clear()
+			self.started = time.monotonic()
 			n = max(self.WAITING_BLOCKS, self.MOST_BUSY if self.auto else self.busy)
 			with self.torch.cuda.device(self.device):
 				streams = [FixedStream("gpu clock {}".format(i)) for i in range(n)] # 0: the lowest priority
@@ -1713,7 +1735,7 @@ class GpuClock:
 		with torch.cuda.device(self.device):
 			done = torch.cuda.Event(blocking=True)
 			while not self.stop.is_set():
-				if i >= (self.WAITING_BLOCKS if self.Waiting() else self.busy):
+				if i >= self.Spinning():
 					self.stop.wait(0.05)
 					continue
 				with torch.cuda.stream(stream):
@@ -1777,6 +1799,8 @@ class GpuClock:
 
 	def Describe(self):
 		d = {"blocks_while_sets_come": "auto" if self.auto else self.busy}
+		if self.started is not None and self.fed is not None:
+			d["held_before_the_feed_s"] = round(self.fed - self.started, 1)
 		if self.fewest:
 			d["fewest_blocks"] = self.fewest
 		if self.remembered:
@@ -2504,6 +2528,13 @@ def Run(args):
 		warnings = DefaultWarnings(args, model) # said now, before the wait for the feed
 		if args.calibration:
 			from campy import pose3d
+		# The GPU's clock held from now, before the feed appears: a GPU left
+		# idle till then is still slow for the first sets of a camera without
+		# a trigger (GpuClock)
+		if HoldsClock(args, model):
+			clock = GpuClock(model.device, args.hold_gpu_clock_blocks,
+				memory=os.path.join(FixedEngine.CacheDir(getattr(args, "engine_cache", "")), "gpu_clock.json"))
+			clock.Start()
 		if args.ready_file:
 			Ready(args.ready_file)
 		# A program that started campy-live first (campy-session) and then
@@ -2515,10 +2546,9 @@ def Run(args):
 				args.wait_sec))
 			return 1
 		Say("Live feed: {}.".format(cameras.Describe()))
-		if HoldsClock(args, model):
-			clock = GpuClock(model.device, args.hold_gpu_clock_blocks,
-				memory=os.path.join(FixedEngine.CacheDir(getattr(args, "engine_cache", "")), "gpu_clock.json"))
-			clock.Start()
+		if clock is not None and clock.FeedCame():
+			Say("The feed took over {:g} minutes to come, so the GPU's clock wasn't held: without a trigger, "
+				"the first sets may be slow.".format(GpuClock.WAITING_MOST_S / 60))
 		if placed:
 			PlaceCampy(args, cameras.readers)
 		shape, dtype = cameras.readers[0].shape, cameras.readers[0].dtype
@@ -3046,7 +3076,7 @@ def Parser():
 		shape of input, and run it in the faster one: the same results (see campy-live's help). auto: on with \
 		a GPU and --memory-format nchw (auto's on ROCm), where it measured faster.")
 	p.add_argument("--hold-gpu-clock", default="auto", choices=["auto", "on", "off"], help="Keep a few blocks of \
-		the GPU spinning at the lowest priority from the feed's coming to the end, so the GPU keeps its full clock \
+		the GPU spinning at the lowest priority from the warm-up's end (at most 10 minutes without a feed) to the end, so the GPU keeps its full clock \
 		(see campy-live's help). auto: on with a GPU (NVIDIA's CUDA or AMD's ROCm).")
 	p.add_argument("--hold-gpu-clock-blocks", default="auto", type=lambda v: v if v == "auto" else str(int(v)),
 		help="How many blocks spin while sets come: auto (0 to 2, as the GPU's clock needs, read through NVML, \
