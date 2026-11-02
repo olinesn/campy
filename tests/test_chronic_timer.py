@@ -289,3 +289,24 @@ def test_the_last_report_arrives_whole(timer_sim):
 	assert len(done) == 1 and "stalls=0" in done[0]
 	if "self_check_us" in done[0]:
 		assert done[0].endswith("rises=0 self_check_us=0")
+
+
+def test_a_six_day_session_fits_and_starts_at_once(timer_sim):
+	# 1728 bouts, loaded as chronic_control.py loads them. Arguments are sent in
+	# pieces, which an operating system limits. The Nano's smaller tables refuse it.
+	s = cc.Settings(["TOTAL_DURATION=518400"])
+	bouts, trains, edges = cc.Plan(s)
+	assert len(bouts) == 1728 and edges[-1][0] == bouts[-1]["gate_off"]
+	commands = ["clear"] + ["train {} {} {} {} {}".format(*t) for t in trains] + ["edge {} {} {}".format(ch, t, level) for t, ch, level in edges]
+	pieces = [commands[i:i + 2000] for i in range(0, len(commands), 2000)]
+	later = [(0.2 * (i + 1), piece) for i, piece in enumerate(pieces[1:])]
+	go = 0.2 * (len(pieces) + 1)
+	got, said = run(timer_sim, go + 0.2, pieces[0], *later, (go, ["go", "status"]))
+	replies = [line for _, line in said]
+	if "err too many edges" in replies:
+		pytest.skip("the Nano's tables are smaller")
+	assert not [line for line in replies if line.startswith("err")]
+	assert "ok train 1728" in replies and "ok edge {}".format(len(edges)) in replies
+	t_asked = int(go * 1e6)
+	assert [t for t, line in said if line == "ok go"][0] - t_asked < 5000 # no long check before it starts
+	assert any(line.startswith("ok status running") for line in replies)

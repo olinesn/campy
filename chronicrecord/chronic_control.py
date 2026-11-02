@@ -523,7 +523,7 @@ def CmdStart(args, s):
 	command = [sys.executable, os.path.abspath(__file__), "run", "--port", args.port, "--state-dir", args.state_dir,
 		"--log-dir", args.log_dir] + sum((["--set", item] for item in args.set), [])
 	child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
-	deadline = time.monotonic() + 30
+	deadline = time.monotonic() + 180 # loading a 6-day session is thousands of commands, a millisecond or two each
 	while time.monotonic() < deadline:
 		status = ReadStatus(args.state_dir)
 		if status and status["pid"] == child.pid and status["state"] != "starting":

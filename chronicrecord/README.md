@@ -21,7 +21,7 @@ The Pi 3B still runs the experiment, started and stopped over SSH. It plans the 
 
 What that doesn't show: the check shares the Pico's crystal, so it can't see how far the crystal itself is from true time (probably tens of parts per million, a few seconds a day, not measured). It only watches the camera pin's rises, not their width or the other three pins. The OneBox's recording of the edges is still the independent check.
 
-**Long recordings:** the Pico holds 8192 edges and 2048 camera trains, 1365 bouts: 4.7 days at one bout per 300 s. A longer session is refused at `start` ("too many edges"). Camera-only sessions have no such limit (2^32 pulses).
+**Long recordings:** the Pico holds 12288 edges and 2048 camera trains, 2048 bouts: 7.1 days at one bout per 300 s. A longer session is refused at `start` ("too many edges"). Camera-only sessions have no such limit (2^32 pulses). For 6 days: `--set TOTAL_DURATION=518400`. Loading that many bouts takes `start` up to a minute or so.
 
 ## Why
 

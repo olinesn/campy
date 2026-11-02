@@ -63,8 +63,8 @@
 #define VERSION 2
 #define MAX_CH 8
 #if defined(USE_PIO)
-#define MAX_EDGES 8192      // the Pico has the room: 1365 bouts of 6 edges
-#define MAX_TRAINS 2048
+#define MAX_EDGES 12288     // the Pico has the room: 2048 bouts of 6 edges and a train,
+#define MAX_TRAINS 2048     // 7.1 days at one bout per 300 s
 #else
 #define MAX_EDGES 4096
 #define MAX_TRAINS 1024
@@ -79,7 +79,7 @@
 #define CHUNK_US 10000      // longest entry: a stop waits for no more than the queue
 
 // Declared here so the sketch also compiles as plain C++ (campy's tests run it)
-struct Edge { int64_t t; uint8_t ch; uint8_t level; };
+struct Edge { int64_t t : 59; uint64_t ch : 4; uint64_t level : 1; }; // 8 bytes: there can be thousands
 struct Train { int64_t start; uint32_t count; uint32_t rate_mhz; uint32_t width; uint8_t ch; };
 uint64_t Micros64();
 int64_t Now();
@@ -434,10 +434,10 @@ void Command(char* text) {
   }
   else if (strcmp(word, "go") == 0) {
     if (n_edges == 0 && n_trains == 0) { Say("err nothing to run"); return; }
+    uint32_t train_channels = 0;
+    for (int j = 0; j < n_trains; j++) { train_channels |= 1u << trains[j].ch; }
     for (int i = 0; i < n_edges; i++) {
-      for (int j = 0; j < n_trains; j++) {
-        if (edges[i].ch == trains[j].ch) { Say("err an edge is on a train's channel"); return; }
-      }
+      if (train_channels & (1u << edges[i].ch)) { Say("err an edge is on a train's channel"); return; }
     }
     AllLow();
     ei = 0; ti = 0; tk = 0; high = false; first_rise = -1;
@@ -544,7 +544,7 @@ void Report(int64_t t, const int8_t* level, bool rose, int first, int64_t late) 
   }
   for (int i = first; i < ei; i++) {
     char text[64];
-    snprintf(text, sizeof text, "ev %lld %d %d %lld", (long long) edges[i].t, edges[i].ch, edges[i].level, (long long) late);
+    snprintf(text, sizeof text, "ev %lld %d %d %lld", (long long) edges[i].t, (int) edges[i].ch, (int) edges[i].level, (long long) late);
     Queue(text);
   }
 }
