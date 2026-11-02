@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 chronic_control.py: ChronicRecord's stimulus sessions, made by the Arduino
-Nano ESP32 (chronic_timer/chronic_timer.ino) and run from the Raspberry Pi.
+Pi Pico (chronic_timer/chronic_timer.ino) and run from the Raspberry Pi.
 
 The Pi plans the whole session (the same bouts as chronicControlv13.py) and
-loads it onto the Nano over USB. The Nano then makes every TTL from its own
+loads it onto the Pico over USB. The Pico then makes every TTL from its own
 crystal clock: the OneBox record gate, the 60 Hz camera trigger and the two
 LED controllers, each edge on its microsecond, the LEDs on whole camera frames.
-The Pi only starts it, logs what the Nano reports, and stops it.
+The Pi only starts it, logs what the Pico reports, and stops it. (An Arduino Nano
+ESP32 with the same sketch works too.)
 
 Over SSH (each returns at once; the session runs in the background):
   python3 chronic_control.py start        start a session
@@ -25,7 +26,7 @@ Needs pyserial (sudo apt install python3-serial) and the user in the dialout
 group; no sudo, no GPIO on the Pi.
 """
 
-import argparse, glob, json, math, os, signal, subprocess, sys, time
+import argparse, glob, json, math, os, re, signal, subprocess, sys, time
 from datetime import datetime
 
 # --- Timing settings (USER EDITABLE), as in chronicControlv13.py ---
@@ -48,15 +49,18 @@ SETTINGS = dict(
 	# exposures, so that every frame is either wholly lit or wholly dark
 	LED_LEAD_US=1000,
 	EXPOSURE_US=200,              # the camera's exposure (campy config), to check the above
+	# A camera-only session: this many seconds of camera pulses at CAMERA_FPS and
+	# nothing else (no bouts, no LEDs, the gate stays low). 0 = the bouts above.
+	CAMERA_ONLY=0,
 )
 
-# --- Outputs: Nano ESP32 screw terminal, the board's channel, what it is ---
+# --- Outputs: the Pico's pins (a Nano ESP32's D2-D5), the board's channel, what it is ---
 OUTPUTS = [
 	# name, Arduino pin, description (as chronicControlv13.py's log names them)
-	("A", 2, "Record Gate"),       # D2 -> OneBox / SpikeGLX level gate
-	("B", 3, "Camera"),            # D3 -> FLIR Line3, 60 Hz
-	("C", 4, "Blue LED"),          # D4 -> 465 nm LED controller TTL
-	("D", 5, "Yellow LED"),        # D5 -> 560 nm LED controller TTL
+	("A", 2, "Record Gate"),       # GP2 -> OneBox / SpikeGLX level gate
+	("B", 3, "Camera"),            # GP3 -> FLIR Line3
+	("C", 4, "Blue LED"),          # GP4 -> 465 nm LED controller TTL
+	("D", 5, "Yellow LED"),        # GP5 -> 560 nm LED controller TTL
 ]
 GATE, CAMERA, BLUE, YELLOW = range(4)
 
@@ -122,6 +126,13 @@ def Plan(s):
 	"""
 	rate = int(round(s["CAMERA_FPS"] * 1000))
 	bouts, trains, edges = [], [], []
+	if s["CAMERA_ONLY"]:
+		count = int(round(s["CAMERA_ONLY"] * s["CAMERA_FPS"]))
+		end = Rise(0, count - 1, rate) + s["CAMERA_PULSE_US"]
+		bouts.append(dict(number=1, extended=False, gate_on=0, camera_start=0, pulses=count, camera_end=end,
+			blue=None, yellow=None, gate_off=end))
+		trains.append((CAMERA, 0, count, rate, s["CAMERA_PULSE_US"]))
+		return bouts, trains, edges
 	for i in range(int(s["TOTAL_DURATION"] // s["INTERVAL"])):
 		extended = i % s["EXTENDED_EVERY"] == 0
 		b0 = Us(i * s["INTERVAL"])
@@ -169,6 +180,10 @@ def Describe(s, bouts):
 	lines = []
 	frames = {}
 	for b in bouts:
+		if b["blue"] is None:
+			lines.append("Camera only: {} pulses at {:g} Hz, {:.6f} s; no LEDs, the gate stays low".format(b["pulses"],
+				s["CAMERA_FPS"], b["camera_end"] / 1e6))
+			continue
 		blue, blue_part = LitFrames(b, *b["blue"], s)
 		yellow, yellow_part = LitFrames(b, *b["yellow"], s)
 		frames[b["number"]] = (blue, yellow)
@@ -190,12 +205,13 @@ def Frames(ks):
 
 
 def FindPort():
-	ports = sorted(glob.glob("/dev/serial/by-id/*Nano_ESP32*")) or sorted(glob.glob("/dev/serial/by-id/*Arduino*"))
+	ports = sorted(glob.glob("/dev/serial/by-id/*Pico*")) or sorted(glob.glob("/dev/serial/by-id/*Nano_ESP32*")) \
+		or sorted(glob.glob("/dev/serial/by-id/*Arduino*"))
 	return ports[0] if ports else "/dev/ttyACM0"
 
 
 class Board:
-	"""The Nano on its serial port: commands answered with ok/err; the rest are its reports."""
+	"""The board on its serial port: commands answered with ok/err; the rest are its reports."""
 
 	def __init__(self, port, on_report):
 		import serial
@@ -260,7 +276,7 @@ class Session:
 		self.log_path = os.path.join(self.log_dir, "timestamps.txt")
 		self.bouts, self.trains, self.edges = Plan(s)
 		self.labels = {}
-		for b in self.bouts:
+		for b in self.bouts if not s["CAMERA_ONLY"] else []:
 			self.labels[(b["gate_on"], GATE, 1)] = (b, "HIGH (SpikeGLX File Recording Started)")
 			self.labels[(b["gate_off"], GATE, 0)] = (b, "LOW (SpikeGLX File Closed)")
 			for ch, (on, off) in ((BLUE, b["blue"]), (YELLOW, b["yellow"])):
@@ -329,6 +345,9 @@ class Session:
 				"bout {}]".format(pulses, b["pulses"], last / 1e6, first / 1e6, b["number"]), last if last >= 0 else None)
 		elif words[0] == "done":
 			self.done = " ".join(words[2:])
+			if not re.search(r"stalls=0\b", self.done):
+				self.Log("SYSTEM: WARNING: the board's output queue ran dry during the session, so edges after that "
+					"moved later: {}".format(self.done))
 			self.Log("SYSTEM: Board finished the session at t={:.6f} s, every output low: {}".format(int(words[1]) / 1e6,
 				self.done))
 		elif words[0] == "ready":
@@ -368,7 +387,7 @@ class Session:
 			return
 		t = self.SessionTime()
 		b = self.Bout(t + 500000) # half a second's margin: a bout about to start still starts
-		if self.end_requested == "bout" and b is not None:
+		if self.end_requested == "bout" and b is not None and not self.s["CAMERA_ONLY"]:
 			answer = self.board.Command("end {}".format(b["gate_off"]))
 			self.Log("SYSTEM: Stop requested: the session ends after bout {}, when its gate goes low at board t={:.6f} s."
 				.format(b["number"], b["gate_off"] / 1e6))
@@ -402,7 +421,7 @@ class Session:
 		return True
 
 	def Run(self):
-		self.Log("=== NEW SESSION (chronic_control.py, timing by the Nano ESP32) ===")
+		self.Log("=== NEW SESSION (chronic_control.py, timing by the board) ===")
 		for line in Describe(self.s, self.bouts):
 			self.Log("PLAN: " + line)
 		try:
@@ -583,7 +602,7 @@ def Main(argv=None):
 	parser.add_argument("command", choices=["start", "stop", "status", "plan", "run"])
 	parser.add_argument("--now", action="store_true", help="stop: end now rather than after the current bout")
 	parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", help="change a timing setting")
-	parser.add_argument("--port", default=None, help="the Nano's serial port (default: found in /dev/serial/by-id)")
+	parser.add_argument("--port", default=None, help="the board's serial port (default: found in /dev/serial/by-id)")
 	parser.add_argument("--state-dir", default=STATE_DIR)
 	parser.add_argument("--log-dir", default=LOG_ROOT, help="timestamps.txt goes in <log-dir>/<date>/")
 	args = parser.parse_args(argv)

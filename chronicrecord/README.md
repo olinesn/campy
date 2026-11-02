@@ -1,18 +1,23 @@
 # ChronicRecord timer
 
-The ChronicRecord rig's four TTL outputs, made by an Arduino Nano ESP32 instead of the Raspberry Pi 3B:
+The ChronicRecord rig's four TTL outputs, made by a Raspberry Pi Pico instead of the Raspberry Pi 3B's own GPIO pins:
 
-| Output | What it drives | Pi 3B before (chronicControlv13.py) | Nano ESP32 now |
+| Output | What it drives | Pi 3B before (chronicControlv13.py) | Pico now |
 |---|---|---|---|
-| A | OneBox / SpikeGLX record gate (level) | GPIO 5 | D2 |
-| B | FLIR camera trigger (Line3), 60 Hz, 3 ms high | GPIO 12 | D3 |
-| C | Blue LED controller TTL (465 nm) | GPIO 13 | D4 |
-| D | Yellow LED controller TTL (560 nm) | GPIO 19 | D5 |
+| A | OneBox / SpikeGLX record gate (level) | GPIO 5 | GP2 (board pin 4) |
+| B | FLIR camera trigger (Line3), 3 ms high | GPIO 12 | GP3 (board pin 5) |
+| C | Blue LED controller TTL (465 nm) | GPIO 13 | GP4 (board pin 6) |
+| D | Yellow LED controller TTL (560 nm) | GPIO 19 | GP5 (board pin 7) |
+| | Every cable's ground | GND | GND (board pin 3 or 8) |
 
-The Pi still runs the experiment, started and stopped over SSH. It plans the whole session and loads it onto the Nano over USB. Then the Nano makes every edge from its own crystal clock. campy doesn't take part: the ChronicRecord campy configs keep `startArduino: False`, and the cameras just record the pulses on Line3.
+The Pi 3B still runs the experiment, started and stopped over SSH. It plans the whole session and loads it onto the Pico over USB. Then the Pico makes every edge from its own crystal clock. campy doesn't take part: on this setup the campy configs need `startArduino: False`, and the cameras just record the pulses on Line3. Start campy first, so that every camera is grabbing before the Pi's `start`.
 
-- `chronic_timer/chronic_timer.ino` is the Nano's sketch.
+- `chronic_timer/chronic_timer.ino` is the Pico's program (the same file also runs on an Arduino Nano ESP32).
 - `chronic_control.py` is the Pi's program (needs only Python 3 and pyserial).
+
+**Why a Pico:** its PIO hardware runs the outputs by itself from a queue of "these levels, for this many clock ticks". All four pins change in the same clock tick (about 7.5 ns at 133 MHz), and neither USB nor the rest of its program can move an edge unless the queue runs dry, which the Pico counts and reports (`stalls=`). The official Pico design has a 12 MHz crystal. An UNO R4 has no crystal in use (about ±1%), and a Pi's Linux can delay anything done in software.
+
+*Not measured on real hardware yet.* The simulated tests check the schedule and the queue's arithmetic to the tick, with the state machine's cycle count taken from reading its instructions. So the real check is the Pico's own `self_check_us` at the end of every session, and the OneBox's recording of the edges.
 
 ## Why
 
@@ -25,13 +30,14 @@ On the Pi, everything was timed in software:
 
 SpikeGLX/OneBox records the real TTL edges, so the true LED widths and gaps can be checked in an existing recording.
 
-On the Nano:
+On the Pico (or Nano):
 
-- The camera trigger is a pulse train on its crystal (±10–20 ppm). Pulse *k* rises at exactly `start + floor(k × 10⁶ / 60)` µs: 16666 or 16667 µs apart, exactly 60 Hz on average. It stops after an exact count (600 pulses in a standard bout, 14400 in an extended one).
+- The camera trigger is a pulse train on its crystal. Pulse *k* rises at exactly `start + floor(k × 10⁶ / 60)` µs: 16666 or 16667 µs apart, exactly 60 Hz on average. It stops after an exact count (600 pulses in a standard bout, 14400 in an extended one).
 - The LEDs are 30 ms. Blue switches on 1 ms before camera pulse 300 (5 s into the camera) and off 30 ms later; yellow follows on the same microsecond. With 200 µs exposures, blue lights frames 300–301 and yellow 302–303, each frame wholly lit or wholly dark. `python3 chronic_control.py plan` lists this for every bout, and warns if a setting would put an edge inside an exposure.
 - Edges due together are written in one register write: blue off and yellow on, or any edge that lands on a camera pulse.
-- Expected on the board: within ~1–2 µs of schedule. The sketch busy-waits the last 300 µs before each change with interrupts off; the clock reads in whole microseconds. *Not measured on the rig.* The tests show the schedule logic is exact on a simulated clock: every edge within 2 µs, and 0 µs late in the simulation.
-- The Nano runs the loaded session by itself. If the Pi's program dies, or the USB link drops (as Arduinos on the lab's rigs often do), the edges don't move. The program reconnects and carries on logging. The Nano reports each edge with its board time and how late it was, and each camera train's exact pulse count. `timestamps.txt` records those, not Python's guesses.
+- On the Pico, each edge is at its scheduled microsecond exactly, on the state machine's clock (tests, to the tick). On the Nano, the sketch busy-waits the last 300 µs with interrupts off: expected within ~1–2 µs. *Neither is measured on real hardware yet.*
+- At the end of a session the Pico reports `rises=` (the camera pin's rises, counted by an interrupt) and `self_check_us=` (the time from first rise to last by its microsecond timer, minus the schedule's). Expect `rises=` equal to `pulses=` and a few microseconds at most.
+- The board runs the loaded session by itself. If the Pi's program dies, or the USB link drops (as Arduinos on the lab's rigs often do), the edges don't move. The program reconnects and carries on logging. The board reports each edge with its board time and how late it was, and each camera train's exact pulse count. `timestamps.txt` records those, not Python's guesses.
 - No `sudo`: the Pi needs no GPIO access, only its serial port.
 
 ## The protocol
@@ -68,46 +74,37 @@ ssh <user>@<pi-address> python3 chronic_control.py status
 ssh <user>@<pi-address> python3 chronic_control.py stop
 ```
 
-- `start` checks that the Nano answers, loads the session, starts it, and returns. The session keeps running in the background after SSH disconnects.
+- `start` checks that the board answers, loads the session, starts it, and returns. The session keeps running in the background after SSH disconnects.
 - `stop` ends the session after the current bout, as typing `cancel` did. The bout's gate still goes low on time.
-- `stop --now` ends it at once. The camera finishes the pulse it is on, then every output goes low. With no session program running, `stop --now` tells the Nano itself to stop.
+- `stop --now` ends it at once. The camera finishes the pulse it is on, then every output goes low. With no session program running, `stop --now` tells the board itself to stop.
 - `plan` prints the session's timeline without touching the board.
 - `run` runs the session in the terminal. Ctrl-C there is `stop --now`.
 
 The log is `~/Documents/<date>/timestamps.txt`, as before. The program's own output goes to `~/.chronic_control/session.out`. `status` reads `~/.chronic_control/status.json`, which the session rewrites as it runs. Like every JSON file campy writes, it is strict JSON: an infinite or NaN number would be the text `"Infinity"` or `"NaN"` ([Recording folders](../docs/recordings.md#infinity-and-nan-in-campys-json-files)).
 
-## Setting it up (the Pi's part done; the Nano's not yet)
+## Camera-only sessions
 
-The board is the Nano ESP32 now on the ChronicRecord PC's COM9 (until now campy's trigger, `campy_config_chronicrecord_v02c_arduinoTrigger.yaml`). It goes on an Arduino [Nano Screw Terminal Adapter](https://store-usa.arduino.cc/products/nano-screw-terminal) and is plugged into the Pi.
+No bouts, no LEDs, and the gate stays low: only the camera pulses, for as long as you say. Use it for calibration or plain recordings:
 
-1. **Flash it while it is still on the PC, before any cable moves.** Its pins aren't connected to anything yet.
-   - In the Arduino IDE, choose board "Arduino Nano ESP32", port COM9, and keep *Tools > Pin Numbering* on **"By Arduino pin (default)"**. With "By GPIO number" the sketch's pins 2–5 would be different physical pins.
-   - Open `chronic_timer/chronic_timer.ino` and upload.
-   - In the Serial Monitor (line ending "Newline"), `id` should answer `ok chronic_timer 1`.
-2. **Move the BNC cables** from the Pi's breakout to the adapter's screw terminals:
+```bash
+python3 chronic_control.py start --set CAMERA_ONLY=3600 --set CAMERA_FPS=30
+```
 
-   | BNC (was on the Pi) | Adapter terminal |
-   |---|---|
-   | A, OneBox record gate (GPIO 5) | D2 |
-   | B, camera Line3 (GPIO 12) | D3 |
-   | C, blue LED controller (GPIO 13) | D4 |
-   | D, yellow LED controller (GPIO 19) | D5 |
-   | every cable's shield / ground wire | GND |
+`stop` ends one at once, on a whole pulse (a few ms to 20 ms later, what's already queued).
 
-   The Nano has only two GND pins. Twist the four ground wires together into one GND terminal, or make a ground strip on the adapter's prototyping area.
-3. **Pull-down resistors.** Fit a 10 kΩ resistor from each of D2–D5 to GND. The adapter's 9×8 prototyping area is a good place: solder each resistor between its pin's row and a ground strip.
-   - Why: while the Nano resets or is being flashed, its pins float, and a floating gate or LED input could read high and start a SpikeGLX file or flash an LED.
-   - Until they're fitted, don't reflash the Nano while the OneBox and LED controllers are on.
-4. **Voltage.** The Nano's outputs are 3.3 V, the same as the Pi's GPIO that drives these inputs today. The Blackfly S Line3 counts 2.6 V or more as high, so 3.3 V works, with a small margin. For more margin over long BNC cables, a 74AHCT125 buffer powered from 5 V (it fits on the prototyping area) would turn the 3.3 V outputs into 5 V ones. That's optional: today's 3.3 V works on this rig.
-5. **Plug the Nano into the Pi by USB.** It shows up as `/dev/serial/by-id/usb-Arduino_Nano_ESP32_...`, which `chronic_control.py` finds by itself. On the PC, `campy_config_chronicrecord_v02c_arduinoTrigger.yaml` (`startArduino: True`, COM9) no longer has a board. Record with a config that has `cameraTrigger: "Line3"`, `startArduino: False` and `frameRate: 60`.
-6. **Set up the Pi.** Done on 24 October 2026, ahead of steps 1–5: pyserial 3.5 was already installed and the user already in `dialout`; `chronic_control.py` was copied to `~`, `plan` gave the 12-bout timeline, and `status` says no session has run. The rig still runs on chronicControlv13.py until the cables move to the Nano. To set up another Pi:
-   - `sudo apt install python3-serial`.
-   - Copy `chronic_control.py` to `~`.
-   - Check that the user is in the `dialout` group (`groups`).
-   - Run `python3 chronic_control.py plan` and check the timeline.
-   - Don't run chronicControlv13.py again once the cables are on the Nano: it would drive GPIO pins that nothing is wired to.
+## Setting it up
 
-## Commands the Nano takes
+1. **Flash the Pico.** Hold BOOTSEL while plugging it in; it appears as a drive named `RPI-RP2`. Copy `chronic_timer.ino.uf2` onto it (built with the [arduino-pico](https://github.com/earlephilhower/arduino-pico) core, board `rp2040:rp2040:rpipico`). It restarts as a serial port, and `id` should answer `ok chronic_timer 2`.
+2. **Wire it** as in the table at the top, in place of the Pi's GPIO pins. Don't connect anything above 3.3 V to a Pico pin: they aren't 5 V tolerant.
+3. **Pull-down resistors.** Fit a 10 kΩ resistor from each of GP2–GP5 to GND, so that nothing reads high while the Pico resets or is being flashed.
+4. **Voltage.** The Pico's outputs are 3.3 V, the same as the Pi's GPIO that drives these inputs today. The Blackfly S Line3 counts 2.6 V or more as high, so 3.3 V works, with a small margin.
+5. **Plug the Pico into the Pi by USB.** It shows up in `/dev/serial/by-id/`, which `chronic_control.py` finds by itself.
+6. **On the PC,** record with `cameraTrigger: "Line3"`, `startArduino: False`, and `frameRate` matching `CAMERA_FPS`. For bouts:
+   - `alertNoFramesSec` above the longest gap between bouts (about 300 s), or campy reports "the trigger has stopped" in every gap.
+   - `recTimeInSec` equal to the session's total camera time (580 s by default), since campy stops after `recTimeInSec` x `frameRate` frames.
+7. **Don't run chronicControlv13.py once the cables are on the Pico:** it would drive GPIO pins that nothing is wired to.
+
+## Commands the board takes
 
 These are what `chronic_control.py` sends. Each answer comes at once: `ok ...` or `err ...`.
 
