@@ -3,6 +3,7 @@
 // as "serial <microseconds> <text>" (text with \r and \n written as such).
 //   sim <end_us> <command> [<at_us>:<command> ...]
 // The first command is waiting at power-up; the others arrive at their times.
+// A command "@<path>" is that file's contents (Windows limits a command line's length).
 // SIM_START_US in the environment starts the clock there instead of at 0 (to
 // run a sketch across micros()'s 32-bit wrap); all times printed are the clock's.
 // SIM_INPUT makes an input pin a pulse train, as a camera trigger:
@@ -260,6 +261,18 @@ float SimSerial::parseFloat() {
 	return std::strtof(number.c_str(), 0);
 }
 
+static std::string Command(const std::string& arg) {
+	if (arg.empty() || arg[0] != '@') return arg;
+	std::string path = arg.substr(1, arg.find_first_of("\r\n") - 1), text;
+	FILE* f = std::fopen(path.c_str(), "rb");
+	if (!f) std::exit(3);
+	char data[4096];
+	size_t n;
+	while ((n = std::fread(data, 1, sizeof data, f)) > 0) text.append(data, n);
+	std::fclose(f);
+	return text;
+}
+
 int main(int argc, char** argv) {
 	ReadInputs();
 	if (argc == 2 && std::strcmp(argv[1], "live") == 0) {
@@ -271,11 +284,11 @@ int main(int argc, char** argv) {
 	if (argc < 3) return 2;
 	if (std::getenv("SIM_START_US")) now_us = std::strtoull(std::getenv("SIM_START_US"), 0, 10);
 	unsigned long long end = std::strtoull(argv[1], 0, 10);
-	input = argv[2];
+	input = Command(argv[2]);
 	for (int i = 3; i < argc; i++) {
 		std::string arg = argv[i];
 		size_t colon = arg.find(':');
-		later.push_back(std::make_pair(std::strtoull(arg.substr(0, colon).c_str(), 0, 10), arg.substr(colon + 1)));
+		later.push_back(std::make_pair(std::strtoull(arg.substr(0, colon).c_str(), 0, 10), Command(arg.substr(colon + 1))));
 	}
 	setup();
 	while (now_us < end) {
