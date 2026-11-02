@@ -62,8 +62,13 @@
 
 #define VERSION 2
 #define MAX_CH 8
+#if defined(USE_PIO)
+#define MAX_EDGES 8192      // the Pico has the room: 1365 bouts of 6 edges
+#define MAX_TRAINS 2048
+#else
 #define MAX_EDGES 4096
 #define MAX_TRAINS 1024
+#endif
 #define NONE INT64_MAX
 #define GO_DELAY_US 20000   // session time 0, after "go": room to answer first
 #define CRITICAL_US 300     // interrupts off this long before a change
@@ -123,7 +128,8 @@ uint32_t lost = 0;
 
 // Lines waiting to be said, while changes were close
 #define QUEUE 64
-char queue[QUEUE][64];
+#define QUEUE_LINE 160
+char queue[QUEUE][QUEUE_LINE];
 int q_head = 0, q_len = 0;
 
 char line[128];
@@ -311,8 +317,8 @@ void Say(const char* text) {
 
 void Queue(const char* text) {
   if (q_len == QUEUE) { lost++; return; }
-  strncpy(queue[(q_head + q_len) % QUEUE], text, 63);
-  queue[(q_head + q_len) % QUEUE][63] = 0;
+  strncpy(queue[(q_head + q_len) % QUEUE], text, QUEUE_LINE - 1);
+  queue[(q_head + q_len) % QUEUE][QUEUE_LINE - 1] = 0;
   q_len++;
 }
 
@@ -569,13 +575,13 @@ void Finish() {
   running = false;
   n_edges = 0;
   n_trains = 0;
-  char text[96];
+  char text[QUEUE_LINE];
 #if defined(ARDUINO_ARCH_RP2040)
   snprintf(text, sizeof text, "done %lld pulses=%lu late_max=%lld lost=%lu stalls=%lu rises=%lu self_check_us=%lld",
     (long long) Now(), (unsigned long) pulses, (long long) late_max, (unsigned long) lost, (unsigned long) stalls,
     (unsigned long) rise_count, (long long) ((int64_t) (rise_last - rise_first) - (last_ever - first_ever)));
 #elif defined(USE_PIO)
-  snprintf(text, sizeof text, "done %lld pulses=%lu late_max=%lld lost=%lu stalls=%lu",
+  snprintf(text, sizeof text, "done %lld pulses=%lu late_max=%lld lost=%lu stalls=%lu rises=0 self_check_us=0",
     (long long) Now(), (unsigned long) pulses, (long long) late_max, (unsigned long) lost, (unsigned long) stalls);
 #else
   snprintf(text, sizeof text, "done %lld pulses=%lu late_max=%lld lost=%lu stalls=0",

@@ -280,3 +280,12 @@ def test_a_camera_only_session(timer_sim):
 	for pin in (2, 4, 5): # the gate and the LEDs never move
 		assert len(rises(got, pin)) == 0
 	assert any(line.startswith("done ") and "pulses=60" in line for _, line in said)
+
+
+def test_the_last_report_arrives_whole(timer_sim):
+	# On the Pico its end, self_check_us, is what shows the timing on the real board
+	got, said = run(timer_sim, 1, ["train 1 0 10 60000 3000", "go"])
+	done = [line for _, line in said if line.startswith("done ")]
+	assert len(done) == 1 and "stalls=0" in done[0]
+	if "self_check_us" in done[0]:
+		assert done[0].endswith("rises=0 self_check_us=0")

@@ -17,7 +17,11 @@ The Pi 3B still runs the experiment, started and stopped over SSH. It plans the 
 
 **Why a Pico:** its PIO hardware runs the outputs by itself from a queue of "these levels, for this many clock ticks". All four pins change in the same clock tick (about 7.5 ns at 133 MHz), and neither USB nor the rest of its program can move an edge unless the queue runs dry, which the Pico counts and reports (`stalls=`). The official Pico design has a 12 MHz crystal. An UNO R4 has no crystal in use (about ±1%), and a Pi's Linux can delay anything done in software.
 
-*Not measured on real hardware yet.* The simulated tests check the schedule and the queue's arithmetic to the tick, with the state machine's cycle count taken from reading its instructions. So the real check is the Pico's own `self_check_us` at the end of every session, and the OneBox's recording of the edges.
+**Checked on a real Pico (2 November 2026, on the Pi 3B's USB, nothing wired to its outputs).** At 60 Hz every session made exactly the planned pulses with no stalls. `self_check_us` was −1 to −3 µs in sessions of 10 s, 30 s and 120 s (7 runs); it doesn't grow with length, so the state machine keeps its schedule. One 60 s run read −17 µs, which didn't recur: the check is an interrupt, and one can be delayed.
+
+What that doesn't show: the check shares the Pico's crystal, so it can't see how far the crystal itself is from true time (probably tens of parts per million, a few seconds a day, not measured). It only watches the camera pin's rises, not their width or the other three pins. The OneBox's recording of the edges is still the independent check.
+
+**Long recordings:** the Pico holds 8192 edges and 2048 camera trains, 1365 bouts: 4.7 days at one bout per 300 s. A longer session is refused at `start` ("too many edges"). Camera-only sessions have no such limit (2^32 pulses).
 
 ## Why
 
@@ -35,7 +39,7 @@ On the Pico (or Nano):
 - The camera trigger is a pulse train on its crystal. Pulse *k* rises at exactly `start + floor(k × 10⁶ / 60)` µs: 16666 or 16667 µs apart, exactly 60 Hz on average. It stops after an exact count (600 pulses in a standard bout, 14400 in an extended one).
 - The LEDs are 30 ms. Blue switches on 1 ms before camera pulse 300 (5 s into the camera) and off 30 ms later; yellow follows on the same microsecond. With 200 µs exposures, blue lights frames 300–301 and yellow 302–303, each frame wholly lit or wholly dark. `python3 chronic_control.py plan` lists this for every bout, and warns if a setting would put an edge inside an exposure.
 - Edges due together are written in one register write: blue off and yellow on, or any edge that lands on a camera pulse.
-- On the Pico, each edge is at its scheduled microsecond exactly, on the state machine's clock (tests, to the tick). On the Nano, the sketch busy-waits the last 300 µs with interrupts off: expected within ~1–2 µs. *Neither is measured on real hardware yet.*
+- On the Pico, each edge is at its scheduled microsecond exactly, on the state machine's clock (simulated tests, to the tick; on the real board, see above). On the Nano, the sketch busy-waits the last 300 µs with interrupts off: expected within ~1–2 µs, not measured.
 - At the end of a session the Pico reports `rises=` (the camera pin's rises, counted by an interrupt) and `self_check_us=` (the time from first rise to last by its microsecond timer, minus the schedule's). Expect `rises=` equal to `pulses=` and a few microseconds at most.
 - The board runs the loaded session by itself. If the Pi's program dies, or the USB link drops (as Arduinos on the lab's rigs often do), the edges don't move. The program reconnects and carries on logging. The board reports each edge with its board time and how late it was, and each camera train's exact pulse count. `timestamps.txt` records those, not Python's guesses.
 - No `sudo`: the Pi needs no GPIO access, only its serial port.
