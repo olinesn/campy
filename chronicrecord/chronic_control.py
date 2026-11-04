@@ -236,7 +236,9 @@ class Board:
 
 	def Poll(self):
 		# What it said since, each report passed on; the answers among it returned
-		self.heard += self.connection.read(4096)
+		# What's there, or the first byte to come within the timeout: never the
+		# whole timeout when an answer is already in (each command waits for one)
+		self.heard += self.connection.read(max(1, self.connection.in_waiting))
 		answers = []
 		while b"\n" in self.heard:
 			raw, self.heard = self.heard.split(b"\n", 1)
@@ -614,7 +616,11 @@ def CmdWiringRun(args, s):
 			if not reports or reports[-1].startswith("done"):
 				board.Command("clear")
 				for t, ch, level in edges:
+					if stop["how"] is not None:
+						break
 					board.Command("edge {} {} {}".format(ch, t, level))
+				if stop["how"] is not None:
+					break
 				reports.clear()
 				board.Command("go")
 				board.Command("end {}".format(length)) # the round lasts its pause too: low until then

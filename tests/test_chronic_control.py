@@ -273,3 +273,21 @@ def test_blink_switches_every_output_together():
 		assert ups == list(range(0, 10 * 10**6, 500000)) and downs == [t + 250000 for t in ups]
 	assert [t for t, _, _ in edges] == sorted(t for t, _, _ in edges)
 	assert len(cc.BlinkPlan("ABCD", 2)[0]) == 300 * 2 * 2 * 4 # a 5-minute round fits the Pico's 12288 edges
+
+
+def test_loading_is_fast(board):
+	# Each command's answer is read as soon as it comes: a 6-day session is
+	# 12,000 commands, which at the read timeout (50 ms) each took 10 minutes
+	port, log_path = board
+	b = cc.Board(port, lambda line: None)
+	try:
+		b.Check()
+		b.Command("clear")
+		t = time.monotonic()
+		for i in range(300):
+			b.Command("edge 2 {} {}".format(i * 1000, i % 2))
+		took = time.monotonic() - t
+		b.Command("clear")
+	finally:
+		b.close()
+	assert took < 5, "{:.1f} s for 300 commands".format(took) # 15 s at the timeout
