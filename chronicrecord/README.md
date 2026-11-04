@@ -118,7 +118,37 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 6. **On the PC,** record with `cameraTrigger: "Line3"`, `startArduino: False`, and `frameRate` matching `CAMERA_FPS`. For bouts:
    - `alertNoFramesSec` above the longest gap between bouts (about 300 s), or campy reports "the trigger has stopped" in every gap.
    - `recTimeInSec` equal to the session's total camera time (580 s by default), since campy stops after `recTimeInSec` x `frameRate` frames.
+   - [`chronic_pico.yaml`](chronic_pico.yaml) is the profile for multi-day sessions; see [Recording a long session](#recording-a-long-session).
 7. **Don't run chronicControlv13.py once the cables are on the Pico:** it would drive GPIO pins that nothing is wired to.
+
+## Recording a long session
+
+[`chronic_pico.yaml`](chronic_pico.yaml) is the campy profile the rig uses for bout sessions of several days. It extends the rig's own profile (`extends: chronicrecord`: four cameras, Quick Sync H.265) and changes only what the Pico needs. Each line's comment says why.
+
+| Setting | Value | Why |
+|---|---|---|
+| `frameRate` | `60` | the Pico's camera rate (`CAMERA_FPS`) |
+| `startArduino` | `False` | the Pico makes the pulses; campy writes `startedBy: external` |
+| `cameraTrigger` | `"Line3"` | where the Pico's camera cable goes in |
+| `recTimeInSec` | `83520` | the 6-day session's total camera time, so campy stops after the last bout |
+| `alertNoFramesSec` | `400` | above the longest gap without pulses, 290 s (300 s between bouts, less 10 s of camera) |
+| `stopFile` | a file | creating it stops the recording cleanly, from SSH or a script |
+
+**`recTimeInSec` for another length.** campy counts camera time, not the wall clock. On the Pi, `python3 chronic_control.py plan --set TOTAL_DURATION=<seconds>` ends with the session's camera pulses; `recTimeInSec` is that number divided by 60. By hand, with the default settings: bouts = `TOTAL_DURATION` / 300, of which every 6th (bouts 1, 7, 13, ...) is 240 s of camera and the rest 10 s.
+
+| Session | `TOTAL_DURATION` | Bouts (long) | Camera pulses | `recTimeInSec` |
+|---|---|---|---|---|
+| 1 hour (the default) | 3600 | 12 (2) | 34,800 | 580 |
+| 4 days | 345600 | 1152 (192) | 3,340,800 | 55680 |
+| 6 days | 518400 | 1728 (288) | 5,011,200 | 83520 |
+
+**Order.** Start campy first and wait for "All 4 cameras are ready.", then the Pi: `python3 chronic_control.py start --set TOTAL_DURATION=518400`. A camera that isn't grabbing when the first pulse comes misses frames the others have.
+
+**Stopping early.** `stop` on the Pi, then Ctrl-C in campy's window (or create the `stopFile`). campy otherwise waits for frames that won't come.
+
+**What the alerts say.** Every gap between bouts looks to campy like a trigger pause: it counts the pulses it would have had at 60 fps. So each bout after a gap is a "trigger paused" warning. From the third bout on it is reported once as coming and going, with a reminder every 30 minutes, for as long as the session lasts. No frame is lost, and `frametimes.npy` has every frame's time. A real stop (no frames for 400 s) is still a critical alert.
+
+**Disk: a 6-day session does not fit on the recording PC today.** The videos are the small part: about 140 to 200 GB for the 6-day plan at 60 fps (worked out from 30 fps recordings of mice; not yet measured at 60 fps with animals). SpikeGLX writes to the same C: drive while the gate is high, at about 24 MB/s (23.1 MB/s for the Neuropixels probe, 0.85 MB/s for the OneBox): about 2.6 to 2.7 TB for the 6-day plan's 109,440 s of gate. In all about 2.9 TB, roughly 475 GB a day, against about 500 GB free on the PC's only disk (1 TB). Before a multi-day session, add a data disk (or move data off during the session); see [Recording many days](../docs/hardware.md#recording-many-days) in the hardware notes. campy's launch check only counts its own videos (about 430 GB here, from the encoder sweep's synthetic frames) and warns above 80% of the free space; it doesn't know about SpikeGLX. campy stops its recording cleanly below 2 GB free, but SpikeGLX would fill the disk first.
 
 ## Commands the board takes
 
