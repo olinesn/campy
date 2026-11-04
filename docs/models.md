@@ -31,6 +31,58 @@ SLEAP 1.6.6 (sleap-nn 0.3.5) still waits after every step. A fix is proposed ups
 
 **Set "Dataloader Workers" in the GUI's Training Configuration dialog.** In SLEAP 1.6.6 the box sits next to "Data Pipeline", goes from 0 to 16, and starts at 0. At 0, the training process itself rotates, scales and resizes every image between steps, and the GPU waits. A centroid model (input scale 0.25, 16 filters, max stride 8, output stride 1, batch 4, 200 steps per epoch, images cached in memory) on the Dell Precision 7875's RTX 6000 Ada took a median 22.7 s per epoch with 0 workers and 2.7 s with 12, 8.5 times as fast, with the same settings otherwise (29 October). With 0 workers the GPU was busy only 27–42% of the time, at 360–540 MHz instead of its 2505 MHz, its driver taking it for idle. Use 8 or more; with images cached in memory, each worker holds its own copy of them, so the copies need RAM (about 260 MB per worker for 200 frames of 1024x1280).
 
+### A large package from the SLEAP GUI (30,000 labeled frames)
+
+Measured on 30 October on the Dell Precision 7875 (RTX 6000 Ada, SLEAP 1.6.6, sleap-nn 0.3.5, with the 10 ms wait above removed), with an 11.3 GB package on its local SSD: 30,869 labeled frames in 1,068 videos, 48,535 labeled frames counting predictions, 61,371 labeled instances, almost all frames 1024x1280, batch 4, 12 workers. One run of each stage. The table is the first run, from the GUI, which trained on a JPEG cache; the retrain on the original images is further down.
+
+| Stage | Time |
+|---|---|
+| Opening the package in the GUI | about 8 s, 150 MB read (the images aren't loaded) |
+| Predict > Run Training, until the dialog appears | **12 min 21 s**, one CPU core, nothing read from disk |
+| Pressing Run to the first step | about 5 min each model: loading the labels and writing `labels_gt` about 16 s (centroid), caching images about 1 min 40 s, starting 24 workers one at a time about 3 min |
+| Centroid (scale 0.25, 16 filters, max stride 16, output stride 2, 1.95M parameters, 200 steps per epoch) | 63 steps/s; about 11 s per epoch, of which 8.4 s is validation; 193 epochs in 36 min; 37% GPU busy |
+| Centered instance (crop 450, 24 filters, max stride 64, output stride 2, 70.76M parameters, 13,802 steps per epoch) | 15.5 steps/s; about 16 min per epoch, of which about 1 min is validation; GPU busy 60% on average, about 80% between short gaps when it is idle; each training worker at 0.92 of a core |
+| After the last centroid epoch | 11 min, predicting on and scoring the training and validation frames |
+
+What this size changes:
+
+- **The Run Training dialog freezes for minutes.** Before it appears, it counts the frames for "Random sample" by scanning every labeled frame once per video (`_sample_frames_from_pool` in `sleap/gui/learning/dialog.py`). With this package that is about 52 million checks. Each one runs an `import` inside `LabeledFrame.is_user_labeled`, which is about 6 times as slow once PySide6 is loaded (0.03 s against 0.19 s per scan, on a Mac; its copy of the Run Training path stalled at the same call). Reopening the dialog may repeat it; that wasn't tried.
+- **The Data Pipeline dropdown has no effect in SLEAP 1.6.6.** The dialog returns `stream`, `cache_memory` or `cache_disk`, while `sleap/gui/config_utils.py` looks up the display names, so every choice becomes "Cache in Memory". We chose "Stream (no caching)" and the run's config said `torch_dataset_cache_img_memory`. Set `data_pipeline_fw` in the YAML to choose for real.
+- **"Cache in Memory" becomes a JPEG cache here, with only a line in the log.** On Windows each worker holds its own copy of the cache, so 12 workers would need about 596 GB (38 GB raw) against 113 GB free. sleap-nn then writes `.jpg` files instead, 1.6 GB here, saved with the imaging library's default quality, so the models train on compressed copies of the images. `data_pipeline_fw: torch_dataset` reads the original images instead; the retrain below compares the two.
+- **Check `train_steps_per_epoch` when reusing a config.** It came along with the reused centroid config at 200, so an epoch saw 800 of 27,782 frames. In the centered instance config it was empty, which means every frame: 13,802 steps. At 16 minutes per epoch, 200 epochs would take about 54 hours unless training stops early. The dialog doesn't show this setting.
+- **Check `max_height` and `max_width` too.** Left empty, they come from the largest frame. A few larger frames (22 of the 3,087 validation frames, up to 1536x2048) set them to 1536x2048, so the 1024x1280 frames were enlarged 1.5 times on every call. This costs CPU, because augmentation runs on the whole enlarged frame, and it makes a crop smaller in real terms: a 450 px crop covers only 300 px of the original image. That is why the dialog warned that 20,524 of 61,371 instances would be clipped. Counting by hand gives 20,562 at 1.5 times, and 2,142 (3.5%, mostly tail tips) with no enlargement. The reused centroid config had these set to 1024 and 1280, so the two models saw frames at different sizes.
+- **Validation can dominate short epochs.** 10% of this package is 3,087 frames, about 772 steps, while the centroid model trained for 200, so about 70% of each epoch was validation. A smaller validation fraction would shorten it but make the validation loss noisier, and the learning-rate schedule and early stopping follow that loss; that trade-off wasn't measured.
+- **How many validation workers depends on the pipeline.** With the JPEG cache and 12 of each, the validation workers used 0.05 of a core each during centered instance training, and each one costs several seconds to start and 2.7 GB of committed memory. Reading the original images, 4 validation workers were too few (below). The worker count for validation alone needs the YAML (`val_data_loader.num_workers`), because the dialog has one box for both.
+- **The centroid model's epochs can slow down partway, and the GPU clock is the likely cause.** In the retrain below, epochs went from 12.1 to 16.3 s at epoch 84 and stayed there. At that moment the GPU clock fell from about 2110 to about 1550 MHz, 36% less, and validation took 36% longer. The GPU was about 35% busy and cooling down, so this looks like the lower clock a part-time load can settle at, not overheating. In the JPEG run, epochs went from 10.3 to 11.4 s at epoch 70 and stayed there; the clock wasn't checked for that one.
+
+**Retraining on the original images.** Same package, split (seed 0) and machine, started with a script rather than the GUI, on 30 and 31 October. The config set `data_pipeline_fw: torch_dataset`, 12 training and 4 validation workers. The centered instance model also set `max_height: 1024` and `max_width: 1280`, so frames aren't enlarged, and `train_steps_per_epoch: 2000`. The larger frames (0.7%) are affected by that size limit, which wasn't looked at separately. Starting took about 2.5 min per model, against about 5.
+
+| Model | Speed | Time |
+|---|---|---|
+| Centroid, as above | 12.1 s per epoch, of which 9.9 s is validation (16.3 and 13.4 s after the clock fell) | 196 epochs in 48 min, then 11 min of scoring |
+| Centered instance, 2,000 steps per epoch | 18–20 steps/s; about 285 s per epoch, of which 175 s is validation | 192 epochs in 15 h 18 min (stopped early, best at epoch 174), then 7 min of scoring |
+
+Scored on the validation frames at the end of each run:
+
+| Centroid | JPEG cache | Original images |
+|---|---|---|
+| Precision / recall / F1 | 0.919 / 0.916 / 0.917 | 0.929 / 0.920 / 0.924 |
+| Error average / p50 / p95 | 9.31 / 7.27 / 27.7 px | 9.38 / 7.22 / 27.8 px |
+| Best validation loss | 4.26e-4 | 4.29e-4 |
+
+| Centered instance | JPEG cache, enlarged 1.5 times, stopped by hand; best at about 28,000 steps | Original images, not enlarged; best at about 348,000 steps |
+|---|---|---|
+| mOKS / mAP (OKS) | 0.609 / 0.309 | 0.836 / 0.667 |
+| Error p50 / p95 / p99 | 2.28 / 16.0 / 92.7 px | 1.76 / 11.3 / 30.7 px |
+| Within 5 px / 10 px | 58.6% / 67.8% | 80.2% / 89.7% |
+| Body parts found, of those labeled visible | 74.5% | 95.7% |
+
+- **The centroid difference is small.** It is one run of each, so it may be no more than run-to-run variation. Position error didn't change.
+- **The centered instance table doesn't measure JPEG against original images.** The two runs differ in image format, in enlargement (which clips far more body parts) and in training length: the JPEG run was stopped after two full passes through the data and part of a third. At about 28,000 steps the two were close by the check run during training: mOKS 0.617 for the new run against 0.613, and 70.4% against 67.7% within 10 px. So most of the gain above comes from training longer, and those two numbers still mix format and enlargement.
+- **Each model was scored alone,** not with the two chained as they run on new frames.
+- **The last third of the centered instance run added almost nothing.** By the check run during training, mOKS was 0.778 at epoch 50 (4 h), 0.835 at epoch 100 (7.9 h), 0.840 at epoch 125 (9.9 h) and 0.841 at epoch 192 (15.2 h). Its largest late gain came between epochs 75 and 100, when the learning rate first dropped. A stricter early stopping setting would have saved about 5 hours; none was tried.
+- **With original images, validation is the slow part.** 4 workers managed about 35 crops/s, while the GPU sat at 11–32%, so 175 of each 285 s went to validation. During training it was 75–80% busy. More validation workers should shorten this: 12 might bring validation to about 60 s, which is an estimate, not a measurement.
+
 ## Settings that worked
 
 **Centroid**: 0.25 input scale, 16 filters, max stride 16, **output stride 2**, a 10 px confidence-map spread (sigma, in full-size pixels), anchored on the trunk. Output stride 2 with sigma 10 found 97.6% of the mice in the validation frames, against 94.8% at output stride 4 with sigma 20. Most of the remaining misses were mice touching each other.
