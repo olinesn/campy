@@ -202,7 +202,8 @@ def emu_session(tmp_path, home, rec_s, live=None, view=False, feed="campy-test-s
 	acquire = {"numCams": len(NAMES), "cameraMake": "emu", "videoFolder": clips.as_posix(),
 		"videoFilename": "emuclip.mp4", "frameRate": 20, "recTimeInSec": rec_s, "chunkLengthInSec": 1,
 		"displayFrameRate": 0, "pixelFormatInput": "gray", "pixelFormatOutput": "yuv420p", "gpuID": -1,
-		"codec": "h264", "preflight": "off", "liveFeedName": "{}-{}".format(feed, os.getpid())}
+		"codec": "h264", "preflight": "off", "liveFeedName": "{}-{}".format(feed, os.getpid()),
+		"alertDiskFreeGB": 1} # a CI runner can have less than the default's 20 GB free: the panel's check would warn
 	sections = {"view": view, "post": post if post is not None else {"remux": False, "export": False}}
 	if live is not None:
 		sections["live"] = dict({"python": sys.executable}, **live)

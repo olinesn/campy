@@ -67,7 +67,7 @@ def Start(tmp_path, service, names=("Camera0", "Camera1"), rec=6, faults="", ext
 	values = dict(numCams=len(names), cameraMake='"emu"', videoFolder='"{}"'.format(tmp_path.as_posix()),
 		videoFilename='"emuclip.mp4"', frameRate=30, recTimeInSec=rec, chunkLengthInSec=100, displayFrameRate=0,
 		pixelFormatInput='"gray"', pixelFormatOutput='"yuv420p"', gpuID=-1, codec='"h264"', preflight='"off"',
-		alertNoFramesSec=1.5)
+		alertNoFramesSec=1.5, alertDiskFreeGB=1) # 1 GB: a CI runner can have less than the default's 20 free
 	values.update(config)
 	(tmp_path / "config.yaml").write_text("".join("{}: {}\n".format(k, v) for k, v in values.items()))
 	alerts = tmp_path / "alerts.json"
@@ -214,7 +214,7 @@ def test_a_short_trigger_pause_is_said(tmp_path, service):
 
 
 def test_a_disk_that_fills_stops_the_recording_cleanly(tmp_path, service):
-	proc = Start(tmp_path, service, rec=60, extra=FILLING_DISK)
+	proc = Start(tmp_path, service, rec=60, extra=FILLING_DISK, alertDiskFreeGB=20)
 	code, out = Finish(proc)
 	assert code == 1, out
 	texts = Texts(service)

@@ -42,7 +42,8 @@ def Alive(pid):
 	try:
 		with open("/proc/{}/stat".format(pid)) as f:
 			return f.read().rsplit(")", 1)[1].split()[0] not in ("Z", "X") # not a zombie
-	except FileNotFoundError:
+	except (OSError, IndexError):
+		# Gone: no /proc entry (FileNotFoundError), or it went while being read (ProcessLookupError, or nothing read)
 		return False
 
 

@@ -427,6 +427,7 @@ def test_the_view_finds_the_cage_where_campy_live_says(tmp_path):
 
 
 def test_a_corner_clicked_can_be_dragged_where_it_should_be(tmp_path):
+	pytest.importorskip("cv2") # before campy.liveview, which needs it
 	from campy import liveview
 	viewer, frames, row, cams = drawn_view(tmp_path)
 	viewer.Key(ord("k"))
@@ -478,6 +479,7 @@ def test_zoomed_a_drag_while_drawing_moves_the_picture_and_drops_no_corner(tmp_p
 
 
 def test_a_corners_cross_dragged_in_a_camera_is_that_corner_there(tmp_path):
+	pytest.importorskip("cv2") # before campy.liveview, which needs it
 	from campy import liveview
 	viewer, frames, row, cams = drawn_view(tmp_path)
 	viewer.Key(ord("k"))
@@ -503,6 +505,7 @@ def test_a_corners_cross_dragged_in_a_camera_is_that_corner_there(tmp_path):
 
 
 def test_while_drawing_the_view_says_what_is_missing_and_marks_the_camera_that_is_off(tmp_path):
+	pytest.importorskip("cv2") # before campy.liveview, which needs it
 	from campy import liveview
 	from test_liveview import like
 	viewer, frames, row, cams = drawn_view(tmp_path)
