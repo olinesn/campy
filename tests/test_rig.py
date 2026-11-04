@@ -342,6 +342,7 @@ def test_a_closed_output_does_not_end_the_run(rig, tmp_path):
 	r = subprocess.Popen([sys.executable, RIG, "run", "tester", "piped", "--", sys.executable, "-c", WAIT_FOR, str(go)],
 		env=rig.env, cwd=str(tmp_path), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 	r.stdout.close()
+	r.stdout = None  # communicate() must not read it (Windows reads it in a thread)
 	try:
 		job_pid(rig)
 		other = rig.popen("-c", HOLD_OPEN, rig.gpu, "1")  # a FOREIGN line for rig.py to log, and print
@@ -554,6 +555,7 @@ def test_what_rig_py_says_can_not_stop_it(tmp_path):
 	p = subprocess.Popen([sys.executable, "-c", SAYS, BENCH, str(tmp_path / "out")], stdout=subprocess.PIPE,
 		stderr=subprocess.PIPE)
 	p.stdout.close()
+	p.stdout = None  # communicate() must not read it (Windows reads it in a thread)
 	err = p.communicate(timeout=60)[1]
 	assert p.returncode == 0 and (tmp_path / "out").read_text() == "went on", err
 	assert not err, err

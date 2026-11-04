@@ -435,6 +435,7 @@ def test_a_killed_rig_py_keeps_gpu_lock_until_its_job_ends(run):
 	p.kill()
 	p.wait()
 	p.stdout.close()
+	p.stdout = None  # communicate() must not read it (Windows reads it in a thread)
 	assert rig.alive(*job)
 	s = run("status")
 	assert s.stdout.startswith("rig held: s1 killed since"), s.stdout
@@ -451,6 +452,7 @@ def test_a_closed_output_does_not_end_a_run_holding_gpu_lock(run):
 	p = subprocess.Popen([sys.executable, RIG, "run", "s1", "piped", "--", sys.executable, "-c", WAIT_FOR, str(go)],
 		env=run.env, cwd=str(run.tmp), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 	p.stdout.close()
+	p.stdout = None  # communicate() must not read it (Windows reads it in a thread)
 	try:
 		lock_job(run)
 		time.sleep(1.0)
