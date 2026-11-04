@@ -177,7 +177,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     <li>
       <h3>Record the videos to a disk of their own.</h3>
       <p>The EVO-X2's SSD sometimes stops completing writes for 10–16 s, with nothing in the system logs: three stalls (9.6, 10 and 16 s) in about 7.5 hours of recording and disk tests. Turning off the drive's power saving didn't stop them. campy now buffers up to 60 s of frames in memory on the EVO-X2, which covers the longest stall seen so far with room to spare, and catches up about 9 times faster than the backlog builds. A separate drive for the videos removes the problem rather than absorbing it.</p>
-      <p class="why">For sizing that drive: H.265 on the Pro Max Slim's Quick Sync at 30 fps and quality 26 (1280 × 1024, the setting chosen after the pose models found 98.4% of the animals they found in lossless video) is 1.26 Mbit/s per camera, about 14 GB per camera per day.</p>
+      <p class="why">For sizing that drive: H.265 on the Pro Max Slim's Quick Sync at 30 fps and quality 26 (1280 × 1024, the setting chosen after the pose models found 98.4% of the animals they found in lossless video) is 1.5–2.6 Mbit/s per camera in six 10-minute recordings of mice in a lit cage (full range), about 16–28 GB per camera per day. At 60 fps the same settings come to about 3.4 Mbit/s, 37 GB per camera per day (worked out from those files' keyframes; not yet measured with animals at 60 fps). A dark cage writes almost nothing, and more light, gain or movement writes more, so measure your own scene. Another program on the same disk can need far more: a Neuropixels 2.0 probe in SpikeGLX writes 23.1 MB/s, and a 6-day plan of 5-minute bouts on the Pro Max Slim (4 cameras at 60 fps, the probe on for 30.4 hours) adds up to 140–200 GB of video and 2.6–2.7 TB of SpikeGLX data.</p>
     </li>
     <li>
       <h3>Linux or Windows: with compiled models both run steadily.</h3>
@@ -689,7 +689,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 
 <footer>
   <p>Measured 18–29 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250, a Dell Precision 7875 and a Dell Pro Tower Plus.</p>
-  <p class="meta">Version 61 · updated 4 November 2026 · reflects campy changes through pull request 255 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p class="meta">Version 62 · updated 4 November 2026 · reflects campy changes through pull request 257 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 
