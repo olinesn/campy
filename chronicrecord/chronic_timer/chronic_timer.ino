@@ -31,6 +31,8 @@
 //                                         on time), then all channels go low
 //   stop                                  end now (Pico: after the 20 ms already queued)
 //   status                                -> ok status <idle|running> t=... pulses=...
+//   trace                                 (Pico) the camera pin's first 64 edges, as its
+//                                         own input saw them: "trace <i> <us> <1 down|2 up|3 both>"
 // What it says on its own, as things happen:
 //   ready chronic_timer <version>         at power-up
 //   ev <t_us> <ch> <level> <late_us>      an edge was made (late_us after its time)
@@ -43,6 +45,7 @@
 //                                         interrupt: the time from the first to the last by
 //                                         the microsecond timer, minus the schedule's; a few
 //                                         microseconds at most, and rises= should be pulses=.
+//                                         bounces=: rises too soon after the last, not counted.
 // Lines it couldn't send (the Pi not reading) are counted in "lost", never waited for.
 
 #include <stdint.h>
@@ -58,6 +61,7 @@
 #if defined(ARDUINO_ARCH_RP2040)
 #include "hardware/clocks.h"
 #include "hardware/pio.h"
+#include "hardware/gpio.h"
 #endif
 
 #define VERSION 2
@@ -230,10 +234,27 @@ void PioClearStall() { pio_block->fdebug = PioStallBit(); }
 
 // The self check: the camera channel's rises, by the microsecond timer, which
 // shares the crystal but not the state machine's count of ticks
+// A rise sooner than rise_gap after the last is a bounce (a long cable can ring
+// as the pulse falls: the cameras don't see it, the Pico's own input does), counted apart
 volatile uint64_t rise_first = 0, rise_last = 0;
-volatile uint32_t rise_count = 0;
-void OnRise() {
+volatile uint32_t rise_count = 0, bounces = 0;
+uint32_t rise_gap = 0;
+// The camera pin's first edges, both ways, kept for "trace": when the Pico's own
+// input saw it go up or down (microseconds, up to a couple late: the interrupt's
+// own delay), with the events seen (1 down, 2 up, 3 both before it ran)
+#define TRACE 64
+volatile uint64_t trace_t[TRACE];
+volatile uint8_t trace_e[TRACE];
+volatile int trace_n = 0;
+void OnEdge(uint, uint32_t events) {
   uint64_t t = time_us_64();
+  if (trace_n < TRACE) {
+    trace_t[trace_n] = t;
+    trace_e[trace_n] = ((events & GPIO_IRQ_EDGE_RISE) ? 2 : 0) | ((events & GPIO_IRQ_EDGE_FALL) ? 1 : 0);
+    trace_n++;
+  }
+  if (!(events & GPIO_IRQ_EDGE_RISE)) { return; }
+  if (rise_count > 0 && t - rise_last < rise_gap) { bounces++; return; }
   if (rise_count++ == 0) { rise_first = t; }
   rise_last = t;
 }
@@ -358,6 +379,19 @@ void Command(char* text) {
     snprintf(reply, sizeof reply, "ok chronic_timer %d", VERSION);
     Say(reply);
   }
+#if defined(ARDUINO_ARCH_RP2040)
+  else if (strcmp(word, "trace") == 0) {
+    // The camera pin's first edges in the last session, after the first one
+    int n = trace_n;
+    for (int i = 0; i < n; i++) {
+      snprintf(reply, sizeof reply, "trace %d %lld %d", i, (long long) (trace_t[i] - trace_t[0]), (int) trace_e[i]);
+      while (Serial.availableForWrite() < 40) { delay(1); }
+      Say(reply);
+    }
+    snprintf(reply, sizeof reply, "ok trace %d", n);
+    Say(reply);
+  }
+#endif
   else if (strcmp(word, "status") == 0) {
     if (running) {
       snprintf(reply, sizeof reply, "ok status running t=%lld pulses=%lu edges=%d/%d trains=%d/%d late_max=%lld",
@@ -453,7 +487,15 @@ void Command(char* text) {
     PioHold(CHUNK_US); // the clock starts here, low
 #if defined(ARDUINO_ARCH_RP2040)
     rise_count = 0;
-    if (n_trains > 0) { attachInterrupt(ch_pin[trains[0].ch], OnRise, RISING); }
+    bounces = 0;
+    if (n_trains > 0) {
+      // halfway from the pulse's fall to the next rise
+      rise_gap = (uint32_t) ((trains[0].width + 1000000000ULL / trains[0].rate_mhz) / 2);
+    }
+    trace_n = 0;
+    if (n_trains > 0) {
+      gpio_set_irq_enabled_with_callback(ch_pin[trains[0].ch], GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, OnEdge);
+    }
 #endif
 #endif
     Say("ok go");
@@ -577,9 +619,9 @@ void Finish() {
   n_trains = 0;
   char text[QUEUE_LINE];
 #if defined(ARDUINO_ARCH_RP2040)
-  snprintf(text, sizeof text, "done %lld pulses=%lu late_max=%lld lost=%lu stalls=%lu rises=%lu self_check_us=%lld",
+  snprintf(text, sizeof text, "done %lld pulses=%lu late_max=%lld lost=%lu stalls=%lu rises=%lu bounces=%lu self_check_us=%lld",
     (long long) Now(), (unsigned long) pulses, (long long) late_max, (unsigned long) lost, (unsigned long) stalls,
-    (unsigned long) rise_count, (long long) ((int64_t) (rise_last - rise_first) - (last_ever - first_ever)));
+    (unsigned long) rise_count, (unsigned long) bounces, (long long) ((int64_t) (rise_last - rise_first) - (last_ever - first_ever)));
 #elif defined(USE_PIO)
   snprintf(text, sizeof text, "done %lld pulses=%lu late_max=%lld lost=%lu stalls=%lu rises=0 self_check_us=0",
     (long long) Now(), (unsigned long) pulses, (long long) late_max, (unsigned long) lost, (unsigned long) stalls);
