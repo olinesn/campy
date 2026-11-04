@@ -85,7 +85,8 @@ Installing and versions. Each machine runs one installed copy, in RIG_ROOT, whic
 script calls (a campy checkout can be on any branch or commit, and every lock user on a
 machine must run the same lock). Its version is a short hash of the five files (rig.py,
 rig_windows.py, rig_guard.sh, rig_guard.ps1, rig_hold.ps1) with line endings ignored, so the
-same commit shows the same version on every machine; status and every rig.log say it. To
+same commit shows the same version on every machine; status (its second line) and every
+rig.log say it. To
 update, run the checkout's own copy: python <checkout>/bench/rig.py install. It takes the rig
 with --no-wait (exit 75 if busy, nothing changed), refuses while any other rig.py run, hold
 or install, or rig_hold.ps1, is running or waiting (exit 75), backs the old files up to
@@ -1206,7 +1207,6 @@ def cmd_hold(args):
 		lock.release()
 
 def cmd_status(args):
-	print("rig.py " + version_text())
 	lock = make_lock()
 	state, info = lock.state()
 	if state in ("held", "hand"):
@@ -1220,6 +1220,7 @@ def cmd_status(args):
 						retry(os.remove, lock.path)
 			else:
 				lock.clear_stale()
+	print("rig.py " + version_text())  # second: scripts look for "rig held" or "rig free" first
 	m = re.search(r"\bjob=(\S+)", info) if state == "held" else None
 	job = m and m.group(1)
 	m = re.search(r"\bpid=(\d+)", info) if state == "held" else None

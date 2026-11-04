@@ -250,7 +250,9 @@ def test_status_and_every_rig_log_say_the_version(tmp_path):
 	assert r.returncode == 0 and "installed rig.py %s" % riglib.version(BENCH) in r.stdout, r.stdout + r.stderr
 	installed = str(root / "rig.py")
 	r = rig("status", script=installed)
-	assert r.stdout.startswith("rig.py %s in %s, installed " % (riglib.version(BENCH), root)), r.stdout + r.stderr
+	lines = r.stdout.splitlines()
+	assert lines[0].startswith("rig free") and lines[1].startswith("rig.py %s in %s, installed " % (
+		riglib.version(BENCH), root)), r.stdout + r.stderr
 	r = rig("run", "tester", "t1", "--", sys.executable, "-c", "pass", script=installed)
 	assert r.returncode == 0, r.stdout + r.stderr
 	log = (tmp_path / "t1.rig.log").read_text()
