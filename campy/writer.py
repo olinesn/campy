@@ -421,17 +421,128 @@ def FfmpegProcess(writer):
 	return process if hasattr(process, "poll") else None
 
 
-def FfmpegStopped(ffmpeg, error, frames, into=None):
+# A camera's ffmpeg that stops taking frames has closed its input (ffmpeg
+# 8.1 closes its video file first, then its input, then exits), and exits
+# within a fraction of a second: 0.05-0.2 s after the frame it refused
+# (ffmpeg 8.1 on a Mac, libx264 and VideoToolbox, in 1280x1024 frames).
+# imageio-ffmpeg then waits for it to exit, with no limit, inside the
+# writer's send(): one stuck on its way out (a GPU driver call that does not
+# return) held up the restart (restartFfmpeg), or the camera's stop, for as
+# long as it lived, while the camera's frames filled writeQueueMaxSec and
+# were dropped. So ExitWatch kills it when it has not exited EXIT_WAIT_S
+# after it stopped taking frames. Its video file is closed by then, so the
+# kill costs it nothing. 3 s, and the second a new ffmpeg takes to start,
+# fit in writeQueueMaxSec's default 5 s, so the restart can come before the
+# first frame is dropped.
+EXIT_WAIT_S = 3.0
+EXIT_CHECK_S = 0.5 # how often ExitWatch looks
+KILLED_WAIT_S = 10.0 # an ffmpeg still there this long after it was killed is said
+
+
+class ExitWatch:
+	"""
+	Kills a camera's ffmpeg that has stopped taking frames but has not
+	exited EXIT_WAIT_S later (see there), from a thread of its own: the
+	writer's is waiting for it, inside imageio-ffmpeg. When a frame cannot
+	be written, imageio-ffmpeg closes ffmpeg's input and waits for it to
+	exit, so its input closed while the process is still there is that
+	wait. An ffmpeg that still takes frames, however slowly (a disk stall),
+	is never killed: its input is open, and campy's recording watch only
+	says it (campy/watch.py). Nor is one finishing its video as the
+	recording ends (Closing): that is the video's end, however long it takes.
+	"""
+
+	def __init__(self, name):
+		self.name = name
+		self.watched = {} # each ffmpeg (a Popen): since when it has been stopped and not exited, or None
+		self.killed = {} # the ffmpegs it killed: when
+		self.stuck = set() # the killed ones said to be still there
+		self.closing = False
+		self.lock = threading.Lock()
+		self.done = threading.Event()
+		self.thread = threading.Thread(target=self.Run, daemon=True, name="ffmpeg exit watch " + name)
+		self.thread.start()
+
+	def Add(self, ffmpeg):
+		# A new ffmpeg. None (FfmpegProcess found none: a stand-in for write_frames) is not watched.
+		if all(hasattr(ffmpeg, a) for a in ("poll", "kill", "stdin", "returncode")):
+			with self.lock:
+				self.watched[ffmpeg] = None
+
+	def Closing(self):
+		# The recording's end: its ffmpeg is told so, and finishes the video
+		self.closing = True
+
+	def Stop(self):
+		self.done.set()
+
+	def Killed(self, ffmpeg):
+		# What to add to why the video stopped, when this killed its ffmpeg
+		if ffmpeg in self.killed:
+			return "and did not exit within {:g} s, so campy killed it".format(EXIT_WAIT_S)
+		return None
+
+	def Run(self):
+		while not self.done.wait(EXIT_CHECK_S) and not self.closing:
+			with self.lock:
+				watched = list(self.watched.items())
+			for ffmpeg, since in watched:
+				try:
+					self.Check(ffmpeg, since)
+				except Exception as e:
+					logging.error("Caught exception at writer.py ExitWatch, {}'s ffmpeg: {}".format(self.name, e))
+
+	def Check(self, ffmpeg, since):
+		if ffmpeg.returncode is not None:
+			self.Forget(ffmpeg) # it has exited
+			return
+		stdin = ffmpeg.stdin
+		if stdin is None or not stdin.closed:
+			return # it takes frames, or is waiting for the next
+		if ffmpeg.poll() is not None:
+			self.Forget(ffmpeg)
+			return
+		now = time.monotonic()
+		if ffmpeg in self.killed:
+			if now - self.killed[ffmpeg] >= KILLED_WAIT_S and ffmpeg not in self.stuck:
+				self.stuck.add(ffmpeg)
+				Say("{}: its ffmpeg (pid {}) is still there {:g} s after it was killed: it is stuck in the operating "
+					"system, in a driver perhaps. campy can neither restart it nor stop the camera until it goes; "
+					"meanwhile the camera's frames wait, and are dropped once they fill writeQueueMaxSec.".format(
+					self.name, ffmpeg.pid, KILLED_WAIT_S))
+			return
+		if since is None:
+			with self.lock:
+				self.watched[ffmpeg] = now
+		elif now - since >= EXIT_WAIT_S:
+			self.killed[ffmpeg] = now # before the kill: the writer reads it as soon as ffmpeg has gone
+			try:
+				ffmpeg.kill()
+			except OSError:
+				pass # it went just now
+			Say("{}: ffmpeg stopped taking frames and did not exit within {:g} s, stuck on its way out: killed it "
+				"(pid {}).".format(self.name, EXIT_WAIT_S, ffmpeg.pid))
+
+	def Forget(self, ffmpeg):
+		with self.lock:
+			self.watched.pop(ffmpeg, None)
+
+
+def FfmpegStopped(ffmpeg, error, frames, into=None, watch=None):
 	# Why the video took no more frames, with ffmpeg's exit code where it can be read. into: the file it was
-	# writing, after a restart (its frames are that file's, not the camera's)
+	# writing, after a restart (its frames are that file's, not the camera's). watch: the writer's ExitWatch,
+	# which may have killed it.
+	killed = watch.Killed(ffmpeg) if watch is not None else None
 	code = None
-	if ffmpeg is not None:
+	if ffmpeg is not None and not killed:
 		try:
-			code = ffmpeg.wait(timeout=5) # imageio-ffmpeg has already waited for it, or killed it
+			code = ffmpeg.wait(timeout=5) # imageio-ffmpeg has waited for it to exit (ExitWatch kills it if it does not)
 		except Exception:
 			code = ffmpeg.poll()
 	why = "ffmpeg stopped after taking {} frames{}".format(frames, " into {}".format(into) if into else "")
-	if code is not None:
+	if killed:
+		why += ", {}".format(killed)
+	elif code is not None:
 		why += ", with {}".format(ExitCodeText(code))
 	return "{}: {}".format(why, ErrorText(error).splitlines()[0])
 
@@ -486,8 +597,9 @@ class FirstFrames:
 	one stops before it wrote anything.
 	"""
 
-	def __init__(self, cam_params, path, recording):
+	def __init__(self, cam_params, path, recording, watch=None):
 		self.cam_params, self.path, self.recording = cam_params, path, recording
+		self.watch = watch # the writer's ExitWatch, given each new ffmpeg
 		self.frames = [] # None once the file holds something, or past OPEN_HOLD_FRAMES
 		self.retries = 0
 
@@ -513,8 +625,8 @@ class FirstFrames:
 	def Reopen(self, why, stopReadQueue):
 		"""
 		After ffmpeg stopped (why): a new ffmpeg on the same, empty file, given
-		the frames held. Returns its writer, or None: the file holds
-		something, or OPEN_RETRIES tries have been made.
+		the frames held. Returns its writer and its ffmpeg (FfmpegProcess), or
+		None: the file holds something, or OPEN_RETRIES tries have been made.
 		"""
 		name = self.cam_params["cameraName"]
 		while self.Empty() and self.retries < OPEN_RETRIES:
@@ -526,15 +638,20 @@ class FirstFrames:
 			time.sleep(OPEN_RETRY_S)
 			if not self.Empty():
 				return None
+			ffmpeg = None
 			try:
 				# The empty file is this process's: newfiles.Take takes it again
 				writer, _, _ = OpenWriter(self.cam_params, stopReadQueue, new=True, path=self.path)
+				ffmpeg = FfmpegProcess(writer)
+				if self.watch is not None:
+					self.watch.Add(ffmpeg)
 				for frame in self.frames:
 					writer.send(frame)
 			except Exception as e:
-				why = "ffmpeg stopped again: {}".format(ErrorText(e).splitlines()[0])
+				killed = self.watch.Killed(ffmpeg) if self.watch is not None else None
+				why = "ffmpeg stopped again{}: {}".format(", " + killed if killed else "", ErrorText(e).splitlines()[0])
 				continue
-			return writer
+			return writer, ffmpeg
 		return None
 
 	def Failed(self, why):
@@ -752,6 +869,7 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 	ffmpeg = None
 	parts = Parts(cam_params, recording)
 	failed = False
+	watch = None # kills an ffmpeg that stopped taking frames but does not exit (ExitWatch)
 	try:
 		# Ctrl-C from here on stops the camera (stopReadQueue), which then stops
 		# the writer, instead of ending the camera process
@@ -787,10 +905,12 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 				# campy's main process says it, if it has to stop this process at a
 				# second Ctrl-C while ffmpeg still runs
 				unicam.TellMain(("ffmpeg", ffmpeg.pid))
+			watch = ExitWatch(cam_params["cameraName"])
+			watch.Add(ffmpeg)
 
 			# Write until interrupted and/or stop message received
 			number = 0 # the frame's number (the camera thread's, in recording.queuedFrames)
-			first = FirstFrames(cam_params, part.path, recording)
+			first = FirstFrames(cam_params, part.path, recording, watch)
 			frame = None # the next frame for ffmpeg
 			while(writing):
 				if frame is None and writeQueue:
@@ -801,12 +921,13 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 					try:
 						writer.send(frame)
 					except Exception as e:
-						why = FfmpegStopped(ffmpeg, e, part.sent, part.name if part.number > 1 else None)
+						# ffmpeg has exited, or was killed by watch when it did not
+						why = FfmpegStopped(ffmpeg, e, part.sent, part.name if part.number > 1 else None, watch)
 						# Stopped before it wrote anything: a new ffmpeg on the same
 						# file, given the same frames, then this one (FirstFrames)
 						reopened = first.Reopen(why, stopReadQueue)
 						if reopened is not None:
-							writer, ffmpeg = reopened, FfmpegProcess(reopened)
+							writer, ffmpeg = reopened
 							if ffmpeg is not None:
 								unicam.TellMain(("ffmpeg", ffmpeg.pid))
 							Say("{}: ffmpeg started again (retry {}), and given the same {} frames.".format(
@@ -829,7 +950,8 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 						writer, ffmpeg, part = restarted
 						if ffmpeg is not None:
 							unicam.TellMain(("ffmpeg", ffmpeg.pid))
-						first = FirstFrames(cam_params, part.path, recording)
+						watch.Add(ffmpeg)
+						first = FirstFrames(cam_params, part.path, recording, watch)
 						frame = None # the old file's: given to the ffmpeg that stopped
 						continue
 					first.Sent(frame)
@@ -852,7 +974,8 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 				parts.Count(part, wait=True)
 			return
 
-		# Close up...
+		# Close up... ffmpeg then finishes the video, however long that takes: not watched
+		watch.Closing()
 		Say("Closing video writer for {}. Please wait...".format(cam_params["cameraName"]))
 		time.sleep(1)
 		writer.close()
@@ -865,6 +988,8 @@ def WriteFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue
 			VideoFailed(cam_params, recording, stopReadQueue, part.ended, stopping=False)
 
 	finally:
+		if watch is not None:
+			watch.Stop()
 		try:
 			parts.Finish(failed)
 		except Exception as e:
