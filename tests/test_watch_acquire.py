@@ -39,6 +39,7 @@ watch.DISK_EVERY_S = 0.25
 watch.DISK_RATE_MIN_S = 1.0
 watch.DROPS_CLEAR_S = 3.0
 watch.STALL_CLEAR_S = 1.0
+watch.STALL_START_S = 1.0
 """
 
 # A disk that loses 0.5 GB a second from 3 GB, as the recording starts

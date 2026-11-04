@@ -30,7 +30,9 @@ and checks:
                    writeQueueMaxSec (a warning) or three quarters (critical):
                    the disk or the encoder has stalled, and frames are
                    dropped once it is full. The EVO-X2's SSD stopped taking
-                   writes for 10-16 s at a time
+                   writes for 10-16 s at a time. Not a warning in a camera's
+                   first 10 s of frames, or a restarted ffmpeg's: ffmpeg
+                   opens its encoder at its first frame (STALL_START_S)
   camera ended     ffmpeg stopped, the camera is gone (unplugged), its
                    thread or its process died: critical, no reminders
   ffmpeg restarted with restartFfmpeg, a camera's ffmpeg stopped and a new
@@ -116,6 +118,7 @@ DROPS_CRITICAL = 0.01 # of the last minute's frames
 STALL_WARNING, STALL_CRITICAL, STALL_CLEAR = 0.25, 0.75, 0.10 # of writeQueueMaxSec
 STALL_UNBOUNDED_S = (10.0, 30.0) # writeQueueMaxSec "None": seconds of frames waiting, warning and critical
 STALL_CLEAR_S = 30.0
+STALL_START_S = 10.0 # a new ffmpeg's first seconds of frames: no write-stall warning (it opens its encoder then)
 FIRST_FRAME_S = 10.0 # after the trigger Arduino started
 EXTERNAL_WAIT_S = 600.0 # an external trigger (startArduino False): waiting this long is said
 TOGETHER_S = 1.0 # cameras whose last frames are this close stopped together: the trigger
@@ -205,6 +208,7 @@ class Watch:
 		self.usbSpeed = {} # camera: its link's Mb/s, as last read
 		self.serialClosed = False # the trigger's port was gone, and its connection closed (CheckSerial)
 		self.restartsSaid = collections.defaultdict(int) # camera: ffmpeg restarts said
+		self.writeFrom = {} # camera: (when frames were first seen going to its ffmpeg, that ffmpeg's restarts count)
 		self.countedSaid = collections.defaultdict(int) # camera: stopped ffmpegs' files counted, as said
 		self.lostSaid = collections.defaultdict(int) # camera: frames lost in them, as said
 		self.missedSaid = collections.defaultdict(int) # camera: trigger pulses without a frame, as said
@@ -544,6 +548,14 @@ class Watch:
 	def CheckQueue(self, c, name, row, now, quiet):
 		key = "{}/queue".format(name)
 		waiting = row["queued"] / self.frameRate # seconds of frames waiting for ffmpeg
+		# ffmpeg opens its encoder only once its first frame comes: four Quick Sync encoders opening at once let
+		# about a second of frames pile up (the ChronicRecord PC, 60 fps), and then catch up. So for its first
+		# STALL_START_S of frames, a camera's ffmpeg (its first, or a new one after a restart) gets no warning;
+		# critical (frames about to be dropped) is still said, and so are dropped frames
+		begun = self.writeFrom.get(c)
+		if row["grabbed"] > 0 and (begun is None or begun[1] != row["restarts"]):
+			begun = self.writeFrom[c] = (now, row["restarts"])
+		starting = begun is not None and now - begun[0] < STALL_START_S
 		if quiet:
 			return # no frame lately: its count of frames waiting is old
 		if self.queueLimit:
@@ -552,6 +564,8 @@ class Watch:
 		else:
 			warn, critical = waiting >= STALL_UNBOUNDED_S[0], waiting >= STALL_UNBOUNDED_S[1]
 			clear = waiting < STALL_CLEAR * STALL_UNBOUNDED_S[0]
+		if starting and not critical and key not in self.problems:
+			return # its encoder is opening
 		then = self.Since(c, SENT_WINDOW_S, now)
 		if warn or (key in self.problems and not clear):
 			taken = row["sent"] - then[3] if then is not None else 0
