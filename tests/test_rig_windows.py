@@ -114,6 +114,15 @@ def test_finish_puts_the_gpu_clock_on_the_last_line():
 	counts["gpu"] = 2
 	rig.finish(dict(counts), lines.append)
 	assert lines[-1].startswith("RIG_CONTAMINATED (2 sightings: gpu 2, encoder 0") and lines[-1].endswith("; GPU 0 SM median 780 MHz)")
+	# A run stopped before its job ended says so on its last line, never RIG_CLEAN or RIG_CONTAMINATED
+	lines.clear()
+	rig.finish(dict(counts), lines.append, "SIGTERM")
+	assert lines[-1].startswith("RIG_ABORTED by SIGTERM (until then: 2 sightings: gpu 2, encoder 0"), lines
+	assert lines[-1].endswith("; GPU 0 SM median 780 MHz)") and not any(l.startswith(("RIG_CLEAN", "RIG_CONTAM")) for l in lines)
+	lines.clear()
+	counts["gpu"] = 0
+	rig.finish(dict(counts), lines.append, "SIGHUP")
+	assert lines == ["GPU 0 over the run: ...", "RIG_ABORTED by SIGHUP (until then: clean; GPU 0 SM median 780 MHz)"]
 
 
 # The lock, in-process
@@ -388,6 +397,110 @@ def test_status_while_held(run):
 	assert r.returncode == 75 and "holder long" in r.stdout, r.stdout
 	assert held.wait(60) == 0
 	assert run("status").stdout.startswith("rig free")
+
+
+# rig.py ending while its job runs: gpu.lock stays until the job ends
+
+WAIT_FOR = "import os, sys, time\nwhile not os.path.exists(sys.argv[1]): time.sleep(0.05)"  # a job that ends when told
+
+
+def lock_job(run, timeout=60):
+	# (pid, start) of the job, once gpu.lock names it
+	t = time.monotonic() + timeout
+	while time.monotonic() < t:
+		try:
+			job = rig.named_job(run.lock.read_text())
+		except OSError:
+			job = None
+		if job:
+			return job
+		time.sleep(0.05)
+	raise AssertionError("gpu.lock never named a job")
+
+
+def until(check, timeout=60):
+	t = time.monotonic() + timeout
+	while not check():
+		if time.monotonic() > t:
+			raise AssertionError("timed out")
+		time.sleep(0.05)
+
+
+@runs
+def test_a_killed_rig_py_keeps_gpu_lock_until_its_job_ends(run):
+	go = run.tmp / "go"
+	p = run.popen("run", "s1", "killed", "--", sys.executable, "-c", WAIT_FOR, str(go))
+	run.until_held(p)
+	job = lock_job(run)
+	p.kill()
+	p.wait()
+	p.stdout.close()
+	p.stdout = None  # communicate() must not read it (Windows reads it in a thread)
+	assert rig.alive(*job)
+	s = run("status")
+	assert s.stdout.startswith("rig held: s1 killed since"), s.stdout
+	assert run("run", "--no-wait", "s2", "early", "--", sys.executable, "-c", "pass").returncode == 75
+	go.touch()
+	until(lambda: not rig.alive(*job))
+	assert run("status").stdout.startswith("rig free (stale gpu.lock cleared: s1 killed"), s.stdout
+	assert "RIG_" not in run.log("killed")
+
+
+@runs
+def test_a_closed_output_does_not_end_a_run_holding_gpu_lock(run):
+	go = run.tmp / "go"
+	p = subprocess.Popen([sys.executable, RIG, "run", "s1", "piped", "--", sys.executable, "-c", WAIT_FOR, str(go)],
+		env=run.env, cwd=str(run.tmp), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+	p.stdout.close()
+	p.stdout = None  # communicate() must not read it (Windows reads it in a thread)
+	try:
+		lock_job(run)
+		time.sleep(1.0)
+		assert p.poll() is None, p.stderr.read()
+		assert run("status").stdout.startswith("rig held: s1 piped since")
+		go.touch()
+		err = p.communicate(timeout=120)[1]
+	finally:
+		go.touch()
+		if p.poll() is None:
+			p.kill()
+	assert p.returncode == 0 and not err, err
+	assert not run.lock.exists()
+	assert "job exit 0" in run.log("piped") and last(run.log("piped")).startswith("RIG_CLEAN"), run.log("piped")
+
+
+FAILING_WATCH = """import sys
+sys.path.insert(0, sys.argv.pop(1))
+import rig
+def broken(self):
+	raise RuntimeError("a bug in the watch")
+rig.Clocks.sample = broken
+rig.main()
+"""
+
+
+@runs
+def test_an_error_in_rig_py_keeps_gpu_lock_until_the_job_ends(run):
+	failing = run.tmp / "failing_rig.py"
+	failing.write_text(FAILING_WATCH)
+	go = run.tmp / "go"
+	log = run.tmp / "broken.rig.log"
+	p = subprocess.Popen([sys.executable, str(failing), BENCH, "run", "s1", "broken", "--", sys.executable, "-c", WAIT_FOR,
+		str(go)], env=run.env, cwd=str(run.tmp), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+	try:
+		until(lambda: log.exists() and "rig.py failed" in log.read_text())
+		assert p.poll() is None and run.lock.exists()
+		assert run("status").stdout.startswith("rig held: s1 broken since")
+		go.touch()
+		err = p.communicate(timeout=120)[1]
+	finally:
+		go.touch()
+		if p.poll() is None:
+			p.kill()
+	assert p.returncode == 1 and "RuntimeError: a bug in the watch" in err, err
+	assert not run.lock.exists()
+	assert last(log.read_text()) == ("RIG_ABORTED by an error in rig.py (RuntimeError: a bug in the watch): "
+		"the job ran on, unwatched, to its end"), log.read_text()
 
 
 # The Windows API itself
