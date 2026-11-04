@@ -245,7 +245,7 @@ def test_a_wiring_check_runs_until_stopped(tmp_path, board):
 	start = control(tmp_path, port, "wiring", "--channels", "AB")
 	assert start.returncode == 0 and "Wiring check started" in start.stdout, start.stdout + start.stderr
 	assert "A (Record Gate) 1x, B (Camera) 2x" in start.stdout
-	time.sleep(10) # more than a round (8 s)
+	time.sleep(18) # two rounds and more (8 s each)
 	assert "Wiring check: running" in control(tmp_path, port, "status").stdout
 	stop = control(tmp_path, port, "stop")
 	assert stop.returncode == 0 and "stopped" in stop.stdout, stop.stdout
@@ -256,5 +256,9 @@ def test_a_wiring_check_runs_until_stopped(tmp_path, board):
 	assert 5 not in p or all(level == 0 for _, level in p[5])
 	for pin in (2, 3):
 		assert p[pin][-1][1] == 0
+	# Each round lasts its pauses too: the gate blinks once a round, 8 s apart
+	_, length = cc.WiringPlan("AB")
+	gate = [t for t, level in p[2] if level == 1]
+	assert all(b - a > length - 500000 for a, b in zip(gate, gate[1:])), gate
 	(day,) = (tmp_path / "logs").iterdir()
 	assert "WIRING CHECK" in (day / "wiring.txt").read_text()

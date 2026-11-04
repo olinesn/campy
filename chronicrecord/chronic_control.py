@@ -594,6 +594,7 @@ def CmdWiringRun(args, s):
 					board.Command("edge {} {} {}".format(ch, t, level))
 				reports.clear()
 				board.Command("go")
+				board.Command("end {}".format(length)) # the round lasts its pause too: low until then
 				rounds += 1
 				if rounds == 1 or rounds % 100 == 0:
 					Log("Round {} started.".format(rounds))
