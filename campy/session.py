@@ -353,10 +353,15 @@ def Register(argv=None):
 
 # ------------------------------------------------------------------ files
 
-def WriteJson(path, value):
-	# In one step: written beside it, then moved into place (retried a moment on Windows, where a reader has it open)
+def WriteJson(path, value, private=False):
+	# In one step: written beside it, then moved into place (retried a moment on Windows, where a reader has it open).
+	# private: readable by its owner only (on Linux and macOS; on Windows the user's own folder already is)
 	tmp = "{}.{}.tmp".format(path, os.getpid())
-	with open(tmp, "w") as f:
+	if private:
+		f = os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w")
+	else:
+		f = open(tmp, "w")
+	with f:
 		strictjson.dump(value, f, indent=1)
 	for attempt in range(20):
 		try:
@@ -381,6 +386,24 @@ def Alive(pid):
 			return False
 
 
+def SessionProcess(pid):
+	# False when pid is not a campy-session (campy-session run or panel, the lock's only holders: python -m
+	# campy.session, or the campy-session command): a lock's pid that another program has after a crash or a power
+	# cut. Not just "campy" in its command line: every python of a campy environment (campy_v...) has that. True when
+	# it is one, or when that can't be told (then the lock is respected, as before)
+	try:
+		import psutil
+	except ImportError:
+		return True
+	try:
+		line = " ".join(psutil.Process(pid).cmdline()).lower()
+		return "campy.session" in line or "campy-session" in line
+	except psutil.NoSuchProcess:
+		return False
+	except Exception: # AccessDenied (another user's process), ZombieProcess, ...
+		return True
+
+
 class Lock:
 	# One campy-session per computer: a file made only if it is not there, with its pid
 	def __init__(self):
@@ -398,11 +421,11 @@ class Lock:
 						pid = int(f.read().split()[0])
 				except (OSError, ValueError, IndexError):
 					pid = None
-				if pid is not None and pid != os.getpid() and Alive(pid):
+				if pid is not None and pid != os.getpid() and Alive(pid) and SessionProcess(pid):
 					raise SessionError("Another campy-session is running on this computer (pid {}). Stop it first; "
 						"{} is its lock.".format(pid, self.path))
 				try:
-					os.remove(self.path) # left by one that ended without removing it
+					os.remove(self.path) # left by one that ended without removing it (its pid gone, or another program's)
 				except OSError:
 					pass
 				continue
@@ -1048,12 +1071,13 @@ def RunMain(argv):
 def Main(argv=None):
 	argv = sys.argv[1:] if argv is None else list(argv)
 	from campy import post
-	from campy import panel, shortcut
+	from campy import manifest, panel, shortcut
 	commands = {"run": RunMain, "register-live": Register, "post": post.Main, "panel": panel.Main,
-		"shortcut": shortcut.Main}
+		"shortcut": shortcut.Main, "note": manifest.NoteMain}
 	if not argv or argv[0] not in commands:
 		print("usage: campy-session run <config>.yaml [--key value ...]\n"
 			"       campy-session post <recording folder> [--only remux,export] [--force]\n"
+			"       campy-session note <recording folder> \"text\"   (a dated note in its session.json)\n"
 			"       campy-session panel <config>.yaml [--port 8765] [--no-browser]\n"
 			"       campy-session shortcut <config>.yaml [--name ...]   (a desktop shortcut that opens the panel)\n"
 			"       campy-session register-live   (once, in campy-live's environment)", file=sys.stderr)

@@ -34,7 +34,13 @@ The page is served from this computer only (127.0.0.1): over Remote
 Desktop, open it in the rig's browser; from another computer, through an SSH
 tunnel (ssh -L 8765:127.0.0.1:8765 <rig>). Every request needs the key in
 the page's address, so no other program on the computer can press Start
-or Stop. Closing the page stops nothing; it can be opened again at any time.
+or Stop, and must be addressed to this computer (Host 127.0.0.1, localhost
+or [::1]; a POST's Origin the same), so a web page that has learnt the key
+still can't. Closing the page stops nothing; it can be opened again at any
+time, from the address in the console, or by starting the panel again (the
+desktop icon): a panel already open writes its address into
+~/.campy/status/panel.json (readable by its user only), and a second one
+that finds it answering opens that page in the browser and ends.
 
 Only the standard library and numpy (campy's recording environment): the
 page is one file of HTML and JavaScript (campy/panelpage.py), no build step.
@@ -54,6 +60,58 @@ THUMB_WIDTH = 192 # px, each camera's thumbnail
 SAMPLE_S = 0.25 # how often the rings' slots are read (campy-live-view: about 20 times a second)
 THUMB_S = 1.0 # and a frame of each camera, for its thumbnail
 STATUS_FRESH_S = 20 # recording.json older than this is not the recording's now
+
+
+LOCAL_NAMES = ("127.0.0.1", "localhost", "[::1]")
+
+
+def LocalName(host):
+	# A Host header (name[:port]) that names this computer, or none (not from a browser): not a name a web page made
+	# point to 127.0.0.1 (DNS rebinding)
+	if not host:
+		return True
+	name = host.strip().lower()
+	name = name[:name.find("]") + 1] if name.startswith("[") else name.split(":")[0]
+	return name in LOCAL_NAMES
+
+
+def LocalOrigin(origin):
+	# A request's Origin: none (not from a web page), or this computer's own page
+	if origin is None:
+		return True
+	url = urlparse(origin)
+	return url.scheme == "http" and LocalName(url.netloc)
+
+
+def PanelFile():
+	# The panel that is open: {pid, url, config, started}, so a second launch opens its page
+	return os.path.join(session.CampyFolder(), "status", "panel.json")
+
+
+def Running():
+	"""
+	The panel already open on this computer (panel.json), when its page
+	answers with its key; else None.
+	"""
+	try:
+		with open(PanelFile()) as f:
+			info = strictjson.load(f)
+		pid, url = int(info["pid"]), str(info["url"])
+	except (OSError, ValueError, KeyError, TypeError):
+		return None
+	if pid == os.getpid() or not children.Alive(pid):
+		return None
+	import urllib.request
+	try:
+		page = urlparse(url)
+		check = "{}://{}/status.json?{}".format(page.scheme, page.netloc, page.query)
+		opener = urllib.request.build_opener(urllib.request.ProxyHandler({})) # 127.0.0.1: never through a proxy
+		with opener.open(check, timeout=5) as r:
+			if r.status != 200:
+				return None
+	except Exception:
+		return None
+	return info
 
 
 def Say(text):
@@ -485,9 +543,14 @@ class Panel:
 			def log_message(self, *args):
 				pass
 
-			def Allowed(self, query):
-				return secrets.compare_digest(query.get("t", [""])[0] or self.headers.get("X-Campy-Token", ""),
-					panel.token)
+			def Refused(self, query):
+				# Why this request is refused ("key": not the page's key), or None
+				if not LocalName(self.headers.get("Host")) or not LocalOrigin(self.headers.get("Origin")):
+					return "this request is not from this computer's panel page: open the address campy-session printed"
+				given = query.get("t", [""])[0] or self.headers.get("X-Campy-Token", "")
+				if not (given.isascii() and secrets.compare_digest(given, panel.token)): # compare_digest: ASCII only
+					return "key"
+				return None
 
 			def Send(self, code, body, kind="application/json"):
 				data = body if isinstance(body, bytes) else strictjson.dumps(body).encode()
@@ -501,9 +564,10 @@ class Panel:
 			def do_GET(self):
 				url = urlparse(self.path)
 				query = parse_qs(url.query)
-				if not self.Allowed(query):
+				why = self.Refused(query)
+				if why:
 					return self.Send(403, {"error": "this page's address has the wrong key: open the one campy-session "
-						"printed"})
+						"printed" if why == "key" else why})
 				if url.path == "/":
 					return self.Send(200, panelpage.PAGE.encode(), "text/html; charset=utf-8")
 				if url.path == "/status.json":
@@ -519,8 +583,9 @@ class Panel:
 			def do_POST(self):
 				url = urlparse(self.path)
 				query = parse_qs(url.query)
-				if not self.Allowed(query):
-					return self.Send(403, {"error": "wrong key"})
+				why = self.Refused(query)
+				if why:
+					return self.Send(403, {"error": "wrong key" if why == "key" else why})
 				try:
 					size = int(self.headers.get("Content-Length") or 0)
 					body = json.loads(self.rfile.read(size) or b"{}") if size else {}
@@ -561,6 +626,11 @@ class Panel:
 		try:
 			self.health.Start()
 			url = self.Serve()
+			try:
+				session.WriteJson(PanelFile(), {"pid": os.getpid(), "url": url, "config": os.path.abspath(
+					self.config_path), "started": datetime.now().astimezone().isoformat(timespec="seconds")}, private=True)
+			except OSError as e:
+				Say("Could not write {} ({}): a second launch won't find this panel.".format(PanelFile(), e))
 			Say("The panel: {}".format(url))
 			Say("Open it in this computer's browser (over Remote Desktop too); from another computer through an SSH "
 				"tunnel: ssh -L {0}:127.0.0.1:{0} <this computer>. Ctrl-C here closes the panel when nothing records."
@@ -582,6 +652,12 @@ class Panel:
 			self.health.Stop()
 			if getattr(self, "server", None) is not None:
 				self.server.shutdown()
+			try:
+				with open(PanelFile()) as f:
+					if strictjson.load(f).get("pid") == os.getpid():
+						os.remove(PanelFile())
+			except (OSError, ValueError, AttributeError):
+				pass
 			lock.Release()
 
 	def Record(self):
@@ -620,6 +696,19 @@ def Main(argv=None):
 	p.add_argument("--port", type=int, default=PORT, help="the page's port on 127.0.0.1 (the next free one if taken)")
 	p.add_argument("--no-browser", action="store_true", help="only print the page's address")
 	args, rest = p.parse_known_args(argv)
+	running = Running()
+	if running is not None:
+		# Opened again (the desktop icon, its page closed): that panel's page, not a second panel
+		Say("The panel is already open (pid {}): {}".format(running["pid"], running["url"]))
+		if running.get("config") and os.path.abspath(args.config) != running["config"]:
+			Say("It was opened with {}, not {}: close it (Ctrl-C in its window) to open the panel with this "
+				"config.".format(running["config"], os.path.abspath(args.config)))
+		if not args.no_browser:
+			try:
+				webbrowser.open(running["url"])
+			except Exception:
+				pass
+		return 0
 	try:
 		return Panel(args.config, rest, port=args.port, browser=not args.no_browser).Run()
 	except session.SessionError as e:

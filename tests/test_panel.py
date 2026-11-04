@@ -5,6 +5,7 @@ campy-live --model none.
 """
 
 import csv
+import http.client
 import json
 import os
 import re
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 import urllib.error
 import urllib.request
 import zlib
@@ -106,6 +108,100 @@ def test_recording_json_only_when_it_is_this_recordings_and_fresh(tmp_path, monk
 	old = time.time() - 60
 	os.utime(str(path), (old, old))
 	assert panel.RecordingStatus(str(tmp_path / "rec")) is None
+
+
+# ------------------------------------------------------------------ the page's requests, and a second launch
+
+def stub_panel():
+	# The real Serve's handler, on a Panel whose actions are stubs: nothing starts
+	calls = []
+	p = object.__new__(panel.Panel)
+	p.token = "T0kenT0kenT0kenT0kenT0ke"
+	p.port = 19700 + os.getpid() % 1000
+	p.health = types.SimpleNamespace(thumbs={})
+	p.Status = lambda: {"state": "ready"}
+	p.Start = lambda body: calls.append(("start", body)) or None
+	p.Stop = lambda level: calls.append(("stop", level)) or None
+	p.Checks = lambda: []
+	p.Serve()
+	return p, calls
+
+
+def raw(p, method, path, headers=None, body=None):
+	c = http.client.HTTPConnection("127.0.0.1", p.port, timeout=10)
+	try:
+		c.request(method, path, body=body, headers=headers or {})
+		r = c.getresponse()
+		return r.status, json.loads(r.read() or b"{}")
+	finally:
+		c.close()
+
+
+def test_the_page_answers_only_its_key_from_this_computer():
+	p, calls = stub_panel()
+	try:
+		key = "?t=" + p.token
+		assert raw(p, "GET", "/status.json" + key) == (200, {"state": "ready"})
+		assert raw(p, "GET", "/status.json", {"X-Campy-Token": p.token}) == (200, {"state": "ready"})
+		assert raw(p, "GET", "/status.json" + key, {"Host": "localhost:{}".format(p.port)})[0] == 200
+		assert raw(p, "GET", "/status.json?t=wrong")[0] == 403
+		# A key that isn't ASCII is a wrong key (it made compare_digest raise: a traceback, the connection dropped)
+		code, said = raw(p, "GET", "/status.json?t=%C3%A9")
+		assert code == 403 and "wrong key" in said["error"]
+		assert raw(p, "GET", "/", {"X-Campy-Token": "\u00e9"})[0] == 403
+		# The key alone isn't enough from a page that isn't this computer's: another name (DNS rebinding), or a POST
+		# from another site
+		code, said = raw(p, "GET", "/status.json" + key, {"Host": "evil.example:{}".format(p.port)})
+		assert code == 403 and "not from this computer's panel page" in said["error"]
+		for origin in ("https://evil.example", "null", "http://evil.example:{}".format(p.port)):
+			code, said = raw(p, "POST", "/start" + key, {"Origin": origin, "Content-Type": "text/plain"}, '{"notes": "x"}')
+			assert code == 403, origin
+		assert calls == []
+		code, said = raw(p, "POST", "/start" + key, {"Origin": "http://127.0.0.1:{}".format(p.port),
+			"Content-Type": "application/json"}, '{"notes": "x"}')
+		assert code == 200 and calls == [("start", {"notes": "x"})]
+	finally:
+		p.server.shutdown()
+		p.server.server_close()
+
+
+def campy_standin():
+	# A live process whose command line says campy, as campy-session's does
+	return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)", "campy-session-standin"])
+
+
+def second_launch(home, config):
+	env = dict(os.environ, PYTHONPATH=REPO, HOME=str(home), USERPROFILE=str(home))
+	return subprocess.run([sys.executable, "-m", "campy.session", "panel", str(config), "--no-browser"], env=env,
+		capture_output=True, text=True, timeout=60)
+
+
+def test_a_second_launch_opens_the_panel_already_open(tmp_path, home):
+	# The desktop icon double-clicked while the panel is open: its page, not "Another campy-session is running"
+	config, clips = emu_session(tmp_path, home, 5)
+	p, calls = stub_panel()
+	first = campy_standin()
+	try:
+		status = home / ".campy" / "status"
+		status.mkdir(parents=True)
+		(status / "launcher.lock").write_text("{} x\n".format(first.pid))
+		(status / "panel.json").write_text(json.dumps({"pid": first.pid, "url": p.url, "config": str(tmp_path / "a.yaml")}))
+		out = second_launch(home, config)
+		assert out.returncode == 0, out.stdout + out.stderr
+		assert "The panel is already open (pid {}): {}".format(first.pid, p.url) in out.stdout
+		assert "It was opened with {}".format(tmp_path / "a.yaml") in out.stdout # another config's: said
+		# A panel.json whose page doesn't answer (that panel was killed) is passed by: the lock says why not
+		p.server.shutdown()
+		p.server.server_close()
+		out = second_launch(home, config)
+		assert out.returncode == 1 and "Another campy-session is running on this computer (pid {})".format(first.pid) \
+			in out.stderr
+	finally:
+		first.kill()
+		first.wait()
+		if p.server.socket.fileno() != -1:
+			p.server.shutdown()
+			p.server.server_close()
 
 
 # ------------------------------------------------------------------ the panel, over HTTP
@@ -218,6 +314,13 @@ def test_a_start_that_a_check_stops(tmp_path, home):
 	config, clips = emu_session(tmp_path, home, 5, live={"model": "none", "python": str(tmp_path / "no-python")})
 	proc, lines, url = start_panel(tmp_path, home, config)
 	try:
+		# Its address is kept for a second launch (the desktop icon double-clicked again), readable by its user only
+		info = json.loads((home / ".campy" / "status" / "panel.json").read_text())
+		assert info["url"] == url and info["pid"] == proc.pid
+		assert (home / ".campy" / "status" / "panel.json").stat().st_mode & 0o777 == 0o600
+		second = second_launch(home, config)
+		assert second.returncode == 0 and "The panel is already open (pid {}): {}".format(proc.pid, url) in \
+			second.stdout, second.stdout + second.stderr
 		status = call(url, "/status.json")[1]
 		assert status["checks"][0]["level"] == "block"
 		code, said = call(url, "/start", {})
@@ -227,6 +330,7 @@ def test_a_start_that_a_check_stops(tmp_path, home):
 		os.killpg(proc.pid, signal.SIGINT)
 		proc.wait(timeout=30)
 	assert not any(d.is_dir() and re.match(r"\d{4}-", d.name) for d in clips.iterdir())
+	assert not (home / ".campy" / "status" / "panel.json").exists() # closed: a next launch opens a new panel
 
 
 @POSIX

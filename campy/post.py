@@ -17,7 +17,12 @@ remux    each fragmented MP4 (fragmentedVideo, campy's default: readable after
          codec header, line for line), so it is the same video, bit for
          bit. Only then does it replace the fragmented one (remux: true), or
          the fragmented one stays beside it as <name>.fragmented.mp4
-         (remux: keep). A check that fails leaves the original as it was.
+         (remux: keep). A check that fails leaves the original as it was,
+         and so does a rename Windows refuses (an antivirus scanner or an
+         indexer holding a file just closed): each is tried again for a few
+         seconds, and in keep mode the original is moved back to its name
+         if the copy cannot take it. One video that fails does not stop the
+         others.
          Each needs free space for one more copy of the video it remuxes;
          without it, that video is skipped, and said.
 join     each camera whose ffmpeg was restarted during the recording
@@ -211,6 +216,22 @@ def Packets(ffmpeg, path):
 	return [line for line in out.stdout.splitlines() if not line.startswith("#software")]
 
 
+REPLACE_TRIES = 50 # Windows: a rename an antivirus scanner or an indexer refuses is tried again, for ~5 s
+REPLACE_WAIT_S = 0.1
+
+
+def ReplaceRetry(src, dst):
+	# os.replace, tried again for a moment on Windows, where another program holding either file refuses it
+	for attempt in range(REPLACE_TRIES):
+		try:
+			os.replace(src, dst)
+			return
+		except PermissionError:
+			if attempt == REPLACE_TRIES - 1:
+				raise
+			time.sleep(REPLACE_WAIT_S)
+
+
 def Remux(path, ffmpeg, keep=False, log=None):
 	"""
 	Remuxes one fragmented video into a plain one, checked packet by packet.
@@ -243,8 +264,28 @@ def Remux(path, ffmpeg, keep=False, log=None):
 			raise PostError("ffmpeg's copy of {} is still fragmented: the original is kept as it was".format(path))
 		packets = sum(1 for line in after if not line.startswith("#"))
 		if keep:
-			os.replace(path, "{}.fragmented{}".format(stem, ext))
-		os.replace(tmp, path)
+			kept = "{}.fragmented{}".format(stem, ext)
+			try:
+				ReplaceRetry(path, kept)
+			except OSError as e:
+				raise PostError("could not rename {} to {} ({}): the original is kept as it was".format(path,
+					os.path.basename(kept), e)) from None
+			try:
+				ReplaceRetry(tmp, path)
+			except OSError as e:
+				try:
+					ReplaceRetry(kept, path) # the original back under its own name
+				except OSError:
+					raise PostError("could not put the remuxed copy of {} in place ({}), nor move the original back: "
+						"it is {}; rename it to {} by hand".format(path, e, kept, os.path.basename(path))) from None
+				raise PostError("could not put the remuxed copy of {} in place ({}): the original is kept as it "
+					"was".format(path, e)) from None
+		else:
+			try:
+				ReplaceRetry(tmp, path)
+			except OSError as e:
+				raise PostError("could not put the remuxed copy of {} in place ({}): the original is kept as it "
+					"was".format(path, e)) from None
 	except BaseException:
 		if os.path.exists(tmp):
 			try:
@@ -272,7 +313,7 @@ def StepRemux(folder, settings, log, ffmpeg=None, stop=None):
 				len(fragmented))
 		try:
 			log.Say(Remux(video, ffmpeg, keep=keep, log=log))
-		except PostError as e:
+		except (PostError, OSError) as e: # one video's error never stops the others
 			log.Say(str(e))
 			failed.append(os.path.basename(os.path.dirname(video)))
 	if failed:
