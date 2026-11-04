@@ -117,6 +117,7 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 5. **Plug the Pico into the Pi by USB.** It shows up in `/dev/serial/by-id/`, which `chronic_control.py` finds by itself.
 6. **On the PC,** record with `cameraTrigger: "Line3"`, `startArduino: False`, and `frameRate` matching `CAMERA_FPS`. For bouts:
    - `alertNoFramesSec` above the longest gap between bouts (about 300 s), or campy reports "the trigger has stopped" in every gap.
+   - `alertTriggerPauseSec` below the shortest gap between bouts (60 s, after a 240 s bout), or campy sends a "trigger paused" warning for every gap.
    - `recTimeInSec` equal to the session's total camera time (580 s by default), since campy stops after `recTimeInSec` x `frameRate` frames.
    - [`chronic_pico.yaml`](chronic_pico.yaml) is the profile for multi-day sessions; see [Recording a long session](#recording-a-long-session).
 7. **Don't run chronicControlv13.py once the cables are on the Pico:** it would drive GPIO pins that nothing is wired to.
@@ -132,6 +133,7 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 | `cameraTrigger` | `"Line3"` | where the Pico's camera cable goes in |
 | `recTimeInSec` | `83520` | the 6-day session's total camera time, so campy stops after the last bout |
 | `alertNoFramesSec` | `400` | above the longest gap without pulses, 290 s (300 s between bouts, less 10 s of camera) |
+| `alertTriggerPauseSec` | `30` | gaps of 30 s or more are planned: logged, not sent. Below the shortest gap, 60 s (after a 240 s bout) |
 | `stopFile` | a file | creating it stops the recording cleanly, from SSH or a script |
 
 **`recTimeInSec` for another length.** campy counts camera time, not the wall clock. On the Pi, `python3 chronic_control.py plan --set TOTAL_DURATION=<seconds>` ends with the session's camera pulses; `recTimeInSec` is that number divided by 60. By hand, with the default settings: bouts = `TOTAL_DURATION` / 300, of which every 6th (bouts 1, 7, 13, ...) is 240 s of camera and the rest 10 s.
@@ -146,7 +148,7 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 
 **Stopping early.** `stop` on the Pi, then Ctrl-C in campy's window (or create the `stopFile`). campy otherwise waits for frames that won't come.
 
-**What the alerts say.** Every gap between bouts looks to campy like a trigger pause: it counts the pulses it would have had at 60 fps. So each bout after a gap is a "trigger paused" warning. From the third bout on it is reported once as coming and going, with a reminder every 30 minutes, for as long as the session lasts. No frame is lost, and `frametimes.npy` has every frame's time. A real stop (no frames for 400 s) is still a critical alert.
+**What the alerts say.** Every gap between bouts looks to campy like a trigger pause: it counts the pulses it would have had at 60 fps. With `alertTriggerPauseSec: 30`, those gaps are planned pauses: each is a `Trigger: The trigger paused as planned ...` line on campy's console and in the session's `alerts.log`, but nothing goes to Slack. The message as the recording ends counts them ("The trigger paused as planned 1727 times ..."). Slack still gets the start and end messages, a real stop (no frames for 400 s) as a critical alert, a pause shorter than 30 s as a "trigger paused" warning, and a camera that misses pulses the others got. No frame is lost, and `frametimes.npy` has every frame's time. This needs a campy with `alertTriggerPauseSec` (pull request 259 or later); an older campy refuses the profile's unknown setting, so update the rig first or delete that line, in which case every gap is a "trigger paused" warning, reported as coming and going from the third bout on, with a reminder every 30 minutes.
 
 **Disk.** At 30 fps, four cameras of mice wrote about 1.2 MB/s of H.265. At 60 fps a 6-day session's 83,520 s of camera should take roughly 150 to 200 GB (not measured at 60 fps with animals). campy's launch check estimates from the encoder sweep's bitrates, measured on synthetic frames at 80 fps (about 430 GB for this session), and warns when that is over 80% of the free space. It stops the recording cleanly below 2 GB free.
 

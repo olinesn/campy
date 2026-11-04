@@ -43,10 +43,15 @@ recTimeInSec: 83520
 # to the next bout's camera: 300 - 10 s), so the default 10 s would say "the trigger has
 # stopped" in every gap. 400 s is above every planned gap, and still catches a Pi or Pico
 # that stopped for good within about 7 minutes.
-# Expected, and harmless: every gap also reads as a "trigger paused" warning (campy counts
-# the pulses it would have had at 60 fps). After three bouts it is reported as coming and
-# going, with a reminder every 30 min. No frame is lost; frametimes.npy has each frame's time.
 alertNoFramesSec: 400
+
+# Every gap between bouts also reads as a trigger pause (campy counts the pulses it would
+# have had at 60 fps). Pauses of 30 s or more are planned: written in alerts.log, counted in
+# the end summary, but not sent to Slack. The shortest planned gap is 60 s (after a 240 s
+# bout: 300 - 240), so 30 s is below every planned gap and still well above a pause that
+# would be a fault. A shorter pause is still a "trigger paused" warning. No frame is lost;
+# frametimes.npy has each frame's time.
+alertTriggerPauseSec: 30
 
 # Stop the recording cleanly from anywhere (an SSH shell, a script) by creating this file;
 # the launcher removes an old one before it starts.

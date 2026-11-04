@@ -20,7 +20,10 @@ and checks:
                    for good is "no frames" above). One camera only: it
                    missed them, a warning. No frame is lost in a pause, but
                    from there on the frames are later than their numbers
-                   say. Each resolved after 2 min without another
+                   say. Each resolved after 2 min without another. With
+                   alertTriggerPauseSec, a pause at least that long is
+                   planned (a trigger that runs the cameras in bouts):
+                   said on the console and written in alerts.log, not sent
   first frame      no frame 10 s after the trigger Arduino started (an
                    external trigger: a warning after 10 min of waiting)
   dropped frames   frames dropped in the last minute, because more than
@@ -39,8 +42,11 @@ and checks:
                    file is counted, with the frames lost in it
   disk             free space on each video folder's disk, every 10 s: a
                    warning below alertDiskFreeGB (20 GB); critical when, at
-                   the rate it has been filling over the last 5 min, it
-                   would be down to stopAtFreeGB before the recording ends;
+                   the bytes a frame it has been filling by over the last
+                   5 min, the frames still to record (recTimeInSec x
+                   frameRate a camera, less those grabbed) would take it
+                   down to stopAtFreeGB: frames, not wall-clock time, so a
+                   trigger that runs only part of the time is counted right;
                    and below stopAtFreeGB (2 GB), the recording is stopped,
                    cleanly, as at Ctrl-C, so that every video, frametimes.npy
                    and metadata.csv is whole (a full disk stops every ffmpeg
@@ -87,7 +93,8 @@ another folder), for a control panel to show (campy-session's):
   disk         [{path, free_gb, projected_full_at (ISO, or null)}]
   open         [{key, severity, text}]: the problems open now
   last_error   {time, text} of the last critical problem, or null
-  trigger_pauses [{pulses, seconds, before_frame}]: the trigger's pauses so far
+  trigger_pauses [{pulses, seconds, before_frame, planned}]: the trigger's pauses
+               so far; planned: at least alertTriggerPauseSec, not sent
   gpu_log      null (not Linux with an AMD GPU, or alertGpuLog False), or
                {read_with ("journalctl", "/dev/kmsg" or null), not_read
                (why not, or null), stalls, hangs, resets (counts so far),
@@ -193,10 +200,12 @@ class Watch:
 		limit = params.get("writeQueueMaxSec", "None")
 		self.queueLimit = None if limit is None or str(limit) == "None" else float(limit)
 		self.recTime = float(params.get("recTimeInSec", 0))
+		planned = params.get("alertTriggerPauseSec", "None")
+		self.plannedPause = None if planned is None or str(planned) == "None" else float(planned)
 		self.external = "serial" not in systems
 		self.problems = {} # key: Problem, open
 		self.history = collections.defaultdict(collections.deque) # camera: (t, grabbed, dropped, sent)
-		self.disks = collections.defaultdict(collections.deque) # folder: (t, free)
+		self.disks = collections.defaultdict(collections.deque) # folder: (t, free, frames grabbed by its cameras)
 		self.at = collections.defaultdict(lambda: None) # what ran when: "disk", "serial", "usb"
 		self.started = None
 		self.startedAt = None # wall time, for recording.json
@@ -209,6 +218,7 @@ class Watch:
 		self.lostSaid = collections.defaultdict(int) # camera: frames lost in them, as said
 		self.missedSaid = collections.defaultdict(int) # camera: trigger pulses without a frame, as said
 		self.pauses = [] # the trigger's pauses: (pulses, the frame after)
+		self.planned = [] # its planned pauses (alertTriggerPauseSec), the same way: logged, not sent
 		self.missedAlone = collections.defaultdict(int) # camera: pulses it missed that the others got
 		self.lastError = None
 		self.errors = set()
@@ -447,11 +457,17 @@ class Watch:
 		if len(triggered) >= 2 and len(new) == len(triggered) and (max(resumed) - min(resumed)) / 1e9 <= TOGETHER_S:
 			n = min(new.values())
 			frame = min(rows[c]["missedFrame"] for c in new)
-			self.pauses.append((n, frame))
-			self.RaisePause(len(triggered), n, frame, now)
+			if self.Planned(n):
+				self.LogPlanned(len(triggered), n, frame, now)
+			else:
+				self.pauses.append((n, frame))
+				self.RaisePause(len(triggered), n, frame, now)
 			new = {c: k - n for c, k in new.items() if k > n} # more than the pause: missed by that camera too
 		for c, n in new.items():
 			name = self.names[c]
+			if len(triggered) == 1 and self.Planned(n): # one camera: a pause this long is the trigger's, planned
+				self.LogPlanned(1, n, rows[c]["missedFrame"], now)
+				continue
 			self.missedAlone[c] += n
 			if len(triggered) >= 2:
 				text = "{}: no frame for {} trigger pulse{} ({:.2f} s) that the other cameras got, just before its " \
@@ -468,8 +484,24 @@ class Watch:
 	def InAll(self, total, n):
 		return " ({} in all)".format(total) if total != n else ""
 
+	def Planned(self, n):
+		# Whether a pause of n pulses is planned: at least alertTriggerPauseSec long
+		return self.plannedPause is not None and n / self.frameRate >= self.plannedPause - 1e-9
+
+	def LogPlanned(self, cameras, n, frame, now):
+		# A planned pause: on the console and in alerts.log, not sent
+		self.planned.append((n, frame))
+		since = notify.Duration(now - self.started) if self.started is not None else "?"
+		who = "all {} cameras got no frame for the same".format(cameras) if cameras > 1 else "no frame for"
+		text = "The trigger paused as planned: {} {} pulse{} ({}), just before frame {}, about {} in " \
+			"(alertTriggerPauseSec {:g}: logged, not sent). Planned pause {} of the recording.".format(who, n,
+			"" if n == 1 else "s", notify.Duration(n / self.frameRate), frame, since, self.plannedPause,
+			len(self.planned))
+		self.say("Trigger: {}".format(text))
+		self.notifier.Log(notify.INFO, "trigger/planned-pause", "planned pause", "logged only", text)
+
 	def RaisePause(self, cameras, n, frame, now):
-		total = sum(p for p, _ in self.pauses)
+		total = sum(p for p, _ in self.pauses) + sum(p for p, _ in self.planned)
 		since = notify.Duration(now - self.started) if self.started is not None else "?"
 		text = "The trigger paused: all {} cameras got no frame for the same {} pulse{} ({:.2f} s), just before frame " \
 			"{}, about {} in. No frame was lost, but from there on the frames are {:.2f} s later than their numbers " \
@@ -487,6 +519,14 @@ class Watch:
 			"before frame {}. From each pause on, the frames are later than their numbers say; frametimes.npy has " \
 			"each one's time.".format(len(self.pauses), "" if len(self.pauses) == 1 else "s", total,
 			"" if total == 1 else "s", total / self.frameRate, self.pauses[0][1])
+
+	def PlannedText(self):
+		if not self.planned:
+			return None
+		total = sum(n for n, _ in self.planned)
+		return "The trigger paused as planned {} time{} (alertTriggerPauseSec {:g}): {} in all, the first just before " \
+			"frame {}.".format(len(self.planned), "" if len(self.planned) == 1 else "s", self.plannedPause,
+			notify.Duration(total / self.frameRate), self.planned[0][1])
 
 	def TriggerText(self):
 		if self.external:
@@ -581,15 +621,29 @@ class Watch:
 			folders = [f] if f else []
 		return folders
 
+	def FolderCameras(self, folder, folders):
+		# The cameras whose videos go to this folder (all of them, with only one folder)
+		if len(folders) == 1:
+			return list(range(len(self.names)))
+		cams = {cam.get("cameraName"): cam for cam in self.cams or []}
+		return [c for c, name in enumerate(self.names) if cams.get(name, {}).get("videoFolder", folders[0]) == folder]
+
 	def CheckDisk(self, now):
-		left = max(0.0, self.recTime - (now - self.started)) if self.started is not None and self.recTime else 0.0
-		for folder in self.Folders():
+		# Whether the disk lasts is counted in frames, not wall-clock time: bytes written per frame grabbed (over the
+		# last DISK_WINDOW_S), times the frames still to record (recTimeInSec x frameRate each, less those grabbed).
+		# With a trigger that runs only part of the time (bouts), the wall clock would say it lasts when it does not.
+		folders = self.Folders()
+		for folder in folders:
+			cameras = self.FolderCameras(folder, folders)
+			grabbed = [self.counters.Row(c)["grabbed"] for c in cameras]
+			frames = sum(grabbed)
+			left = sum(max(0.0, self.recTime * self.frameRate - g) for g in grabbed) if self.recTime else 0.0
 			path = folder
 			while path and not os.path.isdir(path) and os.path.dirname(path) != path:
 				path = os.path.dirname(path)
 			free = float(self.disk_usage(path).free)
 			history = self.disks[folder]
-			history.append((now, free))
+			history.append((now, free, frames))
 			while history and history[0][0] < now - DISK_WINDOW_S:
 				history.popleft()
 			where = "the disk with {}".format(folder)
@@ -607,19 +661,23 @@ class Watch:
 					DiskText(free), where, self.diskFree / 1e9))
 			elif free > 1.1 * self.diskFree:
 				self.Clear(key + "/low", "{} free on {}".format(DiskText(free), where), now)
-			t0, f0 = history[0]
+			t0, f0, n0 = history[0]
 			rate = (f0 - free) / (now - t0) if now - t0 >= DISK_RATE_MIN_S else None
 			full = None
 			if rate is not None and rate > 0:
 				full = (datetime.datetime.now().astimezone() + datetime.timedelta(seconds=free / rate)).isoformat(
 					timespec="seconds")
 			self.diskState[folder] = {"path": folder, "free_gb": round(free / 1e9, 2), "projected_full_at": full}
-			if rate is None or not left:
-				continue
-			toStop = (free - self.stopAt) / rate if rate > 0 else float("inf")
+			if rate is None or not left or frames <= n0 or not cameras:
+				continue # (no frame in the window: between bouts, the rate per frame is not known)
+			perFrame = (f0 - free) / (frames - n0)
+			perSecond = self.frameRate * len(cameras) # frames a second of recording, every camera on this disk
+			toStop = (free - self.stopAt) / perFrame / perSecond if perFrame > 0 else float("inf") # seconds of recording
+			left /= perSecond
 			if toStop < left:
-				self.Raise(key + "/full", notify.CRITICAL, "{} fills at {:.0f} MB/s: down to {} free in {}, {} before "
-					"the recording ends.{}".format(where[0].upper() + where[1:], rate / 1e6, DiskText(self.stopAt),
+				self.Raise(key + "/full", notify.CRITICAL, "{} fills at {:.0f} MB/s while the cameras record: down to "
+					"{} free after {} more of recording, {} of recording before it ends.{}".format(
+					where[0].upper() + where[1:], perFrame * perSecond / 1e6, DiskText(self.stopAt),
 					notify.Duration(toStop), notify.Duration(left - toStop),
 					" campy will then stop the recording, cleanly." if self.stopAt > 0 else ""))
 			elif toStop > 1.1 * left + 60:
@@ -791,8 +849,9 @@ class Watch:
 			"cameras": cameras, "disk": list(self.diskState.values()),
 			"open": [{"key": k, "severity": p.severity, "text": p.text} for k, p in self.problems.items()],
 			"last_error": self.lastError, "gpu_log": self.GpuStatus(),
-			"trigger_pauses": [{"pulses": n, "seconds": round(n / self.frameRate, 3), "before_frame": f}
-				for n, f in self.pauses]}
+			"trigger_pauses": sorted([{"pulses": n, "seconds": round(n / self.frameRate, 3), "before_frame": f,
+				"planned": planned} for pauses, planned in ((self.pauses, False), (self.planned, True))
+				for n, f in pauses], key=lambda p: p["before_frame"])}
 
 	def WriteStatus(self, state):
 		try:
@@ -865,6 +924,9 @@ class Watch:
 		pauses = self.PausesText()
 		if pauses:
 			lines.append("- " + pauses)
+		planned = self.PlannedText()
+		if planned:
+			lines.append("- " + planned)
 		took = notify.Duration(self.clock() - self.started) if self.started is not None else "?"
 		gpu = self.GpuText()
 		if gpu:
