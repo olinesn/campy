@@ -29,7 +29,9 @@ What that doesn't show: the check shares the Pico's crystal, so it can't see how
 - **campy:** 15,600 frames on each camera, split 14,400, 600 and 600 between the bouts, with no frame missing.
 - **Clocks:** the gate rose every 300.000990 s by the OneBox's clock (300.000967 s by the probe's), the same to the sample both times. So the Pico's crystal and SpikeGLX's clocks differ by 3.3 parts per million, about 0.3 s a day. Which one is off isn't known. It doesn't matter for lining up the data, because SpikeGLX records every edge.
 
-Not checked: a session of more than 3 bouts, an animal in the rig, the LEDs' light (only their TTLs), and the gate in a camera-only session.
+**The gate stays low in a camera-only session** (checked the same evening). With SpikeGLX armed the same way, a 2-minute camera-only session at 60 fps (`--set CAMERA_ONLY=120`) made its 7,200 camera pulses and opened no SpikeGLX file. One gate blink just before it and one just after (`wiring --channels A`) each opened a file, so SpikeGLX was armed the whole time.
+
+Not checked: a session of more than 3 bouts, an animal in the rig, and the LEDs' light (only their TTLs).
 
 **Long recordings:** the Pico holds 12288 edges and 2048 camera trains, 2048 bouts: 7.1 days at one bout per 300 s. A longer session is refused at `start` ("too many edges"). Camera-only sessions have no such limit (2^32 pulses). For 6 days: `--set TOTAL_DURATION=518400`. Loading that many bouts takes `start` up to a minute or so.
 
@@ -98,7 +100,7 @@ The log is `~/Documents/<date>/timestamps.txt`, as before. The program's own out
 
 ## Camera-only sessions
 
-No bouts, no LEDs, and the gate stays low: only the camera pulses, for as long as you say. Use it for calibration or plain recordings:
+No bouts, no LEDs, and the gate stays low, so SpikeGLX doesn't record (checked against the OneBox: see "Checked against the OneBox" above). Only the camera pulses, for as long as you say. Use it for calibration or plain recordings:
 
 ```bash
 python3 chronic_control.py start --set CAMERA_ONLY=3600 --set CAMERA_FPS=30
