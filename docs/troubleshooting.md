@@ -108,7 +108,7 @@ Before recording, campy checks the config and the computer, and most problems sh
 
 **`--engine auto: ... so the networks run in torch`.** No compiled engine could be made: TensorRT and Triton aren't installed, or one failed (the line says why). campy-live runs anyway, only slower. To get the engines on Windows, install `tensorrt-cu13`, `onnx` and the `triton-windows` that matches PyTorch ([Installing the engine packages](live-tracking.md#installing-the-engine-packages-windows)).
 
-**`campy-live` skips sets.** The model is too slow for this machine and frame rate. A few skipped in the first fraction of a second on CUDA are the first sets warming up. Skips throughout mean you need a lighter model ([Models](models.md#choosing-one-that-keeps-up)). On a Windows PC with an Intel hybrid CPU, see [Hardware](hardware.md) on pinning.
+**`campy-live` skips sets.** The model is too slow for this machine and frame rate. A few skipped in the first fraction of a second on CUDA mean the GPU was still at its idle clock: `campy-live` waited over 10 minutes for the feed, so it had stopped holding the clock, and it says so in one line ([Live tracking](live-tracking.md#the-first-sets-after-waiting-for-the-feed)). Skips throughout mean you need a lighter model ([Models](models.md#choosing-one-that-keeps-up)). On a Windows PC with an Intel hybrid CPU, see [Hardware](hardware.md) on pinning.
 
 **`campy-live` is slower than the measurements say.** Check that the GPU keeps its clock up (`--hold-gpu-clock`, on by default with NVIDIA and AMD GPUs), that `campy-live` isn't running on the CPU that handles the GPU's interrupts (it avoids that CPU by default on Windows, `--cpus auto`), and that nothing else uses the GPU ([On Windows](live-tracking.md#on-windows-nvidia-cuda)).
 
