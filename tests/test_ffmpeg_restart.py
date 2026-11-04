@@ -11,26 +11,36 @@ a calibration video.
 import csv
 import os
 import re
+import threading
 
 import imageio_ffmpeg
 import numpy as np
 import pytest
 
-from campy import segments, writer
+from campy import newfiles, segments, writer
 from test_failures import CameraProcess, FakeCamera, fake_write_frames, params
 
 
 def Killer(at):
-	# A FakeCamera on_frame that kills the ffmpeg running at each of these frames
-	found = []
+	# A FakeCamera on_frame that kills a camera's ffmpeg at each of these frames. Each kill is for an ffmpeg that is
+	# running and has written something: one due while the next is still starting (it can take more than a second on a
+	# busy machine, and frames go on) waits for it, rather than going to the one already stopped. An ffmpeg that wrote
+	# nothing is not a stop these tests are about: it is started again on the same file (writer.FirstFrames).
+	found, paths, killed = [], [], []
+	due = []
 	real = writer.FfmpegProcess
 
 	def ffmpeg_process(w):
+		paths.append(w.gi_frame.f_locals["path"])
 		found.append(real(w))
 		return found[-1]
 
 	def on_frame(n):
 		if n in at:
+			due.append(n)
+		if due and found and found[-1] not in killed and newfiles.Size(paths[len(found) - 1]):
+			due.pop()
+			killed.append(found[-1])
 			found[-1].kill()
 	return ffmpeg_process, on_frame, found
 
@@ -99,15 +109,27 @@ def test_a_killed_ffmpeg_is_restarted_and_every_frame_accounted_for(tmp_path, mo
 	assert len(levels[:int(first["frames"])]) == int(first["frames"])
 
 
-def test_at_most_three_restarts_an_hour(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("slow_start", [False, True]) # True: a new ffmpeg takes longer to start than the kills are apart
+def test_at_most_three_restarts_an_hour(tmp_path, monkeypatch, capsys, slow_start):
 	ffmpeg_process, on_frame, found = Killer({100, 200, 300, 400})
 	monkeypatch.setattr(writer, "FfmpegProcess", ffmpeg_process)
+	if slow_start:
+		real, opened = writer.OpenWriter, []
+
+		def open_writer(*args, **kwargs):
+			opened.append(1)
+			if len(opened) == 3:
+				threading.Event().wait(1.5) # CameraProcess's time.sleep skips waits this long
+			return real(*args, **kwargs)
+		monkeypatch.setattr(writer, "OpenWriter", open_writer)
 	camera = FakeCamera(on_frame=on_frame)
-	run = CameraProcess(monkeypatch, params(tmp_path, recTimeInSec=6, restartFfmpeg=True), camera)
-	run.Run(timeout=40)
+	# Long enough for the kills on any machine: the fourth ends the recording, well before this
+	run = CameraProcess(monkeypatch, params(tmp_path, recTimeInSec=30, restartFfmpeg=True), camera)
+	run.Run(timeout=60)
 	out = capsys.readouterr().out
-	assert len(found) == 4 and run.recording.restarts == 3
+	assert len(found) == 4 and run.recording.restarts == 3, out
 	# The fourth stop ends the camera's recording, as without restartFfmpeg
+	assert len(run.recording.Failures()) == 1, out
 	(failure,) = run.recording.Failures()
 	assert failure.startswith("ffmpeg stopped after taking ") and " frames into 0.part4.mp4, with exit code" in failure
 	assert failure.endswith(". It was not restarted: it was restarted 3 times in the last hour, the most allowed")
@@ -115,7 +137,7 @@ def test_at_most_three_restarts_an_hour(tmp_path, monkeypatch, capsys):
 		out), out
 	assert "Stopping Camera0." in out and camera.closed
 	meta = run.Metadata()
-	assert int(meta["totalFrames"]) < 600 and meta["videoError"] == failure
+	assert int(meta["totalFrames"]) < 3000 and meta["videoError"] == failure
 	rows = ReadSegments(run.Folder())
 	assert [r["file"] for r in rows] == ["0.mp4", "0.part2.mp4", "0.part3.mp4", "0.part4.mp4"]
 	assert all(r["ended"].startswith("ffmpeg stopped after taking ") for r in rows)
