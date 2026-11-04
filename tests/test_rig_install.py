@@ -31,7 +31,7 @@ def copy_lock(folder, extra=b""):
 
 
 def args(**kw):
-	a = dict(source=None, check=False, owner="tester", allow_dirty=False, allow_older=False)
+	a = dict(source=None, check=False, owner="tester", allow_dirty=False, allow_older=False, commit=None)
 	a.update(kw)
 	return argparse.Namespace(**a)
 
@@ -104,7 +104,8 @@ def test_install_copies_every_file_backs_up_and_records_it(root, tmp_path, capsy
 
 
 def test_a_copy_changed_by_hand_after_install_says_so(root, tmp_path):
-	riglib.cmd_install(args(source=copy_lock(tmp_path / "src")))
+	riglib.cmd_install(args(source=copy_lock(tmp_path / "src"), commit="abc1234"))  # copied files: their commit, as said
+	assert riglib.read_stamp()["commit"] == "abc1234 (said)" and "from campy abc1234 (said)" in riglib.installed_text()
 	(root / "rig.py").write_text("# edited on the machine\n")
 	assert "changed since rig.py install put" in riglib.installed_text()
 

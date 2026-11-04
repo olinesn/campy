@@ -94,7 +94,8 @@ it, renames it into place, and records what it installed in RIG_ROOT/RIG_INSTALL
 rig-install.log. Inside the rig's own job (an update script run under rig.py) it doesn't
 wait for the rig that job holds. --check only says whether the installed copy differs
 (exit 0 the same, 3 different). It refuses a checkout with uncommitted changes to these
-files (--allow-dirty), or one older than what is installed (--allow-older).
+files (--allow-dirty), or one older than what is installed (--allow-older). Files copied
+from a checkout (not a git checkout themselves) can name their commit with --commit.
 
 The Python standard library only. On Linux run it with /usr/bin/python3; on
 Windows with any 64-bit Python 3.9 or newer (campy's own environment will do).
@@ -1030,6 +1031,8 @@ def cmd_install(args):
 			"or give --from <checkout>" % src)
 	new, old = version(src), version(ROOT)
 	commit = git(src, "rev-parse", "--short=9", "HEAD")
+	if not commit and args.commit:
+		commit = "%s (said)" % args.commit
 	print("installed: rig.py " + installed_text())
 	print("source:    rig.py %s in %s (campy %s)" % (new, src, commit or "?, not a git checkout"))
 	rows = compare(src)
@@ -1044,7 +1047,7 @@ def cmd_install(args):
 	if args.check:
 		print("the installed copy differs: run rig.py install from this checkout (when the rig is free)")
 		sys.exit(3)
-	if commit:
+	if commit and not args.commit:
 		dirty = git(src, "status", "--porcelain", "--", *FILES)
 		if dirty and not args.allow_dirty:
 			sys.exit("rig.py install: the checkout has uncommitted changes to the lock's files (--allow-dirty to "
@@ -1296,6 +1299,7 @@ def main(argv=None):
 	p.add_argument("--owner", help="who installs it (default RIG_OWNER)")
 	p.add_argument("--allow-dirty", action="store_true", help="install uncommitted changes to the lock's files")
 	p.add_argument("--allow-older", action="store_true", help="install a commit older than the installed one")
+	p.add_argument("--commit", help="the campy commit the files are from, when --from is a copy, not a git checkout")
 	for name in ("run", "hold"):
 		p = sub.add_parser(name)
 		limits(p)
