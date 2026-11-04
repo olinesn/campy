@@ -56,7 +56,8 @@ def test_the_version_ignores_line_endings_and_follows_every_file(tmp_path):
 	b = tmp_path / "b"
 	b.mkdir()
 	for name in riglib.FILES:  # a Windows checkout (core.autocrlf): the same files with \r\n
-		data = open(os.path.join(a, name), "rb").read()
+		data = open(os.path.join(a, name), "rb").read().replace(b"\r\n", b"\n")  # \r\n already on a Windows runner
+		(tmp_path / "a" / name).write_bytes(data)
 		(b / name).write_bytes(data.replace(b"\n", b"\r\n"))
 	assert riglib.version(a) == riglib.version(str(b)) and len(riglib.version(a)) == 10
 	(b / "rig_hold.ps1").write_bytes(b"# changed\r\n")
