@@ -231,6 +231,28 @@ def test_one_pin_without_a_list(capsys):
 	assert "is triggering pins [2] at 60 fps" in capsys.readouterr().out
 
 
+def test_a_start_command_that_fails_is_not_written_down_as_started(tmp_path, capsys):
+	# The Arduino unplugged between the check and the start: the write fails. trigger.json then says the trigger
+	# did not start (campy-align would otherwise put the ready cameras at trigger 1), and why
+	class Unplugged(Port):
+		def write(self, data):
+			raise OSError(5, "Input/output error")
+	p = params()
+	p.update(serialPort="COM7", digitalPins=[2, 3], frameRate=60, videoFolder=str(tmp_path / "rec"))
+	systems = arduino.StartTriggers({"serial": Unplugged()}, p)
+	assert "triggerStartedNs" not in systems and systems["triggerStartError"].startswith("OSError: [Errno 5]")
+	said = capsys.readouterr().out
+	assert "Could not start the trigger on COM7: [Errno 5] Input/output error. No camera will get a frame" in said
+	path = trigger.SaveStart(p, ["Camera0", "Camera1"], {}, systems.get("triggerStartedNs"),
+		systems.get("triggerStartError"))
+	record = json.loads(open(path).read())
+	assert (record["triggerStarted"], record["readyBeforeTrigger"], record["startedHostNs"]) == (False, [], None)
+	assert record["startError"] == systems["triggerStartError"]
+	# One that went out: its time, and no error
+	systems = arduino.StartTriggers({"serial": Port()}, p)
+	assert systems["triggerStartedNs"] > 0 and "triggerStartError" not in systems
+
+
 # ------------------------------------------------------------------ end to end
 
 def write_clip(path, frames=30):

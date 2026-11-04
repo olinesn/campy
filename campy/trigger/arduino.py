@@ -120,16 +120,22 @@ def StartTriggers(systems, params):
 		systems["serialCommand"] = serialList
 		serialString = ",".join(str(item) for item in serialList)
 
-		# Send command string, noting when, on hosttimes.npy's clock (trigger.json)
-		systems["triggerStartedNs"] = clock.HostNs()
+		# Send command string, noting when, on hosttimes.npy's clock (trigger.json): kept only once it went out,
+		# so a start that failed is never written down as started
+		startedNs = clock.HostNs()
 		systems["serial"].write(serialString.encode())
+		systems["triggerStartedNs"] = startedNs
 
 		Say("Arduino on port {} is triggering pins {} at {} fps{}."\
 			.format(params["serialPort"], pins, frameRate,
 				", and blinking the test LED on pin {} at {} Hz".format(blinkPin, blinkHz) if blinkPin >= 0 else ""))
 
 	except Exception as e:
-		Say("Could not start the trigger on {}: {}".format(params["serialPort"], e))
+		systems.pop("triggerStartedNs", None)
+		systems["triggerStartError"] = "{}: {}".format(type(e).__name__, e)
+		Say("Could not start the trigger on {}: {}. No camera will get a frame: stop the recording (Ctrl-C), check "
+			"the trigger Arduino's USB cable, and start again. trigger.json says the trigger did not start.".format(
+			params["serialPort"], e))
 	return systems
 
 
