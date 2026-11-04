@@ -1,0 +1,53 @@
+# ChronicRecord bout sessions driven by the Raspberry Pi Pico (on the Raspberry Pi 3B's USB).
+# Made 2026-11-04. On the rig it lives in C:\campy_data\configs; start campy first, then the Pi.
+#
+# Everything not listed here comes from the rig profile ~\.campy\configs\chronicrecord.yaml
+# (4 FLIR Blackfly S on Line3, Quick Sync H.265, restartFfmpeg on); that file is not changed.
+# "campy-config show C:\campy_data\configs\chronic_pico.yaml" lists every value and where it comes from.
+#
+# The Pi's session (chronic_control.py on the Pi; code and README in campy's chronicrecord\ folder):
+# one bout every 300 s. Gate high, 5 s wait, camera on at 60 Hz, LEDs 5 s into the camera,
+# camera off after 10 s (240 s in bouts 1, 7, 13, ...: every 6th bout), 10 s wait, gate low.
+# The cameras take one frame per pulse and nothing in between, so campy sees short bursts of
+# frames separated by long silences.
+extends: chronicrecord
+
+# The Pico's camera pulses are 60 Hz (CAMERA_FPS on the Pi). campy needs the same number
+# here: it is how it turns recTimeInSec into a frame count, and what it writes in the videos.
+frameRate: 60
+
+# The Pico, not campy's Arduino, makes the camera pulses, so campy must not start the Arduino.
+# campy then just waits for pulses on Line3 and writes "startedBy: external" in trigger.json.
+startArduino: False
+cameraTrigger: "Line3"
+
+# campy stops by itself after recTimeInSec x frameRate frames per camera. Here that is
+# the session's total CAMERA time (not its wall-clock length), so it stops right after the
+# last bout's last frame. For the default 6-day session (Pi: --set TOTAL_DURATION=518400):
+#   518400 s / 300 s per bout     = 1728 bouts
+#   every 6th is long:  288 bouts x 240 s = 69,120 s
+#   the other           1440 bouts x  10 s = 14,400 s
+#   total camera time                      = 83,520 s  (x 60 fps = 5,011,200 frames per camera)
+# The Pi prints the same total: "python3 chronic_control.py plan --set TOTAL_DURATION=518400"
+# ends with "1728 bouts; 5011200 camera pulses". For another TOTAL_DURATION, run that plan
+# command with the new value and set recTimeInSec = camera pulses / 60. (By hand:
+# bouts = TOTAL_DURATION / 300; long bouts = bouts / 6 rounded up; recTimeInSec =
+# 240 x long bouts + 10 x the rest. 4 days, TOTAL_DURATION=345600: 1152 bouts, 192 long,
+# 55,680 s.)
+# If the Pi is stopped early, campy keeps waiting for frames: stop it with Ctrl-C in its
+# window, or by creating the stop file below.
+recTimeInSec: 83520
+
+# The recording watch alerts (Slack) when a camera sends no frame for alertNoFramesSec.
+# Between bouts there are no pulses for up to 290 s (from the end of a 10 s bout's camera
+# to the next bout's camera: 300 - 10 s), so the default 10 s would say "the trigger has
+# stopped" in every gap. 400 s is above every planned gap, and still catches a Pi or Pico
+# that stopped for good within about 7 minutes.
+# Expected, and harmless: every gap also reads as a "trigger paused" warning (campy counts
+# the pulses it would have had at 60 fps). After three bouts it is reported as coming and
+# going, with a reminder every 30 min. No frame is lost; frametimes.npy has each frame's time.
+alertNoFramesSec: 400
+
+# Stop the recording cleanly from anywhere (an SSH shell, a script) by creating this file;
+# the launcher removes an old one before it starts.
+stopFile: "C:\\campy_data\\launchers\\chronic6day.stop"
