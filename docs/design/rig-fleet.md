@@ -163,7 +163,7 @@ Rig details (ssh alias, checkout path, env pythons, rigcheck folder, lock root, 
 | Field | Linux (EVO-X2) | Windows | Cost |
 |---|---|---|---|
 | campy version / tag | `git describe` in the checkout; pip versions from the last fleet job | same | file reads / git |
-| lock state and owner | RIG_BUSY + `flock -n` | gpu.lock contents | file read |
+| lock state and owner | RIG_BUSY + `flock -n`; a free flock is still held while the job RIG_BUSY names runs (`pid=`, `pidstart=` against /proc) | gpu.lock contents | file read |
 | recording running? | `pgrep campy\|ffmpeg` | process names (Get-Process, no WMI) | light |
 | disk free | `df` | Get-PSDrive | light |
 | cameras: FLIR serials, USB speed | /sys/bus/usb (vendor 1e10: serial, speed) | PnP device list (serial); USB speed only from Spinnaker, so from the nightly job | light / in-lock |

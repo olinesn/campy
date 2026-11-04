@@ -19,7 +19,13 @@ then it runs cmd. Every 2 s while it runs, anything outside the job that uses
 one of those, or a CPU or disk load outside the job above --cpu cores or --io
 MB/s, is logged to <tag>.rig.log, whose last line says RIG_CLEAN or
 RIG_CONTAMINATED. A contaminated run's timings are not to be trusted: run it
-again. With an NVIDIA GPU (nvidia-smi), the log also follows the GPU's clock
+again. Nor are those of a run stopped before its job ended (Ctrl-C, SIGTERM, a
+hangup, an error in rig.py), whose last line says RIG_ABORTED, or of one whose
+log has no RIG_ line at all (its rig.py was killed): trust only RIG_CLEAN. A
+signal ignored when rig.py starts stays ignored: under nohup, a hangup (the
+terminal or the ssh closing) stops neither rig.py nor its job. A closed output
+(rig.py run ... | head, a cut ssh) doesn't stop it either: the log still gets
+every line. With an NVIDIA GPU (nvidia-smi), the log also follows the GPU's clock
 and why it is held down (its throttle reasons): the same GPU can run a test at
 210 MHz or at 2,500.
 
@@ -61,7 +67,10 @@ current job. Likewise rig.py run, inside the rig's current job, runs its command
 at once, in that job, instead of waiting for the rig its own job holds.
 
 The lock. On Linux, a flock on RIG_ROOT/.rig.lock (~/sleap-bench), which the
-kernel releases if rig.py dies, and RIG_BUSY saying who holds it. On Windows,
+kernel releases if rig.py dies, and RIG_BUSY saying who holds it (from the
+moment its rig.py has the flock, while it waits for quiet too) and the process
+id of its job: a rig.py that was killed (SIGKILL, the OOM killer) loses its
+flock, but its job runs on, and the rig stays held until that ends. On Windows,
 the file C:\\campy_data\\live\\gpu.lock (RIG_ROOT), created only if it is
 absent and deleted when the run ends. It says who holds the rig, since when,
 and the process ids of rig.py and of the job: a lock whose rig.py and job have
@@ -99,6 +108,20 @@ FLIR_VENDOR = "1e10"
 HZ = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 NO_WINDOW = 0x08000000 if WINDOWS else 0  # CREATE_NO_WINDOW: no console flashing up for nvidia-smi
 JOBS = {}  # Windows: {job name: rig_windows.Job} of the job rig.py runs
+
+def say(text):
+	"""print, which a closed stdout can't stop. With rig.py run ... | head, or an ssh whose local end was
+	cut, a print raises, and rig.py would end mid-run, its job still running. From then on what it says
+	goes nowhere; its log still gets every line."""
+	try:
+		print(text, flush=True)
+	except (OSError, ValueError):
+		try:
+			fd = os.open(os.devnull, os.O_WRONLY)
+			os.dup2(fd, sys.stdout.fileno())
+			os.close(fd)
+		except (OSError, ValueError):
+			sys.stdout = open(os.devnull, "w")
 
 def device_kind(path, cameras):
 	if path in EXTRA:
@@ -245,6 +268,16 @@ def proc_start(pid):
 def alive(pid, start):
 	s = proc_start(pid)
 	return s is not None and (s in (-1, 0) or not start or s == start)
+
+def named_job(text):
+	"""(pid, start) of the job a lock's line names ('job=<job> pid=<pid> pidstart=<start>'), or None."""
+	m = re.search(r"\bpid=(\d+) pidstart=(-?\d+)", text or "")
+	return (int(m.group(1)), int(m.group(2))) if m else None
+
+def job_runs(text):
+	"""Whether the job a lock's line names still runs."""
+	job = named_job(text)
+	return bool(job) and alive(*job)
 
 def cmdline(p):
 	if WINDOWS:
@@ -451,12 +484,17 @@ def overloaded(load, args):
 # The locks. Each has acquire (wait for it, or exit 75), record (say who holds it and for which job),
 # ours (still held by this rig.py), release, and state/describe for status and break.
 
+ENDED = " (its rig.py has ended, but its job runs on"
+
 class Flock:
-	"""Linux: a flock on LOCK while a job holds the rig (released by the kernel if rig.py dies),
-	and RIG_BUSY saying who, which status shows only while the flock is really held."""
+	"""Linux: a flock on LOCK while a run holds the rig (released by the kernel if rig.py dies), and
+	RIG_BUSY saying who, from the moment its rig.py has the flock, and the pid and start of its job
+	('<owner> <tag> since <date time> rigpid=<pid> [job=<job> pid=<pid> pidstart=<t>]'). A rig.py that
+	was killed (SIGKILL, the OOM killer) loses its flock but leaves its job running, so the rig stays
+	held, by RIG_BUSY, until that job ends (as FileLock does)."""
 
 	def __init__(self):
-		self.fd = None
+		self.fd, self.orphan = None, False
 
 	def text(self):
 		try:
@@ -466,7 +504,8 @@ class Flock:
 			return ""
 
 	def state(self):
-		"""('held' or 'free', what RIG_BUSY says)."""
+		"""('held' or 'free', what RIG_BUSY says). Held while a rig.py holds the flock, or while the job
+		RIG_BUSY names runs on after its rig.py ended (self.orphan)."""
 		os.makedirs(ROOT, exist_ok=True)
 		fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o664)
 		try:
@@ -476,7 +515,15 @@ class Flock:
 			held = True
 		finally:
 			os.close(fd)
-		return ("held" if held else "free"), self.text()
+		text = self.text()
+		self.orphan = not held and job_runs(text)
+		return ("held" if held or self.orphan else "free"), text
+
+	def describe(self, state, text):
+		text = text or "(no RIG_BUSY)"
+		if state == "held" and self.orphan and ENDED not in text:
+			text += ENDED + "; the rig is free once it ends)"
+		return text
 
 	def acquire(self, owner, tag, no_wait):
 		os.makedirs(ROOT, exist_ok=True)
@@ -486,17 +533,43 @@ class Flock:
 			fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 		except OSError:
 			if no_wait:
-				print("rig busy: %s" % (self.text() or "(no RIG_BUSY)"), flush=True)
+				say("rig busy: %s" % (self.text() or "(no RIG_BUSY)"))
 				sys.exit(75)
-			print("rig busy: %s; waiting..." % (self.text() or "(no RIG_BUSY)"), flush=True)
+			say("rig busy: %s; waiting..." % (self.text() or "(no RIG_BUSY)"))
 			fcntl.flock(self.fd, fcntl.LOCK_EX)
+		# The flock is ours. But a rig.py that was killed lost its flock and left its job running: the rig
+		# is that job's until it ends. RIG_BUSY goes on naming it (a guarded script it starts looks for its
+		# job there), and says who waits for it
+		text, said, self.orphan = self.text(), None, True
+		while job_runs(text):
+			if no_wait:
+				say("rig busy: %s" % self.describe("held", text))
+				os.close(self.fd)
+				self.fd = None
+				sys.exit(75)
+			if said is None:
+				self.write(text.split(ENDED)[0] + ENDED + ", and %s %s waits for it since %s rigpid=%d)" % (
+					owner, tag, time.strftime("%F %T"), os.getpid()))
+			if said is None or time.monotonic() - said > 300:
+				say("rig busy: %s; waiting..." % self.describe("held", text))
+				said = time.monotonic()
+			time.sleep(PERIOD)
+			text = self.text()
+		self.orphan = False
+		self.since = time.strftime("%F %T")
+		self.record()
 
-	def record(self, job, pid, note=""):
+	def record(self, job=None, pid=None, note=""):
 		"""pid None: the job is about to start (its name is known before its pid)."""
+		line = "%s %s since %s rigpid=%d" % (self.owner, self.tag, self.since, os.getpid())
+		if job:
+			line += " job=%s %s" % (job, "starting" if pid is None else "pid=%d pidstart=%d" % (pid, proc_start(pid) or 0))
+		self.write(line + note)
+
+	def write(self, line):
 		tmp = INFO + ".tmp"
 		with open(tmp, "w") as f:
-			f.write("%s %s since %s rigpid=%d job=%s %s%s\n" % (self.owner, self.tag, time.strftime("%F %T"),
-				os.getpid(), job, "starting" if pid is None else "pid=%d" % pid, note))
+			f.write(line + "\n")
 		os.replace(tmp, INFO)
 
 	def ours(self):
@@ -508,6 +581,22 @@ class Flock:
 				pass
 		except OSError:
 			pass
+
+	def clear_stale(self):
+		"""Empty RIG_BUSY if nothing holds the rig (status, break): under the flock, so that the line of a
+		rig.py taking the rig this moment stays. False if the rig is held."""
+		fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o664)
+		try:
+			try:
+				fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+			except OSError:
+				return False
+			if job_runs(self.text()):
+				return False
+			self.clear()
+			return True
+		finally:
+			os.close(fd)
 
 	def release(self):
 		if self.fd is not None:
@@ -584,10 +673,7 @@ class FileLock:
 		m = re.search(r"\brigpid=(\d+) rigstart=(-?\d+)", text)
 		if not m:
 			return ("stale" if text == "" and self.age() > 60 else "hand"), text
-		pids = [(int(m.group(1)), int(m.group(2)))]
-		m = re.search(r"\bpid=(\d+) pidstart=(-?\d+)", text)
-		if m:
-			pids.append((int(m.group(1)), int(m.group(2))))
+		pids = [(int(m.group(1)), int(m.group(2)))] + ([named_job(text)] if named_job(text) else [])
 		return ("held" if any(alive(pid, start) for pid, start in pids) else "stale"), text
 
 	def describe(self, state, text):
@@ -604,7 +690,7 @@ class FileLock:
 			with guarded(self.path):
 				state, text = self.state()
 				if state == "stale":
-					print("%s stale gpu.lock removed (its rig.py and job have ended): %s" % (time.strftime("%T"), text), flush=True)
+					say("%s stale gpu.lock removed (its rig.py and job have ended): %s" % (time.strftime("%T"), text))
 					retry(os.remove, self.path)
 					state = "free"
 				if state == "free":
@@ -618,10 +704,10 @@ class FileLock:
 						self.record()
 						return
 			if no_wait:
-				print("rig busy: %s" % self.describe(state, text), flush=True)
+				say("rig busy: %s" % self.describe(state, text))
 				sys.exit(75)
 			if text != last or time.monotonic() - said > 300:
-				print("rig busy: %s; waiting..." % self.describe(state, text), flush=True)
+				say("rig busy: %s; waiting..." % self.describe(state, text))
 				said, last = time.monotonic(), text
 			time.sleep(PERIOD)
 
@@ -646,11 +732,13 @@ class FileLock:
 			if text == self.line:
 				retry(os.remove, self.path)
 			elif text is not None:
-				print("gpu.lock is no longer this run's, so it was left as it is: %s" % text, flush=True)
+				say("gpu.lock is no longer this run's, so it was left as it is: %s" % text)
 		self.line = None
 
 def make_lock():
 	return FileLock() if WINDOWS or os.environ.get("RIG_LOCK") == "file" else Flock()
+
+WAITING = " (waiting for the rig to be quiet)"
 
 def wait_quiet(w, args):
 	"""Wait until nothing outside w's job uses a device or loads the CPU or disk; exit 75 instead with --no-wait.
@@ -663,18 +751,18 @@ def wait_quiet(w, args):
 		if not users and not overloaded(load, args):
 			return
 		if args.no_wait:
-			print("rig in use outside rig.py:", flush=True)
+			say("rig in use outside rig.py:")
 			for p in users:
-				print("  " + describe(p))
-			print("  load: " + load_text(load))
+				say("  " + describe(p))
+			say("  load: " + load_text(load))
 			sys.exit(75)
 		if time.monotonic() - said > 30:
 			said = time.monotonic()
-			print("%s in use outside rig.py, waiting:" % time.strftime("%H:%M:%S"), flush=True)
+			say("%s in use outside rig.py, waiting:" % time.strftime("%H:%M:%S"))
 			for p in users:
-				print("  " + describe(p), flush=True)
+				say("  " + describe(p))
 			if overloaded(load, args):
-				print("  load: " + load_text(load), flush=True)
+				say("  load: " + load_text(load))
 
 def watch(w, alive, log, args, on_signal, lock):
 	"""Log what is outside the job every PERIOD s until alive() is False; returns the sighting counts."""
@@ -716,39 +804,69 @@ def watch(w, alive, log, args, on_signal, lock):
 	return counts
 
 def finish(counts, log, aborted=None):
+	"""The run's last line: RIG_CLEAN or RIG_CONTAMINATED; or, for a run stopped before its job ended,
+	RIG_ABORTED with what was seen until then, never RIG_CLEAN."""
 	desktops = counts.pop("desktops", "none")
 	lines, gpu = counts.pop("clocks", ([], ""))
 	for line in lines:
 		log(line)
 	n = sum(counts.values())
-	if aborted:
-		log("RIG_ABORTED by %s" % aborted)
 	notes = ([] if desktops == "none" else ["desktop on the GPU: " + desktops]) + ([gpu] if gpu else [])
-	if n == 0:
+	if n:
+		notes.insert(0, "%d sightings: %s" % (n, ", ".join("%s %d" % kv for kv in counts.items())))
+	if aborted:
+		log("RIG_ABORTED by %s (until then: %s)" % (aborted, "; ".join(notes if n else ["clean"] + notes)))
+	elif n == 0:
 		log("RIG_CLEAN" + (" (%s)" % "; ".join(notes) if notes else ""))
 	else:
-		log("RIG_CONTAMINATED (%d sightings: %s)" % (n, "; ".join([", ".join("%s %d" % kv for kv in counts.items())] + notes)))
+		log("RIG_CONTAMINATED (%s)" % "; ".join(notes))
 
 def logger(path):
 	def log(text):
 		line = "%s %s" % (time.strftime("%H:%M:%S"), text)
 		with open(path, "a", encoding="utf-8") as f:
 			f.write(line + "\n")
-		print(line, flush=True)
+		say(line)
 	return log
 
 def log_path(args, tag):
 	return os.path.join(args.log_dir or os.getcwd(), re.sub(r"[^\w.+-]", "_", tag) + ".rig.log")
 
 def catch_signals():
-	"""got[0] becomes the name of the first stopping signal (Ctrl-C, Ctrl-Break, SIGTERM, SIGHUP)."""
+	"""got[0] becomes the name of the first stopping signal (Ctrl-C, Ctrl-Break, SIGTERM, SIGHUP). One
+	ignored when rig.py started stays ignored, by rig.py and by its job: under nohup a hangup (the
+	terminal or the ssh closing) stops neither, and a script's background job (cmd &) keeps out of the
+	script's Ctrl-C, as any program would."""
 	got = [None]
 	def on(sig, frame):
-		got[0] = signal.Signals(sig).name
+		got[0] = got[0] or signal.Signals(sig).name
 	for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"):
-		if hasattr(signal, name):
-			signal.signal(getattr(signal, name), on)
+		sig = getattr(signal, name, None)
+		if sig is not None and signal.getsignal(sig) is not signal.SIG_IGN:
+			signal.signal(sig, on)
 	return got
+
+def outlive(error, running, log, got, what, stop=None):
+	"""rig.py failed while the job runs (an error in its watch, a log it can't write). Releasing the rig
+	now would let the next run start beside the job, so the job goes on, unwatched, and the rig stays
+	held until it ends. A stopping signal still stops it (stop) or ends a hold, as usual."""
+	def note(text):
+		try:
+			log(text)
+		except Exception:
+			say(text)
+	error = "%s: %s" % (type(error).__name__, error)
+	note("rig.py failed (%s): %s runs on unwatched, and the rig stays held until it ends" % (error, what))
+	sig = None
+	while running():
+		if got[0]:
+			sig = got[0]
+			if stop:
+				stop(sig)
+			break
+		time.sleep(PERIOD)
+	return note, "RIG_ABORTED by an error in rig.py (%s)%s" % (error, ", then by %s" % sig if sig else
+		": %s ran on, unwatched, to its end" % what)
 
 def start_job(cmd, env, log):
 	"""Start cmd: on Linux in a session of its own, on Windows in a job object of its own (suspended
@@ -803,11 +921,13 @@ def cmd_run(args):
 	lock = make_lock()
 	if in_current_job(lock):
 		# The job holding the rig asked for it again: waiting would wait on itself forever
-		print("rig.py run: already inside the rig's job %s; running %s in it" % (os.environ["RIG_JOB"], args.tag), flush=True)
+		say("rig.py run: already inside the rig's job %s; running %s in it" % (os.environ["RIG_JOB"], args.tag))
 		code = subprocess.call(args.cmd)
 		sys.exit(code if code >= 0 else 128 - code)
 	lock.acquire(args.owner, args.tag, args.no_wait)
+	proc = None
 	try:
+		lock.record(note=WAITING)
 		wait_quiet(Watch(), args)
 		job = "%s-%d" % (re.sub(r"\W", "_", args.tag), os.getpid())
 		log = logger(log_path(args, args.tag))
@@ -835,6 +955,13 @@ def cmd_run(args):
 			log("LEFTOVER still running after the job: %s" % describe(p))
 		log("job exit %s" % code)
 		finish(counts, log, got[0])
+	except BaseException as e:
+		if proc is None or proc.poll() is not None:
+			raise
+		note, verdict = outlive(e, lambda: proc.poll() is None, log, got, "the job", lambda sig: stop_job(proc, sig))
+		note("job exit %s" % proc.wait())
+		note(verdict)
+		raise
 	finally:
 		lock.release()
 		for j in JOBS.values():
@@ -848,9 +975,11 @@ def cmd_hold(args):
 		sys.exit("rig.py hold: pid %d is not running" % args.pid)
 	lock = make_lock()
 	lock.acquire(args.owner, args.tag, args.no_wait)
+	held = False
+	def running():
+		return alive(args.pid, start)
 	try:
-		def running():
-			return alive(args.pid, start)
+		lock.record(note=WAITING)
 		wait_quiet(Watch(root_pid=args.pid), args)
 		if not running():
 			sys.exit("rig.py hold: pid %d ended while waiting for the rig" % args.pid)
@@ -859,19 +988,24 @@ def cmd_hold(args):
 		log = logger(log_path(args, args.tag))
 		got = catch_signals()
 		lock.record(job, args.pid, " (held for a running pid)")
+		held = True
 		log("rig held by %s for %s (running pid %d): %s" % (args.owner, args.tag, args.pid, cmdline(p) if p else "?"))
 		w = Watch(job=p and p.job, sid=p and p.sid, root_pid=args.pid)
 		counts = watch(w, running, log, args, got, lock)
-		finish(counts, log, got[0] and "%s (the held pid was left running)" % got[0])
+		finish(counts, log, got[0] and "%s; the held pid was left running" % got[0])
+	except BaseException as e:
+		if not held or not running():
+			raise
+		note, verdict = outlive(e, running, log, got, "the held pid")
+		note(verdict + ("; the held pid was left running" if got[0] else ""))
+		raise
 	finally:
 		lock.release()
 
 def cmd_status(args):
 	lock = make_lock()
 	state, info = lock.state()
-	if state == "held":
-		print("rig held: %s" % (info or "(no RIG_BUSY)"))
-	elif state == "hand":
+	if state in ("held", "hand"):
 		print("rig held: %s" % lock.describe(state, info))
 	else:
 		print("rig free" + (" (stale %s cleared: %s)" % ("gpu.lock" if isinstance(lock, FileLock) else "RIG_BUSY", info) if info else ""))
@@ -881,7 +1015,7 @@ def cmd_status(args):
 					if lock.state()[0] == "stale":
 						retry(os.remove, lock.path)
 			else:
-				lock.clear()
+				lock.clear_stale()
 	m = re.search(r"\bjob=(\S+)", info) if state == "held" else None
 	job = m and m.group(1)
 	m = re.search(r"\bpid=(\d+)", info) if state == "held" else None
@@ -921,8 +1055,10 @@ def cmd_break(args):
 	if not isinstance(lock, FileLock):
 		state, info = lock.state()
 		if state == "held":
-			sys.exit("rig.py break: a running rig.py holds the rig (%s); stop it instead" % (info or "no RIG_BUSY"))
-		lock.clear()
+			sys.exit("rig.py break: %s holds the rig (%s); stop it instead" % (
+				"the job of a rig.py that has ended" if lock.orphan else "a running rig.py", info or "no RIG_BUSY"))
+		if info and not lock.clear_stale():
+			sys.exit("rig.py break: the rig was taken this moment (%s)" % lock.text())
 		print("rig free" + (" (RIG_BUSY cleared: %s)" % info if info else ""))
 		return
 	with guarded(lock.path):
