@@ -496,3 +496,34 @@ def test_a_lost_answer_never_goes_to_the_wrong_command():
 		assert a.Wait(1).startswith("err no answer")
 	finally:
 		board.Close(off=False)
+
+
+def test_frame_match_reads_only_the_last_rises_and_keeps_its_delays_bounded(monkeypatch):
+	# Period: the median gap of the last 8 trigger rises, without copying all 4096 kept (~60 us a row before);
+	# the delays for the summary in bounded memory (campy/runstats.py)
+	import collections
+	from campy import runstats
+	board = types.SimpleNamespace(clock=outputs.ClockMap(), rises=collections.OrderedDict())
+	for i in range(5):
+		board.clock.Add(10**12 + i * 10**9, 10**12 + i * 10**9 + 400_000, i * 10**6)
+	gaps = [16_667, 16_666, 16_668, 16_667, 16_670, 16_660, 16_667, 16_666, 16_667]
+	t = 0
+	for k in range(1, outputs.RISES + 1):
+		t += gaps[k % len(gaps)] if k > outputs.RISES - 8 else 10_000 # older rises: another rate, not used
+		board.rises[k] = t
+	board.RiseHostNs = lambda k: board.clock.HostNs(board.rises.get(k))
+	match = rules.FrameMatch(board, print)
+	expected = int(np.median(np.diff(list(board.rises.values())[-8:]))) * 1000 # as it was computed
+	assert match.Period() == expected == 16_667_000
+	board.rises = collections.OrderedDict([(1, 100)])
+	assert match.Period() is None
+	assert isinstance(match.delays, runstats.Values) and rules.Stats(match.delays) is None
+	monkeypatch.setattr(runstats, "BLOCK", 64)
+	monkeypatch.setattr(runstats, "EXACT", 256)
+	delays = runstats.Values(np.float64, floor=0.001)
+	values = np.random.default_rng(4).normal(8.0, 0.5, 2000)
+	for v in values:
+		delays.Add(v)
+	s = rules.Stats(delays)
+	assert s["n"] == 2000 and s["max"] == round(values.max(), 3) and s["min"] == round(values.min(), 3)
+	assert s["p50"] == pytest.approx(np.percentile(values, 50), rel=2e-3)

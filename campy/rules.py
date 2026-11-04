@@ -109,12 +109,12 @@ Needs numpy, pyyaml and pyserial (campy's own requirements): it runs in
 campy's environment or campy-live's.
 """
 
-import argparse, json, math, os, signal, sys, threading, time
+import argparse, itertools, json, math, os, signal, sys, threading, time
 from datetime import datetime
 
 import numpy as np
 
-from campy import clock, liveresults, strictjson
+from campy import clock, liveresults, runstats, strictjson
 from campy.frametimes import GrowingNpy
 
 
@@ -612,7 +612,14 @@ def RowNs(row):
 
 
 def Stats(values):
-	v = np.asarray([x for x in values if x is not None], float)
+	if isinstance(values, runstats.Values):
+		v = values.Exact()
+		if v is None: # past runstats.EXACT values: from its histogram, within 0.05%
+			a = values.Approx((50, 99))
+			return dict(n=a["n"], p50=round(a[50], 3), p99=round(a[99], 3), max=round(a["max"], 3),
+				min=round(a["min"], 3))
+	else:
+		v = np.asarray([x for x in values if x is not None], float)
 	if not len(v):
 		return None
 	return dict(n=int(len(v)), p50=round(float(np.percentile(v, 50)), 3), p99=round(float(np.percentile(v, 99)), 3),
@@ -635,7 +642,7 @@ class FrameMatch:
 	def __init__(self, board, say):
 		self.board, self.say = board, say
 		self.offset, self.changes = 0, 0
-		self.delays = [] # ms, frame's trigger to the host
+		self.delays = runstats.Values(np.float64, floor=0.001) # ms, frame's trigger to the host: bounded memory
 		self.waiting = [] # (frame, row_first_ns) whose trigger the board hasn't reported yet
 		self.rows = 0
 		self.said_no_trigger = False
@@ -677,7 +684,7 @@ class FrameMatch:
 			if period and (delay < -slack or delay > 3 * period):
 				self.Rematch(frame, first, period, slack)
 			else:
-				self.delays.append(delay / 1e6)
+				self.delays.Add(delay / 1e6)
 		self.waiting = keep[-64:]
 
 	def Rematch(self, frame, first, period, slack):
@@ -697,7 +704,9 @@ class FrameMatch:
 			"by time, to a frame.".format(frame, best[0], self.offset))
 
 	def Period(self):
-		rises = list(self.board.rises.values())[-8:]
+		# The last 8 rises only: copying all of them (outputs.RISES, 4096) cost ~60 us a row, between deciding and
+		# sending
+		rises = list(itertools.islice(reversed(self.board.rises.values()), 8))[::-1]
 		if len(rises) < 2:
 			return None
 		return int(np.median(np.diff(rises))) * 1000

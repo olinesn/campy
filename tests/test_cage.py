@@ -286,6 +286,27 @@ def test_campy_live_uses_the_cage_beside_the_calibration_from_when_it_is_drawn(t
 	assert live.Pose3D(live_args(calibration, "--cage", other), names).tracker.cage is not None
 
 
+def test_campy_live_warns_when_a_cameras_frames_are_not_its_calibrations_size(tmp_path, monkeypatch):
+	# A camera recording at another ROI or binning than when it was calibrated: its 3D is wrong, silently
+	said = []
+	monkeypatch.setattr(live, "Say", said.append)
+	cams = scene3d.rig()
+	calibration = str(tmp_path / "calibration.toml")
+	write_calibration(calibration, cams) # each 1280 x 1024
+	names = [c.name for c in cams]
+	tracker = live.Pose3D(live_args(calibration, "--cage", "off"), names)
+	tracker.CheckSizes([(1024, 1280, 1)] * len(cams))
+	assert tracker.sizes == [] and not any("Warning" in s for s in said)
+	tracker.CheckSizes([(1024, 1280, 1), (512, 640, 1)] + [(1024, 1280, 1)] * (len(cams) - 2)) # binned 2 x 2
+	assert tracker.sizes == [{"camera": names[1], "calibration": [1280, 1024], "feed": [640, 512]}]
+	assert "Warning: {}'s frames are 640x512, its calibration's 1280x1024".format(names[1]) in said[-1]
+	for cam in tracker.cameras:
+		cam.size = None # a calibration without sizes: nothing to compare
+	tracker.sizes = []
+	tracker.CheckSizes([(512, 640, 1)] * len(cams))
+	assert tracker.sizes == []
+
+
 def test_the_log_says_which_animals_were_outside_the_cage(tmp_path):
 	log = live.Log(str(tmp_path / "campy-live.npy"), 3, 2, 4, 30, animals3d=2)
 	assert "outside_cage" in log.rows_type.names

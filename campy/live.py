@@ -11,7 +11,7 @@ queued, so it is never further behind than one set.
 
 It runs in its own Python environment, the one with torch and sleap-nn: it
 imports only numpy and this package's livefeed, liveresults, frametimes, clock,
-children, manifest and defaults, which need nothing else, so campy's camera
+children, manifest, defaults and runstats, which need nothing else, so campy's camera
 drivers need not be installed there. In that environment, either install
 campy without its dependencies
 
@@ -258,7 +258,7 @@ and its first.
 import argparse, json, math, os, queue, signal, sys, threading, time
 from datetime import datetime
 import numpy as np
-from campy import children, cpus, defaults, livefeed, liveresults, manifest, stopfile, strictjson
+from campy import children, cpus, defaults, livefeed, liveresults, manifest, runstats, stopfile, strictjson
 from campy import clock as hostclock # not clock: Run's clock is the GPU's
 from campy.frametimes import GrowingNpy, Writer
 
@@ -281,6 +281,16 @@ def Say(text):
 
 # ---------------------------------------------------------------- the feed
 
+def DeadWriter(reader):
+	# The pid of a ring's camera process when it is gone (its description says it: campy from October 2026 on), else
+	# None: a ring left RECORDING by a campy-acquire that was killed
+	try:
+		pid = int(strictjson.loads(reader.Description() or "{}").get("pid") or 0)
+	except (ValueError, TypeError, AttributeError):
+		return None
+	return pid if pid and not children.Alive(pid) else None
+
+
 class Cameras:
 	"""
 	The rings of every camera, and the newest set of frames that all hold.
@@ -298,6 +308,7 @@ class Cameras:
 		deadline = time.monotonic() + wait
 		said = False
 		partly = None # since when some cameras' feeds are there, and not all
+		leftover = set() # rings said to be left by a recording that was killed
 		while True:
 			for i, name in enumerate(self.names):
 				if self.readers[i] is None:
@@ -306,6 +317,16 @@ class Cameras:
 					except (OSError, ValueError): # not there yet, or being made (its header not written yet)
 						continue
 					if reader.Ended():
+						reader.Close()
+						continue
+					gone = DeadWriter(reader)
+					if gone:
+						# Left RECORDING by a recording that was killed: its frames are old, and the next
+						# recording's rings replace it (campy-live then took that for the end, and stopped)
+						if name not in leftover:
+							leftover.add(name)
+							Say("{}'s feed was left by a recording that ended without closing it (its camera process "
+								"{} is gone): waiting for the next recording's.".format(name, gone))
 						reader.Close()
 						continue
 					self.readers[i] = reader
@@ -2215,6 +2236,24 @@ class Pose3D:
 		if self.cagePath is not None:
 			self.text += ", cage {}".format(self.cagePath)
 		self.Watch(None)
+		self.sizes = [] # the cameras whose frames aren't the calibration's size (CheckSizes)
+
+	def CheckSizes(self, shapes):
+		# Each camera's frames (height, width, ...) against the size its calibration was made at (anipose's
+		# [width, height]): a camera recording at another ROI or binning than when it was calibrated puts its
+		# keypoints, and so the 3D, in the wrong place, with nothing else to show it
+		for name, camera, shape in zip(self.names, self.cameras, shapes):
+			try:
+				size = [int(v) for v in camera.size] if camera.size is not None else None
+			except (TypeError, ValueError):
+				size = None
+			if size and len(size) == 2 and size != [int(shape[1]), int(shape[0])]:
+				self.sizes.append({"camera": name, "calibration": size, "feed": [int(shape[1]), int(shape[0])]})
+		if self.sizes:
+			Say("Warning: {}. The 3D is wrong for a camera whose image isn't the one it was calibrated with (another "
+				"ROI, binning or resolution): calibrate it again at this size, or record at the calibration's.".format(
+				"; ".join("{camera}'s frames are {feed[0]}x{feed[1]}, its calibration's {calibration[0]}x"
+				"{calibration[1]}".format(**s) for s in self.sizes)))
 
 	def Update(self, keypoints, scores, frame):
 		self.Watch(frame)
@@ -2358,7 +2397,8 @@ class Log:
 		self.path = path
 		self.rows_type = RowType(n_cameras, instances, nodes, animals3d)
 		self.file = GrowingNpy(path, self.rows_type, header_bytes=1024)
-		self.latency_3d, self.pose3d = [], []
+		# The numbers for the summary's percentiles, in ns: bounded memory on a run of days (campy/runstats.py)
+		self.latency_3d, self.pose3d = runstats.Values(), runstats.Values()
 		self.outside = 0 # animals not found because their 3D was outside the cage, over every set
 		self.writer = Writer("campy-live log", path)
 		self.error = None # a write that failed, said when closing and in the summary (log_error)
@@ -2367,7 +2407,8 @@ class Log:
 		self.rows = []
 		self.every = max(1, int(round(frameRate or 60)))
 		self.frameRate = frameRate
-		self.latency_last, self.latency_first, self.read, self.predict, self.spread = [], [], [], [], []
+		self.latency_last, self.latency_first, self.read, self.predict, self.spread = (runstats.Values() for _ in
+			range(5))
 		self.sets, self.skipped, self.misaligned = 0, 0, 0
 		self.first = self.lastFrame = None
 		self.started = None # when the first set was read
@@ -2416,17 +2457,17 @@ class Log:
 		self.sets += 1
 		self.skipped += skipped
 		spread = int(host.max() - host.min())
-		self.spread.append(spread)
+		self.spread.Add(spread)
 		if self.frameRate and spread > 0.5e9 / self.frameRate:
 			self.misaligned += 1
-		self.latency_last.append(done_ns - host.max())
-		self.latency_first.append(done_ns - host.min())
-		self.read.append(read_ns - host.max())
+		self.latency_last.Add(done_ns - host.max())
+		self.latency_first.Add(done_ns - host.min())
+		self.read.Add(read_ns - host.max())
 		inference, pose3d = durations if durations is not None else (done_ns - read_ns, None)
-		self.predict.append(inference)
+		self.predict.Add(inference)
 		if poses is not None:
-			self.latency_3d.append(pose3d_ns - host.max())
-			self.pose3d.append(pose3d_ns - done_ns if pose3d is None else pose3d)
+			self.latency_3d.Add(pose3d_ns - host.max())
+			self.pose3d.Add(pose3d_ns - done_ns if pose3d is None else pose3d)
 
 	def Write(self):
 		# Hands the rows to the writer thread
@@ -2436,7 +2477,12 @@ class Log:
 
 	def Summary(self, since=0):
 		def Ms(values):
-			v = np.asarray(values[since:], np.float64) / 1e6
+			kept = values.Since(since) if since else values.Exact()
+			if kept is None: # a run past runstats.EXACT sets: the whole run's from its histogram, within 0.05%
+				a = values.Approx((50, 90, 99))
+				return {"p50": a[50] / 1e6, "p90": a[90] / 1e6, "p99": a[99] / 1e6, "max": a["max"] / 1e6,
+					"mean": a["mean"] / 1e6} if a else {}
+			v = np.asarray(kept, np.float64) / 1e6
 			if not len(v):
 				return {}
 			return {"p50": float(np.percentile(v, 50)), "p90": float(np.percentile(v, 90)),
@@ -2510,7 +2556,7 @@ def Run(args):
 			Say("Could not lower this program's priority (--nice): {}".format(e))
 
 	cameras = Cameras(names, poll=args.poll_ms / 1e3)
-	log = worker = clock = session = None
+	log = worker = clock = session = moved = None
 	# What campy-live-session.json says of the models, campy and the computer,
 	# read meanwhile: the models' SHA-256s, git, nvidia-smi and PowerShell take
 	# a second or more, done before the feed comes
@@ -2550,7 +2596,7 @@ def Run(args):
 			Say("The feed took over {:g} minutes to come, so the GPU's clock wasn't held: without a trigger, "
 				"the first sets may be slow.".format(GpuClock.WAITING_MOST_S / 60))
 		if placed:
-			PlaceCampy(args, cameras.readers)
+			moved = PlaceCampy(args, cameras.readers)
 		shape, dtype = cameras.readers[0].shape, cameras.readers[0].dtype
 		frameRate = cameras.readers[0].Info("frameRate")
 		if (shape, dtype) != expected:
@@ -2563,6 +2609,8 @@ def Run(args):
 				model, host = Prepare(args, len(names), shape, dtype)
 
 		tracker = Pose3D(args, [r.cameraName for r in cameras.readers]) if args.calibration else None
+		if tracker is not None:
+			tracker.CheckSizes([r.shape for r in cameras.readers])
 
 		out = args.out or "campy-live_{}".format(datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 		# campy-live-session.json, from a thread of its own: the first set is
@@ -2604,6 +2652,7 @@ def Run(args):
 			edges=getattr(model, "edges", None), pose3d=tracker.Describe() if tracker else None,
 			calibration=os.path.abspath(args.calibration) if tracker else None,
 			calibration_names=tracker.names if tracker else None, animals=tracker.animals if tracker else 0,
+			calibration_size_mismatch=tracker.sizes if tracker else None,
 			cage=tracker.cages if tracker else None,
 			cameras=[r.cameraName for r in cameras.readers],
 			rings=names, frame_shape=list(shape), frame_rate=frameRate, log=out + ".npy", cpus=placed,
@@ -2643,6 +2692,10 @@ def Run(args):
 				log.Close()
 			printer.Close()
 		finally:
+			try:
+				UnplaceCampy(moved)
+			except Exception as e:
+				Say("Could not put campy-acquire back on its CPUs: {}".format(e))
 			cameras.Close()
 			signal.signal(signal.SIGINT, previous)
 			if stopWatch is not None:
@@ -2901,7 +2954,7 @@ def PlaceCampy(args, readers):
 		Say("campy-acquire's feed doesn't say its processes (a campy from before October 2026): to put it on CPUs "
 			"{} start it so (python -m campy.cpus says how).".format(cpus.Text(chosen)))
 		return
-	moved, failed = 0, []
+	moved, failed, before = 0, [], {}
 	try:
 		tree = cpus.Tree(pids)
 	except OSError as e:
@@ -2910,7 +2963,12 @@ def PlaceCampy(args, readers):
 		if pid == os.getpid():
 			continue
 		try:
+			try:
+				was = cpus.Affinity(pid)
+			except OSError:
+				was = None # put back on every CPU
 			cpus.Pin(chosen, pid)
+			before[pid] = was
 			moved += 1
 		except OSError as e:
 			failed.append("process {}: {}".format(pid, e))
@@ -2919,6 +2977,39 @@ def PlaceCampy(args, readers):
 			cpus.Text(chosen), " (the efficiency cores)" if choice == "auto" else ""))
 	if failed:
 		Say("Could not move campy-acquire onto CPUs {} (--campy-cpus): {}".format(cpus.Text(chosen), "; ".join(failed)))
+	return {"roots": pids, "before": before} if before else None
+
+
+def UnplaceCampy(moved):
+	# campy-acquire back on the CPUs it had before PlaceCampy, as campy-live ends: campy-live stopped or crashed
+	# mid-recording left it on the efficiency cores alone. Encoders started since (an ffmpeg restart) get the widest
+	# CPUs the others had. Nothing when the recording has ended
+	if not moved:
+		return
+	every = None
+	def Was(pid):
+		nonlocal every
+		was = moved["before"].get(pid, widest)
+		if was is None:
+			every = every or cpus.All()
+			return every
+		return was
+	widest = max(moved["before"].values(), key=lambda was: -1 if was is None else len(was))
+	try:
+		tree = cpus.Tree(moved["roots"])
+	except OSError:
+		return
+	back = 0
+	for pid in tree:
+		if pid == os.getpid():
+			continue
+		try:
+			cpus.Pin(Was(pid), pid)
+			back += 1
+		except OSError:
+			pass # ended meanwhile
+	if back:
+		Say("campy-acquire ({} processes) back on the CPUs it had before campy-live moved it.".format(back))
 
 
 def Prepare(args, n_frames, shape, dtype):
