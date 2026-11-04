@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 chronic_control.py: ChronicRecord's stimulus sessions, made by the Arduino
-Nano ESP32 (chronic_timer/chronic_timer.ino) and run from the Raspberry Pi.
+Pi Pico (chronic_timer/chronic_timer.ino) and run from the Raspberry Pi.
 
 The Pi plans the whole session (the same bouts as chronicControlv13.py) and
-loads it onto the Nano over USB. The Nano then makes every TTL from its own
+loads it onto the Pico over USB. The Pico then makes every TTL from its own
 crystal clock: the OneBox record gate, the 60 Hz camera trigger and the two
 LED controllers, each edge on its microsecond, the LEDs on whole camera frames.
-The Pi only starts it, logs what the Nano reports, and stops it.
+The Pi only starts it, logs what the Pico reports, and stops it. (An Arduino Nano
+ESP32 with the same sketch works too.)
 
 Over SSH (each returns at once; the session runs in the background):
   python3 chronic_control.py start        start a session
@@ -18,6 +19,14 @@ Over SSH (each returns at once; the session runs in the background):
   python3 chronic_control.py plan         print the session's timeline (no board)
   python3 chronic_control.py run          the session in this terminal (start
                                           runs this); Ctrl-C ends it now
+  python3 chronic_control.py wiring       a wiring check, in the background until
+                                          'stop': each output blinks on its own, its
+                                          letter's number of times (A gate 1, B camera
+                                          2, C blue 3, D yellow 4), then a pause.
+                                          --channels AB checks only those outputs;
+                                          --pause 60 waits a minute between rounds.
+  python3 chronic_control.py blink        every output on and off together, 2 Hz
+                                          (--hz), in the background until 'stop'
 Change a setting for one session without editing this file:
   python3 chronic_control.py start --set TOTAL_DURATION=1800 --set INTERVAL=180
 
@@ -25,7 +34,7 @@ Needs pyserial (sudo apt install python3-serial) and the user in the dialout
 group; no sudo, no GPIO on the Pi.
 """
 
-import argparse, glob, json, math, os, signal, subprocess, sys, time
+import argparse, glob, json, math, os, re, signal, subprocess, sys, time
 from datetime import datetime
 
 # --- Timing settings (USER EDITABLE), as in chronicControlv13.py ---
@@ -48,15 +57,18 @@ SETTINGS = dict(
 	# exposures, so that every frame is either wholly lit or wholly dark
 	LED_LEAD_US=1000,
 	EXPOSURE_US=200,              # the camera's exposure (campy config), to check the above
+	# A camera-only session: this many seconds of camera pulses at CAMERA_FPS and
+	# nothing else (no bouts, no LEDs, the gate stays low). 0 = the bouts above.
+	CAMERA_ONLY=0,
 )
 
-# --- Outputs: Nano ESP32 screw terminal, the board's channel, what it is ---
+# --- Outputs: the Pico's pins (a Nano ESP32's D2-D5), the board's channel, what it is ---
 OUTPUTS = [
 	# name, Arduino pin, description (as chronicControlv13.py's log names them)
-	("A", 2, "Record Gate"),       # D2 -> OneBox / SpikeGLX level gate
-	("B", 3, "Camera"),            # D3 -> FLIR Line3, 60 Hz
-	("C", 4, "Blue LED"),          # D4 -> 465 nm LED controller TTL
-	("D", 5, "Yellow LED"),        # D5 -> 560 nm LED controller TTL
+	("A", 2, "Record Gate"),       # GP2 -> OneBox / SpikeGLX level gate
+	("B", 3, "Camera"),            # GP3 -> FLIR Line3
+	("C", 4, "Blue LED"),          # GP4 -> 465 nm LED controller TTL
+	("D", 5, "Yellow LED"),        # GP5 -> 560 nm LED controller TTL
 ]
 GATE, CAMERA, BLUE, YELLOW = range(4)
 
@@ -122,6 +134,13 @@ def Plan(s):
 	"""
 	rate = int(round(s["CAMERA_FPS"] * 1000))
 	bouts, trains, edges = [], [], []
+	if s["CAMERA_ONLY"]:
+		count = int(round(s["CAMERA_ONLY"] * s["CAMERA_FPS"]))
+		end = Rise(0, count - 1, rate) + s["CAMERA_PULSE_US"]
+		bouts.append(dict(number=1, extended=False, gate_on=0, camera_start=0, pulses=count, camera_end=end,
+			blue=None, yellow=None, gate_off=end))
+		trains.append((CAMERA, 0, count, rate, s["CAMERA_PULSE_US"]))
+		return bouts, trains, edges
 	for i in range(int(s["TOTAL_DURATION"] // s["INTERVAL"])):
 		extended = i % s["EXTENDED_EVERY"] == 0
 		b0 = Us(i * s["INTERVAL"])
@@ -169,6 +188,10 @@ def Describe(s, bouts):
 	lines = []
 	frames = {}
 	for b in bouts:
+		if b["blue"] is None:
+			lines.append("Camera only: {} pulses at {:g} Hz, {:.6f} s; no LEDs, the gate stays low".format(b["pulses"],
+				s["CAMERA_FPS"], b["camera_end"] / 1e6))
+			continue
 		blue, blue_part = LitFrames(b, *b["blue"], s)
 		yellow, yellow_part = LitFrames(b, *b["yellow"], s)
 		frames[b["number"]] = (blue, yellow)
@@ -190,12 +213,13 @@ def Frames(ks):
 
 
 def FindPort():
-	ports = sorted(glob.glob("/dev/serial/by-id/*Nano_ESP32*")) or sorted(glob.glob("/dev/serial/by-id/*Arduino*"))
+	ports = sorted(glob.glob("/dev/serial/by-id/*Pico*")) or sorted(glob.glob("/dev/serial/by-id/*Nano_ESP32*")) \
+		or sorted(glob.glob("/dev/serial/by-id/*Arduino*"))
 	return ports[0] if ports else "/dev/ttyACM0"
 
 
 class Board:
-	"""The Nano on its serial port: commands answered with ok/err; the rest are its reports."""
+	"""The board on its serial port: commands answered with ok/err; the rest are its reports."""
 
 	def __init__(self, port, on_report):
 		import serial
@@ -212,7 +236,9 @@ class Board:
 
 	def Poll(self):
 		# What it said since, each report passed on; the answers among it returned
-		self.heard += self.connection.read(4096)
+		# What's there, or the first byte to come within the timeout: never the
+		# whole timeout when an answer is already in (each command waits for one)
+		self.heard += self.connection.read(max(1, self.connection.in_waiting))
 		answers = []
 		while b"\n" in self.heard:
 			raw, self.heard = self.heard.split(b"\n", 1)
@@ -260,7 +286,7 @@ class Session:
 		self.log_path = os.path.join(self.log_dir, "timestamps.txt")
 		self.bouts, self.trains, self.edges = Plan(s)
 		self.labels = {}
-		for b in self.bouts:
+		for b in self.bouts if not s["CAMERA_ONLY"] else []:
 			self.labels[(b["gate_on"], GATE, 1)] = (b, "HIGH (SpikeGLX File Recording Started)")
 			self.labels[(b["gate_off"], GATE, 0)] = (b, "LOW (SpikeGLX File Closed)")
 			for ch, (on, off) in ((BLUE, b["blue"]), (YELLOW, b["yellow"])):
@@ -329,6 +355,9 @@ class Session:
 				"bout {}]".format(pulses, b["pulses"], last / 1e6, first / 1e6, b["number"]), last if last >= 0 else None)
 		elif words[0] == "done":
 			self.done = " ".join(words[2:])
+			if not re.search(r"stalls=0\b", self.done):
+				self.Log("SYSTEM: WARNING: the board's output queue ran dry during the session, so edges after that "
+					"moved later: {}".format(self.done))
 			self.Log("SYSTEM: Board finished the session at t={:.6f} s, every output low: {}".format(int(words[1]) / 1e6,
 				self.done))
 		elif words[0] == "ready":
@@ -368,7 +397,7 @@ class Session:
 			return
 		t = self.SessionTime()
 		b = self.Bout(t + 500000) # half a second's margin: a bout about to start still starts
-		if self.end_requested == "bout" and b is not None:
+		if self.end_requested == "bout" and b is not None and not self.s["CAMERA_ONLY"]:
 			answer = self.board.Command("end {}".format(b["gate_off"]))
 			self.Log("SYSTEM: Stop requested: the session ends after bout {}, when its gate goes low at board t={:.6f} s."
 				.format(b["number"], b["gate_off"] / 1e6))
@@ -402,7 +431,7 @@ class Session:
 		return True
 
 	def Run(self):
-		self.Log("=== NEW SESSION (chronic_control.py, timing by the Nano ESP32) ===")
+		self.Log("=== NEW SESSION (chronic_control.py, timing by the board) ===")
 		for line in Describe(self.s, self.bouts):
 			self.Log("PLAN: " + line)
 		try:
@@ -489,22 +518,161 @@ def CmdRun(args, s):
 	return session.Run()
 
 
+# --- the wiring check ---
+
+BLINK_US = 500000   # high, then low, for each blink
+PAUSE_US = 2500000  # after each output's blinks
+
+
+def WiringPlan(channels, pause_us=PAUSE_US):
+	"""
+	One round of the wiring check: each output in channels (letters, in the
+	order of OUTPUTS) blinks its letter's number of times on its own, A once,
+	B twice, C three times, D four. Returns the edges (time, channel, level),
+	in order, and the round's length, microseconds.
+	"""
+	channels = channels.upper()
+	edges, t = [], 0
+	for ch, (name, pin, description) in enumerate(OUTPUTS):
+		if name not in channels:
+			continue
+		for k in range(ch + 1):
+			edges += [(t, ch, 1), (t + BLINK_US, ch, 0)]
+			t += 2 * BLINK_US
+		t += PAUSE_US
+	t += pause_us - PAUSE_US
+	return edges, t
+
+
+BLINK_ROUND_S = 300 # blink: a round of this many seconds, loaded while the last ends
+
+
+def BlinkPlan(channels, hz, round_us=BLINK_ROUND_S * 10**6):
+	"""
+	Every output in channels blinking together at hz (half the period on),
+	for one round: edges (time, channel, level), in order, and the round's length.
+	"""
+	period = int(round(1e6 / hz))
+	chans = [ch for ch, (name, pin, description) in enumerate(OUTPUTS) if name in channels.upper()]
+	edges = []
+	for k in range(max(1, round_us // period)):
+		edges += [(k * period, ch, 1) for ch in chans] + [(k * period + period // 2, ch, 0) for ch in chans]
+	return edges, max(1, round_us // period) * period
+
+
+def WiringText(channels):
+	return ", ".join("{} ({}) {}x".format(name, description, ch + 1) for ch, (name, pin, description) in
+		enumerate(OUTPUTS) if name in channels)
+
+
+def CmdWiringRun(args, s):
+	# The check's rounds, one after another until stopped. The board makes each
+	# round by itself; between rounds everything is low, so a stop is clean.
+	channels = args.channels.upper()
+	blink = args.command == "blink-run"
+	edges, length = BlinkPlan(channels, args.hz) if blink else WiringPlan(channels, Us(args.pause))
+	stop = {"how": None}
+	signal.signal(signal.SIGUSR1, lambda *a: stop.update(how="now"))
+	signal.signal(signal.SIGTERM, lambda *a: stop.update(how="now"))
+	signal.signal(signal.SIGINT, lambda *a: stop.update(how="now"))
+	os.makedirs(args.state_dir, exist_ok=True)
+	day = os.path.join(args.log_dir, datetime.now().strftime("%Y-%m-%d"))
+	os.makedirs(day, exist_ok=True)
+	log_path = os.path.join(day, "wiring.txt")
+	started = time.time()
+	status = dict(state="running", mode="wiring", pid=os.getpid(), port=args.port, log=log_path, started=started,
+		session_s=0, bout=None, bouts=0, ends_s=None, end_requested=None, end_sent=False, pulses=0, done=None, error=None)
+
+	def Write(**changes):
+		status.update(changes, session_s=time.time() - started)
+		path = os.path.join(args.state_dir, "status.json")
+		with open(path + ".new", "w") as f:
+			json.dump(StrictJson(status), f, allow_nan=False)
+		os.replace(path + ".new", path)
+
+	def Log(text):
+		line = "[{}] {}".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], text)
+		with open(log_path, "a") as f:
+			f.write(line + "\n")
+		print(line, flush=True)
+
+	reports = []
+	board, rounds, lost_since = None, 0, None
+	if blink:
+		Log("=== BLINK: {} together at {:g} Hz, in rounds of {:g} s (a pause between rounds, while "
+			"the next loads) ===".format(", ".join(n for n, _, _ in OUTPUTS if n in channels), args.hz, length / 1e6))
+	else:
+		Log("=== WIRING CHECK: {}, each followed by a {:g} s pause; a round every {:g} s ===".format(WiringText(channels),
+			PAUSE_US / 1e6, length / 1e6))
+	Write()
+	while stop["how"] is None:
+		try:
+			if board is None:
+				board = Board(args.port, reports.append)
+				board.Check()
+				if lost_since is not None:
+					Log("Board back on {}.".format(args.port))
+				lost_since = None
+			if not reports or reports[-1].startswith("done"):
+				board.Command("clear")
+				for t, ch, level in edges:
+					if stop["how"] is not None:
+						break
+					board.Command("edge {} {} {}".format(ch, t, level))
+				if stop["how"] is not None:
+					break
+				reports.clear()
+				board.Command("go")
+				board.Command("end {}".format(length)) # the round lasts its pause too: low until then
+				rounds += 1
+				if rounds == 1 or rounds % 100 == 0:
+					Log("Round {} started.".format(rounds))
+				Write(bouts=rounds)
+			board.Poll()
+		except Exception as e:
+			if lost_since is None:
+				lost_since = time.time()
+				Log("Lost the board on {} ({}); it ends its round low by itself. Reconnecting...".format(args.port, e))
+			if board is not None:
+				board.close()
+			board, reports = None, []
+			time.sleep(2)
+	# Low before leaving: what the board said last, or a stop to be sure
+	try:
+		if board is None:
+			board = Board(args.port, reports.append)
+		board.Command("stop")
+		board.close()
+	except Exception as e:
+		Log("Could not reach the board to stop it ({}): it stops by itself at the end of its round.".format(e))
+	Log("Wiring check stopped after {} rounds.".format(rounds))
+	Write(state="done", done="wiring check stopped after {} rounds".format(rounds))
+	return 0
+
+
 def CmdStart(args, s):
 	status = Running(args.state_dir)
 	if status:
 		print("A session is already running (pid {}, log {}). Stop it first.".format(status["pid"], status["log"]))
 		return 1
-	Plan(s) # a plan that can't run says so here
+	wiring = args.command in ("wiring", "blink")
+	if args.command == "blink":
+		BlinkPlan(args.channels, args.hz)
+	elif wiring:
+		WiringPlan(args.channels, Us(args.pause))
+	else:
+		Plan(s) # a plan that can't run says so here
 	os.makedirs(args.state_dir, exist_ok=True)
 	try:
 		os.remove(os.path.join(args.state_dir, "status.json"))
 	except OSError:
 		pass
 	out = open(os.path.join(args.state_dir, "session.out"), "a")
-	command = [sys.executable, os.path.abspath(__file__), "run", "--port", args.port, "--state-dir", args.state_dir,
-		"--log-dir", args.log_dir] + sum((["--set", item] for item in args.set), [])
+	command = [sys.executable, os.path.abspath(__file__), {"wiring": "wiring-run", "blink": "blink-run"}.get(args.command, "run"), "--port", args.port,
+		"--state-dir", args.state_dir, "--log-dir", args.log_dir, "--channels", args.channels, "--pause", str(args.pause), "--hz", str(args.hz)] \
+		+ sum((["--set", item] for item in args.set), [])
 	child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
-	deadline = time.monotonic() + 30
+	deadline = time.monotonic() + 180 # loading a 6-day session is thousands of commands, a millisecond or two each
 	while time.monotonic() < deadline:
 		status = ReadStatus(args.state_dir)
 		if status and status["pid"] == child.pid and status["state"] != "starting":
@@ -513,6 +681,14 @@ def CmdStart(args, s):
 			break
 		time.sleep(0.1)
 	status = ReadStatus(args.state_dir)
+	if status and status["state"] == "running" and args.command == "blink":
+		print("Blinking (pid {}): {} together at {:g} Hz, until 'stop'. Log: {}".format(child.pid,
+			", ".join(n for n, _, _ in OUTPUTS if n in args.channels.upper()), args.hz, status["log"]))
+		return 0
+	if status and status["state"] == "running" and wiring:
+		print("Wiring check started (pid {}): {}, every {:g} s, until 'stop'. Log: {}".format(child.pid,
+			WiringText(args.channels.upper()), WiringPlan(args.channels, Us(args.pause))[1] / 1e6, status["log"]))
+		return 0
 	if status and status["state"] == "running":
 		print("Session started (pid {}): {} bouts, {:.0f} s. Log: {}".format(child.pid, status["bouts"], status["ends_s"],
 			status["log"]))
@@ -535,7 +711,10 @@ def CmdStop(args, s):
 		finally:
 			board.close()
 		return 0
-	os.kill(status["pid"], signal.SIGTERM if args.now else signal.SIGUSR1)
+	wiring = status.get("mode") == "wiring"
+	os.kill(status["pid"], signal.SIGTERM if args.now or wiring else signal.SIGUSR1)
+	if wiring:
+		args.now = True # a wiring check stops at once
 	deadline = time.monotonic() + (15 if args.now else 10)
 	while time.monotonic() < deadline:
 		now = ReadStatus(args.state_dir)
@@ -558,6 +737,13 @@ def CmdStatus(args, s):
 		return 0
 	if status["state"] in ("starting", "running") and not Alive(status["pid"]):
 		status["state"] = "gone (the program stopped; the board may still be running: 'stop --now')"
+	if status.get("mode") == "wiring":
+		print("Wiring check: {}, {:.0f} s in, {} rounds".format(status["state"], status.get("session_s") or 0, status["bouts"]))
+		for key in ("done", "error"):
+			if status.get(key):
+				print("  {}: {}".format(key, status[key]))
+		print("  log: {}".format(status["log"]))
+		return 0
 	print("Session: {}".format(status["state"]))
 	if status.get("session_s") is not None:
 		print("  {:.1f} s in, bout {} of {}; ends at {:.1f} s{}".format(status["session_s"], status["bout"] or "-",
@@ -580,16 +766,20 @@ def CmdPlan(args, s):
 
 def Main(argv=None):
 	parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-	parser.add_argument("command", choices=["start", "stop", "status", "plan", "run"])
+	parser.add_argument("command", choices=["start", "stop", "status", "plan", "run", "wiring", "wiring-run", "blink", "blink-run"])
+	parser.add_argument("--hz", type=float, default=2, help="blink: blinks a second (default 2)")
+	parser.add_argument("--pause", type=float, default=PAUSE_US / 1e6, help="wiring: seconds after the round's last output (default 2.5)")
+	parser.add_argument("--channels", default="ABCD", help="wiring: the outputs to blink (A gate, B camera, C blue, D yellow)")
 	parser.add_argument("--now", action="store_true", help="stop: end now rather than after the current bout")
 	parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", help="change a timing setting")
-	parser.add_argument("--port", default=None, help="the Nano's serial port (default: found in /dev/serial/by-id)")
+	parser.add_argument("--port", default=None, help="the board's serial port (default: found in /dev/serial/by-id)")
 	parser.add_argument("--state-dir", default=STATE_DIR)
 	parser.add_argument("--log-dir", default=LOG_ROOT, help="timestamps.txt goes in <log-dir>/<date>/")
 	args = parser.parse_args(argv)
 	args.port = args.port or FindPort()
 	s = Settings(args.set)
-	return {"start": CmdStart, "stop": CmdStop, "status": CmdStatus, "plan": CmdPlan, "run": CmdRun}[args.command](args, s)
+	return {"start": CmdStart, "stop": CmdStop, "status": CmdStatus, "plan": CmdPlan, "run": CmdRun, "wiring": CmdStart,
+		"wiring-run": CmdWiringRun, "blink": CmdStart, "blink-run": CmdWiringRun}[args.command](args, s)
 
 
 if __name__ == "__main__":

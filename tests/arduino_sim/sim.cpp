@@ -3,6 +3,7 @@
 // as "serial <microseconds> <text>" (text with \r and \n written as such).
 //   sim <end_us> <command> [<at_us>:<command> ...]
 // The first command is waiting at power-up; the others arrive at their times.
+// A command "@<path>" is that file's contents (Windows limits a command line's length).
 // SIM_START_US in the environment starts the clock there instead of at 0 (to
 // run a sketch across micros()'s 32-bit wrap); all times printed are the clock's.
 // SIM_INPUT makes an input pin a pulse train, as a camera trigger:
@@ -21,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <string>
 #include <vector>
@@ -104,6 +106,58 @@ void digitalWrite(int pin, int value) {
 	if (level.count(pin) && level[pin] == value) return;
 	level[pin] = value;
 	std::fprintf(live ? stderr : stdout, "%llu %d %d\n", Now(), pin, value);
+}
+
+// A PIO state machine running "out pins, n; out x, 32 - n; jmp x-- self" at 125 MHz:
+// each entry's levels last x + 3 ticks. Its entries are worked out as they're
+// pushed: the pins it will set are printed then, with the time they change, and
+// "pio <tick> <levels>" gives that time exactly. It waits, stalled, when its queue
+// is empty, as the real one does, which moves everything after it.
+static const unsigned long long TICKS_PER_US = 125;
+static int pio_first = 0, pio_count = 0;
+static unsigned long long pio_next = 0; // the tick the next entry starts
+static std::deque<unsigned long long> pio_queue; // when queued entries start
+static bool pio_stalled = true; // waiting for its first entry
+
+static void PioAdvance() {
+	unsigned long long now = Now() * TICKS_PER_US;
+	while (!pio_queue.empty() && pio_queue.front() <= now) pio_queue.pop_front();
+	if (pio_next < now) pio_stalled = true;
+}
+
+void SimPioInit(int first_pin, int pins) {
+	pio_first = first_pin;
+	pio_count = pins;
+}
+
+void SimPioPush(uint32_t word) {
+	PioAdvance();
+	unsigned long long now = Now() * TICKS_PER_US;
+	if (pio_next < now) pio_next = now;
+	FILE* out = live ? stderr : stdout;
+	std::fprintf(out, "pio %llu %u\n", pio_next, word & ((1u << pio_count) - 1));
+	for (int i = 0; i < pio_count; i++) {
+		int value = (word >> i) & 1, pin = pio_first + i;
+		if (level.count(pin) && level[pin] == value) continue;
+		level[pin] = value;
+		std::fprintf(out, "%llu %d %d\n", pio_next / TICKS_PER_US, pin, value);
+	}
+	pio_queue.push_back(pio_next);
+	pio_next += (word >> pio_count) + 3;
+}
+
+bool SimPioFull() {
+	PioAdvance();
+	return pio_queue.size() > 8;
+}
+
+bool SimPioStalled() {
+	PioAdvance();
+	return pio_stalled;
+}
+
+void SimPioClearStall() {
+	pio_stalled = false;
 }
 
 static std::string Escaped(const std::string& text) {
@@ -207,6 +261,18 @@ float SimSerial::parseFloat() {
 	return std::strtof(number.c_str(), 0);
 }
 
+static std::string Command(const std::string& arg) {
+	if (arg.empty() || arg[0] != '@') return arg;
+	std::string path = arg.substr(1, arg.find_first_of("\r\n") - 1), text;
+	FILE* f = std::fopen(path.c_str(), "rb");
+	if (!f) std::exit(3);
+	char data[4096];
+	size_t n;
+	while ((n = std::fread(data, 1, sizeof data, f)) > 0) text.append(data, n);
+	std::fclose(f);
+	return text;
+}
+
 int main(int argc, char** argv) {
 	ReadInputs();
 	if (argc == 2 && std::strcmp(argv[1], "live") == 0) {
@@ -218,11 +284,11 @@ int main(int argc, char** argv) {
 	if (argc < 3) return 2;
 	if (std::getenv("SIM_START_US")) now_us = std::strtoull(std::getenv("SIM_START_US"), 0, 10);
 	unsigned long long end = std::strtoull(argv[1], 0, 10);
-	input = argv[2];
+	input = Command(argv[2]);
 	for (int i = 3; i < argc; i++) {
 		std::string arg = argv[i];
 		size_t colon = arg.find(':');
-		later.push_back(std::make_pair(std::strtoull(arg.substr(0, colon).c_str(), 0, 10), arg.substr(colon + 1)));
+		later.push_back(std::make_pair(std::strtoull(arg.substr(0, colon).c_str(), 0, 10), Command(arg.substr(colon + 1))));
 	}
 	setup();
 	while (now_us < end) {

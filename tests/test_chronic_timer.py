@@ -29,6 +29,8 @@ def run(timer_sim, end_s, commands, *later, start_us=0):
 	out = subprocess.run(argv, capture_output=True, text=True, check=True, timeout=120, env=env).stdout
 	edges, said, text, text_t = {}, [], "", None
 	for line in out.splitlines():
+		if line.startswith("pio "):
+			continue
 		if line.startswith("serial "):
 			_, t, chunk = line.split(" ", 2)
 			text_t = int(t) if text_t is None else text_t
@@ -65,8 +67,8 @@ def falls(edges, pin):
 
 def test_it_answers_at_once_and_powers_up_low(timer_sim):
 	edges, said = run(timer_sim, 0.1, ["id", "status"])
-	assert said[0][1] == "ready chronic_timer 1"
-	assert [line for _, line in said[1:]] == ["ok chronic_timer 1", "ok status idle edges=0 trains=0"]
+	assert said[0][1] == "ready chronic_timer 2"
+	assert [line for _, line in said[1:]] == ["ok chronic_timer 2", "ok status idle edges=0 trains=0"]
 	assert said[1][0] < 1000 # microseconds: no timeouts to wait out
 	for pin in PIN.values():
 		assert edges[pin] == [(edges[pin][0][0], 0)]
@@ -166,7 +168,8 @@ def test_stop_ends_on_a_whole_pulse_then_everything_low(timer_sim):
 	assert 49 <= n <= 52
 	end = falls(edges, 3)[-1]
 	assert changes(edges, 4, 1)[-1][1] == 0 and changes(edges, 2, 1)[-1][1] == 0
-	assert changes(edges, 4, 1)[-1][0] <= end + 5 and changes(edges, 2, 1)[-1][0] <= end + 5
+	# At once on the Nano; on the Pico, what's queued (LOOKAHEAD_US, 20 ms) still happens
+	assert changes(edges, 4, 1)[-1][0] <= end + 21000 and changes(edges, 2, 1)[-1][0] <= end + 21000
 	assert any(line.startswith("done ") and "pulses={}".format(n) in line for _, line in said)
 
 
@@ -220,3 +223,90 @@ def test_a_standard_bout_from_the_pi_plan(timer_sim):
 	yellow, _ = cc.LitFrames(bouts[0], *bouts[0]["yellow"], s)
 	assert blue == [300, 301] and yellow == [302, 303]
 	assert any(line.startswith("done ") and "pulses=600" in line for _, line in said)
+
+
+def pio_entries(timer_sim, end_s, commands, *later):
+	# The Pico's build only: [(tick, levels)] the state machine sets, at 125 MHz
+	argv = [timer_sim, str(int(end_s * 1e6)), "\n".join(commands) + "\n"]
+	argv += ["{}:{}".format(int(t * 1e6), "\n".join(c) + "\n") for t, c in later]
+	out = subprocess.run(argv, capture_output=True, text=True, check=True, timeout=120).stdout
+	entries = [tuple(map(int, line.split()[1:])) for line in out.splitlines() if line.startswith("pio ")]
+	if not entries:
+		pytest.skip("the Nano's build has no state machine")
+	return entries, out
+
+
+def test_the_state_machines_edges_are_exact_to_the_tick(timer_sim):
+	# Every rise on its microsecond exactly (125 ticks each), however the entries are cut
+	entries, out = pio_entries(timer_sim, 8, ["train 1 500000 400 60000 3000", "edge 2 1000000 1", "edge 2 1030000 0",
+		"edge 3 1030000 1", "edge 3 1060000 0", "go"])
+	said = [line for line in out.splitlines() if line.startswith("serial ")]
+	t0 = int([line.split()[1] for line in said if "ok go" in line][0]) + GO_DELAY_US
+	changes_at = {}
+	previous = None
+	for tick, levels in entries:
+		if levels != previous:
+			changes_at[(tick - t0 * 125)] = levels
+		previous = levels
+	want = {}
+	for k in range(400):
+		r = 500000 + k * 10**9 // 60000
+		want[r * 125] = None
+		want[(r + 3000) * 125] = None
+	for t in (1000000, 1030000, 1060000):
+		want[t * 125] = None
+	session = {t: v for t, v in changes_at.items() if t >= 0}
+	assert set(session) == set(want)
+	# The blue-to-yellow handover is one entry: both change in the same tick
+	handover = session[1030000 * 125]
+	assert handover & 0b0100 == 0 and handover & 0b1000 == 0b1000 # channel 2 off, channel 3 on
+	assert "stalls=0" in out
+
+
+def test_the_queue_never_runs_dry_with_status_requests(timer_sim):
+	later = [(0.6 + 0.05 * i, ["status"]) for i in range(100)]
+	entries, out = pio_entries(timer_sim, 8, ["train 1 500000 400 60000 3000", "go"], *later)
+	assert "stalls=0" in out and "pulses=400" in out
+
+
+def test_a_camera_only_session(timer_sim):
+	s = cc.Settings(["CAMERA_ONLY=2", "CAMERA_FPS=30"])
+	bouts, trains, edges = cc.Plan(s)
+	assert edges == [] and trains == [(cc.CAMERA, 0, 60, 30000, 3000)]
+	assert "Camera only: 60 pulses at 30 Hz" in cc.Describe(s, bouts)[0]
+	got, said = run(timer_sim, 3, ["train {} {} {} {} {}".format(*trains[0]), "go"])
+	t0 = went_go(said)
+	assert np.abs(rises(got, 3) - t0 - np.arange(60) * 10**9 // 30000).max() <= 2
+	for pin in (2, 4, 5): # the gate and the LEDs never move
+		assert len(rises(got, pin)) == 0
+	assert any(line.startswith("done ") and "pulses=60" in line for _, line in said)
+
+
+def test_the_last_report_arrives_whole(timer_sim):
+	# On the Pico its end, self_check_us, is what shows the timing on the real board
+	got, said = run(timer_sim, 1, ["train 1 0 10 60000 3000", "go"])
+	done = [line for _, line in said if line.startswith("done ")]
+	assert len(done) == 1 and "stalls=0" in done[0]
+	if "self_check_us" in done[0]:
+		assert done[0].endswith("rises=0 self_check_us=0")
+
+
+def test_a_six_day_session_fits_and_starts_at_once(timer_sim, tmp_path):
+	# 1728 bouts, loaded as chronic_control.py loads them, from a file (too long for
+	# a command line on Windows). The Nano's smaller tables refuse it.
+	s = cc.Settings(["TOTAL_DURATION=518400"])
+	bouts, trains, edges = cc.Plan(s)
+	assert len(bouts) == 1728 and edges[-1][0] == bouts[-1]["gate_off"]
+	commands = ["clear"] + ["train {} {} {} {} {}".format(*t) for t in trains] + ["edge {} {} {}".format(ch, t, level) for t, ch, level in edges]
+	schedule = tmp_path / "schedule.txt"
+	schedule.write_text("\n".join(commands) + "\n")
+	go = 0.5
+	got, said = run(timer_sim, go + 0.2, ["@" + str(schedule)], (go, ["go", "status"]))
+	replies = [line for _, line in said]
+	if "err too many edges" in replies:
+		pytest.skip("the Nano's tables are smaller")
+	assert not [line for line in replies if line.startswith("err")]
+	assert "ok train 1728" in replies and "ok edge {}".format(len(edges)) in replies
+	t_asked = int(go * 1e6)
+	assert [t for t, line in said if line == "ok go"][0] - t_asked < 5000 # no long check before it starts
+	assert any(line.startswith("ok status running") for line in replies)

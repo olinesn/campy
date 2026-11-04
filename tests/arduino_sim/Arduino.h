@@ -17,6 +17,12 @@ void digitalWrite(int pin, int level);
 int digitalRead(int pin);
 void noInterrupts();
 void interrupts();
+// A PIO state machine's queue (chronic_timer.ino, compiled with SIM_PIO): see sim.cpp
+void SimPioInit(int first_pin, int pins);
+void SimPioPush(uint32_t word);
+bool SimPioFull();
+bool SimPioStalled();
+void SimPioClearStall();
 
 struct SimSerial {
 	void begin(uint32_t) {}

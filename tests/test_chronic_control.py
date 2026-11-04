@@ -221,3 +221,73 @@ def test_no_board_no_session(tmp_path):
 		os.close(master)
 	assert start.returncode == 1
 	assert "did not start" in start.stdout and "no answer" in start.stdout, start.stdout
+
+
+def test_the_wiring_check_blinks_each_output_its_letters_number_of_times():
+	edges, length = cc.WiringPlan("ABCD")
+	for ch, times in ((cc.GATE, 1), (cc.CAMERA, 2), (cc.BLUE, 3), (cc.YELLOW, 4)):
+		assert sum(1 for _, c, level in edges if c == ch and level == 1) == times
+	assert [t for t, _, _ in edges] == sorted(t for t, _, _ in edges)
+	# One output at a time: never two high together
+	high = set()
+	for t, ch, level in edges:
+		(high.add if level else high.discard)(ch)
+		assert len(high) <= 1
+	assert length == 10 * 2 * cc.BLINK_US + 4 * cc.PAUSE_US
+	only, short = cc.WiringPlan("b")
+	assert {c for _, c, _ in only} == {cc.CAMERA} and short == 2 * 2 * cc.BLINK_US + cc.PAUSE_US
+	_, slow = cc.WiringPlan("AB", pause_us=60 * 10**6) # --pause 60: a minute after the round's last output
+	assert slow == 3 * 2 * cc.BLINK_US + cc.PAUSE_US + 60 * 10**6
+
+
+def test_a_wiring_check_runs_until_stopped(tmp_path, board):
+	port, log_path = board
+	start = control(tmp_path, port, "wiring", "--channels", "AB")
+	assert start.returncode == 0 and "Wiring check started" in start.stdout, start.stdout + start.stderr
+	assert "A (Record Gate) 1x, B (Camera) 2x" in start.stdout
+	time.sleep(18) # two rounds and more (8 s each)
+	assert "Wiring check: running" in control(tmp_path, port, "status").stdout
+	stop = control(tmp_path, port, "stop")
+	assert stop.returncode == 0 and "stopped" in stop.stdout, stop.stdout
+	p = pins(log_path)
+	assert sum(1 for _, level in p[2] if level == 1) >= 2 # the gate, a round or more
+	assert sum(1 for _, level in p[3] if level == 1) >= 2 # the camera
+	assert 4 not in p or all(level == 0 for _, level in p[4]) # the LEDs, never
+	assert 5 not in p or all(level == 0 for _, level in p[5])
+	for pin in (2, 3):
+		assert p[pin][-1][1] == 0
+	# Each round lasts its pauses too: the gate blinks once a round, 8 s apart
+	_, length = cc.WiringPlan("AB")
+	gate = [t for t, level in p[2] if level == 1]
+	assert all(b - a > length - 500000 for a, b in zip(gate, gate[1:])), gate
+	(day,) = (tmp_path / "logs").iterdir()
+	assert "WIRING CHECK" in (day / "wiring.txt").read_text()
+
+
+def test_blink_switches_every_output_together():
+	edges, length = cc.BlinkPlan("ABCD", 2, round_us=10 * 10**6)
+	assert length == 10 * 10**6
+	for ch in range(4):
+		ups = [t for t, c, level in edges if c == ch and level == 1]
+		downs = [t for t, c, level in edges if c == ch and level == 0]
+		assert ups == list(range(0, 10 * 10**6, 500000)) and downs == [t + 250000 for t in ups]
+	assert [t for t, _, _ in edges] == sorted(t for t, _, _ in edges)
+	assert len(cc.BlinkPlan("ABCD", 2)[0]) == 300 * 2 * 2 * 4 # a 5-minute round fits the Pico's 12288 edges
+
+
+def test_loading_is_fast(board):
+	# Each command's answer is read as soon as it comes: a 6-day session is
+	# 12,000 commands, which at the read timeout (50 ms) each took 10 minutes
+	port, log_path = board
+	b = cc.Board(port, lambda line: None)
+	try:
+		b.Check()
+		b.Command("clear")
+		t = time.monotonic()
+		for i in range(300):
+			b.Command("edge 2 {} {}".format(i * 1000, i % 2))
+		took = time.monotonic() - t
+		b.Command("clear")
+	finally:
+		b.close()
+	assert took < 5, "{:.1f} s for 300 commands".format(took) # 15 s at the timeout
