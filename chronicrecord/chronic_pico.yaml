@@ -34,8 +34,8 @@ cameraTrigger: "Line3"
 # bouts = TOTAL_DURATION / 300; long bouts = bouts / 6 rounded up; recTimeInSec =
 # 240 x long bouts + 10 x the rest. 4 days, TOTAL_DURATION=345600: 1152 bouts, 192 long,
 # 55,680 s.)
-# Disk: the 6-day plan needs about 2.9 TB on this PC (videos ~140-200 GB, SpikeGLX ~2.6-2.7 TB
-# on the same drive while the gate is high), far more than its ~500 GB free: add a data disk
+# Disk: the 6-day plan needs about 2.9 TB on this PC (videos ~140-200 GB, SpikeGLX ~2.7 TB
+# on the same drive while the gate is high, plus 1 s before and after each bout), far more than its ~500 GB free: add a data disk
 # first (docs/hardware.md, "Recording many days").
 # If the Pi is stopped early, campy keeps waiting for frames: stop it with Ctrl-C in its
 # window, or by creating the stop file below.
