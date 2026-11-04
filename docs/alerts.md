@@ -59,7 +59,7 @@ campy-notify --test
 
 ## What campy-acquire watches
 
-Every recording is watched, however it was started: a thread in `campy-acquire`'s main process reads each camera's counters (frames grabbed, waiting for ffmpeg, given to ffmpeg, dropped) every 2 seconds. That process otherwise only waits for the camera processes, so the cameras never wait for it. Each alert is also said on the console (`Alert: ...`, `Alert resolved: ...`) and, when the alerts file exists, written to `alerts.log` in the recording's folder. Without the file, the console lines and the disk stop below still happen.
+Every recording is watched, however it was started: a thread in `campy-acquire`'s main process reads each camera's counters (frames grabbed, waiting for ffmpeg, given to ffmpeg, dropped) every 2 seconds. That process otherwise only waits for the camera processes, so the cameras never wait for it. Each alert is also said on the console (`Alert: ...`, `Alert resolved: ...`) and written to `alerts.log` in the recording's folder, with or without the alerts file. Without the file, nothing is sent, but the console lines, `alerts.log` and the disk stop below still happen.
 
 | What | When it is an alert | How bad | Over when |
 |---|---|---|---|

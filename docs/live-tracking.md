@@ -97,6 +97,7 @@ post:
   - Before anything is replaced, ffmpeg's packet checksums of the two files are compared line by line: every packet, timestamp and the codec's header must be identical. Only then does the plain file replace the fragmented one.
   - With `remux: keep`, the fragmented file stays beside it as `<name>.fragmented.mp4`.
   - If the check fails, or the disk has no room for one more copy of the video, the original stays as it was, and the log says why.
+  - On Windows, an antivirus scanner or an indexer sometimes holds a file that was just closed, and Windows then refuses to rename it. Each rename is tried again for about 5 s. If it is still refused, the original keeps its name (with `remux: keep` too), the log says so, and the other cameras are remuxed all the same. `campy-session post <folder> --only remux` tries that camera again later.
   - A 30 s video of 3 cameras takes a fraction of a second.
 - **join** is for a camera whose ffmpeg was restarted during the recording (`restartFfmpeg`), so that its video is in more than one file (`0.mp4`, `0.part2.mp4`, ...). It joins them into one plain MP4, `0.joined.mp4`, without re-encoding, for the tools that read one video per camera: `campy-live-export` (and so LUC3D), `campy-label-pack`, `campy-model-fit` and `campy-synctest`, which say to run it when it hasn't. The files stay as they are.
   - Before it is kept, every packet of the joined video must be the files' packets, in order (ffmpeg's packet checksums), and there must be as many as "frametimes.npy" has rows. Files whose codec headers differ are not joined, since a join without re-encoding keeps only the first file's; each is whole on its own.
@@ -142,14 +143,14 @@ What the page shows, refreshed every second:
   - **programs:** each one's state, and a button that opens `campy-live-view` again if it was closed.
 - **After it:** each step of `post:`, as it runs.
 
-**Stop** stops the recording exactly as Ctrl-C does: each camera closes its video. If a camera hangs while closing, the button turns into **Stop now, without closing**, for a few seconds. Closing the page stops nothing, and the page can be opened again at any time.
+**Stop** stops the recording exactly as Ctrl-C does: each camera closes its video. If a camera hangs while closing, the button turns into **Stop now, without closing**, for a few seconds. Closing the page stops nothing, and the page can be opened again at any time: from the printed address, or by running `campy-session panel` again (or double-clicking the icon). A panel that is already open writes its address into `~/.campy/status/panel.json`, readable by your user only, and a second launch that finds it answering opens that page in the browser and ends, instead of refusing with "Another campy-session is running".
 
 The page is served only to this computer (`127.0.0.1`):
 
 - **Over Remote Desktop** (Windows), open it in the rig's own browser.
 - **From another computer**, go through SSH: run `ssh -L 8765:127.0.0.1:8765 <rig>`, then open the printed address on your own computer.
 
-Every request needs the random key in that address, so no other program on the computer can press Start or Stop. `--port` picks another port, and `--no-browser` only prints the address.
+Every request needs the random key in that address, so no other program on the computer can press Start or Stop. It must also be addressed to this computer (`127.0.0.1`, `localhost` or `[::1]`), so a web page in the rig's browser that has somehow learnt the key still can't press Start or Stop. `--port` picks another port, and `--no-browser` only prints the address.
 
 **Closing the panel's window never ends a recording.** The panel starts `campy-acquire` and `campy-live` apart from its own console: on Windows in a hidden console of their own, on Linux in a session of their own. So closing the window, or the terminal, or the panel crashing, leaves the recording going to its end, with `campy-live` tracking it. Stop and Ctrl-C in the panel's window reach `campy-acquire` through its stop file. A panel opened again while such a recording is still running says so, refuses to start another (two recordings can't share the cameras), and offers **Stop that recording**. `campy-session run` in a terminal keeps its own behaviour: there, Ctrl-C reaches `campy-acquire` directly.
 

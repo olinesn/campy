@@ -115,6 +115,55 @@ def test_a_failed_ffmpeg_leaves_no_copy(tmp_path):
 	assert os.listdir(str(tmp_path)) == ["0.mp4"]
 
 
+def refused(monkeypatch, refuse, times=None):
+	# os.replace as Windows does when another program (an antivirus scanner, an indexer, a viewer) holds a file:
+	# PermissionError for the renames refuse(src, dst) picks, every time or the first `times` tries
+	real, tries = os.replace, {"n": 0}
+	def replace(src, dst):
+		if refuse(str(src), str(dst)) and (times is None or tries["n"] < times):
+			tries["n"] += 1
+			raise PermissionError(32, "The process cannot access the file because it is being used by another process",
+				str(src))
+		return real(src, dst)
+	monkeypatch.setattr(post.os, "replace", replace)
+	monkeypatch.setattr(post, "REPLACE_WAIT_S", 0)
+	return tries
+
+
+def test_a_rename_refused_for_a_moment_is_tried_again(tmp_path, monkeypatch):
+	path = tmp_path / "0.mp4"
+	fragmented_clip(path)
+	tries = refused(monkeypatch, lambda src, dst: ".remux-tmp" in src, times=3)
+	post.Remux(str(path), ffmpeg(), keep=True)
+	assert tries["n"] == 3
+	assert sorted(os.listdir(str(tmp_path))) == ["0.fragmented.mp4", "0.mp4"] and not post.Fragmented(str(path))
+
+
+@pytest.mark.parametrize("keep", [True, False])
+def test_a_rename_always_refused_leaves_the_original_under_its_name(tmp_path, monkeypatch, keep):
+	# remux: keep moved the original aside first: it is moved back, so the camera never ends up with no 0.mp4
+	path = tmp_path / "0.mp4"
+	fragmented_clip(path)
+	original = path.read_bytes()
+	refused(monkeypatch, lambda src, dst: ".remux-tmp" in src)
+	with pytest.raises(post.PostError, match="could not put the remuxed copy .* the original is kept as it was"):
+		post.Remux(str(path), ffmpeg(), keep=keep)
+	assert os.listdir(str(tmp_path)) == ["0.mp4"] and path.read_bytes() == original
+
+
+def test_one_camera_refused_does_not_stop_the_others(tmp_path, monkeypatch):
+	folder = recording(tmp_path)
+	refused(monkeypatch, lambda src, dst: "Camera0" in dst)
+	said = []
+	class Log:
+		def Say(self, text):
+			said.append(text)
+	state, why = post.StepRemux(str(folder), {"remux": True}, Log(), ffmpeg=ffmpeg())
+	assert state == "failed" and "1 of 2 videos not remuxed (Camera0)" in why
+	assert post.Fragmented(str(folder / "Camera0" / "0.mp4")) and not post.Fragmented(str(folder / "Camera1" / "0.mp4"))
+	assert any("Camera0" in line and "could not put the remuxed copy" in line for line in said)
+
+
 def test_every_camera_video_is_found_calibration_ones_too(tmp_path):
 	folder = recording(tmp_path)
 	(folder / "Camera0" / "calibration_images").mkdir()

@@ -153,16 +153,40 @@ def test_the_live_environment_must_run_the_same_feed_code(tmp_path):
 
 def test_one_campy_session_at_a_time(home):
 	lock = session.Lock().Take()
+	other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)", "campy-session-standin"])
+	stranger = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
 	try:
 		with open(lock.path, "w") as f:
-			f.write("{} x\n".format(os.getppid())) # another live process holds it
+			f.write("{} x\n".format(other.pid)) # another live campy-session holds it
 		with pytest.raises(session.SessionError, match="Another campy-session is running"):
 			session.Lock().Take()
 		with open(lock.path, "w") as f:
 			f.write("999999999 x\n") # one that ended without removing it
 		session.Lock().Take().Release()
+		with open(lock.path, "w") as f:
+			f.write("{} x\n".format(stranger.pid)) # its pid another program's now (after a power cut): not campy
+		session.Lock().Take().Release()
 	finally:
+		for p in (other, stranger):
+			p.kill()
+			p.wait()
 		lock.Release()
+
+
+def test_campy_session_note_adds_a_note(tmp_path):
+	# The command the docs give (campy-session note <folder> "text"), run as campy-session is
+	(tmp_path / "session.json").write_text(json.dumps({"schema": 1, "annotations": [], "x": 1}))
+	env = dict(os.environ, PYTHONPATH=REPO)
+	out = subprocess.run([sys.executable, "-m", "campy.session", "note", str(tmp_path), "M3 lost its ear tag"],
+		env=env, capture_output=True, text=True, timeout=60)
+	assert out.returncode == 0, out.stderr
+	data = json.loads((tmp_path / "session.json").read_text())
+	assert data["x"] == 1 and [n["text"] for n in data["annotations"]] == ["M3 lost its ear tag"]
+	out = subprocess.run([sys.executable, "-m", "campy.session", "note", str(tmp_path / "nothing"), "x"], env=env,
+		capture_output=True, text=True, timeout=60)
+	assert out.returncode == 1 and "has no session.json" in out.stderr
+	out = subprocess.run([sys.executable, "-m", "campy.session"], env=env, capture_output=True, text=True, timeout=60)
+	assert out.returncode == 2 and "campy-session note <recording folder>" in out.stderr
 
 
 # ------------------------------------------------------------------ end to end
