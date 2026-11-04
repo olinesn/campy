@@ -354,7 +354,8 @@ def test_the_disk_fills_and_the_recording_stops_in_time(monkeypatch, tmp_path):
 		"20).".format(rig.watch.Folders()[0]) in alerts
 	full = [t for t in alerts if "fills at 50 MB/s" in t]
 	assert full and full[0].startswith(":red_circle: *Test rig*: The disk with ")
-	assert "before the recording ends. campy will then stop the recording, cleanly." in full[0]
+	assert "while the cameras record: down to 2.00 GB free after 8 min 20 s more of recording, 1 h 50 min of " \
+		"recording before it ends. campy will then stop the recording, cleanly." in full[0]
 	assert rig.stops == []
 	while rig.disk.free >= 2e9:
 		rig.Run(watch.DISK_EVERY_S)
@@ -367,6 +368,24 @@ def test_the_disk_fills_and_the_recording_stops_in_time(monkeypatch, tmp_path):
 	assert rig.stops == [rig.watch.stopped] and rig.watch.stopped.startswith("only 1.50 GB free on the disk with ")
 	rig.watch.Stop({})
 	assert "stopped by campy after" in rig.Sent()[-1]
+
+
+def test_a_disk_filled_in_bouts_is_counted_in_frames(monkeypatch, tmp_path):
+	# A trigger that runs the cameras 10 s in every 300 s: recTimeInSec is camera time (600 s here, an hour and a
+	# quarter of wall-clock time). 100 MB/s while they record: 60 GB to go, with 30 GB free. Counted in wall-clock
+	# time, the disk filled at 3.3 MB/s and the recording had 10 min left: no alert. In frames, it does not last.
+	rig = Rig(monkeypatch, tmp_path, free=30e9, recTimeInSec=600, alertNoFramesSec=400).Start()
+	said = len(rig.Sent())
+	for _ in range(2):
+		for _ in range(10): # the disk fills as the frames come
+			rig.disk.free -= 100e6
+			rig.Run(1)
+		rig.Run(290, cameras=[])
+	rig.Run(1)
+	full = [t for t in rig.Sent()[said:] if "fills at" in t]
+	assert len(full) == 1 and full[0].startswith(":red_circle: *Test rig*: The disk with ")
+	assert "fills at 100 MB/s while the cameras record: down to 2.00 GB free after 4 min 20 s more of recording, " \
+		"5 min 20 s of recording before it ends." in full[0]
 
 
 def test_a_disk_that_lasts(monkeypatch, tmp_path):
@@ -749,8 +768,8 @@ def test_the_trigger_pauses(monkeypatch, tmp_path):
 	assert len(rig.Sent()) == 2
 	assert rig.watch.Open()["trigger/paused"].text.endswith(" Pause 2 of the recording.")
 	status = rig.watch.Status("recording")
-	assert status["trigger_pauses"] == [{"pulses": 68, "seconds": 2.267, "before_frame": 601},
-		{"pulses": 10, "seconds": 0.333, "before_frame": 1562}]
+	assert status["trigger_pauses"] == [{"pulses": 68, "seconds": 2.267, "before_frame": 601, "planned": False},
+		{"pulses": 10, "seconds": 0.333, "before_frame": 1562, "planned": False}]
 	assert [c["trigger_pulses_without_frame"] for c in status["cameras"]] == [78, 78, 78]
 	rig.Run(watch.MISSED_CLEAR_S + watch.EVERY_S)
 	assert rig.Sent()[-1].endswith("Trigger: no pause for 2 min (2 in all)")
@@ -806,3 +825,59 @@ def test_a_lone_triggered_camera_can_not_tell_a_pause(monkeypatch, tmp_path):
 		"their numbers say; frametimes.npy has each one's time."
 	rig.watch.Stop()
 	assert "- Camera0: 661 frames, no frame for 15 trigger pulses" in rig.Sent()[-1]
+
+
+def bouts(rig, pulses, n=3):
+	# n bouts: 10 s of frames, then every camera's next frame after pulses without one
+	for _ in range(n):
+		rig.Run(10)
+		rig.clock.now += pulses / 30
+		for c in range(len(rig.names)):
+			rig.Pause(c, pulses)
+		rig.Run(watch.EVERY_S)
+
+
+def test_planned_pauses_are_logged_not_sent(monkeypatch, tmp_path):
+	rig = Rig(monkeypatch, tmp_path, cameraTrigger="Line3", alertTriggerPauseSec=60, alertNoFramesSec=400).Start()
+	bouts(rig, 8700) # 290 s between bouts
+	assert len(rig.Sent()) == 1 # only the start
+	assert "trigger/paused" not in rig.watch.Open()
+	assert [s for s in rig.said if s.startswith("Trigger: ")][0] == "Trigger: The trigger paused as planned: all 3 " \
+		"cameras got no frame for the same 8700 pulses (4 min 50 s), just before frame 301, about 5 min 2 s in " \
+		"(alertTriggerPauseSec 60: logged, not sent). Planned pause 1 of the recording."
+	with open(os.path.join(rig.watch.folder, "alerts.log"), encoding="utf-8") as f:
+		logged = [json.loads(line) for line in f if "planned pause" in line]
+	assert len(logged) == 3 and logged[2]["key"] == "trigger/planned-pause" and logged[2]["severity"] == "info"
+	assert logged[2]["status"] == "logged only" and logged[2]["text"].endswith("Planned pause 3 of the recording.")
+	status = rig.watch.Status("recording")
+	assert [p["planned"] for p in status["trigger_pauses"]] == [True] * 3
+	assert status["trigger_pauses"][0] == {"pulses": 8700, "seconds": 290.0, "before_frame": 301, "planned": True}
+	rig.watch.Stop()
+	lines = rig.Sent()[-1].split("\n")
+	assert lines[0].startswith(":information_source: *Test rig*: Recording 2026-10-23_01-00-00 ended after ")
+	assert lines[-1] == "- The trigger paused as planned 3 times (alertTriggerPauseSec 60): 14 min in all, " \
+		"the first just before frame 301."
+
+
+def test_a_short_pause_is_still_an_alert(monkeypatch, tmp_path):
+	rig = Rig(monkeypatch, tmp_path, cameraTrigger="Line3", alertTriggerPauseSec=60, alertNoFramesSec=400).Start()
+	bouts(rig, 8700, n=1)
+	bouts(rig, 300, n=1) # 10 s: below alertTriggerPauseSec, a fault
+	assert rig.Sent()[-1].startswith(":large_orange_circle: *Test rig*: The trigger paused: all 3 cameras got no frame "
+		"for the same 300 pulses (10.00 s)")
+	# Its "later than their numbers say" counts the planned pause too
+	assert "from there on the frames are 300.00 s later than their numbers say" in rig.Sent()[-1]
+	rig.watch.Stop()
+	lines = rig.Sent()[-1].split("\n")
+	assert lines[0].endswith(", with the trigger paused:")
+	assert lines[-2].startswith("- The trigger paused 1 time: 300 pulses")
+	assert lines[-1].startswith("- The trigger paused as planned 1 time (alertTriggerPauseSec 60): 4 min 50 s in all")
+
+
+def test_a_lone_camera_planned_pause(monkeypatch, tmp_path):
+	rig = Rig(monkeypatch, tmp_path, names=["Camera0"], cameraTrigger="Line3", alertTriggerPauseSec=60,
+		alertNoFramesSec=400).Start()
+	bouts(rig, 8700, n=2)
+	assert len(rig.Sent()) == 1
+	rig.watch.Stop()
+	assert rig.Sent()[-1].split("\n")[1] == "- Camera0: 722 frames" # no "no frame for ... pulses"

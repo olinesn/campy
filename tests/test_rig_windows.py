@@ -520,15 +520,22 @@ def test_cpu_and_io_of_another_process(tmp_path):
 	big = tmp_path / "big"
 	child = subprocess.Popen([sys.executable, "-c",
 		"import sys, time\nt = time.time() + 1.5\nwhile time.time() < t: pass\n"
-		"f = open(sys.argv[1], 'wb', buffering=0)\nfor i in range(40): f.write(b'x' * 1000000)\nf.close()\ntime.sleep(2)", str(big)])
+		"f = open(sys.argv[1], 'wb', buffering=0)\nfor i in range(40): f.write(b'x' * 1000000)\nf.close()\ntime.sleep(60)", str(big)])
 	try:
 		time.sleep(0.3)
 		a = {r[0]: r for r in rig_windows.process_table()}[child.pid]
-		time.sleep(2.5)
-		b = {r[0]: r for r in rig_windows.process_table()}[child.pid]
+		# Wait for the write instead of a fixed sleep: a slow runner can take
+		# seconds to start it. The child sleeps until it is killed below.
+		deadline = time.monotonic() + 20
+		while True:
+			b = {r[0]: r for r in rig_windows.process_table()}[child.pid]
+			if b[5] - a[5] >= 40e6 or time.monotonic() > deadline:
+				break
+			time.sleep(0.2)
 		assert b[4] - a[4] > 0.8, (a, b)  # it spun about 1.2 s of CPU
 		assert b[5] - a[5] >= 40e6, (a, b)  # and wrote 40 MB
 	finally:
+		child.kill()
 		child.wait()
 
 
