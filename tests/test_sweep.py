@@ -45,16 +45,37 @@ def test_codec_takes_the_configs_names_only(capsys):
 	assert "invalid choice: 'hevc'" in capsys.readouterr().err
 
 def test_small_sweep():
+	# Real streams through ffmpeg. How fast they go is the runner's (a shared CI runner, Windows starting ffmpeg,
+	# has measured under 30 fps): only what the sweep makes of its measurements is checked here, and whether they
+	# pass is test_too_slow_stops_the_sweep's, with fixed rates
 	params = sweep.BaseParams(sweep.ParseArgs(["--width", "160", "--height", "128", "--frameRate", "30"]))
 	settings = {"seconds": 0.6, "warmup": 0.2, "headroom": 1.0, "frames": 8, "noise": 3.0}
 	logged = []
-	[entry] = sweep.Sweep(params, ["cpu:ultrafast"], [1, 2], settings, log=logged.append)
-	assert entry["key"] == "libx264/ultrafast"
+	[entry] = sweep.Sweep(params, ["cpu:ultrafast"], [1, 2], settings, keep_going=True, log=logged.append)
+	assert entry["key"] == "libx264/ultrafast" and entry["error"] is None
 	assert (entry["width"], entry["height"], entry["fps"], entry["pix_fmt_in"]) == (160, 128, 30.0, "gray")
-	assert [r["streams"] for r in entry["results"]] == [1, 2]
-	assert entry["max_streams"] == 2 and entry["max_tested"] == 2
-	assert entry["results"][0]["fps_min"] > 30 # a tiny frame encodes far faster than real time
-	assert entry["bitrate_mbps"] > 0
+	rows = entry["results"]
+	assert [r["streams"] for r in rows] == [1, 2] and entry["max_tested"] == 2
+	assert all("error" not in r and r["fps_min"] >= 0 and r["bitrate_mbps"] > 0 for r in rows) # each wrote a video
+	assert [r["pass"] for r in rows] == [r["fps_min"] >= 30 for r in rows]
+	leading = next((i for i, r in enumerate(rows) if not r["pass"]), len(rows)) # counts that kept up, from the first
+	assert entry["max_streams"] == [0, 1, 2][leading]
+
+
+def test_too_slow_stops_the_sweep(monkeypatch):
+	params = sweep.BaseParams(sweep.ParseArgs(["--width", "160", "--height", "128", "--frameRate", "30"]))
+	settings = {"seconds": 1, "warmup": 0, "headroom": 1.25, "frames": 2, "noise": 3.0}
+	rates = {1: 100.0, 2: 37.0, 3: 40.0} # 2 streams under 30 x 1.25 = 37.5 fps
+	def run(params, n, settings, out_dir):
+		return [{"index": i, "error": None, "fps": rates[n], "bitrate_mbps": 1.0} for i in range(n)], [], None
+	monkeypatch.setattr(sweep, "RunStreams", run)
+	[e] = sweep.Sweep(params, ["cpu:ultrafast"], [1, 2, 3], settings, log=[].append)
+	assert [r["pass"] for r in e["results"]] == [True, False] # stopped at the first too slow
+	assert (e["max_streams"], e["max_tested"], e["bitrate_mbps"]) == (1, 2, 1.0)
+	# keep_going measures every count, but a count past one too slow doesn't raise max_streams
+	[e] = sweep.Sweep(params, ["cpu:ultrafast"], [1, 2, 3], settings, keep_going=True, log=[].append)
+	assert [r["pass"] for r in e["results"]] == [True, False, True]
+	assert (e["max_streams"], e["max_tested"]) == (1, 3)
 
 
 def entry(key, fps=60.0, streams=4):
