@@ -19,6 +19,12 @@ Over SSH (each returns at once; the session runs in the background):
   python3 chronic_control.py plan         print the session's timeline (no board)
   python3 chronic_control.py run          the session in this terminal (start
                                           runs this); Ctrl-C ends it now
+  python3 chronic_control.py wiring       a wiring check, in the background until
+                                          'stop': each output blinks on its own, its
+                                          letter's number of times (A gate 1, B camera
+                                          2, C blue 3, D yellow 4), then a pause.
+                                          --channels AB checks only those outputs;
+                                          --pause 60 waits a minute between rounds.
 Change a setting for one session without editing this file:
   python3 chronic_control.py start --set TOTAL_DURATION=1800 --set INTERVAL=180
 
@@ -508,20 +514,131 @@ def CmdRun(args, s):
 	return session.Run()
 
 
+# --- the wiring check ---
+
+BLINK_US = 500000   # high, then low, for each blink
+PAUSE_US = 2500000  # after each output's blinks
+
+
+def WiringPlan(channels, pause_us=PAUSE_US):
+	"""
+	One round of the wiring check: each output in channels (letters, in the
+	order of OUTPUTS) blinks its letter's number of times on its own, A once,
+	B twice, C three times, D four. Returns the edges (time, channel, level),
+	in order, and the round's length, microseconds.
+	"""
+	channels = channels.upper()
+	edges, t = [], 0
+	for ch, (name, pin, description) in enumerate(OUTPUTS):
+		if name not in channels:
+			continue
+		for k in range(ch + 1):
+			edges += [(t, ch, 1), (t + BLINK_US, ch, 0)]
+			t += 2 * BLINK_US
+		t += PAUSE_US
+	t += pause_us - PAUSE_US
+	return edges, t
+
+
+def WiringText(channels):
+	return ", ".join("{} ({}) {}x".format(name, description, ch + 1) for ch, (name, pin, description) in
+		enumerate(OUTPUTS) if name in channels)
+
+
+def CmdWiringRun(args, s):
+	# The check's rounds, one after another until stopped. The board makes each
+	# round by itself; between rounds everything is low, so a stop is clean.
+	channels = args.channels.upper()
+	edges, length = WiringPlan(channels, Us(args.pause))
+	stop = {"how": None}
+	signal.signal(signal.SIGUSR1, lambda *a: stop.update(how="now"))
+	signal.signal(signal.SIGTERM, lambda *a: stop.update(how="now"))
+	signal.signal(signal.SIGINT, lambda *a: stop.update(how="now"))
+	os.makedirs(args.state_dir, exist_ok=True)
+	day = os.path.join(args.log_dir, datetime.now().strftime("%Y-%m-%d"))
+	os.makedirs(day, exist_ok=True)
+	log_path = os.path.join(day, "wiring.txt")
+	started = time.time()
+	status = dict(state="running", mode="wiring", pid=os.getpid(), port=args.port, log=log_path, started=started,
+		session_s=0, bout=None, bouts=0, ends_s=None, end_requested=None, end_sent=False, pulses=0, done=None, error=None)
+
+	def Write(**changes):
+		status.update(changes, session_s=time.time() - started)
+		path = os.path.join(args.state_dir, "status.json")
+		with open(path + ".new", "w") as f:
+			json.dump(StrictJson(status), f, allow_nan=False)
+		os.replace(path + ".new", path)
+
+	def Log(text):
+		line = "[{}] {}".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], text)
+		with open(log_path, "a") as f:
+			f.write(line + "\n")
+		print(line, flush=True)
+
+	reports = []
+	board, rounds, lost_since = None, 0, None
+	Log("=== WIRING CHECK: {}, each followed by a {:g} s pause; a round every {:g} s ===".format(WiringText(channels),
+		PAUSE_US / 1e6, length / 1e6))
+	Write()
+	while stop["how"] is None:
+		try:
+			if board is None:
+				board = Board(args.port, reports.append)
+				board.Check()
+				if lost_since is not None:
+					Log("Board back on {}.".format(args.port))
+				lost_since = None
+			if not reports or reports[-1].startswith("done"):
+				board.Command("clear")
+				for t, ch, level in edges:
+					board.Command("edge {} {} {}".format(ch, t, level))
+				reports.clear()
+				board.Command("go")
+				rounds += 1
+				if rounds == 1 or rounds % 100 == 0:
+					Log("Round {} started.".format(rounds))
+				Write(bouts=rounds)
+			board.Poll()
+		except Exception as e:
+			if lost_since is None:
+				lost_since = time.time()
+				Log("Lost the board on {} ({}); it ends its round low by itself. Reconnecting...".format(args.port, e))
+			if board is not None:
+				board.close()
+			board, reports = None, []
+			time.sleep(2)
+	# Low before leaving: what the board said last, or a stop to be sure
+	try:
+		if board is None:
+			board = Board(args.port, reports.append)
+		board.Command("stop")
+		board.close()
+	except Exception as e:
+		Log("Could not reach the board to stop it ({}): it stops by itself at the end of its round.".format(e))
+	Log("Wiring check stopped after {} rounds.".format(rounds))
+	Write(state="done", done="wiring check stopped after {} rounds".format(rounds))
+	return 0
+
+
 def CmdStart(args, s):
 	status = Running(args.state_dir)
 	if status:
 		print("A session is already running (pid {}, log {}). Stop it first.".format(status["pid"], status["log"]))
 		return 1
-	Plan(s) # a plan that can't run says so here
+	wiring = args.command == "wiring"
+	if wiring:
+		WiringPlan(args.channels, Us(args.pause))
+	else:
+		Plan(s) # a plan that can't run says so here
 	os.makedirs(args.state_dir, exist_ok=True)
 	try:
 		os.remove(os.path.join(args.state_dir, "status.json"))
 	except OSError:
 		pass
 	out = open(os.path.join(args.state_dir, "session.out"), "a")
-	command = [sys.executable, os.path.abspath(__file__), "run", "--port", args.port, "--state-dir", args.state_dir,
-		"--log-dir", args.log_dir] + sum((["--set", item] for item in args.set), [])
+	command = [sys.executable, os.path.abspath(__file__), "wiring-run" if wiring else "run", "--port", args.port,
+		"--state-dir", args.state_dir, "--log-dir", args.log_dir, "--channels", args.channels, "--pause", str(args.pause)] \
+		+ sum((["--set", item] for item in args.set), [])
 	child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
 	deadline = time.monotonic() + 180 # loading a 6-day session is thousands of commands, a millisecond or two each
 	while time.monotonic() < deadline:
@@ -532,6 +649,10 @@ def CmdStart(args, s):
 			break
 		time.sleep(0.1)
 	status = ReadStatus(args.state_dir)
+	if status and status["state"] == "running" and wiring:
+		print("Wiring check started (pid {}): {}, every {:g} s, until 'stop'. Log: {}".format(child.pid,
+			WiringText(args.channels.upper()), WiringPlan(args.channels, Us(args.pause))[1] / 1e6, status["log"]))
+		return 0
 	if status and status["state"] == "running":
 		print("Session started (pid {}): {} bouts, {:.0f} s. Log: {}".format(child.pid, status["bouts"], status["ends_s"],
 			status["log"]))
@@ -554,7 +675,10 @@ def CmdStop(args, s):
 		finally:
 			board.close()
 		return 0
-	os.kill(status["pid"], signal.SIGTERM if args.now else signal.SIGUSR1)
+	wiring = status.get("mode") == "wiring"
+	os.kill(status["pid"], signal.SIGTERM if args.now or wiring else signal.SIGUSR1)
+	if wiring:
+		args.now = True # a wiring check stops at once
 	deadline = time.monotonic() + (15 if args.now else 10)
 	while time.monotonic() < deadline:
 		now = ReadStatus(args.state_dir)
@@ -577,6 +701,13 @@ def CmdStatus(args, s):
 		return 0
 	if status["state"] in ("starting", "running") and not Alive(status["pid"]):
 		status["state"] = "gone (the program stopped; the board may still be running: 'stop --now')"
+	if status.get("mode") == "wiring":
+		print("Wiring check: {}, {:.0f} s in, {} rounds".format(status["state"], status.get("session_s") or 0, status["bouts"]))
+		for key in ("done", "error"):
+			if status.get(key):
+				print("  {}: {}".format(key, status[key]))
+		print("  log: {}".format(status["log"]))
+		return 0
 	print("Session: {}".format(status["state"]))
 	if status.get("session_s") is not None:
 		print("  {:.1f} s in, bout {} of {}; ends at {:.1f} s{}".format(status["session_s"], status["bout"] or "-",
@@ -599,7 +730,9 @@ def CmdPlan(args, s):
 
 def Main(argv=None):
 	parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-	parser.add_argument("command", choices=["start", "stop", "status", "plan", "run"])
+	parser.add_argument("command", choices=["start", "stop", "status", "plan", "run", "wiring", "wiring-run"])
+	parser.add_argument("--pause", type=float, default=PAUSE_US / 1e6, help="wiring: seconds after the round's last output (default 2.5)")
+	parser.add_argument("--channels", default="ABCD", help="wiring: the outputs to blink (A gate, B camera, C blue, D yellow)")
 	parser.add_argument("--now", action="store_true", help="stop: end now rather than after the current bout")
 	parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", help="change a timing setting")
 	parser.add_argument("--port", default=None, help="the board's serial port (default: found in /dev/serial/by-id)")
@@ -608,7 +741,8 @@ def Main(argv=None):
 	args = parser.parse_args(argv)
 	args.port = args.port or FindPort()
 	s = Settings(args.set)
-	return {"start": CmdStart, "stop": CmdStop, "status": CmdStatus, "plan": CmdPlan, "run": CmdRun}[args.command](args, s)
+	return {"start": CmdStart, "stop": CmdStop, "status": CmdStatus, "plan": CmdPlan, "run": CmdRun, "wiring": CmdStart,
+		"wiring-run": CmdWiringRun}[args.command](args, s)
 
 
 if __name__ == "__main__":

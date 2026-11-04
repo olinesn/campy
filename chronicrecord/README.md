@@ -96,6 +96,18 @@ python3 chronic_control.py start --set CAMERA_ONLY=3600 --set CAMERA_FPS=30
 
 `stop` ends one at once, on a whole pulse (a few ms to 20 ms later, what's already queued).
 
+## Checking the wiring
+
+```bash
+python3 chronic_control.py wiring
+```
+
+Each output blinks on its own, its letter's number of times: A (gate) once, B (camera) twice, C (blue) three times, D (yellow) four times, half a second on and half off, with a pause after each. It goes round until `stop`. Watch for them in SpikeGLX, on a meter or with an LED probe.
+- `--channels AB` blinks only those outputs.
+- `--pause 60` waits a minute between rounds.
+
+The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a second with the probe recording, so mind the disk when leaving it running.
+
 ## Setting it up
 
 1. **Flash the Pico.** Hold BOOTSEL while plugging it in; it appears as a drive named `RPI-RP2`. Copy `chronic_timer.ino.uf2` onto it (built with the [arduino-pico](https://github.com/earlephilhower/arduino-pico) core, board `rp2040:rp2040:rpipico`). It restarts as a serial port, and `id` should answer `ok chronic_timer 2`.
