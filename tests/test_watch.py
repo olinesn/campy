@@ -245,6 +245,60 @@ def test_a_stalled_writer(monkeypatch, tmp_path):
 	assert rig.Sent()[-1].endswith("Camera0: caught up (0.3 s of frames waiting for ffmpeg)")
 
 
+def Pile(rig, c, seconds, queued, per_second=30):
+	# Camera c's frames for seconds, each second per_second more waiting for ffmpeg; the others' are taken
+	for _ in range(seconds):
+		rig.clock.now += 1
+		queued += per_second
+		rig.grabbed[c] += 30
+		rig.rows[c].Frame(rig.grabbed[c], queued)
+		for other in range(len(rig.names)):
+			if other != c:
+				rig.Frame(other, 30)
+		rig.watch.Check()
+	return queued
+
+
+def test_an_encoder_opening_at_the_first_frames_is_no_stall(monkeypatch, tmp_path):
+	# ffmpeg opens its encoder at its first frame: on the ChronicRecord PC, 4 Quick Sync encoders opening at once
+	# after an external trigger's wait let 1.8 s of frames pile up, and then caught up (none dropped)
+	rig = Rig(monkeypatch, tmp_path, systems={}).Start()
+	rig.Run(30, cameras=[]) # waiting for the trigger
+	Pile(rig, 0, 4, 0, per_second=20) # 2.7 s waiting (27 % of writeQueueMaxSec 10 s) after 4 s
+	assert waiting(rig, 0) >= watch.STALL_WARNING * 10
+	rig.Run(watch.STALL_START_S, queued=3) # caught up
+	assert not [t for t in rig.Sent() if "waiting for ffmpeg" in t]
+
+
+def waiting(rig, c):
+	return rig.counters[c * status.WIDTH + status.QUEUED] / 30.0
+
+
+def test_a_stall_that_goes_on_past_the_start_is_said(monkeypatch, tmp_path):
+	rig = Rig(monkeypatch, tmp_path, systems={}).Start()
+	rig.Run(30, cameras=[])
+	Pile(rig, 0, int(watch.STALL_START_S) + 2, 0, per_second=8) # 3.2 s waiting at 12 s, and growing
+	said = [t for t in rig.Sent() if "waiting for ffmpeg" in t]
+	assert len(said) == 1 and said[0].startswith(":large_orange_circle: *Test rig*: Camera0: ")
+
+
+def test_a_stall_near_dropping_frames_at_the_start_is_still_said(monkeypatch, tmp_path):
+	rig = Rig(monkeypatch, tmp_path, systems={}).Start()
+	rig.Run(30, cameras=[])
+	Pile(rig, 0, 4, 0, per_second=30 * 2) # 8 s waiting of 10 within 4 s: critical
+	assert rig.Sent()[-1].startswith(":red_circle: *Test rig*: Camera0: 8.0 s of frames waiting for ffmpeg (80%")
+
+
+def test_a_restarted_ffmpeg_opening_its_encoder_is_no_stall(monkeypatch, tmp_path):
+	rig = Rig(monkeypatch, tmp_path).Start()
+	rig.Run(60)
+	rig.rows[0].Restarted(1) # restartFfmpeg: a new ffmpeg, whose encoder opens at its first frame
+	Pile(rig, 0, 4, 0, per_second=20)
+	assert waiting(rig, 0) >= watch.STALL_WARNING * 10
+	rig.Run(watch.STALL_START_S, queued=3)
+	assert not [t for t in rig.Sent() if "waiting for ffmpeg" in t]
+
+
 def test_cameras_that_end(monkeypatch, tmp_path):
 	rig = Rig(monkeypatch, tmp_path, names=["Camera0", "Camera1", "Camera2", "Camera3"]).Start()
 	rig.Run(10)
