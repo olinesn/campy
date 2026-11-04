@@ -25,6 +25,8 @@ Over SSH (each returns at once; the session runs in the background):
                                           2, C blue 3, D yellow 4), then a pause.
                                           --channels AB checks only those outputs;
                                           --pause 60 waits a minute between rounds.
+  python3 chronic_control.py blink        every output on and off together, 2 Hz
+                                          (--hz), in the background until 'stop'
 Change a setting for one session without editing this file:
   python3 chronic_control.py start --set TOTAL_DURATION=1800 --set INTERVAL=180
 
@@ -540,6 +542,22 @@ def WiringPlan(channels, pause_us=PAUSE_US):
 	return edges, t
 
 
+BLINK_ROUND_S = 300 # blink: a round of this many seconds, loaded while the last ends
+
+
+def BlinkPlan(channels, hz, round_us=BLINK_ROUND_S * 10**6):
+	"""
+	Every output in channels blinking together at hz (half the period on),
+	for one round: edges (time, channel, level), in order, and the round's length.
+	"""
+	period = int(round(1e6 / hz))
+	chans = [ch for ch, (name, pin, description) in enumerate(OUTPUTS) if name in channels.upper()]
+	edges = []
+	for k in range(max(1, round_us // period)):
+		edges += [(k * period, ch, 1) for ch in chans] + [(k * period + period // 2, ch, 0) for ch in chans]
+	return edges, max(1, round_us // period) * period
+
+
 def WiringText(channels):
 	return ", ".join("{} ({}) {}x".format(name, description, ch + 1) for ch, (name, pin, description) in
 		enumerate(OUTPUTS) if name in channels)
@@ -549,7 +567,8 @@ def CmdWiringRun(args, s):
 	# The check's rounds, one after another until stopped. The board makes each
 	# round by itself; between rounds everything is low, so a stop is clean.
 	channels = args.channels.upper()
-	edges, length = WiringPlan(channels, Us(args.pause))
+	blink = args.command == "blink-run"
+	edges, length = BlinkPlan(channels, args.hz) if blink else WiringPlan(channels, Us(args.pause))
 	stop = {"how": None}
 	signal.signal(signal.SIGUSR1, lambda *a: stop.update(how="now"))
 	signal.signal(signal.SIGTERM, lambda *a: stop.update(how="now"))
@@ -577,8 +596,12 @@ def CmdWiringRun(args, s):
 
 	reports = []
 	board, rounds, lost_since = None, 0, None
-	Log("=== WIRING CHECK: {}, each followed by a {:g} s pause; a round every {:g} s ===".format(WiringText(channels),
-		PAUSE_US / 1e6, length / 1e6))
+	if blink:
+		Log("=== BLINK: {} together at {:g} Hz, in rounds of {:g} s (a pause between rounds, while "
+			"the next loads) ===".format(", ".join(n for n, _, _ in OUTPUTS if n in channels), args.hz, length / 1e6))
+	else:
+		Log("=== WIRING CHECK: {}, each followed by a {:g} s pause; a round every {:g} s ===".format(WiringText(channels),
+			PAUSE_US / 1e6, length / 1e6))
 	Write()
 	while stop["how"] is None:
 		try:
@@ -626,8 +649,10 @@ def CmdStart(args, s):
 	if status:
 		print("A session is already running (pid {}, log {}). Stop it first.".format(status["pid"], status["log"]))
 		return 1
-	wiring = args.command == "wiring"
-	if wiring:
+	wiring = args.command in ("wiring", "blink")
+	if args.command == "blink":
+		BlinkPlan(args.channels, args.hz)
+	elif wiring:
 		WiringPlan(args.channels, Us(args.pause))
 	else:
 		Plan(s) # a plan that can't run says so here
@@ -637,8 +662,8 @@ def CmdStart(args, s):
 	except OSError:
 		pass
 	out = open(os.path.join(args.state_dir, "session.out"), "a")
-	command = [sys.executable, os.path.abspath(__file__), "wiring-run" if wiring else "run", "--port", args.port,
-		"--state-dir", args.state_dir, "--log-dir", args.log_dir, "--channels", args.channels, "--pause", str(args.pause)] \
+	command = [sys.executable, os.path.abspath(__file__), {"wiring": "wiring-run", "blink": "blink-run"}.get(args.command, "run"), "--port", args.port,
+		"--state-dir", args.state_dir, "--log-dir", args.log_dir, "--channels", args.channels, "--pause", str(args.pause), "--hz", str(args.hz)] \
 		+ sum((["--set", item] for item in args.set), [])
 	child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
 	deadline = time.monotonic() + 180 # loading a 6-day session is thousands of commands, a millisecond or two each
@@ -650,6 +675,10 @@ def CmdStart(args, s):
 			break
 		time.sleep(0.1)
 	status = ReadStatus(args.state_dir)
+	if status and status["state"] == "running" and args.command == "blink":
+		print("Blinking (pid {}): {} together at {:g} Hz, until 'stop'. Log: {}".format(child.pid,
+			", ".join(n for n, _, _ in OUTPUTS if n in args.channels.upper()), args.hz, status["log"]))
+		return 0
 	if status and status["state"] == "running" and wiring:
 		print("Wiring check started (pid {}): {}, every {:g} s, until 'stop'. Log: {}".format(child.pid,
 			WiringText(args.channels.upper()), WiringPlan(args.channels, Us(args.pause))[1] / 1e6, status["log"]))
@@ -731,7 +760,8 @@ def CmdPlan(args, s):
 
 def Main(argv=None):
 	parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-	parser.add_argument("command", choices=["start", "stop", "status", "plan", "run", "wiring", "wiring-run"])
+	parser.add_argument("command", choices=["start", "stop", "status", "plan", "run", "wiring", "wiring-run", "blink", "blink-run"])
+	parser.add_argument("--hz", type=float, default=2, help="blink: blinks a second (default 2)")
 	parser.add_argument("--pause", type=float, default=PAUSE_US / 1e6, help="wiring: seconds after the round's last output (default 2.5)")
 	parser.add_argument("--channels", default="ABCD", help="wiring: the outputs to blink (A gate, B camera, C blue, D yellow)")
 	parser.add_argument("--now", action="store_true", help="stop: end now rather than after the current bout")
@@ -743,7 +773,7 @@ def Main(argv=None):
 	args.port = args.port or FindPort()
 	s = Settings(args.set)
 	return {"start": CmdStart, "stop": CmdStop, "status": CmdStatus, "plan": CmdPlan, "run": CmdRun, "wiring": CmdStart,
-		"wiring-run": CmdWiringRun}[args.command](args, s)
+		"wiring-run": CmdWiringRun, "blink": CmdStart, "blink-run": CmdWiringRun}[args.command](args, s)
 
 
 if __name__ == "__main__":

@@ -262,3 +262,14 @@ def test_a_wiring_check_runs_until_stopped(tmp_path, board):
 	assert all(b - a > length - 500000 for a, b in zip(gate, gate[1:])), gate
 	(day,) = (tmp_path / "logs").iterdir()
 	assert "WIRING CHECK" in (day / "wiring.txt").read_text()
+
+
+def test_blink_switches_every_output_together():
+	edges, length = cc.BlinkPlan("ABCD", 2, round_us=10 * 10**6)
+	assert length == 10 * 10**6
+	for ch in range(4):
+		ups = [t for t, c, level in edges if c == ch and level == 1]
+		downs = [t for t, c, level in edges if c == ch and level == 0]
+		assert ups == list(range(0, 10 * 10**6, 500000)) and downs == [t + 250000 for t in ups]
+	assert [t for t, _, _ in edges] == sorted(t for t, _, _ in edges)
+	assert len(cc.BlinkPlan("ABCD", 2)[0]) == 300 * 2 * 2 * 4 # a 5-minute round fits the Pico's 12288 edges
