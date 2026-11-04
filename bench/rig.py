@@ -12,6 +12,8 @@ every test takes, and a watch over everything a test can be spoiled by.
   rig.py run [options] <owner> <tag> -- cmd...  wait for the rig, then run cmd holding it
   rig.py hold [options] <owner> <tag> <pid>     hold the rig for a job already running
   rig.py break                                  remove a lock nobody holds any more
+  rig.py version                                this copy's version, and the installed one's
+  rig.py install [--check] [--from <checkout>]  install this copy (a campy checkout's) as the rig's
 
 run waits until the rig is free and nothing else uses the GPU, the cameras,
 the video encoder or the trigger, and nothing else loads the CPU or the disk;
@@ -79,11 +81,28 @@ written by hand ("<who> <time>", as sessions did before rig.py ran on Windows)
 is respected until whoever wrote it deletes it, or `rig.py break`. RIG_LOCK=file
 uses the Windows lock on Linux too.
 
+Installing and versions. Each machine runs one installed copy, in RIG_ROOT, which every
+script calls (a campy checkout can be on any branch or commit, and every lock user on a
+machine must run the same lock). Its version is a short hash of the five files (rig.py,
+rig_windows.py, rig_guard.sh, rig_guard.ps1, rig_hold.ps1) with line endings ignored, so the
+same commit shows the same version on every machine; status (its second line) and every
+rig.log say it. To
+update, run the checkout's own copy: python <checkout>/bench/rig.py install. It takes the rig
+with --no-wait (exit 75 if busy, nothing changed), refuses while any other rig.py run, hold
+or install, or rig_hold.ps1, is running or waiting (exit 75), backs the old files up to
+RIG_ROOT/rig-backup/<old version>-<time>/, writes each new file beside the old one, checks
+it, renames it into place, and records what it installed in RIG_ROOT/RIG_INSTALLED and
+rig-install.log. Inside the rig's own job (an update script run under rig.py) it doesn't
+wait for the rig that job holds. --check only says whether the installed copy differs
+(exit 0 the same, 3 different). It refuses a checkout with uncommitted changes to these
+files (--allow-dirty), or one older than what is installed (--allow-older). Files copied
+from a checkout (not a git checkout themselves) can name their commit with --commit.
+
 The Python standard library only. On Linux run it with /usr/bin/python3; on
 Windows with any 64-bit Python 3.9 or newer (campy's own environment will do).
 """
 
-import argparse, contextlib, os, re, shlex, shutil, signal, subprocess, sys, time
+import argparse, contextlib, hashlib, os, re, shlex, shutil, signal, subprocess, sys, time
 
 WINDOWS = os.name == "nt"
 if WINDOWS:
@@ -108,6 +127,10 @@ FLIR_VENDOR = "1e10"
 HZ = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 NO_WINDOW = 0x08000000 if WINDOWS else 0  # CREATE_NO_WINDOW: no console flashing up for nvidia-smi
 JOBS = {}  # Windows: {job name: rig_windows.Job} of the job rig.py runs
+HERE = os.path.dirname(os.path.abspath(__file__))
+# The lock's files: installed together, and hashed together into its version
+FILES = ("rig.py", "rig_windows.py", "rig_guard.sh", "rig_guard.ps1", "rig_hold.ps1")
+STAMP = "RIG_INSTALLED"
 
 def say(text):
 	"""print, which a closed stdout can't stop. With rig.py run ... | head, or an ssh whose local end was
@@ -907,6 +930,185 @@ def stop_job(proc, sig):
 		os.killpg(proc.pid, signal.SIGKILL)
 		proc.wait()
 
+# Versions and installing (rig.py version, install; the first line of status and of every rig.log)
+
+def file_bytes(path):
+	"""A file's bytes with line endings made \n (a Windows checkout's are \r\n), or None if it is missing."""
+	try:
+		with open(path, "rb") as f:
+			return f.read().replace(b"\r\n", b"\n")
+	except FileNotFoundError:
+		return None
+
+def version(folder):
+	"""The lock's version in folder: the first 10 hex digits of a sha256 of FILES there, line endings ignored."""
+	h = hashlib.sha256()
+	for name in FILES:
+		data = file_bytes(os.path.join(folder, name))
+		h.update(name.encode() + (b"\0-\0" if data is None else b"\0+%d\0" % len(data) + data))
+	return h.hexdigest()[:10]
+
+def same_folder(a, b):
+	return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+def read_stamp(root=None):
+	"""What RIG_INSTALLED says ({key: value}), {} if there is none."""
+	try:
+		with open(os.path.join(root or ROOT, STAMP), encoding="utf-8", errors="replace") as f:
+			return dict(line.rstrip("\n").split(": ", 1) for line in f if ": " in line)
+	except OSError:
+		return {}
+
+def installed_text():
+	"""'<version> in <ROOT>, installed <when> from campy <commit> by <who>', or what is known instead."""
+	v, stamp = version(ROOT), read_stamp()
+	text = "%s in %s" % (v, ROOT)
+	if not stamp:
+		return text + " (not installed with rig.py install)"
+	how = "%s from campy %s by %s" % (stamp.get("installed", "?"), stamp.get("commit", "?"), stamp.get("by", "?"))
+	if stamp.get("version") != v:
+		return text + " (changed since rig.py install put %s there on %s)" % (stamp.get("version", "?"), how)
+	return text + ", installed " + how
+
+def version_text():
+	"""This copy's version; and, run from somewhere else than ROOT, the installed one's too."""
+	if same_folder(HERE, ROOT):
+		return installed_text()
+	mine, theirs = version(HERE), version(ROOT)
+	return "%s in %s, %s the installed one: %s" % (mine, HERE, "the same as" if mine == theirs else "NOT", installed_text())
+
+def git(folder, *args):
+	"""git's output in folder (stripped), or None if git isn't there or fails."""
+	try:
+		r = subprocess.run(["git", "-C", folder] + list(args), capture_output=True, text=True, timeout=30,
+			creationflags=NO_WINDOW)
+	except (OSError, subprocess.SubprocessError):
+		return None
+	return r.stdout.strip() if r.returncode == 0 else None
+
+def source_folder(path):
+	"""The folder holding rig.py: path itself, or path/bench (a campy checkout)."""
+	for folder in (os.path.join(path, "bench"), path):
+		if os.path.isfile(os.path.join(folder, "rig.py")):
+			return os.path.abspath(folder)
+	sys.exit("rig.py install: no rig.py in %s or its bench folder" % path)
+
+RIG_PROC = re.compile(r"""rig\.py["']?\s+(run|hold|install)\b|rig_hold\.ps1""", re.I)
+
+def rig_processes(procs=None):
+	"""[(pid, command line)] of every other rig.py run, hold or install, and rig_hold.ps1, running or
+	waiting; this rig.py and the processes it runs under (an update script's rig.py run) left out."""
+	procs = scan() if procs is None else procs
+	mine, pid = set(), os.getpid()
+	while pid in procs and pid not in mine:
+		mine.add(pid)
+		pid = procs[pid].ppid
+	found = []
+	for p in procs.values():
+		if p.pid in mine or p.pid == os.getpid():
+			continue
+		if WINDOWS and not re.match(r"(python|pythonw|py|powershell|pwsh)\d*(\.\d+)*(\.exe)?$", p.cmd, re.I):
+			continue
+		text = cmdline(p)
+		if text and RIG_PROC.search(text):
+			found.append((p.pid, text))
+	return found
+
+def compare(src):
+	"""[(file, 'same' | 'differs' | 'new' | 'not in the source')] between src and ROOT."""
+	rows = []
+	for name in FILES:
+		a, b = file_bytes(os.path.join(src, name)), file_bytes(os.path.join(ROOT, name))
+		rows.append((name, "not in the source" if a is None else "new" if b is None else "same" if a == b else "differs"))
+	return rows
+
+def cmd_version(args):
+	print("rig.py " + version_text())
+
+def cmd_install(args):
+	src = source_folder(args.source) if args.source else HERE
+	if same_folder(src, ROOT):
+		sys.exit("rig.py install: %s is the installed copy itself; run a campy checkout's bench/rig.py install, "
+			"or give --from <checkout>" % src)
+	new, old = version(src), version(ROOT)
+	commit = git(src, "rev-parse", "--short=9", "HEAD")
+	if not commit and args.commit:
+		commit = "%s (said)" % args.commit
+	print("installed: rig.py " + installed_text())
+	print("source:    rig.py %s in %s (campy %s)" % (new, src, commit or "?, not a git checkout"))
+	rows = compare(src)
+	for name, how in rows:
+		print("    %-16s %s" % (name, how))
+	missing = [name for name, how in rows if how == "not in the source"]
+	if missing:
+		sys.exit("rig.py install: %s has no %s; give a campy checkout" % (src, ", ".join(missing)))
+	if new == old:
+		print("the installed copy is this one: nothing to install")
+		return
+	if args.check:
+		print("the installed copy differs: run rig.py install from this checkout (when the rig is free)")
+		sys.exit(3)
+	if commit and not args.commit:
+		dirty = git(src, "status", "--porcelain", "--", *FILES)
+		if dirty and not args.allow_dirty:
+			sys.exit("rig.py install: the checkout has uncommitted changes to the lock's files (--allow-dirty to "
+				"install them anyway):\n" + dirty)
+		was = read_stamp().get("commit", "?").split("+")[0]
+		if re.match(r"^[0-9a-f]{7,40}$", was) and not commit.startswith(was) and not was.startswith(commit) \
+				and git(src, "merge-base", "--is-ancestor", commit, was) is not None and not args.allow_older:
+			sys.exit("rig.py install: campy %s is older than the installed %s (--allow-older to install it anyway)" % (commit, was))
+		if dirty:
+			commit += "+changes"
+	owner = args.owner or os.environ.get("RIG_OWNER") or "unnamed"
+	lock = make_lock()
+	inside = in_current_job(lock)
+	if not inside:
+		lock.acquire(owner, "rig-install", True)  # busy: exit 75
+	try:
+		if not inside:
+			lock.record(note=" (installing rig.py %s)" % new)
+		others = rig_processes()
+		if others:
+			say("rig.py install: not now, other rig.py processes run or wait (a run that has started keeps its "
+				"own copy, but one waiting would start on a mix):")
+			for pid, text in others:
+				say("    %d %s" % (pid, text[:150]))
+			sys.exit(75)
+		backup = None
+		if any(os.path.exists(os.path.join(ROOT, name)) for name in FILES):
+			backup = os.path.join(ROOT, "rig-backup", "%s-%s" % (old, time.strftime("%Y%m%d-%H%M%S")))
+			os.makedirs(backup)
+			for name in FILES:
+				if os.path.exists(os.path.join(ROOT, name)):
+					shutil.copy2(os.path.join(ROOT, name), os.path.join(backup, name))
+			stamp = os.path.join(ROOT, STAMP)
+			if os.path.exists(stamp):
+				shutil.copy2(stamp, os.path.join(backup, STAMP))
+		for name in FILES:
+			with open(os.path.join(src, name), "rb") as f:
+				data = f.read()
+			dest = os.path.join(ROOT, name)
+			tmp = dest + ".new"
+			with open(tmp, "wb") as f:
+				f.write(data)
+			with open(tmp, "rb") as f:
+				if hashlib.sha256(f.read()).digest() != hashlib.sha256(data).digest():
+					sys.exit("rig.py install: %s didn't read back as written; nothing more replaced" % tmp)
+			retry(os.replace, tmp, dest)
+		if version(ROOT) != new:
+			sys.exit("rig.py install: the installed copy is %s, not %s; the old files are in %s" % (version(ROOT), new, backup))
+		when = time.strftime("%Y-%m-%d %H:%M:%S")
+		with open(os.path.join(ROOT, STAMP), "w", encoding="utf-8") as f:
+			f.write("version: %s\ncommit: %s\nfrom: %s\ninstalled: %s\nby: %s\nprevious: %s\nbackup: %s\n" % (
+				new, commit or "?", src, when, owner, old, backup or "none"))
+		with open(os.path.join(ROOT, "rig-install.log"), "a", encoding="utf-8") as f:
+			f.write("%s %s installed rig.py %s (campy %s, from %s) over %s; backup %s\n" % (
+				when, owner, new, commit or "?", src, old, backup or "none"))
+		say("installed rig.py %s over %s%s" % (new, old, "; the old files are in " + backup if backup else ""))
+	finally:
+		if not inside:
+			lock.release()
+
 def in_current_job(lock):
 	"""Whether this rig.py runs inside the job that holds the rig (its RIG_JOB is the lock's job)."""
 	job = os.environ.get("RIG_JOB")
@@ -939,6 +1141,7 @@ def cmd_run(args):
 		lock.record(job, None)
 		proc = start_job(args.cmd, env, log)
 		lock.record(job, proc.pid)
+		log("rig.py " + version_text())
 		log("rig held by %s for %s (job %s, pid %d): %s" % (args.owner, args.tag, job, proc.pid, " ".join(shlex.join(args.cmd).split())))
 		w = Watch(job=job, sid=None if WINDOWS else proc.pid, root_pid=proc.pid)
 		counts = watch(w, lambda: proc.poll() is None, log, args, got, lock)
@@ -989,6 +1192,7 @@ def cmd_hold(args):
 		got = catch_signals()
 		lock.record(job, args.pid, " (held for a running pid)")
 		held = True
+		log("rig.py " + version_text())
 		log("rig held by %s for %s (running pid %d): %s" % (args.owner, args.tag, args.pid, cmdline(p) if p else "?"))
 		w = Watch(job=p and p.job, sid=p and p.sid, root_pid=args.pid)
 		counts = watch(w, running, log, args, got, lock)
@@ -1016,6 +1220,7 @@ def cmd_status(args):
 						retry(os.remove, lock.path)
 			else:
 				lock.clear_stale()
+	print("rig.py " + version_text())  # second: scripts look for "rig held" or "rig free" first
 	m = re.search(r"\bjob=(\S+)", info) if state == "held" else None
 	job = m and m.group(1)
 	m = re.search(r"\bpid=(\d+)", info) if state == "held" else None
@@ -1087,6 +1292,15 @@ def main(argv=None):
 			help="the same for disk reads and writes, MB/s (default 50, or RIG_IO)")
 	limits(sub.add_parser("status", help="who holds the rig, and who uses each device"))
 	sub.add_parser("break", help="remove a lock that nothing holds any more, or one written by hand")
+	sub.add_parser("version", help="this copy's version, and the installed one's")
+	p = sub.add_parser("install", help="install this rig.py (a campy checkout's) as the rig's, when the rig is free")
+	p.add_argument("--from", dest="source", help="the campy checkout (or its bench folder) to install from; "
+		"default: this rig.py's own folder")
+	p.add_argument("--check", action="store_true", help="only say whether the installed copy differs (exit 3 if it does)")
+	p.add_argument("--owner", help="who installs it (default RIG_OWNER)")
+	p.add_argument("--allow-dirty", action="store_true", help="install uncommitted changes to the lock's files")
+	p.add_argument("--allow-older", action="store_true", help="install a commit older than the installed one")
+	p.add_argument("--commit", help="the campy commit the files are from, when --from is a copy, not a git checkout")
 	for name in ("run", "hold"):
 		p = sub.add_parser(name)
 		limits(p)
@@ -1103,7 +1317,8 @@ def main(argv=None):
 	args = ap.parse_args(argv)
 	if args.action == "run" and args.cmd[:1] == ["--"]:
 		args.cmd = args.cmd[1:]
-	{"status": cmd_status, "run": cmd_run, "hold": cmd_hold, "break": cmd_break}[args.action](args)
+	{"status": cmd_status, "run": cmd_run, "hold": cmd_hold, "break": cmd_break, "version": cmd_version,
+		"install": cmd_install}[args.action](args)
 
 if __name__ == "__main__":
 	main()
