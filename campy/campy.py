@@ -315,7 +315,7 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 				and not cameras.ready() and not interrupts.count: # not if the cameras are stopping (Ctrl-C)
 				systems = trigger.StartTriggers(systems, params)
 				emu.StartClock(start)
-			trigger.SaveStart(params, ready, missing, systems.get("triggerStartedNs"))
+			trigger.SaveStart(params, ready, missing, systems.get("triggerStartedNs"), systems.get("triggerStartError"))
 			session.Recording(ready, missing)
 			# The recording watch: alerts (Slack, the console) while it records, and a clean stop before the
 			# disk is full (watch.py). Whatever goes wrong in it, the recording goes on.

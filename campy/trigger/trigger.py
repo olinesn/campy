@@ -43,13 +43,14 @@ def StartTriggers(systems, params):
 	return systems
 
 
-def SaveStart(params, ready, missing, startedNs):
+def SaveStart(params, ready, missing, startedNs, error=None):
 	"""
 	trigger.json in the recording folder: whether campy started the trigger,
 	and which cameras were already grabbing when it did. campy-align starts
 	those cameras at trigger 1 instead of working it out from arrival times.
 	startedNs is when the start command went out, on the clock of every
 	camera's hosttimes.npy (campy/clock.py); None if campy did not start it.
+	error: why the start command could not be sent (startError), if so.
 	"""
 	started = startedNs is not None
 	record = {
@@ -59,6 +60,8 @@ def SaveStart(params, ready, missing, startedNs):
 		"notReady": dict(missing),
 		"startedHostNs": startedNs,
 		}
+	if error:
+		record["startError"] = error
 	blinkPin, blinkHz = configurator.BlinkSettings(params)
 	if started and blinkPin >= 0:
 		record.update(blinkPin=blinkPin, blinkHz=blinkHz) # campy-synctest reads the rate
