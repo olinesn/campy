@@ -56,6 +56,13 @@ alertNoFramesSec: 400
 # frametimes.npy has each frame's time.
 alertTriggerPauseSec: 30
 
+# SpikeGLX writes to the same disk as campy (C:) while the gate is high, about 475 GB a day
+# on the 6-day plan, and campy's disk check doesn't count it. So warn with about a day's
+# room left, not campy's default 20 GB (about an hour here). With today's single disk (~490 GB
+# free) this warns as soon as a session starts: a 6-day session doesn't fit until a data disk
+# is added (docs/hardware.md, "Recording many days").
+alertDiskFreeGB: 500
+
 # Stop the recording cleanly from anywhere (an SSH shell, a script) by creating this file;
 # the launcher removes an old one before it starts.
 stopFile: "C:\\campy_data\\launchers\\chronic6day.stop"
