@@ -102,6 +102,8 @@ Before recording, campy checks the config and the computer, and most problems sh
 
 **`campy-live` keeps printing `Waiting for the live feed` after the recording started.** The recording has no live feed: add `liveFeed: True` to the config, or `--liveFeed True` to `campy-acquire`. Both programs must run on the same computer, and `campy-live --name` must match the config's `liveFeedName` if that was changed ([Live pose estimation](live-tracking.md#live-pose-estimation-livefeed-campy-live)).
 
+**`campy-live` says a camera's feed `was left by a recording that ended without closing it`.** The last recording was killed (or crashed) and left its live feed behind. `campy-live` doesn't track those old frames: it waits for the next recording's feed, as usual. Nothing to do.
+
 **`campy-live` misses the start of the recording.** Start it before `campy-acquire`, and wait for `Waiting for the live feed`. If the cameras' frames aren't 1280 × 1024 grey, give `--frame-shape` so the model is ready for them.
 
 **`campy-live` takes up to 40 s to start.** The first start with a new model, GPU or update builds compiled copies of the networks, and keeps them for later starts. Start it before the recording and wait for `Waiting for the live feed` ([Compiled networks](live-tracking.md#compiled-networks---engine-on-by-default-with-a-gpu)).

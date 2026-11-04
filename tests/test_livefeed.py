@@ -4,14 +4,14 @@ memory, which campy never waits on, and campy-live's reading of them. No
 camera, torch or sleap-nn needed (campy-live runs here with --model none).
 """
 
-import csv, itertools, json, multiprocessing as mp, os, sys, threading, time, types
+import csv, itertools, json, multiprocessing as mp, os, subprocess, sys, threading, time, types
 from argparse import ArgumentParser
 from collections import deque
 
 import numpy as np
 import pytest
 
-from campy import clock, configurator, frametimes, livefeed, live
+from campy import clock, configurator, frametimes, livefeed, live, strictjson
 from campy.cameras import unicam
 
 _count = itertools.count()
@@ -433,6 +433,36 @@ def test_the_newest_set_all_cameras_hold(rings):
 		for w in writers:
 			w.Close()
 		assert cams.NextSet(out) is None # the recording ended
+	finally:
+		cams.Close()
+
+
+def test_rings_left_by_a_killed_recording_are_passed_by(rings, capsys):
+	# A campy-acquire killed mid-recording left its rings RECORDING: their camera processes (the descriptions' pid)
+	# are gone. campy-live waits for the next recording's, rather than track old frames and then take the new
+	# rings for the recording's end
+	prefix = name()
+	dead = subprocess.Popen([sys.executable, "-c", "pass"])
+	dead.wait()
+	left = strictjson.dumps({"kind": livefeed.CAMERA_KIND, "pid": dead.pid, "parent_pid": dead.pid})
+	old = [livefeed.RingWriter(livefeed.RingName(prefix, c), (16, 20), np.uint8, 4, 60.0, c, "Camera{}".format(c),
+		left) for c in range(2)]
+	for w in old:
+		w.Write(frame(500), 500, 500_000)
+	cams = live.Cameras([livefeed.RingName(prefix, c) for c in range(2)], poll=0.0001)
+	try:
+		assert not cams.Attach(wait=0.5)
+		said = capsys.readouterr().out
+		assert said.count("was left by a recording that ended without closing it (its camera process {} is "
+			"gone)".format(dead.pid)) == 2 # once a ring
+		for w in old:
+			w.Close()
+		new = [rings(livefeed.RingName(prefix, c), (16, 20), np.uint8, slots=4, frameRate=60) for c in range(2)]
+		assert cams.Attach(wait=5) # the next recording's: this process writes them
+		for w in new:
+			w.Write(frame(1), 1, 1000)
+		out = np.empty((2, 16, 20, 1), np.uint8)
+		assert [f.frameNumber for f in cams.NextSet(out)[0]] == [1, 1]
 	finally:
 		cams.Close()
 
@@ -1035,14 +1065,25 @@ def test_campy_live_goes_on_the_performance_cores_by_default(monkeypatch, capsys
 	assert pinned == [(None, [0, 1, 10])] and priority == [(None, "high")]
 	readers = [types.SimpleNamespace(Description=lambda pid=pid: json.dumps({"kind": livefeed.CAMERA_KIND,
 		"pid": pid, "parent_pid": 7})) for pid in (11, 12)]
-	live.PlaceCampy(args, readers)
+	monkeypatch.setattr(cpus, "Affinity", lambda pid=None: [0, 1, 2, 3, 10] if pid != 12 else [1, 2])
+	moved = live.PlaceCampy(args, readers)
 	assert pinned[1:] == [(7, [2, 3]), (11, [2, 3]), (12, [2, 3]), (99, [2, 3])]
 	assert "campy-acquire (4 processes" in capsys.readouterr().out
+	# campy-live ending (stopped, or crashed mid-recording): campy-acquire back on the CPUs it had; an encoder
+	# started since (100) on the widest of them
+	pinned.clear()
+	monkeypatch.setattr(cpus, "Tree", lambda pids: sorted(set(pids) | {99, 100}))
+	live.UnplaceCampy(moved)
+	assert pinned == [(7, [0, 1, 2, 3, 10]), (11, [0, 1, 2, 3, 10]), (12, [1, 2]), (99, [0, 1, 2, 3, 10]),
+		(100, [0, 1, 2, 3, 10])]
+	assert "campy-acquire (5 processes) back on the CPUs it had" in capsys.readouterr().out
+	monkeypatch.setattr(cpus, "Tree", lambda pids: sorted(set(pids) | {99}))
 	# Asked not to: as it is
 	pinned.clear(), priority.clear()
 	args = live.ParseArgs(["--cpus", "none", "--campy-cpus", "none"])
 	assert live.PlaceSelf(args) == (None, None)
-	live.PlaceCampy(args, readers)
+	assert live.PlaceCampy(args, readers) is None
+	live.UnplaceCampy(None)
 	assert pinned == [] and priority == []
 	# A list, at the priority asked
 	args = live.ParseArgs(["--cpus", "4-5", "--priority", "above_normal"])
