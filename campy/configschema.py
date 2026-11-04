@@ -236,6 +236,14 @@ SETTINGS = [
 			the console, and written to the recording's alerts.log, either way. See docs/alerts.md."),
 	Setting("alertNoFramesSec", 10, float, section=ALERTS, per_camera=ONE, above=0,
 		help="A camera that has sent frames and sends none for this many seconds is an alert (default: 10)."),
+	Setting("alertTriggerPauseSec", "None", float, section=ALERTS, per_camera=ONE, words=("None",), above=0,
+		help="A trigger that pauses on purpose, such as one that runs the cameras in bouts with long gaps \
+			between them: a trigger pause at least this many seconds long is planned. It is written in the \
+			recording's alerts.log, counted in recording.json and in the message as the recording ends, \
+			but not sent as an alert (default: None = every trigger pause is a warning). Shorter pauses, \
+			and a camera that misses pulses the others got, are alerts as before. Set it above the longest \
+			pause that would be a fault, and alertNoFramesSec above the longest planned gap. See \
+			docs/alerts.md."),
 	Setting("alertDiskFreeGB", 20, float, section=ALERTS, per_camera=ONE, low=0,
 		help="Less free space than this on a video folder's disk is an alert (default: 20)."),
 	Setting("stopAtFreeGB", 2, float, section=ALERTS, per_camera=ONE, low=0,
