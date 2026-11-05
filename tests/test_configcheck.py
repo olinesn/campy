@@ -81,6 +81,14 @@ def test_values_campy_takes(tmp_path):
 	assert resolve(tmp_path, "")["numCams"] == 1 # an empty config is campy's defaults
 
 
+def test_alert_external_wait(tmp_path):
+	assert configurator.DefaultParams()["alertExternalWaitSec"] == 600
+	assert resolve(tmp_path, "alertExternalWaitSec: 3600\n")["alertExternalWaitSec"] == 3600.0
+	assert resolve(tmp_path, "alertExternalWaitSec: None\n")["alertExternalWaitSec"] == "None"
+	assert problems(tmp_path, "alertExternalWaitSec: 0\n") == \
+		['c.yaml:1: alertExternalWaitSec: 0 is not a number above 0, or "None"']
+
+
 def test_quality_limit_follows_the_codec(tmp_path):
 	assert problems(tmp_path, "quality: 60\n") == ["quality is 0 to 51 for codec h264, not 60."]
 	assert problems(tmp_path, "numCams: 2\ncodec: [av1, h265]\nquality: 200\n") == \

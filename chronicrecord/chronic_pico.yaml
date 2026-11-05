@@ -56,6 +56,15 @@ alertNoFramesSec: 400
 # frametimes.npy has each frame's time.
 alertTriggerPauseSec: 30
 
+# campy is started well before the Pi's session (start campy, wait for "All 4 cameras are
+# ready.", then start the Pi), and it waits for the first pulse meanwhile. With the default
+# (600 s), campy sends "No frame yet, 10 min after campy started waiting for the external
+# trigger: is it running?" to Slack if the Pi starts more than 10 minutes later: in the
+# 1-hour rehearsal on 4 November the Pi started 16 minutes after campy, and that was the
+# only false alarm. An hour leaves room for a late start and still catches a Pi that was
+# never started. None would never send it.
+alertExternalWaitSec: 3600
+
 # SpikeGLX writes to the same disk as campy (C:) while the gate is high, about 475 GB a day
 # on the 6-day plan, and campy's disk check doesn't count it. So warn with about a day's
 # room left, not campy's default 20 GB (about an hour here). With today's single disk (~490 GB

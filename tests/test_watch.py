@@ -186,6 +186,37 @@ def test_an_external_trigger(monkeypatch, tmp_path):
 	assert "so the trigger has stopped (an external trigger: is it still running?)" in rig.Sent()[-1]
 
 
+def test_an_external_trigger_started_later_on_purpose(monkeypatch, tmp_path):
+	# alertExternalWaitSec: a session that starts campy well before the device that makes the pulses
+	rig = Rig(monkeypatch, tmp_path, systems={}, alertExternalWaitSec=1800).Start()
+	rig.Run(watch.EXTERNAL_WAIT_S + 60, cameras=[]) # past the default 10 min: nothing
+	assert len(rig.Sent()) == 1
+	rig.Run(1800 - watch.EXTERNAL_WAIT_S - 60 + 10, cameras=[])
+	assert rig.Sent()[-1] == (":large_orange_circle: *Test rig*: No frame yet, 30 min after campy started waiting "
+		"for the external trigger: is it running?")
+	rig.Run(20)
+	assert rig.Sent()[-1].endswith(": The first frames came")
+
+
+def test_an_external_trigger_never_waited_for(monkeypatch, tmp_path):
+	# alertExternalWaitSec None: no "No frame yet" however long campy waits; the rest as before
+	rig = Rig(monkeypatch, tmp_path, systems={}, alertExternalWaitSec="None").Start()
+	rig.Run(3 * 3600, cameras=[])
+	rig.Run(20)
+	assert len(rig.Sent()) == 1 # the start only: nothing said as the frames came either
+	assert not any("No frame yet" in line or "first frames" in line for line in rig.said)
+	rig.Run(watch.EVERY_S * 7, cameras=[])
+	assert "so the trigger has stopped (an external trigger: is it still running?)" in rig.Sent()[-1]
+
+
+def test_external_wait_leaves_the_arduino_alone(monkeypatch, tmp_path):
+	# With the trigger Arduino, no frame 10 s after it started is critical, whatever alertExternalWaitSec says
+	rig = Rig(monkeypatch, tmp_path, alertExternalWaitSec="None").Start()
+	rig.Run(12, cameras=[])
+	assert rig.Sent()[-1] == ":red_circle: *Test rig*: No camera has had a frame 10 s after the trigger Arduino " \
+		"on COM3 started."
+
+
 def test_the_arduino_started_and_no_frame_came(monkeypatch, tmp_path):
 	rig = Rig(monkeypatch, tmp_path).Start()
 	rig.Run(12, cameras=[])
