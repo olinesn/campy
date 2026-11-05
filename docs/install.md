@@ -59,7 +59,7 @@ pip install -e .
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\exclude_from_search_index.ps1 -AlsoSoftware
 ```
-It excludes `C:\campy_data` and your `miniconda3`, `anaconda3`, `venvs` and `sleap-bench` folders, where they exist, and changes nothing else; `-Undo` takes the exclusions back. If you record somewhere else, name that folder instead: `-Folder D:\videos`. Do it while nothing is recording: Windows then spends several minutes removing those folders from its index.
+It excludes `C:\campy_data` and `C:\data` (where the ChronicRecord rig's launcher puts each session's folder) and your `miniconda3`, `anaconda3`, `venvs` and `sleap-bench` folders, where they exist, and changes nothing else; `-Undo` takes the exclusions back. If you record somewhere else, name that folder instead: `-Folder D:\videos`. Do it while nothing is recording: Windows then spends several minutes removing those folders from its index.
 
 ## Spinnaker 4.4 on Windows: when the installer fails
 On one Windows 11 PC (October 2026), Spinnaker 4.4.0.246's installer failed the same way every time. Teledyne Common Components installed, then the installer's administrator process went away and nothing else installed: no SpinView, and PySpin found 0 cameras, although Settings ▸ Apps listed "Teledyne Spinnaker SDK 4.4.0.246". Its log in `%TEMP%` (`Teledyne_Spinnaker_SDK_4.4.0.246_(x64)_*.log`) shows `Applied execute package: TeledyneCommonComponentsSetup.exe, result: 0x0`, then `Error 0x800700e8: Failed to write message type to pipe`. No crash or Microsoft Defender event explained it. By then the installer has saved its packages under `C:\ProgramData\Package Cache`, so they can be installed directly, in PowerShell run as administrator:

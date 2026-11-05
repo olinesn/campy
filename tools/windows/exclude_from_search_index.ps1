@@ -16,7 +16,8 @@
 #
 # What it changes, and nothing else: it adds "exclude" rules to Windows Search's list of indexed places (the same
 # list as Settings > Privacy & security > Searching Windows > Excluded folders), for
-#   - the recording folders given with -Folder (default C:\campy_data). Windows doesn't index a folder outside the
+#   - the recording folders given with -Folder (default C:\campy_data and C:\data, the ChronicRecord PC's session
+#     folders since 2026-11-05; one that doesn't exist is skipped). Windows doesn't index a folder outside the
 #     user folder anyway; the rule keeps it out if "Enhanced" search (the whole disk) is ever turned on. A recording
 #     folder inside the user folder (Documents, Videos, the Desktop) is indexed until excluded;
 #   - with -AlsoSoftware: miniconda3, anaconda3, venvs and sleap-bench in your user folder, if they exist.
@@ -30,7 +31,7 @@
 # Running it again is safe: every step checks first.
 
 param(
-	[string[]]$Folder = @('C:\campy_data'),
+	[string[]]$Folder = @('C:\campy_data', 'C:\data'),
 	[switch]$AlsoSoftware,
 	[switch]$Undo
 )
