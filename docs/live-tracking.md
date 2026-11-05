@@ -431,6 +431,16 @@ Notes on the measurements:
 
   The Windows 11 VM has no `campy-live`, because there is no device for its Intel Arc Pro B50. So it ran a recording check instead: `campy-acquire` recorded 1 and then 3 emulated cameras playing the same clips at 60 fps, for 20 s and 60 s, with Quick Sync H.265 on the B50. Each camera saved all its frames (1,200, then 3 × 3,600), with none dropped (`framesDropped` 0). The 3-camera run was `RIG_CLEAN`. The 1-camera run was flagged by one sighting of the security scanner.
 
+- On 5 November (12:26–12:53 AM) the Dell Pro Tower Plus, which records experiments every day, ran the same rig check on campy 2.4.0 (`95291b0`, both environments 2.4.0) for the first time. It ran under the experiment-machine rules (pull request 272): each check started only because it was night, nobody had used the machine for 15 minutes or more, no camera or campy was in use and tests weren't paused, and each was shown on the screen's banner with a Stop button. Its one NVIDIA GPU, the RTX A2000, ran the models, and the emulated cameras recorded H.265 with Quick Sync on the processor's integrated GPU, as on the Pro Max Slim. That needs an ffmpeg with Quick Sync (a BtbN 8.1 build, `ffmpegPath`): the recording environment's own ffmpeg has none, and on the first try `campy-acquire` stopped each camera after about 3 s. No real camera was opened.
+
+  Nothing was skipped or misaligned, and every camera kept all its frames. Every set was tracked from frame 1 (the replay from frame 2, as on the Pro Max Slim). The runs below are the rerun, all `RIG_CLEAN`. The run before it gave the same times to within 0.1 ms but was marked `RIG_CONTAMINATED`: the security scanner read 55–61 MB/s while `campy-live` loaded the models, starting 7 s into each check.
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | Pro Tower Plus (RTX A2000) | 1,200 / 2.7 / 2.8 | 3,600 / 6.7 / 7.0 / 9.2 / 10.5 | 1,799 / 6.8 / 7.1 / 10.9 / 12.6 |
+
+  The 70 W card is the slowest of the four, as in the 8-camera measurement below: 3 cameras take 6.7 ms per set at a GPU clock of about 1,700 MHz (its power limit held it down at times), against 5.5–5.6 ms on the Pro Max Slim and the EVO-X2 and 1.6 ms on the Precision 7875. That still leaves 10 ms of the 16.7 ms between frames at 60 fps.
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
