@@ -147,12 +147,21 @@ def run(tmp_path):
 SLEEP = [sys.executable, "-c", "import time; time.sleep(60)"]
 
 
+def write_stop(root, text):
+	# As the banner's Stop button writes it (rig_banner.ps1): whole or not at all, through a
+	# temporary file. A plain write_text leaves the file empty for a moment, and rig.py,
+	# reading it then, logs "the STOP file" instead of its reason (seen on Windows CI)
+	tmp = root / "STOP.tmp"
+	tmp.write_text(text)
+	os.replace(str(tmp), str(root / "STOP"))
+
+
 @runs
 def test_stop_file_ends_the_test_within_2_s_and_pauses(run):
 	p = run.popen("run", "tester", "stopme", "--", *SLEEP)
 	run.until_held(p)
 	time.sleep(1.0)
-	(run.root / "STOP").write_text("how=the Stop button on the banner; at=now\n")
+	write_stop(run.root, "how=the Stop button on the banner; at=now\n")
 	t0 = time.monotonic()
 	out, _ = p.communicate(timeout=60)
 	took = time.monotonic() - t0
