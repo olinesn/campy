@@ -13,7 +13,7 @@ The ChronicRecord rig's four TTL outputs, made by a Raspberry Pi Pico instead of
 The Pi 3B still runs the experiment, started and stopped over SSH. It plans the whole session and loads it onto the Pico over USB. Then the Pico makes every edge from its own crystal clock. campy doesn't take part: on this setup the campy configs need `startArduino: False`, and the cameras just record the pulses on Line3. Start campy first, so that every camera is grabbing before the Pi's `start`.
 
 - `chronic_timer/chronic_timer.ino` is the Pico's program (the same file also runs on an Arduino Nano ESP32).
-- `chronic_control.py` is the Pi's program (needs only Python 3 and pyserial).
+- `chronic_control.py` is the Pi's program (needs only Python 3 and pyserial). It also runs on the recording PC itself, Windows or Linux, so the Pico can be plugged straight into the PC without the Pi: see [Without the Pi](#without-the-pi-the-pico-on-the-recording-pc). The rig still uses the Pi until that has been checked on it.
 
 **Why a Pico:** its PIO hardware runs the outputs by itself from a queue of "these levels, for this many clock ticks". All four pins change in the same clock tick (about 7.5 ns at 133 MHz), and neither USB nor the rest of its program can move an edge unless the queue runs dry, which the Pico counts and reports (`stalls=`). The official Pico design has a 12 MHz crystal. An UNO R4 has no crystal in use (about ±1%), and a Pi's Linux can delay anything done in software.
 
@@ -104,6 +104,7 @@ ssh <user>@<pi-address> python3 chronic_control.py stop
 - `stop --now` ends it at once. The camera finishes the pulse it is on, then every output goes low. With no session program running, `stop --now` tells the board itself to stop.
 - `plan` prints the session's timeline without touching the board.
 - `run` runs the session in the terminal. Ctrl-C there is `stop --now`.
+- `attach` takes over a session the board is still running after the program that started it stopped (the computer restarted, or the program was killed): it carries on logging to the same `timestamps.txt` until the session ends, and `stop` works again. The board's edges while nothing was attached aren't in the log; SpikeGLX has them. See [Without the Pi](#without-the-pi-the-pico-on-the-recording-pc).
 
 The log is `~/Documents/<date>/timestamps.txt`, as before. The program's own output goes to `~/.chronic_control/session.out`. `status` reads `~/.chronic_control/status.json`, which the session rewrites as it runs. Like every JSON file campy writes, it is strict JSON: an infinite or NaN number would be the text `"Infinity"` or `"NaN"` ([Recording folders](../docs/recordings.md#infinity-and-nan-in-campys-json-files)).
 
@@ -186,6 +187,29 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 
 **Disk: a 6-day session does not fit on the recording PC today.** The videos are the small part: about 140 to 200 GB for the 6-day plan at 60 fps (worked out from 30 fps recordings of mice; not yet measured at 60 fps with animals). SpikeGLX writes to the same C: drive while the gate is high, plus its trigger margin (1 s before and after each bout on this rig), at about 24 MB/s (23.1 MB/s for the Neuropixels probe, 0.85 MB/s for the OneBox, both measured on 4 November): about 2.7 TB for the 6-day plan's 109,440 s of gate plus 3,456 s of margin. In all about 2.9 TB, roughly 475 GB a day, against about 500 GB free on the PC's only disk (1 TB). Before a multi-day session, add a data disk (or move data off during the session); see [Recording many days](../docs/hardware.md#recording-many-days) in the hardware notes. campy's launch check only counts its own videos (about 430 GB here, from the encoder sweep's synthetic frames) and warns above 80% of the free space; it doesn't know about SpikeGLX. campy stops its recording cleanly below 2 GB free, but SpikeGLX would fill the disk first. The profile's `alertDiskFreeGB: 500` sends a disk warning to Slack once less than about a day's room is left; on today's disk (about 490 GB free) that is from the start of every session, test runs included, until a data disk is added.
 
+## Without the Pi: the Pico on the recording PC
+
+`chronic_control.py` runs on the recording PC as it does on the Pi, so the Pi can go: the Pico on one of the PC's USB ports, and the PC starting and stopping sessions. *Not yet done on the rig: the tests below are on a simulated board.* What changes:
+
+- **Python:** the recording's own environment (it has pyserial), with `python` for `python3`.
+- **Finding the Pico:** on Windows (and on a Linux PC without `/dev/serial/by-id`), the one Pico among the serial ports, by its USB IDs. It never takes an Arduino there, since campy's trigger Arduino may be on the same PC. With two Picos, or to be sure, name it: `--port COM7`, or by its USB serial number, `--port E665485457699D30` (as `/dev/serial/by-id` shows it on the Pi), which stays the same whatever COM number Windows gives it.
+- **Starting it:** from a window on the PC's desktop (Remote Desktop is fine), best from the recording's launcher after campy says all cameras are ready, so the session is part of the recording's rig job (`bench/rig.py` counts a program holding a COM port outside the job as a foreign trigger). Not over SSH: Windows' SSH server ends what an SSH session started when it disconnects. The session runs on in its own process, without a window, so closing the window doesn't end it. `status` and `stop` work over SSH.
+- **Stopping it:** `stop` now asks through a file in the state folder (`stop.request`), which the session reads within a fraction of a second; that works on Windows, which has no `SIGUSR1`. On the Pi, `stop` still works the same.
+- **Logs:** `~/.chronic_control` and `~/Documents/<date>/timestamps.txt` in the user's folder, as on the Pi; `--state-dir` and `--log-dir` put them elsewhere (next to the recording, say). The log's times are the PC's clock, the same clock as campy's frame times.
+
+**Before a long session on the PC** (Windows; settings for the user to make, not the program):
+
+- **Windows Update:** pause updates for longer than the session. Unpaused, Windows restarts the PC for updates by itself, outside its active hours. A restart ends campy and SpikeGLX whatever drives the Pico, and probably restarts a Pico powered by USB (below).
+- **USB power saving:** set "USB selective suspend" to Disabled in the power plan, and in Device Manager untick "Allow the computer to turn off this device to save power" for the Pico's port and its USB hub. It shouldn't matter while a program holds the port open, but costs nothing.
+- **Sleep:** never, on mains power.
+
+**Through a PC restart: a 5 V supply of its own.** Powered only by USB, the Pico probably loses power while the PC restarts (*expected, not measured*): it restarts and sets every output low, ending the session. To keep it running, power it from a separate 5 V supply as well, as the Pico's datasheet describes ("Powering Pico"): the supply's + through a Schottky diode (a 1N5817 or 1N5819; the stripe towards the Pico) to **VSYS (pin 39)**, and its − to **GND (pin 38)**. The Pico's own diode on USB power and this one share the load, so either alone keeps it running and the USB link still works. Use a plug-in supply whose output floats (most phone chargers), so that it adds no connection to mains earth. Then, after a restart:
+
+1. Start campy and SpikeGLX again, as for a new session (campy writes a new recording folder).
+2. `python chronic_control.py attach`. It finds the session the board is running, from `~/.chronic_control/session.json`, and logs it from then on. If the board isn't running a session, it says so: the session ended, or the board lost power.
+
+Not checked yet: a session started from the PC on the rig, the PC restarting with the Pico on its own supply, and the grounds. With the Pico on the PC's USB, its ground is the PC's, which the OneBox and the cameras share through their own USB cables: compare the OneBox's lines (low and high levels, noise) and the probe's noise with the Pico on the Pi and on the PC.
+
 ## Commands the board takes
 
 These are what `chronic_control.py` sends. Each answer comes at once: `ok ...` or `err ...`.
@@ -212,4 +236,4 @@ The full description is at the top of the sketch.
 
 `tests/test_chronic_timer.py` compiles the sketch for the computer and runs it on a simulated clock (`tests/arduino_sim`).
 
-`tests/test_chronic_control.py` checks the Pi program's plan against chronicControlv13.py's timeline. It also runs `start`, `status`, `stop` and `stop --now` end to end against the sketch running live on a pseudo-terminal.
+`tests/test_chronic_control.py` checks the Pi program's plan against chronicControlv13.py's timeline. It also runs `start`, `status`, `stop`, `stop --now` and `attach` (after the session program is killed) end to end against the sketch running live on a pseudo-terminal. Where there is no pseudo-terminal (Windows), the same commands run against a stand-in board on a network socket, which answers as the sketch does but reports only the session's end. It also checks that the Pico is found by its USB IDs, never an Arduino, off the Pi.

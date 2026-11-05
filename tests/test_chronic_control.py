@@ -291,3 +291,244 @@ def test_loading_is_fast(board):
 	finally:
 		b.close()
 	assert took < 5, "{:.1f} s for 300 commands".format(took) # 15 s at the timeout
+
+
+# --- on the recording PC (Windows or Linux): finding the Pico, stop, attach ---
+
+class Port:
+	def __init__(self, device, vid, serial_number):
+		self.device, self.vid, self.serial_number = device, vid, serial_number
+
+
+def test_find_port_takes_the_one_pico_and_never_an_arduino(monkeypatch):
+	# Off Linux (or with no by-id folder): the Pico by its USB IDs. campy's trigger
+	# Arduino (a Nano ESP32, Arduino's IDs) may be on the same PC: never taken
+	monkeypatch.setattr(sys, "platform", "win32")
+	nano = Port("COM9", 0x2341, "ABC")
+	pico = Port("COM7", cc.PICO_VID, "E665485457699D30")
+	assert cc.FindPort(comports=[nano, pico]) == "COM7"
+	with pytest.raises(SystemExit, match="No Pico"):
+		cc.FindPort(comports=[nano])
+	other = Port("COM4", cc.PICO_VID, "E6654854579F5F2F")
+	with pytest.raises(SystemExit, match=r"2 Picos.*COM4 \(E6654854579F5F2F\).*COM7 \(E665485457699D30\)"):
+		cc.FindPort(comports=[nano, pico, other])
+	# By its USB serial number (any case), or a port named as such
+	assert cc.FindPort("e665485457699d30", comports=[nano, pico, other]) == "COM7"
+	assert cc.FindPort("COM9", comports=[nano, pico]) == "COM9"
+	assert cc.FindPort("socket://127.0.0.1:5000", comports=[]) == "socket://127.0.0.1:5000"
+
+
+def test_alive_doesnt_end_the_process_it_looks_at():
+	# On Windows os.kill(pid, 0) would end it: Alive asks without doing so
+	child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+	try:
+		assert cc.Alive(child.pid)
+		assert cc.Alive(child.pid) # still there after being looked at
+		assert child.poll() is None
+	finally:
+		child.kill()
+		child.wait()
+	assert not cc.Alive(child.pid)
+	assert not cc.Alive(None)
+
+
+def test_a_stop_request_is_taken_once(tmp_path):
+	assert cc.TakeStopRequest(str(tmp_path)) is None
+	(tmp_path / cc.STOP_FILE).write_text("now")
+	assert cc.TakeStopRequest(str(tmp_path)) == "now"
+	assert cc.TakeStopRequest(str(tmp_path)) is None
+	(tmp_path / cc.STOP_FILE).write_text("bout")
+	assert cc.TakeStopRequest(str(tmp_path)) == "bout"
+
+
+class FakeBoard:
+	"""
+	A board on a TCP socket (socket://127.0.0.1:<port>), so the end-to-end tests run
+	where the sketch's simulator can't (Windows: no pseudo-terminal). It answers
+	as chronic_timer.ino does and keeps the session time while nothing is connected,
+	but reports only 'done' (with the pulses made), not each edge.
+	"""
+
+	def __init__(self):
+		import socket, threading
+		self.server = socket.socket()
+		self.server.bind(("127.0.0.1", 0))
+		self.server.listen(1)
+		self.url = "socket://127.0.0.1:{}".format(self.server.getsockname()[1])
+		self.lock = threading.Lock()
+		self.conn = None
+		self.trains, self.edges = [], []
+		self.t0 = None
+		self.end = None
+		self.closed = False
+		threading.Thread(target=self.Serve, daemon=True).start()
+		threading.Thread(target=self.Clock, daemon=True).start()
+
+	def Now(self):
+		return int((time.monotonic() - self.t0) * 1e6)
+
+	def Last(self):
+		times = [t for t, _, _ in self.edges] + [cc.Rise(st, n - 1, rate) + w for _, st, n, rate, w in self.trains]
+		return max(times)
+
+	def Pulses(self, until):
+		return sum(sum(1 for k in range(n) if cc.Rise(st, k, rate) < until) for _, st, n, rate, w in self.trains)
+
+	def Say(self, line):
+		try:
+			if self.conn:
+				self.conn.sendall((line + "\r\n").encode())
+		except OSError:
+			pass
+
+	def Clock(self):
+		while not self.closed:
+			with self.lock:
+				if self.t0 is not None and self.Now() >= self.end:
+					self.Say("done {} pulses={} late_max=0 lost=0 stalls=0".format(self.end, self.Pulses(self.end)))
+					self.t0 = None
+			time.sleep(0.01)
+
+	def Serve(self):
+		while not self.closed:
+			try:
+				conn, _ = self.server.accept()
+			except OSError:
+				return
+			self.conn = conn
+			heard = b""
+			while True:
+				try:
+					data = conn.recv(4096)
+				except OSError:
+					break
+				if not data:
+					break
+				heard += data
+				while b"\n" in heard:
+					raw, heard = heard.split(b"\n", 1)
+					with self.lock:
+						self.Command(raw.decode().split())
+			self.conn = None
+
+	def Command(self, words):
+		running = self.t0 is not None
+		if words[0] == "id":
+			self.Say("ok chronic_timer 2")
+		elif words[0] == "status":
+			self.Say("ok status running t={} pulses={} edges=0/{} trains=0/{} late_max=0".format(self.Now(),
+				self.Pulses(self.Now()), len(self.edges), len(self.trains)) if running else
+				"ok status idle edges={} trains={}".format(len(self.edges), len(self.trains)))
+		elif words[0] == "pin":
+			self.Say("ok pin {} {}".format(*words[1:]))
+		elif words[0] == "clear":
+			self.trains, self.edges = [], []
+			self.Say("ok clear")
+		elif words[0] == "edge":
+			self.edges.append(tuple(int(w) for w in (words[2], words[1], words[3])))
+			self.Say("ok edge {}".format(len(self.edges)))
+		elif words[0] == "train":
+			self.trains.append(tuple(int(w) for w in words[1:]))
+			self.Say("ok train {}".format(len(self.trains)))
+		elif words[0] == "go":
+			self.t0 = time.monotonic() + 0.020
+			self.end = self.Last()
+			self.Say("ok go")
+		elif words[0] in ("end", "stop"):
+			if not running:
+				self.Say("ok stop idle" if words[0] == "stop" else "err not running")
+				return
+			t = max(self.Now(), int(words[1]) if words[0] == "end" else 0)
+			self.end = min(self.end, t)
+			self.Say("ok {} {}".format(words[0], self.end))
+		else:
+			self.Say("err unknown")
+
+	def close(self):
+		self.closed = True
+		self.server.close()
+
+
+@pytest.fixture
+def fake_board():
+	board = FakeBoard()
+	yield board.url
+	board.close()
+
+
+def test_start_status_and_stop_after_the_bout_on_any_computer(tmp_path, fake_board):
+	# Start returns at once with the session running on (on Windows: a detached
+	# process); stop asks it through the stop file
+	start = control(tmp_path, fake_board, "start")
+	assert start.returncode == 0 and "Session started" in start.stdout, start.stdout + start.stderr
+	assert "Session: running" in control(tmp_path, fake_board, "status").stdout
+	time.sleep(1.0) # in bout 1
+	stop = control(tmp_path, fake_board, "stop")
+	assert stop.returncode == 0 and "ends after its current bout" in stop.stdout, stop.stdout
+	assert wait_done(tmp_path)["state"] == "done"
+	text = timestamps(tmp_path)
+	assert "the session ends after bout 1, when its gate goes low at board t=3.000000 s" in text
+	assert "Session over: 90 camera pulses\n" in text # bout 1's, by the board's count
+	assert not (tmp_path / "state" / cc.STOP_FILE).exists()
+
+
+def test_stop_now_on_any_computer(tmp_path, fake_board):
+	assert control(tmp_path, fake_board, "start").returncode == 0
+	time.sleep(1.2)
+	stop = control(tmp_path, fake_board, "stop", "--now")
+	assert stop.returncode == 0 and "Session stopped" in stop.stdout, stop.stdout
+	n = int(re.search(r"Session over: (\d+) camera pulses", timestamps(tmp_path)).group(1))
+	assert 20 < n < 90
+
+
+def kill_session(tmp_path):
+	# This computer restarting, as the session program sees it: gone at once, no clean-up
+	pid = cc.ReadStatus(str(tmp_path / "state"))["pid"]
+	if sys.platform == "win32":
+		subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+	else:
+		os.kill(pid, 9)
+	deadline = time.monotonic() + 10
+	while cc.Alive(pid) and time.monotonic() < deadline:
+		time.sleep(0.05)
+	assert not cc.Alive(pid)
+
+
+def attach_after_restart(tmp_path, port):
+	assert control(tmp_path, port, "start").returncode == 0
+	time.sleep(1.0) # in bout 1
+	kill_session(tmp_path)
+	assert "gone" in control(tmp_path, port, "status").stdout
+	command = [sys.executable, CONTROL, "attach", "--state-dir", str(tmp_path / "state")] # its port from the session
+	attach = subprocess.run(command, capture_output=True, text=True, timeout=60)
+	assert attach.returncode == 0 and "Attached" in attach.stdout and "bout 1 of 2" in attach.stdout, attach.stdout + attach.stderr
+	assert wait_done(tmp_path)["state"] == "done"
+	return timestamps(tmp_path)
+
+
+def test_attach_follows_a_session_after_a_restart_on_any_computer(tmp_path, fake_board):
+	text = attach_after_restart(tmp_path, fake_board)
+	assert "=== ATTACHED to the session the board is running" in text
+	assert "Session over: 150 camera pulses\n" in text # all of it: the board kept going
+
+
+def test_attach_follows_the_sketch_after_a_restart(tmp_path, board):
+	port, log_path = board
+	text = attach_after_restart(tmp_path, port)
+	assert "=== ATTACHED to the session the board is running" in text
+	assert text.count("=== NEW SESSION") == 1 # the same log
+	# After attaching, every edge from then on, with its plan label
+	assert "Output A (Record Gate): HIGH (SpikeGLX File Recording Started)" in text.split("ATTACHED")[1] # bout 2
+	assert "Session over: 150 camera pulses\n" in text
+	assert sum(1 for _, level in pins(log_path)[3] if level == 1) == 150
+
+
+def test_attach_with_nothing_running(tmp_path, fake_board):
+	command = [sys.executable, CONTROL, "attach", "--state-dir", str(tmp_path / "state")]
+	out = subprocess.run(command, capture_output=True, text=True, timeout=60)
+	assert out.returncode == 1 and "nothing to attach" in out.stdout
+	# A session that ended: the board is idle, and attach says so
+	assert control(tmp_path, fake_board, "start", "--set", "TOTAL_DURATION=3.5").returncode == 0
+	wait_done(tmp_path)
+	out = subprocess.run(command, capture_output=True, text=True, timeout=60)
+	assert out.returncode == 1 and "not running a session" in out.stdout, out.stdout
