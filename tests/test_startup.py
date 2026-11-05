@@ -1,6 +1,6 @@
 """What a camera says as it opens: one line once it is ready (campy/startup.py)."""
 
-import sys
+import os, sys
 
 from campy import startup
 from campy.cameras import unicam
@@ -59,7 +59,7 @@ def test_a_camera_says_one_line_once_it_is_ready(monkeypatch):
 	startup.Ready(p)
 	assert out.writes == ["Camera1 ready to trigger: flir Blackfly S BFS-U3-13Y3M serial 23501329, 1280x1024 at 80 fps, "
 		"trigger Line3, exposure 750 us, gain 3 dB, gamma off, 100 buffers (oldest first), "
-		"USB limit 380 MB/s (frameRate needs 79), hevc on GPU 0 -> /data/session/Camera1/0.mp4\n"]
+		"USB limit 380 MB/s (frameRate needs 79), hevc on GPU 0 -> {}\n".format(os.path.join("/data/session", "Camera1", "0.mp4"))]
 
 
 def test_the_video_opened_after_the_ready_line_is_not_said_again(monkeypatch):
@@ -123,7 +123,7 @@ def test_the_summary_for_other_cameras():
 	startup.Setting("clip", "playing clip.mp4")
 	s = startup.Summary(startup._current, p)
 	assert s == "Camera0 ready to trigger: emu Emulated_Camera serial 0, 64x48 at 20 fps, no trigger (free-running), " \
-		"playing clip.mp4, h264 on CPU -> /v/Camera0/0.mp4"
+		"playing clip.mp4, h264 on CPU -> {}".format(os.path.join("/v", "Camera0", "0.mp4"))
 	r = dict(p, cameraName="Camera2", cameraMake="ratcam", cameraModel="rp2040 hm01b0", cameraSerialNo="COM5",
 		frameWidth=320, frameHeight=320)
 	startup.Begin(r)
@@ -131,4 +131,4 @@ def test_the_summary_for_other_cameras():
 	startup.Setting("exposure", "exposure 5000 us")
 	s = startup.Summary(startup._current, r)
 	assert s == "Camera2 ready to trigger: ratcam rp2040 hm01b0 serial COM5, 320x320 at 20.00 fps (frame length 400), " \
-		"exposure 5000 us, h264 on CPU -> /v/Camera2/0.mp4"
+		"exposure 5000 us, h264 on CPU -> {}".format(os.path.join("/v", "Camera2", "0.mp4"))
