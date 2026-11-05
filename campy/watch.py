@@ -129,7 +129,7 @@ STALL_CLEAR_S = 30.0
 STALL_START_S = 10.0 # a new ffmpeg's first seconds of frames: no write-stall warning (it opens its encoder then)
 FIRST_FRAME_S = 10.0 # after the trigger Arduino started
 EXTERNAL_WAIT_S = 600.0 # an external trigger (startArduino False): waiting this long is said (alertExternalWaitSec's default)
-TOGETHER_S = 1.0 # cameras whose last frames are this close stopped together: the trigger
+TOGETHER_S = camstatus.TOGETHER_S # cameras whose last frames are this close stopped together: the trigger
 MISSED_SETTLE_S = 1.0 # pulses without a frame are looked at once this old: every camera that missed them has said so
 MISSED_CLEAR_S = 120.0 # a trigger pause, or a camera's missed pulses, are over once none came for this long
 SENT_WINDOW_S = 10.0
@@ -420,7 +420,7 @@ class Watch:
 		quiet = [c for c, (gap, _) in gaps.items() if gap > self.noFramesSec]
 		nearly = [c for c, (gap, _) in gaps.items() if gap > self.noFramesSec - TOGETHER_S - EVERY_S]
 		lasts = [gaps[c][1] for c in nearly]
-		together = len(gaps) >= 2 and len(nearly) == len(gaps) and (max(lasts) - min(lasts)) / 1e9 <= TOGETHER_S
+		together = len(gaps) >= 2 and len(nearly) == len(gaps) and camstatus.Together(lasts)
 		if together and len(quiet) == len(gaps):
 			self.Raise("trigger/stopped", notify.CRITICAL, "No camera has had a frame for {:.0f} s: all {} stopped "
 				"together, so the trigger has stopped ({}).".format(min(gaps[c][0] for c in quiet), len(gaps),
@@ -461,7 +461,7 @@ class Watch:
 		for c in new:
 			self.missedSaid[c] = rows[c]["missed"]
 		resumed = [rows[c]["missedNs"] for c in new]
-		if len(triggered) >= 2 and len(new) == len(triggered) and (max(resumed) - min(resumed)) / 1e9 <= TOGETHER_S:
+		if len(triggered) >= 2 and len(new) == len(triggered) and camstatus.Together(resumed):
 			n = min(new.values())
 			frame = min(rows[c]["missedFrame"] for c in new)
 			if self.Planned(n):

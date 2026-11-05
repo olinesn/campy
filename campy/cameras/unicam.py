@@ -323,25 +323,46 @@ NO_FRAME_SEC = 3
 NO_FRAME_REPORT_SEC = 30
 
 
+def PlannedPauses(cam_params):
+	# alertTriggerPauseSec: the trigger pauses on purpose (bouts), and campy's recording watch says each pause once
+	# (watch.py LogPlanned): None when it does not
+	planned = cam_params.get("alertTriggerPauseSec", "None")
+	return None if planned is None or str(planned) == "None" else float(planned)
+
+
 class FrameWatch:
 	"""
 	Says when a camera stops sending frames, and when they come again. Only
 	once it has sent its first: until then a triggered camera waits for its
 	trigger, for as long as that takes.
+
+	With alertTriggerPauseSec (a trigger that pauses on purpose), a gap every
+	camera shares, their last frames together (status.Camera.QuietTogether,
+	as campy's recording watch tells it), is the trigger's pause, not this
+	camera's: it is not said here, but once for every camera by the
+	recording watch ("Trigger: The trigger paused as planned ...", or a
+	warning when it was shorter). A camera that stops while the others still
+	get frames is said as before, and so is a camera left without frames once
+	the others have them again.
 	"""
 
-	def __init__(self, cam_params):
+	def __init__(self, cam_params, camera=None):
 		self.name = cam_params["cameraName"]
 		self.after = max(NO_FRAME_SEC, 3.0 / float(cam_params["frameRate"]))
 		self.last = None # when the last frame came (time.monotonic)
 		self.frameNumber = 0 # and its number
 		self.reported = None # when the gap was last said
+		# Whether a gap every camera shares is left to the recording watch: a triggered camera, with alertTriggerPauseSec
+		self.pauses = PlannedPauses(cam_params) is not None and Triggered(cam_params)
+		self.camera = camera if camera is not None else status.This() # this camera's row, and the others'
+		self.paused = False # the gap now going is every camera's: not said
 
 	def Frame(self, frameNumber):
 		now = time.monotonic()
 		if self.reported is not None:
 			Say("{}: frames again, after {:.1f} s without (frame {}).".format(self.name, now - self.last, frameNumber))
 			self.reported = None
+		self.paused = False
 		self.last, self.frameNumber = now, frameNumber
 
 	def NoFrame(self, error):
@@ -349,6 +370,9 @@ class FrameWatch:
 			return
 		now = time.monotonic()
 		if now - self.last < self.after:
+			return
+		if self.pauses and self.reported is None and self.camera.QuietTogether():
+			self.paused = True # the trigger's pause: the recording watch says it
 			return
 		if self.reported is not None and now - self.reported < NO_FRAME_REPORT_SEC:
 			return
@@ -480,6 +504,13 @@ def GrabData(cam_params):
 
 	# Frames dropped because the encoder fell behind (see DropFrame)
 	grabdata["framesDropped"] = 0
+
+	# A trigger that pauses on purpose (alertTriggerPauseSec): its pauses, left out of the rate CountFPS says
+	grabdata["planned"] = PlannedPauses(cam_params) is not None
+	grabdata["pausedSec"] = 0.0
+	grabdata["pauses"] = 0
+	grabdata["lastStamp"] = None
+	grabdata["framePeriod"] = 1.0 / float(cam_params["frameRate"])
 	grabdata["lastDropReport"] = float("-inf")
 
 	return grabdata
@@ -532,10 +563,26 @@ def StartGrabbing(camera, cam_params, cam):
 
 
 def CountFPS(grabdata, frameNumber, timeStamp):
+	# With alertTriggerPauseSec (a trigger that pauses on purpose), the gaps of NO_FRAME_SEC or more between two
+	# frames (by the camera's timestamps) are left out of the rate, and said apart: over the whole time, the
+	# rate at 10 s of frames every 5 minutes was a fifth of the trigger's, as if frames were missing
+	if grabdata.get("planned"):
+		last = grabdata.get("lastStamp")
+		if last is not None and timeStamp - last >= NO_FRAME_SEC:
+			grabdata["pausedSec"] += timeStamp - last - grabdata.get("framePeriod", 0.0) # the pulses missed only
+			grabdata["pauses"] += 1
+		grabdata["lastStamp"] = timeStamp
 	if frameNumber % grabdata["chunkLengthInFrames"] == 0:
 		timeElapsed = timeStamp - grabdata["frameTimes"].first
 		if timeElapsed <= 0:
 			return # the first frame, at a chunk of one frame: no rate yet
+		paused = grabdata.get("pausedSec", 0.0)
+		if paused > 0 and timeElapsed - paused > 0:
+			fpsCount = round((frameNumber - 1) / (timeElapsed - paused), 1)
+			Say("{} collected {} frames at {} fps for {} sec of frames ({} sec in all, with {} trigger pause{} "
+				"of {} sec).".format(grabdata["cameraName"], frameNumber, fpsCount, round(timeElapsed - paused),
+				round(timeElapsed), grabdata["pauses"], "" if grabdata["pauses"] == 1 else "s", round(paused)))
+			return
 		fpsCount = round((frameNumber - 1) / timeElapsed, 1)
 		Say('{} collected {} frames at {} fps for {} sec.'\
 			.format(grabdata["cameraName"], frameNumber, fpsCount, round(timeElapsed)))
@@ -748,6 +795,12 @@ def SaveMetadata(cam_params, grabdata, recording=None):
 		if recording.videoError and times.count:
 			Say("{} grabbed {} frames at {} fps. Its video{} {} of them: its ffmpeg stopped.".format(
 				name, frame_count, fps_count, " files hold" if recording.restarts else " holds", times.count))
+		elif times.count and grabdata.get("pauses") and time_count - grabdata["pausedSec"] > 0:
+			# A trigger that paused on purpose: the rate while frames came, and the pauses apart (CountFPS)
+			Say("{} saved {} frames at {} fps over {} s of frames, with {} trigger pause{} of {} s in all.".format(name,
+				frame_count, int(round(frame_count / (time_count - grabdata["pausedSec"]))),
+				round(time_count - grabdata["pausedSec"]), grabdata["pauses"], "" if grabdata["pauses"] == 1 else "s",
+				round(grabdata["pausedSec"])))
 		elif times.count:
 			Say('{} saved {} frames at {} fps.'.format(name, frame_count, fps_count))
 		if grabdata["framesDropped"]:
