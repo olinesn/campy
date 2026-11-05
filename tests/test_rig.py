@@ -316,7 +316,10 @@ def test_a_killed_rig_py_keeps_the_rig_until_its_job_ends(rig, tmp_path):
 	assert second.returncode == 0, out
 	assert "its rig.py has ended" in out, out
 	assert last(rig.log("second")).startswith("RIG_CLEAN")
-	assert "RIG_" not in rig.log("killed")  # no verdict: its numbers can't be trusted
+	# A log from the start (rig.py writes its first line before the job starts, so even a rig.py killed
+	# the moment RIG_BUSY named the job left one), and no verdict: its numbers can't be trusted
+	killed = rig.log("killed")
+	assert killed.splitlines()[0].split(" ", 1)[1].startswith("rig.py ") and "RIG_" not in killed, killed
 	assert busy(rig) == "" and rig("status").stdout.startswith("rig free")
 
 

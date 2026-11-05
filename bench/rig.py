@@ -1133,6 +1133,9 @@ def cmd_run(args):
 		wait_quiet(Watch(), args)
 		job = "%s-%d" % (re.sub(r"\W", "_", args.tag), os.getpid())
 		log = logger(log_path(args, args.tag))
+		# The log's first line before the job starts: a run whose job ran has a log, even when rig.py
+		# is killed (SIGKILL) the moment RIG_BUSY names the job, and the log says nothing more then
+		log("rig.py " + version_text())
 		got = catch_signals()
 		env = dict(os.environ, RIG_JOB=job, RIG_OWNER=args.owner, RIG_TAG=args.tag)
 		# The lock names the job before the job starts: a guarded script (rig_guard.sh, .ps1) checks
@@ -1141,7 +1144,6 @@ def cmd_run(args):
 		lock.record(job, None)
 		proc = start_job(args.cmd, env, log)
 		lock.record(job, proc.pid)
-		log("rig.py " + version_text())
 		log("rig held by %s for %s (job %s, pid %d): %s" % (args.owner, args.tag, job, proc.pid, " ".join(shlex.join(args.cmd).split())))
 		w = Watch(job=job, sid=None if WINDOWS else proc.pid, root_pid=proc.pid)
 		counts = watch(w, lambda: proc.poll() is None, log, args, got, lock)
@@ -1189,10 +1191,10 @@ def cmd_hold(args):
 		p = scan().get(args.pid)
 		job = (p and p.job) or "hold-%d" % args.pid
 		log = logger(log_path(args, args.tag))
+		log("rig.py " + version_text())  # before RIG_BUSY names the pid, as in run
 		got = catch_signals()
 		lock.record(job, args.pid, " (held for a running pid)")
 		held = True
-		log("rig.py " + version_text())
 		log("rig held by %s for %s (running pid %d): %s" % (args.owner, args.tag, args.pid, cmdline(p) if p else "?"))
 		w = Watch(job=p and p.job, sid=p and p.sid, root_pid=args.pid)
 		counts = watch(w, running, log, args, got, lock)
