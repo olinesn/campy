@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-chronic_control.py: ChronicRecord's stimulus sessions, made by the Arduino
-Pi Pico (chronic_timer/chronic_timer.ino) and run from the Raspberry Pi.
+chronic_control.py: ChronicRecord's stimulus sessions, made by the Raspberry
+Pi Pico (chronic_timer/chronic_timer.ino) and run from the computer it is
+plugged into: the recording PC (Windows or Linux; a Raspberry Pi 3B until
+2026-11-05).
 
-The Pi plans the whole session (the same bouts as chronicControlv13.py) and
+This program plans the whole session (the same bouts as chronicControlv13.py) and
 loads it onto the Pico over USB. The Pico then makes every TTL from its own
 crystal clock: the OneBox record gate, the 60 Hz camera trigger and the two
 LED controllers, each edge on its microsecond, the LEDs on whole camera frames.
-The Pi only starts it, logs what the Pico reports, and stops it. (An Arduino Nano
-ESP32 with the same sketch works too.)
+The computer only starts it, logs what the Pico reports, and stops it. (An Arduino
+Nano ESP32 with the same sketch works too.)
 
 Over SSH (each returns at once; the session runs in the background):
   python3 chronic_control.py start        start a session
@@ -27,11 +29,22 @@ Over SSH (each returns at once; the session runs in the background):
                                           --pause 60 waits a minute between rounds.
   python3 chronic_control.py blink        every output on and off together, 2 Hz
                                           (--hz), in the background until 'stop'
+  python3 chronic_control.py attach       take over a session the board is still
+                                          running after this program stopped (a
+                                          restart of this computer, with the Pico on
+                                          its own power supply): logs it to the end
 Change a setting for one session without editing this file:
   python3 chronic_control.py start --set TOTAL_DURATION=1800 --set INTERVAL=180
 
-Needs pyserial (sudo apt install python3-serial) and the user in the dialout
-group; no sudo, no GPIO on the Pi.
+Needs pyserial. On Linux: sudo apt install python3-serial, and the user in the
+dialout group; no sudo, no GPIO.
+
+On Windows: the same commands with "python" for "python3". It finds the Pico by
+its USB IDs (never an Arduino there: campy's trigger Arduino may be on the same
+computer); --port COM7 or --port <the Pico's USB serial number> picks one. Start
+sessions from a window on the PC's desktop (Remote Desktop is fine): Windows' SSH
+server ends what a session started when it disconnects. status and stop work
+over SSH.
 """
 
 import argparse, glob, json, math, os, re, signal, subprocess, sys, time
@@ -74,6 +87,13 @@ GATE, CAMERA, BLUE, YELLOW = range(4)
 
 STATE_DIR = os.path.expanduser("~/.chronic_control")
 LOG_ROOT = os.path.expanduser("~/Documents")
+WINDOWS = sys.platform == "win32"
+PICO_VID = 0x2E8A # Raspberry Pi: the Pico, as a serial port
+# stop asks the session to end by writing this file in the state folder: "bout" (after
+# the current bout) or "now". (Signals were the Pi's way; Windows has no SIGUSR1.)
+STOP_FILE = "stop.request"
+# What the session was started with, for attach
+SESSION_FILE = "session.json"
 
 
 class BoardError(Exception):
@@ -97,7 +117,7 @@ def Us(seconds):
 
 
 # status.json is strict JSON, as every JSON file campy writes (campy/strictjson.py,
-# not imported here: the Pi has no campy). JSON has no infinity or NaN; Python's
+# not imported here: this program needs no campy). JSON has no infinity or NaN; Python's
 # json writes them as bare words other readers refuse, so they are the text
 # "Infinity", "-Infinity" or "NaN", and read back as the numbers.
 NON_FINITE = {"Infinity": math.inf, "-Infinity": -math.inf, "NaN": math.nan}
@@ -119,6 +139,33 @@ def FromStrictJson(data):
 	if isinstance(data, list):
 		return [FromStrictJson(v) for v in data]
 	return NON_FINITE.get(data, data) if isinstance(data, str) else data
+
+
+def WriteJson(path, data):
+	# Whole or not at all: written beside it, then swapped in. On Windows the swap
+	# fails while another program (status) has the file open: a moment later it works.
+	with open(path + ".new", "w") as f:
+		json.dump(StrictJson(data), f, allow_nan=False)
+	for attempt in range(50):
+		try:
+			os.replace(path + ".new", path)
+			return
+		except PermissionError:
+			if attempt == 49:
+				raise
+			time.sleep(0.02)
+
+
+def TakeStopRequest(state_dir):
+	# What stop asked for ("bout" or "now"), once; None if nothing
+	path = os.path.join(state_dir, STOP_FILE)
+	try:
+		with open(path) as f:
+			how = f.read().strip()
+		os.remove(path)
+	except OSError:
+		return None
+	return "now" if how == "now" else "bout"
 
 
 def Rise(start, k, rate_mhz):
@@ -212,10 +259,38 @@ def Frames(ks):
 	return "{}-{}".format(ks[0], ks[-1]) if len(ks) > 1 else str(ks[0])
 
 
-def FindPort():
-	ports = sorted(glob.glob("/dev/serial/by-id/*Pico*")) or sorted(glob.glob("/dev/serial/by-id/*Nano_ESP32*")) \
-		or sorted(glob.glob("/dev/serial/by-id/*Arduino*"))
-	return ports[0] if ports else "/dev/ttyACM0"
+def FindPort(port=None, comports=None):
+	"""
+	The board's serial port. port: a port name (/dev/ttyACM0, COM7, a pyserial
+	URL), a Pico's USB serial number, or None to find it: on Linux in
+	/dev/serial/by-id (a Pico, else a Nano ESP32 or another Arduino, as on the Pi);
+	elsewhere the one Pico among the serial ports, by its USB IDs. Never an
+	Arduino there: campy's trigger Arduino may be on the same computer.
+	"""
+	if port is not None and (os.path.exists(port) or "://" in port or re.match(r"(?i)^COM\d+$", port)):
+		return port
+	if port is None and sys.platform.startswith("linux"):
+		ports = sorted(glob.glob("/dev/serial/by-id/*Pico*")) or sorted(glob.glob("/dev/serial/by-id/*Nano_ESP32*")) \
+			or sorted(glob.glob("/dev/serial/by-id/*Arduino*"))
+		return ports[0] if ports else "/dev/ttyACM0"
+	if comports is None:
+		try:
+			from serial.tools import list_ports
+			comports = list_ports.comports()
+		except ImportError:
+			comports = []
+	picos = sorted((p for p in comports if p.vid == PICO_VID), key=lambda p: p.device)
+	if port is not None:
+		for p in picos:
+			if (p.serial_number or "").upper() == port.upper():
+				return p.device
+		return port # a name this computer doesn't list (yet): opening it says so
+	if len(picos) == 1:
+		return picos[0].device
+	if not picos:
+		raise SystemExit("No Pico among this computer's serial ports. Is it plugged in? (--port picks a port.)")
+	raise SystemExit("{} Picos: pick one with --port, by its port or USB serial number: {}".format(len(picos),
+		", ".join("{} ({})".format(p.device, p.serial_number) for p in picos)))
 
 
 class Board:
@@ -225,7 +300,8 @@ class Board:
 		import serial
 		self.port = port
 		self.on_report = on_report
-		self.connection = serial.Serial(port=port, baudrate=115200, timeout=0.05)
+		# serial_for_url: a port name, or a URL such as socket://host:port (the tests use one)
+		self.connection = serial.serial_for_url(port, baudrate=115200, timeout=0.05)
 		self.heard = b""
 
 	def close(self):
@@ -276,14 +352,15 @@ class Board:
 class Session:
 	"""Plans, loads and runs one session; logs as chronicControlv13.py did, with the board's times."""
 
-	def __init__(self, s, port, state_dir, log_dir):
+	def __init__(self, s, port, state_dir, log_dir, log_path=None):
 		self.s = s
 		self.port = port
 		self.state_dir = state_dir
 		os.makedirs(state_dir, exist_ok=True)
-		self.log_dir = os.path.join(log_dir, datetime.now().strftime("%Y-%m-%d"))
+		# log_path: an attached session's, the log it started (even after midnight)
+		self.log_path = log_path or os.path.join(log_dir, datetime.now().strftime("%Y-%m-%d"), "timestamps.txt")
+		self.log_dir = os.path.dirname(self.log_path)
 		os.makedirs(self.log_dir, exist_ok=True)
-		self.log_path = os.path.join(self.log_dir, "timestamps.txt")
 		self.bouts, self.trains, self.edges = Plan(s)
 		self.labels = {}
 		for b in self.bouts if not s["CAMERA_ONLY"] else []:
@@ -327,10 +404,7 @@ class Session:
 			bout=None if b is None else b["number"], bouts=len(self.bouts),
 			ends_s=self.bouts[-1]["gate_off"] / 1e6 if self.end_sent is None else self.end_sent / 1e6,
 			end_requested=self.end_requested, end_sent=self.end_sent is not None, pulses=self.pulses, done=self.done, error=self.error)
-		path = os.path.join(self.state_dir, "status.json")
-		with open(path + ".new", "w") as f:
-			json.dump(StrictJson(status), f, allow_nan=False)
-		os.replace(path + ".new", path)
+		WriteJson(os.path.join(self.state_dir, "status.json"), status)
 
 	# --- what the board reports ---
 
@@ -355,6 +429,9 @@ class Session:
 				"bout {}]".format(pulses, b["pulses"], last / 1e6, first / 1e6, b["number"]), last if last >= 0 else None)
 		elif words[0] == "done":
 			self.done = " ".join(words[2:])
+			counted = re.search(r"\bpulses=(\d+)", self.done)
+			if counted:
+				self.pulses = int(counted.group(1)) # the board's own count (an attached session missed some 'cam's)
 			if not re.search(r"stalls=0\b", self.done):
 				self.Log("SYSTEM: WARNING: the board's output queue ran dry during the session, so edges after that "
 					"moved later: {}".format(self.done))
@@ -446,9 +523,58 @@ class Session:
 				self.board.close()
 			return 1
 		self.state = "running"
+		WriteJson(os.path.join(self.state_dir, SESSION_FILE), dict(settings=self.s, port=self.port, log=self.log_path,
+			started=self.t0_wall))
 		self.Log("SYSTEM: Session started: {} bouts, ending at board t={:.1f} s".format(len(self.bouts),
 			self.bouts[-1]["gate_off"] / 1e6))
 		self.WriteStatus()
+		return self.Follow()
+
+	def Attach(self):
+		# A session the board is running, started by this program before it stopped
+		# (this computer restarted): its time now from the board, then on as Run
+		self.Log("=== ATTACHED to the session the board is running (chronic_control.py attach) ===")
+		try:
+			self.board = Board(self.port, self.OnReport)
+			sent = time.time()
+			status = self.board.Check()
+			now = (sent + time.time()) / 2
+		except Exception as e:
+			self.state, self.error = "failed", "could not reach the board on {}: {}".format(self.port, e)
+			self.Log("SYSTEM: ERROR: " + self.error)
+			self.WriteStatus()
+			if self.board:
+				self.board.close()
+			return 1
+		t = re.search(r"\brunning t=(-?\d+)", status)
+		if not t:
+			self.state = "failed"
+			self.error = ("the board is not running a session ({}): it finished, or lost power and restarted, "
+				"which sets every output low".format(status))
+			self.Log("SYSTEM: ERROR: " + self.error)
+			self.WriteStatus()
+			self.board.close()
+			return 1
+		loaded = re.search(r"\bedges=\d+/(\d+) trains=\d+/(\d+)", status)
+		if loaded and (int(loaded.group(1)), int(loaded.group(2))) != (len(self.edges), len(self.trains)):
+			self.state = "failed"
+			self.error = ("the board runs a different session ({}) from the one started here ({} edges, {} trains): "
+				"not attached".format(status, len(self.edges), len(self.trains)))
+			self.Log("SYSTEM: ERROR: " + self.error)
+			self.WriteStatus()
+			self.board.close()
+			return 1
+		self.t0_wall = now - int(t.group(1)) / 1e6
+		self.state = "running"
+		b = self.Bout(int(t.group(1)))
+		self.Log("SYSTEM: Board at t={:.6f} s{}: {}. Edges and camera trains before now were not logged here; "
+			"SpikeGLX has them.".format(int(t.group(1)) / 1e6, ", in bout {}".format(b["number"]) if b else ", between bouts",
+			status))
+		self.WriteStatus()
+		return self.Follow()
+
+	def Follow(self):
+		# Log what the board reports until it is done; pass on stop requests
 		last_status = time.monotonic()
 		lost_since = None
 		while self.done is None:
@@ -458,6 +584,9 @@ class Session:
 						time.sleep(1.0)
 						continue
 					lost_since = None
+				how = TakeStopRequest(self.state_dir)
+				if how:
+					self.RequestEnd(how)
 				self.SendEnd()
 				self.board.Poll()
 				if time.monotonic() - last_status > 1.0:
@@ -495,11 +624,39 @@ def ReadStatus(state_dir):
 
 
 def Alive(pid):
+	if not isinstance(pid, int):
+		return False
+	if WINDOWS:
+		# Not os.kill(pid, 0): on Windows that ends the process (TerminateProcess)
+		import ctypes
+		from ctypes import wintypes
+		kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+		kernel32.OpenProcess.restype = wintypes.HANDLE
+		kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+		kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+		kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+		handle = kernel32.OpenProcess(0x1000, False, pid) # PROCESS_QUERY_LIMITED_INFORMATION
+		if not handle:
+			return ctypes.get_last_error() == 5 # access denied: it exists (another user's)
+		try:
+			code = wintypes.DWORD()
+			return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259 # STILL_ACTIVE
+		finally:
+			kernel32.CloseHandle(handle)
 	try:
 		os.kill(pid, 0)
 		return True
-	except (OSError, TypeError):
+	except OSError:
 		return False
+
+
+def OnStopSignals(handler_bout, handler_now):
+	# Ctrl-C (and kill) end it now. SIGUSR1, which the Pi's stop sent before the
+	# stop file, still ends it after the bout where there is one.
+	if hasattr(signal, "SIGUSR1"):
+		signal.signal(signal.SIGUSR1, lambda *a: handler_bout())
+	signal.signal(signal.SIGTERM, lambda *a: handler_now())
+	signal.signal(signal.SIGINT, lambda *a: handler_now())
 
 
 def Running(state_dir):
@@ -511,11 +668,29 @@ def Running(state_dir):
 
 def CmdRun(args, s):
 	session = Session(s, args.port, args.state_dir, args.log_dir)
-	signal.signal(signal.SIGUSR1, lambda *a: session.RequestEnd("bout"))
-	signal.signal(signal.SIGTERM, lambda *a: session.RequestEnd("now"))
-	signal.signal(signal.SIGINT, lambda *a: session.RequestEnd("now"))
+	OnStopSignals(lambda: session.RequestEnd("bout"), lambda: session.RequestEnd("now"))
 	session.WriteStatus()
 	return session.Run()
+
+
+def CmdAttach(args, s):
+	status = Running(args.state_dir)
+	if status:
+		print("A session program is already running here (pid {}): nothing to attach.".format(status["pid"]))
+		return 1
+	try:
+		with open(os.path.join(args.state_dir, SESSION_FILE)) as f:
+			saved = FromStrictJson(json.load(f))
+	except (OSError, ValueError):
+		print("No session was started here (no {}): nothing to attach to.".format(os.path.join(args.state_dir, SESSION_FILE)))
+		return 1
+	if args.foreground:
+		session = Session(saved["settings"], args.port_given or saved["port"], args.state_dir, None, log_path=saved["log"])
+		OnStopSignals(lambda: session.RequestEnd("bout"), lambda: session.RequestEnd("now"))
+		session.WriteStatus()
+		return session.Attach()
+	args.port = args.port_given or saved["port"]
+	return CmdStart(args, s)
 
 
 # --- the wiring check ---
@@ -572,9 +747,7 @@ def CmdWiringRun(args, s):
 	blink = args.command == "blink-run"
 	edges, length = BlinkPlan(channels, args.hz) if blink else WiringPlan(channels, Us(args.pause))
 	stop = {"how": None}
-	signal.signal(signal.SIGUSR1, lambda *a: stop.update(how="now"))
-	signal.signal(signal.SIGTERM, lambda *a: stop.update(how="now"))
-	signal.signal(signal.SIGINT, lambda *a: stop.update(how="now"))
+	OnStopSignals(lambda: stop.update(how="now"), lambda: stop.update(how="now"))
 	os.makedirs(args.state_dir, exist_ok=True)
 	day = os.path.join(args.log_dir, datetime.now().strftime("%Y-%m-%d"))
 	os.makedirs(day, exist_ok=True)
@@ -585,10 +758,7 @@ def CmdWiringRun(args, s):
 
 	def Write(**changes):
 		status.update(changes, session_s=time.time() - started)
-		path = os.path.join(args.state_dir, "status.json")
-		with open(path + ".new", "w") as f:
-			json.dump(StrictJson(status), f, allow_nan=False)
-		os.replace(path + ".new", path)
+		WriteJson(os.path.join(args.state_dir, "status.json"), status)
 
 	def Log(text):
 		line = "[{}] {}".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], text)
@@ -629,7 +799,11 @@ def CmdWiringRun(args, s):
 					Log("Round {} started.".format(rounds))
 				Write(bouts=rounds)
 			board.Poll()
+			if TakeStopRequest(args.state_dir):
+				stop.update(how="now")
 		except Exception as e:
+			if TakeStopRequest(args.state_dir):
+				stop.update(how="now")
 			if lost_since is None:
 				lost_since = time.time()
 				Log("Lost the board on {} ({}); it ends its round low by itself. Reconnecting...".format(args.port, e))
@@ -656,22 +830,32 @@ def CmdStart(args, s):
 		print("A session is already running (pid {}, log {}). Stop it first.".format(status["pid"], status["log"]))
 		return 1
 	wiring = args.command in ("wiring", "blink")
+	attach = args.command == "attach"
 	if args.command == "blink":
 		BlinkPlan(args.channels, args.hz)
 	elif wiring:
 		WiringPlan(args.channels, Us(args.pause))
-	else:
+	elif not attach:
 		Plan(s) # a plan that can't run says so here
 	os.makedirs(args.state_dir, exist_ok=True)
-	try:
-		os.remove(os.path.join(args.state_dir, "status.json"))
-	except OSError:
-		pass
+	for name in ("status.json", STOP_FILE) + (() if attach else (SESSION_FILE,)):
+		try:
+			os.remove(os.path.join(args.state_dir, name))
+		except OSError:
+			pass
 	out = open(os.path.join(args.state_dir, "session.out"), "a")
-	command = [sys.executable, os.path.abspath(__file__), {"wiring": "wiring-run", "blink": "blink-run"}.get(args.command, "run"), "--port", args.port,
-		"--state-dir", args.state_dir, "--log-dir", args.log_dir, "--channels", args.channels, "--pause", str(args.pause), "--hz", str(args.hz)] \
-		+ sum((["--set", item] for item in args.set), [])
-	child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
+	command = [sys.executable, os.path.abspath(__file__), {"wiring": "wiring-run", "blink": "blink-run",
+		"attach": "attach"}.get(args.command, "run"), "--port", args.port, "--state-dir", args.state_dir, "--log-dir",
+		args.log_dir, "--channels", args.channels, "--pause", str(args.pause), "--hz", str(args.hz)] \
+		+ sum((["--set", item] for item in args.set), []) + (["--foreground"] if attach else [])
+	if WINDOWS:
+		# Its own process, with no console: closing the window it was started from
+		# doesn't end it. It stays in the starter's job object, so under rig.py it is
+		# the recording job's; from an SSH session, it ends when SSH disconnects.
+		flags = subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008 # DETACHED_PROCESS
+		child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=out, creationflags=flags)
+	else:
+		child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
 	deadline = time.monotonic() + 180 # loading a 6-day session is thousands of commands, a millisecond or two each
 	while time.monotonic() < deadline:
 		status = ReadStatus(args.state_dir)
@@ -688,6 +872,10 @@ def CmdStart(args, s):
 	if status and status["state"] == "running" and wiring:
 		print("Wiring check started (pid {}): {}, every {:g} s, until 'stop'. Log: {}".format(child.pid,
 			WiringText(args.channels.upper()), WiringPlan(args.channels, Us(args.pause))[1] / 1e6, status["log"]))
+		return 0
+	if status and status["state"] == "running" and attach:
+		print("Attached (pid {}): {:.0f} s into the session, bout {} of {}; it ends at {:.0f} s. Log: {}".format(child.pid,
+			status["session_s"], status["bout"] or "-", status["bouts"], status["ends_s"], status["log"]))
 		return 0
 	if status and status["state"] == "running":
 		print("Session started (pid {}): {} bouts, {:.0f} s. Log: {}".format(child.pid, status["bouts"], status["ends_s"],
@@ -712,7 +900,10 @@ def CmdStop(args, s):
 			board.close()
 		return 0
 	wiring = status.get("mode") == "wiring"
-	os.kill(status["pid"], signal.SIGTERM if args.now or wiring else signal.SIGUSR1)
+	path = os.path.join(args.state_dir, STOP_FILE)
+	with open(path + ".new", "w") as f:
+		f.write("now" if args.now or wiring else "bout")
+	os.replace(path + ".new", path) # the session takes it within a fraction of a second
 	if wiring:
 		args.now = True # a wiring check stops at once
 	deadline = time.monotonic() + (15 if args.now else 10)
@@ -736,7 +927,7 @@ def CmdStatus(args, s):
 		print("No session has run here yet.")
 		return 0
 	if status["state"] in ("starting", "running") and not Alive(status["pid"]):
-		status["state"] = "gone (the program stopped; the board may still be running: 'stop --now')"
+		status["state"] = "gone (the program stopped; the board may still be running: 'attach' to follow it, 'stop --now' to end it)"
 	if status.get("mode") == "wiring":
 		print("Wiring check: {}, {:.0f} s in, {} rounds".format(status["state"], status.get("session_s") or 0, status["bouts"]))
 		for key in ("done", "error"):
@@ -766,20 +957,28 @@ def CmdPlan(args, s):
 
 def Main(argv=None):
 	parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-	parser.add_argument("command", choices=["start", "stop", "status", "plan", "run", "wiring", "wiring-run", "blink", "blink-run"])
+	parser.add_argument("command", choices=["start", "stop", "status", "plan", "run", "wiring", "wiring-run", "blink", "blink-run",
+		"attach"])
 	parser.add_argument("--hz", type=float, default=2, help="blink: blinks a second (default 2)")
 	parser.add_argument("--pause", type=float, default=PAUSE_US / 1e6, help="wiring: seconds after the round's last output (default 2.5)")
 	parser.add_argument("--channels", default="ABCD", help="wiring: the outputs to blink (A gate, B camera, C blue, D yellow)")
 	parser.add_argument("--now", action="store_true", help="stop: end now rather than after the current bout")
 	parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", help="change a timing setting")
-	parser.add_argument("--port", default=None, help="the board's serial port (default: found in /dev/serial/by-id)")
+	parser.add_argument("--port", default=None, help="the board's serial port, or a Pico's USB serial number (default: "
+		"found in /dev/serial/by-id on Linux, the one Pico elsewhere)")
+	parser.add_argument("--foreground", action="store_true", help=argparse.SUPPRESS) # attach: the program itself
 	parser.add_argument("--state-dir", default=STATE_DIR)
 	parser.add_argument("--log-dir", default=LOG_ROOT, help="timestamps.txt goes in <log-dir>/<date>/")
 	args = parser.parse_args(argv)
-	args.port = args.port or FindPort()
+	args.port_given = None
+	if args.command == "attach":
+		# The port the session used, unless one is given
+		args.port_given = FindPort(args.port) if args.port else None
+	elif args.command not in ("plan", "status", "stop") or args.now or args.port:
+		args.port = FindPort(args.port) # only where it talks to the board
 	s = Settings(args.set)
 	return {"start": CmdStart, "stop": CmdStop, "status": CmdStatus, "plan": CmdPlan, "run": CmdRun, "wiring": CmdStart,
-		"wiring-run": CmdWiringRun, "blink": CmdStart, "blink-run": CmdWiringRun}[args.command](args, s)
+		"wiring-run": CmdWiringRun, "blink": CmdStart, "blink-run": CmdWiringRun, "attach": CmdAttach}[args.command](args, s)
 
 
 if __name__ == "__main__":

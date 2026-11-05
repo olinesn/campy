@@ -1,8 +1,8 @@
 // ChronicRecord timer, for a Raspberry Pi Pico (or an Arduino Nano ESP32): makes
 // the rig's TTLs (the OneBox record gate, the camera trigger and the two LED
-// controllers) from one crystal clock, on a schedule the Raspberry Pi loads over
+// controllers) from one crystal clock, on a schedule the computer it's plugged into loads over
 // USB serial (chronicrecord/chronic_control.py). Once started it runs the schedule
-// on its own: the Pi, or its USB link, can go away without changing an edge.
+// on its own: that computer, or its USB link, can go away without changing an edge.
 //
 // Every change is due at a time in microseconds from "go" (session time).
 //
@@ -46,7 +46,7 @@
 //                                         the microsecond timer, minus the schedule's; a few
 //                                         microseconds at most, and rises= should be pulses=.
 //                                         bounces=: rises too soon after the last, not counted.
-// Lines it couldn't send (the Pi not reading) are counted in "lost", never waited for.
+// Lines it couldn't send (the computer not reading) are counted in "lost", never waited for.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -169,7 +169,7 @@ int64_t LastFall(const Train& tr) {
 void setup() {
   Serial.begin(115200);
 #if defined(ESP32)
-  Serial.setTxTimeoutMs(0); // never wait for a Pi that isn't reading
+  Serial.setTxTimeoutMs(0); // never wait for a computer that isn't reading
 #endif
   for (int ch = 0; ch < MAX_CH; ch++) { ch_pin[ch] = -1; }
 #if defined(USE_PIO)
@@ -177,7 +177,7 @@ void setup() {
   PioPush(0); // low from power-up
 #endif
   // The rig's wiring (chronicrecord/README.md): gate, camera, LED1, LED2 on
-  // D2-D5, low from power-up. The Pi sets them again before each session.
+  // D2-D5, low from power-up. chronic_control.py sets them again before each session.
   SetPin(0, 2);
   SetPin(1, 3);
   SetPin(2, 4);
