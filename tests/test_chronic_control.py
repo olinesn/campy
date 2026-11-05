@@ -1,4 +1,4 @@
-"""chronicrecord/chronic_control.py: the Pi's side of the ChronicRecord timer.
+"""chronicrecord/chronic_control.py: the computer's side of the ChronicRecord timer.
 
 Its plan (no board), and its start/status/stop commands end to end against
 chronic_timer.ino running in real time on a pseudo-terminal (tests/arduino_sim, live).

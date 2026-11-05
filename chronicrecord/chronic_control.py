@@ -2,7 +2,8 @@
 """
 chronic_control.py: ChronicRecord's stimulus sessions, made by the Raspberry
 Pi Pico (chronic_timer/chronic_timer.ino) and run from the computer it is
-plugged into: the Raspberry Pi 3B, or the recording PC itself (Windows or Linux).
+plugged into: the recording PC (Windows or Linux; a Raspberry Pi 3B until
+2026-11-05).
 
 This program plans the whole session (the same bouts as chronicControlv13.py) and
 loads it onto the Pico over USB. The Pico then makes every TTL from its own
@@ -35,8 +36,8 @@ Over SSH (each returns at once; the session runs in the background):
 Change a setting for one session without editing this file:
   python3 chronic_control.py start --set TOTAL_DURATION=1800 --set INTERVAL=180
 
-Needs pyserial (sudo apt install python3-serial) and the user in the dialout
-group; no sudo, no GPIO on the Pi.
+Needs pyserial. On Linux: sudo apt install python3-serial, and the user in the
+dialout group; no sudo, no GPIO.
 
 On Windows: the same commands with "python" for "python3". It finds the Pico by
 its USB IDs (never an Arduino there: campy's trigger Arduino may be on the same
@@ -116,7 +117,7 @@ def Us(seconds):
 
 
 # status.json is strict JSON, as every JSON file campy writes (campy/strictjson.py,
-# not imported here: the Pi has no campy). JSON has no infinity or NaN; Python's
+# not imported here: this program needs no campy). JSON has no infinity or NaN; Python's
 # json writes them as bare words other readers refuse, so they are the text
 # "Infinity", "-Infinity" or "NaN", and read back as the numbers.
 NON_FINITE = {"Infinity": math.inf, "-Infinity": -math.inf, "NaN": math.nan}
