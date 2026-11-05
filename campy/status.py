@@ -23,6 +23,17 @@ GRABBED, QUEUED, SENT, DROPPED, FRAME_NS, SENT_NS, STATE, RESTARTS, COUNTED, LOS
 	MISSED_FRAME = range(len(FIELDS))
 WIDTH = 16 # words per camera: room for more fields
 
+# Cameras whose last frames are this close stopped together: the trigger, not a camera
+# (campy/watch.py, and each camera's own FrameWatch, cameras/unicam.py)
+TOGETHER_S = 1.0
+
+
+def Together(times_ns):
+	# Whether these frames' times (ns, Now's clock) are TOGETHER_S or closer: two cameras or more
+	times_ns = list(times_ns)
+	return len(times_ns) >= 2 and (max(times_ns) - min(times_ns)) / 1e9 <= TOGETHER_S
+
+
 # state
 WAITING = 0 # not grabbing yet
 GRABBING = 1
@@ -87,6 +98,20 @@ class Camera:
 			self.a[o + MISSED_NS] = Now()
 			self.a[o + MISSED_FRAME] = frame
 			self.a[o + MISSED] = missed # last: the watch reads the others once missed has changed
+
+	def QuietTogether(self):
+		"""
+		Whether this camera and every other camera grabbing stopped together:
+		their last frames within TOGETHER_S, none since (Together). Read
+		from the other cameras' rows, as campy's main process reads them
+		(watch.py CheckQuiet). False outside campy-acquire, or with one camera.
+		"""
+		a = self.a
+		if a is None or a[self.o + STATE] != GRABBING or a[self.o + GRABBED] <= 0:
+			return False
+		lasts = [a[o + FRAME_NS] for o in range(0, len(a) - WIDTH + 1, WIDTH)
+			if a[o + STATE] == GRABBING and a[o + GRABBED] > 0]
+		return Together(lasts)
 
 	def State(self, state, only_from=None):
 		# only_from: change it only from these states (an end does not hide a failure said before it)

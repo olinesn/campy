@@ -1,3 +1,4 @@
+import re
 import signal
 import sys
 import time
@@ -115,9 +116,20 @@ def StopPrinter():
 		printer.Stop()
 
 
+# Spinnaker's timeout (SPINNAKER_ERR_TIMEOUT, -1011), as it says it when a triggered camera's grab gets no
+# frame: "Spinnaker: Failed waiting for EventData on NEW_BUFFER_DATA event. (GenTL error code: -1011) [-1011]"
+SPINNAKER_TIMEOUT = re.compile(r"\[-1011\]|error code: -1011\b")
+
+
 def ErrorText(error):
-	# An exception's message, or its kind when it has none
-	return str(error).strip() or type(error).__name__
+	# An exception's message, or its kind when it has none. Spinnaker's timeout in plain words: waiting for a frame
+	# (NEW_BUFFER_DATA), a triggered camera between trigger pulses; its code kept, to be looked up
+	text = str(error).strip() or type(error).__name__
+	if SPINNAKER_TIMEOUT.search(text):
+		if "NEW_BUFFER_DATA" in text:
+			return "timed out waiting for a frame (no trigger pulse?) [Spinnaker -1011]"
+		return "timed out [Spinnaker -1011]: {}".format(text)
+	return text
 
 
 def ExitCodeText(code):

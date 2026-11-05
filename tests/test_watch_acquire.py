@@ -214,6 +214,34 @@ def test_a_short_trigger_pause_is_said(tmp_path, service):
 	assert "- The trigger paused 1 time: " in texts[-1], texts[-1]
 
 
+def test_a_planned_pause_is_said_once_not_per_camera(tmp_path, service):
+	# A trigger that runs the cameras in bouts (alertTriggerPauseSec): the gap every camera shares is the watch's
+	# one "paused as planned" line, not each camera's "no frame for" and "frames again", and the frame rate the
+	# console says leaves the pause out
+	code, out = Finish(Start(tmp_path, service, names=("Camera0", "Camera1", "Camera2"), rec=8, frameRate=10,
+		cameraTrigger='"Line0"', alertTriggerPauseSec=3, alertNoFramesSec=60, chunkLengthInSec=7,
+		faults="*:stall@20+5"))
+	assert code == 0, out
+	assert re.search(r"Trigger: The trigger paused as planned: all 3 cameras got no frame for the same \d+ pulses", out), out
+	assert "no frame for" not in out.replace("got no frame for the same", ""), out
+	assert "frames again" not in out, out
+	for name in ("Camera0", "Camera1", "Camera2"):
+		assert re.search(r"{} collected 70 frames at (9\.\d|10\.\d) fps for 7 sec of frames \(1[12] sec in all, with 1 "
+			r"trigger pause of [45] sec\)\.".format(name), out), out
+		assert re.search(r"{} saved 80 frames at 10 fps over 8 s of frames, with 1 trigger pause of [45] s in all\."
+			.format(name), out), out
+
+
+def test_one_camera_stopping_is_said_with_planned_pauses(tmp_path, service):
+	# The others still get frames: that camera's fault, said as before
+	code, out = Finish(Start(tmp_path, service, names=("Camera0", "Camera1", "Camera2"), rec=8, frameRate=10,
+		cameraTrigger='"Line0"', alertTriggerPauseSec=3, alertNoFramesSec=60, faults="1:stall@20+5"))
+	assert code == 0, out
+	assert re.search(r"Camera1: no frame for 3 s, since frame 20\.", out), out
+	assert re.search(r"Camera1: frames again, after [45]\.\d s without \(frame 21\)\.", out), out
+	assert "Camera0: no frame for" not in out and "Camera2: no frame for" not in out, out
+
+
 def test_a_disk_that_fills_stops_the_recording_cleanly(tmp_path, service):
 	proc = Start(tmp_path, service, rec=60, extra=FILLING_DISK, alertDiskFreeGB=20)
 	code, out = Finish(proc)
