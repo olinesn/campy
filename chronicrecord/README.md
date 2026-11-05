@@ -170,7 +170,7 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 | 4 days | 345600 | 1152 (192) | 3,340,800 | 55680 |
 | 6 days | 518400 | 1728 (288) | 5,011,200 | 83520 |
 
-**Order.** Start campy first and wait for "All 4 cameras are ready.", then the Pi: `python3 chronic_control.py start --set TOTAL_DURATION=518400`. A camera that isn't grabbing when the first pulse comes misses frames the others have. Start the Pi within an hour of campy, or campy warns that it has had no frame yet (`alertExternalWaitSec: 3600`; 10 minutes with a campy before pull request 267, which refuses that line).
+**Order.** Start campy first and wait for "All 4 cameras are ready.", then the Pi: `python3 chronic_control.py start --set TOTAL_DURATION=518400` (with the Pico on the PC, the same command there, or the launcher that started campy; see [Without the Pi](#without-the-pi-the-pico-on-the-recording-pc)). A camera that isn't grabbing when the first pulse comes misses frames the others have. Start the Pi within an hour of campy, or campy warns that it has had no frame yet (`alertExternalWaitSec: 3600`; 10 minutes with a campy before pull request 267, which refuses that line).
 
 **Stopping early.** `stop` on the Pi, then Ctrl-C in campy's window (or create the `stopFile`). campy otherwise waits for frames that won't come.
 
@@ -189,11 +189,12 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 
 ## Without the Pi: the Pico on the recording PC
 
-`chronic_control.py` runs on the recording PC as it does on the Pi, so the Pi can go: the Pico on one of the PC's USB ports, and the PC starting and stopping sessions. *Not yet done on the rig's wired Pico: so far a dry run with a spare Pico, nothing wired to its pins (below).* What changes:
+`chronic_control.py` runs on the recording PC as it does on the Pi, so the Pi can go: the Pico on one of the PC's USB ports, and the PC starting and stopping sessions. Checked on the rig on 5 November 2026 (below); the multi-day session itself hasn't run this way yet. What changes:
 
 - **Python:** the recording's own environment (it has pyserial), with `python` for `python3`.
 - **Finding the Pico:** on Windows (and on a Linux PC without `/dev/serial/by-id`), the one Pico among the serial ports, by its USB IDs. It never takes an Arduino there, since campy's trigger Arduino may be on the same PC. With two Picos, or to be sure, name it: `--port COM7`, or by its USB serial number, `--port E665485457699D30` (as `/dev/serial/by-id` shows it on the Pi), which stays the same whatever COM number Windows gives it.
-- **Starting it:** from a window on the PC's desktop (Remote Desktop is fine), best from the recording's launcher after campy says all cameras are ready, so the session is part of the recording's rig job. Keep that window open for the whole session: once the launcher ends, `bench/rig.py` sees the session program (which holds a COM port) as a foreign GPU and trigger user. Not over SSH: Windows' SSH server ends what an SSH session started when it disconnects. The session runs on in its own process, without a window, so closing the window doesn't end it. `status` and `stop` work over SSH.
+- **Starting it:** from a window on the PC's desktop (Remote Desktop is fine), best from the recording's launcher after campy says all cameras are ready, so the session is part of the recording's rig job. Keep that window open for the whole session: once the launcher ends, `bench/rig.py` sees the session program (which holds a COM port) as a foreign GPU and trigger user.
+- **Ending it:** campy stops right after the last bout's last frame, 10 s before the Pico lowers the gate (the post-baseline). A launcher that stops the Pico when campy ends cuts the last bout's SpikeGLX file short (it did once in the check below): let the Pico finish by itself, and stop it only after an error or Ctrl-C. Not over SSH: Windows' SSH server ends what an SSH session started when it disconnects. The session runs on in its own process, without a window, so closing the window doesn't end it. `status` and `stop` work over SSH.
 - **Stopping it:** `stop` now asks through a file in the state folder (`stop.request`), which the session reads within a fraction of a second; that works on Windows, which has no `SIGUSR1`. On the Pi, `stop` still works the same.
 - **Logs:** `~/.chronic_control` and `~/Documents/<date>/timestamps.txt` in the user's folder, as on the Pi; `--state-dir` and `--log-dir` put them elsewhere (next to the recording, say). The log's times are the PC's clock, the same clock as campy's frame times.
 
@@ -215,7 +216,12 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 - **A restart** (Start, Restart; the PC was down about 30 s): the Pico came back idle with an empty schedule (`ok status idle edges=0 trains=0`), so it had lost power. `attach` said so: "the board is not running a session".
 - `start`, `status` and `stop` in a 60 s camera-only session: `stop` ended it in about a second, on a whole pulse (316 pulses made, 316 counted by the Pico's own input, no stalls).
 
-Not checked yet: the PC restarting with the Pico on its own supply, a session on the rig's wired Pico from the PC, and the grounds. With the Pico on the PC's USB, its ground is the PC's, which the OneBox and the cameras share through their own USB cables: compare the OneBox's lines (low and high levels, noise) and the probe's noise with the Pico on the Pi and on the PC.
+**On the rig, the Pico on the PC** (5 November 2026, the wired Pico moved from the Pi's USB to the PC's; LED controllers on, no animal; SpikeGLX gated by the Pico as in "Checked against the OneBox"):
+
+- **Noise:** the same 45 s bout (gate 45 s, camera 30 s, both LEDs) from the Pi, then from the PC, then from the Pi again, a few minutes apart. The probe's noise (300 Hz to 6 kHz, median channel) and its 60 Hz hum were the same from the PC as from the Pi just after it (each channel within 1%). They were about a third lower in the first run from the Pi, before any cable moved, so something else changed between the first two runs; the second run from the Pi shows it wasn't the PC's USB. The OneBox's lines moved by a few millivolts at most: gate 3.17 V high and 0.000 V low, camera line 2.96 V and 0.18 V.
+- **A 3-bout session from the PC** (`--set TOTAL_DURATION=900`) with campy recording the 4 cameras: 15,600 frames on each camera, both gaps logged as planned pauses; the Pico made 15,600 pulses with no stalls and no bounces. In SpikeGLX, bouts 1 and 2 matched the plan to the sample, as from the Pi: files of 257.0 and 27.0 s, the gate high 255.0009 or 25.0001 s, the first camera pulse 5.000 s after it rose, the gate falling 10.0137 s after the last, both LEDs 30.0 ms. Bout 3's file was 18.9 s: the launcher stopped the Pico when campy ended (see "Ending it" above).
+
+Not checked yet: the PC restarting with the Pico on its own supply, and a multi-day session from the PC. With the Pico on the PC's USB, its ground is the PC's, which the OneBox and the cameras share through their own USB cables: compare the OneBox's lines (low and high levels, noise) and the probe's noise with the Pico on the Pi and on the PC.
 
 ## Commands the board takes
 
