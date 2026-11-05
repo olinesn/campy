@@ -5,7 +5,7 @@ The ChronicRecord rig's four TTL outputs, made by a Raspberry Pi Pico instead of
 | Output | What it drives | Pi 3B before (chronicControlv13.py) | Pico now |
 |---|---|---|---|
 | A | OneBox / SpikeGLX record gate (level) | GPIO 5 | GP2 (board pin 4) |
-| B | FLIR camera trigger (Line3), 3 ms high | GPIO 12 | GP3 (board pin 5) |
+| B | FLIR camera trigger (Line3), 3 ms high | GPIO 12 | GP3 (board pin 5), through a 50 Ω resistor |
 | C | Blue LED controller TTL (465 nm) | GPIO 13 | GP4 (board pin 6) |
 | D | Yellow LED controller TTL (560 nm) | GPIO 19 | GP5 (board pin 7) |
 | | Every cable's ground | GND | GND (board pin 3 or 8) |
@@ -31,7 +31,16 @@ What that doesn't show: the check shares the Pico's crystal, so it can't see how
 
 **The gate stays low in a camera-only session** (checked the same evening). With SpikeGLX armed the same way, a 2-minute camera-only session at 60 fps (`--set CAMERA_ONLY=120`) made its 7,200 camera pulses and opened no SpikeGLX file. One gate blink just before it and one just after (`wiring --channels A`) each opened a file, so SpikeGLX was armed the whole time.
 
-Not checked: a session of more than 3 bouts, an animal in the rig, and the LEDs' light (only their TTLs).
+**The 50 Ω resistor on the camera pin** (fitted and checked the same evening). Until then the camera cable rang as each pulse fell, and the Pico's own input counted a second rise on every pulse: `bounces=` equalled the pulse count in every session (15,600 of 15,600 in the 3-bout session above). The cameras never saw the ring: campy got one frame per pulse. A 50 Ω resistor in series with GP3 stopped it:
+
+- **The Pico's own count:** in a 1-hour, 12-bout session (the Pi's default plan, 34,800 pulses) and in a 10 s camera-only burst (600 pulses), `rises=` equalled `pulses=` and `bounces=0`. The Pico's `trace` of the burst shows only up, down, up, down: each pulse 3,000 µs wide, nothing extra at the fall.
+- **On the OneBox (XA2):** the pulse is still 3.003 ms wide, 16.665 ms apart, every one where it should be, and the digital copy (XD bit 2) still within a sample of it. Each edge still completes within one sample (33 µs), as before. The levels moved: 2.97 V high and 0.19 V low, against 3.10 V and 0.08 V without the resistor. The low sits at 0.19 V even between bouts, so a small steady current flows back into the pin while it is low, probably from the cameras' Line3 inputs (*expected, not measured*). No other channel moved by more than a millivolt, and the camera pulses still shift the gate by about 4 mV.
+- **SpikeGLX:** one file per bout, 257 s or 27 s, 12 in all, with 14,400 or 600 camera pulses in each, as planned.
+- **campy:** 34,800 frames on each of the 4 cameras, split 14,400 / 600 / 600 / 600 / 600 / 600 twice over, with none dropped, lost or incomplete. Frame intervals 16.66 to 16.67 ms within each bout.
+
+The OneBox samples every 33 µs, too slowly to see the ring itself: it didn't show there before the resistor either. The Pico's own count is the check that it's gone.
+
+Not checked: a session of more than 12 bouts, an animal in the rig, and the LEDs' light (only their TTLs).
 
 **Long recordings:** the Pico holds 12288 edges and 2048 camera trains, 2048 bouts: 7.1 days at one bout per 300 s. A longer session is refused at `start` ("too many edges"). Camera-only sessions have no such limit (2^32 pulses). For 6 days: `--set TOTAL_DURATION=518400`. Loading that many bouts takes `start` up to a minute or so.
 
@@ -52,7 +61,7 @@ On the Pico (or Nano):
 - The LEDs are 30 ms. Blue switches on 1 ms before camera pulse 300 (5 s into the camera) and off 30 ms later; yellow follows on the same microsecond. With 200 µs exposures, blue lights frames 300–301 and yellow 302–303, each frame wholly lit or wholly dark. `python3 chronic_control.py plan` lists this for every bout, and warns if a setting would put an edge inside an exposure.
 - Edges due together are written in one register write: blue off and yellow on, or any edge that lands on a camera pulse.
 - On the Pico, each edge is at its scheduled microsecond exactly, on the state machine's clock (simulated tests, to the tick; on the real board, see above). On the Nano, the sketch busy-waits the last 300 µs with interrupts off: expected within ~1–2 µs, not measured.
-- At the end of a session the Pico reports `rises=` (the camera pin's rises, counted by an interrupt) and `self_check_us=` (the time from first rise to last by its microsecond timer, minus the schedule's). Expect `rises=` equal to `pulses=` and a few microseconds at most.
+- At the end of a session the Pico reports `rises=` (the camera pin's rises, counted by an interrupt) and `self_check_us=` (the time from first rise to last by its microsecond timer, minus the schedule's). Expect `rises=` equal to `pulses=` and a few microseconds at most. `bounces=` counts rises too soon after the last one to be a pulse (a ringing cable); expect 0 with the 50 Ω resistor on GP3.
 - The board runs the loaded session by itself. If the Pi's program dies, or the USB link drops (as Arduinos on the lab's rigs often do), the edges don't move. The program reconnects and carries on logging. The board reports each edge with its board time and how late it was, and each camera train's exact pulse count. `timestamps.txt` records those, not Python's guesses.
 - No `sudo`: the Pi needs no GPIO access, only its serial port.
 
@@ -125,14 +134,15 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 1. **Flash the Pico.** Hold BOOTSEL while plugging it in; it appears as a drive named `RPI-RP2`. Copy `chronic_timer.ino.uf2` onto it (built with the [arduino-pico](https://github.com/earlephilhower/arduino-pico) core, board `rp2040:rp2040:rpipico`). It restarts as a serial port, and `id` should answer `ok chronic_timer 2`.
 2. **Wire it** as in the table at the top, in place of the Pi's GPIO pins. Don't connect anything above 3.3 V to a Pico pin: they aren't 5 V tolerant.
 3. **Pull-down resistors.** Fit a 10 kΩ resistor from each of GP2–GP5 to GND, so that nothing reads high while the Pico resets or is being flashed.
-4. **Voltage.** The Pico's outputs are 3.3 V, the same as the Pi's GPIO that drives these inputs today. The Blackfly S Line3 counts 2.6 V or more as high, so 3.3 V works, with a small margin.
-5. **Plug the Pico into the Pi by USB.** It shows up in `/dev/serial/by-id/`, which `chronic_control.py` finds by itself.
-6. **On the PC,** record with `cameraTrigger: "Line3"`, `startArduino: False`, and `frameRate` matching `CAMERA_FPS`. For bouts:
+4. **A 50 Ω resistor in series with GP3** (the camera output). Without it, the camera cable rings as each pulse falls, and the Pico's own input counts a second rise on every pulse (`bounces=` equal to `pulses=`). The cameras didn't see that ring, but the resistor stops it: see "The 50 Ω resistor on the camera pin" near the top.
+5. **Voltage.** The Pico's outputs are 3.3 V, the same as the Pi's GPIO that drives these inputs today. The Blackfly S Line3 counts 2.6 V or more as high, so 3.3 V works, with a small margin. With the cameras and the 50 Ω resistor on it, the camera line reads 2.97 V high on the OneBox.
+6. **Plug the Pico into the Pi by USB.** It shows up in `/dev/serial/by-id/`, which `chronic_control.py` finds by itself.
+7. **On the PC,** record with `cameraTrigger: "Line3"`, `startArduino: False`, and `frameRate` matching `CAMERA_FPS`. For bouts:
    - `alertNoFramesSec` above the longest gap between bouts (about 300 s), or campy reports "the trigger has stopped" in every gap.
    - `alertTriggerPauseSec` below the shortest gap between bouts (60 s, after a 240 s bout), or campy sends a "trigger paused" warning for every gap.
    - `recTimeInSec` equal to the session's total camera time (580 s by default), since campy stops after `recTimeInSec` x `frameRate` frames.
    - [`chronic_pico.yaml`](chronic_pico.yaml) is the profile for multi-day sessions; see [Recording a long session](#recording-a-long-session).
-7. **Don't run chronicControlv13.py once the cables are on the Pico:** it would drive GPIO pins that nothing is wired to.
+8. **Don't run chronicControlv13.py once the cables are on the Pico:** it would drive GPIO pins that nothing is wired to.
 
 ## Recording a long session
 
