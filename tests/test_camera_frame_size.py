@@ -196,7 +196,8 @@ def test_a_basler_video_opens_at_the_size_its_settings_file_sets(basler, monkeyp
 	out = capsys.readouterr().out
 	assert "Camera0: frameWidth x frameHeight 1152x1024 changed to 1280x1024, the camera's frame size with its " \
 		"cameraSettings." in out
-	assert out.index("changed to") < out.index("Opened: ") # before the video opens
+	# before its ready line, which names the size the video opened at (campy/startup.py)
+	assert out.index("changed to") < out.index("Camera0 ready to trigger: ") and "1280x1024 at" in out
 
 
 def test_a_basler_with_the_configs_size_says_nothing(basler, monkeypatch, tmp_path, capsys):
@@ -259,7 +260,7 @@ def test_an_emu_video_opens_at_the_clips_size(monkeypatch, tmp_path, capsys):
 	assert opened == (64, 48)
 	out = capsys.readouterr().out
 	assert "Camera0: frameWidth x frameHeight 1152x1024 changed to 64x48, the clip's frame size." in out
-	assert out.index("changed to") < out.index("Opened: ")
+	assert out.index("changed to") < out.index("Camera0 ready to trigger: ") and "64x48 at" in out
 
 
 def test_without_the_wait_an_emu_video_was_empty(monkeypatch, tmp_path):

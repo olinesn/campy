@@ -24,6 +24,7 @@ camera a camera index or * (every camera), from its frame-th frame on:
 
 from campy.cameras import unicam
 from campy.utils.utils import Say
+from campy import startup
 import os
 import time
 import logging
@@ -256,7 +257,8 @@ def OpenCamera(cam_params):
 	cam_params = unicam.SetFrameSize(cam_params, clip.width, clip.height, "the clip's frame size")
 	cam_params['cameraModel'] = GetModelName(camera)
 
-	Say("Opened {} emulation.".format(cam_params["cameraName"]))
+	startup.Step("Opened {} emulation.".format(cam_params["cameraName"]))
+	startup.Setting("clip", "playing {}".format(os.path.basename(full_file_name)))
 	return camera, cam_params
 
 

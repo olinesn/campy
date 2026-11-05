@@ -42,6 +42,15 @@ def no_real_alerts(monkeypatch, tmp_path_factory):
 	monkeypatch.setenv("CAMPY_STATUS_DIR", str(folder / "status"))
 
 
+@pytest.fixture(autouse=True)
+def no_camera_opening():
+	# campy/startup.py holds what a camera says as it opens, per process: each test starts with none
+	from campy import startup
+	startup.End()
+	yield
+	startup.End()
+
+
 OUTPUTS_SKETCH = os.path.join(os.path.dirname(HERE), "campy", "outputs_board", "campy_outputs", "campy_outputs.ino")
 
 

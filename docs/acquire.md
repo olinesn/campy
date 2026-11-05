@@ -8,6 +8,14 @@ campy-acquire ./configs/campy_config.yaml
 ```
 Each run records into a new folder inside `videoFolder`, named by the date and time it started: `./test/2026-10-18_17-30-05/`, which campy prints as it starts (`Recording into ...`). So the same command can be run again and again, and no recording replaces another (see [Stop Recording](#stop-recording)).
 
+The cameras open at the same time, and each says what it set as one line, once it is ready for the trigger:
+```
+Camera1 ready to trigger: flir Blackfly S BFS-U3-13Y3M serial 23501329, 1280x1024 at 80 fps, trigger Line3, exposure 750 us, gain 3 dB, gamma off, 100 buffers (oldest first), USB limit 380 MB/s (frameRate needs 79), hevc on GPU 0 -> D:\data\2026-11-05_14-02-10\Camera1\0.mp4
+...
+All 4 cameras are ready.
+```
+That is its make, model and serial number, the frame size and rate, then each setting campy gave it, and the video it records into, with the encoder and the GPU that compresses it (or CPU). A problem as a camera opens (a setting it would not take, a frame size campy changed) is said at once, after the camera's name. A camera that does not get ready says why, then every step it took as it opened, one line each, after its name. (Up to campy 2.4.0 each camera said each step on a line of its own, `Gain set to 3 dB.`, `Buffer count now set to: 100` and so on, and with several cameras those lines were mixed together.)
+
 Any config key can be changed for one run on the command line: `--key value` means what `key: value` means in the config file. Text needs no quotes, `False` is false, `None` is the text "None", and a key that takes one value per camera takes a list, in quotes for the shell:
 ```
 campy-acquire ./configs/campy_config_chronicrecord.yaml --cameraTrigger None --codec h264 --startArduino False

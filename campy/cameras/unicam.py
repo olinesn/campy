@@ -10,6 +10,7 @@ from collections import deque
 from scipy import io as sio
 from campy import clock, frametimes, newfiles, livefeed, status
 from campy.utils.utils import Say, ExitCodeText, ErrorText
+from campy import startup
 
 
 # Set in each camera process (campy.InitCameraProcess): where it reports that its
@@ -59,7 +60,10 @@ def TellMain(message):
 
 
 def SignalReady(cam_params, ok=True, error=""):
-	# Tell campy's main process this camera is grabbing, or that it never will
+	# Tell campy's main process this camera is grabbing, or that it never will.
+	# One that never will says what it did as it opened (startup.Failed).
+	if not ok:
+		startup.Failed(cam_params, error)
 	if _readyQueue is not None:
 		_readyQueue.put((cam_params["n_cam"], cam_params["cameraName"], ok, error))
 
@@ -399,10 +403,12 @@ def OpenCamera(cam_params, stopWriteQueue, recording=None):
 	# Import the cam module
 	cam = ImportCam(cam_params["cameraMake"])
 
+	# What it says as it opens is said as one line once it is ready (campy/startup.py)
+	startup.Begin(cam_params)
 	try:
 		camera, cam_params = cam.OpenCamera(cam_params)
 
-		Say("Opened {}: {} {} serial# {}".format( \
+		startup.Step("Opened {}: {} {} serial# {}".format( \
 			cam_params["cameraName"],
 			cam_params["cameraMake"], 
 			cam_params["cameraModel"],
@@ -524,7 +530,8 @@ def StartGrabbing(camera, cam_params, cam):
 		except Exception as e:
 			SignalReady(cam_params, False, "could not write metadata.csv: {}".format(e))
 			raise
-		Say("{} ready to trigger.".format(cam_params["cameraName"]))
+		# One line: the camera, its settings and its video (campy/startup.py)
+		startup.Ready(cam_params)
 	else:
 		Say("{} did not start grabbing, so it records nothing.".format(cam_params["cameraName"]))
 	SignalReady(cam_params, bool(grabbing))
@@ -664,6 +671,7 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 		# Close the camera, tell the display and the writer to stop, and once
 		# the writer has given ffmpeg the frames still queued, save metadata
 		grabdata["framesGrabbed"] = frameNumber
+		startup.Failed(cam_params, recording.cameraError) # a camera that stopped before it was ready: what it did
 		mine.State(status.ENDED, only_from=(status.WAITING, status.GRABBING))
 		CloseCamera(cam, cam_params, camera)
 		feed.Close()

@@ -325,7 +325,8 @@ def test_the_writer_opens_its_video_at_the_size_the_camera_sends(flir, monkeypat
 	out = capsys.readouterr().out
 	assert "Camera0: frameWidth 1000 rounded up to 1008: campy sets FLIR frame sizes in steps of 16." in out
 	assert "Camera0: frameHeight 600 rounded up to 608: campy sets FLIR frame sizes in steps of 16." in out
-	assert out.index("rounded up") < out.index("Opened: ") # before the video opens
+	# before its ready line, which names the size the video opened at (campy/startup.py)
+	assert out.index("rounded up") < out.index("Camera0 ready to trigger: ") and "1008x608 (offset 136,208) at" in out
 
 
 def test_rounded_only_in_the_camera_thread_the_video_was_scrambled(flir, monkeypatch, tmp_path):
