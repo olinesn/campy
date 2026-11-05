@@ -189,11 +189,11 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 
 ## Without the Pi: the Pico on the recording PC
 
-`chronic_control.py` runs on the recording PC as it does on the Pi, so the Pi can go: the Pico on one of the PC's USB ports, and the PC starting and stopping sessions. *Not yet done on the rig: the tests below are on a simulated board.* What changes:
+`chronic_control.py` runs on the recording PC as it does on the Pi, so the Pi can go: the Pico on one of the PC's USB ports, and the PC starting and stopping sessions. *Not yet done on the rig's wired Pico: so far a dry run with a spare Pico, nothing wired to its pins (below).* What changes:
 
 - **Python:** the recording's own environment (it has pyserial), with `python` for `python3`.
 - **Finding the Pico:** on Windows (and on a Linux PC without `/dev/serial/by-id`), the one Pico among the serial ports, by its USB IDs. It never takes an Arduino there, since campy's trigger Arduino may be on the same PC. With two Picos, or to be sure, name it: `--port COM7`, or by its USB serial number, `--port E665485457699D30` (as `/dev/serial/by-id` shows it on the Pi), which stays the same whatever COM number Windows gives it.
-- **Starting it:** from a window on the PC's desktop (Remote Desktop is fine), best from the recording's launcher after campy says all cameras are ready, so the session is part of the recording's rig job (`bench/rig.py` counts a program holding a COM port outside the job as a foreign trigger). Not over SSH: Windows' SSH server ends what an SSH session started when it disconnects. The session runs on in its own process, without a window, so closing the window doesn't end it. `status` and `stop` work over SSH.
+- **Starting it:** from a window on the PC's desktop (Remote Desktop is fine), best from the recording's launcher after campy says all cameras are ready, so the session is part of the recording's rig job. Keep that window open for the whole session: once the launcher ends, `bench/rig.py` sees the session program (which holds a COM port) as a foreign GPU and trigger user. Not over SSH: Windows' SSH server ends what an SSH session started when it disconnects. The session runs on in its own process, without a window, so closing the window doesn't end it. `status` and `stop` work over SSH.
 - **Stopping it:** `stop` now asks through a file in the state folder (`stop.request`), which the session reads within a fraction of a second; that works on Windows, which has no `SIGUSR1`. On the Pi, `stop` still works the same.
 - **Logs:** `~/.chronic_control` and `~/Documents/<date>/timestamps.txt` in the user's folder, as on the Pi; `--state-dir` and `--log-dir` put them elsewhere (next to the recording, say). The log's times are the PC's clock, the same clock as campy's frame times.
 
@@ -203,12 +203,19 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 - **USB power saving:** set "USB selective suspend" to Disabled in the power plan, and in Device Manager untick "Allow the computer to turn off this device to save power" for the Pico's port and its USB hub. It shouldn't matter while a program holds the port open, but costs nothing.
 - **Sleep:** never, on mains power.
 
-**Through a PC restart: a 5 V supply of its own.** Powered only by USB, the Pico probably loses power while the PC restarts (*expected, not measured*): it restarts and sets every output low, ending the session. To keep it running, power it from a separate 5 V supply as well, as the Pico's datasheet describes ("Powering Pico"): the supply's + through a Schottky diode (a 1N5817 or 1N5819; the stripe towards the Pico) to **VSYS (pin 39)**, and its − to **GND (pin 38)**. The Pico's own diode on USB power and this one share the load, so either alone keeps it running and the USB link still works. Use a plug-in supply whose output floats (most phone chargers), so that it adds no connection to mains earth. Then, after a restart:
+**Through a PC restart: a 5 V supply of its own.** Powered only by USB, the Pico loses power while the PC restarts: it restarts and sets every output low, ending the session (measured on the Dell Pro Max Slim FCS1250, below). To keep it running, power it from a separate 5 V supply as well, as the Pico's datasheet describes ("Powering Pico"): the supply's + through a Schottky diode (a 1N5817 or 1N5819; the stripe towards the Pico) to **VSYS (pin 39)**, and its − to **GND (pin 38)**. The Pico's own diode on USB power and this one share the load, so either alone keeps it running and the USB link still works. Use a plug-in supply whose output floats (most phone chargers), so that it adds no connection to mains earth. Then, after a restart:
 
 1. Start campy and SpikeGLX again, as for a new session (campy writes a new recording folder).
 2. `python chronic_control.py attach`. It finds the session the board is running, from `~/.chronic_control/session.json`, and logs it from then on. If the board isn't running a session, it says so: the session ended, or the board lost power.
 
-Not checked yet: a session started from the PC on the rig, the PC restarting with the Pico on its own supply, and the grounds. With the Pico on the PC's USB, its ground is the PC's, which the OneBox and the cameras share through their own USB cables: compare the OneBox's lines (low and high levels, noise) and the probe's noise with the Pico on the Pi and on the PC.
+**Dry run on the PC** (5 November 2026, Windows 11, a spare Pico on a USB port with nothing wired to its pins, this version of `chronic_control.py` in the recording's Python environment):
+
+- It found the Pico by itself (COM11), and by its USB serial number.
+- A 30-minute camera-only session started from a PowerShell window in Remote Desktop kept running after the window was closed.
+- **A restart** (Start, Restart; the PC was down about 30 s): the Pico came back idle with an empty schedule (`ok status idle edges=0 trains=0`), so it had lost power. `attach` said so: "the board is not running a session".
+- `start`, `status` and `stop` in a 60 s camera-only session: `stop` ended it in about a second, on a whole pulse (316 pulses made, 316 counted by the Pico's own input, no stalls).
+
+Not checked yet: the PC restarting with the Pico on its own supply, a session on the rig's wired Pico from the PC, and the grounds. With the Pico on the PC's USB, its ground is the PC's, which the OneBox and the cameras share through their own USB cables: compare the OneBox's lines (low and high levels, noise) and the probe's noise with the Pico on the Pi and on the PC.
 
 ## Commands the board takes
 
