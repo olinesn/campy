@@ -38,7 +38,8 @@ On Linux (every process the user can see; other users' processes show only their
            loaded (a process that can open, reset or enumerate the cameras)
   trigger  /dev/ttyACM*, /dev/ttyUSB*  the trigger Arduino
   load     the CPU (cores) and disk (MB/s) used by everything outside the job
-  desktop  a desktop drawing on the GPU (gnome-shell, Xwayland, Xorg, ...; any user,
+  desktop  a desktop drawing on the GPU (gnome-shell, Xwayland, Xorg, GNOME's gsd-xsettings and
+           mutter-x11-frames, ...; any user,
            the login screen too). run does not wait for it (it would not go away),
            but says in the log which was up, and a desktop that starts or ends
            during the run contaminates it.
@@ -131,9 +132,13 @@ PERIOD = float(os.environ.get("RIG_PERIOD", 2.0))  # s between looks
 # (on Windows, NT device names: RIG_EXTRA="trigger=\Device\Serial0")
 EXTRA = dict(reversed(kv.split("=", 1)) for kv in os.environ.get("RIG_EXTRA", "").split(",") if "=" in kv)
 KINDS = ("gpu", "encoder", "camera", "trigger")
-# Desktops drawing on the GPU, by /proc/<pid>/comm
+# Desktops drawing on the GPU, by /proc/<pid>/comm (the kernel keeps its first 15 characters). A logged-in
+# GNOME session also has two helpers that keep the GPU's render node open for as long as it runs:
+# gsd-xsettings and mutter-x11-frames (comm "mutter-x11-fram"). At the login screen they run as gdm, whose
+# open files rig.py can not see; logged in, they are the user's and would otherwise look like encoder users
+# that never go away
 DESKTOP = {"gnome-shell", "Xwayland", "Xorg", "Xvnc", "mutter", "kwin_wayland", "kwin_x11", "plasmashell",
-	"sway", "weston", "Hyprland", "xfwm4", "TeamViewer"}
+	"sway", "weston", "Hyprland", "xfwm4", "TeamViewer", "gsd-xsettings", "mutter-x11-frames"[:15]}
 FLIR_VENDOR = "1e10"
 HZ = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 NO_WINDOW = 0x08000000 if WINDOWS else 0  # CREATE_NO_WINDOW: no console flashing up for nvidia-smi

@@ -174,6 +174,29 @@ def test_a_desktop_is_noted_not_waited_for_and_one_starting_mid_run_is_caught(ri
 	assert "DESKTOP started: %d" % late.pid in log and "RIG_CONTAMINATED" in last(log), log
 
 
+@linux
+def test_a_logged_in_gnome_desktops_helpers_are_desktop_not_device_users(rig, tmp_path):
+	# Logged in, GNOME's gsd-xsettings and mutter-x11-frames keep the render node open for the whole
+	# session; stand-ins named like them hold the fake GPU open, and run neither waits nor is contaminated.
+	# mutter-x11-frames is longer than the 15 characters the kernel keeps of a name, so this checks that too
+	helpers = []
+	with open(rig.gpu) as dev:
+		for name in ("gsd-xsettings", "mutter-x11-frames"):
+			exe = tmp_path / name
+			shutil.copy(shutil.which("sleep"), str(exe))
+			helpers.append(subprocess.Popen([str(exe), "30"], stdin=dev))
+	try:
+		r = rig("run", "tester", "gnome", "--", "sleep", "1", env={"RIG_NOWAIT": "1"})
+		log = rig.log("gnome")
+		assert r.returncode == 0 and "in use outside" not in r.stdout, r.stdout
+		assert last(log).startswith("RIG_CLEAN (desktop on the GPU:"), log
+		assert "gsd-xsettings" in log and "mutter-x11-frames" in log, log
+	finally:
+		for h in helpers:
+			h.kill()
+			h.wait()
+
+
 # rig.py, slowed down between starting the job and going on: as when the machine is busy and
 # rig.py gets its next time slice only after the job has run its first lines
 SLOW_START = """import sys, time
