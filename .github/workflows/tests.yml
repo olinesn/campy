@@ -21,7 +21,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        # Ubuntu 24.04, not ubuntu-latest: on 2026-11-05 ubuntu-latest became 26.04, which has no
+        # Python 3.9 for setup-python
+        os: [ubuntu-24.04]
         # 3.9: the oldest campy (setup.py) and nireyecam support. 3.10: FLIR's PySpin on
         # Ubuntu 22.04. 3.12: docs/install.md's, and PySpin's on Windows, macOS and Ubuntu 24.04.
         python: ["3.9", "3.10", "3.12"]
