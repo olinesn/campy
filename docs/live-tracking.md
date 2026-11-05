@@ -410,6 +410,27 @@ Notes on the measurements:
 
   The replay's accuracy on the EVO-X2 was again 2D median 3.8 px, 3D median 4.2 mm, identity 0.9993, 2 switches.
 
+- On 4 November, right after the 2.4.0 release, the three rigs ran their checks on campy 2.4.0 (`95291b0`). Both environments on each rig report 2.4.0, and each rig's lock is 2.4.0's (`rig.py install --check`). The release adds pull request 247: `campy-live` holds the GPU's clock from the end of its warm-up, not from when the feed appears.
+
+  Nothing was skipped or misaligned in any run, and every camera kept all its frames. The times matched the dcb349d table above to within 0.3 ms. Tracking now starts at the first frame: every run's first set is frame 1, but for the Pro Max Slim's replay, which starts at frame 2. On dcb349d the replays started at frame 4 on the Precision 7875 and frame 9 on the Pro Max Slim. That's why their replays now track 1,800 and 1,799 sets, against 1,797 and 1,792.
+
+  Antivirus scanning marked several Windows runs `RIG_CONTAMINATED`. Every check was rerun until clean or until three tries had been made, and the clean run is the one in the table:
+
+  - **Precision 7875:** the first 1-camera run was flagged and its rerun was clean.
+  - **Pro Max Slim:** the security scanner read the disk at 50–90 MB/s during all three first runs. The reruns of the replay and of the 3-camera run were clean. The 1-camera run was flagged on all three tries, by one to six sightings of the scanner. Its second and third tries gave the same numbers (p99 2.5 ms), and those are the ones below.
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | EVO-X2 | 1,800 / 3.0 / 3.1 | 3,600 / 5.6 / 5.8 / 7.5 / 8.5 | 3,600 / 5.5 / 5.6 / 7.1 / 8.0 |
+  | Pro Max Slim | 1,200 / 2.3 / 2.5 | 3,600 / 5.5 / 6.0 / 7.8 / 8.7 | 1,799 / 5.5 / 6.0 / 8.8 / 9.8 |
+  | Precision 7875 | 1,200 / 0.9 / 1.0 | 3,600 / 1.6 / 1.7 / 4.1 / 5.3 | 1,800 / 1.6 / 1.7 / 4.6 / 5.7 |
+
+  The replay's accuracy on the EVO-X2 was again 2D median 3.8 px, 3D median 4.2 mm, identity 0.9993, 2 switches.
+
+  The Pro Max Slim's third 3-camera try printed one line once: "Could not move campy-acquire onto CPUs 2-9,14-21 (--campy-cpus): ... [WinError 87] The parameter is incorrect." That run kept every set and was `RIG_CLEAN`, its times matched the others, and the other five 3-camera runs didn't print it.
+
+  The Windows 11 VM has no `campy-live`, because there is no device for its Intel Arc Pro B50. So it ran a recording check instead: `campy-acquire` recorded 1 and then 3 emulated cameras playing the same clips at 60 fps, for 20 s and 60 s, with Quick Sync H.265 on the B50. Each camera saved all its frames (1,200, then 3 × 3,600), with none dropped (`framesDropped` 0). The 3-camera run was `RIG_CLEAN`. The 1-camera run was flagged by one sighting of the security scanner.
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
