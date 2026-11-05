@@ -25,7 +25,8 @@ and checks:
                    planned (a trigger that runs the cameras in bouts):
                    said on the console and written in alerts.log, not sent
   first frame      no frame 10 s after the trigger Arduino started (an
-                   external trigger: a warning after 10 min of waiting)
+                   external trigger: a warning after alertExternalWaitSec,
+                   10 min, of waiting; None: never)
   dropped frames   frames dropped in the last minute, because more than
                    writeQueueMaxSec of frames waited for ffmpeg: a warning,
                    critical above 1 % of them; resolved after 2 min without
@@ -127,7 +128,7 @@ STALL_UNBOUNDED_S = (10.0, 30.0) # writeQueueMaxSec "None": seconds of frames wa
 STALL_CLEAR_S = 30.0
 STALL_START_S = 10.0 # a new ffmpeg's first seconds of frames: no write-stall warning (it opens its encoder then)
 FIRST_FRAME_S = 10.0 # after the trigger Arduino started
-EXTERNAL_WAIT_S = 600.0 # an external trigger (startArduino False): waiting this long is said
+EXTERNAL_WAIT_S = 600.0 # an external trigger (startArduino False): waiting this long is said (alertExternalWaitSec's default)
 TOGETHER_S = 1.0 # cameras whose last frames are this close stopped together: the trigger
 MISSED_SETTLE_S = 1.0 # pulses without a frame are looked at once this old: every camera that missed them has said so
 MISSED_CLEAR_S = 120.0 # a trigger pause, or a camera's missed pulses, are over once none came for this long
@@ -205,6 +206,8 @@ class Watch:
 		self.recTime = float(params.get("recTimeInSec", 0))
 		planned = params.get("alertTriggerPauseSec", "None")
 		self.plannedPause = None if planned is None or str(planned) == "None" else float(planned)
+		wait = params.get("alertExternalWaitSec", EXTERNAL_WAIT_S)
+		self.externalWait = None if wait is None or str(wait) == "None" else float(wait) # None: never said
 		self.external = "serial" not in systems
 		self.problems = {} # key: Problem, open
 		self.history = collections.defaultdict(collections.deque) # camera: (t, grabbed, dropped, sent)
@@ -544,10 +547,11 @@ class Watch:
 			self.Clear("trigger/first", "The first frames came", now)
 			return
 		if len(waiting) == len(self.names):
-			if self.external and waited >= EXTERNAL_WAIT_S:
-				self.Raise("trigger/first", notify.WARNING, "No frame yet, {} after campy started waiting for the "
-					"external trigger: is it running?".format(notify.Duration(waited)))
-			elif not self.external and waited >= FIRST_FRAME_S:
+			if self.external:
+				if self.externalWait is not None and waited >= self.externalWait:
+					self.Raise("trigger/first", notify.WARNING, "No frame yet, {} after campy started waiting for the "
+						"external trigger: is it running?".format(notify.Duration(waited)))
+			elif waited >= FIRST_FRAME_S:
 				self.Raise("trigger/first", notify.CRITICAL, "No camera has had a frame {:.0f} s after the trigger "
 					"Arduino on {} started.".format(waited, self.params.get("serialPort")))
 		elif waited >= FIRST_FRAME_S:
