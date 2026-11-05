@@ -65,6 +65,11 @@ It excludes `C:\campy_data` and `C:\data` (where the ChronicRecord rig's launche
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\disable_usb_selective_suspend.ps1
 ```
 It sets "USB selective suspend" to Disabled in the active power plan (plugged in and on battery; the same as Control Panel > Power Options > Change advanced power settings > USB settings) and changes nothing else. `-Undo` puts the old values back. It applies to the active plan only: if you switch power plans later, run it again.
+10. On Windows, pause Windows Update before recording, so that it can't restart the PC in the middle of a session (unpaused, Windows installs updates and restarts by itself outside its active hours; a restart ends every recording). From PowerShell:
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\pause_windows_update.ps1 -Days 14
+```
+It asks for administrator rights itself, does what Settings > Windows Update > Pause updates does (1 to 35 days), prints the date it's paused until, and warns if a restart is already pending (restart first, while nothing records). When the pause ends, Windows installs the waiting updates and usually restarts before it allows another pause: let it, between recordings, then pause again. Settings > Windows Update > Resume updates undoes it.
 
 ## Spinnaker 4.4 on Windows: when the installer fails
 On one Windows 11 PC (October 2026), Spinnaker 4.4.0.246's installer failed the same way every time. Teledyne Common Components installed, then the installer's administrator process went away and nothing else installed: no SpinView, and PySpin found 0 cameras, although Settings ▸ Apps listed "Teledyne Spinnaker SDK 4.4.0.246". Its log in `%TEMP%` (`Teledyne_Spinnaker_SDK_4.4.0.246_(x64)_*.log`) shows `Applied execute package: TeledyneCommonComponentsSetup.exe, result: 0x0`, then `Error 0x800700e8: Failed to write message type to pipe`. No crash or Microsoft Defender event explained it. By then the installer has saved its packages under `C:\ProgramData\Package Cache`, so they can be installed directly, in PowerShell run as administrator:
