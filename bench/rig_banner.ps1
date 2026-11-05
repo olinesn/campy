@@ -234,6 +234,7 @@ function Show-Stopped([string]$how, [bool]$ended) {
 		$script:HideAt = (Get-Date).AddMinutes(10)
 	}
 	if (-not $form.Visible) { $form.Show() }
+	Log "says: $($label.Text)"
 }
 
 function Stop-Test([string]$how) {
@@ -259,7 +260,7 @@ function Show-Test([string]$line, [string]$job) {
 	$form.Show()
 	$form.Refresh()
 	Write-Banner $job
-	Log "showing $job ($line)"
+	Log "showing $job ($line); says: $($label.Text)"
 }
 
 function Test-Ended {
@@ -274,7 +275,7 @@ function Test-Ended {
 	# Stopped by rig.py itself (a camera opened, campy started)? Its PAUSE is newer than the banner
 	$p = Read-Marker 'PAUSE'
 	$at = if ($p) { (Fields $p)['at'] } else { $null }
-	$t = $null
+	[datetime]$t = [datetime]::MinValue
 	if ($at -and [datetime]::TryParse($at, [ref]$t) -and $t -ge $script:ShownAt.AddSeconds(-1)) {
 		Show-Stopped (Fields $p)['how'] $true
 		Log "$job stopped by rig.py ($((Fields $p)['how']))"
