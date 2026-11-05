@@ -62,7 +62,8 @@ alertTriggerPauseSec: 30
 # trigger: is it running?" to Slack if the Pi starts more than 10 minutes later: in the
 # 1-hour rehearsal on 4 November the Pi started 16 minutes after campy, and that was the
 # only false alarm. An hour leaves room for a late start and still catches a Pi that was
-# never started. None would never send it.
+# never started. None would never send it. Needs campy with pull request 267 or later: an older
+# campy refuses this line (delete it there, and the 10-minute warning comes back).
 alertExternalWaitSec: 3600
 
 # SpikeGLX writes to the same disk as campy (C:) while the gate is high, about 475 GB a day
