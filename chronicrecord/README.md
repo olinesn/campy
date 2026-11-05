@@ -169,7 +169,7 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 | 4 days | 345600 | 1152 (192) | 3,340,800 | 55680 |
 | 6 days | 518400 | 1728 (288) | 5,011,200 | 83520 |
 
-**Order.** Start campy first and wait for "All 4 cameras are ready.", then the Pi: `python3 chronic_control.py start --set TOTAL_DURATION=518400`. A camera that isn't grabbing when the first pulse comes misses frames the others have. Start the Pi within 10 minutes of campy, or campy warns that it has had no frame yet (below).
+**Order.** Start campy first and wait for "All 4 cameras are ready.", then the Pi: `python3 chronic_control.py start --set TOTAL_DURATION=518400`. A camera that isn't grabbing when the first pulse comes misses frames the others have. Start the Pi within an hour of campy, or campy warns that it has had no frame yet (`alertExternalWaitSec: 3600`; 10 minutes with a campy before pull request 267, which refuses that line).
 
 **Stopping early.** `stop` on the Pi, then Ctrl-C in campy's window (or create the `stopFile`). campy otherwise waits for frames that won't come.
 
@@ -177,7 +177,7 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 
 **Rehearsed for an hour** (4 November, 7:20 to 8:15 PM, campy at dev 2825003): the Pi's default plan, 12 bouts (two of 240 s of camera, ten of 10 s), started by the Pi at a set time with campy already waiting.
 - **Alerts:** all 11 gaps were logged as planned pauses and none went to Slack, and campy's start sent no "frames waiting" warning. campy ended by itself after the last bout's frames, with an end message counting the 11 planned pauses.
-- **The one Slack warning** was "No frame yet, 10 min after campy started waiting for the external trigger", resolved when the bouts began. campy had been started 16 minutes before the Pi; campy warns after 10 minutes of waiting for an external trigger. So start the Pi within 10 minutes of campy.
+- **The one Slack warning** was "No frame yet, 10 min after campy started waiting for the external trigger", resolved when the bouts began. campy had been started 16 minutes before the Pi; campy then warned after 10 minutes of waiting for an external trigger. Since pull request 267 the profile waits an hour (`alertExternalWaitSec: 3600`), and the rig runs that campy (dev 1078dd4, from the evening of 4 November) with that profile, so a gap like this one sends nothing.
 - **SpikeGLX:** 12 files, one per bout. Checked edge by edge on the OneBox's clock, every bout matched the plan to within a sample (33 µs):
   - gate high 255.0008 s or 25.0001 s;
   - 14,400 or 600 camera pulses, the first 5.000 s after the gate;
