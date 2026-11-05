@@ -1372,7 +1372,8 @@ class Stopper:
 			return True
 		if users:
 			p = users[0]
-			self.why = "someone started using the %s: %s" % (",".join(sorted(p.kinds - {"desktop"})), describe(p, 100))
+			name = re.split(r"[\\/]", (p.cmd or "?").split()[0].strip('"'))[-1]
+			self.why = "%s started outside the test, using the %s (pid %d)" % (name, ",".join(sorted(p.kinds - {"desktop"})), p.pid)
 			return True
 		if time.monotonic() >= self.next:
 			self.next = time.monotonic() + self.cfg["session_every"]

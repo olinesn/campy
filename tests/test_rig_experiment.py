@@ -218,5 +218,5 @@ def test_a_device_opened_outside_the_test_stops_it(run, tmp_path):
 		other.kill()
 	assert p.returncode == 75, out
 	log = run.log("cam")
-	assert "RIG_STOPPED at the machine by someone started using the camera: %d camera" % other.pid in log, log
-	assert "someone started using the camera" in (run.root / "PAUSE").read_text()
+	assert "RIG_STOPPED at the machine by python" in log and "started outside the test, using the camera (pid %d)" % other.pid in log, log
+	assert "using the camera" in (run.root / "PAUSE").read_text()
