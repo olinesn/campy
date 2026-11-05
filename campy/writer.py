@@ -8,7 +8,7 @@ command a recording runs.
 """
 from imageio_ffmpeg import write_frames
 import os, re, sys, time, shutil, logging, functools, threading, subprocess, collections
-from campy import newfiles, status, segments
+from campy import newfiles, status, segments, startup
 from campy.cameras import unicam
 from campy.utils.utils import QueueKeyboardInterrupt, Say, ErrorText, ExitCodeText
 
@@ -355,16 +355,19 @@ def OpenWriter(cam_params, queue, new=False, path=None):
 
 		if not os.path.isdir(folder_name):
 			os.makedirs(folder_name, exist_ok=True) # the grab thread may make it too (metadata.csv)
-			Say("Made directory {}.".format(folder_name))
+			startup.Step("Made directory {}.".format(folder_name))
 		if new:
 			newfiles.Take(full_file_name)
 
 		enc = EncoderArgs(cam_params)
 		SetEnvironment(enc["env"])
+		# The recording's first open is in the camera's ready line (campy/startup.py)
 		if enc["device"] == "cpu":
-			Say("Opened: {} using CPU to compress the stream.".format(full_file_name))
+			startup.Video("Opened: {} using CPU to compress the stream.".format(full_file_name), cam_params,
+				first=path is None)
 		else:
-			Say("Opened: {} using GPU {} to compress the stream.".format(full_file_name, cam_params["gpuID"]))
+			startup.Video("Opened: {} using GPU {} to compress the stream.".format(full_file_name, cam_params["gpuID"]),
+				cam_params, first=path is None)
 		if FullRange(cam_params) and "-color_range" not in enc["output_params"]:
 			Say("{}: colorRange \"full\" does nothing with pixelFormatOutput \"{}\": {} converts RGB to limited-range "
 				"video itself. Use pixelFormatOutput \"yuv420p\" for full range.".format(

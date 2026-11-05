@@ -39,6 +39,7 @@ import csv, os, queue, time
 from campy import clock, newfiles
 from campy.cameras import unicam
 from campy.utils.utils import Say
+from campy import startup
 
 
 PIXEL_FORMAT = "gray" # every RatCam frame is 8-bit mono
@@ -340,11 +341,19 @@ def OpenCamera(cam_params):
 	except Exception:
 		CloseQuietly(camera)
 		raise
-	Say("{}: {}x{} at {:.2f} fps (frame length {}), exposure {:.0f} us, gain code {}, LED {}{}."\
+	startup.Step("{}: {}x{} at {:.2f} fps (frame length {}), exposure {:.0f} us, gain code {}, LED {}{}."\
 		.format(cam_params["cameraName"], cam_params["frameWidth"], cam_params["frameHeight"],
 		cam_params["ratcamFrameRate"], cam_params["ratcamFrameLength"], cam_params["ratcamExposureUs"],
 		cam_params["ratcamGainApplied"], cam_params["ratcamLedApplied"],
 		", driving SYNC_OUT" if cam_params["ratcamSyncOutApplied"] else ""))
+	# Its own clock, which sets its frame rate (no trigger): the ready line's settings (campy/startup.py)
+	startup.Setting("rate", "{:.2f} fps (frame length {})".format(cam_params["ratcamFrameRate"],
+		cam_params["ratcamFrameLength"]))
+	startup.Setting("exposure", "exposure {:.0f} us".format(cam_params["ratcamExposureUs"]))
+	startup.Setting("gain", "gain code {}".format(cam_params["ratcamGainApplied"]))
+	startup.Setting("led", "LED {}".format(cam_params["ratcamLedApplied"]))
+	if cam_params["ratcamSyncOutApplied"]:
+		startup.Setting("sync", "driving SYNC_OUT")
 	return camera, cam_params
 
 
@@ -355,7 +364,7 @@ def StartGrabbing(camera):
 		camera.cam.command("START")
 		return True
 	except Exception as e:
-		Say("RatCam did not start: {}".format(e))
+		startup.Warn("RatCam did not start: {}".format(e))
 		return False
 
 

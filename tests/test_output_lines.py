@@ -111,10 +111,15 @@ def test_a_recording_prints_whole_lines(tmp_path, monkeypatch):
 	monkeypatch.undo()
 
 	said = "".join(out.writes)
-	for message in ("Opened Camera0: fake", "Camera0 ready to trigger.", "Camera0 collected 10 frames",
+	# What it said as it opened is one line, once it was ready (campy/startup.py)
+	ready = "Camera0 ready to trigger: fake fake serial 0, 16x16 at 100 fps, no trigger (free-running), h264 on CPU -> {}\n"\
+		.format(tmp_path / "Camera0" / "v.mp4")
+	assert ready in out.writes
+	for message in ("Camera0 collected 10 frames",
 			"Camera0: the encoder is 5 frames behind", "Camera0 saved 20 frames", "Camera0 dropped 15 of them",
-			"Saved metadata for Camera0.", "using CPU to compress the stream.", "Closing video writer for Camera0."):
+			"Saved metadata for Camera0.", "Closing video writer for Camera0."):
 		assert message in said
+	assert "Opened" not in said # the camera's and the video's, both in the ready line
 	assert [w for w in out.writes if not (w.endswith("\n") and w.count("\n") == 1)] == []
 
 
@@ -144,7 +149,7 @@ def test_a_stuck_stdout_does_not_hold_up_the_camera_thread(tmp_path, monkeypatch
 		utils.StopPrinter()
 	monkeypatch.undo()
 
-	starts = ["Opened Camera0: fake", "Camera0 ready to trigger.",
+	starts = ["Camera0 ready to trigger: fake fake serial 0, 16x16 at 100 fps,",
 		"Camera0: the encoder is 5 frames behind. Dropped 1 frames so far (latest: frame 6).",
 		"Camera0 collected 10 frames at", "Camera0 collected 20 frames at", "Camera0 saved 20 frames at",
 		"Camera0 dropped 15 of them", "Saved metadata for Camera0."]
