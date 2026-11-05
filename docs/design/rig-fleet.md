@@ -240,8 +240,10 @@ It runs **Windows 11 with one shared lab account**, reached from the Mac over SS
 - **SSH and rig.py are set up** (2026-10-28). An administrator ran the SSH setup script once at the machine: it
   installed OpenSSH Server (an optional feature of Windows 11), started it automatically, added the Mac's key, turned
   password logins off and limited the firewall rule to the lab network and VPN addresses, as on the Precision 7875.
-  rig.py and its lock were installed the same evening. What's still missing for this section is the experiment-machine
-  part of stage 6: the banner, STOP/PAUSE and the idle checks.
+  rig.py and its lock were installed the same evening. The experiment-machine part of stage 6 (the banner, STOP/PAUSE and
+  the idle checks) was built on 2026-11-05: `rig.py` with `experiment.json`, `bench/rig_banner.ps1` and
+  `bench/rig_experiment_setup.ps1` (docs/development.md, "Experiment machines"). Still to come: the notice in the
+  campy-session panel, the tray icon with its history, and the Slack note on a stop.
 
 ![On the Dell Pro Tower Plus the Mac starts a test only when nobody is active, nothing records, the hour is allowed and tests aren't paused. A banner on screen shows the running test with a Stop button; one click writes STOP and PAUSE files, rig.py ends the job within 2 s, and PAUSE keeps new tests away. Starting campy or SpinView, or opening a camera, also stops the job.](rig-fleet/06-experiment-machine-stop.svg)
 
@@ -255,7 +257,8 @@ The Mac starts a test on the Tower only when all of these hold:
   mouse input for 15 minutes. `quser` gives the session's state and idle time; it's a small program, not PowerShell
   or WMI.
 - **No camera or recording in use**, checked the same way as on the other rigs.
-- **The hour is inside the machine's allowed window**, e.g. nights and weekends only. You set it.
+- **The hour is inside the machine's allowed window.** Decided 2026-11-05: nights only, 10 PM to 6 AM, every day
+  (`experiment.json`'s `hours`).
 - **Tests aren't paused** (see below).
 
 ### Seeing that a test is running
@@ -279,18 +282,19 @@ every test and spoil every timing.
 ### Stopping a test and taking over
 
 - **One click on "Stop test"** (banner, panel, or a desktop shortcut "Stop campy test" for when neither is in view).
-  It writes a STOP file in the rig folder, which every user may write. rig.py looks for it every 2 s alongside its
+  It writes a STOP file in the rig folder, which every user may write. rig.py looks for it every 0.2 s between its
   other checks, ends **every process of the job** (it already runs each job in a Windows job object), frees the lock,
   and logs `RIG_STOPPED` with how it was stopped. The banner then says "Stopped. The machine is yours." No admin rights are needed,
   and the user never has to find or kill a process.
 - **Automatically, when someone starts working:** opening a camera, or starting campy-acquire, campy-session or SpinView,
-  stops the test the same way (rig.py's `--yield`, section 1). Optionally, any keyboard or mouse input at the
-  console stops it too (question 9).
+  stops the test the same way (rig.py's `--yield`, section 1). Any keyboard or mouse input in the session stops it
+  too (question 9, decided 2026-11-05): the banner sees it (GetLastInputInfo), and rig.py sees a session's idle time go
+  back down in `quser`. The banner says so: "Touching the mouse or keyboard stops it".
 - **When someone connects with Remote Desktop or unlocks the screen.** The banner script hears Windows' session
   events (unlock, Remote Desktop connect) and writes STOP itself. The test ends as the person arrives, not after.
 - **Taking control lasts.** A stop also writes a PAUSE file: no new tests on that machine until the user clicks "Resume
-  campy tests" or the pause runs out. The banner offers 2 hours, until tomorrow morning (the default), or until I
-  resume. The Mac reads PAUSE before every start, and the dashboard shows "paused until <time>" and how it was stopped.
+  campy tests" or the pause runs out. The banner offers 2 hours, until 8 AM the next morning (the default, decided 2026-11-05), or until
+  resumed (the "Resume campy tests" shortcut). The Mac reads PAUSE before every start, and the dashboard shows "paused until <time>" and how it was stopped.
 - A stopped test is reported to you (Slack, through campy.notify) as "stopped at the machine" with how. It's not a failure and not a
   drift.
 
@@ -501,10 +505,10 @@ live-tracking.md's "after each update" steps point to it. Nothing public about h
 6. **Dashboard: static page first (A), artifact later (C)?**
 7. The drift limits in section 4: fine as a start?
 8. **Dell Pro Tower Plus:** which hours may tests run there? (Answered 2026-10-28: Windows 11, one shared lab account,
-   no SSH yet. SSH was set up on 2026-10-28.)
+   no SSH yet. SSH was set up on 2026-10-28. Answered 2026-11-05: nights only, 10 PM to 6 AM.)
 9. **Should any keyboard or mouse input at the Tower stop a test by itself**, or only the Stop button, unlocking,
-   Remote Desktop, opening a camera and starting campy?
-10. **Default pause after a stop:** until the next morning, or something else?
+   Remote Desktop, opening a camera and starting campy? (Answered 2026-11-05: any input stops it.)
+10. **Default pause after a stop:** until the next morning, or something else? (Answered 2026-11-05: until 8 AM.)
 11. **The virtual machine:** do you revert `campy-clean` yourself, or may the Mac have a Proxmox API token limited to
     this one VM? (Answered 2026-10-29: Proxmox; Intel Arc Pro B50 passed through, 8 threads of an i9-14900, 32 GB,
     all adjustable; processor type `host`; its disk is on LVM-thin, which snapshots; its adapter is bridged onto the

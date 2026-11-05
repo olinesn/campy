@@ -81,10 +81,21 @@ written by hand ("<who> <time>", as sessions did before rig.py ran on Windows)
 is respected until whoever wrote it deletes it, or `rig.py break`. RIG_LOCK=file
 uses the Windows lock on Linux too.
 
+On an experiment machine (RIG_ROOT/experiment.json; docs/design/rig-fleet.md, section 5), where people
+record experiments, run starts a test only when every Windows session (quser) has been idle 15+ min,
+nothing outside it uses a device, the hour is allowed ("hours", default 22:00-06:00) and RIG_ROOT/PAUSE
+isn't there (or its time has passed); otherwise it exits 75 at once, never waiting in line. On Windows the
+banner (rig_banner.ps1, started in the session by a Task Scheduler task; rig_experiment_setup.ps1 sets it
+up) must show the test first. The test ends within 2 s, every process of it, when RIG_ROOT/STOP appears
+(the banner's Stop button, the "Stop campy test" shortcut, keyboard or mouse input at the machine, an
+unlock, a Remote Desktop connect, a logon), when anything outside it starts using the GPU, a camera, the
+encoder or the trigger (campy, SpinView, a Python), or when quser shows a session in use; the log's last
+line is then RIG_STOPPED, run exits 75, and PAUSE keeps new tests away until 8 AM ("pause_until").
+
 Installing and versions. Each machine runs one installed copy, in RIG_ROOT, which every
 script calls (a campy checkout can be on any branch or commit, and every lock user on a
-machine must run the same lock). Its version is a short hash of the five files (rig.py,
-rig_windows.py, rig_guard.sh, rig_guard.ps1, rig_hold.ps1) with line endings ignored, so the
+machine must run the same lock). Its version is a short hash of the six files (rig.py,
+rig_windows.py, rig_guard.sh, rig_guard.ps1, rig_hold.ps1, rig_banner.ps1) with line endings ignored, so the
 same commit shows the same version on every machine; status (its second line) and every
 rig.log say it. To
 update, run the checkout's own copy: python <checkout>/bench/rig.py install. It takes the rig
@@ -102,7 +113,7 @@ The Python standard library only. On Linux run it with /usr/bin/python3; on
 Windows with any 64-bit Python 3.9 or newer (campy's own environment will do).
 """
 
-import argparse, contextlib, hashlib, os, re, shlex, shutil, signal, subprocess, sys, time
+import argparse, contextlib, datetime, hashlib, json, os, re, shlex, shutil, signal, subprocess, sys, time
 
 WINDOWS = os.name == "nt"
 if WINDOWS:
@@ -129,7 +140,7 @@ NO_WINDOW = 0x08000000 if WINDOWS else 0  # CREATE_NO_WINDOW: no console flashin
 JOBS = {}  # Windows: {job name: rig_windows.Job} of the job rig.py runs
 HERE = os.path.dirname(os.path.abspath(__file__))
 # The lock's files: installed together, and hashed together into its version
-FILES = ("rig.py", "rig_windows.py", "rig_guard.sh", "rig_guard.ps1", "rig_hold.ps1")
+FILES = ("rig.py", "rig_windows.py", "rig_guard.sh", "rig_guard.ps1", "rig_hold.ps1", "rig_banner.ps1")
 STAMP = "RIG_INSTALLED"
 
 def say(text):
@@ -787,8 +798,10 @@ def wait_quiet(w, args):
 			if overloaded(load, args):
 				say("  load: " + load_text(load))
 
-def watch(w, alive, log, args, on_signal, lock):
-	"""Log what is outside the job every PERIOD s until alive() is False; returns the sighting counts."""
+def watch(w, alive, log, args, on_signal, lock, stopper=None):
+	"""Log what is outside the job every PERIOD s until alive() is False; returns the sighting counts.
+	With a stopper (an experiment machine), it ends as soon as the stopper says why, its STOP file
+	looked for every 0.2 s."""
 	counts = dict.fromkeys(KINDS + ("desktop", "load", "lock"), 0)
 	last = {}  # what was logged when, so a process that stays is logged every 30 s, not every 2 s
 	def note(key, text):
@@ -821,14 +834,24 @@ def watch(w, alive, log, args, on_signal, lock):
 			note(("lock",), "LOCK changed by someone else during the run: %s" % lock.text())
 		if on_signal[0]:
 			break
-		time.sleep(PERIOD)
+		if stopper is None:
+			time.sleep(PERIOD)
+			continue
+		if stopper.check(users):
+			break
+		t = time.monotonic() + PERIOD
+		while time.monotonic() < t and not on_signal[0] and not stopper.stop_file():
+			time.sleep(0.2)
+		if stopper.why:
+			break
 	counts["desktops"] = desktop_text(w.desktops, short=True)
 	counts["clocks"] = clocks.summary()
 	return counts
 
-def finish(counts, log, aborted=None):
+def finish(counts, log, aborted=None, stopped=None):
 	"""The run's last line: RIG_CLEAN or RIG_CONTAMINATED; or, for a run stopped before its job ended,
-	RIG_ABORTED with what was seen until then, never RIG_CLEAN."""
+	RIG_ABORTED with what was seen until then, never RIG_CLEAN; or RIG_STOPPED for one stopped at an
+	experiment machine (stopped says how)."""
 	desktops = counts.pop("desktops", "none")
 	lines, gpu = counts.pop("clocks", ([], ""))
 	for line in lines:
@@ -837,7 +860,9 @@ def finish(counts, log, aborted=None):
 	notes = ([] if desktops == "none" else ["desktop on the GPU: " + desktops]) + ([gpu] if gpu else [])
 	if n:
 		notes.insert(0, "%d sightings: %s" % (n, ", ".join("%s %d" % kv for kv in counts.items())))
-	if aborted:
+	if stopped:
+		log("RIG_STOPPED at the machine by %s (until then: %s)" % (stopped, "; ".join(notes if n else ["clean"] + notes)))
+	elif aborted:
 		log("RIG_ABORTED by %s (until then: %s)" % (aborted, "; ".join(notes if n else ["clean"] + notes)))
 	elif n == 0:
 		log("RIG_CLEAN" + (" (%s)" % "; ".join(notes) if notes else ""))
@@ -929,6 +954,22 @@ def stop_job(proc, sig):
 	except subprocess.TimeoutExpired:
 		os.killpg(proc.pid, signal.SIGKILL)
 		proc.wait()
+
+def end_job(proc):
+	"""Stopped at an experiment machine: end every process of the job now, not after a grace period."""
+	if WINDOWS:
+		for job in JOBS.values():
+			job.terminate()
+		with contextlib.suppress(OSError):
+			proc.kill()
+		return
+	with contextlib.suppress(OSError):
+		os.killpg(proc.pid, signal.SIGTERM)
+	try:
+		proc.wait(3)
+	except subprocess.TimeoutExpired:
+		with contextlib.suppress(OSError):
+			os.killpg(proc.pid, signal.SIGKILL)
 
 # Versions and installing (rig.py version, install; the first line of status and of every rig.log)
 
@@ -1109,6 +1150,248 @@ def cmd_install(args):
 		if not inside:
 			lock.release()
 
+# Experiment machines (docs/design/rig-fleet.md, section 5). A machine people record experiments on has
+# ROOT/experiment.json. There run starts a test only when nobody uses the machine (every Windows session
+# idle 15+ minutes), nothing uses a camera, the GPU, the encoder or the trigger, the hour is allowed and
+# tests aren't paused (ROOT/PAUSE); it never waits in line. On Windows the banner (rig_banner.ps1) must
+# be running in the session and show the test before it starts. The test stops within 2 s when ROOT/STOP
+# appears (the banner's Stop button, its desktop shortcut, input at the machine, unlocking, a Remote
+# Desktop connect, a logon), when anything outside the job starts using a device (campy, SpinView, a
+# camera opened), or when quser shows a session in use; PAUSE then keeps new tests away.
+
+EXPERIMENT_DEFAULTS = {
+	"hours": "22:00-06:00",       # when tests may start: "HH:MM-HH:MM[,...]", "any" for always
+	"idle_minutes": 15,           # every session idle at least this long
+	"pause_until": "08:00",       # a stop pauses tests until this time (the next morning)
+	"banner": WINDOWS,            # need the banner showing the test (Windows)
+	"banner_task": "campy test banner",  # the Task Scheduler task that starts it in the session
+	"session_every": 10,          # s between looks at the sessions (quser) during a test
+}
+
+def experiment_config():
+	"""The experiment machine's settings, or None on any other machine. A file that can't be read
+	still makes this an experiment machine (with the defaults): a typo mustn't turn the safeguards off."""
+	path = os.path.join(ROOT, "experiment.json")
+	try:
+		with open(path, encoding="utf-8") as f:
+			cfg = json.load(f)
+		if not isinstance(cfg, dict):
+			raise ValueError("not a JSON object")
+	except FileNotFoundError:
+		return None
+	except (OSError, ValueError) as e:
+		say("%s can't be read (%s): using the experiment-machine defaults" % (path, e))
+		cfg = {}
+	return dict(EXPERIMENT_DEFAULTS, **cfg)
+
+def minutes(hhmm):
+	h, m = hhmm.strip().split(":")
+	return int(h) * 60 + int(m)
+
+def in_hours(spec, now):
+	"""Whether now (a datetime) is inside spec: 'HH:MM-HH:MM', several comma-separated; a range may
+	wrap past midnight ('22:00-06:00'). 'any' (or empty) is always."""
+	if not spec or str(spec).strip().lower() in ("any", "always"):
+		return True
+	t = now.hour * 60 + now.minute
+	for part in str(spec).split(","):
+		a, b = (minutes(x) for x in part.split("-"))
+		if (a <= t < b) if a <= b else (t >= a or t < b):
+			return True
+	return False
+
+def fields(text):
+	"""'key=value; key=value' as a dict (what STOP, PAUSE and BANNER hold)."""
+	return {k.strip(): v.strip() for k, v in (p.split("=", 1) for p in (text or "").split(";") if "=" in p)}
+
+def marker(name):
+	"""ROOT/<name>'s text; None if there is none. Read so that the writer can still replace it."""
+	try:
+		with open(os.path.join(ROOT, name), encoding="utf-8", errors="replace") as f:
+			return f.read().strip()
+	except FileNotFoundError:
+		return None
+	except OSError:
+		return ""  # being replaced this moment
+
+def write_marker(name, **kv):
+	"""Write ROOT/<name> as one 'key=value; ...' line, whole or not at all."""
+	path = os.path.join(ROOT, name)
+	tmp = "%s.%d.tmp" % (path, os.getpid())
+	with open(tmp, "w", encoding="utf-8") as f:
+		f.write("; ".join("%s=%s" % (k, str(v).replace(";", ",")) for k, v in kv.items()) + "\n")
+	retry(os.replace, tmp, path)
+
+def remove_marker(name):
+	with contextlib.suppress(FileNotFoundError):
+		retry(os.remove, os.path.join(ROOT, name))
+
+def pause_until(cfg, now):
+	"""The next pause_until time after now, as 'YYYY-MM-DD HH:MM' (a stop at 11 PM pauses until 8 AM)."""
+	t = now.replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=minutes(cfg["pause_until"]))
+	if t <= now:
+		t += datetime.timedelta(days=1)
+	return t.strftime("%Y-%m-%d %H:%M")
+
+def read_pause(now):
+	"""PAUSE's text while tests are paused, else None. A pause whose 'until' has passed is removed;
+	'until=resume', or an 'until' that can't be read, pauses until someone removes the file."""
+	text = marker("PAUSE")
+	if text is None:
+		return None
+	until = fields(text).get("until", "resume")
+	try:
+		ends = datetime.datetime.strptime(until, "%Y-%m-%d %H:%M")
+	except ValueError:
+		return text or "PAUSE"
+	if now < ends:
+		return text
+	say("the pause has ended (%s): removed" % text)
+	remove_marker("PAUSE")
+	return None
+
+def write_pause(cfg, how, now=None):
+	"""Pause tests until the next morning, unless a pause is in place already (it may be longer)."""
+	now = now or datetime.datetime.now()
+	if read_pause(now) is None:
+		write_marker("PAUSE", until=pause_until(cfg, now), how=how, at=now.strftime("%Y-%m-%d %H:%M:%S"))
+
+QUSER = re.compile(r"^[ >](\S+)\s+(?:(\S+)\s+)?(\d+)\s+(\S+)\s+(\S+)\s+(\S.*?)\s*$")
+
+def idle_minutes(text):
+	"""quser's IDLE TIME in minutes: '.' or 'none' (under a minute) 0, '7', '1:05', '2+03:04'; None unknown."""
+	text = text.strip()
+	if text in (".", "none"):
+		return 0
+	m = re.match(r"^(?:(\d+)\+)?(?:(\d+):)?(\d+)$", text)
+	if not m:
+		return None
+	d, h, mi = m.groups()
+	return int(d or 0) * 1440 + int(h or 0) * 60 + int(mi)
+
+def parse_quser(text):
+	"""[{user, session, id, state, idle}] from quser's table (a disconnected session has no SESSIONNAME)."""
+	out = []
+	for line in (text or "").splitlines()[1:]:
+		m = QUSER.match(line)
+		if m:
+			out.append({"user": m.group(1), "session": m.group(2) or "", "id": int(m.group(3)),
+				"state": m.group(4), "idle": idle_minutes(m.group(5))})
+	return out
+
+def sessions():
+	"""Every Windows session (quser), [] if none is logged on, None if that can't be told. RIG_QUSER names a
+	file holding quser's output instead (tests). Elsewhere there are none to see."""
+	fake = os.environ.get("RIG_QUSER")
+	if fake:
+		try:
+			with open(fake, encoding="utf-8") as f:
+				return parse_quser(f.read())
+		except OSError:
+			return None
+	if not WINDOWS:
+		return []
+	try:
+		r = subprocess.run(["quser"], capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW)
+	except (OSError, subprocess.TimeoutExpired):
+		return None
+	if r.returncode != 0 and "No User exists" in (r.stdout + r.stderr):
+		return []
+	return parse_quser(r.stdout) if r.returncode == 0 else None
+
+def session_text(s):
+	return "session %d (%s%s, %s, idle %s min)" % (s["id"], s["user"], " " + s["session"] if s["session"] else "",
+		s["state"], "?" if s["idle"] is None else s["idle"])
+
+def banner_pid():
+	"""The banner's process id if it runs (ROOT/BANNER names it), else None."""
+	pid = fields(marker("BANNER")).get("pid", "")
+	return int(pid) if pid.isdigit() and proc_start(int(pid)) is not None else None
+
+def start_banner(cfg, wait=20.0):
+	"""Start the banner in the logged-on session by its Task Scheduler task; whether it runs."""
+	if banner_pid():
+		return True
+	with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+		subprocess.run(["schtasks", "/run", "/tn", cfg["banner_task"]], capture_output=True, timeout=20,
+			creationflags=NO_WINDOW)
+	t0 = time.monotonic()
+	while time.monotonic() - t0 < wait:
+		if banner_pid():
+			return True
+		time.sleep(0.5)
+	return False
+
+def banner_shows(job, wait=15.0):
+	"""Wait until the banner says it shows job; whether it did."""
+	t0 = time.monotonic()
+	while time.monotonic() - t0 < wait:
+		if fields(marker("BANNER")).get("shown") == job and banner_pid():
+			return True
+		time.sleep(0.25)
+	return False
+
+def experiment_blockers(cfg, banner=True, now=None):
+	"""(why a test may not start now, [] if it may; the sessions seen)."""
+	now = now or datetime.datetime.now()
+	why = []
+	if not in_hours(cfg["hours"], now):
+		why.append("outside the hours tests may start (%s)" % cfg["hours"])
+	paused = read_pause(now)
+	if paused is not None:
+		why.append("tests are paused (%s)" % paused)
+	found = sessions()
+	if found is None:
+		why.append("can't tell whether anyone is using the machine (quser failed)")
+	else:
+		for s in found:
+			if s["idle"] is None or s["idle"] < cfg["idle_minutes"]:
+				why.append("someone may be using it: %s, under %d min" % (session_text(s), cfg["idle_minutes"]))
+	if banner and cfg["banner"] and found and not why and not start_banner(cfg):
+		why.append("the banner isn't running in the session (Task Scheduler task %r)" % cfg["banner_task"])
+	return why, found or []
+
+class Stopper:
+	"""During a test on an experiment machine: why to stop it now (self.why), or None."""
+
+	def __init__(self, cfg, found):
+		self.cfg, self.why = cfg, None
+		self.base = {s["id"]: s for s in found}
+		self.next = time.monotonic() + cfg["session_every"]
+
+	def stop_file(self):
+		text = marker("STOP")
+		if text is None:
+			return False
+		self.why = fields(text).get("how") or "the STOP file"
+		return True
+
+	def check(self, users):
+		"""Called every PERIOD with the foreign device users."""
+		if self.why or self.stop_file():
+			return True
+		if users:
+			p = users[0]
+			name = re.split(r"[\\/]", (p.cmd or "?").split()[0].strip('"'))[-1]
+			self.why = "%s started outside the test, using the %s (pid %d)" % (name, ",".join(sorted(p.kinds - {"desktop"})), p.pid)
+			return True
+		if time.monotonic() >= self.next:
+			self.next = time.monotonic() + self.cfg["session_every"]
+			self.why = session_change(self.base, sessions())
+		return self.why is not None
+
+def session_change(base, now):
+	"""Why the sessions show someone at the machine since the test started, or None."""
+	for s in now or ():
+		b = base.get(s["id"])
+		if b is None:
+			return "a new session: %s" % session_text(s)
+		if s["state"] != b["state"]:
+			return "%s was %s" % (session_text(s), b["state"])
+		if s["idle"] is not None and b["idle"] is not None and s["idle"] < b["idle"] - 1:
+			return "keyboard or mouse input: %s (it was idle %s min)" % (session_text(s), b["idle"])
+	return None
+
 def in_current_job(lock):
 	"""Whether this rig.py runs inside the job that holds the rig (its RIG_JOB is the lock's job)."""
 	job = os.environ.get("RIG_JOB")
@@ -1126,11 +1409,24 @@ def cmd_run(args):
 		say("rig.py run: already inside the rig's job %s; running %s in it" % (os.environ["RIG_JOB"], args.tag))
 		code = subprocess.call(args.cmd)
 		sys.exit(code if code >= 0 else 128 - code)
+	cfg = experiment_config()
+	if cfg:  # an experiment machine: a test starts only now or not at all, never waits in line
+		args.no_wait = True
+		why, _ = experiment_blockers(cfg)
+		if why:
+			say("rig.py run: not now on this experiment machine: %s" % "; ".join(why))
+			sys.exit(75)
 	lock.acquire(args.owner, args.tag, args.no_wait)
-	proc = None
+	proc, found = None, []
 	try:
 		lock.record(note=WAITING)
 		wait_quiet(Watch(), args)
+		if cfg:  # again, now that the rig is ours; a STOP left from before is not for this run
+			why, found = experiment_blockers(cfg)
+			if why:
+				say("rig.py run: not now on this experiment machine: %s" % "; ".join(why))
+				sys.exit(75)
+			remove_marker("STOP")
 		job = "%s-%d" % (re.sub(r"\W", "_", args.tag), os.getpid())
 		log = logger(log_path(args, args.tag))
 		# The log's first line before the job starts: a run whose job ran has a log, even when rig.py
@@ -1142,12 +1438,28 @@ def cmd_run(args):
 		# at once whether it runs in the rig's job, and if it looked before the lock named its job, it
 		# would re-run itself under rig.py and wait forever on the rig its own rig.py holds
 		lock.record(job, None)
+		if cfg and cfg["banner"] and found:
+			if not banner_shows(job):
+				log("the banner didn't show the test within 15 s, so it was not started")
+				log("RIG_STOPPED at the machine by no banner showing (the job never started)")
+				sys.exit(75)
+			log("the banner shows the test (pid %s)" % banner_pid())
+		if cfg:
+			log("experiment machine: %s" % ("; ".join(session_text(s) for s in found) or "nobody logged on"))
 		proc = start_job(args.cmd, env, log)
 		lock.record(job, proc.pid)
 		log("rig held by %s for %s (job %s, pid %d): %s" % (args.owner, args.tag, job, proc.pid, " ".join(shlex.join(args.cmd).split())))
 		w = Watch(job=job, sid=None if WINDOWS else proc.pid, root_pid=proc.pid)
-		counts = watch(w, lambda: proc.poll() is None, log, args, got, lock)
-		if got[0]:
+		stopper = Stopper(cfg, found) if cfg else None
+		counts = watch(w, lambda: proc.poll() is None, log, args, got, lock, stopper)
+		stopped = stopper and stopper.why
+		if stopped:
+			log("STOP: %s; ending the job" % stopped)
+			end_job(proc)
+			write_pause(cfg, stopped)
+			remove_marker("STOP")
+			log("tests paused: %s" % read_pause(datetime.datetime.now()))
+		elif got[0]:
 			stop_job(proc, got[0])
 		code = proc.wait()
 		# Whatever the job left running on a device keeps the rig until it ends (at most 60 s)
@@ -1159,7 +1471,9 @@ def cmd_run(args):
 		for p in leftovers():
 			log("LEFTOVER still running after the job: %s" % describe(p))
 		log("job exit %s" % code)
-		finish(counts, log, got[0])
+		finish(counts, log, got[0], stopped)
+		if stopped:
+			code = 75
 	except BaseException as e:
 		if proc is None or proc.poll() is not None:
 			raise
@@ -1223,6 +1537,16 @@ def cmd_status(args):
 			else:
 				lock.clear_stale()
 	print("rig.py " + version_text())  # second: scripts look for "rig held" or "rig free" first
+	cfg = experiment_config()
+	if cfg:
+		now = datetime.datetime.now()
+		found = sessions()
+		paused, banner = read_pause(now), banner_pid()
+		print("experiment machine: tests may start %s (now %s); %s; banner %s" % (cfg["hours"],
+			"inside" if in_hours(cfg["hours"], now) else "outside", "paused: %s" % paused if paused else "not paused",
+			"running (pid %d)" % banner if banner else "not running"))
+		print("    sessions: %s" % ("can't tell (quser failed)" if found is None else
+			"; ".join(session_text(s) for s in found) or "nobody logged on"))
 	m = re.search(r"\bjob=(\S+)", info) if state == "held" else None
 	job = m and m.group(1)
 	m = re.search(r"\bpid=(\d+)", info) if state == "held" else None
