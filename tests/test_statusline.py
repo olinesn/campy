@@ -48,6 +48,17 @@ class Writes:
 		return "".join(self.writes)
 
 
+@pytest.fixture(autouse=True)
+def no_status_line_left():
+	# Prepare sets the camera processes' variable in this process's environment: none is left for other tests
+	saved = os.environ.get(statusline.ENV)
+	yield
+	if saved is None:
+		os.environ.pop(statusline.ENV, None)
+	else:
+		os.environ[statusline.ENV] = saved
+
+
 # ---------------------------------------------------------------------- whether
 
 def test_auto_shows_it_on_a_console_only(monkeypatch):
@@ -60,6 +71,8 @@ def test_auto_shows_it_on_a_console_only(monkeypatch):
 
 def test_prepare_tells_the_camera_processes(monkeypatch):
 	monkeypatch.delenv(statusline.ENV, raising=False)
+	# Tty is no console of Windows' own, whose VT processing campy would turn on: as one where it is on
+	monkeypatch.setattr(statusline, "EnableVT", lambda stream=None: True)
 	assert statusline.Prepare({"statusLine": "auto"}, io.StringIO(), io.StringIO()) is None
 	assert not statusline.Shown() and statusline.ChildMode() is None
 	mode = statusline.Prepare({"statusLine": "auto"}, Tty(), io.StringIO())
@@ -70,6 +83,9 @@ def test_prepare_tells_the_camera_processes(monkeypatch):
 	assert vars(statusline.ChildMode()) == {"how": "ansi", "stderr": True}
 	statusline.Prepare({"statusLine": "never"}, Tty(), Tty())
 	assert statusline.ENV not in os.environ
+	# Where it can't be turned on (a classic console that refuses it): spaces
+	monkeypatch.setattr(statusline, "EnableVT", lambda stream=None: False)
+	assert statusline.Prepare({"statusLine": "auto"}, Tty(), io.StringIO()).how == "pad"
 
 
 def test_without_ansi_it_clears_with_spaces(monkeypatch):
@@ -288,9 +304,10 @@ def Acquire(tmp_path, stdout, **config):
 
 def test_acquire_into_a_log_keeps_the_lines(tmp_path):
 	proc = Acquire(tmp_path, subprocess.PIPE)
-	out = proc.stdout.decode()
+	out = proc.stdout.decode().replace("\r\n", "\n") # Windows ends its lines with \r\n
 	assert proc.returncode == 0, out
-	assert re.search(r"^Camera0 collected 30 frames at", out, re.M) and "\x1b" not in out and "\r" not in out
+	assert re.search(r"^Camera0 collected 30 frames at", out, re.M), out
+	assert "\x1b" not in out and "\r" not in out, [line for line in out.split("\n") if "\x1b" in line or "\r" in line]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="a pseudo-terminal: POSIX only")
