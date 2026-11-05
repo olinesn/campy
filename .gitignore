@@ -139,3 +139,4 @@ cython_debug/
 # Logs and undo lists that tools/windows scripts write next to themselves
 tools/windows/*.log
 tools/windows/*.added.txt
+tools/windows/*.before.txt

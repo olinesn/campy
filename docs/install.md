@@ -59,7 +59,12 @@ pip install -e .
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\exclude_from_search_index.ps1 -AlsoSoftware
 ```
-It excludes `C:\campy_data` and your `miniconda3`, `anaconda3`, `venvs` and `sleap-bench` folders, where they exist, and changes nothing else; `-Undo` takes the exclusions back. If you record somewhere else, name that folder instead: `-Folder D:\videos`. Do it while nothing is recording: Windows then spends several minutes removing those folders from its index.
+It excludes `C:\campy_data` and `C:\data` (where the ChronicRecord rig's launcher puts each session's folder) and your `miniconda3`, `anaconda3`, `venvs` and `sleap-bench` folders, where they exist, and changes nothing else; `-Undo` takes the exclusions back. If you record somewhere else, name that folder instead: `-Folder D:\videos`. Do it while nothing is recording: Windows then spends several minutes removing those folders from its index.
+9. On Windows, turn off USB selective suspend, so that Windows never power-manages a camera or a trigger board it thinks is idle. In the same administrator PowerShell window:
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\disable_usb_selective_suspend.ps1
+```
+It sets "USB selective suspend" to Disabled in the active power plan (plugged in and on battery; the same as Control Panel > Power Options > Change advanced power settings > USB settings) and changes nothing else. `-Undo` puts the old values back. It applies to the active plan only: if you switch power plans later, run it again.
 
 ## Spinnaker 4.4 on Windows: when the installer fails
 On one Windows 11 PC (October 2026), Spinnaker 4.4.0.246's installer failed the same way every time. Teledyne Common Components installed, then the installer's administrator process went away and nothing else installed: no SpinView, and PySpin found 0 cameras, although Settings ▸ Apps listed "Teledyne Spinnaker SDK 4.4.0.246". Its log in `%TEMP%` (`Teledyne_Spinnaker_SDK_4.4.0.246_(x64)_*.log`) shows `Applied execute package: TeledyneCommonComponentsSetup.exe, result: 0x0`, then `Error 0x800700e8: Failed to write message type to pipe`. No crash or Microsoft Defender event explained it. By then the installer has saved its packages under `C:\ProgramData\Package Cache`, so they can be installed directly, in PowerShell run as administrator:
