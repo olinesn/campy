@@ -412,6 +412,15 @@ def test_a_replay_is_split_on_its_clip_whatever_the_recording(tmp_path):
 		clocks.append(labelpack.SplitClock(str(tmp_path / rec), "Camera0", {}))
 	assert clocks[0].Same(clocks[1]) and clocks[0].source == "clip clips clip.mp4"
 	assert clocks[0].Seconds(601) == clocks[0].Seconds(1) == 0 # its second loop is the clip's start again
+	# The clip elsewhere: metadata.csv's clipFrames (the emulated camera counted them) says where loops start
+	other = tmp_path / "2026-11-03_08-00-00" / "Camera0"
+	other.mkdir(parents=True)
+	with open(other / "metadata.csv", "w", newline="") as f:
+		csv.writer(f).writerows([["cameraMake", "emu"], ["videoFilename", "emuclip.mp4"], ["cameraName",
+			"Camera0"], ["frameRate", 60], ["videoFolderRoot", "/elsewhere/clips"], ["clipFrames", 600]])
+	moved = labelpack.SplitClock(str(tmp_path / "2026-11-03_08-00-00"), "Camera0", {})
+	assert moved.Same(clocks[0]) and moved.Seconds(1201) == 0
+	assert np.array_equal(moved.SecondsOf([1, 601, 1201, 1260]), [0, 0, 0, 59 / 60])
 	# A recording of real cameras is keyed on its own name
 	assert labelpack.SplitClock(made_rec(tmp_path), "Camera0", {}).source == "2026-10-23_10-00-00"
 

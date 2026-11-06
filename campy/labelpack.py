@@ -108,9 +108,10 @@ class SplitClock:
 	frame number over its frame rate (frame 1 is 0 s), the same in every log
 	of the recording, whenever campy-live started. A recording of emulated
 	cameras (cameraMake emu) replays a clip: its clock is the clip's, keyed on
-	the clip (its folder's name and file name), and when the clip's
-	frametimes.npy is beside it, counted from the clip's start again on each
-	loop. So a clip replayed into any number of recordings has its frames on
+	the clip (its folder's name and file name), counted from the clip's
+	start again on each loop: metadata.csv's clipFrames (emu.ClipFrames),
+	or for a replay recorded before campy wrote that, the clip's
+	frametimes.npy when it is beside the clip. So a clip replayed into any number of recordings has its frames on
 	the same side every time.
 	"""
 
@@ -133,7 +134,11 @@ class SplitClock:
 			self.source = "clip {} {}".format(os.path.basename(os.path.normpath(root)) if root else "", clip).replace(
 				"/", "_").replace("\\", "_")
 			times = os.path.join(root, str(meta.get("cameraName") or camera), "frametimes.npy")
-			if root and os.path.isfile(times):
+			try: # the clip's frames, as the emulated camera counted them (emu.ClipFrames)
+				self.clip_frames = int(meta.get("clipFrames") or 0) or None
+			except (TypeError, ValueError):
+				self.clip_frames = None
+			if not self.clip_frames and root and os.path.isfile(times):
 				try:
 					self.clip_frames = int(np.load(times, mmap_mode="r").shape[-1]) or None
 				except (OSError, ValueError):
@@ -143,6 +148,13 @@ class SplitClock:
 		n = int(frame) - 1
 		if self.clip_frames:
 			n %= self.clip_frames
+		return n / self.rate
+
+	def SecondsOf(self, frames):
+		"""Seconds, for an array of campy frame numbers."""
+		n = np.asarray(frames, np.int64) - 1
+		if self.clip_frames:
+			n = n % self.clip_frames
 		return n / self.rate
 
 	def Same(self, other):
@@ -172,6 +184,34 @@ def TestSide(source, seconds, share=TEST_SHARE, guard_s=GUARD_S, tested=None, tr
 	if near(tested):
 		return None, "training minute, within {:g} s of a frame in the test package".format(guard_s)
 	return False, "training minute"
+
+
+def GuardBand(source, seconds, share=TEST_SHARE, guard_s=GUARD_S):
+	"""For an array of seconds on source's clock: True where TestSide leaves
+	a set out for being in a training minute within guard_s of a test minute
+	(the packages' frames aside). source None (the recording's name isn't
+	known): True within guard_s of every minute line, which covers it.
+	campy-live-flag doesn't pick these, so none of its picks is lost."""
+	t = np.asarray(seconds, float)
+	if guard_s <= 0:
+		return np.zeros(t.shape, bool)
+	if source is None:
+		within = np.mod(t, 60.0)
+		return (within < guard_s) | (within > 60.0 - guard_s)
+	minutes = {}
+
+	def test(m):
+		out = np.empty(m.shape, bool)
+		for k in np.unique(m):
+			if k not in minutes:
+				minutes[k] = IsTest(source, 60.0 * k, share)
+			out[m == k] = minutes[k]
+		return out
+
+	here = test(np.floor(t / 60.0).astype(np.int64))
+	before = test(np.floor((t - guard_s) / 60.0).astype(np.int64))
+	after = test(np.floor((t + guard_s) / 60.0).astype(np.int64))
+	return ~here & (before | after)
 
 
 def PackageFrames(path, test, rates):

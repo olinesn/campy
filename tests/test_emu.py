@@ -80,6 +80,7 @@ def test_a_gray_emu_camera_opens_at_its_clips_size_and_fills_the_live_feed(tmp_p
 	feed = livefeed.Feed(cam_params, say=lambda text: None)
 	try:
 		assert (cam_params["frameWidth"], cam_params["frameHeight"]) == (64, 48)
+		assert cam_params["clipFrames"] == 10 # metadata.csv says where each loop starts again
 		feed.Prepare(cam_params) # the ring of a gray camera: 48 x 64 x 1
 		ring = feed.writer.ring
 		assert ring.shape == (48, 64, 1)
@@ -283,3 +284,22 @@ def test_campy_acquire_with_emulated_cameras_for_a_live_test(tmp_path):
 			assert video.count_frames() == 60
 		finally:
 			video.close()
+
+
+def test_the_clips_frames_are_counted_without_decoding(tmp_path):
+	# A campy recording's video too (B-frames, an edit list), and an unreadable file: none
+	import imageio_ffmpeg, subprocess
+	path = str(tmp_path / "long.mp4")
+	w = imageio_ffmpeg.write_frames(path, (64, 48), fps=20, macro_block_size=16, ffmpeg_log_level="error")
+	w.send(None)
+	for i in range(137):
+		w.send(np.full((48, 64, 3), i % 250, np.uint8))
+	w.close()
+	assert emu.ClipFrames(path) == 137
+	b = str(tmp_path / "bframes.mp4")
+	subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-v", "error", "-i", path, "-c:v", "libx264", "-bf", "3",
+		"-g", "30", b], check=True)
+	assert emu.ClipFrames(b) == 137
+	bad = tmp_path / "bad.mp4"
+	bad.write_bytes(b"not a video")
+	assert emu.ClipFrames(str(bad)) is None
