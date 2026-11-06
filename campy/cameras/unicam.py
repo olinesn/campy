@@ -301,6 +301,7 @@ class Recording:
 		self.framesSent = 0 # frames the writer has given ffmpeg
 		self.videoError = None # why the video stopped taking frames, or None
 		self.cameraError = None # why the camera stopped before the end, or None
+		self.frameTimesError = None # what frametimes.npy, hosttimes.npy or frametimes.mat lack (SaveMetadata), or None
 		self.written = threading.Event() # the writer is done: everything below is final
 		# The frame number of each frame in the write queue, in its order: the
 		# camera thread adds a frame's number here before the frame, and the
@@ -317,7 +318,7 @@ class Recording:
 		self.videoFiles = [] # the video's files, when it is in more than one
 
 	def Failures(self):
-		return [why for why in (self.cameraError, self.videoError) if why]
+		return [why for why in (self.cameraError, self.videoError, self.frameTimesError) if why]
 
 
 # A camera that has sent frames and then sends none for this long (or for
@@ -490,7 +491,8 @@ def GrabData(cam_params):
 	# Each written frame's number, camera timestamp, and when it reached the
 	# computer (campy-align): frametimes.npy and hosttimes.npy, written as the
 	# recording goes, about every second
-	grabdata["frameTimes"] = frametimes.FrameTimes(CameraFolder(cam_params), cam_params["frameRate"])
+	grabdata["frameTimes"] = frametimes.FrameTimes(CameraFolder(cam_params), cam_params["frameRate"],
+		name=cam_params["cameraName"])
 	grabdata["cameraName"] = cam_params["cameraName"]
 
 	# Calculate display rate
@@ -517,6 +519,10 @@ def GrabData(cam_params):
 	grabdata["pauses"] = 0
 	grabdata["lastStamp"] = None
 	grabdata["framePeriod"] = 1.0 / float(cam_params["frameRate"])
+	# The first and the last grabbed frame's camera timestamps, dropped frames too: the time the frames grabbed
+	# took, for the rate at the end (EndLine) and totalTime
+	grabdata["firstStamp"] = None
+	grabdata["lastGrabStamp"] = None
 	grabdata["lastDropReport"] = float("-inf")
 
 	return grabdata
@@ -667,6 +673,9 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 				img = cam.GetImageArray(grabResult)
 				frameNumber += 1 # first frame = 1
 				timeStamp = cam.GetTimeStamp(grabResult)
+				if grabdata["firstStamp"] is None:
+					grabdata["firstStamp"] = timeStamp
+				grabdata["lastGrabStamp"] = timeStamp
 				if gaps is not None and gaps.Add(timeStamp, frameNumber):
 					mine.Missed(gaps.missed, gaps.frame)
 
@@ -764,27 +773,93 @@ def WriteMetadata(cam_params):
 				w.writerow(row)
 
 
+def GrabbedTime(grabdata):
+	# Seconds from the first grabbed frame to the last, by the camera's timestamps (dropped frames too)
+	first, last = grabdata.get("firstStamp"), grabdata.get("lastGrabStamp")
+	return last - first if first is not None and last is not None else 0
+
+
+def EndLine(name, grabdata, held, recording):
+	"""
+	The camera's line as its recording ends: the frames it grabbed, at the
+	rate they came (by their own first and last timestamps, the trigger's
+	pauses left out), and, when that is not all of them, how many the video
+	holds and where the others went. held: the video's frames.
+	"""
+	grabbed = grabdata["framesGrabbed"]
+	seconds = GrabbedTime(grabdata)
+	paused = grabdata.get("pausedSec", 0.0) if grabdata.get("pauses") else 0.0
+	if paused and seconds - paused > 0:
+		# A trigger that paused on purpose: the rate while frames came, and the pauses apart (CountFPS)
+		rate = "{} fps over {} s of frames, with {} trigger pause{} of {} s in all".format(
+			int(round((grabbed - 1) / (seconds - paused))), round(seconds - paused), grabdata["pauses"],
+			"" if grabdata["pauses"] == 1 else "s", round(paused))
+	else:
+		rate = "{} fps".format(int(round((grabbed - 1) / seconds)) if seconds > 0 else 0)
+	if held >= grabbed and not recording.videoError:
+		return "{} saved {} frames at {}.".format(name, grabbed, rate)
+	dropped = grabdata["framesDropped"]
+	stopped = recording.restarts + (1 if recording.videoError else 0) # ffmpegs that stopped
+	lost = recording.framesLost if stopped else 0
+	after = max(0, grabbed - held - dropped - lost) if recording.videoError else 0
+	why = []
+	if dropped:
+		why.append("{} dropped".format(dropped))
+	if lost:
+		why.append("{} lost in {}".format(lost, "a stopped ffmpeg" if stopped == 1 else "stopped ffmpegs"))
+	if after:
+		why.append("{} after its ffmpeg stopped".format(after))
+	files = len(recording.videoFiles)
+	holds = "its {} video files hold".format(files) if files > 1 else "its video holds"
+	text = "{} grabbed {} frames at {}; {} {}".format(name, grabbed, rate, holds,
+		"all of them" if held >= grabbed else held)
+	if why:
+		text += " ({})".format(", ".join(why))
+	if recording.videoError and not lost and not after:
+		text += ", but its ffmpeg stopped"
+	return text + "."
+
+
 def SaveMetadata(cam_params, grabdata, recording=None):
+	"""
+	As the camera's recording ends: the rest of frametimes.npy and
+	hosttimes.npy, the end line, the totals into metadata.csv, then
+	frametimes.mat. Frame times the files lack, or a frametimes.mat that
+	could not be written, are the recording's frameTimesError (a failure:
+	campy exits 1); totals that could not be written are said.
+	"""
 	full_folder_name = CameraFolder(cam_params)
 	times = grabdata["frameTimes"]
 	name = cam_params["cameraName"]
 	if recording is None:
 		recording = Recording()
 
+	# The last frames into frametimes.npy and hosttimes.npy, one row per
+	# frame in the video. When ffmpeg stopped, only the frames its file
+	# holds: the frames queued after it stopped are left out (keepRows),
+	# and so are those it was given but had not written yet (lostRows,
+	# counted from the file: writer.CountPart), as when it was restarted.
+	# A write that failed (FrameTimes.Flush) leaves times.error.
+	keep = recording.keepRows
+	if keep is None and recording.videoError:
+		keep = recording.framesSent # its ffmpeg did not start, or failed as it closed: the frames it took
 	try:
-		# The last frames into frametimes.npy and hosttimes.npy, one row per
-		# frame in the video. When ffmpeg stopped, only the frames its file
-		# holds: the frames queued after it stopped are left out (keepRows),
-		# and so are those it was given but had not written yet (lostRows,
-		# counted from the file: writer.CountPart), as when it was restarted.
-		keep = recording.keepRows
-		if keep is None and recording.videoError:
-			keep = recording.framesSent # its ffmpeg did not start, or failed as it closed: the frames it took
 		times.Close(keep=keep, drop=recording.lostRows)
+	except Exception as e: # Close says what went wrong in times.error; anything else, here
+		times.error = times.error or "could not close its frame times: {}".format(ErrorText(e))
+	if times.error:
+		recording.frameTimesError = times.error
+		Say("{}: {}.".format(name, times.error))
+
+	try:
 		if recording.cameraError:
 			cam_params["cameraError"] = recording.cameraError
 		if recording.videoError:
 			cam_params["videoError"] = recording.videoError
+		if recording.frameTimesError:
+			cam_params["frameTimesError"] = recording.frameTimesError
+		if times.failedWrites:
+			cam_params["frameTimesFailedWrites"] = times.failedWrites
 		if recording.ffmpegRetries:
 			cam_params["ffmpegRetries"] = recording.ffmpegRetries
 		if recording.restarts:
@@ -797,47 +872,65 @@ def SaveMetadata(cam_params, grabdata, recording=None):
 			if not recording.Failures():
 				return
 
-		# Get the frame and time counts to save into metadata
+		# The camera's line: what it grabbed, and what its video holds
 		frame_count = grabdata["framesGrabbed"]
-		time_count = times.last or 0
-		fps_count = int(round(frame_count/time_count)) if time_count > 0 else 0
-		if recording.videoError and times.count:
-			Say("{} grabbed {} frames at {} fps. Its video{} {} of them: its ffmpeg stopped.".format(
-				name, frame_count, fps_count, " files hold" if recording.restarts else " holds", times.count))
-		elif times.count and grabdata.get("pauses") and time_count - grabdata["pausedSec"] > 0:
-			# A trigger that paused on purpose: the rate while frames came, and the pauses apart (CountFPS)
-			Say("{} saved {} frames at {} fps over {} s of frames, with {} trigger pause{} of {} s in all.".format(name,
-				frame_count, int(round(frame_count / (time_count - grabdata["pausedSec"]))),
-				round(time_count - grabdata["pausedSec"]), grabdata["pauses"], "" if grabdata["pauses"] == 1 else "s",
-				round(grabdata["pausedSec"])))
-		elif times.count:
-			Say('{} saved {} frames at {} fps.'.format(name, frame_count, fps_count))
+		if times.count:
+			Say(EndLine(name, grabdata, times.count, recording))
 		if grabdata["framesDropped"]:
 			Say('{} dropped {} of them: the encoder fell more than {} s behind (writeQueueMaxSec).'\
 				.format(name, grabdata["framesDropped"], cam_params["writeQueueMaxSec"]))
 
-		# Also save frame data to MATLAB file
-		if times.count:
-			x = np.load(os.path.join(full_folder_name, 'frametimes.npy'))
-			mat_filename = os.path.join(full_folder_name, 'frametimes.mat')
-			matdata = {}
-			matdata['frameNumber'] = x[0].astype(int) # as integers, as they were
-			matdata['timeStamp'] = x[1]
-			with newfiles.Open(mat_filename, "wb") as f:
-				sio.savemat(f, matdata, do_compression=True)
-
-		# Save parameters and recording metadata to csv spreadsheet. With a
-		# failure, also what went wrong (cameraError, videoError, above).
+		# The totals into metadata.csv, before frametimes.mat, so that a .mat
+		# that fails leaves them in. With a failure, also what went wrong
+		# (cameraError, videoError, frameTimesError, above). totalFrames: the
+		# frames grabbed; totalTime: the seconds from the first to the last
+		# (by the camera's timestamps); framesWritten: the video's frames.
 		cam_params['totalFrames'] = frame_count
-		cam_params['totalTime'] = time_count
+		cam_params['totalTime'] = GrabbedTime(grabdata)
 		cam_params['framesWritten'] = times.count
 		cam_params['framesDropped'] = grabdata['framesDropped']
-		WriteMetadata(cam_params)
+		saved = True
+		try:
+			WriteMetadata(cam_params)
+		except Exception as e:
+			saved = False
+			Say("{}: could not write its totals into {}: {}".format(name,
+				os.path.join(full_folder_name, "metadata.csv"), ErrorText(e)))
 
-		Say('Saved metadata for {}.'.format(name))
+		# Also save frame data to MATLAB file: the rows frametimes.npy has
+		if times.saved[0]:
+			mat_filename = os.path.join(full_folder_name, 'frametimes.mat')
+			made = False
+			try:
+				x = np.load(os.path.join(full_folder_name, 'frametimes.npy'))
+				matdata = {}
+				matdata['frameNumber'] = x[0].astype(int) # as integers, as they were
+				matdata['timeStamp'] = x[1]
+				with newfiles.Open(mat_filename, "wb") as f:
+					made = True
+					sio.savemat(f, matdata, do_compression=True)
+			except Exception as e:
+				Say("{}: could not write {}: {}".format(name, mat_filename, ErrorText(e)))
+				if made: # this process's own, part-written: it would read as the whole
+					try:
+						os.remove(mat_filename)
+					except OSError:
+						pass
+				if not recording.frameTimesError:
+					recording.frameTimesError = "could not write frametimes.mat: {} (frametimes.npy has every " \
+						"frame)".format(ErrorText(e))
+					cam_params["frameTimesError"] = recording.frameTimesError
+					if saved:
+						try:
+							WriteMetadata(cam_params)
+						except Exception as again:
+							Say("{}: could not write frameTimesError into metadata.csv: {}".format(name, ErrorText(again)))
+
+		if saved:
+			Say('Saved metadata for {}.'.format(name))
 
 	except Exception as e:
-		logging.error('Caught exception: {}'.format(e))
+		logging.exception("{}: could not save its metadata".format(name))
 
 
 def CloseSystems(systems, params):

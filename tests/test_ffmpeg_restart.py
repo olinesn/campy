@@ -103,6 +103,9 @@ def test_a_killed_ffmpeg_is_restarted_and_every_frame_accounted_for(tmp_path, mo
 	assert numbers == expected # one row per video frame: the lost ones left out, and only those
 	assert len(np.load(os.path.join(folder, "hosttimes.npy"))) == len(expected)
 	assert meta["framesWritten"] == str(len(expected))
+	# The end line: what the camera grabbed, and what the two files hold
+	assert "Camera0 grabbed 600 frames at 100 fps; its 2 video files hold {} ({} lost in a stopped ffmpeg).\n".format(
+		len(expected), len(lost)) in out
 	levels = Levels(os.path.join(folder, "0.mp4")) + Levels(os.path.join(folder, "0.part2.mp4"))
 	assert len(levels) == len(expected)
 	assert [n for n, level in zip(expected, levels) if not Near(level, n)] == []
@@ -133,8 +136,8 @@ def test_at_most_three_restarts_an_hour(tmp_path, monkeypatch, capsys, slow_star
 	(failure,) = run.recording.Failures()
 	assert failure.startswith("ffmpeg stopped after taking ") and " frames into 0.part4.mp4, with exit code" in failure
 	assert failure.endswith(". It was not restarted: it was restarted 3 times in the last hour, the most allowed")
-	assert re.search(r"Camera0 grabbed \d+ frames at \d+ fps\. Its video files hold \d+ of them: its ffmpeg stopped\.",
-		out), out
+	assert re.search(r"Camera0 grabbed \d+ frames at \d+ fps; its 4 video files hold \d+ \(([^)]*, )?\d+ lost in "
+		r"stopped ffmpegs(, \d+ after its ffmpeg stopped)?\)\.\n", out), out
 	assert "Stopping Camera0." in out and camera.closed
 	meta = run.Metadata()
 	assert int(meta["totalFrames"]) < 3000 and meta["videoError"] == failure

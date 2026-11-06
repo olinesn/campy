@@ -187,6 +187,11 @@ def test_what_a_clean_stop_is(tmp_path):
 	write_metadata(folder / "Camera1" / "metadata.csv", framesWritten=5, videoError="ffmpeg stopped after taking 5 frames")
 	ok, why = post.CleanStop(str(folder))
 	assert not ok and why == "Camera1: ffmpeg stopped after taking 5 frames"
+	folder = recording(tmp_path / "g", launcher_code=None)
+	write_metadata(folder / "Camera0" / "metadata.csv", framesWritten=12, frameTimesError="could not write all its "
+		"frame times: frametimes.npy and hosttimes.npy have 8 of the video's 12 frames")
+	ok, why = post.CleanStop(str(folder))
+	assert not ok and why.startswith("Camera0: could not write all its frame times")
 	(tmp_path / "f").mkdir()
 	assert post.CleanStop(str(tmp_path / "f"))[0] is False
 

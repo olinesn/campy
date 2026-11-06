@@ -53,6 +53,10 @@ def test_full_queue_drops_and_counts(tmp_path, monkeypatch, capsys):
 	out = capsys.readouterr().out
 	assert "the encoder is 5 frames behind" in out
 	assert "dropped 15 of them" in out
+	# Its last 15 frames dropped: the rate and totalTime are still its frames' own (0.01 s apart), first to last.
+	# They were the grabbed frames over the last kept one's time: "saved 20 frames at 500 fps", totalTime 0.04.
+	assert "Camera0 grabbed 20 frames at 100 fps; its video holds 5 (15 dropped).\n" in out
+	assert abs(float(meta["totalTime"]) - 0.19) < 1e-9
 
 
 def test_unbounded_queue_keeps_every_frame(tmp_path, monkeypatch):

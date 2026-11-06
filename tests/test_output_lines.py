@@ -116,7 +116,8 @@ def test_a_recording_prints_whole_lines(tmp_path, monkeypatch):
 		.format(tmp_path / "Camera0" / "v.mp4")
 	assert ready in out.writes
 	for message in ("Camera0 collected 10 frames",
-			"Camera0: the encoder is 5 frames behind", "Camera0 saved 20 frames", "Camera0 dropped 15 of them",
+			"Camera0: the encoder is 5 frames behind", "Camera0 grabbed 20 frames at 100 fps; its video holds 5 (15 dropped).",
+			"Camera0 dropped 15 of them",
 			"Saved metadata for Camera0.", "Closing video writer for Camera0."):
 		assert message in said
 	assert "Opened" not in said # the camera's and the video's, both in the ready line
@@ -151,7 +152,7 @@ def test_a_stuck_stdout_does_not_hold_up_the_camera_thread(tmp_path, monkeypatch
 
 	starts = ["Camera0 ready to trigger: fake fake serial 0, 16x16 at 100 fps,",
 		"Camera0: the encoder is 5 frames behind. Dropped 1 frames so far (latest: frame 6).",
-		"Camera0 collected 10 frames at", "Camera0 collected 20 frames at", "Camera0 saved 20 frames at",
+		"Camera0 collected 10 frames at", "Camera0 collected 20 frames at", "Camera0 grabbed 20 frames at 100 fps; its video holds 5 (15 dropped).",
 		"Camera0 dropped 15 of them", "Saved metadata for Camera0."]
 	assert len(out.writes) == len(starts)
 	for written, start in zip(out.writes, starts):

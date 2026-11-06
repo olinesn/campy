@@ -21,6 +21,7 @@ import numpy as np
 import pytest
 import imageio_ffmpeg
 import multiprocessing as mp
+from scipy import io as sio
 
 from campy import configurator, frametimes, writer
 from campy.cameras import unicam
@@ -326,8 +327,13 @@ def test_a_killed_ffmpeg_stops_its_camera_and_is_said(tmp_path, monkeypatch, cap
 	assert "Camera0: 0.mp4 holds {} of the {} frames given to its ffmpeg. Lost with that ffmpeg: {} frames ({}-{})." \
 		"\n".format(held, sent + 1, sent + 1 - held, held + 1, sent + 1) in out
 	assert sent <= int(meta["totalFrames"]) < 400 # it stopped, rather than grab 6000
-	assert "Camera0 grabbed {} frames at".format(meta["totalFrames"]) in out
-	assert "Its video holds {} of them: its ffmpeg stopped.".format(held) in out
+	# The camera's end line: what it grabbed, what its video holds, and where the rest went
+	grabbed, lost, dropped = int(meta["totalFrames"]), sent + 1 - held, int(meta["framesDropped"])
+	after = grabbed - held - lost - dropped # grabbed after its ffmpeg stopped: queued, but never given to an ffmpeg
+	why = (["{} dropped".format(dropped)] if dropped else []) + ["{} lost in a stopped ffmpeg".format(lost)] + \
+		(["{} after its ffmpeg stopped".format(after)] if after else [])
+	assert "Camera0 grabbed {} frames at 100 fps; its video holds {} ({}).\n".format(grabbed, held, ", ".join(why)) \
+		in out, out
 	assert not os.path.exists(os.path.join(run.Folder(), "segments.csv")) # one file: no table
 
 
@@ -750,6 +756,185 @@ def test_frame_times_keep(tmp_path, keep, count):
 		times.Add(k, k / 80, k)
 	times.Close(keep=keep)
 	assert times.count == count and np.load(tmp_path / "frametimes.npy").shape == (2, count)
+
+
+# ------------------------------------------------------------------ frame times that could not be written
+
+def FailingAppends(monkeypatch, fails):
+	# frametimes.GrowingNpy.Append raising an I/O error for the writes fails(file name, its write's number) says
+	tries = {}
+	append = frametimes.GrowingNpy.Append
+	def Append(npy, values):
+		name = os.path.basename(npy.path)
+		tries[name] = tries.get(name, 0) + 1
+		if fails(name, tries[name]):
+			raise OSError(5, "Input/output error")
+		append(npy, values)
+	monkeypatch.setattr(frametimes.GrowingNpy, "Append", Append)
+	return tries
+
+
+def test_frame_times_that_could_not_be_written_fail_the_recording(tmp_path, monkeypatch, capsys):
+	# From the 3rd batch on (a disk gone for good), frametimes.npy takes no
+	# more frames while the video goes on. Before, campy said a bare "Caught
+	# exception", wrote no totals and no frametimes.mat, and counted nothing
+	# as failed (exit code 0). Now it is the camera's failure, with the
+	# totals, and the files keep the video's first frames, one row each.
+	FailingAppends(monkeypatch, lambda name, n: n >= 3)
+	run = CameraProcess(monkeypatch, params(tmp_path, recTimeInSec=3, chunkLengthInSec=1), FakeCamera())
+	run.Run(timeout=40)
+	tries = frametimes.CLOSE_TRIES + 1 # the 3rd batch's write, then each try again as it closed
+	why = "could not write all its frame times: frametimes.npy and hosttimes.npy have 200 of the video's 300 " \
+		"frames (frametimes.npy: [Errno 5] Input/output error, {} failed writes)".format(tries)
+	assert run.recording.Failures() == [why] # campy's exit code 1, and the watch's and session.json's failure
+	meta = run.Metadata()
+	assert meta["frameTimesError"] == why and meta["frameTimesFailedWrites"] == str(tries)
+	assert meta["totalFrames"] == meta["framesWritten"] == "300" and run.VideoFrames() == 300
+	assert list(run.FrameTimes()[0]) == list(range(1, 201))
+	assert len(np.load(os.path.join(run.Folder(), "hosttimes.npy"))) == 200
+	mat = sio.loadmat(os.path.join(run.Folder(), "frametimes.mat")) # what frametimes.npy has
+	assert list(mat["frameNumber"][0]) == list(range(1, 201))
+	out = capsys.readouterr().out
+	assert out.count("Camera0: could not write frametimes.npy") == 1 # once while it records
+	assert "Camera0: {}.\n".format(why) in out and "Camera0 saved 300 frames at 100 fps.\n" in out
+	assert "Caught exception" not in out
+
+
+def test_a_frame_times_write_that_fails_once_leaves_them_whole(tmp_path, monkeypatch, capsys):
+	# A write that failed for a moment (a file an antivirus held): its frames
+	# go in with the next batch's, and nothing has failed
+	FailingAppends(monkeypatch, lambda name, n: name == "frametimes.npy" and n == 2)
+	run = CameraProcess(monkeypatch, params(tmp_path, recTimeInSec=3, chunkLengthInSec=1), FakeCamera())
+	run.Run(timeout=40)
+	assert run.recording.Failures() == []
+	meta = run.Metadata()
+	assert "frameTimesError" not in meta and meta["frameTimesFailedWrites"] == "1"
+	assert list(run.FrameTimes()[0]) == list(range(1, 301)) and run.VideoFrames() == 300
+	assert len(np.load(os.path.join(run.Folder(), "hosttimes.npy"))) == 300
+	assert "Camera0: frame times written again, after 1 failed write" in capsys.readouterr().out
+
+
+def test_the_totals_are_written_when_frametimes_mat_is_not(tmp_path, monkeypatch, capsys):
+	def savemat(f, data, **kwargs):
+		f.write(b"part of a .mat")
+		raise OSError(5, "Input/output error")
+	monkeypatch.setattr(unicam.sio, "savemat", savemat)
+	run = CameraProcess(monkeypatch, params(tmp_path), FakeCamera())
+	run.Run()
+	why = "could not write frametimes.mat: [Errno 5] Input/output error (frametimes.npy has every frame)"
+	assert run.recording.Failures() == [why]
+	meta = run.Metadata()
+	assert meta["totalFrames"] == meta["framesWritten"] == "50" and meta["frameTimesError"] == why
+	assert not os.path.exists(os.path.join(run.Folder(), "frametimes.mat")) # not the part of one
+	assert run.FrameTimes().shape == (2, 50)
+	out = capsys.readouterr().out
+	assert "Camera0: could not write {}: [Errno 5] Input/output error\n".format(
+		os.path.join(run.Folder(), "frametimes.mat")) in out
+	assert "Saved metadata for Camera0." in out
+
+
+def test_totals_that_could_not_be_written_are_said(tmp_path, monkeypatch, capsys):
+	# metadata.csv written as the camera starts, and not as it ends: said, by
+	# camera and file, and frametimes.mat is still written
+	write = unicam.WriteMetadata
+	calls = []
+	def WriteMetadata(cam_params):
+		calls.append(1)
+		if len(calls) > 1:
+			raise PermissionError(13, "Permission denied")
+		write(cam_params)
+	monkeypatch.setattr(unicam, "WriteMetadata", WriteMetadata)
+	run = CameraProcess(monkeypatch, params(tmp_path), FakeCamera())
+	run.Run()
+	out = capsys.readouterr().out
+	assert "Camera0: could not write its totals into {}: [Errno 13] Permission denied\n".format(
+		os.path.join(run.Folder(), "metadata.csv")) in out
+	assert "totalFrames" not in run.Metadata() and "Saved metadata" not in out
+	assert os.path.exists(os.path.join(run.Folder(), "frametimes.mat"))
+
+
+# A sitecustomize for campy-acquire's processes (each camera's is a fresh Python: multiprocessing's spawn), making
+# Camera0's frametimes.npy writes fail: from its 2nd batch on ("always"), or only its 2nd ("once")
+FAILING_DISK = """
+import os
+from campy import frametimes
+frametimes.CLOSE_WAIT_S = 0.05
+_append, _tries = frametimes.GrowingNpy.Append, []
+def Append(npy, values):
+	if os.path.basename(os.path.dirname(npy.path)) == "Camera0" and npy.path.endswith("frametimes.npy"):
+		_tries.append(1)
+		if len(_tries) == 2 or (len(_tries) > 2 and os.environ["CAMPY_TEST_FAILING_DISK"] == "always"):
+			raise OSError(5, "Input/output error")
+	_append(npy, values)
+frametimes.GrowingNpy.Append = Append
+"""
+
+
+@pytest.mark.parametrize("fails", ["always", "once"])
+def test_campy_acquire_with_frame_times_it_could_not_write(tmp_path, fails):
+	# The whole of campy-acquire, 2 emulated cameras at 20 fps for 2 s: a
+	# frametimes.npy it could not finish gives exit code 1, and says why in
+	# session.json; one written late is a recording like any other
+	import test_manifest
+	hook = tmp_path / "hook"
+	hook.mkdir()
+	(hook / "sitecustomize.py").write_text(FAILING_DISK)
+	proc, out, folder = test_manifest.record(tmp_path, pythonpath=[str(hook)],
+		environ={"CAMPY_TEST_FAILING_DISK": fails})
+	import json
+	data = json.loads((folder / "session.json").read_text())
+	cam0, cam1 = data["end"]["cameras"]
+	assert cam0["framesWritten"] == cam1["framesWritten"] == 40
+	frames = np.load(folder / "Camera0" / "frametimes.npy")
+	assert len(np.load(folder / "Camera1" / "frametimes.npy")[0]) == 40
+	if fails == "once":
+		assert proc.returncode == 0, out
+		assert data["status"] == "complete" and data["end"]["failures"] == {} and "frameTimesError" not in cam0
+		assert list(frames[0]) == list(range(1, 41))
+		return
+	assert proc.returncode == 1, out
+	why = "could not write all its frame times: frametimes.npy has 20 of the video's 40 frames (frametimes.npy: " \
+		"[Errno 5] Input/output error, {} failed writes)".format(1 + frametimes.CLOSE_TRIES)
+	assert data["status"] == "failed" and data["end"]["exitCode"] == 1
+	assert data["end"]["failures"] == {"Camera0": [why]} and cam0["frameTimesError"] == why
+	assert list(frames[0]) == list(range(1, 21)) and len(np.load(folder / "Camera0" / "hosttimes.npy")) == 40
+	assert "1 of 2 cameras did not record to the end:" in out and "Camera0: {}".format(why) in out
+
+
+# ------------------------------------------------------------------ the camera's end line
+
+def end_line(grabbed, held, dropped=0, last_kept=None, restarts=0, lost=0, video_error=None, files=(),
+		pauses=0, paused=0.0, rate=100):
+	# EndLine for a camera of `rate` fps that grabbed frames 1..grabbed (timestamps k / rate)
+	grabdata = {"framesGrabbed": grabbed, "framesDropped": dropped, "firstStamp": 1 / rate,
+		"lastGrabStamp": grabbed / rate + paused, "pauses": pauses, "pausedSec": paused}
+	recording = unicam.Recording()
+	recording.restarts, recording.framesLost, recording.videoError = restarts, lost, video_error
+	recording.videoFiles = list(files)
+	return unicam.EndLine("Camera0", grabdata, held, recording)
+
+
+def test_the_end_line_says_what_the_video_holds():
+	assert end_line(300, 300) == "Camera0 saved 300 frames at 100 fps."
+	# The last 107 frames dropped (the encoder behind as it ended): the rate is still the camera's, by its frames' own
+	# first and last timestamps. It was 800 / the last kept frame's time: 116 fps.
+	assert end_line(800, 500, dropped=107, restarts=1, lost=193, files=["0.mp4", "0.part2.mp4"]) == \
+		"Camera0 grabbed 800 frames at 100 fps; its 2 video files hold 500 (107 dropped, 193 lost in a stopped ffmpeg)."
+	assert end_line(800, 400, dropped=7, restarts=2, lost=393, files=["0.mp4", "0.part2.mp4", "0.part3.mp4"]) == \
+		"Camera0 grabbed 800 frames at 100 fps; its 3 video files hold 400 (7 dropped, 393 lost in stopped ffmpegs)."
+	assert end_line(20, 5, dropped=15) == "Camera0 grabbed 20 frames at 100 fps; its video holds 5 (15 dropped)."
+	# Its ffmpeg stopped, not restarted: the frames grabbed after it are in neither
+	assert end_line(330, 280, lost=21, video_error="ffmpeg stopped") == \
+		"Camera0 grabbed 330 frames at 100 fps; its video holds 280 (21 lost in a stopped ffmpeg, 29 after its " \
+		"ffmpeg stopped)."
+	assert end_line(50, 50, video_error="ffmpeg ended with exit code 1 as it finished the video") == \
+		"Camera0 grabbed 50 frames at 100 fps; its video holds all of them, but its ffmpeg stopped."
+	# A trigger that paused on purpose: the rate while frames came, as before
+	assert end_line(80, 80, pauses=1, paused=4.0, rate=10) == \
+		"Camera0 saved 80 frames at 10 fps over 8 s of frames, with 1 trigger pause of 4 s in all."
+	assert end_line(80, 70, dropped=10, pauses=2, paused=600.0, rate=10) == \
+		"Camera0 grabbed 80 frames at 10 fps over 8 s of frames, with 2 trigger pauses of 600 s in all; its video " \
+		"holds 70 (10 dropped)."
 
 
 # ------------------------------------------------------------------ camera processes (campy's main process)
