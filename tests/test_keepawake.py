@@ -118,10 +118,16 @@ def test_linux_inhibitor():
 		# Idle and sleep, or idle only where polkit refuses sleep (over SSH)
 		assert awake.how in ("systemd-inhibit, blocking idle and sleep", "systemd-inhibit, blocking idle; sleep refused")
 		assert awake.refused == (["sleep"] if awake.how.endswith("sleep refused") else [])
-		listed = subprocess.run(["systemd-inhibit", "--list"], capture_output=True, text=True).stdout
-		assert keepawake.REASON in listed
+		# Its own inhibitor, by the pid of its systemd-inhibit: another campy on the computer (a test beside this
+		# one, run in parallel) lists one with the same reason
+		pid = awake._process.pid
+		assert ours_listed(pid)
+	assert not ours_listed(pid)
+
+
+def ours_listed(pid):
 	listed = subprocess.run(["systemd-inhibit", "--list"], capture_output=True, text=True).stdout
-	assert keepawake.REASON not in listed
+	return any(keepawake.REASON in line and str(pid) in line.split() for line in listed.splitlines())
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the camera processes' request is Windows only")

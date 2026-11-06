@@ -81,7 +81,9 @@ jobs:
         # look at every process on the machine) are skipped there, and run on their own in the next step
         run: |
           python -c "import os; print('CPUs:', os.cpu_count())"
-          python -m pytest -q -rs -n auto --durations=25 -m "not alone" tests
+          cat /proc/cpuinfo 2>/dev/null | grep -m1 "model name" || true
+          lscpu 2>/dev/null | grep -E "^(Thread|Core|Socket)" || true
+          time python -m pytest -q -rs -n auto --durations=25 -m "not alone" tests
       - name: Test (rig.py's, alone)
         if: success() || failure()
         run: python -m pytest -q -rs --durations=10 -m alone tests

@@ -33,15 +33,7 @@ def pytest_collection_modifyitems(config, items):
 	for item in items:
 		if item.get_closest_marker("alone"):
 			item.add_marker(skip)
-	# The files of long real-time tests first (each worker sorts the same way), so that none of them starts last and
-	# runs on alone after the others are done: test_session.py's frozen campy-live alone takes 2 minutes
-	first = {name: k for k, name in enumerate(LONG_FILES)}
-	items.sort(key=lambda item: first.get(os.path.basename(str(item.fspath)), len(first)))
 
-
-# The files whose tests take longest, longest first (by --durations in CI): run first in parallel
-LONG_FILES = ["test_session.py", "test_devices.py", "test_watch_acquire.py", "test_chronic_control.py",
-	"test_ffmpeg_restart.py", "test_failures.py", "test_newfiles.py", "test_trigger_start.py"]
 
 
 @pytest.fixture(scope="session")
