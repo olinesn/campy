@@ -76,10 +76,11 @@ jobs:
         run: python -m pip install "nireyecam @ git+https://x-access-token:${NIREYECAM_TOKEN}@github.com/olinesn/nir-eye-cam.git#subdirectory=host"
       - name: Test
         # On several workers at once (pytest-xdist, -n auto = the runner's CPUs): most tests wait on real-time
-        # recordings, timers and child processes rather than the CPU, so they overlap well. --durations lists
-        # the 25 slowest, to see where the time goes when the job grows. --dist worksteal: a worker that has run
-        # out of tests takes some queued on another, so none waits behind a long test while others idle. The 'alone' tests (bench/rig.py's, which
-        # look at every process on the machine) are skipped there, and run on their own in the next step
+        # recordings, timers and child processes rather than the CPU, so they overlap well. --dist worksteal: a
+        # worker that has run out of tests takes some queued on another, so none waits behind a long test while
+        # others idle. --durations lists the 25 slowest, to see where the time goes when the job grows. The
+        # 'alone' tests (bench/rig.py's, which look at every process on the machine) are skipped there, and run
+        # on their own in the next step
         run: |
           python -c "import os; print('CPUs:', os.cpu_count())"
           time python -m pytest -q -rs -n auto --dist worksteal --durations=25 -m "not alone" tests
