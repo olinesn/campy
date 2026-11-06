@@ -96,7 +96,7 @@ You can also give a time for the Pico to start (`7:20 PM`); otherwise you start 
 3. **The cameras:** campy starts, and the cameras' window opens. They wait for the Pico's pulses. The **Pico** card counts them as they get ready (`Cameras getting ready: 2 of 4`), then says **All 4 cameras are ready** in green, with a short chime, and the browser tab's title changes to *Cameras ready*: no need to watch campy's console window.
 4. **The Pico:** once every camera is ready, press **Start the Pico** (it asks first), or it starts by itself at the time you gave. If a camera isn't ready, the button says so: stop, and start again.
 
-While it records, the **Pico** card shows the bout (for example `bout 212 of 1728`), the camera pulses so far, and when the session ends. The **SpikeGLX** card shows its run, whether a file is open (the gate is high), and how many files this session has.
+While it records, the **Pico** card shows the bout (for example `bout 212 of 1728`, or `between bouts`), the camera pulses so far, and when the session ends. The **SpikeGLX** card shows its run, whether a file is open (the gate is high), and how many files this session has.
 
 **Stop.** **Stop** asks first, and offers two ways:
 
