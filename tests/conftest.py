@@ -24,6 +24,14 @@ def sim(tmp_path_factory):
 	return Compile(SKETCH, str(tmp_path_factory.mktemp("sketch") / "sim"))
 
 
+@pytest.fixture(scope="session")
+def old_sim(tmp_path_factory):
+	# tests/old_trigger/trigger.ino: the trigger sketch an older campy flashed (6 s settling delay, no test LED)
+	old = os.path.join(HERE, "old_trigger")
+	return Compile(os.path.join(old, "trigger.ino"), str(tmp_path_factory.mktemp("old_sketch") / "sim"), "-include",
+		os.path.join(old, "prototypes.h"))
+
+
 @pytest.fixture(scope="session", params=["pico", "nano"])
 def timer_sim(request, tmp_path_factory):
 	# chronicrecord/chronic_timer/chronic_timer.ino: the ChronicRecord rig's timer,

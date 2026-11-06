@@ -91,3 +91,30 @@ def test_a_command_too_soon_after_the_check_is_lost(sim, after, starts):
 	edges = run(sim, 7 + after + 6, "1,2,-1,-1,0", (7, "2,2,3,-1,-1,0"), (7 + after, "2,2,3,25,-1,0"), said=said)
 	assert ("Frame rate set to: 25.00" in text_after(said, 7)) == starts
 	assert (len(rises(edges, 2)) > 0) == starts
+
+
+def Answered(said):
+	# When the check's answer was complete (the sketch prints it in pieces), in seconds
+	text = ""
+	for t, piece in said:
+		text += piece
+		if arduino.ANSWER.search(text):
+			return t / 1e6
+	raise AssertionError("no answer: {!r}".format(text))
+
+
+@pytest.mark.parametrize("after, starts", [(6.5, False), (6.9, False), (arduino.START_AFTER_CHECK_S, True)])
+def test_the_start_reaches_an_older_campys_sketch(old_sim, after, starts):
+	# The sketch an older campy flashed (campy_v03's) waits 6 s after a command, not 4, then throws away what came
+	# meanwhile; and it reads the check's last two numbers (it has no test LED) as leftovers, the last after its 1 s
+	# timeout. campy's start command, START_AFTER_CHECK_S after the check's answer, must come after all that, or the
+	# Arduino never triggers (the DoublePoke rig, 2026-11-05). campy's check is the first command it gets (opening
+	# the port restarts the board)
+	said = []
+	run(old_sim, 3, "1,2,-1,-1,0", said=said)
+	answered = Answered(said)
+	said = []
+	edges = run(old_sim, answered + after + 6, "1,2,-1,-1,0", (answered + after, "1,2,25,-1,0"), said=said)
+	assert arduino.ANSWER.search(text_after(said, 0)) # it answers campy's check
+	assert ("Frame rate set to: 25.00" in text_after(said, answered + 1)) == starts
+	assert (len(rises(edges, 2)) > 0) == starts
