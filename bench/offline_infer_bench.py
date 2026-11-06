@@ -4,7 +4,7 @@ the time goes, and whether campy-live's speed-ups help there too.
 
 campy-live made sleap-nn's top-down inference several times faster for one
 set of frames at a time (fixed-shape crops in one GPU graph, compiled
-networks, fp16 with tied peaks, the exact crop size, ...). Offline inference
+networks, fp16, ...). Offline inference
 (sleap-nn track over a whole recorded video, in batches, on a cluster GPU) is
 a different job: the frames have to be decoded first, batches are bigger, and
 latency doesn't matter, only frames per second. This script runs the same
@@ -17,7 +17,7 @@ utilization, and the predictions (an .npz) to compare with a baseline run.
 
 run
 ---
---path sleapnn   sleap-nn 0.3.3's own TopDownLayer.predict on each batch, as
+--path sleapnn   sleap-nn's own TopDownLayer.predict on each batch, as
                  sleap-nn predict runs it (Predictor.from_model_paths, then
                  layer.predict per batch, its filter pipeline, to_labels);
                  sleap-nn track runs sleap-nn's older pipeline
@@ -27,9 +27,6 @@ run
                  predict's behaviour)
   --upload gpu   the uint8 batch copied to the GPU first (pinned memory), so
                  resizing, cropping and peak finding run there
-  --exact-crop   campy's crop-size fix (talmolab/sleap-nn#778): sleap-nn cuts
-                 a whole batch's crops one pixel short when the first box's
-                 float corners round down
   --sleapnn-compile  sleap-nn's own TorchBackend torch.compile option
                  (reduce-overhead, dynamic=False): one compile per crop count
 --path fixed     campy-live's FixedCrops (campy/live.py): the whole batch with
@@ -39,9 +36,6 @@ run
   --cuda-graphs on|off              the whole batch as one CUDA graph
 Both paths:
   --precision fp32|fp16    fp16 autocast (sleap-nn's use_fp16)
-  --peaks strict|tied      tied: campy/peaks.py's peak finding, which keeps a
-                           centroid whose top is two equal pixels (fp16 drops
-                           them otherwise; talmolab/sleap-nn#782)
   --memory-format nchw|channels_last
   --tf32 default|on|off    TF32 in cuDNN's convolutions and in matrix products;
                            default: PyTorch's own (convolutions yes, matmul no)
@@ -497,7 +491,7 @@ def TimeSleapNN(layer, stages):
 # ---------------------------------------------------------------- the run
 
 def SamePadInPython():
-	# sleap-nn 0.3.3's MaxPool2dWithSamePadding pads with
+	# sleap-nn's MaxPool2dWithSamePadding (0.3.3 to 0.3.5) pads with
 	# torch.ceil(torch.tensor(i / s)).item(): torch.compile (dynamo) in
 	# torch 2.6 can't trace .item() (newer torch folds it); math.ceil gives
 	# the same integer
@@ -515,8 +509,9 @@ def Build(args):
 	if args.engine == "compile" or args.sleapnn_compile:
 		SamePadInPython()
 	from sleap_nn.inference.predictor import Predictor
-	from campy import peaks
-	peaks.UseTiedPeaks(args.peaks == "tied")
+	from campy.live import SleapProblem
+	if SleapProblem(): # 0.3.5 on: crops at their size, tied peaks kept (what --exact-crop and --peaks tied were)
+		raise SystemExit(SleapProblem())
 	with warnings.catch_warnings():
 		warnings.simplefilter("ignore", UserWarning)
 		predictor = Predictor.from_model_paths([args.centroid, args.instance], device="cuda", batch_size=args.batch,
@@ -528,9 +523,6 @@ def Build(args):
 			backend.model.to(memory_format=torch.channels_last)
 		if args.sleapnn_compile:
 			backend._compiled = torch.compile(backend.model, mode="reduce-overhead", dynamic=False)
-	if args.exact_crop:
-		from campy.live import ExactCropSize
-		ExactCropSize(layer)
 	return predictor, layer
 
 
@@ -576,7 +568,7 @@ def Run(args):
 	if args.path == "fixed":
 		from campy.live import FixedCrops
 		fixed = FixedCrops(layer, B, "cuda", args.max_instances, graph=args.cuda_graphs == "on",
-			tiedPeaks=args.peaks == "tied", engine=args.engine, cache=args.engine_cache)
+			engine=args.engine, cache=args.engine_cache)
 		host = torch.empty((B, H, W, 1), dtype=torch.uint8, pin_memory=True)
 	elif args.stage_timing:
 		TimeSleapNN(layer, stages)
@@ -841,10 +833,8 @@ def Main(argv=None):
 	r.add_argument("--max-instances", type=int, default=5)
 	r.add_argument("--peak-threshold", type=float, default=0.2)
 	r.add_argument("--precision", choices=("fp32", "fp16"), default="fp32")
-	r.add_argument("--peaks", choices=("strict", "tied"), default="strict")
 	r.add_argument("--memory-format", choices=("nchw", "channels_last"), default="nchw")
 	r.add_argument("--upload", choices=("host", "gpu"), default="host")
-	r.add_argument("--exact-crop", action="store_true")
 	r.add_argument("--sleapnn-compile", action="store_true")
 	r.add_argument("--engine", choices=("eager", "compile", "tensorrt"), default="eager")
 	r.add_argument("--engine-cache", default="")

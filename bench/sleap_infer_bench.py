@@ -141,7 +141,7 @@ pipeline. ``--max-instances`` (default 5) is the centroid layer's cap.
 Running on this Mac (smoke test)
 --------------------------------
     uv venv -p 3.12 .venv-bench && . .venv-bench/bin/activate
-    uv pip install "sleap-nn==0.3.3" torch
+    uv pip install "sleap-nn==0.3.5" torch
     python bench/sleap_infer_bench.py --device cpu --iters 20 --warmup 3
     python bench/sleap_infer_bench.py --device mps --iters 50 --sweep
 
@@ -160,7 +160,7 @@ swap them for PyPI's CUDA builds:
     pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ \
         "torch[device-gfx1151]==2.14.0+rocm10.1.0" torchvision
     pip freeze | grep -E "^(torch|torchvision)==" > ~/venvs/rocm-constraints.txt
-    pip install -c ~/venvs/rocm-constraints.txt "sleap-nn==0.3.3"
+    pip install -c ~/venvs/rocm-constraints.txt "sleap-nn==0.3.5"
     python -c "import torch; print(torch.__version__, torch.version.hip, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 
 The last line must print a +rocm version, a HIP version and True. If pip
@@ -908,7 +908,7 @@ def trained_layers(c, ci, args, device, precision, k, memory_format="nchw"):
 def run_fixed(topdown, args, device, k, frames_host):
     """--fixed-crops: campy-live's FixedCrops on the layer, and a set as campy-live runs it."""
     fixed = _LIVE.FixedCrops(topdown, args.frames, device, k, graph=args.cuda_graphs and device.startswith("cuda"),
-                             tiedPeaks=True, engine=args.engine, cache=args.engine_cache)
+                             engine=args.engine, cache=args.engine_cache)
 
     def fn():
         return fixed.Predict(fixed.Upload(frames_host))

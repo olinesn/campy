@@ -210,11 +210,9 @@ with shapes that never depend on the frames. So the CPU launches a whole
 set without waiting for the GPU to say how many animals it found, the
 results come back in one copy, and with --cuda-graphs the whole set, both
 models and everything around them, is one graph. The animals found and the
-keypoints are sleap-nn's own (to the last bit in fp32, as long as sleap-nn
-cuts its crops at their size: sleap-nn 0.3.3 cuts some sets' crops a pixel
-short, FixedCrops never does; in fp16 the instance model rounds differently
-with another batch size, so sets with fewer animals than --max-instances can
-differ). It pays when every frame has about --max-instances animals: each
+keypoints are sleap-nn's own (to the last bit in fp32; in fp16 the instance
+model rounds differently with another batch size, so sets with fewer
+animals than --max-instances can differ). It pays when every frame has about --max-instances animals: each
 missing one still costs a crop's worth of instance model.
 
 Both are on by default with a GPU (auto), off on the CPU and MPS: with 5
@@ -749,13 +747,10 @@ class TopDown:
 			nvidia = self.device.startswith("cuda") and not getattr(torch.version, "hip", None)
 			self.memoryFormat = "channels_last" if nvidia else "nchw"
 		self.nodes, self.nodeNames, self.edges = None, None, None
-		# A centroid whose top is two equal pixels (fp16 rounding) is kept
-		# once, not dropped as sleap-nn does (campy/peaks.py)
-		from campy import peaks
-		tied = not getattr(args, "strict_peaks", False)
-		self.tiedPeaks = peaks.UseTiedPeaks(tied) and tied
+		problem = SleapProblem()
+		if problem:
+			raise SystemExit(problem)
 		self.layer, self.text = self.Build(args)
-		ExactCropSize(self.layer)
 		# --engine: auto (the default) is FixedEngine.Pick's choice, and if
 		# that can't be made, the networks in torch, as off, said once
 		# (engineNote); any other choice that can't be made stops campy-live
@@ -784,7 +779,7 @@ class TopDown:
 		if fixed == "on" or (fixed == "auto" and gpu):
 			try:
 				self.fixed = FixedCrops(self.layer, n_frames, self.device, args.max_instances, graph=graphs,
-					tiedPeaks=self.tiedPeaks, engine=engine, cache=getattr(args, "engine_cache", ""))
+					engine=engine, cache=getattr(args, "engine_cache", ""))
 			except SystemExit as e:
 				if fixed == "on" or explicit:
 					raise
@@ -913,64 +908,31 @@ class TopDown:
 			"the same as without" if diff == 0 else "differs from without", diff)
 
 
-_exactCrop = threading.local() # the crop size, while one of campy-live's layers crops
+SLEAP_NN = "0.3.5" # the oldest sleap-nn campy-live and campy-infer run with
 
 
-def SleapCutsShort():
+def SleapProblem():
 	"""
-	Whether the installed sleap-nn can cut a top-down crop a pixel short (see
-	ExactCropSize). talmolab/sleap-nn#780 fixed it, on sleap-nn's main branch
-	since 22 October 2026, after 0.3.4 (main still calls itself 0.3.4, so its
-	version can't tell): crop_bboxes rounds the size it works out, and takes
-	crop_size=, which its TopDownLayer passes. So a crop_bboxes without
-	crop_size= is one that cuts short.
+	Why the installed sleap-nn won't do, or None. campy needs sleap-nn 0.3.5
+	or later, which has the two fixes campy used to patch in itself:
+	crop_bboxes cuts every crop at the model's crop size (talmolab/sleap-nn#780;
+	0.3.3 cut a whole set's crops a pixel short for some centroids, #778), and
+	find_local_peaks keeps a peak whose top is two (up to 4) equal pixels,
+	at their mean (#782; 0.3.3 lost those, about 0.7% of the centroids in
+	fp16, #781). Told by the fixes themselves, not the version number (a
+	sleap-nn installed from its main branch can say an older one).
 	"""
 	import inspect
-	from sleap_nn.inference.ops import crops
-	return "crop_size" not in inspect.signature(crops.crop_bboxes).parameters
-
-
-def ExactCropSize(layer):
-	"""
-	Has this sleap-nn TopDownLayer cut its crops at its crop size. sleap-nn
-	0.3.3's crop_bboxes takes the size from the first box's corners,
-	int(abs(right - left)) + 1, in float32: for some centroids (x 221.547989
-	with 192 px crops) right - left comes out 190.99998, not 191, and every
-	crop of the set is cut a pixel short (191, or 319 of 320), moving
-	keypoints by up to tens of pixels. So while this layer crops, the first
-	box's far corners are put half a pixel past the crop size's, a copy of
-	the boxes, and the size rounds right; the top-lefts, which place the
-	crops and the keypoints, are untouched. sleap-nn's other layers, and
-	its files, are left as they are. A sleap-nn that has the fix
-	(SleapCutsShort) already cuts the crop size, and is left as it is: its
-	crop_bboxes rounds the size, so the half pixel would make it one more.
-	"""
-	if not SleapCutsShort():
-		return
-	from sleap_nn.inference.layers import topdown
-	if not getattr(topdown.crop_bboxes, "campyExact", False):
-		original = topdown.crop_bboxes
-
-		def crop_bboxes(images, bboxes, sample_inds, **kwargs):
-			size = getattr(_exactCrop, "size", None)
-			if size is not None and len(bboxes):
-				bboxes = bboxes.clone()
-				bboxes[0, 3, 1] = bboxes[0, 0, 1] + (size[0] - 0.5)
-				bboxes[0, 1, 0] = bboxes[0, 0, 0] + (size[1] - 0.5)
-			return original(images, bboxes, sample_inds, **kwargs)
-
-		crop_bboxes.campyExact = True
-		topdown.crop_bboxes = crop_bboxes
-	stage2 = layer._run_stage_2
-
-	def RunStage2(*args, **kwargs):
-		_exactCrop.size = tuple(layer.crop_size)
-		try:
-			return stage2(*args, **kwargs)
-		finally:
-			_exactCrop.size = None
-
-	layer._run_stage_2 = RunStage2
+	try:
+		import sleap_nn
+		from sleap_nn.inference.ops import crops, peaks
+	except ImportError as e:
+		return "campy-live needs sleap-nn {} or later ({}): pip install 'sleap-nn>={}'".format(SLEAP_NN, e, SLEAP_NN)
+	if "crop_size" not in inspect.signature(crops.crop_bboxes).parameters or \
+			not hasattr(peaks, "morphological_dilation_split"):
+		return "campy-live needs sleap-nn {} or later, this is {}: pip install -U 'sleap-nn>={}' " \
+			"(docs/live-tracking.md)".format(SLEAP_NN, getattr(sleap_nn, "__version__", "?"), SLEAP_NN)
+	return None
 
 
 class CUDAGraphed:
@@ -1200,11 +1162,11 @@ class FixedCrops:
 	missing animals' crops padded (cut at the frame's corner, their
 	keypoints thrown away), and the peaks are found with fixed shapes:
 
-	- centroids: the confidence map's local maxima above the threshold
-	  (sleap-nn's 8-neighbour test, or with tiedPeaks campy/peaks.py's,
-	  which keeps a top of two equal pixels once, as campy-live's layer), the max_instances most confident by
-	  topk, in sleap-nn's order (by position, or by confidence when there
-	  were more than max_instances), and a mask of the real ones;
+	- centroids: the confidence map's local maxima above the threshold, by
+	  sleap-nn's rule (a flat top of up to 2x2 equal pixels is one peak, at
+	  their mean: campy/peaks.py's FlatTopPeaks), the max_instances most
+	  confident by topk, in sleap-nn's order (by position, or by confidence
+	  when there were more than max_instances), and a mask of the real ones;
 	- keypoints: sleap-nn's global peak per node (find_global_peaks_rough
 	  has fixed shapes already);
 	- integral refinement on every peak, real or not, with the same 5x5
@@ -1229,23 +1191,23 @@ class FixedCrops:
 	wait in the middle, but every operation still launched one by one.
 
 	Not supported: sleap-nn's centroid NMS, ground-truth centroids or
-	keypoints, multi-class models, and refinement other than integral or
-	none. The frames' sizematcher (max_height, max_width) is the same for
+	keypoints, multi-class models, box detectors as the first stage or
+	box-scaled crops (sleap-nn 0.3.5's bbox models), and refinement other
+	than integral or none. The frames' sizematcher (max_height, max_width) is the same for
 	every frame, so it is a number here: the trained models' 1024x1280 for
 	1024x1280 frames is none.
 	"""
 
-	def __init__(self, layer, n_frames, device, instances, graph=False, tiedPeaks=None, engine="eager", cache=""):
+	def __init__(self, layer, n_frames, device, instances, graph=False, engine="eager", cache=""):
 		import torch
-		from campy import peaks
 		self.torch, self.layer, self.device = torch, layer, device
-		# None: as sleap-nn's peak finding in this process (campy-live's layer)
-		self.tiedPeaks = peaks.TiedPeaksInUse() if tiedPeaks is None else tiedPeaks
 		self.c, self.ci = layer.centroid_layer, layer.centered_instance_layer
 		if getattr(self.c, "use_gt_centroids", False) or getattr(self.ci, "use_gt_peaks", False) or \
-				getattr(layer, "centroid_nms", False) or type(layer).__name__ != "TopDownLayer":
-			raise SystemExit("--fixed-crops: a plain sleap-nn top-down model only (no centroid NMS, ground truth "
-				"or classes)")
+				getattr(layer, "centroid_nms", False) or type(layer).__name__ != "TopDownLayer" or \
+				type(self.c).__name__ != "CentroidLayer" or getattr(layer, "bbox_crop", None) is not None or \
+				getattr(layer, "crop_max_hw", None) is not None:
+			raise SystemExit("--fixed-crops: a plain sleap-nn top-down model only (no centroid NMS, ground truth, "
+				"classes or box detector)")
 		for part in (self.c, self.ci):
 			if part.postprocess_config.effective_refinement not in (None, "integral"):
 				raise SystemExit("--fixed-crops: integral refinement or none, not {}".format(
@@ -1342,19 +1304,15 @@ class FixedCrops:
 		the sizematcher's scale is undone), NaN where none.
 		"""
 		torch = self.torch
-		from sleap_nn.inference.ops.peaks import morphological_dilation
+		from campy.peaks import FlatTopPeaks
 		cfg = self.c.postprocess_config
 		B, C, h, w = cms.shape
 		if C != 1:
 			raise SystemExit("--fixed-crops: a centroid model with one confidence map, not {}".format(C))
 		K = self.K
 		flat = cms.reshape(B, h * w)
-		if self.tiedPeaks: # a top of two equal pixels kept once (campy/peaks.py), as the layer does
-			from campy.peaks import PeakMask
-			peak = PeakMask(cms, cfg.peak_threshold).reshape(B, h * w)
-		else:
-			around = morphological_dilation(cms.reshape(-1, 1, h, w), None).reshape(B, h * w)
-			peak = (flat > around) & (flat > cfg.peak_threshold)
+		# marked on a flat top's first pixel, with the offset to its mean
+		peak, dx, dy = (v.reshape(B, h * w) for v in FlatTopPeaks(cms, cfg.peak_threshold))
 		vals, idx = torch.topk(torch.where(peak, flat, torch.full_like(flat, float("-inf"))), K, dim=1)
 		found = vals > float("-inf")
 		# sleap-nn keeps them in raster order, or, with more than K, the topk's
@@ -1364,10 +1322,15 @@ class FixedCrops:
 		vals = torch.where(raster, vals.gather(1, order), vals)
 		found = torch.where(raster, found.gather(1, order), found)
 		x, y = idx % w, torch.div(idx, w, rounding_mode="floor")
-		peaks = torch.stack([x, y], dim=-1).to(torch.float32)
+		# the top's mean (a whole pixel unless it was a flat top)
+		peaks = torch.stack([x.to(torch.float32) + dx.gather(1, idx), y.to(torch.float32) + dy.gather(1, idx)], dim=-1)
 		if cfg.effective_refinement == "integral":
+			# as sleap-nn's find_local_peaks: refined around the pixel the point
+			# floors to, which is (x, y) unless the top's mean is left of it (SW)
+			at = torch.floor(peaks)
+			ax, ay = at[..., 0].to(torch.long), at[..., 1].to(torch.long)
 			sample = torch.arange(B, device=cms.device)[:, None].expand(B, K)
-			peaks = peaks + self.Integral(cms, sample, x, y, cfg.integral_patch_size)
+			peaks = at + self.Integral(cms, sample, ax, ay, cfg.integral_patch_size)
 		peaks = peaks * self.c.output_stride if self.c.output_stride != 1 else peaks
 		peaks = peaks / scale if scale != 1.0 else peaks
 		nan = torch.full_like(peaks, float("nan"))
@@ -2390,8 +2353,8 @@ class RandomTopDown(TopDown):
 		return layer, text
 
 	def Describe(self):
-		return "{} ({}, {}, {}, max {} animals{})".format(self.text, self.device, self.precision, self.memoryFormat,
-			self.instances, "" if self.tiedPeaks else ", strict peaks")
+		return "{} ({}, {}, {}, max {} animals)".format(self.text, self.device, self.precision, self.memoryFormat,
+			self.instances)
 
 
 def SyntheticCentroidPeaks(inner, n_frames, cm_h, cm_w, k, sigma=2.0):
@@ -2455,8 +2418,8 @@ class TrainedTopDown(TopDown):
 		return layer, text
 
 	def Describe(self):
-		return "{} ({}, {}, {}, max {} animals{})".format(self.text, self.device, self.precision, self.memoryFormat,
-			self.instances, "" if self.tiedPeaks else ", strict peaks")
+		return "{} ({}, {}, {}, max {} animals)".format(self.text, self.device, self.precision, self.memoryFormat,
+			self.instances)
 
 
 MODELS = {"random": RandomTopDown, "sleap": TrainedTopDown, "none": NoModel}
@@ -3364,8 +3327,7 @@ def Parser():
 		help="auto: channels_last on Nvidia GPUs, where it is faster, and nchw elsewhere (ROCm, MPS, CPU), \
 			as bench/sleap_infer_bench.py.")
 	p.add_argument("--max-instances", type=int, default=5, help="Most animals per frame.")
-	p.add_argument("--strict-peaks", action="store_true", help="sleap-nn's own centroid peak finding: a centroid \
-		whose top is two equal pixels (fp16 rounds about 0.7%% of them so) is lost. Default: kept once (campy/peaks.py).")
+	p.add_argument("--strict-peaks", action="store_true", help=argparse.SUPPRESS) # gone with sleap-nn 0.3.5 (ParseArgs)
 	p.add_argument("--animals", type=int, default=5, help="How many animals there are: with --calibration, the 3D \
 		identities 0 .. animals-1; with --model random, the animals it finds per frame.")
 	p.add_argument("--calibration", default="", help="anipose calibration.toml: match the animals across the \
@@ -3448,6 +3410,10 @@ def Parser():
 def ParseArgs(argv=None):
 	argv = sys.argv[1:] if argv is None else list(argv)
 	args = Parser().parse_args(argv)
+	if args.strict_peaks:
+		raise SystemExit("--strict-peaks is gone: it was the old way sleap-nn found centroids, which lost a centroid "
+			"whose top is two equal pixels (fp16). sleap-nn 0.3.5, which campy-live needs, keeps those itself; "
+			"there is no other way now")
 	args.argv = argv # which options were given (manifest.OptionSources)
 	return args
 
