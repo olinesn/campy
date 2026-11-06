@@ -32,6 +32,7 @@ Next to them is a list of checks:
 
 - **ok** (green): fine.
 - **warning** (yellow): you can still record, but read it. The usual one: less free disk space than usual.
+- On the ChronicRecord rig the disk line is what the chosen length needs instead, and a length that doesn't fit stops the start ([below](#on-the-chronicrecord-rig-the-pico-and-spikeglx)).
 - **stops the start** (red): the recording can't start until it is fixed. Ask the person who set up the rig.
 
 The recording's length is fixed by the rig's settings, and the page shows it (for example `2:00:00 each`).
@@ -41,7 +42,7 @@ The recording's length is fixed by the rig's settings, and the page shows it (fo
 Press **Start recording**. Within about a minute, depending on the rig, the page shows **Recording** at the top, and:
 
 - **Each camera's picture**, refreshed every second. Check that every camera shows the cage. Before a camera's first frame it says "No picture yet" instead (on the ChronicRecord rig, until you start the Pico, since the cameras wait for its pulses). Under each one, a green **OK**, or a yellow label saying what's wrong (see below), and its frames per second, which should be steady.
-- **Disk free**, and about how long it lasts.
+- **Disk free**, and about how long it lasts. On the ChronicRecord rig, what the rest of the session's plan still needs instead (an estimate), with how many GB it is short in red if it doesn't fit.
 - **Tracked in 3D**: how many animals the live tracking sees, for example `5 of 5`.
 - **Programs**: each should say **running**.
 - The time recorded so far, out of the recording's length.
@@ -85,7 +86,8 @@ On the ChronicRecord rig the same page also runs the Pico (which makes the camer
 - the Pico answers and isn't running anything;
 - SpikeGLX answers, isn't running a run, and its trigger is TTL (so it writes files only while the gate is high). If SpikeGLX isn't open, the page opens it at Start;
 - Windows Update is paused until a day after the session ends. If not, it's a warning with a **Pause Windows Update** button: Windows asks for administrator rights, click Yes;
-- USB selective suspend is off (a warning if not).
+- USB selective suspend is off (a warning if not);
+- **the disk:** how much the chosen length needs, against the free space where it records, for example `Disk: this length needs about 162 GB of the 370 GB free` for the overnight rehearsal. It counts SpikeGLX (24 MB/s while the gate is open, plus its 1 s margin before and after each bout) and the videos (0.6 MB/s a camera while the cameras take frames, more than a cage with mice usually writes), so it is an estimate, and it keeps `stopAtFreeGB` (2 GB) free on top. A length that doesn't fit is red and stops the start: 6 days need about 2,910 GB, so on the PC's own disk the page says how many GB short it is and asks for a shorter length or a data disk. If you really mean to start it anyway (data will be moved off the disk during the session), **Start recording** asks first, naming the shortfall; nothing else that stops the start can be passed over. Above 80% of the free space it is a warning.
 
 You can also give a time for the Pico to start (`7:20 PM`); otherwise you start it yourself.
 

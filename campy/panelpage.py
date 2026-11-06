@@ -157,7 +157,11 @@ function render(s){
   if(!$("experiment").dataset.set){ $("experiment").value = s.fields.experiment||""; $("ids").value = s.fields.animal_ids||""; $("experiment").dataset.set=1; }
   $("during").hidden = !(st=="recording" || st=="stopping" || st=="starting live");
   $("disk").textContent = s.disk.free_gb!=null ? Math.round(s.disk.free_gb)+" GB" : "-";
-  $("diskleft").textContent = s.disk.hours_left!=null ? "about "+s.disk.hours_left+" h at this rate" : "";
+  // With a Pico's plan: what the rest of it still needs (SpikeGLX and the videos, estimated), not hours at the rate so far
+  const D_ = s.disk, short = D_.plan_left_gb!=null && D_.free_gb!=null ? D_.plan_left_gb - D_.free_gb : null;
+  $("diskleft").innerHTML = D_.plan_left_gb!=null ? "the rest of the plan needs about "+Math.round(D_.plan_left_gb).toLocaleString()+" GB (an estimate)"+
+    (short > 0 ? '<br><span class="err">'+Math.round(short).toLocaleString()+" GB short</span>" : "") :
+    D_.hours_left!=null ? "about "+D_.hours_left+" h at this rate" : "";
   const T = H.tracking; $("good3d").textContent = T && T.good3d!=null ? T.good3d+" of "+T.animals : "-";
   const parts = Object.assign({}, L.parts||{}); if((L.live||[]).length) parts["campy-live"] = L.live[L.live.length-1];
   $("programs").innerHTML = Object.entries(parts).map(([n,p]) => tag(p.state, p.state=="running"?"ok":p.exit_code?"bad":"warn")+" "+esc(n=="acquire"?"campy-acquire":n=="view"?"viewer":n=="watch"?"campy-watch":n)).join("<br>") || "-";
@@ -235,8 +239,14 @@ async function tick(){
 }
 function images(){ for(let i=0;i<thumbs;i++){ const im = $("th"+i); if(im && !im.hidden) im.src = q("/thumb/"+i+".png?k="+Date.now()); } }
 $("start").onclick = async () => { $("starterr").textContent = "";
+  // A length that doesn't fit on the disk (and nothing else stopping the start): only on purpose, from a confirm naming
+  // the shortfall
+  const blocks = ((last||{}).checks||[]).filter(c => c.level=="block"), disk = blocks.find(c => c.action=="disk");
+  const override = !!disk && blocks.length == 1;
+  if(override && !confirm("This session doesn't fit on the disk.\n\n" + disk.text + "\n\nStart anyway? Only if data will be moved off "+
+    "this disk during the session. Otherwise the disk fills up: campy stops cleanly near the end of the space, but SpikeGLX doesn't.")) return;
   const e = await post("/start", {experiment:$("experiment").value, animal_ids:$("ids").value, notes:$("notes").value,
-    length: $("length").value || null, pico_at: $("picoat").value.trim() || null});
+    length: $("length").value || null, pico_at: $("picoat").value.trim() || null, disk_override: override});
   $("starterr").textContent = e || ""; tick(); };
 $("length").onchange = async () => { const e = await post("/length", {seconds: $("length").value}); $("starterr").textContent = e || ""; tick(); };
 let closed = false;

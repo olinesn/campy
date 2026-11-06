@@ -35,6 +35,9 @@ spikeglx:
   devices: "(20,1,1)(20,obx)" # the probe (slot 20, port 1, dock 1) and the OneBox, for a SpikeGLX freshly opened
   stream: [1, 0] # the OneBox's stream, where the gate's TTL is
   run_prefix: "chronic_"
+  # The panel's disk check before the start: SpikeGLX writes this many MB/s while the gate is open (the probe 23.1, the
+  # OneBox 0.85, measured 4 Nov; 150.3 GB for the 8-h rehearsal's 96 bouts). Its trigger margin is read from SpikeGLX.
+  write_mb_s: 24
 
 windows:
   update_paused: true # warn unless Windows Update is paused until a day after the session's end (the page's button)
@@ -42,3 +45,6 @@ windows:
 
 panel:
   rig_lock: auto # C:\campy_data\live\rig.py: the rig is held while the panel is open; close it from its page
+  # The disk check's videos: MB/s per camera while the cameras take frames. On the high side: 60 fps H.265 of mice in a
+  # lit cage is about 0.4-0.5 (worked out from 30 fps recordings); the empty cage of 6 Nov wrote about 0.1.
+  video_mb_s: 0.6

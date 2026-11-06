@@ -169,6 +169,42 @@ class Devices:
 			checks += winsetup.Checks(self.windows, planned)
 		return checks
 
+	def Need(self, seconds, cameras, after_s=0.0):
+		"""
+		What a Pico's session of seconds writes to the disk after after_s of
+		it, estimated from its plan: {spikeglx_b, videos_b, total_b, gate_s,
+		camera_s}. SpikeGLX (with a spikeglx: section): the seconds its gate
+		is open, plus SpikeGLX's trigger margin before and after each
+		opening, at spikeglx.write_mb_s. The videos: the plan's camera
+		seconds, for every camera, at panel.video_mb_s each (an estimate: a
+		video's size depends on what it sees). None without a Pico.
+		"""
+		if self.pico is None:
+			return None
+		gates, trains = self.pico.Spans(seconds)
+		after = float(after_s) if after_s else float("-inf") # the whole session: the first bout's margin too
+		gate_s = 0.0
+		if self.sglx is not None:
+			margin = float(getattr(self.sglx, "margin", 1.0)) # trgTTLMarginS, once SpikeGLX's check has read it
+			gate_s = sum(max(0.0, down + margin - max(up - margin, after)) for up, down in gates)
+		camera_s = sum(max(0.0, end - max(start, after)) for start, end in trains)
+		sglx_b = gate_s * float(self.sglx.section["write_mb_s"]) * 1e6 if self.sglx is not None else 0.0
+		videos_b = camera_s * int(cameras) * float(self.config.panel["video_mb_s"]) * 1e6
+		return {"spikeglx_b": sglx_b, "videos_b": videos_b, "total_b": sglx_b + videos_b, "gate_s": gate_s,
+			"camera_s": camera_s}
+
+	def NeedLeft(self, cameras):
+		"""Need for the rest of the session that records, from where the Pico's session is; None once it has ended
+		(or without a Pico)."""
+		if self.pico is None or self.plan is None:
+			return None
+		if not self.pico_started:
+			return self.Need(self.length, cameras)
+		status = self.cached.get("pico") or {}
+		if not status.get("alive"):
+			return None
+		return self.Need(self.length, cameras, status.get("session_s") or 0)
+
 	# ---------------------------------------------------------- the session's steps (its main thread)
 
 	def Step(self, name, state, text=""):
