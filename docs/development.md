@@ -5,9 +5,10 @@ Running campy's tests, timing tests on a shared machine without spoiling each ot
 ## Running the tests
 ```
 pip install -e . pytest pytest-xdist
-pytest -n auto tests
+pytest -n auto -m "not alone" tests
+pytest -m alone tests
 ```
-`-n auto` runs them on as many workers as the computer has CPUs, which takes the suite from about 17 minutes to about 5: most tests wait on real-time recordings (emulated cameras), timers and child processes rather than on the CPU. Plain `pytest tests` still works, on one worker. Each test makes its own files in its own temporary folder and names its own live feed (with its process id), so tests don't depend on each other or on their order; a new test should do the same. `--durations=25` lists the slowest tests.
+`-n auto` runs them on as many workers as the computer has CPUs, which takes the suite from about 17 minutes to about 5: most tests wait on real-time recordings (emulated cameras), timers and child processes rather than on the CPU. The second line runs the tests marked `alone`, `bench/rig.py`'s: rig.py looks at the whole machine (every process on it, and its CPU and disk load; on Windows every `python.exe` counts as a GPU user), so beside other tests it would see them as foreign users and wait for them. Run in parallel, those tests skip themselves. Plain `pytest tests` still runs everything, on one worker. Each test makes its own files in its own temporary folder and names its own live feed (with its process id), so tests don't depend on each other or on their order; a new test should do the same. `--durations=25` lists the slowest tests.
 
 GitHub Actions runs them on every push to master or dev and every pull request, on Python 3.9, 3.10 and 3.12 on Linux, Python 3.12 on Windows and Python 3.12 on ARM Linux (`.github/workflows/tests.yml`), each on 4 workers. The RatCam tests need nir-eye-cam's `nireyecam`, from a private repository, and are skipped without it. To run them in CI too, add a repository secret `NIREYECAM_TOKEN`: a fine-grained personal access token with read-only access to the contents of `olinesn/nir-eye-cam`.
 
