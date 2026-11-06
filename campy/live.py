@@ -621,25 +621,29 @@ class Cameras:
 		us a camera on an Apple M2). Set numbers stay those of the cameras most
 		of which share an offset; each other camera's offset becomes its
 		frame's number less the set's. Returns the cameras placed.
+
+		A camera whose newest frames reached the computer less than half a
+		frame apart is left as it is (and not placed): it is still catching
+		up on frames its driver held while it was stopped, which all come at
+		once, so their host times say nothing of their pulses. On the
+		EVO-X2, a camera held for 2 s came back so, and was paired 97 frames
+		off until its frames came on time again. It is placed at a later
+		look (Watch), or after more misaligned sets.
 		"""
 		if self.halfFrame is None or not cameras:
 			return set()
-		newest = []
-		for i in cameras:
-			n = self.readers[i].Latest()
-			h = self.readers[i].HostTime(n)
-			if h is None: # being written, or replaced: the one before
-				h = self.readers[i].HostTime(n - 1)
-			if h is not None:
-				newest.append(h)
-		if not newest:
-			return set()
-		target = min(newest)
-		found = {}
+		slots = {}
 		for i in cameras:
 			numbers, host = self.readers[i].Slots()[:2]
-			if not len(numbers):
-				continue
+			if len(numbers) >= 3 and (np.diff(host[-3:]) < self.halfFrame).all():
+				continue # catching up
+			if len(numbers):
+				slots[i] = (numbers, host)
+		if not slots:
+			return set()
+		target = min(int(host[-1]) for numbers, host in slots.values()) # the newest frame of the camera furthest behind
+		found = {}
+		for i, (numbers, host) in slots.items():
 			k = int(np.argmin(np.abs(host - target)))
 			if abs(int(host[k]) - target) <= self.halfFrame:
 				found[i] = int(numbers[k])
