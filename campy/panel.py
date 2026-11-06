@@ -53,7 +53,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from campy import bookmarks, children, clock, livefeed, livehealth, liveresults, session, stopfile, strictjson
+from campy import bookmarks, children, clock, devices, livefeed, livehealth, liveresults, session, stopfile, strictjson
 
 PORT = 8765
 THUMB_WIDTH = 192 # px, each camera's thumbnail
@@ -377,12 +377,19 @@ class Panel:
 		self.health = Health(str(self.config.Value("liveFeedName", "campy-live")), n, live.get("animals", 0))
 		self.marks = None
 		self.disk = collections.deque(maxlen=60) # (time, free bytes), for the rate the disk fills
+		# The Pico, SpikeGLX, Windows' settings, when the config has them (campy/devices.py)
+		self.devices = devices.Devices(self.config, say=Say)
+		if not self.devices.Enabled():
+			self.devices = None
+		self.lengths = self.devices.Lengths() if self.devices is not None else []
+		self.length = self.lengths[0]["seconds"] if self.lengths else None # the page's choice
+		self.closing = False
 		self.checks = self.Checks()
 
 	# ---------------------------------------------------------- before the start
 
 	def Checks(self):
-		"""[(level, text)]: "block" stops a start, "warn" only warns."""
+		"""[(level, text) or (level, text, action)]: "block" stops a start, "warn" only warns."""
 		checks = []
 		live = self.config.live
 		if live is not None:
@@ -396,8 +403,13 @@ class Panel:
 			except session.SessionError as e:
 				checks.append(("block", str(e)))
 		n, names = self.config.Cameras()
-		planned = self.config.Value("recTimeInSec", 0)
-		checks.append(("ok", "{} cameras ({}), {} each (recTimeInSec)".format(n, ", ".join(names), Duration(planned))))
+		if self.devices is not None and self.devices.pico is not None:
+			checks.append(("ok", "{} cameras ({})".format(n, ", ".join(names))))
+		else:
+			planned = self.config.Value("recTimeInSec", 0)
+			checks.append(("ok", "{} cameras ({}), {} each (recTimeInSec)".format(n, ", ".join(names), Duration(planned))))
+		if self.devices is not None:
+			checks += self.devices.Checks(self.length)
 		free = self.Free()
 		if free is not None:
 			least = self.config.Value("alertDiskFreeGB", 20)
@@ -428,8 +440,15 @@ class Panel:
 			orphan = Orphan()
 			if orphan:
 				return "A recording an earlier panel started is still running ({}): stop it first.".format(orphan["folder"])
+			if self.devices is not None and self.devices.pico is not None:
+				try:
+					self.length = self.devices.Length(fields.get("length") or self.length)[0]
+					if fields.get("pico_at"):
+						devices.When(fields["pico_at"])
+				except session.SessionError as e:
+					return str(e)
 			self.checks = self.Checks()
-			blocks = [text for level, text in self.checks if level == "block"]
+			blocks = [c[1] for c in self.checks if c[0] == "block"]
 			if blocks:
 				return "Can't start: " + "; ".join(blocks)
 			self.wanted = fields
@@ -437,8 +456,11 @@ class Panel:
 		return None
 
 	def Args(self, fields):
-		# The experiment's fields, as campy-acquire's options for this run (session.json)
+		# The experiment's fields, as campy-acquire's options for this run (session.json); with a Pico, the session's
+		# length (recTimeInSec, from its plan) and folder
 		args = list(self.args)
+		if self.devices is not None:
+			args += self.devices.Args(self.length)
 		experiment = " ".join(str(fields.get("experiment") or "").split())
 		if experiment:
 			args += ["--experiment", experiment]
@@ -452,10 +474,17 @@ class Panel:
 
 	# ---------------------------------------------------------- while it records
 
-	def Stop(self, level):
+	def Stop(self, level, mode="now"):
 		s = self.session
 		if s is None:
 			return "Nothing is recording."
+		if self.devices is not None and level == 1:
+			# The Pico (after its bout, or now), then campy, then SpikeGLX: from the session's main thread
+			if mode not in ("bout", "now"):
+				return "Stop after this bout, or now?"
+			self.devices.Ask("stop", mode)
+			Say("Stop ({}) asked from the page.".format("after this bout" if mode == "bout" else "now"))
+			return None
 		if not s.RequestStop(level):
 			return None if s.stop_written >= level else "campy-acquire isn't running."
 		Say("Stop{} asked from the page.".format(" now" if level == 2 else ""))
@@ -470,6 +499,47 @@ class Panel:
 		except OSError as e:
 			return "Could not write its stop file: {}".format(e)
 		Say("Stop{} asked of the earlier recording in {}.".format(" now" if now else "", orphan["folder"]))
+		return None
+
+	def StartPico(self, at):
+		s = self.session
+		if self.devices is None or self.devices.pico is None:
+			return "No Pico in this config."
+		if s is None or s.state != "recording":
+			return "campy isn't recording yet."
+		if at:
+			try:
+				at = devices.When(at)
+			except session.SessionError as e:
+				return str(e)
+		else:
+			why = self.devices.CanStartPico(s)
+			if why:
+				return why
+		self.devices.Ask("start-pico", at or None)
+		return None
+
+	def StopLeft(self, what):
+		# The Pico's session or SpikeGLX's run, left running (campy failed, or the panel's window was closed)
+		if self.devices is None:
+			return "No Pico or SpikeGLX in this config."
+		if self.session is not None:
+			return "A recording is running: use Stop."
+		return self.devices.StopLeft(what)
+
+	def PauseUpdates(self):
+		from campy import winsetup
+		seconds = self.devices.Length(self.length)[2]["ends_s"] if self.devices is not None and self.devices.pico \
+			is not None else float(self.config.Value("recTimeInSec", 0) or 0)
+		ok, said = winsetup.PauseUpdates(winsetup.Days(seconds))
+		Say("Pause Windows Update: {}".format(said))
+		self.checks = self.Checks()
+		return None if ok else "Windows Update was not paused: {}".format(said)
+
+	def Close(self):
+		if self.session is not None or self.wanted is not None:
+			return "A recording is running: the panel closes once it has ended and you close it."
+		self.closing = True
 		return None
 
 	def Viewer(self):
@@ -516,9 +586,15 @@ class Panel:
 			for m in reversed(self.marks.recent)] if self.marks is not None and folder and \
 			self.marks.fallback.startswith(folder) else []
 		state = "starting" if self.wanted is not None else (s.state if s is not None else "ready")
+		if s is not None and state in ("done", "failed", "stopped"):
+			state = "finishing" # the recording has ended, and the panel is letting go of it: Start can't take one yet
 		return {"state": state, "rig": platform.node(), "config": self.config.path, "error": self.error,
 			"orphan": Orphan() if s is None else None,
-			"checks": [{"level": level, "text": text} for level, text in self.checks],
+			"checks": [{"level": c[0], "text": c[1], "action": c[2] if len(c) > 2 else None} for c in self.checks],
+			"devices": (launcher or {}).get("devices") if s is not None and s.folder else
+				self.devices.Status() if self.devices is not None else None,
+			"lengths": [{"name": l["name"], "seconds": l["seconds"], "text": l["plan"].get("text") or l["plan"].get("error"),
+				"videoFolder": l["videoFolder"]} for l in self.lengths], "length": self.length,
 			"launcher": launcher, "health": self.health.snapshot, "recording": recording,
 			"disk": {"free_gb": round(free / 1e9, 1) if free is not None else None,
 				"hours_left": round(free / rate / 3600, 1) if free is not None and rate and rate > 1e5 else None},
@@ -562,6 +638,25 @@ class Panel:
 				self.wfile.write(data)
 
 			def do_GET(self):
+				self.Safely(self.Get)
+
+			def do_POST(self):
+				self.Safely(self.Post)
+
+			def Safely(self, handle):
+				# A mistake in the panel answers 500 with what it was (and its traceback in the console), never a
+				# dropped connection
+				try:
+					handle()
+				except Exception as e:
+					import traceback
+					Say("Error answering {} {}:\n{}".format(self.command, urlparse(self.path).path, traceback.format_exc()))
+					try:
+						self.Send(500, {"error": "the panel failed: {}: {}".format(type(e).__name__, e)})
+					except Exception:
+						pass
+
+			def Get(self):
 				url = urlparse(self.path)
 				query = parse_qs(url.query)
 				why = self.Refused(query)
@@ -580,7 +675,7 @@ class Panel:
 					return self.Send(200, png, "image/png") if png else self.Send(404, {"error": "no frame yet"})
 				return self.Send(404, {"error": "no such page"})
 
-			def do_POST(self):
+			def Post(self):
 				url = urlparse(self.path)
 				query = parse_qs(url.query)
 				why = self.Refused(query)
@@ -594,7 +689,24 @@ class Panel:
 				if url.path == "/start":
 					error = panel.Start(body)
 				elif url.path == "/stop":
-					error = panel.Stop(2 if body.get("now") else 1)
+					error = panel.Stop(2 if body.get("now") else 1, body.get("mode") or "now")
+				elif url.path == "/pico-start":
+					error = panel.StartPico(body.get("at"))
+				elif url.path == "/stop-left":
+					error = panel.StopLeft(str(body.get("what")))
+				elif url.path == "/pause-updates":
+					error = panel.PauseUpdates()
+				elif url.path == "/length":
+					if panel.session is not None or panel.devices is None:
+						error = "Not now."
+					else:
+						try:
+							panel.length, error = panel.devices.Length(body.get("seconds"))[0], None
+							panel.checks = panel.Checks()
+						except session.SessionError as e:
+							error = str(e)
+				elif url.path == "/close":
+					error = panel.Close()
 				elif url.path == "/stop-orphan":
 					error = panel.StopOrphan(bool(body.get("now")))
 				elif url.path == "/viewer":
@@ -642,10 +754,13 @@ class Panel:
 					pass
 			while True:
 				try:
-					while self.wanted is None:
+					while self.wanted is None and not self.closing:
 						time.sleep(0.2)
 				except KeyboardInterrupt:
 					Say("Closed.")
+					return 0
+				if self.closing:
+					Say("Closed from the page.")
 					return 0
 				self.Record()
 		finally:
@@ -665,7 +780,10 @@ class Panel:
 		fields, args = self.wanted, self.Args(self.wanted)
 		try:
 			config = session.Config(self.config_path, args)
-			s = session.Session(config, lock=False, detached=True)
+			if self.devices is not None:
+				self.devices.config = config
+				self.devices.Plan(self.length, fields.get("pico_at") or None)
+			s = session.Session(config, lock=False, detached=True, devices=self.devices)
 			self.session = s
 			self.wanted = None
 			s.Run()
@@ -676,6 +794,12 @@ class Panel:
 			self.wanted = None
 			if self.session is not None and self.session.folder:
 				self.last = self.session.StatusDict()
+				try:
+					from campy import post
+					clean, why = post.CleanStop(self.session.folder) # every camera closed its video, with its totals
+				except Exception as e:
+					clean, why = False, "could not be told ({})".format(e)
+				self.last["clean"] = {"clean": bool(clean), "why": why}
 			self.session = None
 			self.checks = self.Checks()
 
@@ -688,6 +812,62 @@ def Duration(seconds):
 	return "{}:{:02d}:{:02d}".format(s // 3600, s // 60 % 60, s % 60)
 
 
+def RigPy(setting):
+	"""The rig.py that panel.rig_lock names: "auto" is the rig's installed one (RIG_ROOT, else its usual folder)."""
+	if setting != "auto":
+		return os.path.abspath(os.path.expanduser(setting))
+	root = os.environ.get("RIG_ROOT") or ("C:\\campy_data\\live" if sys.platform == "win32" else
+		os.path.expanduser("~/sleap-bench"))
+	return os.path.join(root, "rig.py")
+
+
+def IgnoreCtrlC():
+	"""
+	Ctrl-C in this window, from now on, does nothing: under rig.py it would
+	reach rig.py too, which then ends its whole job (the panel, campy, the
+	Pico's session program) before anything is stopped in order. Windows:
+	the console's processed input off, so Ctrl-C is only a key; elsewhere
+	SIGINT ignored, which every program started from here inherits.
+	"""
+	if sys.platform == "win32":
+		import ctypes
+		from ctypes import wintypes
+		k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+		k32.GetStdHandle.restype = wintypes.HANDLE
+		k32.GetStdHandle.argtypes = (wintypes.DWORD,)
+		k32.GetConsoleMode.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+		k32.SetConsoleMode.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+		handle = k32.GetStdHandle(wintypes.DWORD(-10 & 0xFFFFFFFF)) # STD_INPUT_HANDLE
+		mode = wintypes.DWORD()
+		if k32.GetConsoleMode(handle, ctypes.byref(mode)):
+			k32.SetConsoleMode(handle, mode.value & ~0x0001) # ENABLE_PROCESSED_INPUT
+	else:
+		import signal
+		signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+def UnderRig(config, argv):
+	"""
+	With panel.rig_lock: this panel run again under rig.py (the rig's lock,
+	held while the panel is open), unless it already runs in the rig's job.
+	Its exit code, or None to go on here.
+	"""
+	if not config.panel["rig_lock"] or os.environ.get("RIG_JOB"):
+		return None
+	rig = RigPy(config.panel["rig_lock"])
+	if not os.path.isfile(rig):
+		raise session.SessionError("panel.rig_lock: {} isn't there (the rig's rig.py).".format(rig))
+	logs = os.path.join(session.CampyFolder(), "logs")
+	os.makedirs(logs, exist_ok=True)
+	tag = "panel-{}-{}".format(os.path.splitext(os.path.basename(config.path))[0], datetime.now().strftime("%Y%m%d-%H%M%S"))
+	Say("Taking the rig's lock ({}): the panel waits for the rig to be free, then holds it while it is open. Ctrl-C "
+		"does nothing in this window: close the panel from its page.".format(rig))
+	IgnoreCtrlC()
+	import subprocess
+	return subprocess.call([session.Python(), rig, "run", "--log-dir", logs, config.panel["owner"], tag, "--",
+		session.Python(), "-m", "campy.session", "panel"] + list(argv))
+
+
 def Main(argv=None):
 	p = argparse.ArgumentParser(prog="campy-session panel", description="Record from a page in the browser: Start, "
 		"each camera's health, disk space, bookmarks, Stop (python -m pydoc campy.panel).",
@@ -695,6 +875,7 @@ def Main(argv=None):
 	p.add_argument("config", help="the config, as for campy-session run")
 	p.add_argument("--port", type=int, default=PORT, help="the page's port on 127.0.0.1 (the next free one if taken)")
 	p.add_argument("--no-browser", action="store_true", help="only print the page's address")
+	argv = sys.argv[1:] if argv is None else list(argv)
 	args, rest = p.parse_known_args(argv)
 	running = Running()
 	if running is not None:
@@ -710,6 +891,9 @@ def Main(argv=None):
 				pass
 		return 0
 	try:
+		code = UnderRig(session.Config(args.config, rest), argv)
+		if code is not None:
+			return code
 		return Panel(args.config, rest, port=args.port, browser=not args.no_browser).Run()
 	except session.SessionError as e:
 		print("campy-session panel: {}".format(e), file=sys.stderr)

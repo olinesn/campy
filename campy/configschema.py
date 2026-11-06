@@ -361,6 +361,16 @@ SETTINGS = [
 			it by."),
 	Setting("panel", None, SECTION, section=PROGRAMS, per_camera=ONE,
 		help="campy-session: its control panel. campy-acquire passes it by."),
+	Setting("pico", None, SECTION, section=PROGRAMS, per_camera=ONE,
+		help="campy-session: a Raspberry Pi Pico that makes the trigger and the experiment's TTLs \
+			(chronicrecord/chronic_control.py): its session's lengths, port, settings. The panel starts it once every \
+			camera is ready. campy-acquire passes it by."),
+	Setting("spikeglx", None, SECTION, section=PROGRAMS, per_camera=ONE,
+		help="campy-session: SpikeGLX's run, started into the recording's folder before the cameras and stopped \
+			after them, through its command server and SDK. campy-acquire passes it by."),
+	Setting("windows", None, SECTION, section=PROGRAMS, per_camera=ONE,
+		help="campy-session: warn before a recording that Windows Update could restart the PC during it, or that \
+			USB selective suspend is on. campy-acquire passes it by."),
 ]
 
 BY_NAME = {s.name: s for s in SETTINGS}

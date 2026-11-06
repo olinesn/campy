@@ -1,6 +1,6 @@
 # Recording a session from the desktop
 
-This page is for anyone who records on a rig that someone has already set up: no terminal needed. You double-click an icon, check that the cameras look right, press **Start recording**, and press **Stop** at the end (or let it stop at the set length). The person who set up the rig makes the icon once; how is at the end of this page.
+This page is for anyone who records on a rig that someone has already set up: no terminal needed. Every campy recording on the rigs starts this way, live tracking (`campy-live`) included, and so do the ChronicRecord rig's sessions with its Pico and SpikeGLX ([below](#on-the-chronicrecord-rig-the-pico-and-spikeglx)). You double-click an icon, check that the cameras look right, press **Start recording**, and press **Stop** at the end (or let it stop at the set length). The person who set up the rig makes the icon once; how is at the end of this page.
 
 ## Before you start
 
@@ -15,6 +15,8 @@ Double-click the icon on the desktop, named something like **Record with campy (
 - Your web browser opens the panel's page. If it doesn't, the black window's first lines show its address (`http://127.0.0.1:8765/?t=...`): copy the whole address, key included, into the browser.
 
 The page is only for this computer. Working over Remote Desktop, open it in the rig's own browser, inside the Remote Desktop window.
+
+On a rig that other tests share (most of them), the panel first waits for the rig to be free, then holds it for as long as it is open, so that no test runs while you record. While it holds the rig, Ctrl-C in the black window does nothing: close the panel with **Close the panel** at the top of the page once nothing is recording.
 
 ## 2. Fill in the experiment and check the list
 
@@ -71,7 +73,40 @@ After the recording, the page shows **After the recording** while the computer:
 
 Each step turns green when done. Then the page says **Ready**, for the next recording.
 
-When you are done for the day, close the browser tab and the black window.
+When you are done for the day, press **Close the panel** at the top of the page (or, on a rig that doesn't hold the rig's lock, Ctrl-C in the black window), then close the browser tab.
+
+## On the ChronicRecord rig: the Pico and SpikeGLX
+
+On the ChronicRecord rig the same page also runs the Pico (which makes the camera pulses, SpikeGLX's record gate and the two LED drivers' TTLs) and SpikeGLX, which records the probe while the gate is high. It replaces the PowerShell launcher (`chronic6day.ps1`). What changes:
+
+**Before the start.** Pick the **session length**: 6 days, a 15-minute gate test (3 bouts) or an hour. The page shows what that plan holds (bouts, camera pulses, camera time). campy records exactly the plan's camera time, so the two always agree. A gate test goes into `C:\data\gatetest\`, the others into `C:\data\`. The checks add:
+
+- the Pico answers and isn't running anything;
+- SpikeGLX answers, isn't running a run, and its trigger is TTL (so it writes files only while the gate is high). If SpikeGLX isn't open, the page opens it at Start;
+- Windows Update is paused until a day after the session ends. If not, it's a warning with a **Pause Windows Update** button: Windows asks for administrator rights, click Yes;
+- USB selective suspend is off (a warning if not).
+
+You can also give a time for the Pico to start (`7:20 PM`); otherwise you start it yourself.
+
+**Start.** The page shows each step as it goes:
+
+1. **SpikeGLX:** its run starts into the session's folder (`spikeglx\`), with recording on.
+2. **Gate check:** the gate blinks once, and SpikeGLX must open a file for it. If it doesn't, nothing else starts and the page says what to check (SpikeGLX's trigger, the gate's cable).
+3. **The cameras:** campy starts, and the cameras' window opens. They wait for the Pico's pulses.
+4. **The Pico:** once every camera is ready, press **Start the Pico** (it asks first), or it starts by itself at the time you gave. If a camera isn't ready, the button says so: stop, and start again.
+
+While it records, the **Pico** card shows the bout (for example `bout 212 of 1728`), the camera pulses so far, and when the session ends. The **SpikeGLX** card shows its run, whether a file is open (the gate is high), and how many files this session has.
+
+**Stop.** **Stop** asks first, and offers two ways:
+
+- **Stop after this bout:** the Pico finishes the bout it is in, so its gate falls on time and SpikeGLX's file closes as planned; then campy and SpikeGLX stop.
+- **Stop now:** the Pico stops at once (every output low), then campy, then SpikeGLX.
+
+**The end.** campy stops by itself after the last bout's last frame. The page then waits for the Pico's last gate (10 s later) and stops SpikeGLX's run.
+
+**If campy fails on its own** (a camera lost, say), the Pico and SpikeGLX are left running: the animal's LED schedule goes on, and SpikeGLX keeps recording its bouts. The page says so under **Still running**, with **Stop the Pico**, then **Stop SpikeGLX's run**, for when you decide. The same buttons appear if the panel's window was closed during a session and the panel was opened again.
+
+The session's folder, `C:\data\<date_time>\`, also holds `spikeglx\` (SpikeGLX's run, named `chronic_<date_time>`) and `pico\` (the Pico's log, `<date>\timestamps.txt`, and its program's output, `session.out`).
 
 ## Where the recording is
 
@@ -96,4 +131,4 @@ campy-session shortcut <config>.yaml --name "Record: 3 cameras"
 
 The icon runs `campy-session panel <config>` with that environment's Python, by its full path. So make it again after moving the environment or the config. Options after the config are `campy-acquire`'s, for every recording the icon starts. For example, `--recTimeInSec 3600` records an hour.
 
-The config needs everything the recording needs: a `live:` section for the tracking, `post:` for what happens after, and `campy-session register-live` run once in the tracking environment (see [Live tracking](live-tracking.md#in-one-command-campy-session)). The panel starts `campy-acquire` and `campy-live` apart from its own window, so closing that window, or the terminal on Linux, never ends a recording. Its Stop reaches them through `campy-acquire`'s stop file.
+The config needs everything the recording needs: a `live:` section for the tracking, `post:` for what happens after, and `campy-session register-live` run once in the tracking environment (see [Live tracking](live-tracking.md#in-one-command-campy-session)). The view (`campy-live-view`) runs in that registered environment too, or in `view.python`. On a rig shared with tests, add `panel: {rig_lock: auto}`: the panel then holds the rig's lock (`rig.py`) while it is open. A Pico, SpikeGLX and the Windows checks are the `pico:`, `spikeglx:` and `windows:` sections; the ChronicRecord rig's config, [`chronicrecord/chronic_session.yaml`](../chronicrecord/chronic_session.yaml), has each, with a comment on every line. A key campy-session doesn't know is refused, with the list of the keys that section takes. The panel starts `campy-acquire` and `campy-live` apart from its own window, so closing that window, or the terminal on Linux, never ends a recording. Its Stop reaches them through `campy-acquire`'s stop file.
