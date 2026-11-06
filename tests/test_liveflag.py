@@ -273,3 +273,26 @@ def test_a_long_log_is_quick(tmp_path):
 	t = time.perf_counter()
 	liveflag.Main([path + ".npy", "--out", str(tmp_path / "out")])
 	assert time.perf_counter() - t < 20
+
+
+def test_a_late_logs_flags_carry_the_recordings_frame_numbers_which_the_split_keys_on(log, tmp_path):
+	# campy-live started 30 sets late: its time_s counts from its own first set, its frames are campy's.
+	# campy-label-pack splits on campy's frame (labelpack.SplitClock), so both logs put a frame on one side.
+	from campy import labelpack
+	path, _, _ = log
+	late = str(tmp_path / "campy-live.part2")
+	np.save(late + ".npy", np.load(path)[30:])
+	with open(path[:-4] + ".json") as f, open(late + ".json", "w") as g:
+		g.write(f.read())
+	a, fa = flags_of(path)
+	b, fb = flags_of(late + ".npy")
+	assert b.time_s[0] == 0 and a.time_s[30] == pytest.approx(0.5)
+	assert np.array_equal(b.frames, a.frames[30:]) # the same campy frames
+	clock = labelpack.SplitClock.__new__(labelpack.SplitClock)
+	clock.source, clock.rate, clock.clip_frames = "2026-10-22_15-46-09", 60.0, None
+	for f in (40, 100, 140):
+		assert labelpack.TestSide(clock.source, clock.Seconds(f)) == labelpack.TestSide(clock.source,
+			clock.Seconds(int(b.frames[f - 31])))
+	# The flags of the late log are the first log's, from frame 31 on
+	key = lambda fl: sorted((int(x["frame"]), str(x["reason"]), int(x["camera"])) for x in fl if x["frame"] > 31 + 1)
+	assert key(fb) == key(fa)

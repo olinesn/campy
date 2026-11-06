@@ -288,10 +288,14 @@ A budget of 40 sets (round one: enough that about a third can become the rig's t
 `campy-label-pack` turns the sets `campy-live-flag` picked into one file to correct in [LUC3D](https://github.com/talmolab/luc3d), with `campy-live`'s predictions already on them, so labelling means correcting, not starting from nothing. Run it in the inference environment (it needs `sleap-io`, which comes with sleap-nn):
 
 ```
-campy-label-pack <log>_flags/sample.json --recording <recording folder> --name <rig>_<date>
+campy-label-pack <log>_flags/sample.json --recording <recording folder> --name <rig>_<date> \
+    --test-package tests/<rig>.test.pkg.slp --train-package <training package>
 ```
 
 It writes `<name>/<name>.pkg.slp` next to `sample.json`:
+
+- **The name is the round's.** The training and test packages keep each round by this name, so each round needs its own. Without `--name`, it is the recording's name and the start of a hash of `sample.json`, so a second round from the same recording gets another name. With `--test-package`, a name already in the test package is refused.
+- **It checks that each log is its recording's.** The log's frames must have the same host-clock times as the recording's videos (as `campy-live-export` checks), and each picked set must be the log's row for that campy frame. A sample of several logs needs the logs' calibrations and node names to match; pack each log on its own when the rig was calibrated again between them. When a log isn't where the sample says (another computer), the log beside the flags folder is used, but not when two of the sample's logs share its file name (`campy-session` names every log `campy-live.npy`).
 
 - **The frames are in the file**: every camera's frame of each picked set, as PNG, so exactly the video's pixels. It opens on any computer, without the recording's videos. Frame 0, 1, 2, … of the package are the picked sets in order; `sets.csv` says which recording, campy frame and video frame each one is, why it was picked, and its flags.
 - **The predictions are on them**: each camera's detections, and with 3D each animal's identity and 3D pose, grouped across the cameras. So LUC3D also shows where the 3D puts an animal in a camera that missed it.
@@ -316,10 +320,27 @@ campy-label-merge <name>.pkg.slp <name>.labels.slp --test-into tests/<rig>.test.
     --train-into <training package> --train-out <new training package>
 ```
 
-- **Test sets are kept apart for good.** About a third of each recording's minutes are test minutes, chosen by a hash of the recording's name and the minute. A set is always on the same side, and whole minutes are kept out, so no frame a few frames from a test frame is trained on. Test frames go to `<name>.test.pkg.slp` and, with `--test-into`, into that rig's test set, which only grows. They are for measuring models, never for training.
-- **The rest go to `<name>.train.pkg.slp`**, and, with `--train-into`, into a copy of the training package (`--train-out`). The labels are written in that package's nodes, so run it once for the 15-node package (centroid model) and once for the 12-node one (centered-instance model).
+- **Test sets are kept apart for good.** `campy-label-pack` decides which sets are test sets (below). Test frames go to `<name>.test.pkg.slp` and, with `--test-into`, into that rig's test set, which only grows. They are for measuring models, never for training.
+- **The rest go to `<name>.train.pkg.slp`**, and, with `--train-into`, into a copy of the training package (`--train-out`). The labels are written in that package's nodes, so run it once for the 15-node package (centroid model) and once for the 12-node one (centered-instance model). Give `--test-into` on one of the two runs only, the one whose nodes are the test package's; the test package is checked before anything is written:
+
+```
+campy-label-merge <name>.pkg.slp <name>.labels.slp --test-into tests/<rig>.test.pkg.slp \
+    --train-into <15-node training package> --train-out <new 15-node training package>
+campy-label-merge <name>.pkg.slp <name>.labels.slp --out <name>_12 \
+    --train-into <12-node training package> --train-out <new 12-node training package>
+```
+
+- **A round goes in once.** A round already in `--train-into` or `--test-into` (the same labels merged again) is refused, so no frame is added twice. After correcting a round again, `--replace-round` replaces its frames there.
 - **Points marked hidden are left out**, as SLEAP trains on them. That includes the points LUC3D fills in when a prediction becomes a label.
 - **`<name>.merge.csv`** says what happened to each camera frame: taken, not finished (predictions left), untouched, or emptied (every prediction deleted and no label; left out unless `--keep-emptied`).
+
+**Which sets are test sets.** About a third of each recording's minutes are test minutes, chosen by a hash of the recording's name and the minute (`--test-share`). The minutes are the recording's own: campy's frame number over the frame rate. So a set is on the same side in every log of the recording (a `campy-live` started late or restarted, a `campy-live.part2.npy` flagged on its own), in every round, whatever else is picked. A replay with emulated cameras counts the replayed clip's minutes and is keyed on the clip, so the clip is split the same way in every replay of it. Its loops count from the clip's start again when the clip's `frametimes.npy` is beside it.
+
+- **A guard band.** A set in a training minute within 3 s (`--guard-s`) of a test minute is left out of the package, so no training frame is within 3 s of a test frame. That leaves out about 3% of the sets.
+- **Packages already made.** `--test-package` (the rig's test set) leaves out a training set within 3 s of one of its frames. `--train-package` (the training package) leaves out a would-be test set within 3 s of a frame already trained on. Rounds packed before November 2026 counted minutes from the log's first set instead, so their test minutes fall elsewhere. Their test and training frames stay where they are; these two options keep new sets away from them.
+- **`sets.csv`** says each set's side (`test`), the clock it was decided on (`split_source`, `split_s`) and why (`split`). `--old-split` packs a sample with the earlier split, only to pack again a sample that was packed with it.
+
+On an hour of frames, logs started 0.5, 2, 10 or 30 s late now put every frame on the same side. With minutes counted from the log's first set, 0.4%, 1.8%, 8.9% and 26.7% of frames changed side, and 2.3% of training frames were within 2 s of a test frame.
 
 Tried on a 30-second, 3-camera recording of 5 mice: 12 picked sets were packed in 18 s (15 MB). LUC3D opened the package with the predictions, identities and 3D on it. A set corrected and saved there was merged into the 1,000-frame 12-node training package in 5 minutes, mostly reading the 550 MB package over the network. The result read back as 1,003 frames, the new ones pixel for pixel the package's.
 

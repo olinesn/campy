@@ -173,3 +173,26 @@ def test_model_fit_stats_and_check(tmp_path):
 	stats["stats"]["mean"].update(p5=200, p95=230)
 	(model / "image_stats.json").write_text(json.dumps(stats))
 	assert modelfit.Main(["check", str(model), "--recording", rec]) == 1 # now it is darker
+
+
+def test_a_test_package_with_two_rounds_of_one_name_scores_both(tmp_path, monkeypatch):
+	# Before round names were checked, two rounds of one recording took its name: the later round's videos
+	# hid the earlier's from campy-model-eval. Such a package is made here as campy did then.
+	sio = pytest.importorskip("sleap_io")
+	import test_labelpack as tl
+	from campy import labelmerge, labelpack
+	made = tl.made.__wrapped__(tmp_path)
+	monkeypatch.setattr(labelpack, "IsTest", lambda rec, t, share=None: True)
+	tests = str(tmp_path / "tests" / "rig.test.pkg.slp")
+	monkeypatch.setattr(labelmerge, "Rounds", lambda labels: set()) # campy before the check
+	for k, finish in enumerate(((0, 1), (0,))):
+		out = labelpack.Pack(made["sample"], [made["rec"]], name="2026-10-23_10-00-00", out=str(tmp_path / str(k)))
+		saved = tl.correct(out["package"], str(tmp_path / str(k) / "r.labels.slp"), finish=finish)
+		labelmerge.Merge(out["package"], saved, test_into=tests)
+	labels = sio.load_slp(tests)
+	info, rounds = labelmerge.VideoInfo(labels)
+	assert [i["round"] for i in info] == ["2026-10-23_10-00-00"] * 6 and len(rounds) == 1
+	sets = modeleval.TestSets(tests).sets
+	assert len(sets) == 3 # 2 sets of the first round, 1 of the second
+	assert all(len(frames) == 3 for _, _, _, frames in sets)
+	assert len({id(lf) for _, _, _, frames in sets for lf in frames.values()}) == 9
