@@ -29,12 +29,28 @@ HEARTBEAT_S = 0.05
 SYNC_S = 1.0
 ANSWER_TIMEOUT_S = 2.0
 SKETCH = "campy_outputs"
-VERSION = 1
+VERSION = 2 # the sketch's VERSION: 2 counts on through trigger pauses (pull request 304)
 RISES = 4096 # trigger rises kept (68 s at 60 fps)
 
 
 class BoardError(Exception):
 	pass
+
+
+def Mismatch(port, line):
+	"""What to say when the board answered id with line, not campy_outputs VERSION."""
+	words = line.split()
+	upload = ("Upload campy/outputs_board/campy_outputs from this campy to it (docs/closed-loop.md, "
+		"\"Uploading the sketch\").")
+	if len(words) >= 3 and words[1] == SKETCH and words[2].isdigit():
+		if int(words[2]) < VERSION:
+			return ("The outputs board on {} runs an older campy_outputs (version {}); this campy needs version {}. "
+				"The older one counts the camera's frames from 1 again after a pause in the trigger, as between "
+				"two bouts, while campy doesn't, so trains would land on the wrong frames. {}".format(
+				port, words[2], VERSION, upload))
+		return ("The outputs board on {} runs a newer campy_outputs (version {}) than this campy knows (version {}). "
+			"Update campy, or {}".format(port, words[2], VERSION, upload[0].lower() + upload[1:]))
+	return "The board on {} answered {!r}: not campy_outputs version {}. {}".format(port, line, VERSION, upload)
 
 
 def Expected(command):
@@ -147,8 +163,7 @@ class Board:
 		words = line.split()
 		if len(words) < 3 or words[1] != SKETCH or words[2] != str(VERSION):
 			self.Close(off=False)
-			raise BoardError("The board on {} answered {!r}: not campy_outputs version {}. Upload "
-				"campy/outputs_board/campy_outputs to it.".format(port, line, VERSION))
+			raise BoardError(Mismatch(port, line))
 		self.Sync()
 
 	# --------------------------------------------------------- sending

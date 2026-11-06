@@ -38,7 +38,9 @@ Use the Arduino IDE (board: Arduino Nano ESP32) or arduino-cli:
 arduino-cli compile --fqbn arduino:esp32:nano_nora campy/outputs_board/campy_outputs
 arduino-cli upload --fqbn arduino:esp32:nano_nora -p <port> campy/outputs_board/campy_outputs
 ```
-The port is `/dev/ttyACM1` or similar on Linux, `COM5` or similar on Windows. The board answers `ok campy_outputs 1` to `id` at 115200 baud.
+The port is `/dev/ttyACM1` or similar on Linux, `COM5` or similar on Windows. The board answers `ok campy_outputs 2` to `id` at 115200 baud.
+
+Upload it again after each campy update that changes the sketch. `campy-rules` checks the version when it starts and refuses a board that runs another one, saying which it found. Version 2 came with pull request 304: a board that still answers `ok campy_outputs 1` restarts its frame count after a pause in the trigger (see *Order matters* below), so `campy-rules` won't start with it.
 
 ## The rules file
 
@@ -130,7 +132,7 @@ campy-rules rules.yaml --port /dev/ttyACM1
 campy-live --calibration calibration.toml ...
 campy-acquire config.yaml
 ```
-- **Order matters.** The board counts camera triggers from 1 from when `campy-rules` starts, as campy counts its frames, so frame k is the same frame for both. Both keep counting through a pause in the trigger, such as the pause between two bouts, so a train's `every` and `phase` stay on campy's frame numbers. The board reports each pause of half a second or more, and `campy-rules` logs it (`kind: gap` in the events log). Before pull request 304, the board started again at frame 1 after such a pause, while campy didn't, so with `every: 2` blue and violet could swap relative to campy's frames. If the board started counting mid-recording, `campy-rules` matches the frames by time instead, to within a frame, says so and logs it (`kind: rebase`).
+- **Order matters.** The board counts camera triggers from 1 from when `campy-rules` starts, as campy counts its frames, so frame k is the same frame for both. Both keep counting through a pause in the trigger, such as the pause between two bouts, so a train's `every` and `phase` stay on campy's frame numbers. The board reports each pause of half a second or more, and `campy-rules` logs it (`kind: gap` in the events log). Before pull request 304 (sketch version 1), the board started again at frame 1 after such a pause, while campy didn't, so with `every: 2` blue and violet could swap relative to campy's frames. If the board started counting mid-recording, `campy-rules` matches the frames by time instead, to within a frame, says so and logs it (`kind: rebase`).
 - It runs in campy's Python environment or in `campy-live`'s (it needs only numpy, pyyaml and pyserial).
 - It ends when `campy-live` does, or at Ctrl-C, and switches everything off as it ends.
 
