@@ -430,7 +430,7 @@ def test_a_length_that_does_not_fit_is_refused(tmp_path, home, monkeypatch):
 	from campy import pico
 	monkeypatch.setattr(pico.Pico, "Check", lambda self: (_ for _ in ()).throw(pico.PicoError("The Pico doesn't answer")))
 	said = p.Start({"length": 518400, "disk_override": True})
-	assert said.startswith("Can't start: ") and "The Pico doesn't answer" in said and "2,534 GB short" in said
+	assert said == "Can't start: The Pico doesn't answer"
 	assert p.wanted is None
 	# The shorter length fits: chosen on the page, the check follows it
 	p.length = 28800
