@@ -224,7 +224,11 @@ What it recorded:
 - **The Pico:** `pulses=15600 stalls=0 bounces=0 self_check_us=-3`; it ended by itself.
 - **campy:** 15,600 frames on each of the 4 cameras, none dropped or missed. campy-align put every camera on the trigger's timeline, with the two gaps between bouts as planned pauses.
 
-Not checked yet: a session stopped from the page on the rig (after the bout, or now), campy failing mid-session on the rig, and a multi-day session.
+**Both Stops from the page** (the same evening, 9:18 to 9:27 PM, the gate-test length):
+- **Stop after this bout**, pressed in bout 1. The Pico finished bout 1 on time (14,400 pulses, its gate down at 255.0 s) and made no more bouts. campy then stopped with 14,400 frames on each camera, and SpikeGLX stopped too. SpikeGLX's files: the blink, then bout 1 whole, 257.0 s.
+- **Stop now**, pressed 7 s into bout 1's camera. The Pico stopped at once (446 pulses). campy stopped with 446 frames on each camera, every one closed cleanly, and SpikeGLX stopped 3 s later. SpikeGLX's files: the blink, then the cut-short bout, 14.4 s.
+
+Not checked yet: campy failing mid-session on the rig, and a multi-day session.
 
 The desktop icon, made once in the recording environment: `campy-session shortcut C:\campy_data\configs\chronic_session.yaml --name "ChronicRecord session"`. `campy-session register-live`, run once in the campy-live environment, lets the view run there.
 
