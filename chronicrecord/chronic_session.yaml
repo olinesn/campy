@@ -25,6 +25,7 @@ pico:
     - {name: "6 days", seconds: 518400}
     - {name: "Gate test (15 min, 3 bouts)", seconds: 900, videoFolder: "C:\\data\\gatetest"}
     - {name: "1 hour (12 bouts)", seconds: 3600}
+    - {name: "Overnight rehearsal (8 h, 96 bouts)", seconds: 28800, videoFolder: "C:\\data\\rehearsal"} # about 275 GB (SpikeGLX 150, videos 125)
   gate_check: true # the gate blinks once before campy starts; SpikeGLX must open a file for it
   last_gate_s: 120 # campy ends after the last bout's last frame; the Pico's gate falls 10 s later
 
