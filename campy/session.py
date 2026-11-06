@@ -38,7 +38,11 @@ The recording comes first:
   with its own recTimeInSec. Its output goes into its log file, not through
   campy-session (a pipe breaks when campy-session dies). It is not tied to
   campy-session either: if campy-session crashes or is killed, the recording
-  goes on to its end, and Ctrl-C still stops it.
+  goes on to its end, and Ctrl-C still stops it. If campy-acquire ends with
+  an error and its watch never said how the recording ended (killed,
+  crashed: recording.json not ended or failed), campy-session sends a
+  critical alert itself (AcquireEnded); one for campy-watch stopping with an
+  error, a warning.
 - campy-live is not tied to campy-session, and it is started apart from the
   console's Ctrl-C (it would stop before the recording's last frames): if
   campy-session dies, it tracks on to the end of the recording. It waits for
@@ -71,6 +75,7 @@ from datetime import datetime
 import yaml
 
 from campy import children, newfiles, stopfile, strictjson
+from campy.utils.utils import ExitCodeText
 
 SCHEMA = 1 # launcher.json's: bumped when a field changes meaning
 VERSION = "campy-launcher/{}".format(SCHEMA)
@@ -607,9 +612,35 @@ def Alert(key, text, severity="critical"):
 		from campy import notify
 		notifier = notify.Notifier(say=Say)
 		notifier.Problem(key, text, severity, remind=False)
-		notifier.Flush(15)
+		notifier.Finish(30, "campy-session's alert")
 	except Exception as e:
 		Say("Could not send the alert: {}".format(e))
+
+
+def StatusDir():
+	# Where campy-acquire's watch writes recording.json (campy/watch.py's StatusPath)
+	return os.environ.get("CAMPY_STATUS_DIR") or os.path.join(CampyFolder(), "status")
+
+
+def WatchState(folder, since=None):
+	"""
+	The state campy-acquire's watch last wrote for the recording in folder
+	(recording.json: recording, stopping, ended or failed), or None when it
+	wrote none for it (since: not before that time). Its own end is ended or
+	failed: written as it said how the recording ended.
+	"""
+	path = os.path.join(StatusDir(), "recording.json")
+	try:
+		if since and os.path.getmtime(path) < since - 2:
+			return None # an earlier recording's
+		with open(path, encoding="utf-8") as f:
+			status = strictjson.load(f)
+	except (OSError, ValueError):
+		return None
+	where = (status.get("session") or {}).get("folder") if isinstance(status, dict) else None
+	if not where or not folder or os.path.normcase(os.path.abspath(where)) != os.path.normcase(os.path.abspath(folder)):
+		return None
+	return status.get("state")
 
 
 def Stamp(t):
@@ -805,6 +836,7 @@ class Session:
 			Say("campy-acquire ended: every camera recorded to the end.")
 		else:
 			self.Problem("campy-acquire ended with exit code {}: see {}.".format(code, acquire.log))
+			self.AcquireEnded(acquire)
 		self.Status()
 		if self.devices is not None:
 			self.devices.After(self, code)
@@ -821,6 +853,27 @@ class Session:
 		self.state = "done" if code == 0 else "failed"
 		self.Status()
 		return code
+
+	def AcquireEnded(self, acquire):
+		"""
+		campy-acquire ended with an error: its watch says how the recording
+		ended (the end summary, and recording.json ended or failed), unless
+		it never got to (killed: SIGKILL, out of memory, Task Manager; a
+		crash; or an error before its watch started). Then nothing reached the
+		alerts: it is sent from here, critical.
+		"""
+		state = WatchState(self.folder, acquire.started)
+		if state in ("ended", "failed"):
+			return False
+		how = ExitCodeText(acquire.code)
+		if state is None:
+			text = "campy-acquire ended with {} before its recording watch started, so the recording may not have " \
+				"started at all: {}. See {}.".format(how, self.folder, acquire.log)
+		else:
+			text = "campy-acquire ended with {} while it recorded {}, without saying how the recording ended: it was " \
+				"killed, or crashed. See {}.".format(how, self.folder, acquire.log)
+		Alert("session/campy-acquire", text)
+		return True
 
 	def Post(self):
 		# After a clean stop (post.CleanStop reads launcher.json, just written): post.py; a Ctrl-C from here on stops
@@ -916,8 +969,11 @@ class Session:
 				elif name == "view":
 					Say("campy-live-view closed (exit code {}).".format(part.code))
 				elif name == "watch" and part.code not in (0, None):
-					self.Problem("campy-watch stopped (exit code {}): see {}. The recording goes on, without its "
-						"alerts about the live tracking.".format(part.code, part.log))
+					text = "campy-watch stopped ({}): see {}. The recording goes on, without its alerts about the " \
+						"live tracking, and without telling when campy-live hangs.".format(
+						ExitCodeText(part.code), part.log)
+					self.Problem(text)
+					Alert("session/campy-watch", text, "warning")
 		self.CheckHung()
 		if self.devices is not None:
 			self.devices.Watch(self)

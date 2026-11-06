@@ -297,7 +297,7 @@ class Health:
 # ------------------------------------------------------------------ what other programs wrote
 
 def StatusDir():
-	return os.environ.get("CAMPY_STATUS_DIR") or os.path.join(session.CampyFolder(), "status")
+	return session.StatusDir()
 
 
 def RecordingStatus(folder):

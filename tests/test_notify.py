@@ -24,8 +24,10 @@ class Service:
 	# Slack's Web API and webhooks, and healthchecks.io's pings and API, as a local HTTP server
 	def __init__(self):
 		self.requests = [] # (path, headers, body)
+		self.times = [] # when each came (time.time)
 		self.fail = [] # statuses (or Slack error names) the next requests get, in order
 		self.delay = 0.0
+		self.gate = None # a threading.Event the requests wait for, when set
 		self.ts = 0
 		service = self
 
@@ -38,6 +40,9 @@ class Service:
 				raw = self.rfile.read(size) if size else b""
 				body = json.loads(raw) if raw else None
 				service.requests.append((self.path, dict(self.headers), body))
+				service.times.append(time.time())
+				if service.gate is not None:
+					service.gate.wait(30)
 				if service.delay:
 					time.sleep(service.delay)
 				failure = service.fail.pop(0) if service.fail else None
@@ -272,6 +277,39 @@ def test_cap_and_digest(service):
 	assert digest.startswith(":large_orange_circle: 1 more alert this hour")
 
 
+def test_critical_is_not_held_behind_the_cap(service):
+	# An evening of warnings and their resolutions fills the hour's 20; the trigger stopping is still sent at once,
+	# not in the next digest up to 15 min later. Critical messages have 20 an hour of their own
+	clock = Clock()
+	n = Make(service, clock)
+	for i in range(notify.CAP_PER_HOUR):
+		n.Problem("w{}".format(i), "warning {}".format(i))
+	n.Problem("w-late", "one warning too many")
+	assert len(service.Texts()) == notify.CAP_PER_HOUR
+	n.Problem("trigger/stopped", "the trigger has stopped", notify.CRITICAL)
+	assert service.Texts()[-1] == ":red_circle: *Test rig*: the trigger has stopped"
+	n.Resolved("trigger/stopped", "frames again") # its resolution too: it is critical's
+	assert service.Texts()[-1].endswith("resolved, after 0 s: frames again")
+	for i in range(notify.CRITICAL_PER_HOUR - 2):
+		n.Problem("c{}".format(i), "critical {}".format(i), notify.CRITICAL)
+	assert len(service.Texts()) == notify.CAP_PER_HOUR + notify.CRITICAL_PER_HOUR
+	n.Problem("c-late", "one critical too many", notify.CRITICAL) # past its own 20: the digest
+	assert len(service.Texts()) == notify.CAP_PER_HOUR + notify.CRITICAL_PER_HOUR
+	clock.now += notify.DIGEST_S
+	n.Tick()
+	assert service.Texts()[-1].startswith(":red_circle: 2 more alerts this hour")
+	assert "one warning too many" in service.Texts()[-1] and "one critical too many" in service.Texts()[-1]
+
+
+def test_a_resolved_message_of_several_lines_is_struck_through_line_by_line(service):
+	n = Make(service)
+	n.Problem("cameras/queue", "3 cameras at once: frames waiting\n- Camera0: 4 s\n- Camera1: 4 s")
+	n.Resolved("cameras/queue")
+	(update,) = [r[2] for r in service.requests if r[0] == "/api/chat.update"]
+	assert update["text"].startswith("~:large_orange_circle: *Test rig*: 3 cameras at once: frames waiting~\n"
+		"~- Camera0: 4 s~\n~- Camera1: 4 s~ :white_check_mark: resolved after 0 s")
+
+
 # ---------------------------------------------------------------------- failures to send
 
 def test_retry_then_sent(service):
@@ -327,6 +365,69 @@ def test_background_never_waits(service):
 	assert time.monotonic() - t0 < 0.3
 	assert n.Flush(10)
 	assert len(service.Texts()) == 2
+
+
+def test_critical_and_urgent_go_ahead_of_the_messages_waiting(service):
+	# A slow network: a critical message, or a recording's end summary (Note urgent), doesn't wait behind the notes
+	# queued before it
+	service.gate = threading.Event()
+	n = notify.Notifier("rig", channels=[Bot(service, notify.INFO)], say=lambda t: None)
+	n.Note("first note") # being sent: waits for the gate
+	deadline = time.monotonic() + 10
+	while not service.requests and time.monotonic() < deadline:
+		time.sleep(0.01)
+	n.Note("second note")
+	n.Note("third note", notify.WARNING)
+	n.Problem("trigger/stopped", "the trigger has stopped", notify.CRITICAL)
+	n.Note("the end summary", urgent=True)
+	service.gate.set()
+	assert n.Flush(10)
+	assert [t.split("*rig*: ", 1)[1] for t in service.Texts()] == ["first note", "the trigger has stopped",
+		"the end summary", "second note", "third note"]
+
+
+def test_finish_tries_the_others_once_and_logs_what_it_could_not_send(service, tmp_path):
+	said = []
+	n = notify.Notifier("rig", channels=[Bot(service, notify.INFO)], say=said.append)
+	n.SetLog(str(tmp_path / "alerts.log"))
+	# Ending: a note that fails is not tried again (an urgent one is), so the summary is not stuck behind it
+	service.fail, service.gate = [500, 500, 500], threading.Event()
+	n.Note("a note that fails") # being sent: waits for the gate
+	deadline = time.monotonic() + 10
+	while not service.requests and time.monotonic() < deadline:
+		time.sleep(0.01)
+	n.Note("the end summary", notify.CRITICAL, urgent=True)
+	ending = threading.Thread(target=n.Finish, args=(10, "campy-acquire"))
+	ending.start()
+	while not n.closing:
+		time.sleep(0.01)
+	service.gate.set()
+	ending.join(10)
+	assert [t.split("*rig*: ", 1)[1] for t in service.Texts()] == ["a note that fails"] + ["the end summary"] * 3
+	lines = [json.loads(line) for line in (tmp_path / "alerts.log").read_text().splitlines()]
+	assert [l["status"] for l in lines if l["status"] != "queued"] == ["FAILED on Slack U0123ABCDEF: HTTP 500: Internal Server Error",
+		"sent to Slack U0123ABCDEF"]
+	# The network too slow for what is left: said, and logged as not sent
+	service.fail, service.gate = [], threading.Event()
+	n = notify.Notifier("rig", channels=[Bot(service, notify.INFO)], say=said.append)
+	n.SetLog(str(tmp_path / "alerts.log"))
+	before = len(service.requests)
+	n.Note("the start note") # being sent: waits for the gate
+	deadline = time.monotonic() + 10
+	while len(service.requests) == before and time.monotonic() < deadline:
+		time.sleep(0.01)
+	n.Note("Recording x ended after 8 h:\n- Camera0: 1728000 frames", notify.CRITICAL, urgent=True)
+	t0 = time.monotonic()
+	assert n.Finish(0.5, "campy-acquire") is False
+	assert time.monotonic() - t0 < 2
+	assert said[-1].startswith("Alerts: campy-acquire ends with 2 messages not sent after 0.5 s (the network is slow "
+		"or down): (info) the start note; (critical) Recording x ended after 8 h:")
+	lines = [json.loads(line) for line in (tmp_path / "alerts.log").read_text().splitlines()]
+	assert [(l["severity"], l["status"]) for l in lines[-2:]] == [
+		("info", "not sent: campy-acquire ended while it was being tried (the network is slow or down)"),
+		("critical", "not sent: campy-acquire ended before it was tried (the network is slow or down)")]
+	assert lines[-1]["text"].startswith("Recording x ended after 8 h:")
+	service.gate.set()
 
 
 # ---------------------------------------------------------------------- heartbeat

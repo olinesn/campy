@@ -347,14 +347,26 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 				line.Stop() # before the end is said
 			stopWatch.Stop()
 			if guard is not None:
-				guard.Stop(failures)
-			awake.Stop()
-			CloseSystems(systems, params)
-			session.End(failures, interrupted=interrupts.count > 0, error=error)
-			# The files still empty go: a camera that saved no frames leaves
-			# what it always left. Not a stopped camera's, whose ffmpeg may still
-			# be finishing its video.
-			newfiles.Release([(path, n) for path, n in claimed if n is None or n in cameras.done])
+				guard.Halt() # its checks end before the trigger's port closes (no "the trigger is gone")
+			try:
+				CloseSystems(systems, params)
+				session.End(failures, interrupted=interrupts.count > 0, error=error)
+				# The files still empty go: a camera that saved no frames leaves
+				# what it always left. Not a stopped camera's, whose ffmpeg may still
+				# be finishing its video.
+				newfiles.Release([(path, n) for path, n in claimed if n is None or n in cameras.done])
+			except BaseException as e:
+				error = error or ErrorText(e)
+				raise
+			finally:
+				# How the recording ended, said last: a slow network holds up neither the trigger's stop nor
+				# session.json. An error that ended it makes the summary critical. The computer stays awake
+				# until it has gone (or its wait is over)
+				try:
+					if guard is not None:
+						guard.Stop(failures, error=error)
+				finally:
+					awake.Stop()
 
 	# A camera that did not record to the end makes campy's exit code 1
 	if failures:

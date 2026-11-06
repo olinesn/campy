@@ -43,13 +43,18 @@ Each problem has a key (the computer, the camera and the kind of problem):
     once as coming and going, and resolved only once it has stayed away for
     FLAP_S.
   - At most CAP_PER_HOUR messages an hour; beyond that, what would have been
-    sent goes into one digest every DIGEST_S.
+    sent goes into one digest every DIGEST_S. Critical messages have
+    CRITICAL_PER_HOUR of their own, so they never wait behind the others.
 Messages go out from a thread of their own, each request with a 10 s timeout
-and a few tries: a slow or dead network never holds up the caller. What was
+and a few tries: a slow or dead network never holds up the caller. Critical
+messages, and Note(urgent=True) (a recording's end summary) and Pause, go
+ahead of the others waiting. Finish, as a program ends, waits for them a
+while; what it can't send by then is said and logged as not sent. What was
 sent, and what failed to send, is said (say) and written to a log file
 (SetLog: alerts.log in a recording's folder), one JSON object a line: time,
 key, severity, event (problem, worse, flapping, still, resolved, note, ...),
-state (open, resolved), status (queued, sent to ..., FAILED on ...), text.
+state (open, resolved), status (queued, sent to ..., FAILED on ..., not
+sent: ...), text.
 
 Heartbeat (healthchecks.io)
 ---------------------------
@@ -64,7 +69,7 @@ Only the standard library (and PyYAML when there): campy-live's environment
 imports this too.
 """
 
-import argparse, collections, datetime, json, os, re, sys, threading, time, queue
+import argparse, collections, datetime, json, os, re, sys, threading, time
 import urllib.error, urllib.request
 
 from campy import strictjson
@@ -75,6 +80,7 @@ LEVELS = {INFO: 0, WARNING: 1, CRITICAL: 2}
 REMIND_S = 1800 # a problem still there is said again this often
 FLAP_S, FLAP_TIMES = 600, 3 # a problem that starts this many times in this many seconds comes and goes
 CAP_PER_HOUR = 20 # messages an hour, at most; then a digest
+CRITICAL_PER_HOUR = 20 # critical messages: as many again, of their own (never held behind the others)
 DIGEST_S = 900 # how often the digest goes out
 HEARTBEAT_S = 60 # how often Heartbeat pings
 TIMEOUT_S = 10 # each request
@@ -266,6 +272,14 @@ def Duration(seconds):
 	return "{} h {} min".format(s // 3600, s // 60 % 60)
 
 
+class Job:
+	# Something the sending thread does: a message (severity, key, kind, body: what alerts.log says of it), an edit,
+	# a ping or a pause. urgent: ahead of the others waiting
+	def __init__(self, run, urgent=False, severity=None, key=None, kind=None, body=None):
+		self.run, self.urgent = run, urgent
+		self.severity, self.key, self.kind, self.body = severity, key, kind, body
+
+
 class Alert:
 	def __init__(self, key, text, severity, now):
 		self.key, self.text, self.severity = key, text, severity
@@ -307,7 +321,7 @@ class Notifier:
 		self.hold = float(hold) # seconds a problem has to stay resolved before it is said to be
 		self.alerts = {} # key: Alert, open (or resolving)
 		self.starts = collections.defaultdict(collections.deque) # key: when it began, the last FLAP_S
-		self.sent = collections.deque() # when each message went out, the last hour
+		self.sent = collections.deque() # (when, severity) of each message that went out, the last hour
 		self.digest = [] # (severity, text) capped
 		self.digestAt = None
 		self.beatAt = None
@@ -315,9 +329,12 @@ class Notifier:
 		self.lock = threading.RLock()
 		self.state = state
 		self.LoadState()
-		self.jobs = None
+		self.jobs = None # (the sending thread's) the jobs waiting: urgent ones, then the others, each in order
+		self.busy = None # the job being done now
+		self.closing = False # Finish: the program ends, so a job that isn't urgent is tried once only
+		self.ready = threading.Condition()
 		if background and (self.channels or self.heartbeat):
-			self.jobs = queue.SimpleQueue()
+			self.jobs = (collections.deque(), collections.deque())
 			threading.Thread(target=self.Run, name="campy alerts", daemon=True).start()
 
 	@property
@@ -372,11 +389,15 @@ class Notifier:
 				alert.resolving = (self.clock(), text)
 			self.Tick()
 
-	def Note(self, text, severity=INFO):
-		"""A message of its own: a recording started or ended, a nightly summary."""
+	def Note(self, text, severity=INFO, urgent=False):
+		"""
+		A message of its own: a recording started or ended, a nightly summary.
+		urgent: ahead of the messages waiting to go (a recording's end summary;
+		critical ones always are).
+		"""
 		severity = severity if severity in LEVELS else INFO
 		with self.lock:
-			self.Deliver(severity, "{} {}{}".format(ICONS[severity], self.Where(None), text), None)
+			self.Deliver(severity, "{} {}{}".format(ICONS[severity], self.Where(None), text), None, urgent=urgent)
 
 	def Open(self):
 		"""The keys of the problems open now."""
@@ -429,13 +450,14 @@ class Notifier:
 		if self.beatAt is not None and now - self.beatAt < HEARTBEAT_S:
 			return
 		self.beatAt = now
-		self.Queue(lambda: self.Try(self.heartbeat, "ping", self.heartbeat.Ping))
+		self.Queue(Job(lambda: self.Try(self.heartbeat, "ping", self.heartbeat.Ping), kind="ping"))
 
 	def Pause(self):
-		"""Pauses the healthchecks.io check (the recording ended): no alert until the next ping."""
+		"""Pauses the healthchecks.io check (the recording ended): no alert until the next ping. Urgent."""
 		if self.heartbeat is not None:
 			self.beatAt = None
-			self.Queue(lambda: self.Try(self.heartbeat, "pause", self.heartbeat.Pause))
+			self.Queue(Job(lambda: self.Try(self.heartbeat, "pause", self.heartbeat.Pause, urgent=True), urgent=True,
+				kind="pause"))
 
 	# ------------------------------------------------------------------ sending
 
@@ -457,12 +479,15 @@ class Notifier:
 				": " + text if text else ": " + alert.text)
 		first = kind in ("problem", "flapping")
 		if kind == "resolved":
-			# The first message, edited to say so, where the channel can (a bot token)
+			# The first message, edited to say so, where the channel can (a bot token): each line struck through
+			# (Slack's ~...~ ends at a line's end)
 			original = alert.first or "{} {}{}".format(ICONS[alert.severity], where, alert.text)
+			struck = "\n".join("~{}~".format(line) if line.strip() else line for line in original.split("\n"))
 			for index, handle in list(alert.handles.items()):
 				channel = self.channels[index]
-				edited = "~{}~ {} resolved after {}".format(original, ICONS["resolved"], Duration(now - alert.since))
-				self.Queue(lambda c=channel, h=handle, t=edited: self.Try(c, "update", lambda: c.Update(h, t)))
+				edited = "{} {} resolved after {}".format(struck, ICONS["resolved"], Duration(now - alert.since))
+				self.Queue(Job(lambda c=channel, h=handle, t=edited: self.Try(c, "update", lambda: c.Update(h, t)),
+					kind="update", key=alert.key))
 		if first:
 			alert.first = body
 		if self.Deliver(alert.severity, body, alert if first else None, key=alert.key, kind=kind) and first:
@@ -471,16 +496,22 @@ class Notifier:
 	def Where(self, key):
 		return "*{}*: ".format(self.source) if self.source else ""
 
-	def Deliver(self, severity, body, alert, key=None, kind="note", capped=True):
-		# To every channel that takes this severity; True if any will be sent to. Over the hour's cap: into the digest
+	def Deliver(self, severity, body, alert, key=None, kind="note", capped=True, urgent=False):
+		# To every channel that takes this severity; True if any will be sent to. Over the hour's cap: into the
+		# digest. Critical messages have a cap of their own (CRITICAL_PER_HOUR), and go ahead of the others waiting
 		targets = [i for i, c in enumerate(self.channels) if LEVELS[severity] >= LEVELS[c.min]]
 		self.Log(severity, key, kind, "queued" if targets else "below every channel's min_severity", body)
 		if not targets:
 			return False
 		now = self.clock()
-		while self.sent and self.sent[0] < now - 3600:
+		while self.sent and self.sent[0][0] < now - 3600:
 			self.sent.popleft()
-		if capped and len(self.sent) >= CAP_PER_HOUR:
+		critical = severity == CRITICAL
+		if critical:
+			full = sum(1 for _, s in self.sent if s == CRITICAL) >= CRITICAL_PER_HOUR
+		else:
+			full = sum(1 for _, s in self.sent if s != CRITICAL) >= CAP_PER_HOUR
+		if capped and full:
 			self.digest.append((severity, re.sub(r"^:[a-z_]+: ", "", body)))
 			if self.digestAt is None:
 				self.digestAt = now # the first digest a DIGEST_S from now
@@ -488,45 +519,83 @@ class Notifier:
 			if alert is not None:
 				alert.said = now # it is said, in the digest: its resolution is said too
 			return False
-		self.sent.append(now)
+		self.sent.append((now, severity))
+		urgent = urgent or critical
 		for i in targets:
 			channel = self.channels[i]
 
 			def Send(c=channel, i=i):
-				handle = self.Try(c, kind, lambda: c.Send(body))
+				handle = self.Try(c, kind, lambda: c.Send(body), urgent=urgent)
 				if alert is not None and handle:
 					with self.lock:
 						alert.handles[i] = handle
 						self.SaveState()
-			self.Queue(Send)
+			self.Queue(Job(Send, urgent, severity, key, kind, body))
 		return True
 
 	def Queue(self, job):
-		if self.jobs is not None:
-			self.jobs.put(job)
-		else:
-			job()
+		if self.jobs is None:
+			job.run()
+			return
+		with self.ready:
+			self.jobs[0 if job.urgent else 1].append(job)
+			self.ready.notify_all()
 
 	def Run(self):
 		while True:
-			job = self.jobs.get()
-			if job is None:
-				continue
+			with self.ready:
+				while not (self.jobs[0] or self.jobs[1]):
+					self.ready.wait()
+				job = self.busy = (self.jobs[0] or self.jobs[1]).popleft()
 			try:
-				job()
+				job.run()
 			except Exception as e: # never let one message stop the rest
 				self.say("Alerts: {}".format(e))
+			finally:
+				with self.ready:
+					self.busy = None
+					self.ready.notify_all()
 
 	def Flush(self, timeout=30.0):
-		"""Waits (up to timeout s) until every message queued so far has gone, or failed. True if they have."""
+		"""Waits (up to timeout s) until every message queued has gone, or failed. True if they have."""
 		if self.jobs is None:
 			return True
-		done = threading.Event()
-		self.jobs.put(done.set)
-		return done.wait(timeout)
+		deadline = time.monotonic() + timeout
+		with self.ready:
+			while self.jobs[0] or self.jobs[1] or self.busy is not None:
+				left = deadline - time.monotonic()
+				if left <= 0:
+					return False
+				self.ready.wait(left)
+		return True
 
-	def Try(self, channel, kind, call):
-		# A request, tried TRIES times; what it returned, or None when it failed (said and logged)
+	def Finish(self, timeout=30.0, who="this program"):
+		"""
+		As the program ends: the messages waiting go (urgent ones first; the
+		others are tried once, not again), for up to timeout s. What has not
+		gone by then is said and written to the log ("not sent"): the sending
+		thread ends with the program. True if everything went, or failed.
+		"""
+		self.closing = True
+		if self.Flush(timeout):
+			return True
+		with self.ready:
+			busy = self.busy
+			left = ([busy] if busy is not None else []) + list(self.jobs[0]) + list(self.jobs[1])
+		said = []
+		for job in left:
+			status = "not sent: {} ended {} (the network is slow or down)".format(who, "while it was being tried" if
+				job is busy else "before it was tried")
+			self.Log(job.severity, job.key, job.kind, status, job.body)
+			text = re.sub(r"^:[a-z_]+: (\*[^*]*\*: )?", "", job.body).split("\n")[0] if job.body else job.kind
+			said.append("{}{}".format("({}) ".format(job.severity) if job.severity else "", text[:120]))
+		self.say("Alerts: {} ends with {} not sent after {:g} s (the network is slow or down): {}".format(who,
+			"1 message" if len(left) == 1 else "{} messages".format(len(left)), timeout, "; ".join(said)))
+		return False
+
+	def Try(self, channel, kind, call, urgent=False):
+		# A request, tried TRIES times (once as the program ends, unless urgent); what it returned, or None when it
+		# failed (said and logged)
 		error = None
 		for attempt in range(TRIES):
 			try:
@@ -535,7 +604,7 @@ class Notifier:
 				return result if result is not None else True
 			except SendError as e:
 				error = e
-				if e.final or attempt == TRIES - 1:
+				if e.final or attempt == TRIES - 1 or (self.closing and not urgent):
 					break
 				time.sleep(min(30.0, e.wait if e.wait is not None else RETRY_S[attempt]))
 			except Exception as e:

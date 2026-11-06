@@ -14,6 +14,8 @@ import ctypes
 import json
 import os
 import sys
+import threading
+import time
 import types
 
 import pytest
@@ -330,6 +332,75 @@ def test_a_restarted_ffmpeg_opening_its_encoder_is_no_stall(monkeypatch, tmp_pat
 	assert not [t for t in rig.Sent() if "waiting for ffmpeg" in t]
 
 
+def Stall(rig, seconds, stalled=None):
+	# seconds of frames, a check each second. stalled: {camera: from which second its ffmpeg takes no frame}: its
+	# frames pile up, and past writeQueueMaxSec (10 s, 300 frames) they are dropped. The others' are taken at once
+	stalled = stalled or {}
+	queued = getattr(rig, "queued", [0] * len(rig.names))
+	for second in range(seconds):
+		rig.clock.now += 1
+		for c in range(len(rig.names)):
+			rig.grabbed[c] += 30
+			if c in stalled and second >= stalled[c]:
+				queued[c] += 30
+				if queued[c] > 300:
+					rig.dropped[c] += queued[c] - 300
+					queued[c] = 300
+			else:
+				queued[c] = 0
+			rig.rows[c].Frame(rig.grabbed[c], queued[c])
+			rig.rows[c].Sent(rig.grabbed[c] - queued[c] - rig.dropped[c])
+			rig.rows[c].Dropped(rig.dropped[c])
+		rig.watch.Check()
+	rig.queued = queued
+
+
+def test_a_disk_stall_in_every_camera_is_one_message(monkeypatch, tmp_path):
+	# The EVO-X2's SSD stopped taking writes for 10-16 s: every camera's queue fills, then frames are dropped. Each
+	# camera's warning, worse, dropped frames and both resolutions were 15 messages for 3 cameras (40 for 8): now 5,
+	# each saying every camera. Camera2's stall shows a second after the others': within GROUP_S, it joins them
+	rig = Rig(monkeypatch, tmp_path).Start()
+	rig.Run(30)
+	Stall(rig, 13, {0: 0, 1: 0, 2: 1})
+	sent = rig.Sent()[1:]
+	assert len(sent) == 3, sent
+	assert sent[0].startswith(":large_orange_circle: *Test rig*: 2 cameras at once: frames waiting for ffmpeg. The "
+		"disk or the encoder has stalled: frames are dropped once it reaches 100 %.\n- Camera0: 3.0 s of frames "
+		"waiting for ffmpeg (30% of writeQueueMaxSec 10 s); it took ")
+	assert "\n- Camera1: 3.0 s of frames waiting" in sent[0] and "Camera2" not in sent[0]
+	assert sent[1].startswith(":red_circle: *Test rig*: worse: 3 cameras at once: frames waiting for ffmpeg.")
+	assert "\n- Camera2: 7.0 s of frames waiting" in sent[1]
+	assert sent[2].startswith(":red_circle: *Test rig*: 2 cameras at once: frames dropped: more than "
+		"writeQueueMaxSec (10 s) of frames were waiting for ffmpeg.\n- Camera0: dropped 30 frames in the last ")
+	# Each camera's own problems: on the console, and in recording.json
+	assert len([t for t in rig.said if t.startswith("Alert: Camera") and "of frames waiting for ffmpeg (" in t]) == 3
+	assert sorted(p["key"] for p in rig.watch.Status("recording")["open"]) == ["Camera0/drops", "Camera0/queue",
+		"Camera1/drops", "Camera1/queue", "Camera2/drops", "Camera2/queue"]
+	Stall(rig, int(watch.DROPS_CLEAR_S) + 10) # the disk takes writes again: caught up
+	resolved = rig.Sent()[4:]
+	assert len(resolved) == 2, resolved
+	assert resolved[0].startswith(":white_check_mark: *Test rig*: resolved, after ") and resolved[0].endswith(
+		": 3 cameras:\n- Camera0: caught up (0.0 s of frames waiting for ffmpeg)\n- Camera1: caught up (0.0 s of "
+		"frames waiting for ffmpeg)\n- Camera2: caught up (0.0 s of frames waiting for ffmpeg)")
+	assert resolved[1].endswith(": 3 cameras:\n- Camera0: no frame dropped for 2 min (90 in all)\n- Camera1: no "
+		"frame dropped for 2 min (90 in all)\n- Camera2: no frame dropped for 2 min (60 in all)")
+	assert rig.watch.groups == [] and rig.notifier.Open() == []
+	# The same stall again, 20 min on: 3 messages again, not "coming and going"
+	rig.Run(1200)
+	Stall(rig, 13, {0: 0, 1: 0, 2: 0})
+	assert len(rig.Sent()) == 6 + 3 and rig.Sent()[6].startswith(":large_orange_circle: *Test rig*: 3 cameras at once")
+
+
+def test_one_cameras_stall_while_the_others_record_is_its_own(monkeypatch, tmp_path):
+	rig = Rig(monkeypatch, tmp_path).Start()
+	rig.Run(30)
+	Stall(rig, 3, {0: 0})
+	Stall(rig, 4, {0: 0, 1: 0}) # Camera1's starts later: a message of its own
+	sent = rig.Sent()[1:]
+	assert [t.split("*Test rig*: ", 1)[1][:30] for t in sent] == ["Camera0: 3.0 s of frames waiti",
+		"Camera1: 3.0 s of frames waiti"]
+
+
 def test_cameras_that_end(monkeypatch, tmp_path):
 	rig = Rig(monkeypatch, tmp_path, names=["Camera0", "Camera1", "Camera2", "Camera3"]).Start()
 	rig.Run(10)
@@ -338,15 +409,18 @@ def test_cameras_that_end(monkeypatch, tmp_path):
 	rig.rows[2].State(status.ENDED) # its process then died without saying why
 	rig.cameras.failures["Camera2"] = ["its camera process stopped, with exit code -9 (SIGKILL): killed, or crashed"]
 	rig.Run(watch.EVERY_S, cameras=[3])
-	assert rig.Sent()[1:] == [
-		":red_circle: *Test rig*: Camera0: the camera is gone (unplugged, or its USB link lost) after frame 300. Its "
-		"recording has ended there; the other cameras go on. It needs a replug, and a new recording.",
-		":red_circle: *Test rig*: Camera1: ffmpeg stopped after taking 300 frames, and the camera has stopped. Its "
-		"video can be read up to its last fragment; the other cameras go on.",
-		":red_circle: *Test rig*: Camera2: its camera process stopped, with exit code -9 (SIGKILL): killed, or "
+	# Three cameras ending in the same check: one message (a GPU reset ends every VA-API encoder at once)
+	assert rig.Sent()[1:] == [":red_circle: *Test rig*: 3 cameras at once: their recordings have ended.\n"
+		"- Camera0: the camera is gone (unplugged, or its USB link lost) after frame 300. Its "
+		"recording has ended there; the other cameras go on. It needs a replug, and a new recording.\n"
+		"- Camera1: ffmpeg stopped after taking 300 frames, and the camera has stopped. Its "
+		"video can be read up to its last fragment; the other cameras go on.\n"
+		"- Camera2: its camera process stopped, with exit code -9 (SIGKILL): killed, or "
 		"crashed. The other cameras go on."]
+	assert sorted(p["key"] for p in rig.watch.Status("recording")["open"]) == ["Camera0/ended", "Camera1/ended",
+		"Camera2/ended"] # each camera's own, in recording.json
 	rig.Run(notify.REMIND_S + 60, cameras=[3])
-	assert len(rig.Sent()) == 4 # no reminders: once is enough
+	assert len(rig.Sent()) == 2 # no reminders: once is enough
 	# restartFfmpeg: a camera whose ffmpeg was restarted, and then stopped once too often
 	rig.rows[3].Restarted(3)
 	rig.rows[3].State(status.VIDEO_FAILED)
@@ -549,6 +623,66 @@ def test_a_failing_check_is_said_once_and_the_others_go_on(monkeypatch, tmp_path
 	rig.Run(watch.DISK_EVERY_S * 3, cameras=[0, 2])
 	assert rig.said.count("Watch: the disk check failed: disk_usage failed") == 1
 	assert "Camera1: no frame for" in rig.Sent()[-1]
+
+
+def test_a_check_that_keeps_failing_is_sent_once_and_resolved_once_it_works(monkeypatch, tmp_path):
+	# A bug in the cameras check turned off the camera alerts silently: two cameras stopped for 2 minutes, and
+	# nothing was sent. Now it is a warning, once, and it is resolved once the check works again
+	rig = Rig(monkeypatch, tmp_path).Start()
+	rig.Run(10)
+	works = rig.watch.CheckCameras
+
+	def broken(now):
+		raise KeyError("missedNs")
+	rig.watch.CheckCameras = broken
+	rig.Run(120, cameras=[])
+	assert rig.said.count("Watch: the cameras check failed: 'missedNs'") == 1
+	assert rig.Sent()[1:] == [":large_orange_circle: *Test rig*: The recording watch's cameras check failed: "
+		"'missedNs'. Its alerts are off while it fails; the recording goes on."]
+	assert [p["key"] for p in rig.watch.Status("recording")["open"]] == ["watch/cameras"]
+	rig.watch.CheckCameras = works
+	rig.Run(watch.EVERY_S, cameras=[])
+	assert rig.Sent()[-2].startswith(":red_circle: *Test rig*: No camera has had a frame for ")
+	assert rig.Sent()[-1] == ":white_check_mark: *Test rig*: resolved, after 2 min: The recording watch's cameras " \
+		"check works again."
+
+
+def test_a_failing_step_outside_the_checks_never_ends_the_watch(monkeypatch, tmp_path):
+	# Resolutions, the heartbeat and the alerts' reminders ran outside the checks' try: one that raised ended the
+	# watch's thread, and with it every alert, for the rest of the recording
+	rig = Rig(monkeypatch, tmp_path).Start()
+
+	def broken(*args):
+		raise RuntimeError("made-up error")
+	monkeypatch.setattr(rig.watch, "Settle", broken)
+	monkeypatch.setattr(rig.notifier, "Heartbeat", broken)
+	rig.Run(10)
+	assert rig.said.count("Watch: the resolutions check failed: made-up error") == 1
+	assert rig.said.count("Watch: the heartbeat check failed: made-up error") == 1
+	assert [t.split("*Test rig*: ", 1)[1][:44] for t in rig.Sent()[1:]] == [
+		"The recording watch's resolutions check fail", "The recording watch's heartbeat check failed"]
+	# In its thread: it goes on checking
+	monkeypatch.setattr(watch, "EVERY_S", 0.01)
+	monkeypatch.setattr(rig.watch, "CheckCameras", broken)
+	rig.watch.thread = threading.Thread(target=rig.watch.Run, daemon=True)
+	rig.watch.thread.start()
+	time.sleep(0.3)
+	assert rig.watch.thread.is_alive()
+	rig.watch.Halt()
+	assert not rig.watch.thread.is_alive()
+
+
+def test_an_error_that_ended_campy_acquire_makes_the_summary_critical(monkeypatch, tmp_path):
+	# campy-acquire's camera wait raised: its end summary was an info "ended", which a warning channel never got,
+	# and recording.json said "ended"
+	rig = Rig(monkeypatch, tmp_path).Start()
+	rig.Run(60)
+	rig.watch.Stop(None, error="RuntimeError: something inside cameras.Wait failed")
+	assert rig.Sent()[-1] == ":red_circle: *Test rig*: Recording 2026-10-23_01-00-00 ended after 1 min with an error " \
+		"in campy-acquire: RuntimeError: something inside cameras.Wait failed. Its log says more.\n" \
+		"- Camera0: 1800 frames\n- Camera1: 1800 frames\n- Camera2: 1800 frames"
+	with open(watch.StatusPath()) as f:
+		assert json.load(f)["state"] == "failed"
 
 
 def test_heartbeat_and_pause(monkeypatch, tmp_path):
