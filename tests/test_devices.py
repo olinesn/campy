@@ -274,7 +274,9 @@ def steps(status):
 
 
 def recording_with_cameras_ready(url):
-	return wait(url, lambda s: s["state"] == "recording" and s["devices"] and not s["devices"]["can_start_pico"],
+	# The page says so itself (no need to watch campy's console): every camera ready, in its own line and step
+	return wait(url, lambda s: s["state"] == "recording" and s["devices"] and not s["devices"]["can_start_pico"]
+		and s["devices"]["cameras_ready"] and s["devices"]["cameras_ready"][0] == s["devices"]["cameras_ready"][1],
 		timeout=90)
 
 
@@ -297,7 +299,9 @@ def test_a_bout_session_from_the_page(tmp_path, home, rig, sglx_state):
 		assert call(url, "/start", {"experiment": "Gate test", "length": 12}) == (200, {"ok": True})
 		status = recording_with_cameras_ready(url)
 		folder = the_folder(clips)
-		assert steps(status) == {"SpikeGLX": "done", "Gate check": "done", "Pico": "waiting"}
+		assert steps(status) == {"SpikeGLX": "done", "Gate check": "done", "Cameras": "done", "Pico": "waiting"}
+		cams = status["devices"]["cameras_ready"][1]
+		assert cams >= 1 and any(s["text"] == "all {} cameras are ready".format(cams) for s in status["devices"]["steps"])
 		sglx = state(sglx_state)
 		assert sglx["running"] and sglx["dir"] == str(folder / "spikeglx") and sglx["run"] == "chronic_" + folder.name
 		assert len(list((folder / "spikeglx").glob("*.bin"))) == 1 # the gate check's blink

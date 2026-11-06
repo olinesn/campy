@@ -80,6 +80,7 @@ class Devices:
 		self.stop_mode = None
 		self.stop_campy_after_pico = False
 		self.left_running = None # what was left running after campy failed on its own
+		self.cameras_ready = None # (ready, cameras) as the page last showed it
 
 	def Enabled(self):
 		return self.pico is not None or self.sglx is not None or self.windows is not None
@@ -221,6 +222,7 @@ class Devices:
 				self.StopSpikeGLX()
 				raise sessionmod.SessionError("The gate check failed: " + text)
 			self.Step("Gate check", "done", "SpikeGLX opened a file for the blink (its run's first file)")
+		self.Step("Cameras", "running", "campy is starting them: each one waits for the Pico's pulses once it's ready")
 		if self.pico is not None:
 			self.Step("Pico", "waiting", "starts once every camera is ready{}".format(", at " + Clock(self.start_at)
 				if self.start_at else ", when you press Start the Pico"))
@@ -241,7 +243,16 @@ class Devices:
 		return sum(1 for c in cams if c.get("ready")), len(cams)
 
 	def Watch(self, s):
-		"""Each moment while campy-acquire runs: the page's asks, the Pico's start at its time, a stop after its bout."""
+		"""Each moment while campy-acquire runs: the page's asks, the cameras getting ready, the Pico's start at its
+		time, a stop after its bout."""
+		if self.folder and self.cameras_ready is None or self.cameras_ready and self.cameras_ready[0] < self.cameras_ready[1]:
+			ready = self.Ready() if self.folder else None
+			if ready and ready != self.cameras_ready:
+				self.cameras_ready = ready
+				if ready[0] >= ready[1]:
+					self.Step("Cameras", "done", "all {} cameras are ready".format(ready[1]))
+				else:
+					self.Step("Cameras", "running", "{} of {} ready".format(*ready))
 		while self.wanted:
 			with self.lock:
 				ask = self.wanted.pop(0)
@@ -431,6 +442,7 @@ class Devices:
 			"start_at": Clock(self.start_at) if self.start_at else None,
 			"pico_started": sessionmod.Stamp(self.pico_started) if self.pico_started else None,
 			"can_start_pico": self.CanStartPico() if self.pico is not None and self.folder else "Not recording.",
+			"cameras_ready": list(self.cameras_ready) if self.cameras_ready else None,
 			"stop_mode": self.stop_mode, "left_running": self.left_running}
 
 

@@ -69,6 +69,7 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
 <div id="devs" class="two" hidden>
   <div class="card"><h2>Steps</h2><ul id="steps" class="steps"><li class="muted">At Start: SpikeGLX's run, the gate check, the cameras, then the Pico.</li></ul></div>
   <div class="card"><h2 id="picotitle">Pico</h2><div id="picostate" class="muted">-</div>
+    <div id="camready" style="margin-top:8px" hidden></div>
     <div id="picostart" class="row" style="margin-top:8px" hidden><button id="startpico" class="go">Start the Pico</button>
       <input id="picoat2" style="width:110px" placeholder="7:20 PM"><button id="picoatbtn">At this time</button></div>
     <div id="picoerr" class="err"></div>
@@ -114,6 +115,8 @@ async function post(path, body){
 function hms(s){ if(s==null) return "-"; s=Number(s); if(!isFinite(s)) return s>0 ? "\u221e" : "-"; s=Math.max(0,Math.round(s)); return Math.floor(s/3600)+":"+String(Math.floor(s/60)%60).padStart(2,"0")+":"+String(s%60).padStart(2,"0"); }
 function esc(t){ return String(t==null?"":t).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 function dur(s){ s = Math.max(0, Math.floor(s)); return Math.floor(s/60)+":"+String(s%60).padStart(2,"0"); }
+let camsWereReady = false; const baseTitle = document.title;
+function chime(){ try { const a = new (window.AudioContext||window.webkitAudioContext)(); [0, 0.18].forEach((t, i) => { const o = a.createOscillator(), g = a.createGain(); o.frequency.value = i ? 1100 : 880; g.gain.setValueAtTime(0.15, a.currentTime+t); g.gain.exponentialRampToValueAtTime(0.001, a.currentTime+t+0.16); o.connect(g); g.connect(a.destination); o.start(a.currentTime+t); o.stop(a.currentTime+t+0.17); }); } catch(e) {} }
 function tag(text, kind){ return '<span class="tag '+kind+'">'+esc(text)+'</span>'; }
 function render(s){
   last = s;
@@ -198,6 +201,13 @@ function renderDevices(s, st){
   $("picostate").textContent = pt;
   $("picostart").hidden = !(P && st=="recording" && !D.pico_started && !D.stop_mode);
   $("startpico").disabled = !!D.can_start_pico; $("startpico").title = D.can_start_pico || "";
+  // The cameras getting ready, said plainly (no need to watch the console): a chime and the tab's title once all are
+  const CR = D.cameras_ready, waitingPico = P && st=="recording" && !D.pico_started && !D.stop_mode;
+  $("camready").hidden = !(waitingPico && CR);
+  if(waitingPico && CR) $("camready").innerHTML = CR[0] >= CR[1] ? tag("All "+CR[1]+" cameras are ready","ok")+(D.start_at ? " The Pico starts at "+esc(D.start_at)+"." : " Press <b>Start the Pico</b>.") : tag("Cameras getting ready: "+CR[0]+" of "+CR[1],"warn");
+  const allReady = !!(waitingPico && CR && CR[0] >= CR[1]);
+  if(allReady && !camsWereReady) chime();
+  camsWereReady = allReady; document.title = allReady ? "Cameras ready · campy panel" : baseTitle;
   if(P && st=="recording" && !D.pico_started) $("picoerr").textContent = D.can_start_pico && D.can_start_pico!="Not recording." ? D.can_start_pico : "";
   const G = D.spikeglx;
   $("sglxstate").innerHTML = !G ? "-" : G.busy && G.running==null ? tag("busy","warn")+" its run is starting" : !G.answers ? tag("not answering","warn")+" "+esc(G.error||"") :
