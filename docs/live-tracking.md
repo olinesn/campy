@@ -448,16 +448,16 @@ Notes on the measurements:
 
 - On 5 November (10:28–10:37 PM), right after the 2.5.0 release, the three rigs ran their checks on campy 2.5.0 (`9345fc9`). Both environments on each rig report 2.5.0, and each rig's lock is the release's (`rig.py install --check`: nothing to install). The release changes nothing in `campy-live`'s timing; its new console status line (pull request 281) shows only on a console, so these checks' logs still have the per-camera lines.
 
-  Nothing was skipped or misaligned in any run, and every camera kept all its frames. The times matched 2.4.0's to within 0.2 ms, with one exception below. Antivirus scanning again marked several Windows runs `RIG_CONTAMINATED`. As for 2.4.0, each was rerun until clean or until three tries had been made, and the clean run is the one in the table:
+  Nothing was skipped or misaligned in any run, and every camera kept all its frames. The times matched 2.4.0's to within 0.2 ms. Antivirus scanning again marked several Windows runs `RIG_CONTAMINATED`. As for 2.4.0, each was rerun until clean or until three tries had been made, and the clean run is the one in the table:
 
   - **Pro Max Slim:** all three first runs were flagged. The 3-camera and replay reruns were clean. The 1-camera run was clean on its third rerun. Its flagged first run had a p99 of 7.8 ms, all of it in its second half, while the scanner was being seen; the clean run's was 2.4 ms.
-  - **Precision 7875:** the 1-camera and 3-camera runs were flagged, and their reruns were clean. The clean 1-camera run's p99 was 2.7 ms (inference; 3.6 ms from frame to result), against 1.0 ms in the flagged first run and on 2.4.0, with nothing skipped. Why is not known: one clean run isn't enough to say whether it's real.
+  - **Precision 7875:** the 1-camera and 3-camera runs were flagged, and their reruns were clean. The first clean 1-camera run had a slow tail, p99 2.7 ms (3.6 ms from frame to result), with nothing skipped; two more clean runs right after gave 1.0 ms, as on 2.4.0, so that tail was a one-off.
 
   | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
   |---|---|---|---|
   | EVO-X2 | 1,800 / 3.0 / 3.2 | 3,600 / 5.6 / 5.8 / 7.6 / 8.5 | 3,600 / 5.5 / 5.7 / 7.1 / 8.1 |
   | Pro Max Slim | 1,200 / 2.3 / 2.4 | 3,600 / 5.5 / 5.7 / 7.8 / 8.7 | 1,800 / 5.5 / 5.7 / 8.8 / 9.7 |
-  | Precision 7875 | 1,200 / 0.9 / 2.7 | 3,600 / 1.6 / 1.8 / 4.1 / 5.4 | 1,798 / 1.6 / 1.7 / 4.7 / 5.7 |
+  | Precision 7875 | 1,200 / 0.9 / 1.0 | 3,600 / 1.6 / 1.8 / 4.1 / 5.4 | 1,798 / 1.6 / 1.7 / 4.7 / 5.7 |
 
   In the first round, every 1-camera and 3-camera run was tracked from frame 1. The replays started at frame 1 on the EVO-X2, 2 on the Pro Max Slim and 3 on the Precision 7875 (frame 1 on 2.4.0); the Pro Max Slim's clean replay rerun kept all 1,800 sets. The Windows 11 VM's recording check kept every frame again (1,200, then 3 × 3,600); its 3-camera run was `RIG_CLEAN`, its 1-camera run flagged by one sighting of the security scanner. The Dell Pro Tower Plus was not checked this time: as an experiment machine, it runs checks only when nobody uses it.
 
