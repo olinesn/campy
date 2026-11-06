@@ -64,7 +64,8 @@ jobs:
       - name: Install campy
         # OpenCV (headless) for campy-live-view's tests: it is installed in campy-live's
         # environment, not campy's
-        run: python -m pip install -e . pytest opencv-python-headless
+        # pytest-xdist: the tests run on as many workers as the runner has CPUs (-n auto, below)
+        run: python -m pip install -e . pytest pytest-xdist opencv-python-headless
       - name: Install sleap-io (campy-live-export's tests)
         # Also campy-live's environment's, with sleap-nn; it needs Python 3.10 or later,
         # so on 3.9 those tests are skipped
@@ -74,4 +75,7 @@ jobs:
         if: env.NIREYECAM_TOKEN != ''
         run: python -m pip install "nireyecam @ git+https://x-access-token:${NIREYECAM_TOKEN}@github.com/olinesn/nir-eye-cam.git#subdirectory=host"
       - name: Test
-        run: python -m pytest -q -rs tests
+        # On 4 workers at once (pytest-xdist, -n auto = the runner's CPUs): most tests wait on real-time
+        # recordings, timers and child processes rather than the CPU, so they overlap well. --durations lists
+        # the 25 slowest, to see where the time goes when the job grows
+        run: python -m pytest -q -rs -n auto --durations=25 tests
