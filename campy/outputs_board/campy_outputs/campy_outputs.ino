@@ -3,10 +3,12 @@
 // poses, on a board of their own, next to the camera trigger's.
 //
 // The board watches the camera trigger on an input pin and counts its rising
-// edges, frame 1, 2, ... (counting starts again at 1 when the trigger comes
-// back after half a second or more without a pulse, as at the start of each
-// recording: then frame k here is campy's frame k). It says when each one
-// rose, so every output can be lined up with the frames afterwards.
+// edges, frame 1, 2, ... from when campy-rules sets it up (trig, or reset).
+// A pause in the trigger doesn't restart the count, as campy doesn't restart
+// its frame count: it goes on, and the board says how long the pause was
+// (gap). So frame k here stays campy's frame k through planned pauses (bouts),
+// and a train's every/phase stays on campy's frame numbers. It says when each
+// one rose, so every output can be lined up with the frames afterwards.
 //
 // Outputs are low at power-up. A channel is high while it is "on" (a level),
 // or during a pulse: one a command asks for, or one of its train, which the
@@ -49,12 +51,14 @@
 //   run <ch> <n> [k]                  run its train for n pulses, -1 until stopped,
 //                                     0 stop -> ok run <ch> <n> <t_us> <k> <after_us>
 //   alloff                            every channel low, every train stopped
+//   reset                             count the trigger's frames from 1 again -> ok reset
 //   time                              -> ok time <t_us> <frame> <its rise_us>
 //   hb                                nothing but keeping the watchdog quiet (no answer)
 //   status                            -> ok status ...
 // What it says on its own (t_us: the board's clock, microseconds since power-up):
 //   ready campy_outputs <version>     at power-up
 //   t <k> <t_us>                      the camera trigger rose: frame k
+//   gap <k> <us>                      frame k came us after the one before (half a second or more)
 //   p <ch> <k> <rise_us> <fall_us>    a pulse is over (k: the frame it was for, -1 none)
 //   e <ch> <0|1> <t_us> <why>         a level changed by itself: max, wd
 //   clash <ch> <k> <t_us>             a pulse skipped: its group had a channel high
@@ -76,7 +80,7 @@
 #define CRITICAL_US 300     // interrupts off this long before a change
 #define SERIAL_US 1500      // serial only when the next change is further off
 #define TRIG_SLACK_US 300   // how long past its expected time a trigger is waited for
-#define GAP_US 500000       // a trigger after this long starts again at frame 1
+#define GAP_US 500000       // a trigger after this long is after a pause: said (gap), the rate learnt again
 #ifndef INPUT_PULLDOWN
 #define INPUT_PULLDOWN INPUT
 #endif
@@ -321,10 +325,15 @@ void ScheduleTrain(int ch, int64_t now) {
 void Rose(int64_t t) {
   // The camera trigger rose at t: frame k, and the trains' pulses for it.
   // Those due right away (offset 0) go high here, in one write.
-  if (frame > 0 && t - rises[frame % RISES] >= GAP_US) { frame = 0; }
-  if (frame > 0) { period = t - rises[frame % RISES]; } else { period = 0; }
+  int64_t gap = frame > 0 ? t - rises[frame % RISES] : 0;
+  period = gap >= GAP_US ? 0 : gap; // after a pause, the rate is learnt again from the next two
   frame++;
   rises[frame % RISES] = t;
+  if (gap >= GAP_US) {
+    char said[48];
+    snprintf(said, sizeof said, "gap %lld %lld", (long long) frame, (long long) gap);
+    Queue(said);
+  }
   int8_t level[MAX_CH];
   for (int ch = 0; ch < MAX_CH; ch++) { level[ch] = -1; } // all of it before Clash reads it
   bool any = false;
@@ -567,6 +576,12 @@ void Command(char* text) {
   else if (strcmp(word, "alloff") == 0) {
     AllOff();
     snprintf(reply, sizeof reply, "ok alloff %lld", (long long) Now());
+    Say(reply);
+  }
+  else if (strcmp(word, "reset") == 0) {
+    frame = 0;
+    period = 0;
+    snprintf(reply, sizeof reply, "ok reset %lld", (long long) Now());
     Say(reply);
   }
   else if (strcmp(word, "pin") == 0) {

@@ -81,13 +81,24 @@ campy-rules checks the bound too before sending. Switching off is never
 refused. If no set comes for --stale-ms (200), what the rules switched on goes
 off (the session's trains go on: they don't depend on the poses).
 
+Several rules on one output: its level is on while any level rule holds, its
+train runs while any train rule holds, each stopped when its own last rule
+lets go. A switch-on the board didn't make (late, a clash, an error) is sent
+again with each next set while its rule holds; pulses and bursts are not
+(their moment has passed).
+
 Safety: the board's outputs are low from power-up; its watchdog switches
-everything off when campy-rules says nothing for watchdog_ms (a crash, kill
-or unplugged cable); campy-rules switches everything off when it ends
-(campy-live ended, Ctrl-C, an error). --dry-run opens no port: it logs what
-it would do. The board's frame numbers count camera triggers from 1 after a
-pause of half a second or more, as campy counts its frames: power the board
-and start campy-rules before the recording starts, so frame k is campy's.
+everything off when campy-rules says nothing for watchdog_ms (a crash, kill,
+unplugged cable, or its decision loop stuck: the heartbeat goes only while
+the loop goes round, LOOP_ALIVE_S); campy-rules then starts the rules over
+and the session's trains again. campy-rules switches everything off when it
+ends (campy-live ended, Ctrl-C, an error). Its logs are written by a thread
+of their own, so a slow disk holds up neither the decisions nor the
+heartbeat. --dry-run opens no port: it logs what it would do. The board
+counts camera triggers from 1 from when campy-rules starts, and keeps
+counting through pauses, as campy counts its frames (a pause of half a
+second or more is logged, kind gap): start campy-rules before the recording
+starts, so frame k is campy's.
 
 Output (--out, default campy-rules_<date_time>):
   <out>.npy          per set: frame, its times, each rule's value (-1 unknown)
@@ -115,7 +126,9 @@ from datetime import datetime
 import numpy as np
 
 from campy import clock, liveresults, runstats, strictjson
-from campy.frametimes import GrowingNpy
+from campy.frametimes import GrowingNpy, Writer
+
+LOOP_ALIVE_S = 0.1 # the board's heartbeat goes only while the decision loop has gone round this recently
 
 
 class RulesError(Exception):
@@ -125,6 +138,7 @@ class RulesError(Exception):
 # ---------------------------------------------------------------- the file
 
 ACTIONS = ("level", "pulse", "train", "burst")
+KINDS = ("level", "train") # what a rule holds on: an output's level, its train
 
 
 def Load(path):
@@ -514,6 +528,11 @@ class Rule:
 		return raw, change
 
 
+class Retry(tuple):
+	# A switch-on sent again (Rules.Retries): a command tuple like the others
+	pass
+
+
 class Rules:
 	"""
 	The whole file, bound to campy-live's results: Step(row) gives the
@@ -539,7 +558,17 @@ class Rules:
 		names = [r.name for r in self.rules]
 		if len(set(names)) != len(names):
 			raise RulesError("rules: two rules of the same name")
-		self.holders = {name: set() for name in self.outputs} # rules holding a level or train
+		self.by_name = {r.name: r for r in self.rules}
+		# The rules holding each output's level, and each output's train: apart, as the board keeps them apart ("off"
+		# doesn't stop a train, "run ch 0" doesn't clear a level), so each is stopped when its own last rule lets go
+		self.holders = {(name, kind): set() for name in self.outputs for kind in KINDS}
+		# Switch-ons the board didn't make (refused as late, a clash, an error): sent again with the next set while
+		# their rules still hold (Retries). Added by the board's reading thread, so behind a lock
+		self.retry = set()
+		self.retry_lock = threading.Lock()
+
+	def Holding(self, o, kind):
+		return bool(self.holders[(o.name, kind)])
 
 	def Setup(self):
 		# The board's commands for the outputs (pins, groups, limits, trains)
@@ -563,12 +592,13 @@ class Rules:
 			values.append(-1 if raw is None else int(raw))
 			if change:
 				commands += self.Act(rule, change)
-		return values, commands
+		return values, commands + self.Retries(commands)
 
 	def Act(self, rule, change):
 		o, ch = rule.output, rule.output.channel
-		holders = self.holders[o.name]
-		if rule.action in ("level", "train"):
+		if rule.action in KINDS:
+			key = (o.name, rule.action)
+			holders = self.holders[key]
 			was = bool(holders)
 			if change == "start":
 				holders.add(rule.name)
@@ -576,33 +606,79 @@ class Rules:
 				holders.discard(rule.name)
 			if bool(holders) == was:
 				return []
-			if rule.action == "level":
-				return [(rule, o, "on" if holders else "off", "on {}".format(ch) if holders else "off {}".format(ch),
-					bool(holders))]
-			return [(rule, o, "run" if holders else "stop", "run {} {}".format(ch, -1 if holders else 0), bool(holders))]
+			if not holders:
+				with self.retry_lock:
+					self.retry.discard(key)
+			return [self.Switch(rule, o, rule.action, bool(holders))]
 		if change != "start":
 			return []
 		if rule.action == "pulse":
 			return [(rule, o, "pulse", "pulse {} {}".format(ch, rule.pulse_us), True)]
-		if holders:
+		if self.Holding(o, "train"):
 			return [] # its train runs already
 		return [(rule, o, "burst", "run {} {}".format(ch, rule.pulses), True)]
 
+	@staticmethod
+	def Switch(rule, o, kind, on):
+		# The command that starts or stops an output's level or train
+		ch = o.channel
+		if kind == "level":
+			return (rule, o, "on" if on else "off", "on {}".format(ch) if on else "off {}".format(ch), on)
+		return (rule, o, "run" if on else "stop", "run {} {}".format(ch, -1 if on else 0), on)
+
+	@staticmethod
+	def Kind(action):
+		# The kind a command switches on, if it is a switch-on that is held (and so sent again if refused)
+		return {"on": "level", "run": "train"}.get(action)
+
+	def Refused(self, output_name, kind):
+		# The board didn't make a switch-on (or campy-rules didn't send it: late): send it again with the next set
+		# while a rule still holds it. From any thread
+		with self.retry_lock:
+			self.retry.add((output_name, kind))
+
+	def Retries(self, commands):
+		# The switch-ons refused before, again, for those still held (and not just sent anew)
+		with self.retry_lock:
+			if not self.retry:
+				return []
+			keys, self.retry = self.retry, set()
+		sent = {(c[1].name, self.Kind(c[2])) for c in commands}
+		out = []
+		for name, kind in sorted(keys):
+			holders = self.holders[(name, kind)]
+			if holders and (name, kind) not in sent:
+				rule = self.by_name[min(holders)]
+				out.append(Retry(self.Switch(rule, self.outputs[name], kind, True)))
+		return out
+
 	def Release(self):
-		# Everything the rules switched on, off (rules start over)
+		# Everything the rules switched on, off (rules start over): both of an output's stops whenever any of its
+		# rules held, whichever it was
 		commands = []
 		for o in self.outputs.values():
-			if self.holders[o.name]:
+			if any(self.holders[(o.name, kind)] for kind in KINDS):
 				commands.append((None, o, "off", "off {}".format(o.channel), False))
 				if o.train:
 					commands.append((None, o, "stop", "run {} 0".format(o.channel), False))
-				self.holders[o.name].clear()
+				for kind in KINDS:
+					self.holders[(o.name, kind)].clear()
+		with self.retry_lock:
+			self.retry.clear()
 		for rule in self.rules:
 			rule.Reset()
 		return commands
 
 
 # ---------------------------------------------------------------- live
+
+class LogFile:
+	# The board log as the board writes it (Board's log.write), its writes on campy-rules' writer thread
+	def __init__(self, runner, f):
+		self.runner, self.f = runner, f
+
+	def write(self, text):
+		self.runner.Write(self.f, text)
 
 def RowNs(row):
 	# When the set was complete on the host: its last camera's frame
@@ -629,8 +705,9 @@ def Stats(values):
 class FrameMatch:
 	"""
 	campy's frame F as the board's frame k: k = F + offset. Both count the
-	camera triggers from 1, so offset is 0 when the board was counting before
-	the recording started and campy grabbed every frame. Checked against the
+	camera triggers from 1, and on through pauses, so offset is 0 when the
+	board was counting before the recording started and campy grabbed every
+	frame. Checked against the
 	times, once the board has reported each frame's trigger: a frame reaches
 	the host some milliseconds after its trigger (exposure, readout, USB),
 	about the same every frame. A delay below zero, of more than 3 frames, or
@@ -639,8 +716,8 @@ class FrameMatch:
 	each time it changes.
 	"""
 
-	def __init__(self, board, say):
-		self.board, self.say = board, say
+	def __init__(self, board, say, event=None):
+		self.board, self.say, self.event = board, say, event
 		self.offset, self.changes = 0, 0
 		self.delays = runstats.Values(np.float64, floor=0.001) # ms, frame's trigger to the host: bounded memory
 		self.waiting = [] # (frame, row_first_ns) whose trigger the board hasn't reported yet
@@ -697,6 +774,9 @@ class FrameMatch:
 				best = (k, r)
 		if best is None or best[0] - frame == self.offset:
 			return
+		if self.event is not None:
+			self.event(dict(kind="rebase", frame=frame, board_frame=best[0], offset=best[0] - frame,
+				was=self.offset))
 		self.offset = best[0] - frame
 		self.changes += 1
 		self.say("campy-rules: campy's frame {} is the board's trigger {} (offset {}): the board's count and "
@@ -727,12 +807,30 @@ class Runner:
 		self.latency = dict(trigger_to_host=[], host_to_pose=[], pose_to_read=[], read_to_decided=[],
 			decided_to_written=[], written_to_pin=[], trigger_to_pin=[], host_to_pin=[])
 		self.counts = dict(rows=0, commands=0, late_host=0, late_board=0, clash=0, pulses=0, stale=0, errors=0,
-			watchdog=0)
+			watchdog=0, retries=0, gaps=0)
+		self.rules = None
+		self.writer = None    # the log files' writes, on a thread of their own (frametimes.Writer)
+		self.beat = None      # when the decision loop last went round (time.monotonic), None: not looping yet
+		self.watchdog_fired = threading.Event() # the board's watchdog switched everything off: Loop recovers
+		self.said = set()     # the board's errors said already (a retried command's error is said once)
+
+	def Alive(self):
+		# Whether the board may hear the heartbeat: the decision loop isn't stuck. Else the board's watchdog fires
+		return self.beat is None or time.monotonic() - self.beat < LOOP_ALIVE_S
+
+	def Write(self, f, text):
+		# A line for a log file: the writer thread writes it, so a slow disk never holds up the decisions, the
+		# board's reading thread or its heartbeat
+		if self.writer is None:
+			f.write(text)
+		else:
+			self.writer.Do(f.write, text)
 
 	def Event(self, record):
+		text = strictjson.dumps(record, separators=(",", ":")) + "\n"
 		with self.lock:
 			if self.events is not None:
-				self.events.write(strictjson.dumps(record, separators=(",", ":")) + "\n")
+				self.Write(self.events, text)
 
 	def Listen(self, kind, fields, heard_ns, line):
 		if kind == "answer":
@@ -760,7 +858,12 @@ class Runner:
 				self.counts["clash"] += 1
 			elif words[:1] == ["err"]:
 				self.counts["errors"] += 1
-				self.say("campy-rules: the board refused {!r}: {}".format(answer.command, answer.line))
+				said = (record.get("output"), answer.line)
+				if said not in self.said:
+					self.said.add(said)
+					self.say("campy-rules: the board refused {!r}: {}".format(answer.command, answer.line))
+			if words[:1] == ["err"]:
+				self.Refused(record)
 			self.Event(record)
 		elif kind == "p":
 			ch, k, rise, fall = (int(x) for x in fields[:4])
@@ -772,8 +875,15 @@ class Runner:
 				self.counts["clash"] += 1
 			if kind == "wd":
 				self.counts["watchdog"] += 1
-				self.say("campy-rules: the board's watchdog switched everything off ({}).".format(line))
+				self.say("campy-rules: the board's watchdog switched everything off ({}): the rules start over and "
+					"the session's trains start again.".format(line))
+				self.watchdog_fired.set()
 			self.Event(dict(kind=kind, line=line, heard_ns=heard_ns))
+		elif kind == "gap":
+			# The trigger paused (the board keeps counting its frames: campy's frame k stays the board's k)
+			self.counts["gaps"] += 1
+			k, gap_us = (int(x) for x in fields[:2])
+			self.Event(dict(kind="gap", board_frame=k, gap_ms=gap_us / 1e3, heard_ns=heard_ns, line=line))
 		elif kind == "lost":
 			self.say("campy-rules: {}. The board switches its outputs off by itself (its watchdog). "
 				"Stopping.".format(fields[0]))
@@ -794,6 +904,12 @@ class Runner:
 		if r.get("after_us") is not None:
 			L["trigger_to_pin"].append(r["after_us"] / 1e3)
 
+	def Refused(self, record):
+		# A switch-on that a rule holds didn't happen: sent again with the next set while the rule still holds
+		kind = Rules.Kind(record.get("action"))
+		if kind is not None and record.get("rule") is not None and self.rules is not None:
+			self.rules.Refused(record["output"], kind)
+
 	def Send(self, rule, output, action, text, framed, row_info=None):
 		record = dict(kind="command", rule=rule.name if rule else None, output=output.name, channel=output.channel,
 			action=action, command=text)
@@ -806,11 +922,14 @@ class Runner:
 				self.counts["late_host"] += 1
 				record.update(answer="late (campy-rules: {:.1f} ms after the frame)".format(
 					(row_info["decided_ns"] - since) / 1e6))
+				self.Refused(record)
 				self.Event(record)
 				return
 			text = "{} {}".format(text, row_info["k"])
 			record["command"] = text
 		self.counts["commands"] += 1
+		if record.get("retry"):
+			self.counts["retries"] += 1
 		if self.board is None:
 			record["answer"] = "dry run"
 			self.Event(record)
@@ -836,8 +955,10 @@ class Runner:
 		rows_type = np.dtype([("frame", "<i8"), ("row_ns", "<i8"), ("pose_ns", "<i8"), ("read_ns", "<i8"),
 			("decided_ns", "<i8"), ("board_frame", "<i8"), ("values", "<i1", (max(1, len(rules.rules)),)),
 			("holding", "?", (max(1, len(rules.rules)),))])
+		self.rules = rules
 		log = GrowingNpy(out + ".npy", rows_type, header_bytes=1024)
 		self.events = open(out + ".events.jsonl", "x")
+		self.writer = Writer("campy-rules logs", out + "'s logs")
 		boardlog = None
 		match = None
 		try:
@@ -847,12 +968,13 @@ class Runner:
 				if not port:
 					raise RulesError("no port for the outputs board: --port, or board: port: in the rules")
 				boardlog = open(out + ".board.txt", "x", buffering=1)
-				self.board = outputs.Board(port, log=boardlog, listener=self.Listen, say=self.say)
+				self.board = outputs.Board(port, log=LogFile(self, boardlog), listener=self.Listen, say=self.say,
+					alive=self.Alive)
 				for command in ["alloff", "trig {}".format(int(board_cfg.get("trigger_pin", 10))),
 						"watchdog {}".format(int(board_cfg.get("watchdog_ms", 250))),
 						"bound {}".format(int(self.bound_ms * 1000))] + rules.Setup():
 					self.board.Command(command).Ok()
-				match = FrameMatch(self.board, self.say)
+				match = FrameMatch(self.board, self.say, self.Event)
 			self.say("campy-rules: {} rules on {} outputs, {}; results from {} ({} cameras, {}).".format(
 				len(rules.rules), len(rules.outputs), "dry run (no board)" if self.board is None else
 				"board on {}".format(args.port or board_cfg.get("port")), name, len(d.cameras),
@@ -871,6 +993,11 @@ class Runner:
 			if self.board is not None:
 				self.board.Close()
 			results.Close()
+			try:
+				self.writer.Close() # the writes still queued
+			except Exception as e:
+				self.say("campy-rules: could not write its logs: {}".format(e))
+			self.writer = None
 			log.Close()
 			summary = self.Summary(rules, out, match)
 			with self.lock:
@@ -907,6 +1034,13 @@ class Runner:
 		released = True
 		end = time.monotonic() + self.args.duration_s if self.args.duration_s else None
 		while not self.stop.is_set():
+			self.beat = time.monotonic()
+			if self.watchdog_fired.is_set():
+				# The board switched everything off (campy-rules was quiet too long): the rules start over from the
+				# next sets, and the session's trains start again
+				self.watchdog_fired.clear()
+				for c in rules.Release() + rules.SessionStarts():
+					self.Send(*c)
 			latest = results.Latest()
 			if latest <= n:
 				now = time.monotonic()
@@ -927,6 +1061,7 @@ class Runner:
 				continue
 			first = max(n + 1, latest - results.slots + 1)
 			for m in range(first, latest + 1):
+				self.beat = time.monotonic()
 				row = results.Read(m)
 				read_ns = clock.HostNs()
 				if row is None:
@@ -948,9 +1083,13 @@ class Runner:
 		info = dict(frame=frame, k=k if self.board is not None else None, row_ns=row_ns, row_first_ns=first,
 			pose_ns=pose_ns, read_ns=read_ns, decided_ns=decided_ns, trigger_ns=trigger_ns)
 		for c in commands:
-			self.Send(*c, row_info=info)
-		log.Append(np.array([(frame, row_ns, pose_ns, read_ns, decided_ns, k if match else -1,
-			values or [0], [r.holding for r in rules.rules] or [False])], log.dtype))
+			self.Send(*c, row_info=dict(info, retry=True) if isinstance(c, Retry) else info)
+		row = np.array([(frame, row_ns, pose_ns, read_ns, decided_ns, k if match else -1,
+			values or [0], [r.holding for r in rules.rules] or [False])], log.dtype)
+		if self.writer is None:
+			log.Append(row)
+		else:
+			self.writer.Do(log.Append, row) # a write, a header rewrite and a flush: never on the decision thread
 
 	def Summary(self, rules, out, match):
 		if match is not None:

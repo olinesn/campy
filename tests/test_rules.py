@@ -204,6 +204,62 @@ def test_trains_and_bursts_and_several_rules_on_one_output():
 	assert steps(r, [make_row(k + 1, p) for k, p in enumerate(seq)]) == [["run 0 5"], ["run 0 -1"], [], [], ["run 0 0"]]
 
 
+@pytest.mark.parametrize("first", ["level", "train"])
+def test_a_level_and_a_train_on_one_output_each_stop_with_their_own_rules(first):
+	# One rule holds the laser's level, the other its train. Whichever starts and stops first, each sends its own
+	# stop when its own last rule lets go ("off" doesn't stop a train on the board, "run ch 0" doesn't clear a level)
+	out = dict(OUT, laser={"channel": 2, "pin": 4, "train": {"every": 1, "width_us": 3000}})
+	actions = {"level": "level", "train": "train"}
+	second = "train" if first == "level" else "level"
+	r = build({"outputs": out, "regions": {"nest": NEST}, "rules": [
+		{"name": first, "when": {"inside": {"region": "nest", "animal": 0, "node": "nose"}},
+			"do": {"output": "laser", "action": actions[first]}},
+		{"name": second, "when": {"inside": {"region": "nest", "animal": 1, "node": "nose"}},
+			"do": {"output": "laser", "action": actions[second]}}]})
+	i, o = [50, 50, 10], [500, 0, 0]
+	seq = [{0: {"nose": i}, 1: {"nose": o}}, {0: {"nose": i}, 1: {"nose": i}}, {0: {"nose": o}, 1: {"nose": i}},
+		{0: {"nose": o}, 1: {"nose": o}}]
+	start = {"level": "on 2", "train": "run 2 -1"}
+	stop = {"level": "off 2", "train": "run 2 0"}
+	got = steps(r, [make_row(k + 1, p) for k, p in enumerate(seq)])
+	assert got == [[start[first]], [start[second]], [stop[first]], [stop[second]]]
+	# The board's state, as the sketch keeps it: nothing left on
+	level = train = False
+	for text in sum(got, []):
+		level = {"on 2": True, "off 2": False}.get(text, level)
+		train = {"run 2 -1": True, "run 2 0": False}.get(text, train)
+	assert not level and not train
+	assert r.Release() == []
+
+
+def test_release_stops_a_level_and_a_train_on_one_output():
+	out = dict(OUT, laser={"channel": 2, "pin": 4, "train": {"every": 1, "width_us": 3000}})
+	r = build({"outputs": out, "regions": {"nest": NEST}, "rules": [
+		{"name": "t", "when": {"inside": {"region": "nest", "animal": 0, "node": "nose"}},
+			"do": {"output": "laser", "action": "train"}}]})
+	steps(r, [make_row(1, {0: {"nose": [50, 50, 10]}})])
+	assert sorted(c[3] for c in r.Release()) == ["off 2", "run 2 0"]
+
+
+def test_a_refused_switch_on_is_sent_again_while_its_rule_holds():
+	r = build({"outputs": OUT, "regions": {"nest": NEST}, "rules": [
+		{"name": "m", "when": {"inside": {"region": "nest", "animal": 0, "node": "nose"}}, "do": {"output": "laser"}},
+		{"name": "b", "when": {"inside": {"region": "nest", "animal": 0, "node": "nose"}}, "do": {"output": "blue"}}]})
+	i, o = {0: {"nose": [50, 50, 10]}}, {0: {"nose": [500, 0, 0]}}
+	assert steps(r, [make_row(1, i)]) == [["on 2", "run 0 -1"]]
+	r.Refused("laser", "level")
+	r.Refused("blue", "train")
+	values, commands = r.Step(make_row(2, i), 2 * 16_666_667)
+	assert sorted(c[3] for c in commands) == ["on 2", "run 0 -1"]
+	assert all(isinstance(c, rules.Retry) for c in commands)
+	values, commands = r.Step(make_row(3, i), 3 * 16_666_667)
+	assert commands == [] # the board said ok: nothing more
+	# Refused, then the rule lets go before the next set: nothing is sent again
+	r.Refused("laser", "level")
+	assert sorted(c[3] for c in r.Step(make_row(4, o), 4 * 16_666_667)[1]) == ["off 2", "run 0 0"]
+	assert r.Step(make_row(5, o), 5 * 16_666_667)[1] == []
+
+
 def test_setup_and_session_trains():
 	r = build({"outputs": OUT, "rules": []})
 	setup = r.Setup()
@@ -532,3 +588,204 @@ def test_frame_match_reads_only_the_last_rises_and_keeps_its_delays_bounded(monk
 	s = rules.Stats(delays)
 	assert s["n"] == 2000 and s["max"] == round(values.max(), 3) and s["min"] == round(values.min(), 3)
 	assert s["p50"] == pytest.approx(np.percentile(values, 50), rel=2e-3)
+
+
+class SketchPort:
+	"""
+	A serial port whose board answers every command as the sketch does, or as
+	refuse(words) says (a line, or None for the sketch's answer). Keeps every
+	line written, with its host time.
+	"""
+
+	def __init__(self, refuse=None):
+		self.written, self.incoming, self.lock = [], [], threading.Lock()
+		self.refuse = refuse
+
+	def write(self, data):
+		text = data.decode().strip()
+		now = clock.HostNs()
+		with self.lock:
+			self.written.append((now, text))
+			w = text.split()
+			if not w or w[0] == "hb":
+				return
+			reply = self.refuse(w) if self.refuse else None
+			if reply is None:
+				if w[0] == "id":
+					reply = "ok campy_outputs 1"
+				elif w[0] == "time":
+					reply = "ok time {} 0 -1".format(now // 1000)
+				elif w[0] in ("on", "pulse"):
+					reply = "ok {} {} {} -1 -1".format(w[0], w[1], now // 1000)
+				elif w[0] == "off":
+					reply = "ok off {} {}".format(w[1], now // 1000)
+				elif w[0] == "run":
+					reply = "ok run {} {} {} -1 -1".format(w[1], w[2], now // 1000)
+				else:
+					reply = "ok " + w[0]
+			self.incoming.append((reply + "\r\n").encode())
+
+	def read(self, n):
+		with self.lock:
+			if self.incoming:
+				return self.incoming.pop(0)
+		time.sleep(0.001)
+		return b""
+
+	def Say(self, line):
+		with self.lock:
+			self.incoming.append((line + "\r\n").encode())
+
+	def Lines(self):
+		with self.lock:
+			return list(self.written)
+
+	def close(self):
+		pass
+
+
+def run_on_port(monkeypatch, tmp_path, port, config, feed_rows, **arg):
+	"""
+	campy-rules with a board on port, and campy-live's rows: feed_rows(feed,
+	runner) writes them. Returns the runner and its events.
+	"""
+	real = outputs.Board
+	monkeypatch.setattr(outputs, "Board", lambda name, **kw: real(port=name, connection=port, **kw))
+	prefix = name()
+	feed = Feed(prefix)
+	out = str(tmp_path / "rules")
+	args = args_for(prefix, out)
+	args.port = "fake"
+	args.__dict__.update(arg)
+	runner = rules.Runner(args, config)
+	said = []
+	runner.say = said.append
+	thread, result = start(runner)
+	try:
+		deadline = time.monotonic() + 10
+		while runner.board is None and time.monotonic() < deadline:
+			time.sleep(0.01)
+		time.sleep(0.1)
+		feed_rows(feed, runner)
+	finally:
+		runner.stop.set()
+		thread.join(10)
+		feed.Close()
+	assert result.get("code") == 0, said
+	runner.said_lines = said
+	return runner, [json.loads(l) for l in open(out + ".events.jsonl")]
+
+
+IN_NEST = {0: {"nose": [50, 50, 10]}}
+LASER_RULE = {"outputs": OUT, "regions": {"nest": NEST}, "rules": [
+	{"name": "m0", "when": {"inside": {"region": "nest", "animal": 0, "node": "nose"}}, "do": {"output": "laser"}}]}
+
+
+def test_refused_switch_ons_are_sent_again_with_the_next_sets(monkeypatch, tmp_path):
+	# The first set reaches campy-rules too late (it doesn't send), the board then refuses the switch-on as late,
+	# then for a clash; each time the next fresh set, the mouse still in the nest, sends it again, and the 4th
+	# set's is made. Before, the laser stayed off while the rows said the rule held
+	answers = iter(["err late 2 2 50000", "err clash 2 3 0"])
+
+	def refuse(w):
+		return next(answers, None) if w[0] == "on" else None
+	port = SketchPort(refuse)
+
+	def feed_rows(feed, runner):
+		feed.Write(make_row(1, IN_NEST, t_ns=clock.HostNs() - 60_000_000)) # 60 ms old: over the 40 ms bound
+		for k in range(2, 8):
+			time.sleep(1 / 60)
+			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
+		time.sleep(0.1)
+	runner, events = run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows)
+	commands = [e for e in events if e["kind"] == "command" and e["output"] == "laser"]
+	assert [(e["frame"], e["answer"].split()[:2]) for e in commands] == [(1, ["late", "(campy-rules:"]),
+		(2, ["err", "late"]), (3, ["err", "clash"]), (4, ["ok", "on"])]
+	assert [bool(e.get("retry")) for e in commands] == [False, True, True, True]
+	ons = [x for _, x in port.Lines() if x.startswith("on 2")]
+	assert ons == ["on 2 2", "on 2 3", "on 2 4"]
+	c = runner.counts
+	assert (c["late_host"], c["late_board"], c["clash"], c["retries"]) == (1, 1, 1, 3)
+
+
+def test_after_the_watchdog_the_rules_start_over_and_the_session_trains_again(monkeypatch, tmp_path):
+	port = SketchPort()
+
+	def feed_rows(feed, runner):
+		for k in range(1, 6):
+			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
+			time.sleep(1 / 60)
+		port.Say("wd 123456") # the board's watchdog switched everything off
+		time.sleep(0.05)
+		for k in range(6, 11):
+			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
+			time.sleep(1 / 60)
+		time.sleep(0.1)
+	runner, events = run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows)
+	lines = [x for _, x in port.Lines() if x.split()[0] in ("on", "off", "run")]
+	assert lines[:2] == ["run 1 -1", "on 2 1"]
+	after = lines[2:]
+	assert after[:2] == ["off 2", "run 1 -1"] # released, the session's train started again
+	assert after[2].startswith("on 2 ") and int(after[2].split()[2]) >= 6 # the rule holds again: on again
+	assert runner.counts["watchdog"] == 1
+
+
+def test_a_stuck_decision_loop_lets_the_board_watchdog_fire(monkeypatch, tmp_path):
+	# The decision loop held up for 1 s with the laser on: the heartbeat stops LOOP_ALIVE_S later, so the board
+	# hears nothing for far longer than its watchdog_ms (250) and switches everything off. Before, the reading
+	# thread kept the heartbeat going whatever the loop did
+	port = SketchPort()
+	held = {}
+	real_row = rules.Runner.Row
+
+	def Row(self, row, *a):
+		if int(row["frame"]) == 5:
+			held["at"] = clock.HostNs()
+			time.sleep(1.0)
+			held["end"] = clock.HostNs()
+		return real_row(self, row, *a)
+	monkeypatch.setattr(rules.Runner, "Row", Row)
+
+	def feed_rows(feed, runner):
+		for k in range(1, 8):
+			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
+			time.sleep(1 / 60)
+		time.sleep(1.3)
+	run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows)
+	# Nothing at all on the port from LOOP_ALIVE_S into the hold to its end: 0.9 s, well over the watchdog's 250 ms
+	quiet_from = held["at"] + int((rules.LOOP_ALIVE_S + 0.02) * 1e9)
+	assert [x for t, x in port.Lines() if quiet_from <= t <= held["end"]] == []
+	# Heartbeats before it, as usual
+	assert any(x == "hb" and t < held["at"] for t, x in port.Lines())
+
+
+def test_a_slow_row_log_write_holds_up_neither_the_stale_check_nor_the_heartbeat(monkeypatch, tmp_path):
+	# One write of the rows' log held 1.5 s by the disk, the laser on, campy-live's rows then stopping: the laser
+	# still goes off about --stale-ms (200) after the last row, and the heartbeat goes on. Before, the write was on
+	# the decision thread: off came 1.7 s after the last row
+	port = SketchPort()
+	from campy.frametimes import GrowingNpy
+
+	class SlowLog(GrowingNpy):
+		calls = 0
+
+		def Append(self, values):
+			SlowLog.calls += 1
+			if SlowLog.calls == 5:
+				time.sleep(1.5)
+			return super().Append(values)
+	monkeypatch.setattr(rules, "GrowingNpy", SlowLog)
+	last = {}
+
+	def feed_rows(feed, runner):
+		for k in range(1, 6):
+			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
+			last["row"] = clock.HostNs()
+			time.sleep(1 / 60)
+		time.sleep(1.8)
+	runner, events = run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows)
+	off = next(t for t, x in port.Lines() if x.startswith("off 2"))
+	assert 150 <= (off - last["row"]) / 1e6 <= 700, (off - last["row"]) / 1e6
+	written = [t for t, x in port.Lines() if x == "hb" and last["row"] < t < last["row"] + 1_400_000_000]
+	assert len(written) >= 10
+	assert len(np.load(str(tmp_path / "rules.npy"))) == 5 # every row logged in the end

@@ -179,12 +179,23 @@ class TestSets:
 		info, self.rounds = labelmerge.VideoInfo(self.labels)
 		if not any(info):
 			raise EvalError("{} isn't campy-label-merge's test package (no cameras in its provenance)".format(path))
-		self.sets = [] # (round, frame, {camera index: (video, LabeledFrame)})
-		by_round = {}
+		self.sets = [] # (round, frame, cameras, {camera index: LabeledFrame})
+		# Each round's videos, one per camera. A package made before round names
+		# were checked can hold two rounds of one name: a camera seen again
+		# starts the next round of that name (each round's videos were added
+		# together), so neither's sets are lost.
+		groups = [] # (round, {camera: video})
+		last = {}
 		for v, i in zip(self.labels.videos, info):
-			if i:
-				by_round.setdefault(i["round"], {})[i["camera"]] = v
-		for rnd, videos in sorted(by_round.items()):
+			if not i:
+				continue
+			g = last.get(i["round"])
+			if g is None or i["camera"] in g[1]:
+				g = (i["round"], {})
+				groups.append(g)
+				last[i["round"]] = g
+			g[1][i["camera"]] = v
+		for rnd, videos in sorted(groups, key=lambda g: g[0]):
 			cameras = self.rounds.get(rnd, {}).get("cameras") or sorted(videos)
 			frames = {}
 			for c, cam in enumerate(cameras):

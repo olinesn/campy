@@ -39,7 +39,14 @@ package (the 15-node one for the centroid model, the 12-node one for the
 centered-instance model): each gets the nodes it has.
 --test-into <rig's test package> adds the test frames to that rig's test set
 (made if it isn't there yet). The test set only grows: a test frame is never
-moved to training.
+moved to training. Give --test-into on one of the two runs only, the one
+whose nodes are the test package's (the 15-node one): the other run's nodes
+differ. That is checked before anything is written.
+
+Each package is one round (campy-label-pack's --name). A round already in
+--train-into or --test-into is refused, so merging the same labels twice
+doesn't add its frames twice; --replace-round replaces that round's frames
+there (labels corrected again).
 
 It needs sleap-io (campy-live's environment has it).
 """
@@ -122,14 +129,24 @@ def Convert(inst, skeleton, tracks):
 	return sio.Instance.from_numpy(out, skeleton=skeleton, track=track)
 
 
+def Rounds(labels):
+	"""The rounds a package made by campy-label-merge holds: its rounds' names
+	and its videos'."""
+	info, rounds = VideoInfo(labels)
+	return set(rounds) | {i["round"] for i in info if i}
+
+
 def Merge(package_path, labels_path, skeleton=None, out=None, keep_emptied=False, train_into=None,
-		train_out=None, test_into=None):
+		train_out=None, test_into=None, replace_round=False):
 	import sleap_io as sio
+	if train_into and not train_out:
+		raise MergeError("--train-into needs --train-out, the new training package")
 	package = sio.load_slp(package_path)
 	labels = sio.load_slp(labels_path, open_videos=False)
 	sets = SetTable(package)
 	videos = MatchVideos(package, labels)
 	base = sio.load_slp(train_into) if train_into else None
+	old_test = sio.load_slp(test_into) if test_into and os.path.isfile(test_into) else None
 	if skeleton:
 		skel = sio.load_slp(skeleton, open_videos=False).skeletons[0] if skeleton.endswith(".slp") else None
 		if skel is None:
@@ -147,6 +164,25 @@ def Merge(package_path, labels_path, skeleton=None, out=None, keep_emptied=False
 	if not have & {n.name for n in skel.nodes}:
 		raise MergeError("the labels' nodes ({}) and the skeleton's ({}) have none in common".format(
 			", ".join(sorted(have)), ", ".join(n.name for n in skel.nodes)))
+	# Before anything is written: does the test package take these nodes, and
+	# is this round already in the packages it goes into?
+	nodes = [n.name for n in skel.nodes]
+	if old_test is not None and [n.name for n in old_test.skeletons[0].nodes] != nodes:
+		raise MergeError("{}'s nodes ({}) differ from the ones written now ({}, {}): give --test-into on the run "
+			"whose nodes are the test package's only".format(test_into, ", ".join(n.name for n in
+			old_test.skeletons[0].nodes), ", ".join(nodes), "--skeleton's" if skeleton else "--train-into's" if base
+			is not None else "the package's"))
+	round_name = package.provenance["campy-label-pack"].get("name")
+	if not round_name:
+		round_name = os.path.basename(package_path)
+		for ext in (".pkg.slp", ".slp"):
+			if round_name.endswith(ext):
+				round_name = round_name[:-len(ext)]
+				break
+	for what, into, path in (("training", base, train_into), ("test", old_test, test_into)):
+		if into is not None and round_name in Rounds(into) and not replace_round:
+			raise MergeError("{} ({} package) already has round {}: was it merged before? --replace-round "
+				"replaces that round's frames with these".format(path, what, round_name))
 
 	# What the package offered on each camera frame, and what came back
 	offered = {(v, lf.frame_idx): len(lf.instances) for v in package.videos for lf in package.find(v)}
@@ -189,7 +225,6 @@ def Merge(package_path, labels_path, skeleton=None, out=None, keep_emptied=False
 	written = {}
 
 	prov = package.provenance["campy-label-pack"]
-	round_name = prov.get("name") or name
 
 	def save(frames, path):
 		used = [v for v in package.videos if any(f.video is v for f in frames)]
@@ -198,7 +233,8 @@ def Merge(package_path, labels_path, skeleton=None, out=None, keep_emptied=False
 				rounds={round_name: dict(package=os.path.abspath(package_path), labels=os.path.abspath(labels_path),
 				cameras=prov.get("cameras"), calibration=prov.get("calibration"),
 				sets={str(j): dict(campy_frame=t.get("campy_frame"), recording=t.get("recording"), why=t.get("why"),
-				test=int(t.get("test", 0))) for j, t in sets.items()})})})
+				test=int(t.get("test", 0)), **{k: t[k] for k in ("split_source", "split_s") if k in t})
+				for j, t in sets.items()})})})
 		with contextlib.redirect_stdout(io.StringIO()):
 			new.save(path, embed="user", verbose=False)
 		return path
@@ -214,20 +250,17 @@ def Merge(package_path, labels_path, skeleton=None, out=None, keep_emptied=False
 	written["table"] = os.path.join(folder, name + ".merge.csv")
 
 	if base is not None and train:
-		if not train_out:
-			raise MergeError("--train-into needs --train-out, the new training package")
-		written["train_into"] = Append(base, written["train"], train_out)
+		written["train_into"] = Append(base, written["train"], train_out, replace=replace_round)
 	if test_into and test:
-		old = sio.load_slp(test_into) if os.path.isfile(test_into) else None
-		if old is not None and [n.name for n in old.skeletons[0].nodes] != [n.name for n in skel.nodes]:
-			raise MergeError("{}'s nodes differ from --skeleton's".format(test_into))
-		written["test_into"] = Append(old, written["test"], test_into)
+		written["test_into"] = Append(old_test, written["test"], test_into, replace=replace_round)
 	return dict(counts=counts, train=len(train), test=len(test), written=written)
 
 
-def Append(base, new_path, out_path):
+def Append(base, new_path, out_path, replace=False):
 	"""base (Labels, or None) with new_path's frames added, saved with every
-	labelled frame embedded at out_path (written beside it first, then moved)."""
+	labelled frame embedded at out_path (written beside it first, then moved).
+	A round base already has is refused, or with replace, its frames and
+	videos in base are dropped first."""
 	import sleap_io as sio
 	new = sio.load_slp(new_path)
 	new_videos, new_rounds = VideoInfo(new)
@@ -238,13 +271,22 @@ def Append(base, new_path, out_path):
 		skel = base.skeletons[0]
 		if [n.name for n in skel.nodes] != [n.name for n in new.skeletons[0].nodes]:
 			raise MergeError("the new frames' nodes differ from {}'s".format(out_path))
+		base_videos, rounds = VideoInfo(base)
+		again = set(new_rounds) & Rounds(base)
+		if again and not replace:
+			raise MergeError("{} already has round {}".format(out_path, ", ".join(sorted(again))))
+		keep = [v for v, i in zip(base.videos, base_videos) if not (i and i["round"] in again)]
+		base_videos = [i for v, i in zip(base.videos, base_videos) if not (i and i["round"] in again)]
+		for r in again:
+			rounds.pop(r, None)
+		kept = set(map(id, keep))
 		tracks = {t.name: t for t in base.tracks}
-		frames = list(base.labeled_frames) + [sio.LabeledFrame(video=lf.video, frame_idx=lf.frame_idx,
+		frames = [lf for lf in base.labeled_frames if id(lf.video) in kept]
+		frames += [sio.LabeledFrame(video=lf.video, frame_idx=lf.frame_idx,
 			instances=[sio.Instance.from_numpy(i.numpy(), skeleton=skel, track=None if i.track is None else
 			tracks.setdefault(i.track.name, sio.Track(name=i.track.name))) for i in lf.user_instances]) for lf in new]
-		videos = list(base.videos) + list(new.videos)
+		videos = keep + list(new.videos)
 		tracks = list(tracks.values())
-		base_videos, rounds = VideoInfo(base)
 		info = base_videos + new_videos
 		rounds.update(new_rounds)
 		provenance = {k: v for k, v in (base.provenance or {}).items() if k != KEY}
@@ -275,7 +317,9 @@ def Main(argv=None):
 	p.add_argument("--train-into", default="", help="A training package to add the new training frames to.")
 	p.add_argument("--train-out", default="", help="With --train-into: the new training package.")
 	p.add_argument("--test-into", default="", help="The rig's test package to add the test frames to (made if "
-		"it isn't there).")
+		"it isn't there). With two training packages, give it on one of the two runs only.")
+	p.add_argument("--replace-round", action="store_true", help="This round is already in --train-into or "
+		"--test-into (merged before): replace its frames there with these.")
 	args = p.parse_args(argv)
 	try:
 		import sleap_io
@@ -286,7 +330,7 @@ def Main(argv=None):
 	try:
 		r = Merge(args.package, args.labels, skeleton=args.skeleton or None, out=args.out or None,
 			keep_emptied=args.keep_emptied, train_into=args.train_into or None, train_out=args.train_out or None,
-			test_into=args.test_into or None)
+			test_into=args.test_into or None, replace_round=args.replace_round)
 	except MergeError as e:
 		print("campy-label-merge: {}".format(e), file=sys.stderr)
 		return 1
