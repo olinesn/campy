@@ -143,11 +143,21 @@ The view puts a red label on a camera's tile when something is wrong with it ([W
 
 **`campy-live-export` says `no node names: the log has no summary; give --skeleton <model folder>`.** The log's summary has no skeleton: a log from campy 2.1.0rc6 or earlier, a campy-live stopped by an error, or one that ran untrained models (`--model random`, which have no body parts to name). Give `--skeleton <the instance model's folder>`, and `--cameras` if the summary is missing ([Opening a tracked recording in LUC3D](live-tracking.md#opening-a-tracked-recording-in-luc3d)).
 
+**`campy-live-export` (or `campy-label-pack`, or the join) says a camera `did not close its recording; N of frametimes.npy's rows are frames its video does not hold ... left out`.** The recording was cut short (a crash, a power cut, campy killed). The frames still on their way to the video were lost; their rows are left out, so each prediction stays on the frame that holds it. Nothing to do ([Recordings](recordings.md#what-is-in-the-folder)).
+
+**`campy-live-export` says a camera's `video is in 2 files ... --only join --force`.** Its ffmpeg was restarted, and the recording then ended in a crash. `campy-session post` skips a recording that didn't stop cleanly unless given `--force`; run the command it gives.
+
 **LUC3D's tab runs out of memory opening a long recording.** File ▸ Load SLP reads the whole file at once; an hour was too much. Export the stretch you want with `campy-live-export --frames FIRST:LAST`, or open the whole recording with File ▸ Load Project or Load Session Folder ([Opening a tracked recording in LUC3D](live-tracking.md#opening-a-tracked-recording-in-luc3d)).
 
 **LUC3D shows no video on Windows: "HEVC (H.265) video, which this browser cannot decode".** This is a limit of the browser, not of campy or LUC3D: Chrome has no H.265 decoder of its own. It decodes H.264 and AV1 itself, on the processor, but for H.265 it borrows the GPU's hardware decoder, and without one it can't play the video at all (Edge is the same). A Windows virtual machine with no GPU passed through to it is the usual case: chrome://gpu, or the graphics adapter in Device Manager, shows "Microsoft Basic Render Driver". Give the machine a GPU with an H.265 decoder and install its maker's driver; Chrome needs no add-on. It needn't be a graphics card: most modern CPUs have a built-in GPU that is enough (Intel 6th generation or newer, AMD Ryzen with Radeon graphics). Cards work too (NVIDIA GTX 950/960 or newer, AMD from about 2015). On a virtual machine, pass the host's GPU through to it. Over Remote Desktop, also turn on the Group Policy "Use hardware graphics adapters for all Remote Desktop Services sessions" if Chrome still doesn't use the GPU. Without a GPU, open the session on a Mac, where Chrome and Safari decode H.265, or make H.264 copies that keep every frame: `ffmpeg -i 0.mp4 -c:v libx264 -crf 18 -pix_fmt yuv420p -fps_mode passthrough -an h264/0.mp4`.
 
 **LUC3D can't open folders, in Brave.** Brave turns off the file access LUC3D uses. Use Chrome or Edge, or turn on brave://flags/#file-system-access-api.
+
+## campy-infer
+
+**`campy-infer` says a `.slp` `is already there, but it was made by other models` (or `holds the first 1000 frames`): `NOT run`, and ends with exit status 1.** The `.slp` beside the video was made another way: by other models, by a `--frames` trial given the full run's name, or by a run that stopped early. campy-infer left it alone instead of taking it for this run's result. Give `--overwrite` to replace it, or `--name` to write this run under another name ([Offline inference](offline-inference.md#how-to-run-it)).
+
+**`campy-infer <session folder>` says a camera's `video is in 2 files ... Join them into one first`.** That camera's ffmpeg was restarted during the recording. Run the `campy-session post ... --only join` command it gives, then campy-infer again: it then runs `0.joined.mp4`, whose frames are numbered as campy numbered them.
 
 ## Timing tests
 

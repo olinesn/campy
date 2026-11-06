@@ -55,7 +55,9 @@ def write_recording(rec, fragmented=False):
 		np.save(os.path.join(d, "frametimes.npy"), np.array([frames, (np.array(frames) - 1) / 60.0], float))
 		np.save(os.path.join(d, "hosttimes.npy"), np.array([host(c, n) for n in frames], np.int64))
 		with open(os.path.join(d, "metadata.csv"), "w", newline="") as f:
-			csv.writer(f).writerows([["videoFilename", "0.mp4"], ["cameraName", name], ["frameRate", 60]])
+			# framesWritten: the camera closed its recording (without it, a crash: its video's frames are counted)
+			csv.writer(f).writerows([["videoFilename", "0.mp4"], ["cameraName", name], ["frameRate", 60],
+				["framesWritten", len(frames)]])
 
 
 def write_calibration(path, cams):

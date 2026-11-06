@@ -34,7 +34,11 @@ join     each camera whose ffmpeg was restarted during the recording
          (campy-live-export, so LUC3D; campy-label-pack, campy-synctest).
          Checked before it is kept: every packet of the joined video is the
          files' packets in order (ffmpeg's framemd5: same size and hash),
-         and their number is frametimes.npy's rows. Files whose codec
+         and their number is frametimes.npy's rows. For a camera that did
+         not close its recording (a crash: run with --force), the rows of
+         frames its files hold, read from their packets
+         (segments.HeldRows): the frames still queued when it was cut short
+         are left out, and said. Files whose codec
          headers differ are not joined (a lossless join keeps the first's
          only), and a file that holds no frame is left out. The files stay
          as they are. Needs free space for one more copy of the files.
@@ -192,8 +196,7 @@ def Videos(folder):
 		for sub in ("", "calibration_images"):
 			for path in sorted(glob.glob(os.path.join(folder, camera, sub, "*"))):
 				name = os.path.basename(path)
-				if os.path.isfile(path) and name.lower().endswith(VIDEO_EXTENSIONS) and ".fragmented." not in name \
-						and ".remux-tmp" not in name and ".join-tmp" not in name:
+				if os.path.isfile(path) and name.lower().endswith(VIDEO_EXTENSIONS) and not segments.NotTheVideo(name):
 					videos.append(path)
 	return videos
 
@@ -407,6 +410,24 @@ def Join(camera, ffmpeg, log=None):
 	"""
 	rows = segments.Read(camera)
 	files = [r["file"] for r in rows if r["frames"] != 0] # a file that holds no frame cannot be read
+	rows_npy = os.path.join(camera, "frametimes.npy")
+	held = None
+	if os.path.isfile(rows_npy) and not segments.Closed(camera):
+		# Its camera did not close its recording (campy killed, a power cut):
+		# the last file ends at its last fragment written, and frametimes.npy
+		# can have rows for frames that never reached it. Which rows the
+		# files hold is read from their packets, and the others left out, as
+		# campy does when a recording ends (and the tools that read it, too)
+		import numpy as np
+		try:
+			held = segments.HeldRows(camera, np.load(rows_npy)[0])
+		except segments.Uncounted as e:
+			raise PostError("{}: it did not close its recording, and its video's frames could not be counted ({}): "
+				"not joined".format(camera, e))
+		empty = set(f for f, n in held.files if n == 0)
+		files = [f for f in files if f not in empty]
+		if not files:
+			raise PostError("{}: none of its video files holds a frame: not joined".format(camera))
 	joined = os.path.join(camera, segments.JoinedName(rows[0]["file"]))
 	stem, ext = os.path.splitext(joined)
 	tmp, listing = "{}.join-tmp{}".format(stem, ext), "{}.join-list.txt".format(stem)
@@ -426,8 +447,16 @@ def Join(camera, ffmpeg, log=None):
 			"the first's: not joined. Each file is whole on its own".format(camera, " against ".join(sorted(
 			str(h) for h in headers))))
 	expected = [packet for _, packets in parts for packet in packets]
-	rows_npy = os.path.join(camera, "frametimes.npy")
-	if os.path.isfile(rows_npy):
+	if held is not None:
+		kept = int(held.keep.sum())
+		# The packets: a frame for each row kept, those past the last row, and a frame cut in the middle (at the
+		# end of a file cut short), which no decoder gives, so it has no row
+		if kept + held.beyond + held.corrupt != len(expected):
+			raise PostError("{}: its video files hold {} frames, and {} of frametimes.npy's rows are frames they "
+				"hold{}{}: not joined".format(camera, len(expected), kept, " (and {} past the last row)".format(
+				held.beyond) if held.beyond else "", " ({} cut in the middle)".format(held.corrupt) if held.corrupt
+				else ""))
+	elif os.path.isfile(rows_npy):
 		import numpy as np
 		frames = np.load(rows_npy)[0]
 		kept = int(segments.KeepRows(frames, segments.LostFrames(camera)).sum())
@@ -462,8 +491,12 @@ def Join(camera, ffmpeg, log=None):
 					os.remove(path)
 				except OSError:
 					pass
-	return "{}: {} files joined into {}, {} frames, the same packets, {:.1f} s".format(os.path.basename(camera),
+	said = "{}: {} files joined into {}, {} frames, the same packets, {:.1f} s".format(os.path.basename(camera),
 		len(files), os.path.basename(joined), len(expected), time.monotonic() - t0)
+	if held is not None and held.Details():
+		said += ". It did not close its recording; {}. The tools that read it (campy-live-export, campy-label-pack) " \
+			"leave those rows out too".format(held.Details())
+	return said
 
 
 def StepJoin(folder, settings, log, ffmpeg=None, stop=None):
