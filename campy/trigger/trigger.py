@@ -8,9 +8,8 @@ from campy.utils.utils import Say
 from campy.trigger.arduino import TriggerError, TriggerInterrupted
 
 def ImportTrigger(params):
-	if params["triggerController"] == "Arduino" or params["triggerController"] == "arduino":
-		import campy.trigger.arduino as trigger
-	elif params["triggerController"] == "None" or params["triggerController"] == "none":
+	# The config check takes arduino and None, in either case
+	if str(params["triggerController"]).lower() in ("arduino", "none"):
 		import campy.trigger.arduino as trigger
 	else:
 		Say('The microcontroller you have selected is not supported.')
@@ -18,8 +17,9 @@ def ImportTrigger(params):
 
 
 def DrivesTrigger(params):
-	# campy runs the trigger itself, rather than the rig (startArduino False)
-	return bool(params["startArduino"]) and params["triggerController"] != "None"
+	# campy runs the trigger itself, rather than the rig (startArduino False).
+	# triggerController "None" or "none" (the config check takes both) is no trigger.
+	return configurator.DrivesTrigger(params)
 
 
 def OpenTriggers(systems, params, interrupted=lambda: False):

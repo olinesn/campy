@@ -177,6 +177,25 @@ def test_campy_config_diff(tmp_path, profiles, capsys):
 	assert "frameRate" in out and "old.yaml:3" in out and "rig.yaml:3" in out
 
 
+def test_campy_config_diff_compares_sections(tmp_path, profiles, capsys):
+	# It compared the recording settings only: two configs whose live: models differ
+	# said "No difference: both record with the same settings."
+	(profiles / "rig.yaml").write_text("numCams: 2\nlive:\n  models: /models/v1\n  animals: 2\n")
+	a = write(tmp_path / "a.yaml", "extends: rig\npost:\n  copy: /backup\n")
+	b = write(tmp_path / "b.yaml", "extends: rig\nlive:\n  models: /models/v2\npico:\n  port: COM9\n")
+	assert configtool.Main(["diff", a, b]) == 1
+	rows = [line.split() for line in capsys.readouterr().out.splitlines()[1:]]
+	assert rows == [["live.models", "/models/v1", "rig.yaml:2", "/models/v2", "b.yaml:2"], # the section's line
+		["post.copy", "/backup", "a.yaml:2", "(not", "set)"],
+		["pico.port", "(not", "set)", "COM9", "b.yaml:4"]]
+	assert [key for key, _, _ in configtool.Diff(configurator.Resolve(a), configurator.Resolve(b))] == \
+		["live.models", "post.copy", "pico.port"]
+	# The same sections, written another way, are no difference
+	c = write(tmp_path / "c.yaml", "numCams: 2\nlive: {animals: 2, models: /models/v1}\npost: {copy: /backup}\n")
+	assert configtool.Main(["diff", a, c]) == 0
+	assert "No difference: both record with the same settings, and their sections" in capsys.readouterr().out
+
+
 def test_campy_config_where_and_new(tmp_path, profiles, capsys):
 	assert configtool.Main(["new", "evo", "--from", write(tmp_path / "x.yaml", "numCams: 2\nframeRate: 60\n")]) == 0
 	text = (profiles / "evo.yaml").read_text()
@@ -214,6 +233,43 @@ def test_sections_for_other_programs(tmp_path, profiles):
 	with pytest.raises(configurator.ConfigError, match='unknown key "lives". Did you mean "live"?'):
 		configurator.Resolve(write(tmp_path / "bad.yaml", "lives:\n  animals: 3\n"))
 	assert "live.animals" not in configurator.ReadCheckedConfig(exp) and "live" not in configurator.ReadCheckedConfig(exp)
+
+
+def test_a_section_null_drops_the_profile_s(tmp_path, profiles):
+	# A profile's live: couldn't be turned off: live: and live: null were refused, and
+	# live: {} kept the profile's keys. live: null (or live: alone) drops it now.
+	(profiles / "rig.yaml").write_text("numCams: 2\nlive:\n  model: random\n  animals: 5\npost:\n  remux: True\n")
+	for text in ("live: null\n", "live:\n", "live: ~\n"):
+		r = configurator.Resolve(write(tmp_path / "exp.yaml", "extends: rig\n" + text))
+		assert r.sections == {"post": {"remux": True}}, text
+		assert "live" not in r.section_sources and "live.model" not in r.Effective()
+		again = configurator.Resolve(write(tmp_path / "flat.yaml", r.ToYaml()))
+		assert again.sections == r.sections and again.params == r.params
+	from campy import session
+	assert session.Config(str(tmp_path / "exp.yaml")).live is None
+	assert session.Config(str(profiles / "rig.yaml")).live is not None
+	# live: {} adds nothing, as before; a file after the null starts the section again
+	exp = write(tmp_path / "exp.yaml", "extends: rig\nlive: {}\n")
+	assert configurator.Resolve(exp).sections["live"] == {"model": "random", "animals": 5}
+	write(tmp_path / "off.yaml", "extends: rig\nlive: null\n")
+	r = configurator.Resolve(write(tmp_path / "on.yaml", "extends: off.yaml\nlive:\n  animals: 3\n"))
+	assert r.sections["live"] == {"animals": 3} and r.section_sources["live"]["animals"].path.endswith("on.yaml")
+	# A section alone in a file is no section; other words are still refused
+	assert configurator.Resolve(write(tmp_path / "alone.yaml", "numCams: 1\nview: null\n")).sections == {}
+	with pytest.raises(configurator.ConfigError, match="bad.yaml:2: live is a section of key: value lines \\(indented "
+			"under it\\), or null to drop the one a file it extends gives, not False"):
+		configurator.Resolve(write(tmp_path / "bad.yaml", "extends: rig\nlive: false\n"))
+
+
+def test_one_name_alone_across_files(tmp_path, profiles):
+	# A one-camera profile's name alone, and an experiment with more cameras: named with both files
+	(profiles / "one.yaml").write_text("numCams: 1\ncameraNames: Top\n")
+	assert configurator.Resolve(write(tmp_path / "same.yaml", "extends: one\n")).params["cameraNames"] == ["Top"]
+	with pytest.raises(configurator.ConfigError) as e:
+		configurator.Resolve(write(tmp_path / "exp.yaml", "extends: one\nnumCams: 2\n"))
+	assert e.value.problems == ["cameraNames: 'Top' is one value for 2 cameras. It takes one per camera, e.g. "
+		"cameraNames: [Camera0, Camera1]. (cameraNames is from {}:2, numCams from {}:2)".format(
+		profiles / "one.yaml", tmp_path / "exp.yaml")]
 
 
 def test_paths_in_the_home_folder_are_shown_with_a_tilde(tmp_path, monkeypatch):

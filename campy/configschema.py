@@ -179,7 +179,7 @@ SETTINGS = [
 		choices=("quiet", "panic", "fatal", "error", "warning", "info", "verbose", "debug", "trace"),
 		help="Sets verbosity level for ffmpeg logging. ('quiet' (no warnings), 'warning', 'info' \
 			(real-time stats))."),
-	Setting("ffmpegPath", "None", TEXT, section=ENC, help="Location of ffmpeg binary for imageio."),
+	Setting("ffmpegPath", "None", TEXT, section=ENC, per_camera=ONE, help="Location of ffmpeg binary for imageio."),
 	Setting("pixelFormatInput", "rgb24", str, section=ENC,
 		help="Pixel format input. Use 'rgb24' for RGB or 'bayer_bggr8' for 8-bit bayer pattern."),
 	Setting("pixelFormatOutput", "rgb0", str, section=ENC,
@@ -312,7 +312,8 @@ SETTINGS = [
 	# Trigger
 	Setting("triggerController", "arduino", str, section=TRIGGER, per_camera=ONE,
 		choices=("arduino", "Arduino", "None", "none"),
-		help="Microntroller make for camera triggering. Currently supported: 'arduino'."),
+		help="Microcontroller make for camera triggering. Currently supported: 'arduino'. 'None' (or 'none'): \
+			campy starts no trigger, even with startArduino True."),
 	Setting("startArduino", False, bool, section=TRIGGER, per_camera=ONE,
 		help="If True, start Arduino after initializing cameras."),
 	Setting("serialPort", "COM3", str, section=TRIGGER, per_camera=ONE,
@@ -402,9 +403,11 @@ def Reference():
 		"",
 		"Every key a campy config file can have, and its command-line option (`--key value` means what "
 		"`key: value` means in the file). \"Per camera\" says how a list is read: *one, or one per camera* "
-		"takes one value for every camera or a list with a value for each, in camera order; *one for the rig* "
-		"refuses a list. A config can also start with `extends: <rig profile or file>`, which takes every "
-		"setting the config doesn't give from that file. [Configs](configs.md) explains profiles and how campy "
+		"takes one value for every camera or a list with a value for each, in camera order; *one per camera* "
+		"(`cameraNames`, `cameraSelection`) needs a list with a value for each camera, and takes one value alone "
+		"only with `numCams: 1`; *one for the rig* refuses a list. A number is never `.inf` or `.nan`. A config "
+		"can also start with `extends: <rig profile or file>`, which takes every setting the config doesn't give "
+		"from that file. [Configs](configs.md) explains profiles and how campy "
 		"checks a config; `campy-config show` prints where each setting of a config came from.",
 		"",
 	]

@@ -14,10 +14,12 @@ campy-config: look at campy configs without starting any camera.
       out of range, per-camera lists of the wrong length, keys that were
       renamed. Exit status 1 if any config has a problem.
   campy-config diff <config a> <config b> [--key value ...]
-      The settings whose values differ between two configs, with where each
-      came from. Exit status 1 if any differ: a rewritten config (a rig profile
-      and a short experiment file) that records exactly as the old one did
-      shows no difference.
+      The settings whose values differ between two configs, then the keys
+      of their sections that differ (live.models, post.copy, pico.port),
+      with where each came from. Exit status 1 if any differ: a rewritten config
+      (a rig profile and a short experiment file) that records exactly as
+      the old one did, and gives campy-session the same sections, shows no
+      difference.
   campy-config where
       The rig profile folder (extends: <name> is <folder>/<name>.yaml), and
       the profiles in it.
@@ -76,7 +78,10 @@ def ShortSources(result):
 			if source.kind == Source.FILE and text.startswith(long):
 				return name + text[len(long):]
 		return text
-	return {key: Text(source) for key, source in result.sources.items()}
+	short_sources = {key: Text(source) for key, source in result.sources.items()}
+	for name, sources in result.section_sources.items():
+		short_sources.update({"{}.{}".format(name, key): Text(source) for key, source in sources.items()})
+	return short_sources
 
 
 def Show(result, changed=False, cameras=False):
@@ -105,13 +110,24 @@ def Show(result, changed=False, cameras=False):
 	return "\n".join(lines)
 
 
+NOT_SET = "(not set)"
+
+
 def Diff(a, b):
-	# (key, value in a, value in b) for every setting that differs
+	# (key, value in a, value in b) for every setting that differs, then for
+	# every key of a section (live:, post: ...) that differs, as live.models
 	rows = []
 	for key in Ordered(dict(a.params, **b.params)):
-		va, vb = a.params.get(key, "(not set)"), b.params.get(key, "(not set)")
+		va, vb = a.params.get(key, NOT_SET), b.params.get(key, NOT_SET)
 		if va != vb:
 			rows.append((key, va, vb))
+	names = [s.name for s in configschema.SETTINGS if s.kind is configschema.SECTION]
+	for name in names + sorted((set(a.sections) | set(b.sections)) - set(names)):
+		sa, sb = a.sections.get(name, {}), b.sections.get(name, {})
+		for key in list(sa) + [k for k in sb if k not in sa]:
+			va, vb = sa.get(key, NOT_SET), sb.get(key, NOT_SET)
+			if va != vb:
+				rows.append(("{}.{}".format(name, key), va, vb))
 	return rows
 
 
@@ -198,7 +214,8 @@ def Main(argv=None):
 			a, b = configurator.Resolve(args.a, options), configurator.Resolve(args.b, options)
 			rows = Diff(a, b)
 			if not rows:
-				print("No difference: both record with the same settings.")
+				print("No difference: both record with the same settings, and their sections (live:, post: ...) "
+					"are the same.")
 				return 0
 			sa, sb = ShortSources(a), ShortSources(b)
 			table = [["", os.path.basename(args.a), "", os.path.basename(args.b), ""]]

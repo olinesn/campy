@@ -4,7 +4,7 @@ Every setting is described once, in configschema.py: its default, the values
 it takes and its help.
 """
 
-import os, sys, copy, yaml, time, logging
+import os, sys, copy, math, yaml, time, logging
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter, ArgumentTypeError
 from campy import configschema
 from campy.cameras import unicam
@@ -214,6 +214,7 @@ def MergeChain(chain, notes, problems, sections=None, section_sources=None):
 	# Each file's values are checked, and its renamed keys read as the new ones.
 	# Sections (live:, post: ...) go into sections instead, combined one level
 	# deep: a file's live: models replaces the profile's, its other keys stay.
+	# A file's live: null drops the live: of the files it extends.
 	params, sources = {}, {}
 	sections = {} if sections is None else sections
 	section_sources = {} if section_sources is None else section_sources
@@ -223,7 +224,12 @@ def MergeChain(chain, notes, problems, sections=None, section_sources=None):
 		values, more = CheckValues(values, where)
 		problems += more
 		for name in [k for k in values if configschema.BY_NAME[k].kind is configschema.SECTION]:
-			for key, value in values.pop(name).items():
+			section = values.pop(name)
+			if section is None:
+				sections.pop(name, None)
+				section_sources.pop(name, None)
+				continue
+			for key, value in section.items():
 				sections.setdefault(name, {})[key] = value
 				section_sources.setdefault(name, {})[key] = Source(Source.FILE, path, lines.get(name))
 		layer = {key: Source(Source.FILE, path, lines.get(key)) for key in values}
@@ -279,6 +285,7 @@ def ResolveClargs(clargs):
 		if key not in params:
 			sources[key] = Source(Source.DEFAULT, note="one per camera, from numCams")
 	params = FillCameraLists(params)
+	problems += EveryCamera(params, sources)
 
 	for check in (lambda p: ValidateCameraLists(p, sources, notes), ValidateColorRange, ValidateGamma,
 			ValidateExperiment):
@@ -287,7 +294,7 @@ def ResolveClargs(clargs):
 		except ValueError as e:
 			problems.append(str(e))
 	# These look at each camera's values, which needs lists that fit numCams
-	checks = [ValidateQuality] + ([TriggerFrameRate] if params["startArduino"] else [])
+	checks = [ValidateQuality] + ([TriggerFrameRate] if DrivesTrigger(params) else [])
 	for check in checks if not problems else []:
 		try:
 			check(params) # TriggerFrameRate fails here, with the reason, if the rates disagree
@@ -306,9 +313,9 @@ def ConfigureCamParams(systems, params, n_cam):
 	cam_params = params
 	cam_params["n_cam"] = n_cam
 	cam_params["baseFolder"] = os.getcwd()
-	cam_params["cameraName"] = params["cameraNames"][n_cam]
 
 	cam_params = OptParams(cam_params)
+	cam_params["cameraName"] = cam_params["cameraNames"] # this camera's, as CameraParams has it
 	cam_make = cam_params["cameraMake"]
 	cam_idx = cam_params["cameraSelection"]
 
@@ -341,26 +348,50 @@ def OptParams(cam_params):
 	return cam_params
 
 
+def SetWhere(key, sources):
+	# " (key is from c.yaml:2, numCams from rig.yaml:1)", for a message about key and numCams
+	if not sources or key not in sources or "numCams" not in sources:
+		return ""
+	return " ({} is from {}, numCams from {})".format(key, sources[key].Where(), sources["numCams"].Where())
+
+
+def EveryCamera(params, sources=None):
+	# cameraNames and cameraSelection as lists, for every reader: one value
+	# alone is a list of one for one camera, and refused for more, since two
+	# cameras can't share a name or a device. The problems, as messages.
+	# (A name alone used to be read letter by letter: cameraNames: Top
+	# recorded into T/, and cameraSelection: 1 opened device 1 for each camera.)
+	num_cams, problems = params["numCams"], []
+	for key in EVERY_CAMERA_LISTS:
+		if key not in params or isinstance(params[key], list):
+			continue
+		if num_cams == 1:
+			params[key] = [params[key]]
+			continue
+		example = ["Camera{}".format(n) if key == "cameraNames" else str(n) for n in range(num_cams)]
+		if num_cams > 4:
+			example = example[:2] + ["..."] + example[-1:]
+		problems.append("{}: {!r} is one value for {} cameras. It takes one per camera, e.g. {}: [{}].{}".format(
+			key, params[key], num_cams, key, ", ".join(example), SetWhere(key, sources)))
+	return problems
+
+
 def ValidateCameraLists(params, sources=None, notes=None):
 	# Per-camera lists must cover every camera, so changing numCams fails here
 	# with the key's name rather than in a camera process. With sources, the
 	# messages say where a list and numCams were set; notes collects what
 	# would otherwise be said.
 	num_cams = params["numCams"]
-	def From(key):
-		if not sources or key not in sources:
-			return ""
-		return " ({} is from {}, numCams from {})".format(key, sources[key].Where(), sources["numCams"].Where())
 	longer = []
 	for key, value in params.items():
 		if type(value) is not list or key in NON_CAMERA_LISTS:
 			continue
 		if key in EVERY_CAMERA_LISTS and len(value) < num_cams:
 			raise ValueError("{} has {} values for {} cameras. It needs one per camera.{}"\
-				.format(key, len(value), num_cams, From(key)))
+				.format(key, len(value), num_cams, SetWhere(key, sources)))
 		if 1 < len(value) < num_cams:
 			raise ValueError("{} has {} values for {} cameras. Give one value per camera, "
-				"or a single value for all of them.{}".format(key, len(value), num_cams, From(key)))
+				"or a single value for all of them.{}".format(key, len(value), num_cams, SetWhere(key, sources)))
 		if len(value) > num_cams:
 			longer.append(key)
 	if longer:
@@ -435,6 +466,12 @@ def GammaFromDisableGamma(values, where, notes=None):
 	else:
 		notes.append(note)
 	return values
+
+
+def DrivesTrigger(params):
+	# campy starts the trigger itself (startArduino), with a controller:
+	# triggerController "None" or "none" means none, whatever its case
+	return bool(params.get("startArduino")) and str(params.get("triggerController", "arduino")).lower() != "none"
 
 
 def TriggerFrameRate(params):
@@ -564,10 +601,24 @@ def UnknownKey(key):
 	return 'unknown key "{}". docs/config-reference.md (or campy-config reference) lists every key.'.format(key)
 
 
-def ItemError(item, kind, words=(), lists=True):
+def NullHint(takes_none):
+	# Why an empty value is refused, and what to write: None only for a setting that takes it
+	return " (YAML reads null, ~ and an empty value as no value: {})".format(
+		"write None" if takes_none else "give a value, or leave it out")
+
+
+def TakesNone(setting):
+	# Whether the text "None" means something to setting: one of its words or
+	# choices, or the default of a setting that takes any text (cameraTrigger)
+	return "None" in setting.words or "None" in (setting.choices or ()) or \
+		(setting.kind in (str, configschema.TEXT) and not setting.choices and setting.default == "None")
+
+
+def ItemError(item, kind, words=(), lists=True, takes_none=None):
 	# What is wrong with one value of a kind (configschema), or None. Floats
 	# take whole numbers too. Returns the value as campy uses it: PyYAML reads
-	# 1e3 as text, which is a number here.
+	# 1e3 as text, which is a number here. takes_none: whether an empty
+	# value's message says to write None (default: when it is one of words).
 	if isinstance(item, str) and item in words:
 		return item, None
 	if kind is float and isinstance(item, str):
@@ -585,7 +636,7 @@ def ItemError(item, kind, words=(), lists=True):
 	if lists:
 		expected += ", or a list of them"
 	if item is None:
-		hint = " (YAML reads null, ~ and an empty value as no value: write None)"
+		hint = NullHint("None" in words if takes_none is None else takes_none)
 	elif isinstance(item, bool):
 		hint = " (YAML reads yes, no, on, off, true and false as True or False: quote text, e.g. \"'off'\")"
 	else:
@@ -612,11 +663,15 @@ def SettingError(setting, item):
 		if setting.name == "preflight" and item is False:
 			return item, None # preflight: off, unquoted: YAML's False, which preflight reads as off
 		if not isinstance(item, str):
-			return item, "{!r} is not text".format(item)
+			return item, "{!r} is not text{}".format(item, NullHint(TakesNone(setting)) if item is None else "")
 	else:
-		item, error = ItemError(item, setting.kind, setting.words, setting.per_camera != configschema.ONE)
+		item, error = ItemError(item, setting.kind, setting.words, setting.per_camera != configschema.ONE,
+			TakesNone(setting))
 		if error:
 			return item, error
+		if isinstance(item, float) and not math.isfinite(item):
+			# .inf and .nan (or "inf", "1e999") passed every range check: NaN compares False to every limit
+			return item, "{!r} is not a finite number (it takes {})".format(item, setting.Takes())
 	if isinstance(item, str) and item in setting.words:
 		return item, None
 	if setting.choices:
@@ -650,9 +705,11 @@ def CheckValues(values, where):
 		if setting.kind is configschema.SECTION:
 			if key == "view" and isinstance(value, bool):
 				value = {"show": value} # view: true or false, campy-session's shorthand for view: {show: ...}
-			if not isinstance(value, dict):
-				problems.append("{}: {} is a section of key: value lines (indented under it), not {!r}".format(
-					where(key), key, value))
+			if value is None:
+				checked[key] = None # live: null (or live: alone) drops the live: of the files it extends
+			elif not isinstance(value, dict):
+				problems.append("{}: {} is a section of key: value lines (indented under it), or null to drop the "
+					"one a file it extends gives, not {!r}".format(where(key), key, value))
 			else:
 				checked[key] = value
 			continue
@@ -782,12 +839,29 @@ def TextValue(text):
 	return text
 
 
+def TextValues(text):
+	# A per-camera path or text option: as TextValue, or a list in [...], one
+	# per camera, read as the config file reads one: --cameraSettings
+	# "[top.pfs, side.pfs]". YAML keeps the backslashes of C:\x\top.pfs in it,
+	# and of 'C:\my files\top.pfs' in single quotes (double quotes read \ as
+	# an escape, as in the file).
+	stripped = text.strip()
+	if not (stripped.startswith("[") and stripped.endswith("]")):
+		return TextValue(text)
+	try:
+		value = yaml.safe_load(stripped)
+	except yaml.YAMLError as e:
+		raise ArgumentTypeError("{!r} is not a list campy can read ({}). Quote a path with backslashes in single "
+			"quotes: \"['C:\\x\\a.pfs']\"".format(text, getattr(e, "problem", e)))
+	return value if isinstance(value, list) else TextValue(text)
+
 
 
 def OptionType(setting):
 	# The argparse type that reads a setting's --key value
 	if setting.kind is configschema.TEXT:
-		return TextValue
+		# One value for the rig (notes, sessionPath) is taken as typed, brackets and all
+		return TextValues if setting.per_camera == configschema.PER_CAMERA else TextValue
 	if setting.kind is configschema.GAMMA:
 		return GammaValue
 	if setting.kind in (configschema.ID, configschema.MAPPING):
@@ -800,7 +874,8 @@ def ParseClargs(parser, argv=None):
 		Line3 and h265 are text, True and False are booleans, and None is the text None. YAML also reads \
 		yes, no, on and off as booleans, which the True/False options take; text options refuse them, \
 		so quote such text: \"'off'\". Options that take one value per camera also take a list, e.g. \
-		--quality \"[24, 26]\" (quoted for the shell). Paths, and --preflight, are taken as typed. \
+		--quality \"[24, 26]\" (quoted for the shell), and paths too: --cameraSettings \"[top.pfs, side.pfs]\". \
+		Paths, and --preflight, are otherwise taken as typed, backslashes and all. \
 		docs/config-reference.md describes every setting."
 	# --qual is not --quality: an option is its whole name
 	parser.allow_abbrev = False

@@ -1489,10 +1489,12 @@ _leftovers = {} # id(camera): (cameraName, note), for StartGrabbing
 
 def CampyTriggers(cam_params):
 	# Whether no pulse can come before campy starts the trigger: campy's own Arduino, or software
+	from campy import configurator
 	trigger = str(cam_params.get("cameraTrigger", "None")).lower()
 	if trigger == "software":
 		return True
-	return trigger != "none" and bool(cam_params.get("startArduino"))
+	# startArduino with triggerController None: campy starts no trigger, and the rig's may pulse at any time
+	return trigger != "none" and configurator.DrivesTrigger(cam_params)
 
 
 def LeftoverNotePath(cam_params):
