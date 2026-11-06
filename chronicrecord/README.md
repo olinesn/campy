@@ -213,6 +213,18 @@ Since pull request 283 a ChronicRecord session runs from campy's panel, a page i
 - **The end:** campy stops after the last frame; the panel waits for the Pico's last gate (up to `pico.last_gate_s`, 120 s), stops SpikeGLX's run 3 s later, and copies this session's part of `session.out` into `pico\`. **Stop** asks first: after this bout (the Pico's `stop`, then campy once the bout's gate has fallen, then SpikeGLX) or now (`stop --now`, then campy's stop file, then SpikeGLX). If campy fails on its own, the Pico and SpikeGLX are left running and the page offers to stop each.
 - **The rig's lock:** the panel waits for the rig and holds it while it is open (`panel: {rig_lock: auto}`). Ctrl-C in its window does nothing then (it would reach `rig.py`, which ends the whole job before anything stops in order); **Close the panel** on the page ends it when nothing records. Closing its window by mistake leaves campy, the Pico and SpikeGLX running; the panel opened again shows them, with buttons to stop each.
 
+**Gate test from the panel** (5 November 2026, 7:15 to 7:27 PM; this pull request's code, LED drivers on, no animal; SpikeGLX closed beforehand, so the panel opened it, and its settings were verified from the panel). The page ran every step in order:
+- SpikeGLX's run, then the gate check: the blink opened a 2.5 s file.
+- The cameras, then the Pico from **Start the Pico**.
+- At the end, the Pico's last gate, then SpikeGLX stopped 12 s after campy's last frame, then remux and align.
+
+What it recorded:
+- **SpikeGLX:** files of 257.0, 27.0 and 27.0 s for the three bouts, as with the launcher.
+- **The Pico:** `pulses=15600 stalls=0 bounces=0 self_check_us=-3`; it ended by itself.
+- **campy:** 15,600 frames on each of the 4 cameras, none dropped or missed. campy-align put every camera on the trigger's timeline, with the two gaps between bouts as planned pauses.
+
+Not checked yet: a session stopped from the page on the rig (after the bout, or now), campy failing mid-session on the rig, and a multi-day session.
+
 The desktop icon, made once in the recording environment: `campy-session shortcut C:\campy_data\configs\chronic_session.yaml --name "ChronicRecord session"`. `campy-session register-live`, run once in the campy-live environment, lets the view run there.
 
 **Before a long session on the PC** (Windows; settings for the user to make, not the program):
