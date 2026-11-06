@@ -7,7 +7,10 @@ thread that reads every line the board says, stamped on campy's host clock
 (campy/clock.py): the camera trigger's rises (frame k, on the board's clock),
 the pulses made, the answers to commands. The same thread keeps the board's
 watchdog quiet (hb, every HEARTBEAT_S) and asks the board's time every
-SYNC_S, so that board times can be put on the host clock (ClockMap).
+SYNC_S, so that board times can be put on the host clock (ClockMap). Both
+only while alive() says the program using the board is alive (campy-rules:
+its decision loop went round lately): a program that is stuck goes quiet, and
+the board's watchdog switches everything off.
 
 Every line it hears goes to the board log (<out>.board.txt: "<host_ns> <line>"),
 and every command it sends ("<host_ns> > <command>"), so a session can be
@@ -105,12 +108,14 @@ class Board:
 	"""
 	listener(kind, fields, heard_ns, line) is called from the reading thread
 	with each line the board says on its own ("t", "p", "e", "clash", "wd",
-	"ready") and each answer (kind "answer", fields the Answer).
+	"gap", "ready") and each answer (kind "answer", fields the Answer).
+	alive() (if given): whether to keep the watchdog quiet now.
 	"""
 
 	def __init__(self, port=None, connection=None, log=None, listener=None, say=print, heartbeat=HEARTBEAT_S,
-			sync=SYNC_S):
+			sync=SYNC_S, alive=None):
 		self.port, self.say, self.listener = port, say, listener
+		self.alive = alive
 		self.log = log
 		self.heartbeat, self.sync = heartbeat, sync
 		if connection is None:
@@ -214,6 +219,8 @@ class Board:
 						self.Heard(line, heard_ns)
 			now = time.monotonic()
 			try:
+				if self.alive is not None and not self.alive():
+					continue # stuck: no heartbeat, no clock question either (a command too keeps the watchdog quiet)
 				if self.heartbeat and now - self.last_sent >= self.heartbeat:
 					self.Write("hb")
 				if self.sync and now - last_sync >= self.sync:

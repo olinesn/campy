@@ -193,12 +193,38 @@ def test_a_level_stays_on_at_most_its_max(outputs_sim):
 	assert any(l.startswith("e 0 0") and l.endswith("max") for _, l in said)
 
 
-def test_counting_starts_again_after_a_pause(outputs_sim):
-	# Two recordings: the second's triggers are frames 1, 2, ... again
-	inputs = trigger(count=10) + ";" + trigger(count=5, start=START + 10 * PERIOD + 800000)
+def test_counting_goes_on_through_a_pause(outputs_sim):
+	# A pause of 0.8 s (a planned pause between bouts): frames 10, 11, ... go on, as campy's do, and the pause is said
+	inputs = trigger(count=9) + ";" + trigger(count=5, start=START + 9 * PERIOD + 800000)
 	edges, said = run(outputs_sim, 1.4, ["id"], inputs=inputs)
 	ks = [int(l.split()[1]) for _, l in lines(said, "t")]
-	assert ks == list(range(1, 11)) + list(range(1, 6))
+	assert ks == list(range(1, 15))
+	gaps = [l.split()[1:] for _, l in lines(said, "gap")]
+	assert len(gaps) == 1 and gaps[0][0] == "10"
+	assert abs(int(gaps[0][1]) - (PERIOD + 800000)) <= 2
+
+
+def test_a_train_keeps_its_frames_through_a_pause(outputs_sim):
+	# every 2, phase 1: odd frames. The pause comes after frame 9 (odd), so a count that started again would put
+	# the next pulses on the 10th, 12th and 14th triggers; they stay on frames 11 and 13
+	second = START + 9 * PERIOD + 800000
+	inputs = trigger(count=9) + ";" + trigger(count=5, start=second)
+	edges, said = run(outputs_sim, 1.4, ["train 0 2 1 0 3000", "run 0 -1"], *heartbeats(1.4), inputs=inputs)
+	rises = [r for r, _ in pulses(edges, 2)]
+	assert len(rises) == 5 + 2
+	after = [r for r in rises if r >= second]
+	assert len(after) == 2
+	for r, k in zip(after, (11, 13)):
+		assert 0 <= r - (second + (k - 10) * PERIOD) <= 10, (k, r)
+	assert [int(l.split()[2]) for _, l in lines(said, "p")][-2:] == [11, 13]
+
+
+def test_reset_counts_from_1_again(outputs_sim):
+	edges, said = run(outputs_sim, 0.6, ["id"], ((rise_of(10) + 5000) / 1e6, ["reset"]))
+	assert any(l.startswith("ok reset") for _, l in said)
+	ks = [int(l.split()[1]) for _, l in lines(said, "t")]
+	assert ks == list(range(1, 11)) + list(range(1, 21))
+	assert not lines(said, "gap")
 
 
 def test_time_answers_with_the_last_frame(outputs_sim):
