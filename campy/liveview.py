@@ -2022,11 +2022,19 @@ class Viewer:
 			return [self.selected]
 		return list(range(n))
 
-	def Read(self, n):
-		# Frame n of each camera shown, or None if a ring no longer holds it
+	def Read(self, n, row=None):
+		# Frame n of each camera shown, or None if a ring no longer holds it. With a row of campy-live's: each
+		# camera's own frame of the set (cam_frame: it differs after the camera lost a frame), and the newest
+		# frame of a camera campy-live left out of the set (cam_frame -1: its feed ended or stalled)
+		own = row["cam_frame"] if row is not None and "cam_frame" in row.dtype.names else None
 		frames = []
 		for c in self.Shown():
-			frame = self.readers[c].Read(n, self.buffers[c])
+			m = n if own is None or own[c] == 0 else int(own[c]) # 0: not given (frame numbers start at 1)
+			if m < 0:
+				m = self.readers[c].Latest()
+				frame = self.readers[c].Read(m, self.buffers[c]) or self.readers[c].Read(m - 1, self.buffers[c])
+			else:
+				frame = self.readers[c].Read(m, self.buffers[c])
 			if frame is None:
 				return None
 			frames.append(frame)
@@ -2073,7 +2081,7 @@ class Viewer:
 					# times are on campy/clock.py's clock, not always this one: not compared with it)
 					self.lastSeen = (seen - int(np.max(row["written_ns"]))) / 1e6
 					self.resultMs.append(self.lastSeen)
-					frames = self.Read(int(row["frame"]))
+					frames = self.Read(int(row["frame"]), row)
 					if frames is None:
 						self.gone += 1 # its frames already replaced in the feed
 						return None
@@ -2279,7 +2287,8 @@ class Viewer:
 			return None
 		frames, row = self.last
 		if self.Shown() != self.lastCameras:
-			frames = self.Read(frames[0].frameNumber) if self.readers is not None else None
+			frames = (self.Read(frames[0].frameNumber) if row is None else self.Read(int(row["frame"]), row)) \
+				if self.readers is not None else None
 			if frames is None:
 				return None
 		return self.Compose(frames, row)

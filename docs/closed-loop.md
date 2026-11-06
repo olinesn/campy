@@ -105,7 +105,7 @@ To light only part of the exposure, use `offset_us` to place the pulse within th
 - **`animal:`** an identity (0 to animals − 1, from `campy-live --calibration`), a list of them, or `any`.
 - **`node:`** a name, an index, a list (their mean), or `all`.
 
-**Missing data.** An animal that fewer than 2 cameras see has no 3D point. Neither has one whose 3D lands outside the cage, when a cage is drawn ([The cage](live-tracking.md#the-cage-3d-outside-it-is-not-found---cage)): it counts as not found, in 3D and in each camera (its `members` are -1), so no rule acts on a place where no animal can be. Its rule then keeps its last value for `missing_ms` (default 100), then counts as false. So missing data can switch an output off, never on.
+**Missing data.** An animal that fewer than 2 cameras see has no 3D point. Neither has one whose 3D lands outside the cage, when a cage is drawn ([The cage](live-tracking.md#the-cage-3d-outside-it-is-not-found---cage)): it counts as not found, in 3D and in each camera (its `members` are -1), so no rule acts on a place where no animal can be. Its rule then keeps its last value for `missing_ms` (default 100), then counts as false. So missing data can switch an output off, never on. A camera that `campy-live` left out of a set (its feed ended or stalled: [A camera that stops](live-tracking.md#live-pose-estimation-livefeed-campy-live)) has no detections in it, so its `members` are -1 and a condition on that camera's 2D is missing data too; 3D conditions go on from the other cameras.
 
 **Identities** come from `campy-live`'s tracker, which can swap two animals. Each command's log line has the frame, so a swap can be checked afterwards in LUC3D.
 

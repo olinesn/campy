@@ -59,13 +59,14 @@ def test_kinds():
 
 def test_a_camera_a_frame_behind(monkeypatch):
 	w, clock, channel, said = Make()
-	behind = "Camera1: 1 frame behind the other cameras (+33 ms for the same frame number): campy-live's sets mix " \
-		"frames of different pulses. Stop the recording and start it again."
+	behind = "Camera1: 1 frame behind the other cameras (+33 ms for the same frame number): campy-live pairs its " \
+		"frames by host time instead (it says so on its console), and campy-align puts each frame on its trigger pulse."
 	w.rig = Cameras(("Camera1", "1 FRAME BEHIND", behind))
 	Run(w, clock, livewatch.OFFSET_HOLD_S - 1)
 	assert channel.texts == [] # not yet: a moment's offset is no alert
 	Run(w, clock, 2)
-	assert Texts(channel) == [behind] and channel.texts[0].startswith(":red_circle:")
+	# A warning: campy-live re-pairs its sets by host time (it was critical, "stop and start again", before)
+	assert Texts(channel) == [behind] and channel.texts[0].startswith(":large_orange_circle:")
 	w.rig = Cameras()
 	Run(w, clock, 1)
 	assert Texts(channel)[-1].endswith(": Camera1: in step with the other cameras again")
@@ -127,7 +128,8 @@ def test_campy_live_stops(monkeypatch):
 
 
 def test_a_camera_that_stops_is_not_a_hung_campy_live(monkeypatch):
-	# campy-live waits for a frame from each camera: one unplugged stops its sets. campy-acquire says that one.
+	# A campy-live from before November 2026 waits for a frame from each camera: one unplugged stops its sets.
+	# campy-acquire says that one, not campy-watch. (campy-live now leaves that camera out after a second.)
 	w, clock, channel, said = Make()
 	frames = [0, 0]
 	for _ in range(60):
@@ -230,7 +232,7 @@ def test_campy_watch_says_a_camera_fell_behind(tmp_path, service):
 	# 30 fps (590 ms, 18 frames, once on a CI runner running other tests beside this one)
 	m = re.match(r"Camera1: (\d+) frames behind the other cameras \(\+(\d+) ms for the same frame number\)", behind[0])
 	assert m and 8 <= int(m.group(1)) <= 18 and 250 <= int(m.group(2)) <= 600, behind[0]
-	assert service.Texts()[0].startswith(":red_circle:")
+	assert service.Texts()[0].startswith(":large_orange_circle:") # a warning: campy-live re-pairs by host time
 	assert watcher.returncode == 0
 	# Its own log, beside campy-acquire's alerts.log
 	(session,) = [d for d in tmp_path.iterdir() if re.fullmatch(r"\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d", d.name)]

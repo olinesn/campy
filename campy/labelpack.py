@@ -261,7 +261,12 @@ def Pack(sample_path, recordings, out=None, name=None, skeleton=None, calibratio
 			s = sets[i]
 			o = opened[logs.index(s["log"])]
 			frame = int(s["frame"])
-			vf = [int(c.Index([frame])[0]) for c in o["cams"]]
+			# Each camera's own frame of the set (cam_frame: it differs after a camera lost a frame; -1 for one
+			# campy-live left out of the set, whose image is then its video's frame of the set's number)
+			rows = o["rows"]
+			own = [int(v) for v in rows[int(s["row"])]["cam_frame"]] if "cam_frame" in rows.dtype.names else \
+				[frame] * len(o["cams"])
+			vf = [int(c.Index([m if m > 0 else frame])[0]) for c, m in zip(o["cams"], own)] # 0: not given
 			if min(vf) < 0:
 				skipped += 1
 				Say("Set at campy frame {} left out: {}'s video lacks it.".format(frame,

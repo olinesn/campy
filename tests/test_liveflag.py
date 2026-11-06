@@ -137,6 +137,36 @@ def test_a_clean_log_has_no_flags(tmp_path):
 	assert len(flags) == 0
 
 
+def test_a_camera_left_out_of_the_sets_is_no_missed_animal(tmp_path):
+	# campy-live left Camera2 out of sets 50 on (its feed ended): no keypoints, members -1, host_ns 0,
+	# cam_frame -1. Its animals are not "missed" there: it had no frame to see them in; and the sets' times
+	# come from the other cameras' host times
+	cams = rig()
+	write_calibration(str(tmp_path / "calibration.toml"), cams)
+	rows = make_rows(cams, scene3d.scene(SETS, n=ANIMALS), plant=False)
+	rows["cam_frame"] = rows["frame"][:, None]
+	for row in rows[49:]:
+		for key in ("centroids", "centroid_vals", "keypoints", "peak_vals"):
+			row[key][2] = np.nan
+		row["members"][:, 2] = -1
+		row["n_views"] = 2
+		row["found"][2] = 0
+		row["host_ns"][2] = 0
+		row["cam_frame"][2] = -1
+	path = str(tmp_path / "left")
+	np.save(path + ".npy", rows)
+	with open(path + ".json", "w") as f:
+		json.dump({"cameras": CAMERAS, "calibration": str(tmp_path / "calibration.toml"),
+			"calibration_names": CALIBRATION_NAMES, "animals": ANIMALS}, f)
+	lg, flags = flags_of(path + ".npy")
+	assert len(flags) == 0, flags
+	assert np.allclose(np.diff(lg.time_s), PERIOD / 1e9, atol=1e-6)
+	# The same sets with Camera2 in them, its detections taken away: its animals missed there, and fewer found
+	rows["cam_frame"][:, 2] = rows["frame"]
+	np.save(path + ".npy", rows)
+	_, flags = flags_of(path + ".npy")
+	assert set(flags["reason"].tolist()) == {"missed", "fewer"} and set(flags["camera"].tolist()) == {2}
+
 def test_each_planted_mistake_is_flagged_where_it_is(log):
 	path, cams, truth = log
 	lg, flags = flags_of(path)

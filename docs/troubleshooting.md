@@ -118,7 +118,9 @@ Before recording, campy checks the config and the computer, and most problems sh
 
 **`campy-live` is slower than the measurements say.** Check that the GPU keeps its clock up (`--hold-gpu-clock`, on by default with NVIDIA and AMD GPUs), that `campy-live` isn't running on the CPU that handles the GPU's interrupts (it avoids that CPU by default on Windows, `--cpus auto`), and that nothing else uses the GPU ([On Windows](live-tracking.md#on-windows-nvidia-cuda)).
 
-**"misaligned" sets.** A set's frames reached the computer more than half a frame apart: one camera's frames came late, or a camera lost a frame (`flirFramesLost` in its `metadata.csv`) and numbers its frames one lower than the others ([Live pose estimation](live-tracking.md#live-pose-estimation-livefeed-campy-live)).
+**"misaligned" sets.** A set's frames reached the computer more than half a frame apart: one camera's frames came late, or a camera lost a frame (`flirFramesLost` in its `metadata.csv`) and numbers its frames one lower than the others. After 3 in a row, `campy-live` finds each camera's frame by its host time and pairs them that way from then on: its console says `Camera2's frames paired again by host time`, and its summary's `feed` has the offsets ([Live pose estimation](live-tracking.md#live-pose-estimation-livefeed-campy-live)). Many such messages from cameras without a trigger mean their frames drift apart in time.
+
+**`Camera2's feed ended at its frame 5791 while the other cameras record on`, or `No frame from Camera2 for 1.0 s`.** That camera was lost or stalled. `campy-live` tracks on with the others; a stalled camera is taken back when its frames come again. Look at `campy-acquire`'s messages for that camera.
 
 **Latencies in steps of 15–16 ms on Windows.** That recording was made before campy took its host times from Windows' precise clock (pull request 118). The steps are the old clock's. A program that writes frames into the live feed itself must stamp them with `campy.clock.HostNs` ([On Windows](live-tracking.md#on-windows-nvidia-cuda)).
 
@@ -132,7 +134,7 @@ The view puts a red label on a camera's tile when something is wrong with it ([W
 - **`LOST 2`**: the camera's own timestamps skipped frames in the last 10 seconds (lost before campy got them).
 - **`GAP 1`**: frame numbers are missing from its live feed.
 - **`LATE 1`**: frames reached the computer a frame late.
-- **`1 FRAME AHEAD`**: the camera's frames of a given number were taken a trigger pulse before or after the others'. A camera kept grabbing after a run that didn't close it. Stop the recording and start it again.
+- **`1 FRAME AHEAD`**: the camera's frames of a given number were taken a trigger pulse before or after the others'. A camera kept grabbing after a run that didn't close it. `campy-live` pairs that camera's frames by host time instead. To get the frame numbers right again, stop the recording and start it again.
 - **`#2  bad 3D: 34 px`** on a mouse: its 3D is far from the cameras' 2D (above `--bad-px`). Usually a false detection or a mouse one camera misses.
 
 **No window over SSH.** Without a desktop, use `campy-live-view --no-window --png <folder>`, which saves every 30th view.

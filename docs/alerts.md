@@ -252,7 +252,7 @@ campy-watch --cameras 3
 
 | What | When it is an alert | How bad |
 |---|---|---|
-| A camera a frame or more ahead or behind | for 10 s: every set campy-live makes mixes frames of different trigger pulses, so stop the recording and start it again | critical |
+| A camera a frame or more ahead or behind | for 10 s: its frames of a given number are of other trigger pulses than the others'. campy-live pairs them by host time instead, and campy-align puts each frame on its pulse, so the recording goes on (before November 2026, campy-live's sets mixed pulses, and this was critical: stop and start again) | warning |
 | Frames lost, missing from the feed, or late | in every check for 30 s (counted over the last 10 s, as campy-live-view does) | warning |
 | A camera slower than the others | for 30 s | warning |
 | Tracking | good 3D for fewer animals than campy-live's `--animals`, for 70 % of the last 3 minutes | warning |
@@ -306,7 +306,7 @@ Everything worked as on Linux. The trigger's messages came a little later than t
 | The trigger's cable pulled | "The trigger Arduino on COM9 is gone", about 4 s later (the port is checked every 5 s). The reason Windows gives is "ClearCommError failed ... The device does not recognize the command" |
 | The two cameras still plugged in, without trigger pulses | "No camera has had a frame for 10 s: all 2 stopped together, so the trigger has stopped", 10 s after their last frame |
 | The trigger plugged back in | "resolved, after 1 min 12 s: The trigger Arduino's port COM9 is back", about 4 s later. Windows keeps a device's COM number, so it came back as COM9 |
-| `campy-watch` | no message, although `campy-live` stopped making results once the unplugged camera's frames stopped (it waits for every camera's frame of a set) |
+| `campy-watch` | no message, although `campy-live` stopped making results once the unplugged camera's frames stopped (it waited for every camera's frame of a set; since November 2026 it leaves such a camera out after a second and tracks on with the others: [A camera that stops](live-tracking.md#live-pose-estimation-livefeed-campy-live)) |
 | The end | ":red_circle: Recording ... ended after 5 min 36 s, 1 of 3 cameras not to the end", with each camera's frames and "Still open as it ended: No camera has had a frame for 203 s ... the trigger has stopped" |
 
 Every frame each camera grabbed was in its video, which decoded without an error (3771, 3771 and 2253 frames), with `frametimes.npy`, `hosttimes.npy` and `metadata.csv` beside it and one host time per frame. `alerts.log` had one JSON line for each problem and one for each message sent, Slack accepted every message, and the file holds no token. `recording.json` ended as `failed`, with each camera's state (`ended`, `ended`, `lost`) and the two problems still open. Its `usb_speed` was empty on Windows then, as the USB link check was Linux only; it is read on Windows too now ([A camera on a USB 2 link](#a-camera-on-a-usb-2-link)). The recording's start message, `info`, went only to the log, as the alerts file asks for `warning` and up.

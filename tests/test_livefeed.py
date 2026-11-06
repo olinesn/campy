@@ -520,7 +520,7 @@ def test_campy_live_waits_for_a_ring_still_being_made(rings):
 		cams.Close()
 
 
-def _record(prefix, cameras, frames, rate, delay, trigger=None):
+def _record(prefix, cameras, frames, rate, delay, trigger=None, lose=None):
 	# campy-acquire's rings, made after delay, and frames at rate from when
 	# trigger is set: campy makes its rings a few seconds before the trigger,
 	# and a campy-live already waiting attaches meanwhile. A short recording
@@ -544,7 +544,11 @@ def _record(prefix, cameras, frames, rate, delay, trigger=None):
 			# one by one, a thread switch between them (Python's is every 5 ms)
 			# could put the set more than half a frame apart, misaligned
 			host = clock.HostNs()
-			for w in writers:
+			for c, w in enumerate(writers):
+				if lose is not None and c == lose[0] and n > lose[1]:
+					if n == lose[1] + 1:
+						w.Close() # the camera lost: its process closes its ring, the others record on
+					continue
 				w.Write(frame(n), n, host, n / rate)
 	finally:
 		for w in writers:
@@ -684,13 +688,13 @@ def seeing(tmp_path, monkeypatch):
 	return args, truth, order
 
 
-def run_live(prefix, out, args, frames=60, rate=200, delay=0.3, triggered=True):
+def run_live(prefix, out, args, frames=60, rate=200, delay=0.3, triggered=True, lose=None):
 	# campy-live on a recording of 3 cameras' frames, from a thread: its rings
 	# made after delay, its frames from when campy-live has attached to them
 	# (triggered), or else from when the rings are made, as cameras without a
 	# trigger send them
 	trigger = threading.Event()
-	t = threading.Thread(target=_record, args=(prefix, 3, frames, rate, delay, trigger if triggered else None))
+	t = threading.Thread(target=_record, args=(prefix, 3, frames, rate, delay, trigger if triggered else None, lose))
 	attach = live.Cameras.Attach
 
 	def Attach(cameras, *a, **k):
@@ -778,6 +782,276 @@ def test_campy_live_stops_at_a_3d_error(tmp_path, monkeypatch):
 	monkeypatch.setattr(pose3d.Tracker, "Update", Update)
 	with pytest.raises(ValueError, match="the 3D failed"):
 		run_live(name(), str(tmp_path / "live3d"), args, frames=200)
+
+
+# -------------------------------------------- a camera that stops, or loses a frame
+
+PERIOD = 16_666_667 # ns, 60 fps
+
+
+def three(rings, slots=8):
+	prefix = name()
+	writers = [rings(livefeed.RingName(prefix, c), (16, 20), np.uint8, slots=slots, frameRate=60, camera=c,
+		cameraName="Camera{}".format(c)) for c in range(3)]
+	said = []
+	cams = live.Cameras([w.name for w in writers], poll=0.0001, say=said.append)
+	assert cams.Attach(wait=5)
+	return writers, cams, said
+
+
+def pulse(writers, p, t0=10**12, numbers=None, skip=()):
+	# Trigger pulse p: each camera's frame (its pixels say the pulse), numbered as that camera numbers it
+	for c, w in enumerate(writers):
+		if c not in skip:
+			w.Write(frame(p), p if numbers is None else numbers[c], t0 + p * PERIOD + 100_000 * c, p / 60)
+
+
+def pulses(out):
+	return [int(out[c, 0, 0, 0]) for c in range(len(out))]
+
+
+def test_a_ring_that_ends_mid_recording_is_left_out_and_the_sets_go_on(rings):
+	# Camera 2 is lost at frame 20 (its process closes its ring) while cameras 0 and 1 record on: the sets
+	# went on waiting for camera 2, silently, for the rest of the recording
+	writers, cams, said = three(rings)
+	out = np.empty((3, 16, 20, 1), np.uint8)
+	try:
+		for p in range(1, 21):
+			pulse(writers, p)
+		assert cams.NextSet(out)[0].number == 20
+		writers[2].Close()
+		for p in range(21, 41): # under half a second of the others' frames: it could be the recording's end
+			pulse(writers, p, skip=(2,))
+		with pytest.raises(TimeoutError):
+			cams.NextSet(out, stop=Timeout(0.3))
+		assert said == []
+		for p in range(41, 81):
+			pulse(writers, p, skip=(2,))
+		frames, skipped = cams.NextSet(out)
+		assert frames.number == 80 and frames[2] is None and frames.own == [80, 80, -1]
+		assert pulses(out)[:2] == [80, 80] and np.all(out[2] == 0) # a blank frame for the model
+		assert len(said) == 1 and "Camera2's feed ended at its frame 20" in said[0] and "Camera0, Camera1" in said[0]
+		report = cams.Report()
+		assert report["sets_without"] == {"Camera2": 1} and report["left_out_at_end"] == {"Camera2": "ended"}
+		assert report["events"][0]["event"] == "left out" and report["events"][0]["why"] == "ended"
+		for w in writers[:2]:
+			w.Close()
+		assert cams.NextSet(out) is None # the recording ended
+	finally:
+		cams.Close()
+
+
+class Timeout:
+	def __init__(self, seconds):
+		self.at = time.monotonic() + seconds
+
+	def __call__(self):
+		if time.monotonic() > self.at:
+			raise TimeoutError
+		return False
+
+
+def test_a_camera_that_stalls_is_left_out_and_taken_back_when_it_resumes(rings, monkeypatch):
+	# Camera 1 sends nothing for 1 s (STALL_S 0.3 here) while the others record on: it is left out, the sets
+	# go on without it; its frames come again, numbered on from where it stopped (it lost the pulses in
+	# between), and it is taken back, its frames found by host time
+	monkeypatch.setattr(live, "STALL_S", 0.3)
+	writers, cams, said = three(rings)
+	out = np.empty((3, 16, 20, 1), np.uint8)
+	got = []
+	done = threading.Event()
+
+	def Read():
+		while not done.is_set():
+			r = cams.NextSet(out, stop=done.is_set)
+			if r is None:
+				return
+			got.append((r[0].number, list(r[0].own), pulses(out)))
+
+	reader = threading.Thread(target=Read)
+	reader.start()
+	try:
+		t0 = clock.HostNs()
+		number1 = 0
+		for p in range(1, 151): # 2.5 s at 60 fps
+			stalled = 30 < p <= 90
+			if not stalled:
+				number1 += 1
+			numbers = [p, number1, p]
+			pulse(writers, p, t0, numbers, skip=(1,) if stalled else ())
+			time.sleep(PERIOD / 1e9)
+		time.sleep(0.2)
+	finally:
+		done.set()
+		reader.join()
+		cams.Close()
+	assert any("No frame from Camera1" in s for s in said), said
+	assert any("Camera1's frames came again" in s for s in said), said
+	without = [g for g in got if g[1][1] == -1]
+	assert without and all(g[2][0] == g[2][2] for g in without) # the others still paired
+	# Once taken back, every set pairs one pulse's frames, camera 1's numbered 60 lower
+	back = [g for g in got if g[0] > 90 and g[1][1] != -1]
+	assert back, got
+	for number, own, seen in back:
+		assert seen[0] == seen[1] == seen[2] == number % 251 and own[1] == number - 60, (number, own, seen)
+	assert cams.offset == [0, -60, 0]
+
+
+def test_a_dropped_frame_is_paired_again_by_host_time(rings):
+	# Camera 2 loses pulse 10's frame and numbers every later frame one lower: its frame of each number is
+	# of the next pulse. After MISALIGNED_SETS sets in a row more than half a frame apart, its frames are
+	# found again by host time, and each set pairs one pulse's frames from then on
+	writers, cams, said = three(rings)
+	out = np.empty((3, 16, 20, 1), np.uint8)
+	try:
+		def Pulse(p):
+			if p == 10:
+				pulse(writers, p, skip=(2,))
+			else:
+				pulse(writers, p, numbers=[p, p, p - 1 if p > 10 else p])
+		for p in range(1, 21):
+			Pulse(p)
+		seen = []
+		for p in range(21, 21 + live.MISALIGNED_SETS):
+			frames, _ = cams.NextSet(out)
+			seen.append(pulses(out))
+			Pulse(p)
+		assert seen[0] == [19, 19, 20] # paired by number: the wrong pulse
+		assert cams.offset == [0, 0, -1]
+		frames, _ = cams.NextSet(out)
+		assert pulses(out) == [frames.number] * 3 and frames.own[2] == frames.number - 1
+		assert len(said) == 1 and "Camera2's frames paired again by host time" in said[0] and "-1" in said[0]
+		report = cams.Report()
+		assert report["offsets"] == {"Camera2": -1} and report["offset_changes"] == 1
+		event = report["events"][0]
+		assert event["event"] == "offset" and event["offset"] == -1 and event["before"] == 0
+		# More sets: the offset stays, and nothing more is said
+		for p in range(21 + live.MISALIGNED_SETS, 40):
+			Pulse(p)
+			frames, _ = cams.NextSet(out)
+			assert pulses(out) == [frames.number] * 3
+		assert len(said) == 1
+	finally:
+		cams.Close()
+
+
+def test_a_camera_that_lost_more_frames_than_its_ring_holds_is_paired_again(rings):
+	# Camera 2 loses 12 frames at once (more than its 8 slots): no set number is held by every ring any more,
+	# so no set came at all. Its frames are found again by host time
+	writers, cams, said = three(rings)
+	out = np.empty((3, 16, 20, 1), np.uint8)
+	got = []
+	done = threading.Event()
+
+	def Read():
+		while not done.is_set():
+			r = cams.NextSet(out, stop=done.is_set)
+			if r is None:
+				return
+			got.append((r[0].number, pulses(out)))
+
+	reader = threading.Thread(target=Read)
+	reader.start()
+	try:
+		t0 = clock.HostNs()
+		for p in range(1, 61):
+			if not 20 <= p < 32:
+				pulse(writers, p, t0, numbers=[p, p, p - 12 if p >= 32 else p])
+			else:
+				pulse(writers, p, t0, skip=(2,))
+			time.sleep(PERIOD / 1e9)
+		time.sleep(0.1)
+	finally:
+		done.set()
+		reader.join()
+		cams.Close()
+	assert cams.offset == [0, 0, -12], (cams.offset, said)
+	late = [g for g in got if g[0] >= 40]
+	assert late and all(seen == [number % 251] * 3 for number, seen in late), late
+
+
+def test_every_camera_pausing_at_once_is_no_stall_and_no_offset(rings, monkeypatch):
+	# The trigger pauses (between a Pico's bouts): every camera stops at once for longer than STALL_S, then
+	# goes on. No camera is left out, no offset taken, and the sets after the pause pair the same pulses
+	monkeypatch.setattr(live, "STALL_S", 0.2)
+	writers, cams, said = three(rings)
+	out = np.empty((3, 16, 20, 1), np.uint8)
+	got = []
+	done = threading.Event()
+
+	def Read():
+		while not done.is_set():
+			r = cams.NextSet(out, stop=done.is_set)
+			if r is None:
+				return
+			got.append((r[0].number, list(r[0].own), pulses(out)))
+
+	reader = threading.Thread(target=Read)
+	reader.start()
+	try:
+		for p in range(1, 31):
+			pulse(writers, p, clock.HostNs() - p * PERIOD) # each frame's host time: now
+			time.sleep(PERIOD / 1e9)
+		time.sleep(0.6) # the pause: 3 STALL_S
+		for p in range(31, 61):
+			# The cameras' frames come back one at a time: camera 2's first a few ms after the others'. One
+			# host time for the pulse (a thread switch between the writes could put them half a frame apart)
+			host = clock.HostNs()
+			for c, w in enumerate(writers):
+				w.Write(frame(p), p, host, p / 60)
+				if c == 1 and p == 31:
+					time.sleep(0.005)
+			time.sleep(PERIOD / 1e9)
+		time.sleep(0.1)
+	finally:
+		done.set()
+		reader.join()
+		cams.Close()
+	assert said == [] and cams.offset == [0, 0, 0] and cams.left == {}
+	assert all(-1 not in own for _, own, _ in got)
+	assert any(number > 31 for number, _, _ in got)
+	assert all(seen == [number % 251] * 3 for number, _, seen in got)
+
+
+def test_the_log_row_of_a_set_without_a_camera(tmp_path):
+	# A camera left out of the set: no host time, its own frame -1, and what the model made of its blank
+	# frame dropped; its host time is not in the set's spread or latency
+	log = live.Log(str(tmp_path / "log.npy"), 3, 2, 4, 60)
+	frames = live.FrameSet([livefeed.Frame(None, 41, 1000, 0.5, 7), livefeed.Frame(None, 40, 1100, 0.5, 8), None])
+	frames.number, frames.own = 41, [41, 40, -1]
+	result = {"keypoints": np.ones((3, 2, 4, 2)), "peak_vals": np.ones((3, 2, 4)), "centroids": np.ones((3, 2, 2)),
+		"centroid_vals": np.ones((3, 2))}
+	row = log.Row(frames, 0, 2000, 3000, result)
+	assert row["frame"] == 41 and list(row["cam_frame"]) == [41, 40, -1]
+	assert list(row["host_ns"]) == [1000, 1100, 0] and np.isnan(row["stamp"][2])
+	assert list(row["found"]) == [2, 2, 0] and np.isnan(row["keypoints"][2]).all()
+	log.Add(row, frames)
+	log.Close()
+	summary = log.Summary()
+	assert summary["misaligned"] == 0 and summary["host_time_spread_ms"]["max"] == pytest.approx(0.0001)
+	assert np.load(tmp_path / "log.npy")["cam_frame"].tolist() == [[41, 40, -1]]
+
+
+def test_campy_live_goes_on_with_the_other_cameras_when_one_is_lost(tmp_path, monkeypatch, capsys):
+	# Camera 2 ("right") is lost at frame 60 of 300, at 200 fps: campy-live says so, and its later sets have
+	# the other two cameras' keypoints and 3D, camera 2's columns empty; the summary says how many
+	args, truth, order = seeing(tmp_path, monkeypatch)
+	out = str(tmp_path / "lost")
+	assert run_live(name(), out, args, frames=300, lose=(2, 60)) == 0
+	said = capsys.readouterr().out
+	assert "Camera2's feed ended at its frame 60 while the other cameras record on" in said, said
+	rows = np.load(out + ".npy")
+	summary = json.load(open(out + ".json"))
+	without = rows[rows["cam_frame"][:, 2] == -1]
+	assert len(without) and rows["frame"][-1] == 300
+	assert summary["feed"]["sets_without"] == {"Camera2": len(without)}
+	assert np.all(without["host_ns"][:, 2] == 0) and np.isnan(without["keypoints"][:, 2]).all()
+	assert np.all(without["members"][:, :, 2] == -1) and np.all(without["n_views"] == 2)
+	for identity in range(3):
+		mouse = order[0][without[-1]["members"][identity][0]]
+		error = np.linalg.norm(without[-1]["points3d"][identity] - truth[mouse], axis=-1)
+		assert np.nanmax(error) < 3 # mm: the 3D from the two cameras left
+	assert np.all(rows["cam_frame"][:, :2] == rows["frame"][:, None])
 
 
 def test_campy_live_makes_its_model_before_the_feed_comes(tmp_path, monkeypatch, capsys):

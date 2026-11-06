@@ -163,8 +163,13 @@ class Log:
 		host = np.asarray(self.rows["host_ns"]) if "host_ns" in names else None
 		frames = np.asarray(self.rows["frame"], np.int64)
 		self.frames = frames
-		if host is not None and np.all(host > 0):
-			t = np.median(host, axis=1)
+		# The cameras in each set: campy-live leaves out a camera whose feed ended or stalled (cam_frame -1)
+		self.present = np.asarray(self.rows["cam_frame"]) >= 0 if "cam_frame" in names else \
+			np.ones((len(frames), self.cameras_n), bool)
+		if host is not None and len(host) and np.all((host > 0).any(axis=1)):
+			# host_ns 0: a camera left out of the set
+			with _quiet():
+				t = np.nanmedian(np.where(host > 0, host, np.nan), axis=1)
 			self.time_s = (t - t[0]) / 1e9 if len(t) else t
 		else:
 			self.time_s = (frames - (frames[0] if len(frames) else 0)) / self.frame_rate
@@ -219,7 +224,7 @@ def FlagBlock(log, first, block, s, out, centres3d):
 	for c in range(C):
 		r = np.nonzero(n_det[:, c] > log.animals)[0]
 		add(r, "extra", c, -1, n_det[r, c] - log.animals, np.nan)
-		r = np.nonzero(n_det[:, c] < log.animals)[0]
+		r = np.nonzero((n_det[:, c] < log.animals) & log.present[rows, c])[0] # not a camera left out of the set
 		add(r, "fewer", c, -1, log.animals - n_det[r, c], np.nan)
 	with _quiet():
 		score = np.nanmedian(vals, axis=-1)  # B, C, I
@@ -282,7 +287,9 @@ def FlagBlock(log, first, block, s, out, centres3d):
 	d = np.linalg.norm(proj[:, :, :, None, :] - where[:, None], axis=-1)  # B, A, C, I
 	d = np.where(det[:, None] & np.isfinite(d), d, np.inf)
 	nearest = np.min(d, axis=-1) if d.shape[-1] else np.full(d.shape[:3], np.inf)
-	b, k, c = np.nonzero((n_views >= 2)[..., None] & (members < 0) & inside & ~(nearest <= s.near_px))
+	# (not in a camera left out of the set: it had no frame to see it in)
+	present = log.present[rows][:, None, :]  # B, 1, C
+	b, k, c = np.nonzero((n_views >= 2)[..., None] & (members < 0) & present & inside & ~(nearest <= s.near_px))
 	add(b, "missed", c, k, np.where(np.isfinite(nearest[b, k, c]), nearest[b, k, c], -1), proj[b, k, c])
 	# A detection that is no animal, with no more detections than animals
 	b, c, i = np.nonzero(det & (animal_of < 0) & (n_det <= log.animals)[..., None])

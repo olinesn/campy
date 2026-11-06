@@ -66,6 +66,28 @@ a cage drawn mid-recording is used from then on; the summary's "cage" says
 each cage used and from which frame, and "outside_cage" how many animals it
 set aside. Without the file (or with --cage off) every 3D position is kept.
 
+A camera that stops, or loses a frame
+-------------------------------------
+A set pairs the frames of one trigger pulse, by frame number. A camera
+whose feed ends (it was unplugged or lost: campy records on with the
+others) or that sends no frame for STALL_S (1 s) while the others send
+half a second of frames is left out of the sets, said once on the
+console: tracking and 3D go on with the other cameras, and its columns in
+those sets are empty (cam_frame -1, host_ns 0, keypoints NaN, members -1).
+A stalled camera is taken back once its frames come again. Every camera
+pausing at once (the trigger's pause, between a Pico's bouts) is not a
+stall: nothing is left out, and the sets go on after it as before.
+A camera that lost a frame numbers its later frames one lower than the
+others (flirFramesLost), so its frame of the same number is of the next
+pulse. After MISALIGNED_SETS (3) sets in a row whose host times are more
+than half a frame apart (or when the cameras' numbers drift further apart
+than their rings hold), campy-live finds each camera's frame again by its
+host time: the frame that came within half a frame of the others', from
+the rings' slots, without copying a frame. That camera's frame number for
+set n is then n + its offset (cam_frame), said on the console. The
+summary's "feed" says the sets made without each camera, the offsets at
+the end, and each change, with the set after which it was made.
+
 Output
 ------
 <out>.npy, one row per set processed (a structured array; np.load reads it,
@@ -85,9 +107,11 @@ changed in a newer campy and that this run relies on (campy/defaults.py):
 --defaults-version and --default-warnings stop them.
 Fields of each row:
 
-  frame          the set's frame number
+  frame          the set's frame number: the frame number of the cameras
+                 that lost no frame (cam_frame has each camera's own)
   host_ns        per camera: when campy got the frame (as hosttimes.npy, on
-                 campy's host clock, campy/clock.py)
+                 campy's host clock, campy/clock.py); 0 for a camera left
+                 out of the set
   written_ns     per camera: when it was in shared memory (time.perf_counter_ns)
   stamp          per camera: the camera's timestamp, seconds
   read_ns        when campy-live had copied the set (host clock)
@@ -99,6 +123,12 @@ Fields of each row:
   centroid_vals  per camera, per animal: the centroid's confidence
   keypoints      per camera, per animal, per node: x, y in the frame
   peak_vals      per camera, per animal, per node: confidence
+  cam_frame      per camera: its own frame number in the set, -1 when it
+                 was left out of the set (its feed ended or stalled: its
+                 centroids and keypoints are NaN, found 0). It differs
+                 from frame after the camera lost a frame (below). Readers
+                 take 0 (never a frame number) as frame: rows of a program
+                 that left it unfilled
 
 and with --calibration:
 
@@ -291,17 +321,69 @@ def DeadWriter(reader):
 	return pid if pid and not children.Alive(pid) else None
 
 
+# A camera whose feed ended, or that sent no frame for STALL_S while the
+# others sent half a second of frames, is left out of the sets till it sends
+# frames again (an ended one: for good). A pause of every camera at once (the
+# trigger's: between a Pico's bouts) is never taken for one.
+STALL_S = 1.0
+# Sets in a row whose host times are more than half a frame apart, before
+# each camera's frame is found again by its host time (Cameras.Repair)
+MISALIGNED_SETS = 3
+# How often, waiting for the next set, the feeds are looked at for a camera that stopped (Cameras.Watch)
+WATCH_S = 0.01
+REPAIR_S = 0.1 # and at most how often they are paired again from there
+EVENTS_KEPT = 1000 # the summary's feed events: the first ones (a free-running camera could make many)
+SAID_MOST = 20 # offset changes said on the console; the rest only in the summary
+
+
+class FrameSet(list):
+	"""
+	One set: each camera's Frame, None for a camera left out of it. number is
+	the set's number (the log's frame), own each camera's own frame number
+	(-1: left out). They differ by the camera's offset, after it lost a frame.
+	"""
+	__slots__ = ("number", "own")
+
+
 class Cameras:
 	"""
 	The rings of every camera, and the newest set of frames that all hold.
+
+	A set pairs the frames of one trigger pulse: frame n + offset of each
+	camera, offset 0 till a camera loses a frame (it then numbers its later
+	frames one lower: flirFramesLost). When MISALIGNED_SETS sets in a row
+	have host times more than half a frame apart, or the cameras' numbers
+	drift further apart than their rings hold, each camera's frame is found
+	again by its host time (Repair), and its offset kept from then on.
+
+	A camera whose feed ends, or stalls while the others go on, is left out
+	of the sets (None in them), said once, and taken back when it sends
+	frames again: tracking goes on with the others meanwhile.
 	"""
 
-	def __init__(self, names, poll=0.0005):
+	def __init__(self, names, poll=0.0005, say=None):
 		self.names = list(names)
 		self.poll = poll
+		self.say = say or Say
 		self.readers = [None] * len(self.names)
-		self.buffer = None # (cameras, height, width, channels): the set, copied out
-		self.last = 0 # the last set's frame number
+		self.buffer = None # the out array of the last NextSet: a camera left out has its frame zeroed there
+		self.last = 0 # the last set's number
+		n = len(self.names)
+		self.offset = [0] * n # each camera's frame number for set n is n + offset
+		self.active = list(range(n)) # the cameras in the sets
+		self.left = {} # camera: why it is left out ("ended", "stalled")
+		self.leftAt = [0.0] * n
+		self.seen = [0] * n # each camera's newest frame number as last looked at
+		self.movedAt = [0.0] * n # when it last changed
+		self.snap = [0] * n # the newest set number of any camera then
+		self.without = [0] * n # sets made without each camera
+		self.events = [] # what changed, for the summary (feed: events)
+		self.dropped = 0 # events past EVENTS_KEPT
+		self.changes = 0 # offset changes
+		self.run = 0 # misaligned sets in a row
+		self.halfFrame = None # ns; None: no frame rate known, sets are paired by number only
+		self.stallFrames = 30
+		self.watched = self.repaired = 0.0
 
 	def Attach(self, wait=float("inf"), stop=lambda: False):
 		# Waits until every camera's ring is there and recording
@@ -357,7 +439,19 @@ class Cameras:
 		if len(shapes) > 1:
 			raise ValueError("the cameras' frames differ in size or type: {}".format(
 				", ".join("{} {}x{}x{} {}".format(r.cameraName, *(r.shape + (r.dtype,))) for r in self.readers)))
+		rate = self.readers[0].Info("frameRate")
+		if rate and rate > 0:
+			self.halfFrame = 0.5e9 / rate
+			self.stallFrames = max(3, int(round(rate * 0.5)))
+		now = time.monotonic()
+		self.seen = [r.Latest() for r in self.readers]
+		self.movedAt = [now] * len(self.readers)
+		self.snap = [max(self.seen)] * len(self.readers)
 		return True
+
+	def Name(self, i):
+		r = self.readers[i]
+		return r.cameraName if r is not None and r.cameraName else self.names[i]
 
 	def Describe(self):
 		r = self.readers[0]
@@ -383,46 +477,205 @@ class Cameras:
 		return False
 
 	def Newest(self):
-		# The newest frame number every camera has written
-		return min(r.Latest() for r in self.readers)
+		# The newest set number every camera in the sets has written
+		if not self.active:
+			return 0
+		return min(self.readers[i].Latest() - self.offset[i] for i in self.active)
 
 	def ReadSet(self, n, out):
-		# Frame n of every camera into out; None if a ring no longer holds it
-		frames = []
-		for i, reader in enumerate(self.readers):
-			frame = reader.Read(n, out[i])
+		# Set n of every camera in the sets into out; None if a ring no longer holds its frame
+		frames = FrameSet([None] * len(self.readers))
+		frames.number, frames.own = n, [-1] * len(self.readers)
+		for i in self.active:
+			m = n + self.offset[i]
+			frame = self.readers[i].Read(m, out[i])
 			if frame is None:
 				return None
-			frames.append(frame)
+			frames[i] = frame
+			frames.own[i] = m
+		for i in self.left:
+			self.without[i] += 1
 		return frames
 
 	def NextSet(self, out, stop=lambda: False, check_every=0.25):
 		"""
 		Waits for a set newer than the last one, and copies the newest that
-		every ring still holds whole into out. Returns (frames, skipped), or
-		None when the recording ends or stop() says to.
+		every ring in the sets still holds whole into out. Returns (frames,
+		skipped), frames a FrameSet, or None when the recording ends or stop()
+		says to.
 		"""
+		self.buffer = out
 		checked = time.monotonic()
 		while True:
 			newest = self.Newest()
 			if newest > self.last:
 				# The newest first; if a ring replaced it as it was copied (a
 				# reader slower than the slots), the next older ones
-				oldest = max(self.last + 1, max(r.Latest() for r in self.readers) - self.readers[0].slots + 2)
+				oldest = max(self.last + 1, max(self.readers[i].Latest() - self.offset[i] for i in self.active) -
+					self.readers[0].slots + 2)
 				for n in range(newest, oldest - 1, -1):
 					frames = self.ReadSet(n, out)
 					if frames is not None:
 						skipped = n - self.last - 1 if self.last else 0
 						self.last = n
+						self.Check(frames)
 						return frames, skipped
 				self.last = newest # none whole: look again at the next frame
 				continue
 			now = time.monotonic()
+			if now - self.watched >= WATCH_S:
+				self.watched = now
+				self.Watch(now)
 			if now - checked > check_every:
 				checked = now
 				if stop() or self.Ended():
 					return None
 			time.sleep(self.poll)
+
+	def Check(self, frames):
+		# After each set (about a microsecond): MISALIGNED_SETS sets in a row whose host times are more than half
+		# a frame apart have each camera's frame found again by its host time
+		if self.halfFrame is None:
+			return
+		low = high = None
+		for f in frames:
+			if f is not None:
+				h = f.hostTime
+				if low is None or h < low:
+					low = h
+				if high is None or h > high:
+					high = h
+		if low is None or high - low <= self.halfFrame:
+			self.run = 0
+			return
+		self.run += 1
+		if self.run >= MISALIGNED_SETS:
+			self.run = 0
+			self.Repair(list(self.active))
+
+	def Watch(self, now):
+		"""
+		Waiting for the next set: the cameras whose feed ended, or stalled
+		while the others go on, are left out; those that send frames again
+		are taken back (their frames found by host time); and the cameras are
+		paired again when their numbers drifted further apart than their
+		rings hold (a camera that lost more frames than that at once).
+		"""
+		latest = [r.Latest() for r in self.readers]
+		newest = max(latest[i] - self.offset[i] for i in range(len(latest)))
+		for i, n in enumerate(latest):
+			if n != self.seen[i]:
+				self.seen[i], self.movedAt[i], self.snap[i] = n, now, newest
+		for i in list(self.active):
+			if len(self.active) < 2:
+				break
+			# Not moved for STALL_S (or ended), while the others sent half a second of frames: every camera
+			# pausing at once (the trigger's pause) is not that
+			ended = self.readers[i].Ended()
+			if (ended or now - self.movedAt[i] >= STALL_S) and newest - self.snap[i] >= self.stallFrames:
+				self.Leave(i, "ended" if ended else "stalled", now)
+		back = [i for i, why in self.left.items() if why == "stalled" and self.movedAt[i] > self.leftAt[i] and
+			not self.readers[i].Ended()]
+		# Only cameras sending frames: one that stopped is left out after STALL_S instead, and its newest frame
+		# is no time to pair the others' with
+		moving = [i for i in self.active if now - self.movedAt[i] < REPAIR_S]
+		numbers = [latest[i] - self.offset[i] for i in moving]
+		drifted = len(numbers) > 1 and max(numbers) - min(numbers) >= self.readers[0].slots - 1
+		if (back or drifted) and now - self.repaired >= REPAIR_S:
+			self.repaired = now
+			placed = self.Repair(moving + back)
+			for i in back:
+				if i in placed:
+					self.Join(i)
+
+	def Leave(self, i, why, now):
+		self.active.remove(i)
+		self.left[i] = why
+		self.leftAt[i] = now
+		self.run = 0
+		if self.buffer is not None:
+			self.buffer[i] = 0 # the model gets a blank frame for it, and its results are dropped (Log.Row)
+		self.Event(i, "left out", why=why, frame=self.seen[i])
+		others = ", ".join(self.Name(j) for j in self.active)
+		if why == "ended":
+			self.say("{}'s feed ended at its frame {} while the other cameras record on (camera lost?): tracking "
+				"goes on with {}, without it.".format(self.Name(i), self.seen[i], others))
+		else:
+			self.say("No frame from {} for {:.1f} s (its newest: {}) while the other cameras record on: tracking "
+				"goes on with {}, and takes it back when its frames come again.".format(self.Name(i),
+				now - self.movedAt[i], self.seen[i], others))
+
+	def Join(self, i):
+		del self.left[i]
+		self.active.append(i)
+		self.active.sort()
+		self.Event(i, "back", offset=self.offset[i])
+		self.say("{}'s frames came again: in the sets again from set {} (its frame number {:+d} from the set's)."
+			.format(self.Name(i), self.last + 1, self.offset[i]))
+
+	def Repair(self, cameras):
+		"""
+		Each of cameras' frames found again by its host time: the frame
+		nearest the newest frame of the camera furthest behind, within half
+		a frame (from the slots' fields, without copying a frame: about 11
+		us a camera on an Apple M2). Set numbers stay those of the cameras most
+		of which share an offset; each other camera's offset becomes its
+		frame's number less the set's. Returns the cameras placed.
+		"""
+		if self.halfFrame is None or not cameras:
+			return set()
+		newest = []
+		for i in cameras:
+			n = self.readers[i].Latest()
+			h = self.readers[i].HostTime(n)
+			if h is None: # being written, or replaced: the one before
+				h = self.readers[i].HostTime(n - 1)
+			if h is not None:
+				newest.append(h)
+		if not newest:
+			return set()
+		target = min(newest)
+		found = {}
+		for i in cameras:
+			numbers, host = self.readers[i].Slots()[:2]
+			if not len(numbers):
+				continue
+			k = int(np.argmin(np.abs(host - target)))
+			if abs(int(host[k]) - target) <= self.halfFrame:
+				found[i] = int(numbers[k])
+		inside = [i for i in found if i in self.active]
+		if not inside:
+			return set()
+		counts = {}
+		for i in inside:
+			counts[self.offset[i]] = counts.get(self.offset[i], 0) + 1
+		most = max(counts.values())
+		ref = min(i for i in inside if counts[self.offset[i]] == most)
+		number = found[ref] - self.offset[ref]
+		for i, m in sorted(found.items()):
+			offset = m - number
+			if offset != self.offset[i]:
+				before, self.offset[i] = self.offset[i], offset
+				self.changes += 1
+				self.Event(i, "offset", offset=offset, before=before, frame=m, pairs_with=number)
+				if self.changes <= SAID_MOST:
+					self.say("{}'s frames paired again by host time: its frame {} goes with the others' {} (frame "
+						"number {:+d} from the set's, was {:+d}){}.".format(self.Name(i), m, number, offset, before,
+						"; further changes only in the summary" if self.changes == SAID_MOST else ""))
+		return set(found)
+
+	def Event(self, i, what, **more):
+		if len(self.events) >= EVENTS_KEPT:
+			self.dropped += 1
+			return
+		self.events.append(dict(after_set=self.last, camera=self.Name(i), event=what, **more))
+
+	def Report(self):
+		# For the summary ("feed"): the sets made without each camera, offsets at the end, and what changed
+		return {"sets_without": {self.Name(i): n for i, n in enumerate(self.without) if n},
+			"offsets": {self.Name(i): o for i, o in enumerate(self.offset) if o},
+			"left_out_at_end": {self.Name(i): why for i, why in sorted(self.left.items())},
+			"offset_changes": self.changes, "events": self.events, "events_not_kept": self.dropped}
 
 	def Close(self):
 		for r in self.readers:
@@ -2366,7 +2619,7 @@ def RowType(n_cameras, instances, nodes, animals3d=0):
 		("frame", "<i8"), ("host_ns", "<i8", (c,)), ("written_ns", "<i8", (c,)), ("stamp", "<f8", (c,)),
 		("read_ns", "<i8"), ("done_ns", "<i8"), ("inference_ns", "<i8"), ("skipped", "<i4"), ("found", "<i2", (c,)),
 		("centroids", "<f4", (c, i, 2)), ("centroid_vals", "<f4", (c, i)),
-		("keypoints", "<f4", (c, i, n, 2)), ("peak_vals", "<f4", (c, i, n))]
+		("keypoints", "<f4", (c, i, n, 2)), ("peak_vals", "<f4", (c, i, n)), ("cam_frame", "<i8", (c,))]
 	if animals3d:
 		a = animals3d
 		fields += [("pose3d_ns", "<i8"), ("points3d", "<f4", (a, n, 3)), ("members", "<i2", (a, c)),
@@ -2415,16 +2668,22 @@ class Log:
 
 	def Row(self, frames, skipped, read_ns, done_ns, result, inference_ns=0):
 		# One set's row: its frames, and the model's results
+		# frames: a FrameSet (Cameras.NextSet; None for a camera left out of the set), or a list of Frames
 		row = np.zeros((), self.rows_type)
-		host = [f.hostTime for f in frames]
-		row["frame"] = frames[0].frameNumber
-		row["host_ns"] = host
-		row["written_ns"] = [f.written for f in frames]
-		row["stamp"] = [f.timeStamp for f in frames]
+		number = getattr(frames, "number", None)
+		row["frame"] = frames[0].frameNumber if number is None else number
+		row["host_ns"] = [f.hostTime if f is not None else 0 for f in frames]
+		row["written_ns"] = [f.written if f is not None else 0 for f in frames]
+		row["stamp"] = [f.timeStamp if f is not None else np.nan for f in frames]
+		row["cam_frame"] = [f.frameNumber if f is not None else -1 for f in frames]
 		row["read_ns"], row["done_ns"], row["skipped"] = read_ns, done_ns, skipped
 		row["inference_ns"] = inference_ns
 		for key in ("centroids", "centroid_vals", "keypoints", "peak_vals"):
 			row[key] = Fit(result.get(key), row[key].shape)
+		for c, f in enumerate(frames):
+			if f is None: # left out of the set: what the model made of its blank frame is not kept
+				for key in ("centroids", "centroid_vals", "keypoints", "peak_vals"):
+					row[key][c] = np.nan
 		row["found"] = (~np.isnan(row["centroids"]).any(-1)).sum(-1)
 		return row
 
@@ -2445,15 +2704,16 @@ class Log:
 		if self.results is not None:
 			self.results.Write(row)
 		read_ns, done_ns, skipped = int(row["read_ns"]), int(row["done_ns"]), int(row["skipped"])
-		host = np.array([f.hostTime for f in frames], np.int64)
+		host = np.array([f.hostTime for f in frames if f is not None], np.int64)
 		self.rows.append(row)
 		if len(self.rows) >= self.every:
 			self.Write()
 
+		frame = int(row["frame"])
 		if self.first is None:
-			self.first = frames[0].frameNumber
+			self.first = frame
 			self.started = time.monotonic()
-		self.lastFrame = frames[0].frameNumber
+		self.lastFrame = frame
 		self.sets += 1
 		self.skipped += skipped
 		spread = int(host.max() - host.min())
@@ -2654,7 +2914,7 @@ def Run(args):
 			calibration_names=tracker.names if tracker else None, animals=tracker.animals if tracker else 0,
 			calibration_size_mismatch=tracker.sizes if tracker else None,
 			cage=tracker.cages if tracker else None,
-			cameras=[r.cameraName for r in cameras.readers],
+			cameras=[r.cameraName for r in cameras.readers], feed=cameras.Report(),
 			rings=names, frame_shape=list(shape), frame_rate=frameRate, log=out + ".npy", cpus=placed,
 			cuda_graphs=model.DescribeGraphs() if hasattr(model, "DescribeGraphs") else None,
 			fast_upsample=model.DescribeUpsamples() if hasattr(model, "DescribeUpsamples") else None,

@@ -301,7 +301,14 @@ class Placement:
 
 	def __init__(self, rows, cameras):
 		self.frames = np.asarray(rows["frame"], np.int64)
-		self.video = np.stack([c.Index(self.frames) for c in cameras], axis=1) # rows x cameras
+		# Each camera's own frame of the set: the set's number, or (campy-live from November 2026) cam_frame,
+		# which differs after a camera lost a frame, and is -1 where the camera was left out of the set
+		own = np.repeat(self.frames[:, None], len(cameras), axis=1)
+		if "cam_frame" in rows.dtype.names: # 0: not given (frame numbers start at 1)
+			given = np.asarray(rows["cam_frame"], np.int64)
+			own = np.where(given != 0, given, own)
+		self.video = np.stack([np.where(own[:, c] >= 0, camera.Index(np.maximum(own[:, c], 0)), -1)
+			for c, camera in enumerate(cameras)], axis=1) # rows x cameras
 		# How many cameras' videos agree with each camera's; the group goes on
 		# the frame most agree on (a tie: the first camera's)
 		have = self.video >= 0
