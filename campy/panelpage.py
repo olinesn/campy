@@ -206,6 +206,7 @@ function renderDevices(s, st){
 }
 async function pauseUpdates(b){ b.disabled = true; b.textContent = "Windows asks for administrator rights…"; const e = await post("/pause-updates"); if(e) alert(e); tick(); }
 async function tick(){
+  if(closed) return;
   try { const r = await fetch(q("/status.json")); if(r.status==403){ $("state").textContent="Wrong key"; $("error").hidden=false; $("error").textContent=(await r.json()).error; return; }
     render(await r.json()); } catch(e){ $("state").textContent = "Panel not running"; $("state").className = "tag bad"; }
 }
@@ -215,7 +216,10 @@ $("start").onclick = async () => { $("starterr").textContent = "";
     length: $("length").value || null, pico_at: $("picoat").value.trim() || null});
   $("starterr").textContent = e || ""; tick(); };
 $("length").onchange = async () => { const e = await post("/length", {seconds: $("length").value}); $("starterr").textContent = e || ""; tick(); };
-$("close").onclick = async () => { if(!confirm("Close the panel? Nothing is recording; the page stops answering.")) return; const e = await post("/close"); if(e) alert(e); };
+let closed = false;
+$("close").onclick = async () => { if(!confirm("Close the panel? Nothing is recording.")) return; const e = await post("/close"); if(e){ alert(e); return; }
+  closed = true; document.querySelector("main").innerHTML = '<div class="card"><h2>The panel is closed</h2><p class="muted">You can close this tab. '+
+    'To record again, open the panel from its desktop icon.</p></div>'; };
 $("keep").onclick = () => { $("stopdlg").hidden = true; };
 async function stopMode(mode){ $("stopdlg").hidden = true; const e = await post("/stop", {mode}); if(e) alert(e); tick(); }
 $("stopbout").onclick = () => stopMode("bout"); $("stopnow").onclick = () => stopMode("now");
