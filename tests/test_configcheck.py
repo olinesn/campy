@@ -73,6 +73,63 @@ def test_file_values_are_checked_like_options(tmp_path):
 		"of them (YAML reads null, ~ and an empty value as no value: write None)"]
 
 
+def test_an_empty_value_says_none_only_where_it_is_taken(tmp_path):
+	# frameRate: (empty) said "write None", which frameRate refuses
+	assert problems(tmp_path, "frameRate:\n") == ["c.yaml:1: frameRate: None is not a number, or a list of them "
+		"(YAML reads null, ~ and an empty value as no value: give a value, or leave it out)"]
+	assert problems(tmp_path, "keyframeInterval:\nnumCams:\n") == [
+		'c.yaml:1: keyframeInterval: None is not a number or "None", or a list of them '
+		"(YAML reads null, ~ and an empty value as no value: write None)",
+		"c.yaml:2: numCams: None is not a whole number "
+		"(YAML reads null, ~ and an empty value as no value: give a value, or leave it out)"]
+	assert problems(tmp_path, "notes:\nvideoFolder: ~\ntriggerController:\n") == [
+		"c.yaml:1: notes: None is not text (YAML reads null, ~ and an empty value as no value: write None)",
+		"c.yaml:2: videoFolder: None is not text "
+		"(YAML reads null, ~ and an empty value as no value: give a value, or leave it out)",
+		"c.yaml:3: triggerController: None is not text (YAML reads null, ~ and an empty value as no value: "
+		"write None)"]
+
+
+def test_numbers_are_finite(tmp_path):
+	# .inf and .nan passed every range check (NaN compares False to every limit):
+	# recTimeInSec: .inf crashed every camera process, stopAtFreeGB: .nan turned the disk stop off
+	assert problems(tmp_path, "recTimeInSec: .inf\nstopAtFreeGB: .nan\nframeRate: [30, -.inf]\n"
+			"displayFrameRate: .NaN\nkeyframeInterval: nan\nblinkHz: 1e999\ncameraGain: [1, .nan]\n") == [
+		"c.yaml:1: recTimeInSec: inf is not a finite number (it takes a number above 0)",
+		"c.yaml:2: stopAtFreeGB: nan is not a finite number (it takes a number, 0 or more)",
+		"c.yaml:3: frameRate: -inf is not a finite number (it takes a number above 0)",
+		"c.yaml:4: displayFrameRate: nan is not a finite number (it takes a number, 0 or more)",
+		'c.yaml:5: keyframeInterval: nan is not a finite number (it takes a number above 0, or "None")',
+		'c.yaml:6: blinkHz: inf is not a finite number (it takes a number, 0 or more, or "None")',
+		"c.yaml:7: cameraGain: nan is not a finite number (it takes a number, 0 or more)"]
+	for option, value in (("--readyTimeoutSec", "nan"), ("--recTimeInSec", "inf"), ("--alertNoFramesSec", ".inf")):
+		key = option[2:]
+		assert problems(tmp_path, "", option, value) == ["{}: {}: {} is not a finite number (it takes {})".format(
+			option, key, "nan" if "nan" in value else "inf", configschema.BY_NAME[key].Takes())]
+	assert problems(tmp_path, "cameraGamma: .inf\n") == \
+		['c.yaml:1: cameraGamma: cameraGamma is a number above 0 (e.g. 0.6) or "Off", not inf.'] # its own check
+	assert resolve(tmp_path, "recTimeInSec: 1e9\nstopAtFreeGB: 0\n")["recTimeInSec"] == 1e9
+
+
+def test_one_name_or_index_alone_for_several_cameras(tmp_path):
+	# cameraNames: Cam with 2 cameras was read as C and a; cameraSelection: 1 opened device 1 twice
+	assert problems(tmp_path, "numCams: 2\ncameraNames: Cam\ncameraSelection: 1\n") == [
+		"cameraNames: 'Cam' is one value for 2 cameras. It takes one per camera, e.g. cameraNames: "
+		"[Camera0, Camera1]. (cameraNames is from c.yaml:2, numCams from c.yaml:1)",
+		"cameraSelection: 1 is one value for 2 cameras. It takes one per camera, e.g. cameraSelection: [0, 1]. "
+		"(cameraSelection is from c.yaml:3, numCams from c.yaml:1)"]
+	assert problems(tmp_path, "cameraNames: Cam\n", "--numCams", "3") == [
+		"cameraNames: 'Cam' is one value for 3 cameras. It takes one per camera, e.g. cameraNames: "
+		"[Camera0, Camera1, Camera2]. (cameraNames is from c.yaml:1, numCams from command line)"]
+	assert resolve(tmp_path, "numCams: 1\ncameraNames: Top\n")["cameraNames"] == ["Top"]
+
+
+def test_ffmpeg_path_is_one_for_the_rig(tmp_path):
+	# It goes to imageio, for every camera: a list passed the check, then stopped campy with a TypeError
+	assert problems(tmp_path, "ffmpegPath: [/usr/bin/ffmpeg]\n") == \
+		["c.yaml:1: ffmpegPath takes one value for the whole rig, not a list (['/usr/bin/ffmpeg'])"]
+
+
 def test_values_campy_takes(tmp_path):
 	p = resolve(tmp_path, "numCams: 2\nrecTimeInSec: 1e3\ncolorRange: Full\npreflight: off\n"
 		"cameraGamma: [0.45, off]\nkeyframeInterval: None\nquality: [0, 51]\n")

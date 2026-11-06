@@ -26,9 +26,18 @@ cameraGain: [4, 3, 7]   # Camera0 4 dB, Camera1 3 dB, Camera2 7 dB
 quality: 26             # every camera
 ```
 
-A one-item list is the same as one value. A list longer than `numCams` uses its first `numCams` items, so a config written for 8 cameras also runs 4, and campy says which lists it shortened. A list with 2 or more items but fewer than `numCams` stops campy. `cameraNames` and `cameraSelection` need a value for every camera.
+A one-item list is the same as one value. A list longer than `numCams` uses its first `numCams` items, so a config written for 8 cameras also runs 4, and campy says which lists it shortened. A list with 2 or more items but fewer than `numCams` stops campy.
 
-A few settings take one value for the whole rig and refuse a list: `numCams`, `recTimeInSec`, `keepAwake`, `liveFeedSlots`, the launch check's, and the trigger's. The reference's "Per camera" column says which.
+`cameraNames` and `cameraSelection` need a list with a value for every camera, since two cameras can't share a name or a device: `cameraNames: [Top, Side]`, `cameraSelection: [0, 1]`. One value alone is taken only with `numCams: 1`, as a list of one (`cameraNames: Top` is `[Top]`). With more cameras it stops campy:
+
+```
+cameraNames: 'Cam' is one value for 2 cameras. It takes one per camera, e.g. cameraNames: [Camera0, Camera1]. (cameraNames is from my_rig.yaml:2, numCams from my_rig.yaml:1)
+cameraSelection: 1 is one value for 2 cameras. It takes one per camera, e.g. cameraSelection: [0, 1]. (cameraSelection is from my_rig.yaml:3, numCams from my_rig.yaml:1)
+```
+
+In campy 2.5.0 and older, one name alone was read letter by letter: with one camera, `cameraNames: Top` recorded into a folder `T`, while session.json said `Top`; with two, `cameraNames: Cam` stopped campy with `C and a would both write ...`, and `cameraSelection: 1` opened device 1 for both cameras.
+
+A few settings take one value for the whole rig and refuse a list: `numCams`, `recTimeInSec`, `keepAwake`, `ffmpegPath`, `liveFeedSlots`, the launch check's, and the trigger's. The reference's "Per camera" column says which. (In campy 2.5.0 and older, `ffmpegPath` took a list, which then stopped campy with `TypeError: str expected, not list` after the check.)
 
 ## What campy checks before any camera opens
 
@@ -45,8 +54,8 @@ The config has 3 problems:
 It checks:
 
 - **Unknown keys**, in each file of an `extends:` chain. campy suggests the key you probably meant: the same name in other capitals (`framerate`), one a few letters away (`cameraExposureTimeUs`), or the only key that contains the word (`exposure` is `cameraExposureTimeInUs`). An unknown command-line option stops it the same way, `unknown option --framerate. Did you mean --frameRate?`. A shortened option is not taken: `--qual 20` used to mean `--quality 20`.
-- **Kinds.** A number, True or False, or text, as the reference says. This used to be checked only on the command line: `quality: "26"` in the file got through and failed later. YAML reads `yes`, `no`, `on` and `off` as True or False, and an empty value as nothing, and the message says so when that is the cause.
-- **Ranges and words.** For example, `frameRate` above 0, `numCams` 1 or more, `cameraGain` 0 or more, `quality` 0 to 51 (0 to 255 for `codec: av1`). Settings with a fixed list of words take only those: `codec`, `gpuMake`, `cameraMake`, `bufferMode`, `colorRange`, `ffmpegLogLevel`, `preflight`, `triggerController`. Limits that depend on the camera model are left to the camera: for example, the highest gain a camera takes, and the gamma it clamps to.
+- **Kinds.** A number, True or False, or text, as the reference says. This used to be checked only on the command line: `quality: "26"` in the file got through and failed later. YAML reads `yes`, `no`, `on` and `off` as True or False, and an empty value as nothing, and the message says so when that is the cause. For an empty value it says to write `None` only where the setting takes it (`keyframeInterval:` gives `... no value: write None`, `frameRate:` gives `... no value: give a value, or leave it out`).
+- **Ranges and words.** For example, `frameRate` above 0, `numCams` 1 or more, `cameraGain` 0 or more, `quality` 0 to 51 (0 to 255 for `codec: av1`). Settings with a fixed list of words take only those: `codec`, `gpuMake`, `cameraMake`, `bufferMode`, `colorRange`, `ffmpegLogLevel`, `preflight`, `triggerController`. Limits that depend on the camera model are left to the camera: for example, the highest gain a camera takes, and the gamma it clamps to. A number is never infinite or "not a number": YAML's `.inf` and `.nan` (and `inf`, `nan`, `1e999`) are refused, naming the key, `recTimeInSec: inf is not a finite number (it takes a number above 0)`. They used to pass every range check: `recTimeInSec: .inf` stopped every camera's process with an error as the recording started, and `stopAtFreeGB: .nan` turned the low-disk stop off without a word. For a time that should never run out, give a large number (`alertNoFramesSec: 1e9`), or `None` where the reference lists it.
 - **A key given twice in one file.** YAML would keep the last value without a word.
 - **Per-camera lists** of the wrong length (above), and the checks across settings that were there before: one frame rate for the cameras a trigger drives, `colorRange`, `cameraGamma`.
 - **Renamed keys.** A config that still says `disableGamma` is read as `cameraGamma`: True as `"Off"`, False as 0.6. campy says so as it starts. A config that gives both is refused.
@@ -99,7 +108,9 @@ Keep the rig's own settings in a profile, not as an edit of a config in `configs
 
 ## Sections other programs read
 
-A config can also hold sections of their own `key: value` lines, indented under the section's name, for a program that starts campy-acquire: `live:`, `view:`, `post:` and `panel:` (campy-session's). campy-acquire passes them by, and the program that reads them checks what is inside. Across `extends:` they combine one level deep: an experiment's `live:` with only `animals: 3` keeps the profile's other `live:` keys. A misspelled section name is caught like any key (`lives` → "Did you mean "live"?").
+A config can also hold sections of their own `key: value` lines, indented under the section's name, for a program that starts campy-acquire: `live:`, `view:`, `post:`, `panel:`, `pico:`, `spikeglx:` and `windows:` (campy-session's). campy-acquire passes them by, and the program that reads them checks what is inside. Across `extends:` they combine one level deep: an experiment's `live:` with only `animals: 3` keeps the profile's other `live:` keys. A misspelled section name is caught like any key (`lives` → "Did you mean "live"?").
+
+To turn off a section a profile gives, write it as null in the experiment's config: `live: null` (or `live:` with nothing indented under it, or `live: ~`). The experiment then has no `live:` section at all, as if no file gave one: no live tracking for `live:`, campy-session's defaults for `view:`, `post:` and `panel:`. A file that extends the experiment can give the section again, and starts it afresh. `live: {}` adds nothing and keeps the profile's keys, and other values (`live: false`) are refused. In campy 2.5.0 and older, a section could not be turned off: `live: null` and `live:` were refused.
 
 ## Where each setting came from: campy-config show
 
@@ -123,7 +134,7 @@ codec                   h265                               chronicrecord.yaml:28
 - `--yaml`: the whole config as one file with no `extends:`. Each line says where its value came from, and `campy-acquire` records with it exactly as with the original.
 - `--json`: the same values, each with its source as `{"kind", "file", "line", "note"}` (a section's keys as `live.animals`), for programs.
 
-**Moving to profiles without changing a recording: campy-config diff.** `campy-config diff old.yaml new.yaml` lists every setting whose value differs between two configs, each with where it came from. It also takes campy-acquire's options, applied to both. When a standalone config is rewritten as a profile plus a short experiment file, "No difference" proves they record the same.
+**Moving to profiles without changing a recording: campy-config diff.** `campy-config diff old.yaml new.yaml` lists every setting whose value differs between two configs, then every key of their sections that differs (as `live.models`, `post.copy`, `pico.port`), each with where it came from (a section's key, the line of its section). It also takes campy-acquire's options, applied to both. When a standalone config is rewritten as a profile plus a short experiment file, "No difference" proves they record the same and give campy-session the same sections. In campy 2.5.0 and older it compared the recording settings only, and said "No difference" for two configs whose `live:` models differed.
 
 ## Checking a config without recording: campy-config check
 

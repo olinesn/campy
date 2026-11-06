@@ -2,7 +2,7 @@
 
 <!-- Generated from campy/configschema.py by `campy-config reference > docs/config-reference.md`. Edit the table there, not this page: a test fails when the two differ. -->
 
-Every key a campy config file can have, and its command-line option (`--key value` means what `key: value` means in the file). "Per camera" says how a list is read: *one, or one per camera* takes one value for every camera or a list with a value for each, in camera order; *one for the rig* refuses a list. A config can also start with `extends: <rig profile or file>`, which takes every setting the config doesn't give from that file. [Configs](configs.md) explains profiles and how campy checks a config; `campy-config show` prints where each setting of a config came from.
+Every key a campy config file can have, and its command-line option (`--key value` means what `key: value` means in the file). "Per camera" says how a list is read: *one, or one per camera* takes one value for every camera or a list with a value for each, in camera order; *one per camera* (`cameraNames`, `cameraSelection`) needs a list with a value for each camera, and takes one value alone only with `numCams: 1`; *one for the rig* refuses a list. A number is never `.inf` or `.nan`. A config can also start with `extends: <rig profile or file>`, which takes every setting the config doesn't give from that file. [Configs](configs.md) explains profiles and how campy checks a config; `campy-config show` prints where each setting of a config came from.
 
 ## Recording
 
@@ -58,7 +58,7 @@ Every key a campy config file can have, and its command-line option (`--key valu
 | Key | Default | Takes | Per camera | What it does |
 |---|---|---|---|---|
 | `ffmpegLogLevel` | `"quiet"` | "quiet", "panic", "fatal", "error", "warning", "info", "verbose", "debug" or "trace" | one, or one per camera | Sets verbosity level for ffmpeg logging. ('quiet' (no warnings), 'warning', 'info' (real-time stats)). |
-| `ffmpegPath` | `"None"` | text, as typed | one, or one per camera | Location of ffmpeg binary for imageio. |
+| `ffmpegPath` | `"None"` | text, as typed | one for the rig | Location of ffmpeg binary for imageio. |
 | `pixelFormatInput` | `"rgb24"` | text | one, or one per camera | Pixel format input. Use 'rgb24' for RGB or 'bayer_bggr8' for 8-bit bayer pattern. |
 | `pixelFormatOutput` | `"rgb0"` | text | one, or one per camera | Pixel format output. Use 'rgb0' for best results. |
 | `colorRange` | `"limited"` | "limited" or "full" | one, or one per camera | Video color range: 'limited' (16-235, the default) or 'full' (0-255: every gray level of the camera, and less CPU for ffmpeg; raise quality by about 2 for the same file size). |
@@ -116,7 +116,7 @@ Every key a campy config file can have, and its command-line option (`--key valu
 
 | Key | Default | Takes | Per camera | What it does |
 |---|---|---|---|---|
-| `triggerController` | `"arduino"` | "arduino", "Arduino", "None" or "none" | one for the rig | Microntroller make for camera triggering. Currently supported: 'arduino'. |
+| `triggerController` | `"arduino"` | "arduino", "Arduino", "None" or "none" | one for the rig | Microcontroller make for camera triggering. Currently supported: 'arduino'. 'None' (or 'none'): campy starts no trigger, even with startArduino True. |
 | `startArduino` | `False` | True or False | one for the rig | If True, start Arduino after initializing cameras. |
 | `serialPort` | `"COM3"` | text | one for the rig | Serial port for communicating with Arduino. |
 | `digitalPins` | `[0, 1, 2, 3, 4, 5, 6]` | a whole number, 0 or more | a list | Digital pins on microcontroller board for sending TTL camera triggers. |

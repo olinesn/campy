@@ -398,6 +398,24 @@ def test_with_a_trigger_campy_does_not_start_it_only_warns(flir, capsys):
 	assert device.held == 1 and camera.calls.count("GetNextImage") == 0
 
 
+def test_with_trigger_controller_none_campy_starts_no_trigger_either(flir, capsys):
+	# startArduino True with triggerController none (or None): campy opens no Arduino,
+	# so the rig's trigger may pulse at any time, as with startArduino False. The
+	# frames were discarded as if campy's own Arduino were to start them.
+	for controller in ("none", "None"):
+		values = dict(ARDUINO, triggerController=controller)
+		assert not flir.CampyTriggers(params(**values))
+		device = killed_while_triggered(flir, **values)
+		capsys.readouterr()
+		camera = new_process(device)
+		flir.LoadSettings(camera, params(**values))
+		assert flir.StartGrabbing(camera)
+		out = capsys.readouterr().out
+		assert "it may still hold frames from that run" in out and "discarded" not in out
+		assert device.held == 1
+	assert flir.CampyTriggers(params(**ARDUINO)) and flir.CampyTriggers(params(**dict(ARDUINO, triggerController="Arduino")))
+
+
 def test_a_software_trigger_is_campy_s_own(flir, capsys):
 	device = killed_while_triggered(flir, cameraTrigger="Software")
 	capsys.readouterr()

@@ -2,12 +2,15 @@
 Command-line overrides: --key value means what key: value means in the config."""
 
 import os
+import re
 import sys
+import subprocess
 import pytest
 import yaml
 from argparse import ArgumentParser
 
-from campy import configurator
+from campy import configurator, newfiles
+from campy.trigger import trigger
 
 
 def params(num_cams, **values):
@@ -283,3 +286,116 @@ def test_flir_example_configs_gamma(monkeypatch):
 		config = os.path.join(os.path.dirname(__file__), "..", "configs", name)
 		monkeypatch.setattr(sys, "argv", ["campy-acquire", config])
 		assert configurator.ConfigureParams()["cameraGamma"] == gamma, name
+
+
+# ------------------------------------------------------------- a name or an index alone
+
+def test_one_name_alone_is_a_list_of_one(tmp_path, monkeypatch):
+	# cameraNames: Top used to be read letter by letter: the camera recorded into T/,
+	# while session.json said Top and campy-session Camera0
+	p = run_config(tmp_path, monkeypatch, {"numCams": 1, "cameraNames": "Top", "cameraSelection": 1})
+	assert (p["cameraNames"], p["cameraSelection"]) == (["Top"], [1]) # every reader sees a list
+	cam = configurator.CameraParams(p, 0)
+	assert (cam["cameraName"], cam["cameraSelection"]) == ("Top", 1)
+	assert os.path.basename(newfiles.CameraFolder(cam)) == "Top"
+	assert newfiles.CalibrationCameras(dict(p, videoFilename="0-calibration.mp4")) == ["Top"]
+	assert run_config(tmp_path, monkeypatch, {"numCams": 1}, "--cameraNames", "Top")["cameraNames"] == ["Top"]
+	from campy import session
+	assert session.Config(str(tmp_path / "c.yaml"), ["--cameraNames", "Side"]).Cameras() == (1, ["Side"])
+	# The effective config campy-session runs campy-acquire with reads the same
+	again = tmp_path / "flat.yaml"
+	again.write_text(configurator.Resolve(str(tmp_path / "c.yaml"), ["--cameraNames", "Top"]).ToYaml())
+	assert configurator.Resolve(str(again)).params["cameraNames"] == ["Top"]
+
+
+def test_one_name_or_index_for_several_cameras_is_refused(tmp_path, monkeypatch):
+	# cameraNames: Cam stopped later, in newfiles ("C and a would both write ..."), and
+	# cameraSelection: 1 opened device 1 for both cameras
+	with pytest.raises(configurator.ConfigError, match=re.escape("cameraNames: 'Cam' is one value for 2 cameras. "
+			"It takes one per camera, e.g. cameraNames: [Camera0, Camera1].")):
+		run_config(tmp_path, monkeypatch, {"cameraNames": "Cam"})
+	with pytest.raises(configurator.ConfigError, match=re.escape("cameraSelection: 1 is one value for 8 cameras. "
+			"It takes one per camera, e.g. cameraSelection: [0, 1, ..., 7].")):
+		run_config(tmp_path, monkeypatch, {"numCams": 8}, "--cameraSelection", "1")
+
+
+def test_campy_acquire_records_a_name_alone_into_its_folder(tmp_path):
+	# The whole run, with one emulated camera: it used to record into T/ and say "Opened T"
+	from test_emu import write_clip, REPO
+	(tmp_path / "Top").mkdir()
+	write_clip(str(tmp_path / "Top" / "clip.mp4"), frames=7)
+	config = tmp_path / "config.yaml"
+	config.write_text("\n".join(["numCams: 1", "cameraNames: Top", 'cameraMake: "emu"',
+		'videoFolder: "{}"'.format(tmp_path.as_posix()), 'videoFilename: "emuclip.mp4"', "frameRate: 20",
+		"recTimeInSec: 1", "chunkLengthInSec: 1", "displayFrameRate: 0", 'pixelFormatInput: "gray"',
+		'pixelFormatOutput: "yuv420p"', "gpuID: -1", 'codec: "h264"', 'preflight: "off"', "alerts: False", ""]))
+	env = dict(os.environ, PYTHONPATH=REPO, PYTHONUNBUFFERED="1")
+	env.pop("IMAGEIO_FFMPEG_EXE", None)
+	code = "import sys; sys.argv = ['campy-acquire', sys.argv[1]]; from campy.campy import Main; Main()"
+	proc = subprocess.run([sys.executable, "-c", code, str(config)], cwd=str(tmp_path), env=env,
+		capture_output=True, text=True, timeout=120)
+	assert proc.returncode == 0, proc.stdout + proc.stderr
+	recording, = [d for d in tmp_path.iterdir() if re.fullmatch(r"\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d", d.name)]
+	assert sorted(d.name for d in recording.iterdir() if d.is_dir()) == ["Top"], proc.stdout
+	assert (recording / "Top" / "emuclip.mp4").is_file() and (recording / "Top" / "frametimes.npy").is_file()
+	assert "Top ready to trigger" in proc.stdout and "Closing T." not in proc.stdout
+
+
+# ------------------------------------------------------------- triggerController none
+
+def test_trigger_controller_none_in_any_case_drives_no_trigger():
+	# DrivesTrigger compared with "None" only, so triggerController: none (one of the
+	# check's own words) still opened and started the Arduino
+	for controller, drives in (("arduino", True), ("Arduino", True), ("None", False), ("none", False)):
+		p = {"startArduino": True, "triggerController": controller}
+		assert (trigger.DrivesTrigger(p), configurator.DrivesTrigger(p)) == (drives, drives), controller
+		assert not trigger.DrivesTrigger(dict(p, startArduino=False))
+	# Nothing is opened, started or stopped, and trigger.json says the trigger was the rig's
+	called = []
+	class Fail:
+		def __getattr__(self, name):
+			called.append(name)
+	p = {"startArduino": True, "triggerController": "none"}
+	assert trigger.OpenTriggers({}, p) == {} and trigger.WaitToStart({}, p) and trigger.StartTriggers({}, p) == {}
+	trigger.StopTriggers({}, p)
+	assert called == []
+
+
+def test_the_trigger_frame_rate_check_is_for_campy_s_trigger(tmp_path, monkeypatch):
+	# One frame rate for the cameras campy's Arduino pulses; a rig's own trigger is not checked
+	rates = {"frameRate": [30, 60], "cameraTrigger": "Line3", "startArduino": True}
+	with pytest.raises(configurator.ConfigError, match="The trigger controller pulses at one rate"):
+		run_config(tmp_path, monkeypatch, rates)
+	for controller in ("None", "none"):
+		assert run_config(tmp_path, monkeypatch, dict(rates, triggerController=controller))["frameRate"] == [30, 60]
+
+
+# ------------------------------------------------------------- per-camera paths on the command line
+
+def test_a_path_option_takes_a_list(tmp_path, monkeypatch):
+	# --cameraSettings "[a.pfs, b.pfs]" gave every camera the path '[a.pfs, b.pfs]'
+	assert overrides("--cameraSettings", "[top.pfs, side.pfs]", "--videoFolder", "[D:/a, D:/b]") == \
+		{"cameraSettings": ["top.pfs", "side.pfs"], "videoFolder": ["D:/a", "D:/b"]}
+	assert overrides("--cameraSettings", r"[C:\pfs\top.pfs, 'C:\my pfs\side.pfs']") == \
+		{"cameraSettings": [r"C:\pfs\top.pfs", r"C:\my pfs\side.pfs"]} # backslashes kept, as in the file
+	assert overrides("--vaapiDevice", "[/dev/dri/renderD128, /dev/dri/renderD129]", "--liveFeedName", "[a]") == \
+		{"vaapiDevice": ["/dev/dri/renderD128", "/dev/dri/renderD129"], "liveFeedName": ["a"]}
+	# One value for the rig is still taken as typed, brackets and all
+	assert overrides("--notes", "[draft]", "--experiment", "[x, y]") == {"notes": "[draft]", "experiment": "[x, y]"}
+	assert overrides("--videoFolder", "'[draft]'") == {"videoFolder": "[draft]"} # quoted: one name
+	# Each camera's own, as from the file: the calibration video is camera 1's alone
+	p = run_config(tmp_path, monkeypatch, {}, "--videoFilename", "[0.mp4, 0-calibration.mp4]")
+	assert [configurator.CameraParams(p, n)["videoFilename"] for n in range(2)] == ["0.mp4", "0-calibration.mp4"]
+	assert newfiles.CalibrationCameras(p) == ["Camera1"]
+	p = run_config(tmp_path, monkeypatch, {}, "--cameraSettings", "[a.pfs, b.pfs]")
+	assert [configurator.CameraParams(p, n)["cameraSettings"] for n in range(2)] == ["a.pfs", "b.pfs"]
+	with pytest.raises(configurator.ConfigError, match="--videoFilename: videoFilename: 3 is not text"):
+		run_config(tmp_path, monkeypatch, {}, "--videoFilename", "[0.mp4, 3]")
+
+
+def test_a_path_list_campy_cannot_read_names_the_option(capsys):
+	err = refusal(capsys, "--cameraSettings", r'["C:\x\a.pfs"]') # double quotes read \x as an escape
+	assert "argument --cameraSettings: " in err and "is not a list campy can read" in err
+	assert "in single quotes" in err
+	# ffmpegPath is one for the rig: it goes to imageio, and a list stopped campy with a TypeError
+	assert overrides("--ffmpegPath", "[x]") == {"ffmpegPath": "[x]"}
