@@ -118,7 +118,8 @@ To light only part of the exposure, use `offset_us` to place the pulse within th
 | `train` | Its train runs while the rule holds |
 | `burst` | `pulses: N` of its train each time the rule starts holding |
 
-- Several rules on one output: it is on, or its train runs, while any of them holds.
+- Several rules on one output: its level is on while any of its `level` rules holds, and its train runs while any of its `train` rules holds. Each is stopped when its own last rule lets go, so a level and a train can share an output. Before pull request N, one rule's stop could leave the other kind on: a level stayed on, or a train kept running, until `campy-rules` ended.
+- A switch-on the board didn't make is sent again. If a `level` or `train` switch-on is refused (too late, a clash with its group, or an error), `campy-rules` sends it again with the next set while the rule still holds. That set is a fresh frame. Each refusal and each retry is in the events log, and the summary counts the retries. A `pulse` or `burst` is not sent again: its moment has passed.
 - `refractory_s`: a rule doesn't start holding again until that long after it last did.
 
 ## Running it
@@ -129,7 +130,7 @@ campy-rules rules.yaml --port /dev/ttyACM1
 campy-live --calibration calibration.toml ...
 campy-acquire config.yaml
 ```
-- **Order matters.** The board counts camera triggers from 1 when the trigger starts after a pause, as campy counts its frames, so frame k is the same frame for both. If the board starts counting mid-recording, `campy-rules` matches the frames by time instead, to within a frame, and says so.
+- **Order matters.** The board counts camera triggers from 1 from when `campy-rules` starts, as campy counts its frames, so frame k is the same frame for both. Both keep counting through a pause in the trigger, such as the pause between two bouts, so a train's `every` and `phase` stay on campy's frame numbers. The board reports each pause of half a second or more, and `campy-rules` logs it (`kind: gap` in the events log). Before pull request N, the board started again at frame 1 after such a pause, while campy didn't, so with `every: 2` blue and violet could swap relative to campy's frames. If the board started counting mid-recording, `campy-rules` matches the frames by time instead, to within a frame, says so and logs it (`kind: rebase`).
 - It runs in campy's Python environment or in `campy-live`'s (it needs only numpy, pyyaml and pyserial).
 - It ends when `campy-live` does, or at Ctrl-C, and switches everything off as it ends.
 
@@ -141,8 +142,10 @@ Options:
 ## Safety
 
 - **Off by default.** The outputs are low from power-up and after every reset.
-- **Watchdog.** `campy-rules` sends the board a heartbeat every 50 ms. If 250 ms pass without one while anything is on, the board switches everything off by itself. That covers a crash, a hang, a kill or an unplugged cable.
-- **Clean exit.** `campy-rules` switches everything off when it ends, whatever the reason.
+- **Watchdog.** `campy-rules` sends the board a heartbeat every 50 ms. If 250 ms pass without one while anything is on, the board switches everything off by itself. That covers a crash, a kill or an unplugged cable. It also covers a stuck decision loop: the heartbeat goes out only while the loop that checks the rules has gone round in the last 100 ms. Before pull request N, another thread sent it, so a stuck loop kept the watchdog quiet.
+- **After the watchdog.** `campy-rules` starts the rules over from the next sets, and starts the session's trains (`run: session`) again. A rule that still holds then switches its output on again.
+- **Logs never hold up a decision.** `campy-rules` writes its logs on a thread of its own. A slow disk delays neither the decisions, nor the stale-feed check, nor the heartbeat.
+- **Clean exit.** `campy-rules` switches everything off when it ends, whatever the reason. That includes the session's photometry trains: when `campy-live` ends or restarts, `campy-rules` ends too, and the trains stop.
 - **A stalled feed.** If no set comes from `campy-live` for 200 ms (`--stale-ms`), whatever the rules switched on goes off. The session's trains keep running, since they don't depend on the poses.
 - **Limits.** `max_on_s` per output, and groups that are never on together, are enforced on the board itself.
 - **Old poses.** Nothing ever acts on a pose taken longer ago than `bound_ms` (next section). Switching off is never refused.
@@ -191,5 +194,5 @@ All host times are on campy's host clock (`hosttimes.npy`'s), so everything line
   - groups never on together;
   - refusing late commands;
   - the watchdog and `max_on_s`;
-  - counting from 1 after a pause, and the 71-minute wrap of the board's clock.
-- `tests/test_rules.py` checks every condition, debouncing, hysteresis, missing data, refractory periods and file errors. It also checks `--dry-run` and `--replay`. And it runs the whole path in real time: a results feed, `campy-rules`, and the sketch on a simulated serial port with a 60 Hz trigger.
+  - counting on through a pause (and a train keeping its frames across it), and the 71-minute wrap of the board's clock.
+- `tests/test_rules.py` checks every condition, debouncing, hysteresis, missing data, refractory periods and file errors. It also checks `--dry-run` and `--replay`, a level and a train on one output (both orders), switch-ons refused and sent again, the recovery after the watchdog, a stuck decision loop that lets the watchdog fire, and a slow log write. And it runs the whole path in real time: a results feed, `campy-rules`, and the sketch on a simulated serial port with a 60 Hz trigger.
