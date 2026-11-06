@@ -2254,7 +2254,7 @@ class Viewer:
 		s = rig.cameras[c]
 		if s.problems:
 			text, color, box = "  ".join(tag for tag, _ in s.problems), (255, 255, 255), WARN
-		elif s.paused_s is not None: # the trigger's planned pause (--pause-sec): not a fault
+		elif getattr(s, "paused_s", None) is not None: # the trigger's planned pause (--pause-sec): not a fault
 			text, color, box = "PAUSED {}".format(livehealth.Duration(s.paused_s)[2:]), DIM, BOX
 		elif s.fps is not None:
 			text, color, box = "{:.1f} fps".format(s.fps), FINE, BOX
