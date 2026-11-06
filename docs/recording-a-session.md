@@ -80,7 +80,7 @@ When you are done for the day, press **Close the panel** at the top of the page 
 
 On the ChronicRecord rig the same page also runs the Pico (which makes the camera pulses, SpikeGLX's record gate and the two LED drivers' TTLs) and SpikeGLX, which records the probe while the gate is high. It replaces the PowerShell launcher (`chronic6day.ps1`). What changes:
 
-**Before the start.** Pick the **session length**: 6 days, a 15-minute gate test (3 bouts) or an hour. The page shows what that plan holds (bouts, camera pulses, camera time). campy records exactly the plan's camera time, so the two always agree. A gate test goes into `C:\data\gatetest\`, the others into `C:\data\`. The checks add:
+**Before the start.** Pick the **session length**: 6 days, a 15-minute gate test (3 bouts), an hour, or an 8-hour overnight rehearsal (96 bouts, about 275 GB: SpikeGLX about 150 GB, videos about 125 GB, so it fits on the PC's own disk where 6 days don't). The page shows what that plan holds (bouts, camera pulses, camera time). campy records exactly the plan's camera time, so the two always agree. A gate test goes into `C:\data\gatetest\`, a rehearsal into `C:\data\rehearsal\`, the others into `C:\data\`. The checks add:
 
 - the Pico answers and isn't running anything;
 - SpikeGLX answers, isn't running a run, and its trigger is TTL (so it writes files only while the gate is high). If SpikeGLX isn't open, the page opens it at Start;
