@@ -35,7 +35,6 @@ def pytest_collection_modifyitems(config, items):
 			item.add_marker(skip)
 
 
-
 @pytest.fixture(scope="session")
 def sim(tmp_path_factory):
 	# campy/trigger/trigger.ino
