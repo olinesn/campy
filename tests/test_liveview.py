@@ -1571,7 +1571,11 @@ def test_the_cameras_tiles_have_luc3ds_node_trails():
 	plain = viewer.Compose(frames, rows[-1]).astype(int)
 	viewer.trails = True
 	image = viewer.Compose(frames, rows[-1]).astype(int)
-	assert viewer.cameraTrailMs and viewer.Summary(1.0)["camera_trails_ms"]["p50"] < 20
+	# The trails' drawing time: the median of 7 draws (one alone can be held up on a busy computer)
+	for _ in range(6):
+		viewer.Compose(frames, rows[-1])
+	assert len(viewer.cameraTrailMs) == 7 and viewer.Summary(1.0)["camera_trails_ms"]["p50"] < 20, \
+		list(viewer.cameraTrailMs)
 	for c in range(3):
 		tile, before = tile_of(viewer, image, c), tile_of(viewer, plain, c)
 		moved = np.abs(tile - before).sum(-1) > 0
