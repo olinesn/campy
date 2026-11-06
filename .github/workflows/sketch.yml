@@ -32,7 +32,9 @@ concurrency:
 jobs:
   compile:
     name: ${{ matrix.board.name }}
-    runs-on: ubuntu-latest
+    # Ubuntu 24.04, not ubuntu-latest: on 26.04 compile-sketches' own Python (3.12.4) can't be installed
+    # ("not found for Ubuntu 26.04"), and every board failed before compiling
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
