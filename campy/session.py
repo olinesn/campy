@@ -129,10 +129,21 @@ def DeviceSections():
 
 SECTIONS = dict({"live": LIVE, "view": VIEW, "post": POST, "panel": PANEL}, **DeviceSections())
 
-RESTART_AFTER_S = (10, 60, 300) # campy-live started again after these, then every 300 s
+def TestSeconds(name, default):
+	# A wait that a test can shorten through the environment (CAMPY_TEST_*: tests/test_session.py), so that
+	# it needn't record for minutes; nothing else sets these
+	value = os.environ.get(name)
+	return tuple(float(v) for v in value.split(",")) if value and isinstance(default, tuple) else \
+		float(value) if value else default
+
+
+RESTART_AFTER_S = TestSeconds("CAMPY_TEST_LIVE_RESTART_S", (10, 60, 300)) # campy-live started again after these,
+# then every 300 s
 RESTARTS_PER_HOUR = 5
 LIVE_END_S = 60 # once the recording has ended, campy-live has this long to finish, then its stop file
-LIVE_STOP_S = 30 # ... and this long after it, then it is ended
+LIVE_STOP_S = TestSeconds("CAMPY_TEST_LIVE_STOP_S", 30) # ... and this long after it, then it is ended
+LIVE_STALL_S = TestSeconds("CAMPY_TEST_LIVE_STALL_S", 30) # campy-watch's (livewatch.STALL_S): no result this long
+# while the cameras record, and campy-live hangs
 STATUS_EVERY_S = 2.0
 
 
@@ -950,7 +961,7 @@ class Session:
 		"""
 		campy-live that hangs (it runs, and makes no result while the cameras
 		record): campy-watch says so in alerts-live.log, key live/campy-live,
-		after 30 s. It is then stopped (its stop file; ended LIVE_STOP_S later
+		after LIVE_STALL_S (30 s). It is then stopped (its stop file; ended LIVE_STOP_S later
 		if it does not stop) and started again as one that died (LiveDied).
 		"""
 		live = self.parts.get("live")
@@ -959,7 +970,7 @@ class Session:
 		now = time.time() if now is None else now
 		if self.hung is live:
 			if now - self.hung_at > LIVE_STOP_S:
-				self.Problem("campy-live did not stop within {} s of its stop file: ended.".format(LIVE_STOP_S))
+				self.Problem("campy-live did not stop within {:g} s of its stop file: ended.".format(LIVE_STOP_S))
 				live.End() # which sees it end (Check), so Watch will not: started again from here
 				self.LiveDied(live)
 			return
@@ -969,8 +980,8 @@ class Session:
 		event = LastAlert(os.path.join(self.folder, "alerts-live.log"), "live/campy-live")
 		if event is None or event.get("state") != "open" or (event.get("time") or 0) <= (live.started or now):
 			return
-		self.Problem("campy-watch: campy-live made no result for 30 s while the cameras record: it is stopped, to "
-			"be started again.")
+		self.Problem("campy-watch: campy-live made no result for {:g} s while the cameras record: it is stopped, to "
+			"be started again.".format(LIVE_STALL_S))
 		self.hung, self.hung_at = live, now
 		try:
 			stopfile.Write(self.liveStop)
@@ -1000,7 +1011,7 @@ class Session:
 			return
 		after = RESTART_AFTER_S[min(len(self.restarts), len(RESTART_AFTER_S) - 1)]
 		self.restart_due = now + after
-		Say("Starting it again in {} s.".format(after))
+		Say("Starting it again in {:g} s.".format(after))
 
 	def EndLive(self):
 		# campy-live ends once the feed has; else its stop file, then it is ended
@@ -1022,7 +1033,7 @@ class Session:
 				asked, deadline = True, now + LIVE_STOP_S
 				Say("campy-live asked to stop (its stop file).")
 			elif asked and now >= deadline:
-				self.Problem("campy-live did not stop within {} s of its stop file: ended.".format(LIVE_STOP_S))
+				self.Problem("campy-live did not stop within {:g} s of its stop file: ended.".format(LIVE_STOP_S))
 				live.End()
 				break
 			time.sleep(0.2)

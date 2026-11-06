@@ -50,7 +50,7 @@ from campy import children, livefeed, livehealth, liveresults, notify, stopfile,
 OFFSET_HOLD_S = 10.0
 COUNTS_HOLD_S = 30.0
 COLLAPSE_S, COLLAPSE_SHARE = 180.0, 0.7
-STALL_S = 30.0
+STALL_S = float(os.environ.get("CAMPY_TEST_LIVE_STALL_S") or 30.0) # tests shorten it (tests/test_session.py)
 MOVING_S = 3.0 # a camera records: its newest frame changed this recently
 ENDED_HOLD_S = 5.0
 CHECK_S = 1.0 # how often problems are checked (the rings' slots are read more often: Rig.Every)

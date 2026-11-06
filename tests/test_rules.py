@@ -394,7 +394,12 @@ def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, ou
 		for k in range(k0 + 2, k0 + 62):
 			while k not in board.rises and time.monotonic() < deadline + 5:
 				time.sleep(0.0005)
-			feed.Write(make_row(k, t_ns=clock.HostNs()))
+			# The frame reached the host 5 ms after its trigger, as a camera's does: its time from the trigger's,
+			# not from when this loop got to it. On a busy computer (other tests beside this one) the loop can be
+			# held up for more than 3 frames, and a frame stamped then would look late by that much, which
+			# campy-rules rightly takes for another frame (frame_offset_changes)
+			rise = board.RiseHostNs(k)
+			feed.Write(make_row(k, t_ns=rise + 5_000_000 if rise is not None else clock.HostNs()))
 		time.sleep(0.3)
 	finally:
 		runner.stop.set()
