@@ -169,8 +169,11 @@ def test_a_lock_whose_processes_ended_is_free(root, capsys):
 
 @pytest.mark.skipif(not RUNS, reason="needs process start times (Linux, Windows)")
 def test_a_reused_pid_does_not_hold_the_lock(root):
-	# The pid runs (it's this test), but it started at another time: a different process
-	(root / "gpu.lock").write_text("ghost t since 2026-10-21 05:33:00 rigpid=%d rigstart=12345\n" % os.getpid())
+	# The pid runs (it's this test), but it started at another time: a different process. That time is this
+	# process's own start plus one, not a made-up number: on Linux a start is counted in 1/100 s since boot, and a
+	# CI runner that booted just before the job can have started pytest at any small number (12345 once matched)
+	other_start = rig.proc_start(os.getpid()) + 1
+	(root / "gpu.lock").write_text("ghost t since 2026-10-21 05:33:00 rigpid=%d rigstart=%d\n" % (os.getpid(), other_start))
 	assert rig.FileLock().state()[0] == "stale"
 
 

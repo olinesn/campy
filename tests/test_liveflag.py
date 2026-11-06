@@ -255,12 +255,14 @@ def test_main_writes_flags_events_and_the_sample(log, tmp_path, capsys):
 
 
 def test_a_long_log_is_quick(tmp_path):
-	# An hour at 60 fps, 3 cameras, 5 animals, every set flagged somewhere
+	# Ten minutes at 60 fps, 3 cameras, 3 animals, every set flagged somewhere: at most 20 s, the 2 minutes an hour
+	# this test once allowed an hour's log (whose 810 MB file alone took a Windows runner over a minute to write and
+	# read). Ten minutes are 36,000 sets: a step that grows faster than the log does still shows
 	import time
 	cams = rig()
 	write_calibration(str(tmp_path / "calibration.toml"), cams)
 	base = make_rows(cams, scene3d.scene(SETS, n=ANIMALS))
-	rows = np.tile(base, 60 * 60 * 60 // SETS)
+	rows = np.tile(base, 10 * 60 * 60 // SETS)
 	rows["frame"] = np.arange(1, len(rows) + 1)
 	rows["host_ns"] = 10 ** 12 + rows["frame"][:, None] * PERIOD
 	path = str(tmp_path / "hour")
@@ -270,4 +272,4 @@ def test_a_long_log_is_quick(tmp_path):
 			"calibration_names": CALIBRATION_NAMES, "animals": ANIMALS}, f)
 	t = time.perf_counter()
 	liveflag.Main([path + ".npy", "--out", str(tmp_path / "out")])
-	assert time.perf_counter() - t < 120
+	assert time.perf_counter() - t < 20

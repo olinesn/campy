@@ -1632,7 +1632,7 @@ class Viewer:
 				self.ended = False
 				self.cameraTrails.fps = self.cameraTrails.fps or readers[0].Info("frameRate")
 				self.rig = livehealth.Rig([r.cameraName or r.name for r in readers], readers[0].Info("frameRate"),
-					readers[0].slots)
+					readers[0].slots, self.args.pause_sec, self.args.stop_sec)
 				self.rigAt = 0.0
 				self.recording = RecordingFolder(readers)
 				Say("Live feed: {}. Bookmarks (m) go to {}.".format(", ".join("{} {}x{}".format(r.cameraName or r.name,
@@ -2254,6 +2254,8 @@ class Viewer:
 		s = rig.cameras[c]
 		if s.problems:
 			text, color, box = "  ".join(tag for tag, _ in s.problems), (255, 255, 255), WARN
+		elif getattr(s, "paused_s", None) is not None: # the trigger's planned pause (--pause-sec): not a fault
+			text, color, box = "PAUSED {}".format(livehealth.Duration(s.paused_s)[2:]), DIM, BOX
 		elif s.fps is not None:
 			text, color, box = "{:.1f} fps".format(s.fps), FINE, BOX
 		else:
@@ -3141,6 +3143,10 @@ def ParseArgs(argv=None):
 		"(campy-live's, mean over the nodes; its median over the last 0.5 s, not to flicker) is above this is drawn "
 		"dimmed and dashed, its label red (0: never).")
 	p.add_argument("--fps", type=float, default=30, help="Frames alone (no results) shown per second.")
+	p.add_argument("--pause-sec", type=float, default=None, help="The config's alertTriggerPauseSec: every camera "
+		"without frames at once is the trigger pausing (shown as PAUSED, not NO FRAMES), as in bout sessions.")
+	p.add_argument("--stop-sec", type=float, default=None, help="The config's alertNoFramesSec: a pause longer "
+		"than this is NO FRAMES again (the trigger has stopped).")
 	p.add_argument("--no-window", action="store_true", help="No window (e.g. over SSH): with --png, saves the "
 		"views; ends with the recording.")
 	p.add_argument("--png", default="", help="Folder for the views saved as PNG (every --png-every-th, and s).")

@@ -24,7 +24,9 @@ main{max-width:1100px;margin:0 auto;padding:16px;display:flex;flex-direction:col
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
 .tile{background:var(--soft);border-radius:8px;padding:10px 12px}.big{font-size:20px;font-weight:500}
 .cams{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
-.cam img{width:100%;aspect-ratio:5/4;object-fit:contain;background:var(--soft);border-radius:6px;display:block}
+.cam img,.cam .ph{width:100%;aspect-ratio:5/4;object-fit:contain;background:var(--soft);border-radius:6px;display:block}
+.cam .ph{display:flex;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:12px;padding:8px;box-sizing:border-box}
+.cam [hidden]{display:none}
 .two{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
 button{font:inherit;padding:6px 14px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer}
 button:hover{background:var(--soft)}button.stop{color:var(--bad);border-color:var(--bad)}button.go{color:var(--ok);border-color:var(--ok)}
@@ -69,6 +71,7 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
 <div id="devs" class="two" hidden>
   <div class="card"><h2>Steps</h2><ul id="steps" class="steps"><li class="muted">At Start: SpikeGLX's run, the gate check, the cameras, then the Pico.</li></ul></div>
   <div class="card"><h2 id="picotitle">Pico</h2><div id="picostate" class="muted">-</div>
+    <div id="camready" style="margin-top:8px" hidden></div>
     <div id="picostart" class="row" style="margin-top:8px" hidden><button id="startpico" class="go">Start the Pico</button>
       <input id="picoat2" style="width:110px" placeholder="7:20 PM"><button id="picoatbtn">At this time</button></div>
     <div id="picoerr" class="err"></div>
@@ -113,6 +116,9 @@ async function post(path, body){
 }
 function hms(s){ if(s==null) return "-"; s=Number(s); if(!isFinite(s)) return s>0 ? "\u221e" : "-"; s=Math.max(0,Math.round(s)); return Math.floor(s/3600)+":"+String(Math.floor(s/60)%60).padStart(2,"0")+":"+String(s%60).padStart(2,"0"); }
 function esc(t){ return String(t==null?"":t).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function dur(s){ s = Math.max(0, Math.floor(s)); return Math.floor(s/60)+":"+String(s%60).padStart(2,"0"); }
+let camsWereReady = false; const baseTitle = document.title;
+function chime(){ try { const a = new (window.AudioContext||window.webkitAudioContext)(); [0, 0.18].forEach((t, i) => { const o = a.createOscillator(), g = a.createGain(); o.frequency.value = i ? 1100 : 880; g.gain.setValueAtTime(0.15, a.currentTime+t); g.gain.exponentialRampToValueAtTime(0.001, a.currentTime+t+0.16); o.connect(g); g.connect(a.destination); o.start(a.currentTime+t); o.stop(a.currentTime+t+0.17); }); } catch(e) {} }
 function tag(text, kind){ return '<span class="tag '+kind+'">'+esc(text)+'</span>'; }
 function render(s){
   last = s;
@@ -157,9 +163,13 @@ function render(s){
   $("programs").innerHTML = Object.entries(parts).map(([n,p]) => tag(p.state, p.state=="running"?"ok":p.exit_code?"bad":"warn")+" "+esc(n=="acquire"?"campy-acquire":n=="view"?"viewer":n=="watch"?"campy-watch":n)).join("<br>") || "-";
   const R = s.recording || {}, counters = {}; (R.cameras||[]).forEach(c => counters[c.name] = c);
   const cams = H.cameras || [];
-  if(cams.length != thumbs){ thumbs = cams.length; $("cams").innerHTML = cams.map((c,i) => '<div class="card cam"><img id="th'+i+'" alt="'+esc(c.name)+'"><div id="cm'+i+'"></div></div>').join(""); }
-  cams.forEach((c,i) => { const k = counters[c.name] || {};
-    $("cm"+i).innerHTML = '<div class="row" style="margin-top:6px"><b class="grow">'+esc(c.name)+'</b>'+(c.problems.length ? c.problems.map(p => tag(p,"warn")).join(" ") : tag("OK","ok"))+'</div>'+
+  if(cams.length != thumbs){ thumbs = cams.length; $("cams").innerHTML = cams.map((c,i) => '<div class="card cam"><div class="ph" id="ph'+i+'"></div><img id="th'+i+'" alt="'+esc(c.name)+'" hidden><div id="cm'+i+'"></div></div>').join(""); }
+  // No picture until a camera's first frame (on the ChronicRecord rig, the Pico's first pulse): a line, not a broken image
+  const noPulses = !!(s.devices && s.devices.pico && !s.devices.pico_started);
+  cams.forEach((c,i) => { const k = counters[c.name] || {}, first = (c.frame||0) > 0;
+    $("th"+i).hidden = !first; $("ph"+i).hidden = first;
+    if(!first) $("ph"+i).textContent = st=="recording" || st=="starting" ? (noPulses ? "No picture yet: the camera waits for the Pico's pulses" : "No picture yet: waiting for its first frame") : "No picture";
+    $("cm"+i).innerHTML = '<div class="row" style="margin-top:6px"><b class="grow">'+esc(c.name)+'</b>'+(c.problems.length ? c.problems.map(p => tag(p,"warn")).join(" ") : c.paused_s!=null ? tag("PAUSED "+dur(c.paused_s),"muted") : tag("OK","ok"))+'</div>'+
       '<div class="muted">'+(c.fps!=null?c.fps.toFixed(1):"-")+' frames/s · frame '+(c.frame||0).toLocaleString()+
       (k.dropped!=null?' · '+k.dropped+' dropped':'')+(k.write_queue_s!=null?' · queue '+k.write_queue_s.toFixed(1)+' s':'')+'</div>'; });
   const warn = [];
@@ -189,7 +199,9 @@ function renderDevices(s, st){
   let pt = "-";
   if(P && P.state){
     if(P.alive && P.mode=="wiring") pt = "Blinking (the gate check)";
-    else if(P.alive) pt = "Running: bout "+(P.bout||"-")+" of "+P.bouts+" · "+(P.pulses||0).toLocaleString()+" camera pulses · ends "+(P.ends_at||"?")+" ("+hms(Math.max(0,(P.ends_s||0)-(P.session_s||0)))+" left)"+(P.end_requested?" · stop asked ("+P.end_requested+")":"");
+    else if(P.alive) pt = "Running: "+(P.bout ? "bout "+P.bout+" of "+P.bouts : "between bouts ("+P.bouts+" in all)")+" · "+(P.pulses||0).toLocaleString()+" camera pulses · ends "+(P.ends_at||"?")+" ("+hms(Math.max(0,(P.ends_s||0)-(P.session_s||0)))+" left)"+(P.end_requested?" · stop asked ("+P.end_requested+")":"");
+    // The gate check's blink runs as a short wiring check: say so, not "Last session: wiring check stopped after 1 rounds"
+    else if(P.mode=="wiring") pt = "Idle. Its last run was a gate blink (the gate check)"+(P.error?" · "+P.error:"");
     else pt = "Idle. Last session: "+P.state+(P.done?" ("+P.done+")":"")+(P.error?" · "+P.error:"");
   } else if(P) pt = "Idle (no session run here yet)";
   if(D.plan && !(P && P.alive)) pt += " · This recording: " + D.plan.text;
@@ -197,6 +209,13 @@ function renderDevices(s, st){
   $("picostate").textContent = pt;
   $("picostart").hidden = !(P && st=="recording" && !D.pico_started && !D.stop_mode);
   $("startpico").disabled = !!D.can_start_pico; $("startpico").title = D.can_start_pico || "";
+  // The cameras getting ready, said plainly (no need to watch the console): a chime and the tab's title once all are
+  const CR = D.cameras_ready, waitingPico = P && st=="recording" && !D.pico_started && !D.stop_mode;
+  $("camready").hidden = !(waitingPico && CR);
+  if(waitingPico && CR) $("camready").innerHTML = CR[0] >= CR[1] ? tag("All "+CR[1]+" cameras are ready","ok")+(D.start_at ? " The Pico starts at "+esc(D.start_at)+"." : " Press <b>Start the Pico</b>.") : tag("Cameras getting ready: "+CR[0]+" of "+CR[1],"warn");
+  const allReady = !!(waitingPico && CR && CR[0] >= CR[1]);
+  if(allReady && !camsWereReady) chime();
+  camsWereReady = allReady; document.title = allReady ? "Cameras ready · campy panel" : baseTitle;
   if(P && st=="recording" && !D.pico_started) $("picoerr").textContent = D.can_start_pico && D.can_start_pico!="Not recording." ? D.can_start_pico : "";
   const G = D.spikeglx;
   $("sglxstate").innerHTML = !G ? "-" : G.busy && G.running==null ? tag("busy","warn")+" its run is starting" : !G.answers ? tag("not answering","warn")+" "+esc(G.error||"") :
@@ -213,7 +232,7 @@ async function tick(){
   try { const r = await fetch(q("/status.json")); if(r.status==403){ $("state").textContent="Wrong key"; $("error").hidden=false; $("error").textContent=(await r.json()).error; return; }
     render(await r.json()); } catch(e){ $("state").textContent = "Panel not running"; $("state").className = "tag bad"; }
 }
-function images(){ for(let i=0;i<thumbs;i++){ const im = $("th"+i); if(im) im.src = q("/thumb/"+i+".png?k="+Date.now()); } }
+function images(){ for(let i=0;i<thumbs;i++){ const im = $("th"+i); if(im && !im.hidden) im.src = q("/thumb/"+i+".png?k="+Date.now()); } }
 $("start").onclick = async () => { $("starterr").textContent = "";
   const e = await post("/start", {experiment:$("experiment").value, animal_ids:$("ids").value, notes:$("notes").value,
     length: $("length").value || null, pico_at: $("picoat").value.trim() || null});
@@ -237,7 +256,7 @@ $("stop").onclick = async () => {
   if(D && !(last.launcher && last.launcher.recording && last.launcher.recording.stop_asked)){
     const P = D.pico, on = P && P.alive && D.pico_started;
     $("stopbout").hidden = !on;
-    $("stoptext").textContent = on ? "After this bout: the Pico finishes bout "+(P.bout||"-")+" (its gate falls on time, so SpikeGLX's file closes as planned), then campy and SpikeGLX stop. Now: the Pico stops at once, then campy, then SpikeGLX." :
+    $("stoptext").textContent = on ? (P.bout ? "After this bout: the Pico finishes bout "+P.bout+" (its gate falls on time, so SpikeGLX's file closes as planned), then campy and SpikeGLX stop." : "After this bout: the Pico is between bouts, so it stops at once, before the next bout starts, then campy and SpikeGLX stop.")+" Now: the Pico stops at once, then campy, then SpikeGLX." :
       "campy stops (each camera closes its video)"+(D.spikeglx?", then SpikeGLX's run":"")+".";
     $("stopdlg").hidden = false; return; }
   if(last && last.launcher && last.launcher.recording && last.launcher.recording.stop_asked && !stopArmed){ stopArmed = 1; setTimeout(() => {stopArmed = 0;}, 5000); tick(); return; }

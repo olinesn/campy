@@ -40,7 +40,7 @@ The recording's length is fixed by the rig's settings, and the page shows it (fo
 
 Press **Start recording**. Within about a minute, depending on the rig, the page shows **Recording** at the top, and:
 
-- **Each camera's picture**, refreshed every second. Check that every camera shows the cage. Under each one, a green **OK**, or a yellow label saying what's wrong (see below), and its frames per second, which should be steady.
+- **Each camera's picture**, refreshed every second. Check that every camera shows the cage. Before a camera's first frame it says "No picture yet" instead (on the ChronicRecord rig, until you start the Pico, since the cameras wait for its pulses). Under each one, a green **OK**, or a yellow label saying what's wrong (see below), and its frames per second, which should be steady.
 - **Disk free**, and about how long it lasts.
 - **Tracked in 3D**: how many animals the live tracking sees, for example `5 of 5`.
 - **Programs**: each should say **running**.
@@ -55,6 +55,7 @@ Press **Start recording**. Within about a minute, depending on the rig, the page
 | Label | What it means | What to do |
 |---|---|---|
 | `NO FRAMES` | The camera stopped sending pictures | Tell the person in charge of the rig; the other cameras keep recording |
+| `PAUSED 4:30` (grey, on every camera at once) | The trigger is pausing as planned, as between the bouts of a ChronicRecord session: no camera gets pictures until the next bout | Nothing. If it lasts longer than the config's `alertNoFramesSec`, it turns into `NO FRAMES`: the trigger has stopped |
 | `LOST`, `GAP`, `LATE` | The camera lost or delayed a few frames in the last 10 seconds | Nothing, unless it keeps coming back: then note it in a bookmark |
 | `1 FRAME AHEAD` or `BEHIND` | That camera is out of step with the others | Stop, and start a new recording |
 | `40.0 FPS` (lower than the others) | The camera is falling behind | Tell the person in charge of the rig |
@@ -92,10 +93,10 @@ You can also give a time for the Pico to start (`7:20 PM`); otherwise you start 
 
 1. **SpikeGLX:** its run starts into the session's folder (`spikeglx\`), with recording on.
 2. **Gate check:** the gate blinks once, and SpikeGLX must open a file for it. If it doesn't, nothing else starts and the page says what to check (SpikeGLX's trigger, the gate's cable).
-3. **The cameras:** campy starts, and the cameras' window opens. They wait for the Pico's pulses.
+3. **The cameras:** campy starts, and the cameras' window opens. They wait for the Pico's pulses. The **Pico** card counts them as they get ready (`Cameras getting ready: 2 of 4`), then says **All 4 cameras are ready** in green, with a short chime, and the browser tab's title changes to *Cameras ready*: no need to watch campy's console window.
 4. **The Pico:** once every camera is ready, press **Start the Pico** (it asks first), or it starts by itself at the time you gave. If a camera isn't ready, the button says so: stop, and start again.
 
-While it records, the **Pico** card shows the bout (for example `bout 212 of 1728`), the camera pulses so far, and when the session ends. The **SpikeGLX** card shows its run, whether a file is open (the gate is high), and how many files this session has.
+While it records, the **Pico** card shows the bout (for example `bout 212 of 1728`, or `between bouts`), the camera pulses so far, and when the session ends. The **SpikeGLX** card shows its run, whether a file is open (the gate is high), and how many files this session has.
 
 **Stop.** **Stop** asks first, and offers two ways:
 
