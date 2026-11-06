@@ -210,8 +210,8 @@ def emu_session(tmp_path, home, rec_s, live=None, view=False, feed="campy-test-s
 	return write_config(tmp_path / "config.yaml", acquire, **sections), clips
 
 
-def start(tmp_path, home, config, *args, group=False):
-	env = dict(os.environ, PYTHONPATH=REPO, PYTHONUNBUFFERED="1", HOME=str(home), USERPROFILE=str(home))
+def start(tmp_path, home, config, *args, group=False, env=None):
+	env = dict(os.environ, PYTHONPATH=REPO, PYTHONUNBUFFERED="1", HOME=str(home), USERPROFILE=str(home), **(env or {}))
 	env.pop("IMAGEIO_FFMPEG_EXE", None)
 	env.pop("CAMPY_LIVE_PYTHON", None)
 	proc = subprocess.Popen([sys.executable, "-m", "campy.session", "run", str(config)] + list(args), cwd=str(tmp_path),
@@ -321,8 +321,9 @@ def test_ctrl_c_stops_the_recording_and_campy_live_tracks_to_its_end(tmp_path, h
 
 @POSIX
 def test_campy_live_that_dies_is_started_again_and_the_recording_goes_on(tmp_path, home):
-	config, clips = emu_session(tmp_path, home, 16, live={"model": "none"})
-	proc, lines = start(tmp_path, home, config)
+	# Started again 1 s after it died, not 10 (CAMPY_TEST_LIVE_RESTART_S), so that it records 10 s, not 16
+	config, clips = emu_session(tmp_path, home, 10, live={"model": "none"})
+	proc, lines = start(tmp_path, home, config, env={"CAMPY_TEST_LIVE_RESTART_S": "1,60,300"})
 	try:
 		assert wait_for(lines, r"\[live\] .*Logging to")
 		folder = the_folder(clips)
@@ -334,9 +335,9 @@ def test_campy_live_that_dies_is_started_again_and_the_recording_goes_on(tmp_pat
 			proc.kill()
 	out = "".join(lines)
 	assert proc.returncode == 0, out
-	assert recorded(folder) == [320, 320]
+	assert recorded(folder) == [200, 200]
 	assert "campy-live stopped while the cameras record (exit code -9)" in out
-	assert "Starting campy-live again (campy-live.part2)" in out
+	assert "Starting it again in 1 s." in out and "Starting campy-live again (campy-live.part2)" in out
 	status = json.loads((folder / "launcher.json").read_text())
 	assert status["live_restarts"] == 1 and status["live"][1]["exit_code"] == 0
 	assert json.loads((folder / "campy-live.part2.json").read_text())["ended"] == "the recording ended"
@@ -550,9 +551,12 @@ def test_without_watch_no_campy_watch(tmp_path, home):
 @POSIX
 def test_a_frozen_campy_live_is_found_by_campy_watch_and_replaced(tmp_path, home):
 	# campy-live frozen (SIGSTOP) mid-recording: campy-watch says "no result for 30 s", campy-session stops it (its
-	# stop file, then ended), and starts it again; the recording keeps every frame
-	config, clips = emu_session(tmp_path, home, 110, live={"model": "none"}, feed="campy-test-hang")
-	proc, lines = start(tmp_path, home, config)
+	# stop file, then ended), and starts it again; the recording keeps every frame. With the waits shortened (30 s
+	# with no result, 30 s for the stop file, 10 s before starting again: 5, 3 and 1 here), so that it records
+	# 30 s, not 110
+	config, clips = emu_session(tmp_path, home, 30, live={"model": "none"}, feed="campy-test-hang")
+	proc, lines = start(tmp_path, home, config, env={"CAMPY_TEST_LIVE_STALL_S": "5", "CAMPY_TEST_LIVE_STOP_S": "3",
+		"CAMPY_TEST_LIVE_RESTART_S": "1,60,300"})
 	try:
 		assert wait_for(lines, r"\[live\] .*Logging to")
 		folder = the_folder(clips)
@@ -565,8 +569,10 @@ def test_a_frozen_campy_live_is_found_by_campy_watch_and_replaced(tmp_path, home
 			proc.kill()
 	out = "".join(lines)
 	assert proc.returncode == 0, out
-	assert recorded(folder) == [2200, 2200]
-	assert "campy-watch: campy-live made no result for 30 s while the cameras record" in out
+	assert recorded(folder) == [600, 600]
+	assert "campy-watch: campy-live made no result for 5 s while the cameras record" in out
+	assert "campy-live did not stop within 3 s of its stop file: ended." in out
+	assert "Starting it again in 1 s." in out
 	assert "Starting campy-live again (campy-live.part2)" in out
 	status = json.loads((folder / "launcher.json").read_text())
 	assert status["live_restarts"] == 1 and status["live"][1]["exit_code"] == 0
