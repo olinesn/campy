@@ -12,7 +12,7 @@ import json, os, subprocess, sys, threading, time, types
 import numpy as np
 import pytest
 
-from campy import clock, live, liveresults, rules
+from campy import clock, live, livefeed, liveresults, rules
 from campy.trigger import outputs
 
 from test_livefeed import name
@@ -337,25 +337,48 @@ def test_replay_a_log(tmp_path, capsys):
 # ---------------------------------------------------------------- live
 
 class Feed:
-	"""campy-live's results feed, rows written by the test."""
+	"""campy-live's results feed, rows written by the test. rings: the camera rings it names (campy-live's do)."""
 
-	def __init__(self, prefix, animals=3):
-		self.prefix = prefix
-		self.publisher = liveresults.Publisher(liveresults.RingName(prefix), ROW, cameras=CAMERAS, nodes=NODES,
-			calibration="/x/calibration.toml", calibration_names=CAMERAS, animals=animals, frame_rate=60.0)
+	def __init__(self, prefix, animals=3, rings=None):
+		self.prefix, self.animals, self.rings = prefix, animals, rings
+		self.publisher = self.Publisher()
+
+	def Publisher(self):
+		extra = dict(rings=self.rings) if self.rings else {}
+		return liveresults.Publisher(liveresults.RingName(self.prefix), ROW, cameras=CAMERAS, nodes=NODES,
+			calibration="/x/calibration.toml", calibration_names=CAMERAS, animals=self.animals, frame_rate=60.0,
+			**extra)
 
 	def Write(self, row):
 		self.publisher.Write(row)
 
+	def Restart(self):
+		# campy-live ended (its feed ends), and a new campy-live makes the feed again
+		self.Close()
+		self.publisher = self.Publisher()
+
 	def Close(self):
 		self.publisher.Close()
+
+
+class CameraRings:
+	"""The cameras' live feeds of a recording (campy's camera processes make them): ended by Close."""
+
+	def __init__(self, prefix, pid=None):
+		self.names = ["{}-{}".format(prefix, i) for i in range(len(CAMERAS))]
+		description = json.dumps({"kind": livefeed.CAMERA_KIND, "pid": pid or os.getpid()})
+		self.writers = [livefeed.RingWriter(n, (2, 2, 1), np.uint8, 4, description=description) for n in self.names]
+
+	def Close(self):
+		for w in self.writers:
+			w.Close()
 
 
 def args_for(prefix, out, *extra):
 	p = ["rules.yaml", "--name", prefix, "--out", out, "--poll-ms", "0.2", "--wait-sec", "5"] + list(extra)
 	# Runner's own parsing, without running Main's signal setup
 	ns = types.SimpleNamespace(rules="rules.yaml", name=prefix, port="", dry_run=False, replay="", out=out,
-		bound_ms=None, stale_ms=200.0, poll_ms=0.2, wait_sec=5.0, duration_s=0.0)
+		bound_ms=None, stale_ms=200.0, poll_ms=0.2, wait_sec=5.0, duration_s=0.0, live_wait_s=float("inf"))
 	for i in range(0, len(extra), 2):
 		key = extra[i].lstrip("-").replace("-", "_")
 		value = extra[i + 1]
@@ -655,15 +678,18 @@ class SketchPort:
 		pass
 
 
-def run_on_port(monkeypatch, tmp_path, port, config, feed_rows, **arg):
+def run_on_port(monkeypatch, tmp_path, port, config, feed_rows, cameras=False, **arg):
 	"""
 	campy-rules with a board on port, and campy-live's rows: feed_rows(feed,
-	runner) writes them. Returns the runner and its events.
+	runner) writes them. cameras: a recording's camera rings too (feed.cameras),
+	which the feed names. Returns the runner and its events.
 	"""
 	real = outputs.Board
 	monkeypatch.setattr(outputs, "Board", lambda name, **kw: real(port=name, connection=port, **kw))
 	prefix = name()
-	feed = Feed(prefix)
+	rings = CameraRings(prefix) if cameras else None
+	feed = Feed(prefix, rings=rings.names if rings else None)
+	feed.cameras = rings
 	out = str(tmp_path / "rules")
 	args = args_for(prefix, out)
 	args.port = "fake"
@@ -682,6 +708,8 @@ def run_on_port(monkeypatch, tmp_path, port, config, feed_rows, **arg):
 		runner.stop.set()
 		thread.join(10)
 		feed.Close()
+		if rings is not None:
+			rings.Close()
 	assert result.get("code") == 0, said
 	runner.said_lines = said
 	return runner, [json.loads(l) for l in open(out + ".events.jsonl")]
@@ -800,3 +828,271 @@ def test_a_slow_row_log_write_holds_up_neither_the_stale_check_nor_the_heartbeat
 	written = [t for t, x in port.Lines() if x == "hb" and last["row"] < t < last["row"] + 1_400_000_000]
 	assert len(written) >= 10
 	assert len(np.load(str(tmp_path / "rules.npy"))) == 5 # every row logged in the end
+
+
+# ---------------------------------------------------------------- campy-live ends or restarts mid-recording
+
+def alloff_after(port, t):
+	# The board's alloff after host time t (campy-rules' clean exit; it also sends one as it starts)
+	return next((u for u, x in port.Lines() if x == "alloff" and u >= t), None)
+
+
+def until(test, seconds=5.0):
+	deadline = time.monotonic() + seconds
+	while not test() and time.monotonic() < deadline:
+		time.sleep(0.005)
+	return test()
+
+
+def test_campy_live_restarting_keeps_the_session_trains_and_the_rules_resume(monkeypatch, tmp_path):
+	# campy-live ends mid-recording (campy-session restarts it): the laser goes off at once, the session's train goes
+	# on (no "run 1 0", no alloff), the heartbeat too; then the new campy-live's feed comes and the rule, still true,
+	# switches the laser on again from a fresh start. Before, campy-rules ended, and its alloff stopped the train
+	port = SketchPort()
+	marks = {}
+
+	def feed_rows(feed, runner):
+		for k in range(1, 6):
+			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
+			time.sleep(1 / 60)
+		time.sleep(0.05)
+		marks["gone"] = clock.HostNs()
+		feed.Close() # campy-live ended; the cameras record on
+		assert until(lambda: runner.counts["live_gaps"] == 1 and runner.results is None)
+		time.sleep(1.0) # 4 x the board's watchdog_ms
+		marks["back"] = clock.HostNs()
+		feed.publisher = feed.Publisher() # campy-session's next campy-live
+		assert until(lambda: runner.results is not None)
+		for k in range(100, 106):
+			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
+			time.sleep(1 / 60)
+		time.sleep(0.1)
+	runner, events = run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows, cameras=True)
+	lines = port.Lines()
+	switches = [(t, x) for t, x in lines if x.split()[0] in ("on", "off", "run", "alloff")]
+	texts = [x for _, x in switches]
+	assert texts[:3] == ["alloff", "run 1 -1", "on 2 1"] # campy-rules starts with an alloff
+	off = [t for t, x in switches if x == "off 2"]
+	assert len(off) == 1 and 0 <= (off[0] - marks["gone"]) / 1e6 < 300 # off at once, not when campy-rules ended
+	gap = [x for t, x in switches if marks["gone"] <= t < marks["back"]]
+	assert gap == ["off 2"] # the train keeps running: no "run 1 0", no alloff
+	after = [x for t, x in switches if t >= marks["back"]]
+	assert after[0].startswith("on 2 ") and int(after[0].split()[2]) >= 100 # the new feed's sets, from a fresh start
+	assert after[-1] == "alloff" and "run 1 0" not in after[:-1] # Ctrl-C (the test's stop): all off
+	# The board heard campy-rules all through the gap: never quiet near its watchdog_ms (250)
+	heard = [t for t, x in lines if marks["gone"] <= t <= marks["back"]]
+	assert len(heard) >= 15 and max(np.diff(heard)) / 1e6 < 200, max(np.diff(heard)) / 1e6
+	assert runner.counts["watchdog"] == 0 and runner.counts["live_gaps"] == 1
+	gone = [e for e in events if e["kind"] == "live_gone"]
+	back = [e for e in events if e["kind"] == "live_back"]
+	assert len(gone) == 1 and len(back) == 1 and back[0]["back"] and back[0]["why"] is None
+	assert 0.9 <= back[0]["gap_s"] < 3 and gone[0]["heard_ns"] == back[0]["gone_ns"]
+	summary = json.load(open(str(tmp_path / "rules.json")))
+	assert summary["live_gaps"][0]["back"] and summary["counts"]["live_gaps"] == 1
+	said = " ".join(runner.said_lines)
+	assert "campy-live ended: pose rules off, session trains on (violet), waiting for campy-live" in said
+	assert "campy-live is back after" in said
+	rows = np.load(str(tmp_path / "rules.npy"))
+	assert list(rows["frame"]) == list(range(1, 6)) + list(range(100, 106)) # one log through the restart
+
+
+def test_the_recording_ending_while_campy_live_is_gone_ends_campy_rules_with_alloff(monkeypatch, tmp_path):
+	port = SketchPort()
+	marks = {}
+
+	def feed_rows(feed, runner):
+		for k in range(1, 6):
+			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
+			time.sleep(1 / 60)
+		time.sleep(0.05)
+		feed.Close()
+		assert until(lambda: runner.counts["live_gaps"] == 1)
+		time.sleep(0.3)
+		marks["ended"] = clock.HostNs()
+		feed.cameras.Close() # then the recording ends
+		assert until(lambda: alloff_after(port, marks["ended"]), 3)
+		marks["stopped"] = not runner.stop.is_set()
+	runner, events = run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows, cameras=True)
+	assert marks["stopped"] # it ended by itself
+	alloff = alloff_after(port, marks["ended"])
+	assert (alloff - marks["ended"]) / 1e6 < 1500 # within a look at the cameras (RECORDING_CHECK_S) and the exit
+	back = [e for e in events if e["kind"] == "live_back"]
+	assert len(back) == 1 and not back[0]["back"] and back[0]["why"] == "the recording ended"
+	assert any("the recording ended while campy-live was gone" in x for x in runner.said_lines)
+
+
+def test_the_recording_ending_first_ends_campy_rules_with_campy_live(monkeypatch, tmp_path):
+	# The usual end: the cameras stop, then campy-live ends: no waiting, everything off as before
+	port = SketchPort()
+	marks = {}
+
+	def feed_rows(feed, runner):
+		for k in range(1, 6):
+			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
+			time.sleep(1 / 60)
+		time.sleep(0.05)
+		marks["ended"] = clock.HostNs()
+		feed.cameras.Close()
+		feed.Close()
+		assert until(lambda: alloff_after(port, marks["ended"]), 3)
+	runner, events = run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows, cameras=True)
+	alloff = alloff_after(port, marks["ended"])
+	assert (alloff - marks["ended"]) / 1e6 < 1000
+	assert runner.counts["live_gaps"] == 0
+	assert not [e for e in events if e["kind"] in ("live_gone", "live_back")]
+	assert any("campy-live ended, and the recording with it" in x for x in runner.said_lines), runner.said_lines
+
+
+@pytest.mark.parametrize("cameras, arg", [(False, {}), (True, {"live_wait_s": 0.0})])
+def test_without_camera_rings_or_with_live_wait_0_campy_rules_ends_with_campy_live(monkeypatch, tmp_path, cameras,
+		arg):
+	# Can't tell the recording goes on (a campy-live that doesn't name its rings), or --live-wait-s 0: as before
+	port = SketchPort()
+
+	def feed_rows(feed, runner):
+		for k in range(1, 4):
+			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
+			time.sleep(1 / 60)
+		time.sleep(0.05)
+		t = clock.HostNs()
+		feed.Close()
+		assert until(lambda: alloff_after(port, t), 3)
+	runner, events = run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows, cameras=cameras, **arg)
+	assert runner.counts["live_gaps"] == 0
+	assert any(x == "campy-rules: campy-live ended." for x in runner.said_lines)
+
+
+def test_a_stale_feed_ends_campy_rules_once_the_cameras_feeds_end(monkeypatch, tmp_path):
+	# campy-live hung (its feed stays open, no sets) and the recording ends: campy-rules ends too. Before, it waited
+	# for the hung campy-live's feed to end
+	port = SketchPort()
+	marks = {}
+
+	def feed_rows(feed, runner):
+		for k in range(1, 6):
+			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
+			time.sleep(1 / 60)
+		marks["stale"] = clock.HostNs()
+		time.sleep(0.6) # stale: the laser off, the train on
+		assert not alloff_after(port, marks["stale"])
+		marks["ended"] = clock.HostNs()
+		feed.cameras.Close()
+		assert until(lambda: alloff_after(port, marks["ended"]), 3)
+	runner, events = run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows, cameras=True)
+	alloff = alloff_after(port, marks["ended"])
+	assert (alloff - marks["ended"]) / 1e6 < 1500
+	assert runner.counts["stale"] == 1
+	assert any("the recording ended (its cameras' live feeds did)" in x for x in runner.said_lines)
+
+
+def test_recording_tells_a_killed_or_new_recording_from_one_that_goes_on():
+	prefix = name()
+	cams = CameraRings(prefix)
+	try:
+		r = rules.Recording()
+		assert not r.Known() and not r.GoesOn()
+		r.Snap(cams.names + ["{}-nope".format(prefix)])
+		assert r.Known() and r.GoesOn() and sorted(r.rings) == sorted(cams.names)
+		cams.writers[0].Close() # one camera stopped: the others record on
+		assert r.GoesOn()
+		cams.Close()
+		assert not r.GoesOn()
+	finally:
+		cams.Close()
+	# The next recording's rings, of the same names: not this recording
+	again = CameraRings(prefix)
+	try:
+		assert not r.GoesOn()
+	finally:
+		again.Close()
+	# Rings left recording by a campy that was killed (their camera process gone)
+	dead = subprocess.Popen([sys.executable, "-c", "pass"])
+	dead.wait()
+	killed = CameraRings(name(), pid=dead.pid)
+	try:
+		r = rules.Recording()
+		r.Snap(killed.names)
+		assert not r.Known()
+	finally:
+		killed.Close()
+
+
+def test_refractory_counts_from_the_last_start_across_a_release():
+	# A reward pulsed, the feed went stale (or campy-live restarted): the rule starts over, but its next pulse still
+	# waits refractory_s from the last one
+	r = build({"outputs": OUT, "rules": [{"name": "t", "refractory_s": 0.1, "when": {"test": {"every": 1}},
+		"do": {"output": "reward"}}]})
+	ms = 1_000_000
+	assert [c[3] for c in r.Step(make_row(1), 0)[1]] == ["pulse 3 50000"]
+	r.Release()
+	assert r.Step(make_row(2), 50 * ms)[1] == [] # 50 ms later: not yet
+	assert r.Step(make_row(3), 90 * ms)[1] == []
+	assert [c[3] for c in r.Step(make_row(4), 110 * ms)[1]] == ["pulse 3 50000"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal for the simulated board")
+def test_the_board_sketch_keeps_the_session_train_and_never_fires_its_watchdog_while_campy_live_is_gone(tmp_path,
+		outputs_sim):
+	# The sketch itself, in real time with a 60 Hz trigger: campy-live gone for 1 s (4 x watchdog_ms) while the
+	# cameras record. The session train's pin keeps pulsing on its frames, the laser goes off, the board's watchdog
+	# never fires; the laser comes back on with the new campy-live's sets
+	master, slave = pty()
+	sim_log = tmp_path / "sim.log"
+	env = dict(os.environ, SIM_INPUT="10:300000:16667:3000:100000")
+	with open(str(sim_log), "w") as log:
+		board_sim = subprocess.Popen([outputs_sim, "live"], stdin=master, stdout=master, stderr=log, env=env)
+	prefix = name()
+	cams = CameraRings(prefix)
+	feed = Feed(prefix, rings=cams.names)
+	out = str(tmp_path / "live")
+	config = dict(LASER_RULE, board={"trigger_pin": 10, "bound_ms": 60, "watchdog_ms": 250})
+	args = args_for(prefix, out)
+	args.port = os.ttyname(slave)
+	runner = rules.Runner(args, config)
+	said = []
+	runner.say = said.append
+	thread, result = start(runner)
+	marks = {}
+
+	def rows(count):
+		board = runner.board
+		k0 = next(reversed(board.rises))
+		for k in range(k0 + 1, k0 + 1 + count):
+			assert until(lambda: k in board.rises, 2)
+			rise = board.RiseHostNs(k)
+			feed.Write(make_row(k, IN_NEST, t_ns=rise + 5_000_000 if rise is not None else clock.HostNs()))
+	try:
+		assert until(lambda: runner.board is not None and len(runner.board.rises) >= 5 and
+			runner.board.clock.Ready(), 10)
+		rows(10)
+		time.sleep(0.05)
+		marks["gone"] = clock.HostNs()
+		feed.Close()
+		assert until(lambda: runner.results is None and runner.counts["live_gaps"] == 1)
+		time.sleep(1.0)
+		marks["back"] = clock.HostNs()
+		feed.publisher = feed.Publisher()
+		assert until(lambda: runner.results is not None)
+		rows(10)
+		time.sleep(0.2)
+	finally:
+		runner.stop.set()
+		thread.join(10)
+		feed.Close()
+		cams.Close()
+		board_sim.terminate()
+		board_sim.wait()
+		os.close(slave)
+		os.close(master)
+	assert result.get("code") == 0, said
+	assert runner.counts["watchdog"] == 0, said
+	assert not [line for line in open(out + ".board.txt") if line.split()[1:2] == ["wd"]] # the board never said wd
+	events = [json.loads(l) for l in open(out + ".events.jsonl")]
+	laser = [e["command"].split()[0] for e in events if e["kind"] == "command" and e["output"] == "laser"]
+	assert laser[:3] == ["on", "off", "on"], laser # (then off once the test's sets stop: stale)
+	# The session's train (violet, pin 3, every 2nd frame) pulsed all through the gap: ~30 pulses a second
+	pin3 = [line.split() for line in sim_log.read_text().splitlines() if line.split()[1:3] == ["3", "1"]]
+	assert len(pin3) >= 40
+	pulses = [e for e in events if e["kind"] == "pulse" and e["channel"] == 1 and e.get("rise_ns")]
+	during = [p for p in pulses if marks["gone"] + 100_000_000 < p["rise_ns"] < marks["back"]]
+	assert len(during) >= 20, len(during)

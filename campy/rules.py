@@ -71,7 +71,8 @@ missing data. do: {output, action}: level (on while the rule holds; the
 default for an output without train or pulse_ms), pulse (pulse_ms, or the
 output's, each time it starts holding), train (the output's train while it
 holds), burst (pulses: N of the output's train, each time it starts holding).
-refractory_s: it doesn't start holding again until that long after it last did.
+refractory_s: it doesn't start holding again until that long after it last did
+(also across a stale feed, the watchdog and campy-live's restart).
 Several rules on one output: on (or running) while any of them holds.
 
 Timing: each command names the frame its set came from, so the board says
@@ -92,13 +93,28 @@ everything off when campy-rules says nothing for watchdog_ms (a crash, kill,
 unplugged cable, or its decision loop stuck: the heartbeat goes only while
 the loop goes round, LOOP_ALIVE_S); campy-rules then starts the rules over
 and the session's trains again. campy-rules switches everything off when it
-ends (campy-live ended, Ctrl-C, an error). Its logs are written by a thread
+ends (the recording ended, Ctrl-C, an error). Its logs are written by a thread
 of their own, so a slow disk holds up neither the decisions nor the
 heartbeat. --dry-run opens no port: it logs what it would do. The board
 counts camera triggers from 1 from when campy-rules starts, and keeps
 counting through pauses, as campy counts its frames (a pause of half a
 second or more is logged, kind gap): start campy-rules before the recording
 starts, so frame k is campy's.
+
+campy-live ending or restarting mid-recording (campy-session restarts a
+hung or dead one) doesn't end campy-rules: what the rules switched on goes
+off at once, the session's trains go on, the heartbeat too, and campy-rules
+waits for the next campy-live's results feed (logged, kinds live_gone and
+live_back), then runs the rules on it from the next sets. The recording goes
+on while any camera's live feed that campy-live read (its results say which)
+is still that feed, not ended, and its camera process alive (Recording); when
+none is, campy-rules ends, everything off. It ends too when campy-live's
+results end and that can't be told (no sets yet, a campy-live that doesn't
+name its rings), after --live-wait-s without campy-live (default: no limit),
+or right away with --live-wait-s 0 (as before November 2026). With no set
+for a while and the cameras' feeds ended, it ends without waiting for
+campy-live's feed to end. campy-session doesn't start campy-rules, nor
+restart it: start it by hand, before the recording.
 
 Output (--out, default campy-rules_<date_time>):
   <out>.npy          per set: frame, its times, each rule's value (-1 unknown)
@@ -125,10 +141,13 @@ from datetime import datetime
 
 import numpy as np
 
-from campy import clock, liveresults, runstats, strictjson
+from campy import children, clock, livefeed, liveresults, runstats, strictjson
 from campy.frametimes import GrowingNpy, Writer
 
 LOOP_ALIVE_S = 0.1 # the board's heartbeat goes only while the decision loop has gone round this recently
+RECORDING_CHECK_S = 0.5 # without campy-live's sets: how often to look whether the recording goes on (Recording)
+REJOIN_ATTACH_S = 0.05 # waiting for campy-live to come back: how often to look for its new results feed
+REJOIN_POLL_S = 0.01 # and how long each round of that wait sleeps (well within LOOP_ALIVE_S)
 
 
 class RulesError(Exception):
@@ -494,14 +513,16 @@ class Rule:
 		self.pulses = int(do.get("pulses", 1))
 		if self.action == "burst" and self.pulses < 1:
 			raise RulesError("{}: burst needs pulses >= 1".format(where))
+		self.started_ns = None  # when it last started holding
 		self.Reset()
 
 	def Reset(self):
+		# From the next set as from the first (Rules.Release), except refractory_s: it still counts from when the rule
+		# last started holding, as the sets' host times go on through a stale feed, the watchdog and campy-live's restart
 		self.holding = False
 		self.value = None       # the condition's last known value
 		self.known_ns = None    # when it was last known
 		self.since_ns = None    # since when it has said what it says now
-		self.started_ns = None  # when it last started holding
 
 	def Step(self, row, t):
 		"""
@@ -792,6 +813,64 @@ class FrameMatch:
 		return int(np.median(np.diff(rises))) * 1000
 
 
+class Recording:
+	"""
+	Whether campy's recording goes on, from its cameras' live feeds: the rings
+	campy-live reads, which its results' description names. Snap takes them
+	once a results feed has sent sets (so the cameras record then); the
+	recording goes on while any of those rings is still the same ring (its
+	id), not ended, and its camera process alive. A camera's ring that ended,
+	is gone, was made again (the next recording) or was left by a campy that
+	was killed: that camera's recording ended. Nothing taken (no sets yet, or
+	a campy-live too old to name its rings): unknown, and campy-rules ends with
+	campy-live, as before.
+	"""
+
+	def __init__(self):
+		self.rings = {} # name: ring id
+
+	def Known(self):
+		return bool(self.rings)
+
+	@staticmethod
+	def _Recording(reader):
+		# Not ended, and its camera process (its description's pid, campy from October 2026 on) still there
+		if reader.Ended() or reader.Replaced():
+			return False
+		try:
+			pid = int(strictjson.loads(reader.Description() or "{}").get("pid") or 0)
+		except (ValueError, TypeError, AttributeError):
+			pid = 0
+		return not pid or children.Alive(pid)
+
+	def Snap(self, names):
+		rings = {}
+		for name in names or []:
+			try:
+				reader = livefeed.RingReader(name)
+			except (OSError, ValueError):
+				continue
+			try:
+				if self._Recording(reader):
+					rings[name] = reader.ringId
+			finally:
+				reader.Close()
+		self.rings = rings
+
+	def GoesOn(self):
+		for name, ring_id in self.rings.items():
+			try:
+				reader = livefeed.RingReader(name)
+			except (OSError, ValueError): # gone, or the next recording's being made
+				continue
+			try:
+				if reader.ringId == ring_id and self._Recording(reader):
+					return True
+			finally:
+				reader.Close()
+		return False
+
+
 class Runner:
 	"""
 	The live loop: rows from the results feed, through the rules, to the board.
@@ -807,8 +886,10 @@ class Runner:
 		self.latency = dict(trigger_to_host=[], host_to_pose=[], pose_to_read=[], read_to_decided=[],
 			decided_to_written=[], written_to_pin=[], trigger_to_pin=[], host_to_pin=[])
 		self.counts = dict(rows=0, commands=0, late_host=0, late_board=0, clash=0, pulses=0, stale=0, errors=0,
-			watchdog=0, retries=0, gaps=0)
+			watchdog=0, retries=0, gaps=0, live_gaps=0)
 		self.rules = None
+		self.results = None   # campy-live's results feed now (None while waiting for campy-live to come back)
+		self.live_gaps = []   # each time campy-live's results were gone while the recording went on (Rejoin)
 		self.writer = None    # the log files' writes, on a thread of their own (frametimes.Writer)
 		self.beat = None      # when the decision loop last went round (time.monotonic), None: not looping yet
 		self.watchdog_fired = threading.Event() # the board's watchdog switched everything off: Loop recovers
@@ -939,8 +1020,8 @@ class Runner:
 	def Run(self):
 		args = self.args
 		out = args.out or "campy-rules_{}".format(datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
-		name = liveresults.RingName(args.name)
-		results = self.Attach(name)
+		name = self.name = liveresults.RingName(args.name)
+		results = self.results = self.Attach(name)
 		if results is None:
 			return 1
 		d = Description.From(results.description, results.rows_type)
@@ -948,6 +1029,7 @@ class Runner:
 			rules = Rules(self.config, d)
 		except RulesError as e:
 			results.Close()
+			self.results = None
 			self.say("campy-rules: {}".format(e))
 			return 2
 		board_cfg = rules.board
@@ -981,7 +1063,7 @@ class Runner:
 				"{} animals in 3D".format(d.animals) if d.animals else "2D"))
 			for rule, o, action, text, framed in rules.SessionStarts():
 				self.Send(rule, o, action, text, framed)
-			self.Loop(results, rules, log, match)
+			self.Loop(log, match)
 		except RulesError as e:
 			self.say("campy-rules: {}".format(e))
 			return 2
@@ -992,14 +1074,16 @@ class Runner:
 		finally:
 			if self.board is not None:
 				self.board.Close()
-			results.Close()
+			if self.results is not None:
+				self.results.Close()
+				self.results = None
 			try:
 				self.writer.Close() # the writes still queued
 			except Exception as e:
 				self.say("campy-rules: could not write its logs: {}".format(e))
 			self.writer = None
 			log.Close()
-			summary = self.Summary(rules, out, match)
+			summary = self.Summary(self.rules, out, match)
 			with self.lock:
 				self.events.close()
 				self.events = None
@@ -1027,14 +1111,18 @@ class Runner:
 			time.sleep(0.1)
 		return None
 
-	def Loop(self, results, rules, log, match):
+	def Loop(self, log, match):
 		n, last_row = 0, time.monotonic()
 		poll = self.args.poll_ms / 1e3
 		stale = self.args.stale_ms / 1e3
 		released = True
 		end = time.monotonic() + self.args.duration_s if self.args.duration_s else None
+		recording = Recording() # whether the recording goes on, from its cameras' feeds: taken once sets come
+		snapped = False # this results feed's camera rings taken
+		looked = 0.0 # when the recording was last looked at, while no set came
 		while not self.stop.is_set():
 			self.beat = time.monotonic()
+			rules, results = self.rules, self.results
 			if self.watchdog_fired.is_set():
 				# The board switched everything off (campy-rules was quiet too long): the rules start over from the
 				# next sets, and the session's trains start again
@@ -1051,9 +1139,35 @@ class Runner:
 					for c in rules.Release():
 						self.Send(*c)
 					released = True
+				if not snapped and n:
+					# This feed's sets came, so the cameras it reads record: the rings that say whether the
+					# recording goes on when campy-live's results end. Between sets, once a feed
+					recording.Snap(results.description.get("rings"))
+					snapped = True
 				if results.Ended():
-					self.say("campy-rules: campy-live ended.")
-					return
+					for c in rules.Release(): # what the rules switched on, off now (not after --stale-ms)
+						self.Send(*c)
+					released = True
+					if self.args.live_wait_s <= 0 or not recording.Known() or not recording.GoesOn():
+						self.say("campy-rules: campy-live ended{}.".format(", and the recording with it"
+							if recording.Known() and self.args.live_wait_s > 0 else ""))
+						return
+					results.Close()
+					self.results = None
+					self.results = self.Rejoin(recording, end)
+					if self.results is None:
+						return
+					self.Rebind(self.results)
+					n, last_row, snapped = 0, time.monotonic(), False
+					continue
+				if released and recording.Known() and now - looked >= RECORDING_CHECK_S:
+					# No set for a while (between bouts, campy-live hung or killed): if the cameras' feeds ended, the
+					# recording did, even if campy-live's results didn't say so
+					looked = now
+					if not recording.GoesOn():
+						self.say("campy-rules: the recording ended (its cameras' live feeds did), and campy-live's "
+							"results stopped with it.")
+						return
 				if end and now > end:
 					return
 				if poll:
@@ -1068,6 +1182,96 @@ class Runner:
 					continue
 				self.Row(row, read_ns, rules, log, match)
 			n, last_row, released = latest, time.monotonic(), False
+
+	def Rejoin(self, recording, end):
+		"""
+		campy-live's results ended while the recording goes on (campy-live
+		ended, or campy-session restarts it). What the rules switched on is off
+		already; the session's trains go on, and so does the board's heartbeat:
+		this loop goes round every REJOIN_POLL_S. Returns campy-live's next
+		results feed, or None when campy-rules ends instead: the recording
+		ended, no campy-live for --live-wait-s, --duration-s, Ctrl-C.
+		"""
+		since, since_ns = time.monotonic(), clock.HostNs()
+		self.counts["live_gaps"] += 1
+		gap = dict(gone_ns=since_ns, back_ns=None, gap_s=None, back=False, why=None)
+		self.live_gaps.append(gap)
+		self.Event(dict(kind="live_gone", heard_ns=since_ns))
+		trains = [o.name for o in self.rules.outputs.values() if o.run == "session"]
+		self.say("campy-rules: campy-live ended: pose rules off, {}, waiting for campy-live (the recording goes "
+			"on).".format("session trains on ({})".format(", ".join(trains)) if trains else "no session trains"))
+		looked = tried = 0.0
+		why, results = "stopped", None
+		while not self.stop.is_set():
+			now = self.beat = time.monotonic()
+			if self.watchdog_fired.is_set():
+				self.watchdog_fired.clear()
+				for c in self.rules.Release() + self.rules.SessionStarts():
+					self.Send(*c)
+			if now - tried >= REJOIN_ATTACH_S:
+				tried = now
+				results = self.TryAttach(self.name)
+				if results is not None:
+					why = None
+					break
+			if now - looked >= RECORDING_CHECK_S:
+				looked = now
+				if not recording.GoesOn():
+					why = "the recording ended"
+					break
+			if now - since > self.args.live_wait_s:
+				why = "no campy-live for {:g} s (--live-wait-s)".format(self.args.live_wait_s)
+				break
+			if end and now > end:
+				why = "--duration-s"
+				break
+			time.sleep(REJOIN_POLL_S)
+		back_ns = clock.HostNs()
+		gap.update(back_ns=back_ns, gap_s=round((back_ns - since_ns) / 1e9, 3), back=results is not None, why=why)
+		self.Event(dict(kind="live_back", gone_ns=since_ns, heard_ns=back_ns, gap_s=gap["gap_s"],
+			back=results is not None, why=why))
+		if results is None:
+			self.say("campy-rules: {} while campy-live was gone ({:.1f} s): campy-rules ends.".format(why, gap["gap_s"]))
+		else:
+			self.say("campy-rules: campy-live is back after {:.1f} s: the pose rules again, from the next sets "
+				"({}).".format(gap["gap_s"], results.name))
+		return results
+
+	@staticmethod
+	def TryAttach(name):
+		# campy-live's results feed, if one is there and recording (an ended one, still held by a reader: not yet)
+		try:
+			results = liveresults.Results(name)
+		except (OSError, ValueError):
+			return None
+		if results.Ended():
+			results.Close()
+			return None
+		return results
+
+	def Rebind(self, results):
+		"""
+		The rules on a new campy-live's results: the same rules when its
+		cameras, nodes, animals and rows are the earlier one's; else made again
+		for it (a RulesError if they can't be: campy-rules ends, everything
+		off), each rule's refractory_s still counting from its last start.
+		"""
+		old = self.rules
+		d = Description.From(results.description, results.rows_type)
+		was = old.d
+		if (d.cameras, d.nodes, d.animals, d.fields) == (was.cameras, was.nodes, was.animals, was.fields):
+			return
+		try:
+			rules = Rules(self.config, d)
+		except RulesError as e:
+			raise RulesError("campy-live came back with other results ({}), which the rules don't fit: {}".format(
+				results.name, e))
+		for rule in rules.rules:
+			if rule.name in old.by_name:
+				rule.started_ns = old.by_name[rule.name].started_ns
+		self.say("campy-rules: campy-live came back with other cameras, nodes or animals: the rules are made "
+			"again for it.")
+		self.rules = rules
 
 	def Row(self, row, read_ns, rules, log, match):
 		self.counts["rows"] += 1
@@ -1101,6 +1305,7 @@ class Runner:
 			latency_ms={k: Stats(v) for k, v in self.latency.items()},
 			frame_offset=match.offset if match else None, frame_offset_changes=match.changes if match else None,
 			trigger_to_host_all_ms=Stats(match.delays) if match else None,
+			live_gaps=self.live_gaps, # campy-live gone while the recording went on: pose rules off (Rejoin)
 			files=dict(rows=out + ".npy", events=out + ".events.jsonl", board=None if self.board is None else
 				out + ".board.txt"))
 		if self.board is not None and self.board.clock.Ready():
@@ -1115,6 +1320,10 @@ class Runner:
 		self.say("campy-rules: {} sets, {} commands ({} refused as late by campy-rules, {} by the board), {} pulses, "
 			"{} clashes, {} times stale, watchdog {}.".format(c["rows"], c["commands"], c["late_host"],
 			c["late_board"], c["pulses"], c["clash"], c["stale"], c["watchdog"]))
+		gaps = summary.get("live_gaps") or []
+		if gaps:
+			self.say("campy-rules: campy-live was gone {} times while the recording went on: pose rules off for {:.1f} s "
+				"in all (events log: live_gone, live_back).".format(len(gaps), sum(g["gap_s"] or 0 for g in gaps)))
 		for key, s in summary["latency_ms"].items():
 			if s:
 				self.say("  {:<20} p50 {:7.2f}  p99 {:7.2f}  worst {:7.2f} ms  ({} commands)".format(key, s["p50"],
@@ -1189,7 +1398,10 @@ def Main(argv=None):
 	p.add_argument("--poll-ms", type=float, default=0.2, help="how often to look for a new set; 0: all the time "
 		"(a whole core)")
 	p.add_argument("--wait-sec", type=float, default=float("inf"), help="how long to wait for campy-live's results")
-	p.add_argument("--duration-s", type=float, default=0.0, help="stop after this long (0: when campy-live ends)")
+	p.add_argument("--duration-s", type=float, default=0.0, help="stop after this long (0: when the recording ends)")
+	p.add_argument("--live-wait-s", type=float, default=float("inf"), help="campy-live gone while the recording goes "
+		"on (it ended, or campy-session restarts it): how long to wait for it, the session's trains on and the pose "
+		"rules off (default: as long as the recording goes on); 0: end with campy-live, as before")
 	args = p.parse_args(argv)
 	if args.name is None:
 		from campy import livefeed
