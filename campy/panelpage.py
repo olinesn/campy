@@ -193,7 +193,7 @@ function renderDevices(s, st){
   let pt = "-";
   if(P && P.state){
     if(P.alive && P.mode=="wiring") pt = "Blinking (the gate check)";
-    else if(P.alive) pt = "Running: bout "+(P.bout||"-")+" of "+P.bouts+" · "+(P.pulses||0).toLocaleString()+" camera pulses · ends "+(P.ends_at||"?")+" ("+hms(Math.max(0,(P.ends_s||0)-(P.session_s||0)))+" left)"+(P.end_requested?" · stop asked ("+P.end_requested+")":"");
+    else if(P.alive) pt = "Running: "+(P.bout ? "bout "+P.bout+" of "+P.bouts : "between bouts ("+P.bouts+" in all)")+" · "+(P.pulses||0).toLocaleString()+" camera pulses · ends "+(P.ends_at||"?")+" ("+hms(Math.max(0,(P.ends_s||0)-(P.session_s||0)))+" left)"+(P.end_requested?" · stop asked ("+P.end_requested+")":"");
     else pt = "Idle. Last session: "+P.state+(P.done?" ("+P.done+")":"")+(P.error?" · "+P.error:"");
   } else if(P) pt = "Idle (no session run here yet)";
   if(D.plan && !(P && P.alive)) pt += " · This recording: " + D.plan.text;
@@ -248,7 +248,7 @@ $("stop").onclick = async () => {
   if(D && !(last.launcher && last.launcher.recording && last.launcher.recording.stop_asked)){
     const P = D.pico, on = P && P.alive && D.pico_started;
     $("stopbout").hidden = !on;
-    $("stoptext").textContent = on ? "After this bout: the Pico finishes bout "+(P.bout||"-")+" (its gate falls on time, so SpikeGLX's file closes as planned), then campy and SpikeGLX stop. Now: the Pico stops at once, then campy, then SpikeGLX." :
+    $("stoptext").textContent = on ? (P.bout ? "After this bout: the Pico finishes bout "+P.bout+" (its gate falls on time, so SpikeGLX's file closes as planned), then campy and SpikeGLX stop." : "After this bout: the Pico is between bouts, so it stops at once, before the next bout starts, then campy and SpikeGLX stop.")+" Now: the Pico stops at once, then campy, then SpikeGLX." :
       "campy stops (each camera closes its video)"+(D.spikeglx?", then SpikeGLX's run":"")+".";
     $("stopdlg").hidden = false; return; }
   if(last && last.launcher && last.launcher.recording && last.launcher.recording.stop_asked && !stopArmed){ stopArmed = 1; setTimeout(() => {stopArmed = 0;}, 5000); tick(); return; }
