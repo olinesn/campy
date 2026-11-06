@@ -162,8 +162,13 @@ def test_a_camera_left_out_of_the_sets_is_no_missed_animal(tmp_path):
 	assert len(flags) == 0, flags
 	assert np.allclose(np.diff(lg.time_s), PERIOD / 1e9, atol=1e-6)
 	# The same sets with Camera2 in them, its detections taken away: its animals missed there, and fewer found
+	# (another file: on Windows the first is still open, memory-mapped, and can't be replaced)
 	rows["cam_frame"][:, 2] = rows["frame"]
+	path = str(tmp_path / "in")
 	np.save(path + ".npy", rows)
+	with open(path + ".json", "w") as f:
+		json.dump({"cameras": CAMERAS, "calibration": str(tmp_path / "calibration.toml"),
+			"calibration_names": CALIBRATION_NAMES, "animals": ANIMALS}, f)
 	_, flags = flags_of(path + ".npy")
 	assert set(flags["reason"].tolist()) == {"missed", "fewer"} and set(flags["camera"].tolist()) == {2}
 
