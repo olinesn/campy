@@ -103,7 +103,7 @@ While it records, campy keeps the computer out of sleep and standby (`keepAwake:
 - Linux: `systemd-inhibit` blocks idle and sleep. Over SSH, polkit allows blocking idle only, and campy says so.
 - macOS: `caffeinate` keeps the display and the system awake.
 
-campy says how as it starts (`Keeping this computer awake while recording (keepAwake): a Windows power request.`). The request ends with the recording, and with campy if it is killed. Where it cannot be made, campy says why and records anyway. `keepAwake: False` (or `--keepAwake False`) turns it off.
+campy says how as it starts (`Keeping this computer awake while recording (keepAwake): a Windows power request.`). The request ends with the recording, once its end message has gone to the [alerts](alerts.md) (at most 30 s later, on a slow network), and with campy if it is killed. Where it cannot be made, campy says why and records anyway. `keepAwake: False` (or `--keepAwake False`) turns it off.
 
 ## Alerts on your phone (campy-notify)
 

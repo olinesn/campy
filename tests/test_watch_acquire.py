@@ -138,6 +138,43 @@ def test_a_recording_that_goes_well(tmp_path, service):
 		("Camera0", 90, 0, "ended"), ("Camera1", 90, 0, "ended")]
 
 
+def test_a_slow_network_holds_up_neither_the_trigger_stop_nor_session_json(tmp_path, service):
+	# Slack answering each request 2 s late. The end summary was said before the trigger's stop and session.json's
+	# end, which then waited up to 15 s for it: now it is said after them
+	service.delay = 2.0
+	code, out = Finish(Start(tmp_path, service, rec=3))
+	assert code == 0, out
+	ended = os.path.getmtime(str(Session(tmp_path) / "session.json"))
+	(summary,) = [t for t, r in zip(service.times, service.requests) if r[0] == "/api/chat.postMessage" and
+		"ended after" in r[2]["text"]]
+	assert summary >= ended, (summary, ended)
+	assert Texts(service)[-1].startswith("Recording ") # every message still went, the summary too
+	assert service.Paths()[-1].endswith("/pause")
+
+
+BROKEN_WAIT = """
+from campy.cameras import unicam
+def _broken(self, interrupts):
+	import time
+	time.sleep(1)
+	raise RuntimeError("a made-up error in the camera wait")
+unicam.CameraProcesses.Wait = _broken
+"""
+
+
+def test_an_error_in_campy_acquire_is_a_critical_end(tmp_path, service):
+	# An error that ended campy-acquire's recording was summed up as an info "ended" (which a warning channel never
+	# gets), and recording.json said "ended"
+	code, out = Finish(Start(tmp_path, service, rec=3, extra=BROKEN_WAIT))
+	assert code != 0 and "a made-up error in the camera wait" in out, out
+	end = Texts(service)[-1]
+	assert end.startswith("Recording {} ended after ".format(Session(tmp_path).name)), end
+	assert "with an error in campy-acquire: a made-up error in the camera wait. Its log says more." in end, end
+	assert service.Texts()[-1].startswith(":red_circle:")
+	status = json.load(open(os.path.join(os.environ["CAMPY_STATUS_DIR"], "recording.json")))
+	assert status["state"] == "failed"
+
+
 def test_ffmpeg_killed(tmp_path, service):
 	proc = Start(tmp_path, service, rec=8)
 	ffmpegs = Ffmpegs(proc)

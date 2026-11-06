@@ -167,6 +167,9 @@ class LiveWatch:
 					"waits for a frame from each (campy-acquire's alert says which)")
 			if not any(moving):
 				self.Gone(key + "/ended")
+		if not self.resultsEnded:
+			# campy-live's results are there again: campy-session started it again (live.restart)
+			self.Gone(key + "/ended", "campy-live: results again (campy-live was started again)")
 
 	def Rows(self, taken, now):
 		if self.rows is None or taken != self.rows[1]:
@@ -264,7 +267,7 @@ def Run(args, notifier=None, say=print):
 			r.Close()
 		if results is not None:
 			results.Close()
-		notifier.Flush(15)
+		notifier.Finish(15, "campy-watch")
 	return 0
 
 

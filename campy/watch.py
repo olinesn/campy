@@ -76,6 +76,20 @@ and says when the recording started and how it ended. With a healthchecks.io
 check in the alerts file, it pings it every minute and pauses it at the end
 (notify.Notifier.Heartbeat).
 
+Two cameras or more with a problem of the same kind (frames waiting, dropped
+frames, no frames, a recording ended, USB 2), starting in the same check, are
+one message ("3 cameras at once: ...", key cameras/<kind>), and so is their
+resolution, once each camera's is over: a disk that stalls fills every
+camera's queue at once. Each camera's own problem is still said on the
+console, and listed in recording.json.
+
+How it ended (Stop) is said last in campy-acquire, after the trigger has
+stopped and session.json is written, so that a slow network holds up
+neither; the summary and the heartbeat's pause go ahead of the messages
+still waiting, which then get FINISH_S (30 s). An error that ended
+campy-acquire's recording (Stop's error) makes the summary critical, and
+recording.json "failed".
+
 What it finds goes into the recording's alerts.log (one JSON object a line:
 notify.Notifier.Log), whether or not the alerts file names a channel. And
 every STATUS_EVERY_S, and as the recording ends, it writes the recording's
@@ -106,7 +120,10 @@ another folder), for a control panel to show (campy-session's):
 written whole each time (a .tmp file, then replaced), by campy-acquire only.
 
 Nothing here acts on the recording but the stop at stopAtFreeGB: the watch
-only reads. An error in a check is said, and the others go on.
+only reads. An error in a check (or in its other steps: resolutions, the
+grouping, the heartbeat, the alerts' reminders) is said once on the console,
+and sent once as a warning (watch/<check>: its alerts are off while it
+fails), resolved once it works again; the other checks go on.
 """
 
 import collections, datetime, json, math, os, shutil, sys, threading, time
@@ -153,10 +170,39 @@ STATE_NAMES = {camstatus.WAITING: "waiting", camstatus.GRABBING: "grabbing", cam
 	camstatus.CAMERA_FAILED: "camera failed"}
 
 
+FINISH_S = 30.0 # as the recording ends, how long the alerts get to go (notify.Notifier.Finish)
+
+# A camera's problems of these kinds that start in the same check, in two cameras or more, are one message
+# ("3 cameras at once: ..."), whose resolution is one message too. A disk that stalls fills every camera's
+# queue at once: 5 messages a camera (warning, worse, dropped frames, and each resolved), 40 with 8 cameras
+GROUPS = {
+	"queue": "frames waiting for ffmpeg. The disk or the encoder has stalled{}.",
+	"drops": "frames dropped: more than writeQueueMaxSec ({}) of frames were waiting for ffmpeg.",
+	"no-frames": "no frames.",
+	"ended": "their recordings have ended.",
+	"usb": "on a USB 2 link, not USB 3: they can't carry their frames. Check their cables, hub and ports.",
+}
+
+
+GROUP_S = 5.0 # a camera's problem this soon after a group of its kind began joins it; later, it is its own
+
+
 class Problem:
-	def __init__(self, severity, text, hold, remind):
+	def __init__(self, severity, text, hold, remind, line=None):
 		self.severity, self.text, self.hold, self.remind = severity, text, hold, remind
+		self.line = line or text # in a message about several cameras at once
 		self.clearSince = None
+		self.sent = None # a camera's kind in GROUPS: "alone" (its own key), "group" (a Grouped's), None (not yet)
+		self.group = None
+
+
+class Grouped:
+	# Several cameras' problems of one kind, sent as one message (key cameras/<kind>, or cameras/<kind>/2 ... while
+	# an earlier one is still open)
+	def __init__(self, kind, key, began):
+		self.kind, self.key, self.began = kind, key, began
+		self.members = [] # their keys, open
+		self.cleared = [] # what each that is over said
 
 
 class Watch:
@@ -229,9 +275,13 @@ class Watch:
 		self.planned = [] # its planned pauses (alertTriggerPauseSec), the same way: logged, not sent
 		self.missedAlone = collections.defaultdict(int) # camera: pulses it missed that the others got
 		self.lastError = None
-		self.errors = set()
+		self.errors = set() # the checks whose error has been said on the console
+		self.failing = set() # the checks failing now (an alert, watch/<check>)
+		self.pending = [] # cameras' problems of a kind in GROUPS, raised in this check: sent at its end (Group)
+		self.groups = [] # Grouped, open
 		self.done = threading.Event()
 		self.thread = None
+		self.halted = False
 
 	# ------------------------------------------------------------------ the thread
 
@@ -251,11 +301,17 @@ class Watch:
 
 	def Run(self):
 		while not self.done.wait(EVERY_S):
-			self.Check()
+			try:
+				self.Check()
+			except Exception as e: # (each of its steps catches its own: never let the thread end)
+				self.Failed("watch", e)
 
-	def Stop(self, failures=None, timeout=15.0):
-		"""Ends the watch, says how the recording ended, and waits (up to timeout s) for the alerts to go."""
+	def Halt(self):
+		"""Ends the checks (the thread, the kernel log's reading), before the trigger's port is closed."""
 		self.done.set()
+		if self.halted:
+			return
+		self.halted = True
 		if self.thread is not None:
 			self.thread.join(5)
 		if self.gpuLog is not None:
@@ -263,13 +319,26 @@ class Watch:
 				self.gpuLog.Stop()
 			except Exception as e:
 				self.say("Watch: could not stop reading the kernel log: {}".format(ErrorText(e)))
+
+	def Stop(self, failures=None, error=None, timeout=FINISH_S):
+		"""
+		Ends the watch (Halt, if not yet), says how the recording ended, and
+		waits (up to timeout s) for the alerts to go: the end summary and the
+		heartbeat's pause first; what can't go by then is said, and logged.
+		error: what ended campy-acquire's recording, if an error did (the
+		summary is then critical). campy-acquire calls it last, once the
+		trigger has stopped and session.json is written, which a slow network
+		then holds up no more.
+		"""
+		self.Halt()
+		self.Step("grouping", self.Group, self.clock())
 		try:
-			self.Ended(failures or {})
+			self.Ended(failures or {}, error)
 		except Exception as e:
 			self.say("Watch: could not say how the recording ended: {}".format(ErrorText(e)))
-		self.WriteStatus("failed" if failures or self.stopped or self.StillOpen(notify.CRITICAL) else "ended")
+		self.WriteStatus("failed" if failures or error or self.stopped or self.StillOpen(notify.CRITICAL) else "ended")
 		self.notifier.Pause()
-		self.notifier.Flush(timeout)
+		self.notifier.Finish(timeout, "campy-acquire")
 
 	def Check(self, now=None):
 		"""Every check, once (the thread calls it every EVERY_S)."""
@@ -281,30 +350,107 @@ class Watch:
 			if every and self.at[name] is not None and now - self.at[name] < every:
 				continue
 			self.at[name] = now
-			try:
-				check(now)
-			except Exception as e:
-				if name not in self.errors: # said once
-					self.errors.add(name)
-					self.say("Watch: the {} check failed: {}".format(name, ErrorText(e)))
-		self.Settle(now)
-		self.notifier.Heartbeat()
-		self.notifier.Tick()
+			self.Step(name, check, now)
+		# Outside the checks, but caught the same way: one that raised would end the watch's thread for good
+		self.Step("resolutions", self.Settle, now)
+		self.Step("grouping", self.Group, now)
+		self.Step("heartbeat", lambda now: self.notifier.Heartbeat(), now)
+		self.Step("alerts", lambda now: self.notifier.Tick(), now)
+
+	def Step(self, name, call, now):
+		# One check, or step of a check: an error is said once on the console, and sent as a warning (its alerts are
+		# off while it fails); resolved once it works again
+		try:
+			call(now)
+		except Exception as e:
+			self.Failed(name, e)
+			return
+		if name in self.failing:
+			self.failing.discard(name)
+			self.Clear("watch/" + name, "The recording watch's {} check works again.".format(name), now)
+
+	def Failed(self, name, e):
+		if name not in self.errors: # said once
+			self.errors.add(name)
+			self.say("Watch: the {} check failed: {}".format(name, ErrorText(e)))
+		self.failing.add(name)
+		key = "watch/" + name
+		text = "The recording watch's {} check failed: {}. Its alerts are off while it fails; the recording goes " \
+			"on.".format(name, ErrorText(e))
+		problem = self.problems.get(key)
+		if problem is None:
+			problem = self.problems[key] = Problem(notify.WARNING, text, 0.0, False)
+		problem.text, problem.clearSince = text, None
+		try:
+			self.notifier.Problem(key, text, notify.WARNING, remind=False)
+		except Exception:
+			pass # the alerts themselves are what fails: said on the console
 
 	# ------------------------------------------------------------------ problems: raised, cleared
 
-	def Raise(self, key, severity, text, hold=0.0, remind=True):
+	def Raise(self, key, severity, text, hold=0.0, remind=True, line=None):
 		problem = self.problems.get(key)
 		if severity == notify.CRITICAL:
 			self.lastError = {"time": Wall(), "text": text}
 		if problem is None:
-			self.problems[key] = Problem(severity, text, hold, remind)
+			problem = self.problems[key] = Problem(severity, text, hold, remind, line)
 			self.say("Alert: {}".format(text))
 		else:
 			if notify.LEVELS[severity] > notify.LEVELS[problem.severity]:
 				self.say("Alert, worse: {}".format(text))
 			problem.severity, problem.text, problem.clearSince = severity, text, None
-		self.notifier.Problem(key, text, severity, remind=remind)
+			problem.line = line or text
+		if self.Kind(key) is None or problem.sent == "alone":
+			self.notifier.Problem(key, text, severity, remind=remind)
+		elif problem.sent is None and key not in self.pending:
+			self.pending.append(key) # sent at the check's end: alone, or with other cameras' (Group)
+
+	def Kind(self, key):
+		# A camera's problem of a kind in GROUPS: its kind; else None
+		name, _, kind = key.rpartition("/")
+		return kind if kind in GROUPS and name in self.names else None
+
+	def Group(self, now):
+		# The problems raised in this check, of a kind in GROUPS: in two cameras or more, or into a group of that
+		# kind that began within GROUP_S, one message; one camera's, alone. Then each group's message, as its
+		# cameras' problems are now (the notifier sends it again only when it is worse)
+		pending, self.pending = [k for k in self.pending if k in self.problems], []
+		for kind in GROUPS:
+			new = [k for k in pending if self.Kind(k) == kind]
+			group = next((g for g in self.groups if g.kind == kind and now - g.began <= GROUP_S), None)
+			if group is None and len(new) >= 2:
+				used, n, key = {g.key for g in self.groups}, 1, "cameras/" + kind
+				while key in used:
+					n += 1
+					key = "cameras/{}/{}".format(kind, n)
+				group = Grouped(kind, key, now)
+				self.groups.append(group)
+			for key in new:
+				p = self.problems[key]
+				if group is None:
+					p.sent = "alone"
+					self.notifier.Problem(key, p.text, p.severity, remind=p.remind)
+				else:
+					p.sent, p.group = "group", group
+					group.members.append(key)
+		for group in self.groups:
+			members = [self.problems[k] for k in sorted(group.members, key=lambda k: self.names.index(self.Name(k)))]
+			if members:
+				self.notifier.Problem(group.key, self.GroupText(group.kind, members),
+					max((p.severity for p in members), key=notify.LEVELS.get), remind=any(p.remind for p in members))
+
+	def Name(self, key):
+		return key.rpartition("/")[0]
+
+	def GroupText(self, kind, members):
+		if kind == "queue":
+			what = GROUPS[kind].format(": frames are dropped once it reaches 100 %" if self.queueLimit else
+				", and memory fills")
+		elif kind == "drops":
+			what = GROUPS[kind].format(self.QueueLimitText())
+		else:
+			what = GROUPS[kind]
+		return "\n".join(["{} cameras at once: {}".format(len(members), what)] + ["- " + p.line for p in members])
 
 	def Clear(self, key, text=None, now=None):
 		problem = self.problems.get(key)
@@ -312,13 +458,22 @@ class Watch:
 			problem.clearSince = (self.clock() if now is None else now, text)
 
 	def Settle(self, now):
-		# Problems clear for their hold: resolved
+		# Problems clear for their hold: resolved. A camera's in a group leaves it; the group's last, its resolution
 		for key, problem in list(self.problems.items()):
 			if problem.clearSince is not None and now - problem.clearSince[0] >= problem.hold:
 				del self.problems[key]
 				text = problem.clearSince[1]
 				self.say("Alert resolved: {}".format(text or problem.text))
-				self.notifier.Resolved(key, text)
+				if self.Kind(key) is None or problem.sent == "alone":
+					self.notifier.Resolved(key, text)
+				elif problem.group is not None:
+					group = problem.group
+					group.members.remove(key)
+					group.cleared.append(text or "{}: over".format(self.Name(key)))
+					if not group.members:
+						self.groups.remove(group)
+						self.notifier.Resolved(group.key, "\n".join(["{} cameras:".format(len(group.cleared))] +
+							["- " + t for t in group.cleared]))
 
 	def Open(self):
 		return dict(self.problems)
@@ -580,9 +735,10 @@ class Watch:
 		frames = max(1, row["grabbed"] - then[1])
 		if row["dropped"] > history[-2][2]:
 			severity = notify.CRITICAL if dropped > DROPS_CRITICAL * frames else notify.WARNING
-			self.Raise(key, severity, "{}: dropped {} frames in the last {} ({} since the start): more than "
-				"writeQueueMaxSec ({}) of frames were waiting for ffmpeg.".format(name, dropped,
-				notify.Duration(now - then[0]), row["dropped"], self.QueueLimitText()), hold=DROPS_CLEAR_S)
+			line = "{}: dropped {} frames in the last {} ({} since the start)".format(name, dropped,
+				notify.Duration(now - then[0]), row["dropped"])
+			self.Raise(key, severity, "{}: more than writeQueueMaxSec ({}) of frames were waiting for ffmpeg.".format(
+				line, self.QueueLimitText()), hold=DROPS_CLEAR_S, line=line)
 		elif row["dropped"]:
 			self.Clear(key, "{}: no frame dropped for {} ({} in all)".format(name, notify.Duration(DROPS_CLEAR_S),
 				row["dropped"]), now)
@@ -615,13 +771,14 @@ class Watch:
 		if warn or (key in self.problems and not clear):
 			taken = row["sent"] - then[3] if then is not None else 0
 			span = now - then[0] if then is not None else 0
-			text = "{}: {:.1f} s of frames waiting for ffmpeg{}; it took {} frames in the last {} ({:.0f} a second, of "\
-				"{:g}). The disk or the encoder has stalled{}.".format(name, waiting,
+			line = "{}: {:.1f} s of frames waiting for ffmpeg{}; it took {} frames in the last {} ({:.0f} a second, of "\
+				"{:g})".format(name, waiting,
 				" ({:.0%} of writeQueueMaxSec {:g} s)".format(share, self.queueLimit) if self.queueLimit else "",
-				taken, notify.Duration(span), taken / span if span > 0 else 0, self.frameRate,
+				taken, notify.Duration(span), taken / span if span > 0 else 0, self.frameRate)
+			text = "{}. The disk or the encoder has stalled{}.".format(line,
 				": frames are dropped once it reaches 100 %" if self.queueLimit else ", and memory fills")
 			severity = notify.CRITICAL if critical else notify.WARNING if warn else self.problems[key].severity
-			self.Raise(key, severity, text, hold=STALL_CLEAR_S)
+			self.Raise(key, severity, text, hold=STALL_CLEAR_S, line=line)
 		elif clear:
 			self.Clear(key, "{}: caught up ({:.1f} s of frames waiting for ffmpeg)".format(name, waiting), now)
 
@@ -921,7 +1078,7 @@ class Watch:
 			not key.endswith("/missed") and key not in ("disk/stop", "trigger/paused") and
 			notify.LEVELS[p.severity] >= notify.LEVELS[severity]]
 
-	def Ended(self, failures):
+	def Ended(self, failures, error=None):
 		lines = []
 		dropped = restarts = 0
 		rows = [self.counters.Row(c) for c in range(len(self.names))]
@@ -963,6 +1120,11 @@ class Watch:
 		if self.stopped:
 			head, severity = "Recording {} stopped by campy after {}: {}.".format(self.Session(), took, self.stopped), \
 				notify.CRITICAL
+		elif error:
+			# An error ended campy-acquire's recording (it stopped waiting for its cameras): not a recording that
+			# ended as planned, whatever the cameras' counts say
+			head, severity = "Recording {} ended after {} with an error in campy-acquire: {}. Its log says more.".format(
+				self.Session(), took, error.rstrip(".")), notify.CRITICAL
 		elif failures:
 			head, severity = "Recording {} ended after {}, {} of {} cameras not to the end:".format(self.Session(), took,
 				len(failures), len(self.names)), notify.CRITICAL
@@ -986,7 +1148,7 @@ class Watch:
 				notify.WARNING
 		else:
 			head, severity = "Recording {} ended after {}:".format(self.Session(), took), notify.INFO
-		self.notifier.Note("\n".join([head] + lines), severity)
+		self.notifier.Note("\n".join([head] + lines), severity, urgent=True) # ahead of the messages still waiting
 
 
 def Wall():

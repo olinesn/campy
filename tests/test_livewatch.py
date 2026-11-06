@@ -150,6 +150,33 @@ def test_campy_live_ends_when_the_recording_ends(monkeypatch):
 	assert channel.texts == []
 
 
+def test_campy_live_started_again_resolves_its_end(monkeypatch):
+	# campy-session starts a campy-live that died again (live.restart). Its "campy-live has ended" warning was resolved
+	# only once the cameras stopped, so it was reminded every 30 min for the rest of the recording, while the new
+	# campy-live tracked
+	w, clock, channel, said = Make()
+	frame = rows = 0
+	w.Rows(0, clock.now)
+	t0 = clock.now
+	while clock.now - t0 < 2 * 3600:
+		t = clock.now - t0
+		frame += 30
+		w.Frames([frame, frame], clock.now)
+		if 60 <= t < 80:
+			w.resultsEnded = True # its results ended: campy-live died
+		elif 80 <= t < 81:
+			w.resultsEnded, rows = False, 0 # the new campy-live's results (campy-watch's Run does both)
+			w.Rows(0, clock.now)
+		else:
+			rows += 30
+			w.Rows(rows, clock.now)
+		w.Check(clock.now)
+		clock.now += 1
+	assert Texts(channel) == ["campy-live has ended, while the cameras still record",
+		"resolved, after 15 s: campy-live: results again (campy-live was started again)"]
+	assert w.notifier.Open() == []
+
+
 # ---------------------------------------------------------------------- end to end
 
 QUICK = """

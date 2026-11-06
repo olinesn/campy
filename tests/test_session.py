@@ -540,6 +540,72 @@ def test_giving_up_on_campy_live_sends_an_alert(tmp_path, monkeypatch):
 	assert sent == [("live/campy-live/restarts", "critical")] and s.restart_due is None
 
 
+# A campy-acquire stand-in: writes recording.json as its watch would (state, for its folder; none if state is None),
+# then ends with exit code code, at once: as killed, crashed, or as one whose watch said how it ended
+STANDIN = """
+import json, os, sys
+folder = sys.argv[sys.argv.index('--sessionPath') + 1]
+state, code = {state!r}, {code!r}
+if state is not None:
+	d = os.environ.get('CAMPY_STATUS_DIR') or os.path.join(os.path.expanduser('~'), '.campy', 'status')
+	os.makedirs(d, exist_ok=True)
+	with open(os.path.join(d, 'recording.json'), 'w') as f:
+		json.dump({{'schema': 1, 'state': state, 'session': {{'folder': folder}}}}, f)
+os._exit(code)
+"""
+
+
+@pytest.mark.parametrize("state, code, alert", [
+	("recording", 9, "while it recorded"), # killed mid-recording: no finally ran, its watch said nothing
+	(None, 3, "before its recording watch started"), # an error before the watch started
+	("failed", 1, None), # its watch said how it ended (the summary went): nothing more
+	("ended", 0, None)])
+def test_campy_acquire_that_ends_without_its_watchs_summary_is_an_alert(tmp_path, home, monkeypatch, state, code,
+		alert):
+	# A campy-acquire killed (SIGKILL, out of memory, Task Manager) or crashed sent nothing: campy-session only said
+	# the exit code on its console. The panel's recordings run the same Steps
+	config = write_config(tmp_path / "c.yaml", {"numCams": 2, "cameraMake": "emu", "videoFolder": str(tmp_path /
+		"rec"), "frameRate": 20, "recTimeInSec": 60, "preflight": "off", "liveFeedName": "x"}, view=False,
+		post={"remux": False, "export": False})
+	sent = []
+	monkeypatch.setattr(session, "Alert", lambda key, text, severity="critical": sent.append((key, severity, text)))
+	monkeypatch.setattr(session, "ACQUIRE", STANDIN.format(state=state, code=code))
+	s = session.Session(session.Config(str(config)))
+	assert s.Run() == code
+	if alert is None:
+		assert sent == []
+		return
+	((key, severity, text),) = sent
+	assert key == "session/campy-acquire" and severity == "critical"
+	assert text.startswith("campy-acquire ended with exit code {} ".format(code)) and alert in text
+	assert s.folder in text and os.path.join(s.logs, "campy-acquire.log") in text
+
+
+def test_a_summary_from_an_earlier_recording_is_not_this_ones(tmp_path, monkeypatch):
+	status = tmp_path / "status"
+	status.mkdir()
+	monkeypatch.setenv("CAMPY_STATUS_DIR", str(status))
+	(status / "recording.json").write_text(json.dumps({"state": "ended", "session": {"folder": str(tmp_path / "a")}}))
+	assert session.WatchState(str(tmp_path / "a")) == "ended"
+	assert session.WatchState(str(tmp_path / "b")) is None # another folder's
+	assert session.WatchState(str(tmp_path / "a"), since=time.time() + 60) is None # written before this one began
+	(status / "recording.json").write_text("{not json")
+	assert session.WatchState(str(tmp_path / "a")) is None
+
+
+def test_campy_watch_that_stops_is_an_alert(tmp_path, monkeypatch):
+	config = write_config(tmp_path / "c.yaml", {"numCams": 1}, live={"model": "none"})
+	s = session.Session(session.Config(str(config)))
+	sent = []
+	monkeypatch.setattr(session, "Alert", lambda key, text, severity="critical": sent.append((key, severity, text)))
+	monkeypatch.setattr(session, "Say", lambda text: None)
+	s.parts["watch"] = types.SimpleNamespace(Check=lambda: True, code=1, log="campy-watch.log")
+	s.Watch()
+	assert sent == [("session/campy-watch", "warning", "campy-watch stopped (exit code 1): see campy-watch.log. The "
+		"recording goes on, without its alerts about the live tracking, and without telling when campy-live hangs.")]
+	assert s.problems[-1][1] == sent[0][2]
+
+
 def test_without_watch_no_campy_watch(tmp_path, home):
 	config, clips = emu_session(tmp_path, home, 2, live={"model": "none", "watch": False})
 	proc, lines = start(tmp_path, home, config)
