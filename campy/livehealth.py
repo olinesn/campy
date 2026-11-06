@@ -153,6 +153,12 @@ class Rig:
 		rate = 1.0 / self.Period()
 		return min(0.05, 0.4 * self.slots / rate)
 
+	def PauseGap(self, seconds, period):
+		# With alertTriggerPauseSec (pause_s), a silence long enough to show as PAUSED (as Status counts it) and
+		# shorter than alertNoFramesSec is the trigger pausing: the camera's timestamps jump over the pause's
+		# pulses that never came, which are not frames it lost. (A camera quiet alone shows NO FRAMES meanwhile.)
+		return bool(self.pause_s) and seconds > max(0.5, 5 * period) and (self.stop_s is None or seconds < self.stop_s)
+
 	def Add(self, c, frames, hosts, stamps, written, latest=None):
 		"""Camera c's frames as its ring holds them (numbers, oldest first), and its newest frame number."""
 		feed = self.feeds[c]
@@ -175,7 +181,9 @@ class Rig:
 				feed.writtenSteps.append(dw)
 			if np.isfinite(ds) and ds > 0 and usual:
 				pulses = ds / usual
-				if pulses > 1.5: # the camera skipped frames
+				if pulses > 1.5 and self.PauseGap(dw / 1e9, period):
+					pass # the trigger paused (between a Pico's bouts, say), shown as PAUSED meanwhile: no frame lost
+				elif pulses > 1.5: # the camera skipped frames
 					feed.Event(w, "lost", int(round(pulses)) - 1)
 				elif dw / 1e9 - pulses * period > period: # here a frame or more after its time
 					feed.Event(w, "late", 1)

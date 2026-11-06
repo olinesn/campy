@@ -210,6 +210,31 @@ def test_every_camera_quiet_at_once_is_a_planned_pause_with_alert_trigger_pause_
 	assert problems(status) == [["NO FRAMES"]] * 3 and status.paused_s is None
 
 
+def bouts(gap_s):
+	# Two bouts of 300 frames each with the trigger paused gap_s seconds between them: the cameras' timestamps
+	# jump over the pause, as the ChronicRecord rig's did between its Pico's bouts (LOST 3600 at 60 fps, 60 s)
+	first = frames()
+	shift = 300 * P + int(gap_s * 1e9)
+	return {c: f + [(k + 300, h + shift, s + shift / 1e9, w + shift) for k, h, s, w in f] for c, f in first.items()}
+
+
+def test_the_frames_after_a_planned_pause_are_not_lost():
+	feeds = bouts(60)
+	status = sampled(feeds, pause_s=30, stop_s=400).Status()
+	assert problems(status) == [[], [], []]
+	assert all(s.lost == 0 and s.totals["lost"] == 0 for s in status.cameras)
+	# Without alertTriggerPauseSec (no bouts planned), the timestamps' jump is frames lost, as before
+	status = sampled(feeds).Status()
+	assert all(s.totals["lost"] == 1800 for s in status.cameras)
+	assert all("LOST 1800" in [tag for tag, _ in s.problems] for s in status.cameras)
+
+
+def test_a_pause_past_alert_no_frames_sec_still_counts_its_frames_lost():
+	# Past alertNoFramesSec it was NO FRAMES meanwhile (the trigger had stopped), and its frames count lost
+	status = sampled(bouts(20), pause_s=5, stop_s=15).Status()
+	assert all(s.totals["lost"] == 600 for s in status.cameras)
+
+
 def test_a_pause_longer_than_alert_no_frames_sec_is_no_frames():
 	feeds = frames()
 	end = max(f[-1][3] for f in feeds.values())
