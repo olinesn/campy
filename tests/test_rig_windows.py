@@ -16,6 +16,10 @@ RIG = os.path.join(BENCH, "rig.py")
 sys.path.insert(0, BENCH)
 import rig, rig_windows  # noqa: E402
 
+# rig.py looks at the whole machine (every process on it, its CPU and disk load): these tests run with no
+# other test beside them (conftest.py, 'alone')
+pytestmark = pytest.mark.alone
+
 WINDOWS = sys.platform == "win32"
 RUNS = WINDOWS or sys.platform.startswith("linux")  # where rig.py can see processes
 runs = pytest.mark.skipif(not RUNS, reason="rig.py reads processes on Linux and Windows only")

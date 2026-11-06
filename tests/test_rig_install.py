@@ -14,6 +14,10 @@ RIG = os.path.join(BENCH, "rig.py")
 sys.path.insert(0, BENCH)
 import rig as riglib  # noqa: E402
 
+# rig.py looks at the whole machine (every process on it, its CPU and disk load): these tests run with no
+# other test beside them (conftest.py, 'alone')
+pytestmark = pytest.mark.alone
+
 RUNS = sys.platform == "win32" or sys.platform.startswith("linux")
 runs = pytest.mark.skipif(not RUNS, reason="rig.py reads processes on Linux and Windows only")
 has_git = pytest.mark.skipif(not shutil.which("git"), reason="needs git")

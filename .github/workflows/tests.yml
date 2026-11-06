@@ -64,7 +64,8 @@ jobs:
       - name: Install campy
         # OpenCV (headless) for campy-live-view's tests: it is installed in campy-live's
         # environment, not campy's
-        run: python -m pip install -e . pytest opencv-python-headless
+        # pytest-xdist: the tests run on as many workers as the runner has CPUs (-n auto, below)
+        run: python -m pip install -e . pytest pytest-xdist opencv-python-headless
       - name: Install sleap-io (campy-live-export's tests)
         # Also campy-live's environment's, with sleap-nn; it needs Python 3.10 or later,
         # so on 3.9 those tests are skipped
@@ -74,4 +75,15 @@ jobs:
         if: env.NIREYECAM_TOKEN != ''
         run: python -m pip install "nireyecam @ git+https://x-access-token:${NIREYECAM_TOKEN}@github.com/olinesn/nir-eye-cam.git#subdirectory=host"
       - name: Test
-        run: python -m pytest -q -rs tests
+        # On several workers at once (pytest-xdist, -n auto = the runner's CPUs): most tests wait on real-time
+        # recordings, timers and child processes rather than the CPU, so they overlap well. --dist worksteal: a
+        # worker that has run out of tests takes some queued on another, so none waits behind a long test while
+        # others idle. --durations lists the 25 slowest, to see where the time goes when the job grows. The
+        # 'alone' tests (bench/rig.py's, which look at every process on the machine) are skipped there, and run
+        # on their own in the next step
+        run: |
+          python -c "import os; print('CPUs:', os.cpu_count())"
+          time python -m pytest -q -rs -n auto --dist worksteal --durations=25 -m "not alone" tests
+      - name: Test (rig.py's, alone)
+        if: success() || failure()
+        run: python -m pytest -q -rs --durations=10 -m alone tests

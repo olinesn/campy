@@ -13,6 +13,10 @@ RIG = os.path.join(BENCH, "rig.py")
 sys.path.insert(0, BENCH)
 import rig as riglib  # noqa: E402
 
+# rig.py looks at the whole machine (every process on it, its CPU and disk load): these tests run with no
+# other test beside them (conftest.py, 'alone')
+pytestmark = pytest.mark.alone
+
 linux = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="rig.py reads Linux's /proc")
 posix = pytest.mark.skipif(os.name != "posix", reason="the Linux lock is a flock")
 HOLD_OPEN = "import sys, time; f = open(sys.argv[1]); time.sleep(float(sys.argv[2]))"
