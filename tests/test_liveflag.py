@@ -210,7 +210,7 @@ def test_flags_of_a_moment_make_one_event_and_one_pick(log):
 
 def test_the_sample_takes_every_reason_and_keeps_its_gap(log):
 	path, _, _ = log
-	s = liveflag.Settings(logs=[path], budget=10, min_gap_s=0.2, random=0.1)
+	s = liveflag.Settings(logs=[path], budget=10, min_gap_s=0.2, random=0.1, guard_s=0)
 	lg = liveflag.Log(path, s)
 	flags = liveflag.FlagLog(lg, s)
 	events = liveflag.Events(flags, s)
@@ -226,7 +226,7 @@ def test_the_sample_takes_every_reason_and_keeps_its_gap(log):
 
 def test_a_small_budget_goes_to_the_first_reasons(log):
 	path, _, _ = log
-	s = liveflag.Settings(logs=[path], budget=2, random=0.0, min_gap_s=0.2)
+	s = liveflag.Settings(logs=[path], budget=2, random=0.0, min_gap_s=0.2, guard_s=0)
 	lg = liveflag.Log(path, s)
 	flags = liveflag.FlagLog(lg, s)
 	picked = liveflag.Sample([lg], flags, liveflag.Events(flags, s), s)
@@ -236,7 +236,7 @@ def test_a_small_budget_goes_to_the_first_reasons(log):
 def test_main_writes_flags_events_and_the_sample(log, tmp_path, capsys):
 	path, _, _ = log
 	out = str(tmp_path / "out")
-	liveflag.Main([path, "--out", out, "--budget", "8", "--min-gap-s", "0.2"])
+	liveflag.Main([path, "--out", out, "--budget", "8", "--min-gap-s", "0.2", "--guard-s", "0"])
 	with open(os.path.join(out, "flags.csv")) as f:
 		rows = list(csv.DictReader(f))
 	assert {r["reason"] for r in rows} >= {"missed", "swap", "jump", "disagree", "unmatched", "extra"}
@@ -296,3 +296,60 @@ def test_a_late_logs_flags_carry_the_recordings_frame_numbers_which_the_split_ke
 	# The flags of the late log are the first log's, from frame 31 on
 	key = lambda fl: sorted((int(x["frame"]), str(x["reason"]), int(x["camera"])) for x in fl if x["frame"] > 31 + 1)
 	assert key(fb) == key(fa)
+
+
+def test_no_set_is_picked_that_label_pack_would_leave_out(tmp_path):
+	# A minute and a half of sets, from frame 3000 on (50 s into the recording, at 60 fps); the recording's folder
+	# beside the log, as campy-session puts it
+	from campy import labelpack
+	cams = rig()
+	n = 90 * 60
+	base = make_rows(cams, scene3d.scene(SETS, n=ANIMALS), plant=False)
+	rows = np.concatenate([base] * (n // SETS + 1))[:n]
+	rows["frame"] = 3000 + np.arange(n)
+	rows["host_ns"] = 10 ** 12 + (rows["frame"][:, None] * PERIOD) + np.arange(3)
+	rec = tmp_path / "2026-10-22_15-46-09"
+	for name in CAMERAS:
+		(rec / name).mkdir(parents=True)
+		with open(rec / name / "metadata.csv", "w") as f:
+			f.write('"frameRate","60"\n"cameraMake","flir"\n')
+	path = str(rec / "campy-live")
+	np.save(path + ".npy", rows)
+	with open(path + ".json", "w") as f:
+		json.dump({"cameras": CAMERAS, "animals": ANIMALS, "frame_rate": 60.0}, f)
+	s = liveflag.Settings(logs=[path + ".npy"], budget=200, random=1.0, min_gap_s=0.1)
+	lg = liveflag.Log(path + ".npy", s)
+	assert lg.recording == str(rec) and lg.split_source == "2026-10-22_15-46-09"
+	t = (lg.frames - 1) / 60.0
+	want = np.array([labelpack.TestSide(lg.split_source, x)[0] is None for x in t])
+	assert np.array_equal(lg.guarded, want)
+	picked = liveflag.Sample([lg], liveflag.FlagLog(lg, s), [], s)
+	assert len(picked) == 200 and not any(lg.guarded[p["row"]] for p in picked)
+	# Without the recording on this computer: nothing within 3 s of any minute line
+	other = tmp_path / "elsewhere"
+	other.mkdir()
+	np.save(str(other / "campy-live.npy"), rows) # a copy: the first is still open (Windows can't move it)
+	with open(path + ".json") as f, open(str(other / "campy-live.json"), "w") as g:
+		g.write(f.read())
+	lg = liveflag.Log(str(other / "campy-live.npy"), s)
+	assert lg.recording is None and lg.split_source is None
+	edge = np.minimum(np.mod(t, 60), 60 - np.mod(t, 60))
+	assert np.array_equal(lg.guarded, edge < 3) and lg.guarded.any()
+	# --recording names it
+	s = liveflag.Settings(logs=[str(other / "campy-live.npy")], recording=[str(rec)])
+	assert liveflag.Log(str(other / "campy-live.npy"), s).split_source == "2026-10-22_15-46-09"
+
+
+def test_an_events_pick_is_a_set_label_pack_keeps(log):
+	path, _, _ = log
+	s = liveflag.Settings(logs=[path], guard_s=0)
+	lg = liveflag.Log(path, s)
+	flags = liveflag.FlagLog(lg, s)
+	events = liveflag.Events(flags, s)
+	missed = [e for e in events if e["reason"] == "missed"][0] # rows 19-28
+	lg.guarded[:] = False
+	lg.guarded[19:25] = True # its first rows in the guard band
+	picked = liveflag.Sample([lg], flags, events, liveflag.Settings(logs=[path], budget=8, random=0.0,
+		min_gap_s=0.05, guard_s=0))
+	assert missed["pick"] >= 25
+	assert not any(lg.guarded[p["row"]] for p in picked)

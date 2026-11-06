@@ -64,6 +64,11 @@ in it. Then --budget sets are picked:
   each camera found, and with 3D how close together they are. The first pick
   of a reason is its longest event.
 - no two picked sets of one recording are less than --min-gap-s apart;
+- no set is picked that campy-label-pack would leave out: one in a training
+  minute within --guard-s (3 s) of a test minute, on the recording's own
+  clock. The recording is found from the log's campy-live-session.json, or
+  the log's folder, or --recording. When it isn't on this computer, no set
+  within 3 s of any minute line is picked (about 10% of them);
 - when the events run out, the rest of the budget is taken at random.
 
 A set is labelled whole (every camera's frame), so each pick also lists every
@@ -93,7 +98,7 @@ import argparse, csv, json, os, sys
 
 import numpy as np
 
-from campy import liveexport, pose3d, strictjson
+from campy import labelpack, liveexport, pose3d, strictjson
 
 REASONS = ("missed", "swap", "jump", "unmatched", "disagree", "extra", "fewer", "low_score")
 NEEDS_3D = ("missed", "swap", "jump", "unmatched", "disagree")
@@ -168,6 +173,40 @@ class Log:
 			self.time_s = (t - t[0]) / 1e9 if len(t) else t
 		else:
 			self.time_s = (frames - (frames[0] if len(frames) else 0)) / self.frame_rate
+		# The sets campy-label-pack would leave out (its guard band), not to be picked
+		self.recording = FindRecording(path, summary, settings, index, self.cameras)
+		clock = None
+		if self.recording:
+			try:
+				clock = labelpack.SplitClock(self.recording, self.cameras[0], summary)
+			except labelpack.PackError:
+				clock = None
+		if clock is not None:
+			self.split_source, split_s = clock.source, clock.SecondsOf(frames)
+		else:
+			self.split_source, split_s = None, (frames - 1) / self.frame_rate
+		self.guarded = labelpack.GuardBand(self.split_source, split_s, guard_s=settings.guard_s)
+
+
+def FindRecording(path, summary, settings, index, cameras):
+	"""The recording folder this log tracked, when it is on this computer:
+	--recording (one per log, in order), else the folder of the log's
+	campy-live-session.json (the recording's, under campy-session), else the
+	log's own folder. None when none of them has the log's first camera."""
+	given = list(settings.recording or [])
+	if given:
+		if index >= len(given):
+			raise FlagError("give one --recording per log, in order ({} for {} logs)".format(len(given),
+				len(settings.logs)))
+		return os.path.abspath(given[index])
+	places = []
+	if summary.get("session"):
+		places.append(os.path.dirname(str(summary["session"])))
+	places.append(os.path.dirname(os.path.abspath(path)))
+	for place in places:
+		if cameras and os.path.isfile(os.path.join(place, cameras[0], "metadata.csv")):
+			return place
+	return None
 
 
 def Centres(keypoints):
@@ -413,6 +452,8 @@ def Sample(logs, flags, events, s):
 	picked, described = [], []
 
 	def free(lg, row):
+		if logs[lg].guarded[row]:
+			return False
 		t = logs[lg].time_s[row]
 		return all(p["log"] != lg or abs(logs[lg].time_s[p["row"]] - t) >= s.min_gap_s for p in picked)
 
@@ -427,6 +468,9 @@ def Sample(logs, flags, events, s):
 		count[lg] = dict(zip(rows.tolist(), n.tolist()))
 	for e in events:
 		n = np.array([count[e["log"]].get(int(r), 0) for r in e["rows"]])
+		ok = ~logs[e["log"]].guarded[np.asarray(e["rows"], np.int64)]
+		if ok.any(): # a set campy-label-pack keeps, if the event has one
+			n = np.where(ok, n, -1)
 		best = np.nonzero(n == n.max())[0]
 		e["pick"] = int(e["rows"][best[len(best) // 2]])
 		e["first_frame"] = int(logs[e["log"]].frames[e["rows"][0]])
@@ -520,7 +564,8 @@ def SampleJson(logs, flags, events, picked, s):
 				y=None if not np.isfinite(x["y"]) else round(float(x["y"]), 1)) for x in f]))
 	return dict(kind="campy-live-flag sample", version=1,
 		logs=[dict(path=lg.path, sets=lg.n, cameras=lg.cameras, animals=lg.animals, has3d=lg.has3d,
-			calibration=bool(lg.calibration)) for lg in logs],
+			calibration=bool(lg.calibration), recording=lg.recording, split_source=lg.split_source,
+			guarded=int(lg.guarded.sum())) for lg in logs],
 		settings={k: v for k, v in vars(s).items() if k not in ("logs", "out")},
 		counts=Counts(logs, flags, events, picked), sets=sets)
 
@@ -555,6 +600,12 @@ def Report(logs, flags, events, picked, s):
 	n_random = sum(p["why"] == "random" for p in picked)
 	Say("Picked {} sets to label: {} for their flags, {} at random.".format(len(picked), len(picked) - n_random,
 		n_random))
+	for lg in logs:
+		if s.guard_s > 0:
+			Say("{}: {} sets not picked, as campy-label-pack would leave them out ({}).".format(
+				os.path.basename(lg.path), int(lg.guarded.sum()), "training minutes within {:g} s of a test minute "
+				"of {}".format(s.guard_s, lg.split_source) if lg.split_source else "within {:g} s of a minute "
+				"line: the recording isn't on this computer (--recording)".format(s.guard_s)))
 
 
 def Run(s):
@@ -608,6 +659,12 @@ def Parser():
 	p.add_argument("--low-score", type=float, default=0.5, help="low_score: a detection's median node score "
 		"under this.")
 	p.add_argument("--seed", type=int, default=0, help="For the random picks.")
+	p.add_argument("--guard-s", type=float, default=labelpack.GUARD_S, help="Don't pick sets that "
+		"campy-label-pack would leave out: in a training minute this close to a test minute (its --guard-s). "
+		"Without the recording, this close to any minute line.")
+	p.add_argument("--recording", action="append", default=[], help="The recording's folder, once per log in "
+		"order, for the minutes campy-label-pack splits on (default: the log's campy-live-session.json's folder, "
+		"or the log's own).")
 	return p
 
 

@@ -246,6 +246,24 @@ def ClipPath(cam_params):
 	return os.path.join(folder, cam_params["cameraName"], videoFileName)
 
 
+def ClipFrames(path, timeout=30):
+	"""
+	How many frames the clip has, so that a recording of it says where each
+	loop starts again (metadata.csv's clipFrames: campy frame n is the clip's
+	frame (n - 1) % clipFrames). campy-label-pack splits a replay's test sets
+	on the clip's own minutes with it. From the packets' timestamps, nothing
+	decoded (segments.CountFrames): seconds for an hour. None when they
+	can't be counted.
+	"""
+	from campy import segments
+	places = []
+	try:
+		segments.CountFrames(path, None, 0, beyond=places, timeout=timeout)
+	except segments.Uncounted:
+		return None
+	return len(set(places)) or None
+
+
 def OpenCamera(cam_params):
 	# Open video reader for emulation
 	full_file_name = ClipPath(cam_params)
@@ -256,6 +274,9 @@ def OpenCamera(cam_params):
 	# The clip's frame size, for the writer (which waits for it) and metadata
 	cam_params = unicam.SetFrameSize(cam_params, clip.width, clip.height, "the clip's frame size")
 	cam_params['cameraModel'] = GetModelName(camera)
+	frames = ClipFrames(full_file_name)
+	if frames:
+		cam_params['clipFrames'] = frames
 
 	startup.Step("Opened {} emulation.".format(cam_params["cameraName"]))
 	startup.Setting("clip", "playing {}".format(os.path.basename(full_file_name)))
