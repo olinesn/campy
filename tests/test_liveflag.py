@@ -328,8 +328,9 @@ def test_no_set_is_picked_that_label_pack_would_leave_out(tmp_path):
 	# Without the recording on this computer: nothing within 3 s of any minute line
 	other = tmp_path / "elsewhere"
 	other.mkdir()
-	for ext in (".npy", ".json"):
-		os.replace(path + ext, str(other / "campy-live") + ext)
+	np.save(str(other / "campy-live.npy"), rows) # a copy: the first is still open (Windows can't move it)
+	with open(path + ".json") as f, open(str(other / "campy-live.json"), "w") as g:
+		g.write(f.read())
 	lg = liveflag.Log(str(other / "campy-live.npy"), s)
 	assert lg.recording is None and lg.split_source is None
 	edge = np.minimum(np.mod(t, 60), 60 - np.mod(t, 60))
