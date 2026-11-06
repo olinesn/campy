@@ -291,6 +291,14 @@ def test_the_labels_of_mice_side_by_side_do_not_cover_each_other():
 			assert like(drawn[y0:y1, x0:x1], color).sum() > 20
 
 
+def test_a_planned_trigger_pause_is_a_grey_paused_badge_not_a_fault():
+	# Every camera quiet at once with --pause-sec (a bout session's gap): PAUSED with how long, dim, no red frame
+	paused = types.SimpleNamespace(cameras=[types.SimpleNamespace(problems=[], fps=0.0, paused_s=125.0)])
+	header = liveview.TextBox("1  Camera0", (liveview.PAD, liveview.PAD + 12), 0.5)
+	text, at, color, box, wrong, where = liveview.Viewer.Badge(None, 0, paused, 800, header)
+	assert text == "PAUSED 02:05" and color == liveview.DIM and box == liveview.BOX and not wrong
+
+
 def test_the_health_badge_goes_under_the_name_line_where_both_do_not_fit():
 	# The badge at a tile's top right: level with its name line, or under it on a narrow tile, in the
 	# font it is drawn in; what is wrong white on a red box

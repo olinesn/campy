@@ -139,7 +139,7 @@ What the page shows, refreshed every second:
   - the checks. Some stop a start: `campy-live`'s environment not found or not the same campy, or another `campy-session` running. Others only warn: less free disk space than `alertDiskFreeGB`.
 - **While it records:**
   - **time:** elapsed, against the planned length;
-  - **each camera:** a grey thumbnail, refreshed once a second; its frames per second and frame number; and its health, from the same checks `campy-live-view` draws in red: `NO FRAMES`, behind, `LOST`, `GAP`, `LATE`, frames ahead or behind. When campy-acquire's watch is running, also its dropped frames and write queue;
+  - **each camera:** a grey thumbnail, refreshed once a second; its frames per second and frame number; and its health, from the same checks `campy-live-view` draws in red: `NO FRAMES`, behind, `LOST`, `GAP`, `LATE`, frames ahead or behind. With the config's `alertTriggerPauseSec`, every camera stopping at once is a planned trigger pause, shown as a grey `PAUSED` instead of `NO FRAMES` (until `alertNoFramesSec`). When campy-acquire's watch is running, also its dropped frames and write queue;
   - **disk:** free space, and roughly how long it lasts at the rate it's filling;
   - **tracking:** how many animals `campy-live` tracked in 3D over the last second;
   - **warnings:** from the alerts' logs in the recording's folder, and anything `campy-session` reported;

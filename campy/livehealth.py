@@ -101,7 +101,13 @@ class Rig:
 	warn of, (short tag for its tile, sentence for the panel)).
 	"""
 
-	def __init__(self, names, frameRate=0.0, slots=8):
+	def __init__(self, names, frameRate=0.0, slots=8, pause_s=None, stop_s=None):
+		# pause_s: the config's alertTriggerPauseSec. With it, every camera quiet at once (their last frames
+		# within a second) is the trigger pausing, as campy-acquire's watch counts it (a gap between a
+		# Pico's bouts, say): shown as PAUSED, not NO FRAMES, until stop_s (alertNoFramesSec), after which
+		# the trigger has stopped. One camera quiet while the others get frames is NO FRAMES at once.
+		self.pause_s = float(pause_s) if pause_s else None
+		self.stop_s = float(stop_s) if stop_s else None
 		self.feeds = [Feed(n) for n in names]
 		self.frameRate = float(frameRate or 0.0)
 		self.slots = int(slots)
@@ -237,8 +243,10 @@ class Rig:
 		How each camera is doing, as of now (time.perf_counter_ns; default:
 		the last Sample): .cameras, one
 		each (.name, .fps, .lost, .gaps, .late (the last 10 s), .totals,
-		.offset_ms, .frames_off, .problems: [(tag, sentence)]), .recording_s
-		(how long the recording has been going, or None), .period (s).
+		.offset_ms, .frames_off, .problems: [(tag, sentence)], .paused_s: how
+		long the trigger has paused, or None), .recording_s (how long the
+		recording has been going, or None), .period (s), .paused_s (the
+		trigger's pause, as the cameras', or None).
 		"""
 		if now is None:
 			now = self.sampledAt if self.sampledAt is not None else time.perf_counter_ns()
@@ -251,14 +259,22 @@ class Rig:
 		known = [r for r, _ in rates if r is not None]
 		fastest = max(known) if known else None
 		offsets = self.Offsets(now)
+		quiet_min = max(0.5, 5 * period)
+		quiets = [q for _, q in rates]
+		paused = None
+		if self.pause_s and quiets and all(q is not None and q > quiet_min for q in quiets) \
+				and max(quiets) - min(quiets) < 1.0 and (self.stop_s is None or min(quiets) < self.stop_s):
+			paused = min(quiets) # every camera stopped together: the trigger pauses
 		cameras = []
 		for feed, (fps, quiet), offset in zip(self.feeds, rates, offsets):
 			while feed.events and feed.events[0][0] < since:
 				feed.events.popleft()
 			s = types.SimpleNamespace(name=feed.name, fps=fps, quiet_s=quiet, offset_ms=offset, frames_off=0,
 				lost=feed.Recent("lost", since), gaps=feed.Recent("gaps", since), late=feed.Recent("late", since),
-				totals=dict(feed.totals), problems=[])
-			if quiet is not None and quiet > max(0.5, 5 * period):
+				totals=dict(feed.totals), problems=[], paused_s=None)
+			if paused is not None:
+				s.paused_s = quiet
+			elif quiet is not None and quiet > quiet_min:
 				s.problems.append(("NO FRAMES", "{}: no frame for {:.1f} s".format(feed.name, quiet)))
 			elif fps is not None and fastest and fps < 0.97 * fastest and fastest - fps > 0.5:
 				s.problems.append(("{:.1f} FPS".format(fps), "{}: {:.1f} frames/s, behind the fastest camera's {:.1f}"
@@ -287,7 +303,8 @@ class Rig:
 				n0, h0 = feed.first
 				t = (feed.frames[feed.order[-1]][0] - h0) / 1e9 + (n0 - 1) * period
 				recording = t if recording is None else max(recording, t)
-		status = types.SimpleNamespace(cameras=cameras, recording_s=recording, period=period, fastest=fastest)
+		status = types.SimpleNamespace(cameras=cameras, recording_s=recording, period=period, fastest=fastest,
+			paused_s=paused)
 		self.cache = (key, status)
 		return status
 

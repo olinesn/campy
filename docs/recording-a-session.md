@@ -55,6 +55,7 @@ Press **Start recording**. Within about a minute, depending on the rig, the page
 | Label | What it means | What to do |
 |---|---|---|
 | `NO FRAMES` | The camera stopped sending pictures | Tell the person in charge of the rig; the other cameras keep recording |
+| `PAUSED 4:30` (grey, on every camera at once) | The trigger is pausing as planned, as between the bouts of a ChronicRecord session: no camera gets pictures until the next bout | Nothing. If it lasts longer than the config's `alertNoFramesSec`, it turns into `NO FRAMES`: the trigger has stopped |
 | `LOST`, `GAP`, `LATE` | The camera lost or delayed a few frames in the last 10 seconds | Nothing, unless it keeps coming back: then note it in a bookmark |
 | `1 FRAME AHEAD` or `BEHIND` | That camera is out of step with the others | Stop, and start a new recording |
 | `40.0 FPS` (lower than the others) | The camera is falling behind | Tell the person in charge of the rig |
