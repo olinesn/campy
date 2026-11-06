@@ -256,7 +256,10 @@ def test_keep_rows():
 def test_video_for(tmp_path):
 	assert segments.VideoFor(str(tmp_path), "0.mp4") == "0.mp4" # no segments.csv: the one file
 	segments.Write(str(tmp_path), [{"file": "0.mp4"}, {"file": "0.part2.mp4"}])
-	with pytest.raises(segments.NeedsJoin, match=r"its video is in 2 files \(0\.mp4, 0\.part2\.mp4\).*--only join"):
+	with pytest.raises(segments.NeedsJoin, match=r"its video is in 2 files \(0\.mp4, 0\.part2\.mp4\).*--only join --force"):
+		segments.VideoFor(str(tmp_path), "0.mp4") # no metadata.csv totals: it did not close, so post needs --force
+	(tmp_path / "metadata.csv").write_text('"framesWritten","10"\n')
+	with pytest.raises(segments.NeedsJoin, match=r"--only join$"):
 		segments.VideoFor(str(tmp_path), "0.mp4")
 	(tmp_path / "0.joined.mp4").write_bytes(b"x")
 	assert segments.VideoFor(str(tmp_path), "0.mp4") == "0.joined.mp4"
@@ -282,10 +285,14 @@ def test_the_tools_after_a_restart(tmp_path, monkeypatch, capsys, codec):
 	lost = segments.LostFrames(folder)
 	expected = [n for n in range(1, 601) if n not in lost]
 
-	# Before the join: the tools that need one video say how to make it; campy-infer takes each file
-	with pytest.raises(liveexport.ExportError, match="campy-session post .* --only join"):
+	# Before the join: the tools that need one video say how to make it, campy-infer's folder scan too (each part on
+	# its own would number its frames from 0); a part named by itself is run as it is
+	with pytest.raises(liveexport.ExportError, match="campy-session post .* --only join$"):
 		liveexport.Camera(str(tmp_path), "Camera0")
-	assert [os.path.basename(v) for v in videoread.FindVideos([str(tmp_path)])] == ["0.mp4", "0.part2.mp4"]
+	with pytest.raises(SystemExit, match="campy-session post .* --only join"):
+		videoread.FindVideos([str(tmp_path)])
+	part2 = os.path.join(folder, "0.part2.mp4")
+	assert videoread.FindVideos([part2]) == [part2]
 
 	# The join: one video, the files' packets, as many as frametimes.npy has rows
 	class Log:

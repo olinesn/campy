@@ -42,6 +42,61 @@ def test_two_videos_into_one_slp_stops_before_any_model(tmp_path):
 			str(tmp_path / "preds")])
 
 
+def test_a_trial_on_the_first_frames_has_its_own_name(tmp_path):
+	cam = os.path.join(str(tmp_path), "Camera2")
+	assert infer.OutputPath(os.path.join(cam, "0.mp4"), Args("--frames", "1000")) == os.path.join(cam,
+		"0.first1000.predictions.slp")
+	# a name given is used as it is
+	assert infer.OutputPath(os.path.join(cam, "0.mp4"), Args("--frames", "1000", "--name", "{stem}.slp")) == \
+		os.path.join(cam, "0.slp")
+
+
+def NoModels(*args, **kwargs):
+	raise AssertionError("the models were loaded, with nothing to run")
+
+
+@pytest.mark.parametrize("prov, run, code, said", [
+	# made by this run's models (the same folders' names, from another computer): skipped
+	({"model_paths": ["/elsewhere/c", "/elsewhere/i/"], "campy_infer": {"frames_limit": 0}}, [], 0, "skipped"),
+	# other models: not run, left as it is, exit status 1 (a batch job fails rather than ends "done")
+	({"model_paths": ["/m/other_c", "/m/other_i"], "campy_infer": {"frames_limit": 0}}, [], 1,
+		"but it was made by other models (/m/other_c, /m/other_i): NOT run"),
+	# a trial run's, given the full run's name with --name
+	({"model_paths": ["c", "i"], "campy_infer": {"frames_limit": 1000}}, [], 1, "but it holds the first 1000 frames: NOT run"),
+	({"model_paths": ["c", "i"], "campy_infer": {"frames_limit": 1000}}, ["--frames", "1000", "--name",
+		"{stem}.predictions.slp"], 0, "skipped"),
+	# sleap-nn track's, or an older campy-infer's: the frames it read against the video's
+	({"model_paths": ["c", "i"], "frame_selection": {"frames_processed": 1000}}, [], 1,
+		"but it holds 1,000 frames, where this run reads 5,000"),
+	({"model_paths": ["c", "i"], "frame_selection": {"frames_processed": 5000}}, [], 0, "skipped"),
+])
+def test_an_slp_made_otherwise_is_not_taken_for_this_runs(tmp_path, capsys, monkeypatch, prov, run, code, said):
+	from campy import videoread
+	(tmp_path / "a.mp4").write_bytes(b"")
+	(tmp_path / "a.predictions.slp").write_bytes(b"made before")
+	monkeypatch.setattr(infer, "ReadProvenance", lambda path: prov)
+	monkeypatch.setattr(videoread, "VideoInfo", lambda path: type("Info", (), {"frames": 5000, "exact": True})())
+	monkeypatch.setattr(infer, "Model", NoModels)
+	assert infer.Main([str(tmp_path / "a.mp4"), "--centroid", "c", "--instance", "i", "--max-instances", "5"] +
+		run) == code
+	assert said in capsys.readouterr().out
+	assert (tmp_path / "a.predictions.slp").read_bytes() == b"made before"
+
+
+def test_read_provenance_reads_both_layouts(tmp_path):
+	# Newer sleap-io: the dataset /provenance_json; older sleap-io and SLEAP: /metadata's json attribute
+	h5py = pytest.importorskip("h5py")
+	import json
+	new, old = str(tmp_path / "new.slp"), str(tmp_path / "old.slp")
+	with h5py.File(new, "w") as f:
+		f.create_group("metadata").attrs["json"] = np.bytes_(json.dumps({"version": "2"}))
+		f.create_dataset("provenance_json", data=np.bytes_(json.dumps({"model_paths": ["a"]})))
+	with h5py.File(old, "w") as f:
+		f.create_group("metadata").attrs["json"] = np.bytes_(json.dumps({"provenance": {"model_paths": ["b"]}}))
+	assert infer.ReadProvenance(new) == {"model_paths": ["a"]}
+	assert infer.ReadProvenance(old) == {"model_paths": ["b"]}
+
+
 def test_videos_with_an_slp_are_skipped(tmp_path, capsys):
 	(tmp_path / "a.mp4").write_bytes(b"")
 	(tmp_path / "a.predictions.slp").write_bytes(b"")
@@ -81,6 +136,10 @@ def test_slp_has_every_frame_in_order(random_model, tmp_path):
 	assert [lf.frame_idx for lf in frames] == list(range(N))
 	assert all(len(lf.instances) == ANIMALS for lf in frames)
 	assert labels.provenance["campy_infer"]["engine"] == "eager"
+	assert labels.provenance["campy_infer"]["frames_limit"] == 0
+	# read back without the frames, as a later run reads it to tell whether it made it
+	assert infer.ReadProvenance(out)["campy_infer"] == labels.provenance["campy_infer"]
+	assert infer.ReadProvenance(out)["frame_selection"]["frames_processed"] == N
 	# sleap-nn's provenance fields, and its system_info's, made without
 	# importing the packages sleap-nn only looks up to drop (wandb, Lightning)
 	prov = labels.provenance
