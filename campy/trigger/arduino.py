@@ -20,9 +20,12 @@ RESEND_S = 1.0
 ANSWER = re.compile(r"Frame rate set to: 0(\.0+)?(?![\d.])")
 # After each command, trigger.ino waits a second for one more number (the
 # last value ends the command: Stream's 1 s timeout), then 4 s (ResetTimer),
-# then throws away whatever came meanwhile. So the start command goes out
-# this long after the check's answer, or the sketch never sees it.
-START_AFTER_CHECK_S = 5.5
+# then throws away whatever came meanwhile. The sketch an older campy flashed
+# (campy_v03's, still on some rigs' Arduinos) waits 6 s there, and reads the
+# check's last number with that 1 s timeout after it: about 7 s in all. So the
+# start command goes out this long after the check's answer, with a second to
+# spare, or the sketch never sees it (and no camera gets a frame).
+START_AFTER_CHECK_S = 8.0
 
 
 class TriggerError(Exception):
