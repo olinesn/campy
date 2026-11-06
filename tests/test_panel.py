@@ -372,3 +372,93 @@ def test_a_recording_outlives_its_panel_and_the_next_panel_finds_it(tmp_path, ho
 	finally:
 		os.killpg(proc.pid, signal.SIGINT)
 		proc.wait(timeout=30)
+
+
+# ------------------------------------------------------------------ the disk check before the start
+
+FAKE_SDK = os.path.join(REPO, "tests", "fake_sglx")
+
+
+def disk_panel(tmp_path, monkeypatch, free_gb, devices=True):
+	# A panel for 4 cameras at 60 fps: with a Pico (8 h and 6 days, its board and SpikeGLX answering) and SpikeGLX, or
+	# with neither; its disk holding free_gb. Nothing records: Start only hands the main thread its fields.
+	from campy import pico, spikeglx
+	from test_session import write_config
+	sections = {"pico": {"port": "E665485457699D30", "lengths": [{"name": "8 h", "seconds": 28800},
+		{"name": "6 days", "seconds": 518400}]}, "spikeglx": {"sdk": FAKE_SDK}} if devices else {}
+	config = write_config(tmp_path / "c.yaml", {"numCams": 4, "frameRate": 60, "videoFolder": str(tmp_path / "data"),
+		"recTimeInSec": 3600}, **sections)
+	monkeypatch.setattr(pico.Pico, "Check", lambda self: "COM3: idle")
+	def answers(self):
+		self.margin = 1.0 # trgTTLMarginS, as SpikeGLX's check reads it
+		return "SpikeGLX: idle, TTL trigger"
+	monkeypatch.setattr(spikeglx.SpikeGLX, "Check", answers)
+	monkeypatch.setattr(panel.Panel, "Free", lambda self, folder=None: free_gb * 1e9)
+	return panel.Panel(str(config), browser=False)
+
+
+def disk_check(p):
+	return [c for c in p.checks if c[1].startswith("Disk")]
+
+
+def test_a_length_that_fits_on_the_disk(tmp_path, home, monkeypatch):
+	# The 8-hour rehearsal: SpikeGLX 151 GB (6,272 s of gate with its margin, at 24 MB/s; 150.3 GB measured on
+	# 6 November) and 4 cameras' 4,640 s at 0.6 MB/s, 11.1 GB: about 162 GB of 370 GB free
+	p = disk_panel(tmp_path, monkeypatch, 370)
+	assert p.length == 28800
+	[(level, text, action)] = disk_check(p)
+	assert (level, action) == ("ok", "disk")
+	assert text == "Disk: this length needs about 162 GB of the 370 GB free, an estimate (SpikeGLX 151 GB: 6,272 s of " \
+		"open gate with its trigger margin, at 24 MB/s; videos about 11 GB, at 0.6 MB/s a camera; plus 2 GB kept free, " \
+		"stopAtFreeGB)", text
+	assert not any(c[1].endswith("GB free where it records") for c in p.checks) # the need, in its place
+	assert p.Start({"length": 28800}) is None and p.wanted == {"length": 28800}
+
+
+def test_a_length_that_does_not_fit_is_refused(tmp_path, home, monkeypatch):
+	# 6 days: about 2,910 GB, against 378 GB free (the ChronicRecord PC's one disk, the day it nearly started)
+	p = disk_panel(tmp_path, monkeypatch, 378)
+	assert p.Start({"length": 518400}).startswith("Can't start: Disk: this length needs about 2,910 GB of the 378 GB "
+		"free: 2,534 GB short, an estimate")
+	assert p.wanted is None and p.length == 518400
+	[(level, text, action)] = disk_check(p)
+	assert (level, action) == ("block", "disk") and text.endswith("Pick a shorter length, or add a data disk.")
+	# The page's confirm, naming the shortfall, passes over the disk check alone
+	assert p.Start({"length": 518400, "disk_override": True}) is None and p.wanted["length"] == 518400
+	p.wanted = None
+	# ... never another check's block
+	from campy import pico
+	monkeypatch.setattr(pico.Pico, "Check", lambda self: (_ for _ in ()).throw(pico.PicoError("The Pico doesn't answer")))
+	said = p.Start({"length": 518400, "disk_override": True})
+	assert said.startswith("Can't start: ") and "The Pico doesn't answer" in said and "2,534 GB short" in said
+	assert p.wanted is None
+	# The shorter length fits: chosen on the page, the check follows it
+	p.length = 28800
+	monkeypatch.setattr(pico.Pico, "Check", lambda self: "COM3: idle")
+	p.checks = p.Checks()
+	assert disk_check(p)[0][0] == "ok"
+	# Near the edge (more than 80% of the free space): a warning
+	monkeypatch.setattr(panel.Panel, "Free", lambda self, folder=None: 190e9)
+	assert p.Checks()[-1][0] == "warn"
+
+
+def test_without_a_pico_the_disk_check_is_as_before(tmp_path, home, monkeypatch):
+	p = disk_panel(tmp_path, monkeypatch, 15, devices=False)
+	assert p.devices is None and p.lengths == [] and not disk_check(p)
+	assert p.checks[-1] == ("warn", "15 GB free where it records") # below alertDiskFreeGB (20)
+	assert p.Start({}) is None
+	# The tile: hours at the rate it fills
+	assert p.Disk(15e9, 1e6, None) == {"free_gb": 15.0, "hours_left": 4.2, "plan_left_gb": None}
+
+
+def test_the_disk_tile_counts_the_rest_of_a_picos_plan(tmp_path, home, monkeypatch):
+	# Not hours at the rate so far (none before the Pico starts: "about 65 h"), but what the plan still needs
+	p = disk_panel(tmp_path, monkeypatch, 378)
+	s = types.SimpleNamespace(folder=str(tmp_path / "rec"))
+	p.devices.Plan(28800)
+	assert p.Disk(378e9, 1.0e6, s) == {"free_gb": 378.0, "hours_left": None, "plan_left_gb": 161.7}
+	p.devices.pico_started = time.time()
+	p.devices.cached = {"pico": {"alive": True, "session_s": 14400}} # half way: 48 of 96 bouts left
+	assert p.Disk(378e9, 1.0e6, s)["plan_left_gb"] == round(p.devices.Need(28800, 4, 14400)["total_b"] / 1e9, 1) == 80.8
+	p.devices.cached = {"pico": {"alive": False}} # its session has ended
+	assert p.Disk(378e9, 1.0e6, s) == {"free_gb": 378.0, "hours_left": None, "plan_left_gb": None}

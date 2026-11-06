@@ -90,6 +90,7 @@ class Pico:
 		self.python = python or sys.executable
 		self.fps = fps
 		self.module = Module(self.control)
+		self.spans = {} # Spans' answers, by length
 		self.state_dir = section["state_dir"] or self.module.STATE_DIR
 		self.lengths = []
 		for n, length in enumerate(section["lengths"]):
@@ -141,6 +142,26 @@ class Pico:
 		return {"seconds": seconds, "bouts": len(bouts), "pulses": pulses, "camera_s": camera_s, "ends_s": ends,
 			"text": "{} bouts over {}, {:,} camera pulses ({} of camera)".format(len(bouts), Clock(seconds), pulses,
 				Clock(camera_s))}
+
+	def Spans(self, seconds):
+		"""
+		([(gate up, gate down)], [(camera's first pulse, its end)]) in the
+		session's seconds: when the gate is open (SpikeGLX writes) and when
+		the cameras take frames (each train's pulses over CAMERA_FPS), for the
+		panel's disk estimate. A camera-only session's gate never opens.
+		"""
+		key = int(seconds)
+		if key not in self.spans:
+			s = self.Settings(seconds)
+			try:
+				_, trains, edges = self.module.Plan(s)
+			except SystemExit as e:
+				raise PicoError("The Pico can't run {}: {}".format(Clock(seconds), e))
+			gate, fps = getattr(self.module, "GATE", 0), float(s["CAMERA_FPS"])
+			ups = [t / 1e6 for t, channel, level in edges if channel == gate and level]
+			downs = [t / 1e6 for t, channel, level in edges if channel == gate and not level]
+			self.spans[key] = (list(zip(ups, downs)), [(t[1] / 1e6, t[1] / 1e6 + t[2] / fps) for t in trains])
+		return self.spans[key]
 
 	# ---------------------------------------------------------- the board
 

@@ -120,6 +120,9 @@ PANEL = {
 	"rig_lock": ((str,), "", "rig.py (bench/rig.py, installed on the rig): the panel holds the rig's lock while it is "
 		"open, and Ctrl-C in its window does nothing (the page's Close ends it); \"auto\": the rig's installed one"),
 	"owner": ((str,), "panel", "who holds the rig lock, as rig.py status shows it"),
+	"video_mb_s": ((int, float), 0.6, "each camera's video while it takes frames, in MB/s, for the panel's disk check "
+		"before a Pico's session: an estimate on the high side (0.6: 60 fps H.265 of mice in a lit cage; a still, "
+		"empty cage writes far less)"),
 	}
 VIEW["python"] = ((str,), "", "the python that runs campy-live-view (default: campy-live's, when the config has a "
 	"live: section or campy-live's environment is registered; else this one)")

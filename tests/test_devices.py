@@ -7,7 +7,7 @@ FakeBoard, which here also opens a SpikeGLX file at each rise of the gate) and
 a stand-in SpikeGLX SDK (tests/fake_sglx).
 """
 
-import json, os, re, signal, subprocess, sys, threading, time
+import json, os, re, signal, subprocess, sys, threading, time, types
 
 import pytest
 import yaml
@@ -404,3 +404,59 @@ def test_spikeglx_open_without_its_command_server_is_not_opened_again(tmp_path, 
 	with pytest.raises(spikeglx.SpikeGLXError, match="command server doesn't answer"):
 		a_sglx(exe=str(exe)).Open()
 	assert launched == []
+
+
+# ------------------------------------------------------------------ the disk a session needs
+
+class NeedConfig:
+	def __init__(self, **panel_given):
+		self.panel = section("panel", panel_given)
+
+
+def a_devices(sglx=True, margin=1.0, **panel_given):
+	d = object.__new__(devices.Devices)
+	d.pico, d.config = a_pico(), NeedConfig(**panel_given)
+	d.sglx = types.SimpleNamespace(section=section("spikeglx", {"sdk": FAKE_SDK}), margin=margin) if sglx else None
+	d.Reset()
+	d.cached = {}
+	return d
+
+
+def test_the_disk_a_session_needs():
+	d = a_devices()
+	# The 6-day plan: 288 bouts with 255 s of gate and 1,440 with 25 s, each with SpikeGLX's 1 s margin before and
+	# after (112,896 s at 24 MB/s: 2,709.5 GB); 83,520 s of camera for 4 cameras at 0.6 MB/s (200.4 GB). As
+	# chronicrecord/README.md works it out: about 2.9 TB
+	six = d.Need(518400, 4)
+	assert (six["gate_s"], six["camera_s"]) == (112896, 83520)
+	assert (round(six["spikeglx_b"] / 1e9, 1), round(six["videos_b"] / 1e9, 1), round(six["total_b"] / 1e12, 2)) == \
+		(2709.5, 200.4, 2.91)
+	# The 8-hour rehearsal of 6 November: 96 bouts, 6,272 s of gate: 150.5 GB (SpikeGLX wrote 150.3)
+	eight = d.Need(28800, 4)
+	assert (eight["gate_s"], round(eight["spikeglx_b"] / 1e9, 1)) == (6272, 150.5)
+	# The rates are the config's
+	d2 = a_devices(video_mb_s=0.1)
+	d2.sglx.section["write_mb_s"] = 12
+	assert (d2.Need(28800, 4)["spikeglx_b"], d2.Need(28800, 4)["videos_b"]) == (6272 * 12e6, 4640 * 4 * 0.1e6)
+	# SpikeGLX's margin as it is set (2 s: 4 s more per bout)
+	assert a_devices(margin=2.0).Need(28800, 4)["gate_s"] == 6272 + 96 * 2
+	# Without SpikeGLX: the videos alone; without a Pico: no plan to count from
+	alone = a_devices(sglx=False).Need(28800, 4)
+	assert alone["spikeglx_b"] == 0 and alone["total_b"] == alone["videos_b"]
+	d.pico = None
+	assert d.Need(28800, 4) is None
+
+
+def test_the_rest_of_a_session_from_where_the_pico_is():
+	d = a_devices()
+	assert d.NeedLeft(4) is None # nothing planned
+	d.Plan(900) # the gate test: 3 bouts at 0, 300 and 600 s (255, 25 and 25 s of gate)
+	assert d.NeedLeft(4)["gate_s"] == 311 # the Pico not started yet: all of it
+	d.pico_started = time.time()
+	d.cached = {"pico": {"alive": True, "session_s": 610}} # 10 s into the last bout, whose gate is open 1 s earlier
+	assert d.NeedLeft(4)["gate_s"] == 25 + 1 - 10
+	assert d.NeedLeft(4)["camera_s"] == 10 - 5 # its camera starts 5 s in, for 10 s
+	d.cached = {"pico": {"alive": False}}
+	assert d.NeedLeft(4) is None
+	# A camera-only session: the gate never opens
+	assert a_pico(set={"CAMERA_ONLY": 60}).Spans(3600) == ([], [(0.0, 60.0)])

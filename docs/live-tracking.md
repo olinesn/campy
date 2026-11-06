@@ -137,11 +137,11 @@ What the page shows, refreshed every second:
 
 - **Before the start:**
   - the experiment's name, the animal IDs and notes, which go into the recording's `session.json`;
-  - the checks. Some stop a start: `campy-live`'s environment not found or not the same campy, or another `campy-session` running. Others only warn: less free disk space than `alertDiskFreeGB`.
+  - the checks. Some stop a start: `campy-live`'s environment not found or not the same campy, or another `campy-session` running. Others only warn: less free disk space than `alertDiskFreeGB`. With a Pico (`pico:`), the disk line is what the chosen length's plan needs instead (SpikeGLX while the gate is open, at `spikeglx.write_mb_s`, and the videos at `panel.video_mb_s` a camera: an estimate), and a length that doesn't fit, keeping `stopAtFreeGB`, stops the start unless the page's confirm passes over it ([Recording a session](recording-a-session.md#on-the-chronicrecord-rig-the-pico-and-spikeglx)).
 - **While it records:**
   - **time:** elapsed, against the planned length;
   - **each camera:** a grey thumbnail, refreshed once a second; its frames per second and frame number; and its health, from the same checks `campy-live-view` draws in red: `NO FRAMES`, behind, `LOST`, `GAP`, `LATE`, frames ahead or behind. With the config's `alertTriggerPauseSec`, every camera stopping at once is a planned trigger pause, shown as a grey `PAUSED` instead of `NO FRAMES` (until `alertNoFramesSec`). When campy-acquire's watch is running, also its dropped frames and write queue;
-  - **disk:** free space, and roughly how long it lasts at the rate it's filling;
+  - **disk:** free space, and roughly how long it lasts at the rate it's filling (with a Pico, what the rest of its plan still needs);
   - **tracking:** how many animals `campy-live` tracked in 3D over the last second;
   - **warnings:** from the alerts' logs in the recording's folder, and anything `campy-session` reported;
   - **bookmarks:** a note box and an Add button. They write the same `bookmarks.csv` in the recording's folder as `campy-live-view`'s `m` key, and the two never give two bookmarks the same number;

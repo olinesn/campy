@@ -35,6 +35,8 @@ KEYS = {
 		"(selectDevices): \"(20,1,1)(20,obx)\""),
 	"stream": ((list,), [1, 0], "the stream the gate's TTL is on, [js, ip] (1, 0: the first OneBox)"),
 	"run_prefix": ((str,), "", "the run's name before the recording's date_time: \"chronic_\""),
+	"write_mb_s": ((int, float), 24, "what SpikeGLX writes while the gate is open, in MB/s, for the panel's disk check "
+		"before the start (24: a Neuropixels 2.0 probe's 23.1 and a OneBox's 0.85, measured on the ChronicRecord rig)"),
 	"start_timeout_s": ((int, float), 120, "how long its run may take to start acquiring"),
 	"open_timeout_s": ((int, float), 120, "how long SpikeGLX may take to open and answer"),
 	}

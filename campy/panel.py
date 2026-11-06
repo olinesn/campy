@@ -16,14 +16,18 @@ What the page shows, once a second:
   for session.json) and the checks: what stops a start (campy-live's
   environment not found or not the same campy, another campy-session
   running) apart from what only warns (disk space). The recording's length
-  is the config's recTimeInSec.
+  is the config's recTimeInSec. With a Pico, the length is the page's choice,
+  and the disk check is what that length's plan needs (SpikeGLX while the
+  gate is open, and the videos: an estimate) against the free space: a
+  length that doesn't fit stops the start, unless a confirm on the page
+  passes over it.
 - while it records: elapsed and planned time; each camera's frames/s,
   frames and health, from the cameras' rings with campy-live-view's own
   checks (campy/livehealth.py: NO FRAMES, behind, LOST, GAP, LATE, frames
   ahead or behind), and their dropped frames and write queue from
   campy-acquire's watch (~/.campy/status/recording.json, when there); a
   grey thumbnail of each camera, once a second; disk space and the time left
-  at the rate it fills; campy-live's 3D (animals with good 3D in the last
+  at the rate it fills (with a Pico, what the rest of its plan needs); campy-live's 3D (animals with good 3D in the last
   second) from its results feed; the warnings (the alerts' logs in the
   recording's folder, campy-session's problems); bookmarks, written into the
   recording's bookmarks.csv as campy-live-view writes them; each program's
@@ -53,13 +57,16 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from campy import bookmarks, children, clock, devices, livefeed, livehealth, liveresults, session, stopfile, strictjson
+from campy import bookmarks, children, clock, devices, livefeed, livehealth, liveresults, pico, session, stopfile, \
+	strictjson
 
 PORT = 8765
 THUMB_WIDTH = 192 # px, each camera's thumbnail
 SAMPLE_S = 0.25 # how often the rings' slots are read (campy-live-view: about 20 times a second)
 THUMB_S = 1.0 # and a frame of each camera, for its thumbnail
 STATUS_FRESH_S = 20 # recording.json older than this is not the recording's now
+WARN_FRACTION = 0.8 # the disk check warns when a length needs more than this share of the free space (as the launch
+# check's, campy/preflight.py)
 
 
 LOCAL_NAMES = ("127.0.0.1", "localhost", "[::1]")
@@ -421,6 +428,10 @@ class Panel:
 			checks.append(("ok", "{} cameras ({}), {} each (recTimeInSec)".format(n, ", ".join(names), Duration(planned))))
 		if self.devices is not None:
 			checks += self.devices.Checks(self.length)
+		need = self.DiskCheck()
+		if need is not None:
+			checks.append(need)
+			return checks
 		free = self.Free()
 		if free is not None:
 			least = self.config.Value("alertDiskFreeGB", 20)
@@ -431,8 +442,43 @@ class Panel:
 			checks.append(("warn" if free / 1e9 < least else "ok", "{:.0f} GB free where it records".format(free / 1e9)))
 		return checks
 
-	def Free(self):
-		where = os.path.abspath(str(self.config.Value("videoFolder", ".")))
+	def DiskCheck(self):
+		"""
+		With a Pico: the disk the chosen length needs (its plan's SpikeGLX
+		and videos, devices.Need) against the free space where it records,
+		keeping stopAtFreeGB: (level, text, "disk"), "block" when it doesn't
+		fit (a start then needs the page's confirm, disk_override), "warn"
+		above 80% of the free space. None without a Pico, or when the plan or
+		the free space can't be told (then the free space alone, as before).
+		"""
+		if self.devices is None or self.devices.pico is None:
+			return None
+		try:
+			_, folder, _ = self.devices.Length(self.length)
+			need = self.devices.Need(self.length, self.config.Cameras()[0])
+		except (session.SessionError, pico.PicoError):
+			return None # the plan's own check says why
+		free = self.Free(folder)
+		if need is None or free is None:
+			return None
+		keep = Seconds(self.config.Value("stopAtFreeGB", 2)) or 0.0
+		wanted = need["total_b"] + keep * 1e9
+		parts = []
+		if self.devices.sglx is not None:
+			parts.append("SpikeGLX {}: {:,.0f} s of open gate with its trigger margin, at {:g} MB/s".format(
+				GB(need["spikeglx_b"]), need["gate_s"], float(self.devices.sglx.section["write_mb_s"])))
+		parts.append("videos about {}, at {:g} MB/s a camera".format(GB(need["videos_b"]),
+			float(self.config.panel["video_mb_s"])))
+		how = "an estimate ({}; plus {:g} GB kept free, stopAtFreeGB)".format("; ".join(parts), keep)
+		text = "Disk: this length needs about {} of the {} free".format(GB(need["total_b"]), GB(free))
+		if wanted > free:
+			return ("block", "{}: {} short, {}. Pick a shorter length, or add a data disk.".format(text, GB(wanted - free),
+				how), "disk")
+		return ("warn" if wanted > WARN_FRACTION * free else "ok", "{}, {}".format(text, how), "disk")
+
+	def Free(self, folder=None):
+		where = os.path.abspath(str(folder or self.config.Value("videoFolder", ".")))
+
 		while where and not os.path.isdir(where):
 			parent = os.path.dirname(where)
 			if parent == where:
@@ -459,9 +505,15 @@ class Panel:
 				except session.SessionError as e:
 					return str(e)
 			self.checks = self.Checks()
-			blocks = [c[1] for c in self.checks if c[0] == "block"]
+			# The disk check alone can be passed over, from the page's confirm that names the shortfall (data moved off
+			# during the session, say); every other block can't
+			blocks = [c[1] for c in self.checks if c[0] == "block" and not (fields.get("disk_override") and
+				len(c) > 2 and c[2] == "disk")]
 			if blocks:
 				return "Can't start: " + "; ".join(blocks)
+			if fields.get("disk_override") and any(c[0] == "block" for c in self.checks):
+				Say("Started though the disk check says it doesn't fit (confirmed on the page): {}".format(next(
+					c[1] for c in self.checks if c[0] == "block")))
 			self.wanted = fields
 			self.error = None
 		return None
@@ -607,11 +659,30 @@ class Panel:
 			"lengths": [{"name": l["name"], "seconds": l["seconds"], "text": l["plan"].get("text") or l["plan"].get("error"),
 				"videoFolder": l["videoFolder"]} for l in self.lengths], "length": self.length,
 			"launcher": launcher, "health": self.health.snapshot, "recording": recording,
-			"disk": {"free_gb": round(free / 1e9, 1) if free is not None else None,
-				"hours_left": round(free / rate / 3600, 1) if free is not None and rate and rate > 1e5 else None},
+			"disk": self.Disk(free, rate, s),
 			"alerts": {"open": open_, "resolved": resolved}, "problems": problems, "bookmarks": marks,
 			"fields": {"experiment": str(self.config.Value("experiment", "") or "").replace("None", ""),
 				"animal_ids": ", ".join(str(a) for a in (self.config.Value("animalIds", []) or []))}}
+
+	def Disk(self, free, rate, s):
+		"""
+		The page's disk tile: the free space, and how long it lasts at the
+		rate it fills (hours_left). With a Pico's session, what the rest of
+		its plan still needs (plan_left_gb, devices.Need) in place of the
+		hours: the rate before the Pico starts is the cameras' none at all,
+		and SpikeGLX writes only while the gate is open.
+		"""
+		disk = {"free_gb": round(free / 1e9, 1) if free is not None else None, "hours_left": None, "plan_left_gb": None}
+		try:
+			left = self.devices.NeedLeft(self.config.Cameras()[0]) if self.devices is not None and s is not None and \
+				s.folder else None
+		except (session.SessionError, pico.PicoError):
+			left = None
+		if left is not None:
+			disk["plan_left_gb"] = round(left["total_b"] / 1e9, 1)
+		elif free is not None and rate and rate > 1e5 and not (self.devices is not None and self.devices.pico is not None):
+			disk["hours_left"] = round(free / rate / 3600, 1)
+		return disk
 
 	@staticmethod
 	def FreeAt(folder):
@@ -813,6 +884,11 @@ class Panel:
 				self.last["clean"] = {"clean": bool(clean), "why": why}
 			self.session = None
 			self.checks = self.Checks()
+
+
+def GB(n):
+	# Bytes as the page says them: "7.5 GB", "2,910 GB"
+	return "{:,.1f} GB".format(n / 1e9) if n < 9.95e9 else "{:,.0f} GB".format(n / 1e9)
 
 
 def Duration(seconds):
