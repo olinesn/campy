@@ -5,14 +5,16 @@ campy-watch: the live tracking's watch, beside campy-live, sent as alerts
 campy-acquire's own watch (campy/watch.py) sees each camera's frames and its
 writing. What it can't see is what campy-live-view shows in red: cameras
 whose frames of the same number came at different times (a camera a frame
-ahead or behind: every set campy-live makes then mixes frames of different
-trigger pulses), frames a camera lost before campy got them, a camera
+ahead or behind: its frames of the same number are of other trigger pulses,
+and campy-live pairs them by host time instead), frames a camera lost before campy got them, a camera
 slower than the others, and the tracking itself. campy-watch reads what
 campy-live-view reads, read-only, with campy-live-view's own checks
 (campy/livehealth.py), and sends them when they last:
 
   misaligned       a camera a frame or more ahead or behind the others for
-                   OFFSET_HOLD_S (10 s): critical (stop and start again)
+                   OFFSET_HOLD_S (10 s): a warning (campy-live re-pairs its
+                   sets by host time; it was critical, "stop and start
+                   again", before it did)
   lost, gaps, late its frames lost (its timestamps skipped them), missing
                    from its feed, or here late, in each of the last
                    COUNTS_HOLD_S (30 s): a warning
@@ -22,9 +24,10 @@ campy-live-view reads, read-only, with campy-live-view's own checks
                    warning
   campy-live       no new row for STALL_S (30 s) while every camera records:
                    critical (it stopped or hangs); its results ended while
-                   they record: a warning. A camera without frames stops
-                   campy-live's sets too (it waits for a frame from each),
-                   which is campy-acquire's alert, not this one
+                   they record: a warning. A camera without frames is left
+                   out of campy-live's sets after a second (campy-acquire's
+                   alert says which camera); a campy-live from before
+                   November 2026 waited for it instead
 
 NO FRAMES is left to campy-acquire's watch, which says it already. What it
 finds goes into alerts-live.log in the recording's folder (the cameras'
@@ -111,8 +114,8 @@ class LiveWatch:
 						continue # campy-acquire's watch says it
 					key = "live/{}/{}".format(camera.name, kind)
 					seen.add(key)
-					if kind == "offset":
-						self.Problem(key, notify.CRITICAL, sentence, now, OFFSET_HOLD_S)
+					if kind == "offset": # campy-live pairs that camera's frames by host time instead
+						self.Problem(key, notify.WARNING, sentence, now, OFFSET_HOLD_S)
 					else:
 						self.Problem(key, notify.WARNING, sentence, now, COUNTS_HOLD_S)
 		for key in list(self.since):
@@ -163,8 +166,8 @@ class LiveWatch:
 			if now - self.rows[0] < STALL_S:
 				self.Gone(key, "campy-live: results again")
 			else:
-				self.Gone(key, "campy-live: not hung after all: a camera has stopped sending frames, and campy-live "
-					"waits for a frame from each (campy-acquire's alert says which)")
+				self.Gone(key, "campy-live: not hung after all: the cameras have stopped sending frames (campy-acquire's "
+					"alert says which)")
 			if not any(moving):
 				self.Gone(key + "/ended")
 		if not self.resultsEnded:

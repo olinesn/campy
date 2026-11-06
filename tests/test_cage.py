@@ -191,6 +191,31 @@ def test_animals_in_the_cage_are_tracked_as_without_it():
 		assert not q.outside.any()
 
 
+def test_a_camera_left_out_of_the_sets_keeps_the_identities_3d_and_cage():
+	# campy-live leaves out a camera whose feed ended or stalled: its keypoints NaN in every set from then on.
+	# The two cameras left keep each animal's identity and 3D, in the cage, and that camera's members are -1
+	cams = scene3d.rig()
+	X = scene3d.scene(120)
+	rng = np.random.default_rng(5)
+	cage = pose3d.Cage([(-400, -400, -60), (400, -400, -60), (400, 400, -60), (-400, 400, -60)], (0, 0, 1), 200)
+	tracker = pose3d.Tracker(cams, n_animals=5, cage=cage)
+	which = None
+	for f in range(len(X)):
+		kp, sc = scene3d.observe(cams, X[f], rng)[:2]
+		if f >= 40:
+			kp[2], sc[2] = np.nan, 0 # camera 2 left out
+		p = tracker.Update(kp, sc, frame=f)
+		centres = np.nanmedian(p.points3d, axis=1) # identity: (3,)
+		truth = np.nanmedian(X[f], axis=1)
+		nearest = np.argmin(np.linalg.norm(centres[:, None] - truth[None], axis=-1), axis=1)
+		if f == 39:
+			which = nearest # each identity's animal, with every camera
+		if f >= 40:
+			assert np.array_equal(nearest, which), f # the same animal under each identity
+			assert np.all(p.members[:, 2] == -1) and np.all(p.n_views == 2) and not p.outside.any()
+			error = np.linalg.norm(p.points3d - X[f][which], axis=-1)
+			assert np.nanmedian(error) < 3, f # mm
+
 def test_a_node_outside_the_cage_is_dropped_its_animal_kept():
 	cams = scene3d.rig()
 	mouse = scene3d.animal(np.array([20.0, 10, 0]), 0.3)

@@ -24,8 +24,10 @@ second, keeps the last few seconds of them, and tells for each camera:
   offset     how far its host times are from the other cameras' for the
              same frame number (a trimmed mean over the last 2 s, against
              the middle camera's). Half a frame or more: it is a frame ahead
-             (earlier) or behind, and every set campy-live makes mixes
-             frames of different trigger pulses (it calls them misaligned).
+             (earlier) or behind: frames of the same number are of
+             different trigger pulses. campy-live (from November 2026)
+             then pairs that camera's frames by host time instead, and
+             campy-align puts every frame on its pulse.
              That happened on 2026-10-20: a camera left grabbing after a
              second Ctrl+C started the next recording one frame ahead of the
              others, 31 ms off.
@@ -292,9 +294,9 @@ class Rig:
 				s.frames_off = k if offset < 0 else -k
 				way = "ahead of" if offset < 0 else "behind"
 				s.problems.append(("{} FRAME{} {}".format(k, "S" if k > 1 else "", way.split()[0].upper()),
-					"{}: {} {} the other cameras ({:+.0f} ms for the same frame number): campy-live's sets mix "
-					"frames of different pulses. Stop the recording and start it again.".format(feed.name,
-					Plural(k, "frame"), way, offset)))
+					"{}: {} {} the other cameras ({:+.0f} ms for the same frame number): campy-live pairs its "
+					"frames by host time instead (it says so on its console), and campy-align puts each frame on "
+					"its trigger pulse.".format(feed.name, Plural(k, "frame"), way, offset)))
 			if s.lost:
 				s.problems.append(("LOST {}".format(s.lost), "{}: the camera lost {} in the last {:.0f} s (its "
 					"timestamps skipped them)".format(feed.name, Plural(s.lost, "frame"), WINDOW_S)))

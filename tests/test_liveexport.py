@@ -424,3 +424,29 @@ def test_an_export_that_fails_leaves_no_files(recording, monkeypatch):
 	assert not [p for p in os.listdir(rec) if not p.startswith("Camera")]
 	assert all(sorted(os.listdir(os.path.join(rec, name))) == ["0.mp4", "frametimes.npy", "hosttimes.npy",
 		"metadata.csv"] for name in CAMERAS)
+
+
+def test_each_cameras_own_frame_of_a_set_is_placed():
+	# campy-live's cam_frame: Camera2 lost pulse 10's frame, so its frame of each later set is numbered one
+	# lower (campy-live paired it by host time); Camera1 was left out of set 12 (cam_frame -1). Each camera's
+	# 2D goes on its own frame's video frame, none for the one left out, and the group on the others'
+	class Cam:
+		Index = liveexport.Camera.Index
+
+		def __init__(self, name, frames):
+			self.name, self.frames, self.host = name, np.asarray(frames, np.int64), None
+
+	cams = [Cam("Camera0", range(1, 21)), Cam("Camera1", range(1, 21)), Cam("Camera2", range(1, 20))]
+	numbers = np.arange(5, 16)
+	rows = np.zeros(len(numbers), live.RowType(3, 2, 2))
+	rows["frame"] = numbers
+	rows["cam_frame"] = np.stack([numbers, numbers, np.where(numbers > 10, numbers - 1, numbers)], axis=1)
+	rows["cam_frame"][numbers == 12, 1] = -1
+	place = liveexport.Placement(rows, cams)
+	assert place.video[:, 0].tolist() == (numbers - 1).tolist() # video frame = campy frame - 1
+	assert place.video[:, 2].tolist() == np.where(numbers > 10, numbers - 2, numbers - 1).tolist()
+	assert place.video[numbers == 12, 1].tolist() == [-1]
+	assert place.group.tolist() == (numbers - 1).tolist()
+	# A log whose rows leave cam_frame 0 (unfilled): each camera's frame is the set's
+	rows["cam_frame"] = 0
+	assert liveexport.Placement(rows, cams).video[:, 1].tolist() == (numbers - 1).tolist()
