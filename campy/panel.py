@@ -586,6 +586,8 @@ class Panel:
 			for m in reversed(self.marks.recent)] if self.marks is not None and folder and \
 			self.marks.fallback.startswith(folder) else []
 		state = "starting" if self.wanted is not None else (s.state if s is not None else "ready")
+		if s is not None and state in ("done", "failed", "stopped"):
+			state = "finishing" # the recording has ended, and the panel is letting go of it: Start can't take one yet
 		return {"state": state, "rig": platform.node(), "config": self.config.path, "error": self.error,
 			"orphan": Orphan() if s is None else None,
 			"checks": [{"level": c[0], "text": c[1], "action": c[2] if len(c) > 2 else None} for c in self.checks],

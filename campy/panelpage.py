@@ -119,9 +119,9 @@ function render(s){
   const L = s.launcher || {}, rec = L.recording || {}, H = s.health || {};
   $("rig").textContent = s.rig + " · " + s.config.split(/[\\/]/).pop();
   $("where").textContent = L.folder || s.config;
-  const st = s.state, live = ["checking","starting","preparing","starting live","recording","stopping","post"].includes(st);
+  const st = s.state, live = ["checking","starting","preparing","starting live","recording","stopping","post","finishing"].includes(st);
   $("state").className = "tag " + (st=="recording" ? "ok" : st=="failed" ? "bad" : live ? "warn" : "");
-  $("state").textContent = {ready:"Ready", starting:"Starting", checking:"Checking", preparing:"Starting SpikeGLX, gate check", "starting live":"Starting campy-live",
+  $("state").textContent = {ready:"Ready", starting:"Starting", checking:"Checking", preparing:"Starting SpikeGLX, gate check", finishing:"Finishing", "starting live":"Starting campy-live",
     recording:"Recording", stopping:"Stopping", post:"After the recording", done:"Done", failed:"Failed"}[st] || st;
   $("stop").hidden = !(st=="recording" || st=="stopping");
   $("close").hidden = !(st=="ready" || st=="done" || st=="failed");
@@ -130,7 +130,7 @@ function render(s){
   const DP = s.devices && s.devices.plan ? s.devices.pico : null;
   if(DP){ // a Pico's session: its time against its plan (campy's recTimeInSec is camera time, not the clock's)
     const on = DP.alive && s.devices.pico_started && DP.mode != "wiring";
-    $("clock").innerHTML = on ? "<b>"+hms(DP.session_s)+"</b> <span class=muted>of "+hms(DP.ends_s)+", the Pico's</span>" : (live ? "<span class=muted>the Pico hasn't started</span>" : "");
+    $("clock").innerHTML = on ? "<b>"+hms(DP.session_s)+"</b> <span class=muted>of "+hms(DP.ends_s)+", the Pico's</span>" : (live ? "<span class=muted>"+(s.devices.pico_started ? "the Pico's session has ended" : "the Pico hasn't started")+"</span>" : "");
     $("progress").style.width = on && DP.ends_s ? Math.min(100, 100*DP.session_s/DP.ends_s)+"%" : "0";
   } else {
   $("clock").innerHTML = rec.elapsed_s!=null ? "<b>"+hms(rec.elapsed_s)+"</b> <span class=muted>of "+hms(rec.planned_s)+"</span>" : "";
@@ -138,6 +138,7 @@ function render(s){
   }
   $("error").hidden = !s.error; $("error").textContent = s.error || "";
   $("before").hidden = !(st=="ready" || st=="done" || st=="failed");
+  if(st=="recording") $("starterr").textContent = ""; // a refusal from before this recording no longer applies
   $("orphan").hidden = $("stoporphan").hidden = !s.orphan;
   if(s.orphan) $("orphan").textContent = "A recording an earlier panel started is still running, in " + s.orphan.folder +
     " (its window was closed; the recording went on). Stop it, or wait for it to end, before starting another.";
@@ -172,7 +173,7 @@ function render(s){
   $("lastmark").textContent = s.bookmarks.length ? "last at "+s.bookmarks[0].time : "";
   $("marks").innerHTML = s.bookmarks.map(m => "<li class=muted>"+m.number+" at "+m.time+", frame "+(m.frame!=null?m.frame.toLocaleString():"-")+(m.note?": "+esc(m.note):"")+"</li>").join("");
   const P = L.post || {};
-  $("after").hidden = !(st=="post" || (["done","failed","ready"].includes(st) && L.folder));
+  $("after").hidden = !(st=="post" || (["done","failed","ready","finishing"].includes(st) && L.folder));
   const C = L.clean; $("aftertitle").textContent = st=="post" ? "After the recording" : "The last recording: " +
     (C ? (C.clean ? "every camera recorded to the end" : "it didn't end cleanly: " + (C.why||"").split(";")[0] + (String(C.why||"").includes(";") ? "; ..." : "")) :
     L.state=="done" ? "campy-acquire ended" : L.state || "");
