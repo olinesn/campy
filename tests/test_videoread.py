@@ -166,3 +166,26 @@ def test_find_videos_in_a_session_folder(tmp_path):
 	assert videoread.FindVideos([found[0], str(tmp_path)]) == found
 	with pytest.raises(SystemExit):
 		videoread.FindVideos([str(tmp_path / "nothing")])
+
+
+def test_find_videos_leaves_out_campys_copies_and_unjoined_parts(tmp_path):
+	from campy import segments
+	def touch(*p):
+		path = tmp_path.joinpath(*p)
+		path.parent.mkdir(parents=True, exist_ok=True)
+		path.write_bytes(b"x")
+	touch("Camera0", "0.mp4"); touch("Camera0", "0.fragmented.mp4") # campy-session post's remux: keep
+	touch("Camera1", "0.mp4"); touch("Camera1", "0.remux-tmp.mp4") # a remux stopped part way
+	touch("Camera1", "0.join-tmp.mp4"); touch("Camera1", ".0.predictions.partial.slp")
+	touch("Camera2", "0.mp4"); touch("Camera2", "0.part2.mp4") # an ffmpeg restart
+	segments.Write(str(tmp_path / "Camera2"), [{"file": "0.mp4"}, {"file": "0.part2.mp4"}])
+	# Not joined yet: refused, with how to join them (each part on its own would number its frames from 0)
+	with pytest.raises(SystemExit, match=r"Camera2: its video is in 2 files .*--only join"):
+		videoread.FindVideos([str(tmp_path)])
+	touch("Camera2", "0.joined.mp4")
+	found = videoread.FindVideos([str(tmp_path)])
+	assert [os.path.relpath(v, str(tmp_path)) for v in found] == [os.path.join("Camera0", "0.mp4"),
+		os.path.join("Camera1", "0.mp4"), os.path.join("Camera2", "0.joined.mp4")]
+	# a file named by itself is run as it is
+	keep = str(tmp_path / "Camera0" / "0.fragmented.mp4")
+	assert videoread.FindVideos([keep]) == [keep]

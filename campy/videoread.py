@@ -501,21 +501,31 @@ def FindVideos(inputs):
 	"""
 	The videos to run, in order: each input a video file, or a folder: a
 	session folder's camera folders' videos (Camera1/Camera1.mp4, ...,
-	Camera10/..., in the cameras' number order), or the videos in it. A
-	camera's video in several files (an ffmpeg restart) counts once, joined,
-	when campy-session post has joined them.
+	Camera10/..., in the cameras' number order), or the videos in it. In a
+	folder, campy's own copies and files being written are not videos
+	(segments.NotTheVideo: the fragmented original remux: keep left, a
+	stopped remux's or join's file). A camera's video in several files (an
+	ffmpeg restart) counts once, joined, when campy-session post has joined
+	them; before that, the folder is refused (SystemExit), with how to join
+	them: each part on its own would number its frames from 0. Files named
+	one by one are run as they are.
 	"""
 	def Natural(name):
 		return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
 
 	def VideosIn(folder):
 		names = [f for f in sorted(os.listdir(folder), key=Natural) if f.lower().endswith(VIDEO_EXTENSIONS) and
-			not f.startswith(".") and ".join-tmp" not in f and os.path.isfile(os.path.join(folder, f))]
+			not segments.NotTheVideo(f) and os.path.isfile(os.path.join(folder, f))]
 		# A camera whose ffmpeg was restarted (restartFfmpeg) has its video in
 		# several files: once they are joined into one (campy-session post),
-		# that one only, else each of them
+		# that one only (segments.VideoFor); not joined yet, none of them
 		parts = segments.Files(folder)
-		if len(parts) > 1 and segments.JoinedName(parts[0]) in names:
+		if len(parts) > 1:
+			try:
+				segments.VideoFor(folder, parts[0])
+			except segments.NeedsJoin as e:
+				raise SystemExit("{} Or give its files by name, each its own .slp (each numbers its frames from "
+					"its own first frame, not campy's).".format(e))
 			names = [f for f in names if f not in parts]
 		return [os.path.join(folder, f) for f in names]
 	videos = []

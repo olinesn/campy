@@ -216,7 +216,8 @@ class Camera:
 			meta = ReadMetadata(os.path.join(self.folder, "metadata.csv"))
 		video = str(meta.get("videoFilename", ""))
 		if not video or not os.path.isfile(os.path.join(self.folder, video)):
-			videos = sorted(f for f in os.listdir(self.folder) if f.lower().endswith(VIDEO_EXTENSIONS))
+			videos = sorted(f for f in os.listdir(self.folder) if f.lower().endswith(VIDEO_EXTENSIONS) and
+				not segments.NotTheVideo(f) and segments.Part(f) is None and ".joined." not in f)
 			if len(videos) != 1:
 				raise ExportError("{}: {} videos ({}); which one is the recording's?".format(
 					self.folder, len(videos), ", ".join(videos) or "none"))
@@ -236,6 +237,23 @@ class Camera:
 		# Frames lost in a stopped ffmpeg still have rows when campy was cut
 		# short before it took them out (segments.csv names them)
 		keep = segments.KeepRows(self.frames, segments.LostFrames(self.folder))
+		# A camera that did not close its recording (campy killed, a power
+		# cut): frametimes.npy can have rows for frames that never reached its
+		# video, which ends at its last fragment written. Its files' frames
+		# are read (packets only) and only the rows they hold are kept.
+		self.held = None
+		if not segments.Closed(self.folder):
+			try:
+				self.held = segments.HeldRows(self.folder, self.frames, video=video)
+			except segments.Uncounted as e:
+				Say("{}: did not close its recording, and its video's frames could not be counted ({}): every row "
+					"of frametimes.npy is taken to be in its video, so the last frames' results may be off.".format(
+					name, e))
+			else:
+				keep = self.held.keep
+				text = self.held.Text(name)
+				if text:
+					Say(text)
 		if not keep.all():
 			self.frames = self.frames[keep]
 			if self.host is not None and len(self.host) == len(keep):

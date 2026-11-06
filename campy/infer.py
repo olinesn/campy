@@ -7,11 +7,15 @@ files, several times faster than `sleap-nn track` (docs/offline-inference.md).
 
 Each video gets its own .slp, as sleap-nn track writes it: next to the video
 as <video name>.predictions.slp, or in --out, named by --name ({stem}: the
-video's name without its extension; {folder}: the folder it is in). A folder
-stands for its videos and its sub-folders' videos (a campy session:
+video's name without its extension; {folder}: the folder it is in). A trial
+run on the first N frames (--frames N) is named <video name>.firstN.
+predictions.slp instead, so that a full run never takes it for its own. A
+folder stands for its videos and its sub-folders' videos (a campy session:
 Camera1/Camera1.mp4, Camera2/...). A video whose .slp is already there is
 skipped (--overwrite runs it again), so a batch job that stopped can be
-started again as it was.
+started again as it was; but not when that .slp says (its provenance) it was
+made by other models or from another number of frames: it is then left as
+it is, the video is not run, and campy-infer ends with exit status 1.
 
 What makes it fast (each measured in docs/offline-inference.md):
 
@@ -265,7 +269,7 @@ class Model:
 		from campy import manifest
 		prov = dict(prov or {})
 		version = manifest.SetupVersion(manifest.CampyRoot()) or manifest.PackageVersion("campy")
-		prov["campy_infer"] = {"campy_version": version, "how": self.Describe(),
+		prov["campy_infer"] = {"campy_version": version, "how": self.Describe(), "frames_limit": int(self.args.frames or 0),
 			"exact": bool(self.exact), "fp16": bool(self.fp16), "tied_peaks": bool(self.tied),
 			"engine": self.engine, "notes": list(self.notes)}
 		labels.provenance = prov
@@ -319,11 +323,79 @@ def SlpVideo(path):
 		return sio.Video(filename=path, open_backend=False)
 
 
+DEFAULT_NAME = "{stem}.predictions.slp"
+
+
 def OutputPath(video, args):
 	stem = os.path.splitext(os.path.basename(video))[0]
 	folder = os.path.basename(os.path.dirname(os.path.abspath(video)))
-	name = args.name.format(stem=stem, folder=folder)
+	pattern = args.name
+	if not pattern:
+		# A trial on the first N frames is named for them, never as a full run
+		pattern = "{{stem}}.first{}.predictions.slp".format(args.frames) if args.frames else DEFAULT_NAME
+	name = pattern.format(stem=stem, folder=folder)
 	return os.path.join(args.out or os.path.dirname(os.path.abspath(video)), name)
+
+
+def ReadProvenance(path):
+	"""
+	A .slp's provenance (a dict), read without its frames, as sleap-io
+	reads it (io/slp.py read_provenance): newer sleap-io writes it as the
+	HDF5 dataset /provenance_json, older sleap-io and SLEAP in /metadata's
+	json attribute. Raises an exception when it cannot be read.
+	"""
+	import json
+	import h5py
+
+	def Text(raw):
+		if hasattr(raw, "shape") and getattr(raw, "shape", None) == (1,):
+			raw = raw[0]
+		if hasattr(raw, "item") and not isinstance(raw, (bytes, str)):
+			raw = raw.item()
+		return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+
+	with h5py.File(path, "r") as f:
+		if "provenance_json" in f:
+			return json.loads(Text(f["provenance_json"][()])) or {}
+		return json.loads(Text(f["metadata"].attrs["json"])).get("provenance") or {}
+
+
+def ModelNames(paths):
+	# The model folders' own names: a .slp made on another computer has other paths to the same models
+	return sorted(os.path.basename(os.path.normpath(str(p))) for p in paths or [])
+
+
+def Differs(video, out, args):
+	"""
+	Why the .slp already at out is not what this run would write (other
+	models, another number of frames), from its provenance; None when it is
+	(or that cannot be told: then said).
+	"""
+	try:
+		prov = ReadProvenance(out)
+	except Exception as e:
+		Say("{}: could not read what made it ({}: {}), so it is taken to be this run's".format(out, type(e).__name__, e))
+		return None
+	why = []
+	models = prov.get("model_paths")
+	if models and ModelNames(models) != ModelNames([args.centroid, args.instance]):
+		why.append("it was made by other models ({})".format(", ".join(str(m) for m in models)))
+	mine = prov.get("campy_infer") or {}
+	if "frames_limit" in mine: # campy-infer's own .slp: the --frames it was run with (0: all)
+		if int(mine["frames_limit"] or 0) != int(args.frames or 0):
+			why.append("it holds the first {} frames".format(mine["frames_limit"]) if mine["frames_limit"] else
+				"it holds every frame")
+	elif (prov.get("frame_selection") or {}).get("frames_processed") is not None: # sleap-nn's, an older campy-infer's
+		done = int(prov["frame_selection"]["frames_processed"])
+		try:
+			info = videoread.VideoInfo(video)
+		except Exception:
+			info = None
+		if info is not None and info.frames:
+			want = min(info.frames, args.frames) if args.frames else info.frames
+			if done != want if info.exact else done < 0.9 * want:
+				why.append("it holds {:,} frames, where this run reads {}{:,}".format(done, "" if info.exact else "about ", want))
+	return " and ".join(why) or None
 
 
 def Hms(seconds):
@@ -398,9 +470,10 @@ def Parser():
 	p.add_argument("--max-instances", type=int, required=True, help="the most animals in a frame")
 	p.add_argument("--peak-threshold", type=float, default=0.2, help="both models' peak threshold (default 0.2)")
 	p.add_argument("--out", default="", help="the folder for the .slp files (default: each next to its video)")
-	p.add_argument("--name", default="{stem}.predictions.slp", help="each .slp's name: {stem} the video's name "
-		"without its extension, {folder} the folder it is in (default: {stem}.predictions.slp)")
-	p.add_argument("--overwrite", action="store_true", help="run videos whose .slp is already there again")
+	p.add_argument("--name", default="", help="each .slp's name: {stem} the video's name without its extension, "
+		"{folder} the folder it is in (default: {stem}.predictions.slp; with --frames N, {stem}.firstN.predictions.slp)")
+	p.add_argument("--overwrite", action="store_true", help="run videos whose .slp is already there again (also one "
+		"made by other models or from another number of frames, which is otherwise left, with exit status 1)")
 	p.add_argument("--batch", type=int, default=16, help="frames per batch (default 16: on an A100 and the EVO-X2 "
 		"as fast as 32 or 64, or faster, with less GPU memory)")
 	p.add_argument("--exact", action="store_true", help="a reference run: sleap-nn's own layer, fp32 without TF32, "
@@ -443,17 +516,24 @@ def Main(argv=None):
 	if twice:
 		raise SystemExit("two videos would write {}: give --name a {{folder}} (e.g. \"{{folder}}_{{stem}}.slp\")".format(
 			twice[0]))
-	todo = []
+	todo, other = [], []
 	for v, out in jobs:
 		if os.path.exists(out) and not args.overwrite:
-			skipped.append(out)
+			why = Differs(v, out, args)
+			if why:
+				other.append(out)
+				Say("{} is already there, but {}: NOT run, and left as it is. --overwrite replaces it; --name "
+					"gives this run's .slp another name".format(out, why))
+			else:
+				skipped.append(out)
 		else:
 			todo.append((v, out))
 	for out in skipped:
 		Say("{} is already there: skipped (--overwrite runs it again)".format(out))
 	if not todo:
-		Say("nothing to do")
-		return 0
+		Say("nothing to do{}".format("; {} .slp made otherwise left as they are (exit status 1)".format(len(other))
+			if other else ""))
+		return 1 if other else 0
 	Say("{} video{} to run".format(len(todo), "" if len(todo) == 1 else "s"))
 	t0 = time.perf_counter()
 	model = Model(args)
@@ -477,7 +557,10 @@ def Main(argv=None):
 		Say("done: {} video{}, {:,} frames in {} ({:.0f} frames/s with loading the models){}".format(len(results),
 			"" if len(results) == 1 else "s", frames, Hms(seconds), frames / seconds, "; {} FAILED: {}".format(
 			len(failed), ", ".join(failed)) if failed else ""))
-	return 1 if failed else 0
+	if other:
+		Say("{} video{} NOT run: {} .slp, made otherwise, is there ({})".format(len(other), "" if len(other) == 1 else
+			"s", "its" if len(other) == 1 else "each one's", ", ".join(other)))
+	return 1 if failed or other else 0
 
 
 if __name__ == "__main__":
