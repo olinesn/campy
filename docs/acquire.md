@@ -16,6 +16,18 @@ All 4 cameras are ready.
 ```
 That is its make, model and serial number, the frame size and rate, then each setting campy gave it, and the video it records into, with the encoder and the GPU that compresses it (or CPU). A problem as a camera opens (a setting it would not take, a frame size campy changed) is said at once, after the camera's name. A camera that does not get ready says why, then every step it took as it opened, one line each, after its name. (Up to campy 2.4.0 each camera said each step on a line of its own, `Gain set to 3 dB.`, `Buffer count now set to: 100` and so on, and with several cameras those lines were mixed together.)
 
+### The status line (statusLine)
+
+While it records, campy shows its progress on one line at the bottom of the console, rewritten about once a second instead of printed again:
+```
+Recording 3:00 · Camera0 10,800 · Camera1 10,800 · Camera2 10,800 · Camera3 10,800 frames · 60.0 fps
+```
+That is the time since the first frame, each camera's frames so far, and the frame rate over the last 5 s of frames. When the cameras' rates differ by half a frame a second or more, it shows each camera's (`fps 60.0/60.0/58.1/60.0`). It also shows dropped frames (`12 dropped`), a camera that stopped (`Camera2 10,800 (lost)`), and the trigger's pauses: `trigger paused 0:45` while every camera has had no frame for a second or more, then `3 trigger pauses` once frames come again. Before the first frame it says `Waiting for the first frame 12:34`. Where the console is too narrow, it shows the counts without the names (`frames 10,800 / 10,800 / 10,800 / 10,800`), then cuts the line.
+
+Every other message (warnings, alerts, `Trigger: ...` lines, each camera's end) still prints as a line of its own: the status line is wiped before it and drawn again under it. The status line replaces each camera's own progress line, `Camera0 collected 10800 frames at 60.0 fps for 180 sec.`, which every camera printed every `chunkLengthInSec` (5 s): 4 cameras printed 4 lines every 5 s, some 400,000 in a 6-day session.
+
+`statusLine: "auto"`, the default, shows it only when campy's output goes to a console (Windows Terminal, PowerShell, a Linux or macOS terminal). When the output goes to a file or another program (a launcher's log, `campy-session`, which prefixes each line with `[acquire]`, a test), campy prints the `collected` lines as before, so a log keeps them. `"always"` shows the status line even then (the log then holds the console codes that rewrite the line), and `"never"` prints the `collected` lines on a console too. On Windows, campy turns on the console's handling of these codes (the classic console and PowerShell 5 have it off), or, where it can't, wipes the line with spaces.
+
 Any config key can be changed for one run on the command line: `--key value` means what `key: value` means in the config file. Text needs no quotes, `False` is false, `None` is the text "None", and a key that takes one value per camera takes a list, in quotes for the shell:
 ```
 campy-acquire ./configs/campy_config_chronicrecord.yaml --cameraTrigger None --codec h264 --startArduino False

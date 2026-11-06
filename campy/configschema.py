@@ -297,6 +297,13 @@ SETTINGS = [
 	# Display
 	Setting("chunkLengthInSec", 5, float, section=DISPLAY, above=0,
 		help="Length of video chunks in seconds for reporting recording progress."),
+	Setting("statusLine", "auto", str, section=DISPLAY, per_camera=ONE, choices=("auto", "always", "never"),
+		fold_case=True,
+		help="While recording, one status line on the console, rewritten in place: the time, each \
+			camera's frames, the frame rate, the trigger's pauses (docs/acquire.md). It replaces each \
+			camera's 'collected N frames' line every chunkLengthInSec. Other messages still print as \
+			lines of their own. 'auto' (default): only when the output is a console, so a log file or a \
+			launcher's log keeps the lines as before; 'always'; 'never'."),
 	Setting("displayFrameRate", 10, float, section=DISPLAY, low=0,
 		help="Display frame rate in Hz. Max ~30. 0 = no display window (headless)."),
 	Setting("displayDownsample", 2, int, section=DISPLAY, low=1,
