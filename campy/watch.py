@@ -212,6 +212,7 @@ class Watch:
 		self.problems = {} # key: Problem, open
 		self.history = collections.defaultdict(collections.deque) # camera: (t, grabbed, dropped, sent)
 		self.disks = collections.defaultdict(collections.deque) # folder: (t, free, frames grabbed by its cameras)
+		self.diskFirst = {} # folder: its first (t, free, frames), for a trigger that runs in bouts
 		self.at = collections.defaultdict(lambda: None) # what ran when: "disk", "serial", "usb"
 		self.started = None
 		self.startedAt = None # wall time, for recording.json
@@ -649,7 +650,8 @@ class Watch:
 	def CheckDisk(self, now):
 		# Whether the disk lasts is counted in frames, not wall-clock time: bytes written per frame grabbed (over the
 		# last DISK_WINDOW_S), times the frames still to record (recTimeInSec x frameRate each, less those grabbed).
-		# With a trigger that runs only part of the time (bouts), the wall clock would say it lasts when it does not.
+		# With a trigger that runs only part of the time (bouts), the wall clock would say it lasts when it does not;
+		# with planned pauses (alertTriggerPauseSec), counted over the whole recording (below).
 		folders = self.Folders()
 		for folder in folders:
 			cameras = self.FolderCameras(folder, folders)
@@ -679,7 +681,13 @@ class Watch:
 					DiskText(free), where, self.diskFree / 1e9))
 			elif free > 1.1 * self.diskFree:
 				self.Clear(key + "/low", "{} free on {}".format(DiskText(free), where), now)
-			t0, f0, n0 = history[0]
+			first = self.diskFirst.setdefault(folder, (now, free, frames))
+			# With planned trigger pauses (bouts: alertTriggerPauseSec), over the whole recording, not the last
+			# DISK_WINDOW_S: other programs fill the disk between the cameras' frames (SpikeGLX while the gate is
+			# open, before and after them), and a few minutes' bytes over their frames swing with the kind of bout
+			# (on the ChronicRecord rig, 150 to 346 MB/s for about 60 on average: "fills" alerts all night, wrongly).
+			# The bouts' plan repeats, so the whole recording's average counts them in the right proportion.
+			t0, f0, n0 = first if self.plannedPause is not None else history[0]
 			rate = (f0 - free) / (now - t0) if now - t0 >= DISK_RATE_MIN_S else None
 			full = None
 			if rate is not None and rate > 0:
