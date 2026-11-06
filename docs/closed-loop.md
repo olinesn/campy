@@ -118,7 +118,7 @@ To light only part of the exposure, use `offset_us` to place the pulse within th
 | `train` | Its train runs while the rule holds |
 | `burst` | `pulses: N` of its train each time the rule starts holding |
 
-- Several rules on one output: its level is on while any of its `level` rules holds, and its train runs while any of its `train` rules holds. Each is stopped when its own last rule lets go, so a level and a train can share an output. Before pull request N, one rule's stop could leave the other kind on: a level stayed on, or a train kept running, until `campy-rules` ended.
+- Several rules on one output: its level is on while any of its `level` rules holds, and its train runs while any of its `train` rules holds. Each is stopped when its own last rule lets go, so a level and a train can share an output. Before pull request 304, one rule's stop could leave the other kind on: a level stayed on, or a train kept running, until `campy-rules` ended.
 - A switch-on the board didn't make is sent again. If a `level` or `train` switch-on is refused (too late, a clash with its group, or an error), `campy-rules` sends it again with the next set while the rule still holds. That set is a fresh frame. Each refusal and each retry is in the events log, and the summary counts the retries. A `pulse` or `burst` is not sent again: its moment has passed.
 - `refractory_s`: a rule doesn't start holding again until that long after it last did.
 
@@ -130,7 +130,7 @@ campy-rules rules.yaml --port /dev/ttyACM1
 campy-live --calibration calibration.toml ...
 campy-acquire config.yaml
 ```
-- **Order matters.** The board counts camera triggers from 1 from when `campy-rules` starts, as campy counts its frames, so frame k is the same frame for both. Both keep counting through a pause in the trigger, such as the pause between two bouts, so a train's `every` and `phase` stay on campy's frame numbers. The board reports each pause of half a second or more, and `campy-rules` logs it (`kind: gap` in the events log). Before pull request N, the board started again at frame 1 after such a pause, while campy didn't, so with `every: 2` blue and violet could swap relative to campy's frames. If the board started counting mid-recording, `campy-rules` matches the frames by time instead, to within a frame, says so and logs it (`kind: rebase`).
+- **Order matters.** The board counts camera triggers from 1 from when `campy-rules` starts, as campy counts its frames, so frame k is the same frame for both. Both keep counting through a pause in the trigger, such as the pause between two bouts, so a train's `every` and `phase` stay on campy's frame numbers. The board reports each pause of half a second or more, and `campy-rules` logs it (`kind: gap` in the events log). Before pull request 304, the board started again at frame 1 after such a pause, while campy didn't, so with `every: 2` blue and violet could swap relative to campy's frames. If the board started counting mid-recording, `campy-rules` matches the frames by time instead, to within a frame, says so and logs it (`kind: rebase`).
 - It runs in campy's Python environment or in `campy-live`'s (it needs only numpy, pyyaml and pyserial).
 - It ends when `campy-live` does, or at Ctrl-C, and switches everything off as it ends.
 
@@ -142,7 +142,7 @@ Options:
 ## Safety
 
 - **Off by default.** The outputs are low from power-up and after every reset.
-- **Watchdog.** `campy-rules` sends the board a heartbeat every 50 ms. If 250 ms pass without one while anything is on, the board switches everything off by itself. That covers a crash, a kill or an unplugged cable. It also covers a stuck decision loop: the heartbeat goes out only while the loop that checks the rules has gone round in the last 100 ms. Before pull request N, another thread sent it, so a stuck loop kept the watchdog quiet.
+- **Watchdog.** `campy-rules` sends the board a heartbeat every 50 ms. If 250 ms pass without one while anything is on, the board switches everything off by itself. That covers a crash, a kill or an unplugged cable. It also covers a stuck decision loop: the heartbeat goes out only while the loop that checks the rules has gone round in the last 100 ms. Before pull request 304, another thread sent it, so a stuck loop kept the watchdog quiet.
 - **After the watchdog.** `campy-rules` starts the rules over from the next sets, and starts the session's trains (`run: session`) again. A rule that still holds then switches its output on again.
 - **Logs never hold up a decision.** `campy-rules` writes its logs on a thread of its own. A slow disk delays neither the decisions, nor the stale-feed check, nor the heartbeat.
 - **Clean exit.** `campy-rules` switches everything off when it ends, whatever the reason. That includes the session's photometry trains: when `campy-live` ends or restarts, `campy-rules` ends too, and the trains stop.
