@@ -120,7 +120,7 @@ To light only part of the exposure, use `offset_us` to place the pulse within th
 
 - Several rules on one output: its level is on while any of its `level` rules holds, and its train runs while any of its `train` rules holds. Each is stopped when its own last rule lets go, so a level and a train can share an output. Before pull request 304, one rule's stop could leave the other kind on: a level stayed on, or a train kept running, until `campy-rules` ended.
 - A switch-on the board didn't make is sent again. If a `level` or `train` switch-on is refused (too late, a clash with its group, or an error), `campy-rules` sends it again with the next set while the rule still holds. That set is a fresh frame. Each refusal and each retry is in the events log, and the summary counts the retries. A `pulse` or `burst` is not sent again: its moment has passed.
-- `refractory_s`: a rule doesn't start holding again until that long after it last did. That still counts after a stalled feed, the watchdog or a `campy-live` restart, when the rules otherwise start over. Before pull request 309, those reset it, so a reward could come again sooner.
+- `refractory_s`: a rule doesn't start holding again until that long after it last did. That still counts after a stalled feed, the watchdog or a `campy-live` restart, when the rules otherwise start over. Before pull request 311, those reset it, so a reward could come again sooner.
 
 ## Running it
 
@@ -139,11 +139,11 @@ Options:
 - `--dry-run` opens no port: it reads the feed, checks the rules and logs what it would send.
 - `--replay campy-live_<date_time>.npy` runs the rules over a finished `campy-live` log, with no board. It says how often each rule fired and for how long it held. Use it to tune regions, distances and debounce times on real data before an experiment.
 - `--bound-ms`, `--stale-ms` and `--poll-ms`: see the latency and safety sections below.
-- `--live-wait-s`: how long to wait for `campy-live` to come back while the recording goes on. The default is no limit. `--live-wait-s 0` ends `campy-rules` with `campy-live`, as before pull request 309.
+- `--live-wait-s`: how long to wait for `campy-live` to come back while the recording goes on. The default is no limit. `--live-wait-s 0` ends `campy-rules` with `campy-live`, as before pull request 311.
 
 ### When campy-live ends or restarts
 
-`campy-session` restarts a `campy-live` that stops or hangs during the recording ([Live tracking](live-tracking.md)), so a restart is a normal event. Since pull request 309, `campy-rules` rides through it:
+`campy-session` restarts a `campy-live` that stops or hangs during the recording ([Live tracking](live-tracking.md)), so a restart is a normal event. Since pull request 311, `campy-rules` rides through it:
 
 1. As soon as `campy-live`'s results feed ends, whatever the rules switched on goes off: a laser, a rule's train. The session's trains (`run: session`, such as photometry excitation) keep running, since they don't depend on the poses.
 2. `campy-rules` says so once: `campy-live ended: pose rules off, session trains on (blue, violet), waiting for campy-live (the recording goes on)`. It keeps the board's heartbeat going while it waits, so the board's watchdog stays quiet and the trains go on.
@@ -164,7 +164,7 @@ The events log has a `live_gone` line when the results end and a `live_back` lin
 - **After the watchdog.** `campy-rules` starts the rules over from the next sets, and starts the session's trains (`run: session`) again. A rule that still holds then switches its output on again.
 - **Logs never hold up a decision.** `campy-rules` writes its logs on a thread of its own. A slow disk delays neither the decisions, nor the stale-feed check, nor the heartbeat.
 - **Clean exit.** `campy-rules` switches everything off when it ends, whatever the reason, the session's photometry trains included.
-- **`campy-live` gone mid-recording.** What the rules switched on goes off at once. The session's trains, and the heartbeat, go on while `campy-rules` waits for the next `campy-live` ([When campy-live ends or restarts](#when-campy-live-ends-or-restarts)). Before pull request 309, `campy-rules` ended then, and its clean exit stopped the trains. When the recording itself ends, it ends and switches everything off, as before. The heartbeat still goes only while its waiting loop goes round, so a stuck or killed `campy-rules` is still caught by the watchdog.
+- **`campy-live` gone mid-recording.** What the rules switched on goes off at once. The session's trains, and the heartbeat, go on while `campy-rules` waits for the next `campy-live` ([When campy-live ends or restarts](#when-campy-live-ends-or-restarts)). Before pull request 311, `campy-rules` ended then, and its clean exit stopped the trains. When the recording itself ends, it ends and switches everything off, as before. The heartbeat still goes only while its waiting loop goes round, so a stuck or killed `campy-rules` is still caught by the watchdog.
 - **A stalled feed.** If no set comes from `campy-live` for 200 ms (`--stale-ms`), whatever the rules switched on goes off. The session's trains keep running, since they don't depend on the poses.
 - **Limits.** `max_on_s` per output, and groups that are never on together, are enforced on the board itself.
 - **Old poses.** Nothing ever acts on a pose taken longer ago than `bound_ms` (next section). Switching off is never refused.
