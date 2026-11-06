@@ -970,6 +970,29 @@ def test_a_camera_that_lost_more_frames_than_its_ring_holds_is_paired_again(ring
 	assert late and all(seen == [number % 251] * 3 for number, seen in late), late
 
 
+def test_a_camera_catching_up_on_held_frames_is_not_paired_by_their_host_times(rings):
+	# A camera whose process was stopped comes back with the frames its driver held meanwhile, all at once:
+	# their host times are those of their coming, not of their pulses. Paired by them, it got an offset 97
+	# frames off on the EVO-X2. Now it is left as it is until its frames come on time again, then paired
+	writers, cams, said = three(rings)
+	try:
+		t0 = 10**12
+		for p in range(1, 31):
+			pulse(writers, p, t0, skip=(2,) if p > 10 else ())
+		# Camera 2's frames 11-30 (no frame lost, so numbered as the others'), all here within 2 ms, now
+		now = t0 + 30 * PERIOD + 1_000_000
+		for p in range(11, 31):
+			writers[2].Write(frame(p), p, now + (p - 11) * 100_000, p / 60)
+		cams.Leave(2, "stalled", time.monotonic())
+		assert cams.Repair([0, 1, 2]) == {0, 1} and cams.offset == [0, 0, 0] # not placed: catching up
+		# Then on time again: its frames paired with the same pulses' (offset 0)
+		for p in range(31, 35):
+			pulse(writers, p, t0, numbers=[p, p, p])
+		assert 2 in cams.Repair([0, 1, 2]) and cams.offset == [0, 0, 0]
+		assert not any("paired again" in s for s in said)
+	finally:
+		cams.Close()
+
 def test_every_camera_pausing_at_once_is_no_stall_and_no_offset(rings, monkeypatch):
 	# The trigger pauses (between a Pico's bouts): every camera stops at once for longer than STALL_S, then
 	# goes on. No camera is left out, no offset taken, and the sets after the pause pair the same pulses
