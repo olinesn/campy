@@ -459,7 +459,13 @@ Notes on the measurements:
   | Pro Max Slim | 1,200 / 2.3 / 2.4 | 3,600 / 5.5 / 5.7 / 7.8 / 8.7 | 1,800 / 5.5 / 5.7 / 8.8 / 9.7 |
   | Precision 7875 | 1,200 / 0.9 / 1.0 | 3,600 / 1.6 / 1.8 / 4.1 / 5.4 | 1,798 / 1.6 / 1.7 / 4.7 / 5.7 |
 
-  In the first round, every 1-camera and 3-camera run was tracked from frame 1. The replays started at frame 1 on the EVO-X2, 2 on the Pro Max Slim and 3 on the Precision 7875 (frame 1 on 2.4.0); the Pro Max Slim's clean replay rerun kept all 1,800 sets. The Windows 11 VM's recording check kept every frame again (1,200, then 3 × 3,600); its 3-camera run was `RIG_CLEAN`, its 1-camera run flagged by one sighting of the security scanner. The Dell Pro Tower Plus was not checked this time: as an experiment machine, it runs checks only when nobody uses it.
+  In the first round, every 1-camera and 3-camera run was tracked from frame 1. The replays started at frame 1 on the EVO-X2, 2 on the Pro Max Slim and 3 on the Precision 7875 (frame 1 on 2.4.0); the Pro Max Slim's clean replay rerun kept all 1,800 sets. The Windows 11 VM's recording check kept every frame again (1,200, then 3 × 3,600); its 3-camera run was `RIG_CLEAN`, its 1-camera run flagged by one sighting of the security scanner.
+
+  The Dell Pro Tower Plus ran the same checks at 10:39–10:44 PM, under the experiment-machine rules (inside its test hours, nobody had used it for over 40 minutes, the banner showing each run with a Stop button). Again nothing was skipped or misaligned, every camera kept all its frames, and every set was tracked from frame 1 (the replay from frame 2, as on 2.4.0). Its 1-camera run was flagged by two sightings of the security scanner and its rerun was clean; the times matched 2.4.0's to within 0.4 ms:
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | Pro Tower Plus (RTX A2000) | 1,200 / 2.7 / 2.8 | 3,600 / 6.7 / 7.0 / 9.2 / 10.5 | 1,799 / 6.8 / 7.0 / 10.5 / 12.2 |
 
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
