@@ -76,8 +76,8 @@ def heartbeats(until_s, every_s=0.1):
 
 def test_frames_are_counted_from_the_trigger(outputs_sim):
 	edges, said = run(outputs_sim, 0.6, ["id"])
-	assert said[0][1] == "ready campy_outputs 1"
-	assert ("ok campy_outputs 1" in [line for _, line in said])
+	assert said[0][1] == "ready campy_outputs 2"
+	assert ("ok campy_outputs 2" in [line for _, line in said])
 	rises = [(int(l.split()[1]), int(l.split()[2])) for _, l in lines(said, "t")]
 	assert [k for k, _ in rises] == list(range(1, 31))
 	for k, t in rises:

@@ -520,15 +520,16 @@ def test_clock_map_is_offset_and_drift():
 class FakePort:
 	"""A serial port whose board answers what the test says, as it says."""
 
-	def __init__(self):
+	def __init__(self, version=outputs.VERSION):
 		self.written, self.incoming = [], []
 		self.lock = threading.Lock()
+		self.version = version # what it answers to id
 
 	def write(self, data):
 		with self.lock:
 			self.written.append(data.decode().strip())
 			if data.decode().strip() == "id":
-				self.incoming.append(b"ok campy_outputs 1\r\n")
+				self.incoming.append("ok campy_outputs {}\r\n".format(self.version).encode())
 			elif data.decode().strip() == "time":
 				self.incoming.append("ok time {} 0 -1\r\n".format(clock.HostNs() // 1000).encode())
 
@@ -545,6 +546,16 @@ class FakePort:
 
 	def close(self):
 		pass
+
+
+def test_board_refuses_an_older_or_newer_sketch():
+	# A board still running the sketch from before pull request 304 answers
+	# id with version 1: campy-rules says to upload the new one, and why
+	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 1\).*needs version 2.*Upload"):
+		outputs.Board(connection=FakePort(version=1), port="fake", heartbeat=0, sync=0)
+	with pytest.raises(outputs.BoardError, match=r"newer campy_outputs \(version 3\).*Update campy"):
+		outputs.Board(connection=FakePort(version=3), port="fake", heartbeat=0, sync=0)
+	assert "not campy_outputs version 2" in outputs.Mismatch("fake", "ok something 2")
 
 
 def test_a_lost_answer_never_goes_to_the_wrong_command():
@@ -612,7 +623,7 @@ class SketchPort:
 			reply = self.refuse(w) if self.refuse else None
 			if reply is None:
 				if w[0] == "id":
-					reply = "ok campy_outputs 1"
+					reply = "ok campy_outputs {}".format(outputs.VERSION)
 				elif w[0] == "time":
 					reply = "ok time {} 0 -1".format(now // 1000)
 				elif w[0] in ("on", "pulse"):

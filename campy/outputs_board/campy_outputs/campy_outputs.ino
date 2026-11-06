@@ -73,7 +73,7 @@
 #include "soc/gpio_struct.h"
 #endif
 
-#define VERSION 1
+#define VERSION 2           // 2: counts on through trigger pauses, says gap, takes reset (pull request 304)
 #define MAX_CH 8
 #define RISES 1024          // trigger rises remembered: 17 s at 60 fps
 #define NONE INT64_MAX
