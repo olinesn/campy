@@ -1,0 +1,43 @@
+# ChronicRecord bout sessions from campy's panel (campy-session panel): the cameras, the Pico and SpikeGLX from
+# one page in the browser, in place of the PowerShell launcher. On the rig it lives in C:\campy_data\configs, next
+# to chronic_pico.yaml, which it extends; its desktop icon:
+#   campy-session shortcut C:\campy_data\configs\chronic_session.yaml --name "ChronicRecord session"
+# (in the recording environment). What the page does, in order: chronicrecord/README.md, "From the panel".
+extends: chronic_pico.yaml
+
+# The session's folder, C:\data\<date_time>\ (gate tests: C:\data\gatetest\<date_time>\, below): campy's videos,
+# spikeglx\ (SpikeGLX's run), pico\ (the Pico's log) and logs\ (every program's output).
+videoFolder: "C:\\data"
+
+# The cameras in one campy-live-view window (frames only, no tracking), not a preview window per camera.
+liveFeed: True
+displayFrameRate: 0
+view:
+  show: true
+  args: ["--no-3d", "--fps", "15"]
+
+pico:
+  port: "E665485457699D30" # the rig's Pico, by its USB serial number (the spare is E6654854579F5F2F)
+  state_dir: "C:\\campy_data\\pico\\state"
+  # The lengths the page offers, the first by default. campy's recTimeInSec is worked out from the Pico's plan for
+  # the length chosen (the plan's camera pulses / 60), so they can't disagree.
+  lengths:
+    - {name: "6 days", seconds: 518400}
+    - {name: "Gate test (15 min, 3 bouts)", seconds: 900, videoFolder: "C:\\data\\gatetest"}
+    - {name: "1 hour (12 bouts)", seconds: 3600}
+  gate_check: true # the gate blinks once before campy starts; SpikeGLX must open a file for it
+  last_gate_s: 120 # campy ends after the last bout's last frame; the Pico's gate falls 10 s later
+
+spikeglx:
+  sdk: "C:\\campy_data\\launchers\\spikeglx" # holds sglx_pkg (SpikeGLX-CPP-SDK)
+  exe: "C:\\SpikeGLX\\Release_v20260826-api4\\Release_v20260826-api4\\SpikeGLX\\SpikeGLX_NISIM.exe"
+  devices: "(20,1,1)(20,obx)" # the probe (slot 20, port 1, dock 1) and the OneBox, for a SpikeGLX freshly opened
+  stream: [1, 0] # the OneBox's stream, where the gate's TTL is
+  run_prefix: "chronic_"
+
+windows:
+  update_paused: true # warn unless Windows Update is paused until a day after the session's end (the page's button)
+  usb_suspend: true
+
+panel:
+  rig_lock: auto # C:\campy_data\live\rig.py: the rig is held while the panel is open; close it from its page

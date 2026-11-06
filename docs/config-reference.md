@@ -142,4 +142,7 @@ Every key a campy config file can have, and its command-line option (`--key valu
 | `view` | none | key: value lines of its own | - | campy-session: the live view (campy-live-view); view: true or false is short for view: {show: true}. campy-acquire passes it by. |
 | `post` | none | key: value lines of its own | - | campy-session: what to do after the recording (remux, join, align, export, copy). campy-acquire passes it by. |
 | `panel` | none | key: value lines of its own | - | campy-session: its control panel. campy-acquire passes it by. |
+| `pico` | none | key: value lines of its own | - | campy-session: a Raspberry Pi Pico that makes the trigger and the experiment's TTLs (chronicrecord/chronic_control.py): its session's lengths, port, settings. The panel starts it once every camera is ready. campy-acquire passes it by. |
+| `spikeglx` | none | key: value lines of its own | - | campy-session: SpikeGLX's run, started into the recording's folder before the cameras and stopped after them, through its command server and SDK. campy-acquire passes it by. |
+| `windows` | none | key: value lines of its own | - | campy-session: warn before a recording that Windows Update could restart the PC during it, or that USB selective suspend is on. campy-acquire passes it by. |
 

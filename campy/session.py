@@ -111,8 +111,23 @@ POST = {
 	"run": ((list,), [], "your own commands, {folder} replaced by the recording's folder"),
 	"ffmpeg": ((str,), "", "the ffmpeg to remux with (default: imageio-ffmpeg's)"),
 	}
+PANEL = {
+	"rig_lock": ((str,), "", "rig.py (bench/rig.py, installed on the rig): the panel holds the rig's lock while it is "
+		"open, and Ctrl-C in its window does nothing (the page's Close ends it); \"auto\": the rig's installed one"),
+	"owner": ((str,), "panel", "who holds the rig lock, as rig.py status shows it"),
+	}
+VIEW["python"] = ((str,), "", "the python that runs campy-live-view (default: campy-live's, when the config has a "
+	"live: section or campy-live's environment is registered; else this one)")
 POST_DEFAULTS = {key: default for key, (kinds, default, _) in POST.items()}
-SECTIONS = {"live": LIVE, "view": VIEW, "post": POST}
+
+
+def DeviceSections():
+	# The devices around a recording (campy/devices.py): the Pico, SpikeGLX, Windows' settings
+	from campy import pico, spikeglx, winsetup
+	return {"pico": pico.KEYS, "spikeglx": spikeglx.KEYS, "windows": winsetup.KEYS}
+
+
+SECTIONS = dict({"live": LIVE, "view": VIEW, "post": POST, "panel": PANEL}, **DeviceSections())
 
 RESTART_AFTER_S = (10, 60, 300) # campy-live started again after these, then every 300 s
 RESTARTS_PER_HOUR = 5
@@ -200,8 +215,15 @@ class Config:
 				raise SessionError("{}: campy-session sets it itself; leave it out.".format(key))
 		self.resolved = self.Resolve()
 		self.acquire = self.resolved.params
+		self.replaced = []
 		for key in ("sessionPath", "stopFile"):
 			if str(self.acquire.get(key, "None")) not in ("None", ""):
+				source = self.resolved.sources.get(key)
+				if key == "stopFile" and getattr(source, "path", None) and os.path.abspath(source.path) != self.path:
+					# A profile's, for its own launchers: campy-session's stop file replaces it, as on the command line
+					self.replaced.append("stopFile {} (from {}): campy-session uses its own".format(self.acquire[key],
+						source.path))
+					continue
 				raise SessionError("{}: campy-session sets it itself; leave it out of the config.".format(key))
 		sections = self.resolved.sections
 		self.live = Section("live", sections["live"], LIVE) if "live" in sections else None
@@ -209,12 +231,15 @@ class Config:
 		if "view" not in sections:
 			self.view["show"] = self.live is not None # without tracking, the cameras' own preview is there
 		self.post = Section("post", sections.get("post"), POST)
+		self.panel = Section("panel", sections.get("panel"), PANEL)
 		if self.post["remux"] not in (True, False, "keep"):
 			raise SessionError("post.remux: {!r} is not true, false or keep.".format(self.post["remux"]))
 		if isinstance(self.post["copy"], str):
 			self.post["copy"] = {"to": self.post["copy"]}
 		if set(self.post["copy"]) - {"to"}:
 			raise SessionError("post.copy: it takes to: only (the folder the recording is copied into).")
+		for name, keys in DeviceSections().items():
+			setattr(self, name, Section(name, sections[name], keys) if name in sections else None)
 		if self.live is not None and self.live["model"] == "sleap" and not (self.live["centroid"] and self.live["instance"]):
 			raise SessionError("live: give the trained models' folders, centroid: and instance: (or model: random, "
 				"or none).")
@@ -605,8 +630,10 @@ ACQUIRE = "import sys; sys.argv = ['campy-acquire'] + sys.argv[1:]; from campy.c
 class Session:
 	"""One run of campy-session: run() starts the programs, waits, ends them, and returns campy-acquire's exit code."""
 
-	def __init__(self, config, live_python=None, lock=True, detached=False):
+	def __init__(self, config, live_python=None, lock=True, detached=False, devices=None):
 		self.config = config
+		# The Pico, SpikeGLX, Windows' settings (campy/devices.py): the panel's, or None
+		self.devices = devices
 		self.live_python = live_python
 		self.take_lock = lock # False: the panel holds campy-session's lock (campy/panel.py)
 		# True (the panel): campy-acquire and campy-live apart from this console altogether, so that closing the
@@ -720,7 +747,25 @@ class Session:
 		self.MakeFolder()
 		Say("Recording into {}".format(self.folder))
 		Say("Logs: {}".format(self.logs))
+		for text in config.replaced:
+			Say(text)
 		self.Status()
+		if self.devices is not None:
+			self.state = "preparing"
+			self.Status()
+			try:
+				self.devices.Before(self)
+			except SessionError as e:
+				self.state = "failed"
+				self.Problem(str(e))
+				self.Status()
+				return 1
+			if self.presses:
+				self.state = "stopped"
+				self.Problem("Stopped before the recording started: nothing was recorded.")
+				self.devices.After(self, 1)
+				self.Status()
+				return 1
 
 		if config.live is not None and not self.StartLive(1, wait=True):
 			if config.live["required"]:
@@ -761,6 +806,9 @@ class Session:
 		else:
 			self.Problem("campy-acquire ended with exit code {}: see {}.".format(code, acquire.log))
 		self.Status()
+		if self.devices is not None:
+			self.devices.After(self, code)
+			self.Status()
 		self.EndLive()
 		self.EndWatch()
 		view = self.parts.get("view")
@@ -801,7 +849,14 @@ class Session:
 		return True
 
 	def ViewPython(self):
-		return self.live_python or Python()
+		if self.config.view["python"]:
+			return self.config.view["python"]
+		if self.live_python:
+			return self.live_python
+		try:
+			return LivePython({})[0] # campy-live's registered environment draws the view best (OpenCV, Qt)
+		except SessionError:
+			return Python()
 
 	def ViewEnv(self):
 		return self.LiveEnv() if self.config.live is not None else dict(os.environ, PYTHONUNBUFFERED="1")
@@ -852,6 +907,8 @@ class Session:
 					self.Problem("campy-watch stopped (exit code {}): see {}. The recording goes on, without its "
 						"alerts about the live tracking.".format(part.code, part.log))
 		self.CheckHung()
+		if self.devices is not None:
+			self.devices.Watch(self)
 		if self.view_wanted:
 			self.view_wanted = False
 			self.ReopenView()
@@ -996,6 +1053,11 @@ class Session:
 			Say("Ctrl-C: the steps after the recording stop after this one (campy-session post <folder> runs the rest).")
 			return
 		level = min(self.presses, 2)
+		if self.devices is not None and level == 1:
+			# The Pico first (its session stopped now), then campy: in the main thread, from Watch
+			self.devices.Ask("stop", "now")
+			Say("Ctrl-C: stopping the Pico, then campy-acquire.")
+			return
 		self.RequestStop(level)
 		Say("Ctrl-C: campy-acquire stops its cameras{}.".format(" now, without closing the ones that hang" if level == 2
 			else ", each closing its video: please wait"))
@@ -1035,6 +1097,7 @@ class Session:
 			"live_restarts": len(self.live_parts) - 1 if self.live_parts else 0,
 			"problems": [{"time": t, "text": text} for t, text in self.problems],
 			"post": {step: {"state": state, "message": message} for step, (state, message) in self.post_results.items()},
+			"devices": self.devices.Status() if self.devices is not None else None,
 			"recording": {"started": Stamp(started), "elapsed_s": round((ended or time.time()) - started, 1) if started else
 				None, "planned_s": planned, "stop_asked": self.stop_written}}
 
@@ -1061,6 +1124,9 @@ def RunMain(argv):
 	args, rest = p.parse_known_args(argv)
 	try:
 		config = Config(args.config, rest)
+		if config.pico is not None:
+			raise SessionError("This config drives a Pico (pico:): record it from the panel, campy-session panel {}, "
+				"which asks before starting and stopping the Pico.".format(args.config))
 		session = Session(config)
 		return session.Run()
 	except SessionError as e:

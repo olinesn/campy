@@ -120,13 +120,17 @@ campy-session post <recording folder> --force         # after a crash, or again
 
 ### From a page in the browser: `campy-session panel`
 
-For people who'd rather not use a terminal, the same recording can be run from a page in the browser:
+The same recording can be run from a page in the browser. On the rigs this is how every recording starts, with live tracking or without, so nobody types a launcher command:
 
 ```
 campy-session panel <config>.yaml
 ```
 
-It opens the page in this computer's browser, and prints its address. A recording starts only when someone presses **Start recording** on the page, never on its own. Its length is the config's `recTimeInSec`. After each recording the page is ready for the next one, into a new folder. Ctrl-C in the panel's console closes it, when nothing is recording.
+It opens the page in this computer's browser, and prints its address. A recording starts only when someone presses **Start recording** on the page, never on its own. Its length is the config's `recTimeInSec`. After each recording the page is ready for the next one, into a new folder. **Close the panel** at the top of the page closes it when nothing is recording, and so does Ctrl-C in its console, unless the panel holds the rig's lock (below).
+
+**On a rig shared with tests,** `panel: {rig_lock: auto}` in the config makes the panel wait for the rig to be free and hold it (`rig.py`, `bench/rig.py` as installed on the rig: `C:\campy_data\live\rig.py` on Windows, `~/sleap-bench/rig.py` on Linux; or give its path) for as long as the panel is open. Ctrl-C in its window then does nothing: it would reach `rig.py` too, which ends every program of its job at once, before anything is stopped in order. Use **Close the panel**. `panel.owner` is the name `rig.py status` shows (default `panel`).
+
+**The view** (`campy-live-view`) runs with `view.python` when given, else with `campy-live`'s environment (`live.python`, or the one `campy-session register-live` registered), which has the view's OpenCV, even for a recording without a `live:` section; else with the recording's own python.
 
 What the page shows, refreshed every second:
 
@@ -142,6 +146,7 @@ What the page shows, refreshed every second:
   - **bookmarks:** a note box and an Add button. They write the same `bookmarks.csv` in the recording's folder as `campy-live-view`'s `m` key, and the two never give two bookmarks the same number;
   - **programs:** each one's state, and a button that opens `campy-live-view` again if it was closed.
 - **After it:** each step of `post:`, as it runs.
+- **With a Pico and SpikeGLX** (the config's `pico:` and `spikeglx:` sections, the ChronicRecord rig's): the session's length to choose, their own checks, each step (SpikeGLX's run, the gate check, the Pico), the Pico's bout and pulses, SpikeGLX's run and files, a **Start the Pico** button once every camera is ready, and a Stop that asks whether to stop after the Pico's bout or now ([Recording a session from the desktop](recording-a-session.md#on-the-chronicrecord-rig-the-pico-and-spikeglx), [chronicrecord/README.md](../chronicrecord/README.md#from-the-panel)).
 
 **Stop** stops the recording exactly as Ctrl-C does: each camera closes its video. If a camera hangs while closing, the button turns into **Stop now, without closing**, for a few seconds. Closing the page stops nothing, and the page can be opened again at any time: from the printed address, or by running `campy-session panel` again (or double-clicking the icon). A panel that is already open writes its address into `~/.campy/status/panel.json`, readable by your user only, and a second launch that finds it answering opens that page in the browser and ends, instead of refusing with "Another campy-session is running".
 
