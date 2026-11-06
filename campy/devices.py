@@ -150,9 +150,13 @@ class Devices:
 			try:
 				checks.append(("ok", self.sglx.Check(), None))
 			except sglxmod.SpikeGLXError as e:
-				if self.sglx.section["exe"] and os.path.isfile(self.sglx.section["exe"]) and not self.sglx.Answers():
+				if self.sglx.section["exe"] and os.path.isfile(self.sglx.section["exe"]) and not self.sglx.Answers() and \
+						not sglxmod.ProgramRunning(self.sglx.section["exe"]):
 					checks.append(("ok", "SpikeGLX isn't open: it is opened at Start ({})".format(self.sglx.section["exe"]),
 						None))
+				elif sglxmod.ProgramRunning(self.sglx.section["exe"]) and not self.sglx.Answers():
+					checks.append(("block", "SpikeGLX is open, but its command server doesn't answer: in SpikeGLX, Options > "
+						"Command Server Settings > Enable; or close SpikeGLX, and it is opened at Start.", None))
 				else:
 					checks.append(("block", str(e), None))
 		if self.windows is not None:

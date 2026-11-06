@@ -377,3 +377,16 @@ def test_campy_failing_leaves_the_pico_and_spikeglx_running(tmp_path, home, rig,
 		assert not state(sglx_state)["running"]
 	finally:
 		close_panel(proc, url, lines)
+
+
+def test_spikeglx_open_without_its_command_server_is_not_opened_again(tmp_path, sglx_state, monkeypatch):
+	# SpikeGLX running, its command server off: a second SpikeGLX would fight the first for the probe
+	set_state(sglx_state, open=False)
+	exe = tmp_path / "SpikeGLX_NISIM.exe"
+	exe.write_text("")
+	launched = []
+	monkeypatch.setattr(spikeglx, "Launch", launched.append)
+	monkeypatch.setattr(spikeglx, "ProgramRunning", lambda exe: True)
+	with pytest.raises(spikeglx.SpikeGLXError, match="command server doesn't answer"):
+		a_sglx(exe=str(exe)).Open()
+	assert launched == []

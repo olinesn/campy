@@ -189,6 +189,10 @@ class SpikeGLX:
 		if self.Answers():
 			return True
 		exe = self.section["exe"]
+		if ProgramRunning(exe):
+			raise SpikeGLXError("SpikeGLX is open, but its command server doesn't answer: in SpikeGLX, Options > Command "
+				"Server Settings > Enable (127.0.0.1, port {}); or close SpikeGLX, and it is opened at Start.".format(
+				self.section["port"]))
 		if not exe:
 			raise SpikeGLXError("SpikeGLX doesn't answer: open it, with its command server on (or give spikeglx.exe, to "
 				"have it opened from here).")
@@ -250,6 +254,20 @@ class SpikeGLX:
 			return {"answers": False, "error": str(e)}
 		finally:
 			self.lock.release()
+
+
+def ProgramRunning(exe):
+	"""True when SpikeGLX's program (exe's name, else any SpikeGLX*) is running on this computer; False elsewhere than
+	Windows, or when that can't be told."""
+	if sys.platform != "win32":
+		return False
+	name = os.path.basename(exe) if exe else "SpikeGLX*"
+	try:
+		out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq {}".format(name), "/FO", "CSV", "/NH"],
+			capture_output=True, text=True, timeout=30)
+	except (OSError, subprocess.TimeoutExpired):
+		return False
+	return "spikeglx" in out.stdout.lower()
 
 
 def Files(folder):
