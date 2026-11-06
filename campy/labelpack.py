@@ -3,7 +3,8 @@ campy-label-pack: the sets campy-live-flag picked, as one file to correct in
 LUC3D, with campy-live's predictions already on them.
 
 	campy-label-pack ./campy-live_2026-10-22_15-46-09_flags/sample.json \\
-		--recording ./rec/2026-10-22_15-46-09 --name chronicrecord_2026-10-23
+		--recording ./rec/2026-10-22_15-46-09 --name chronicrecord_2026-10-23 \\
+		--test-package tests/chronicrecord.test.pkg.slp
 
 It writes, into --out (default: next to sample.json), <name>/:
 
@@ -46,10 +47,25 @@ Test sets
 ---------
 Some sets are kept to measure models, and never trained on: every set in a
 minute of a recording that falls in the test share (--test-share, a third),
-chosen by a hash of the recording's name and the minute, so a set is always
-on the same side, in every round and whatever else is picked. Whole minutes,
-not single sets, so no frame a few frames from a test frame is trained on.
-sets.csv's test column says which; campy-label-merge splits them off.
+chosen by a hash of the recording's name and the minute. The minutes are the
+recording's own (campy's frame number over its frame rate, SplitClock), not
+the log's, so a set is on the same side in every log of the recording (a
+campy-live started late or again, a campy-live.part2.npy), in every round,
+whatever else is picked. A replay (emulated cameras) counts the replayed
+clip's minutes, keyed on the clip, so a clip is split the same way in every
+replay of it. Whole minutes, and a set within --guard-s (3 s) of a test
+minute is a test set too, so no training frame is within 3 s of a test
+frame. With --test-package (the rig's test set), a set within 3 s of one of
+its frames is a test set too; with --train-package, a set that would be a
+test set but is within 3 s of a frame already trained on is left out. These
+keep packages made before this split (which counted from the log's first
+set) apart from new ones. sets.csv's test column says which side, split_source
+and split_s the clock it was decided on, and split why; campy-label-merge
+splits them off.
+
+The package's name is its round's name in the training and test packages
+(default: the recording's, and the start of a hash of sample.json, so
+packing one recording's flags twice makes two rounds).
 
 It needs sleap-io (campy-live's environment has it, with sleap-nn), and
 reads the videos with it. A recording made with campy's fragmentedVideo (the
@@ -64,6 +80,7 @@ import numpy as np
 from campy import liveexport, strictjson
 
 TEST_SHARE = 1 / 3
+GUARD_S = 3.0 # no training set this close to a test minute, or to a test frame
 
 
 class PackError(Exception):
@@ -74,13 +91,121 @@ def Say(text):
 	print(text, flush=True)
 
 
-def IsTest(recording, time_s, share=TEST_SHARE):
-	"""Whether the set at time_s (seconds since the log's first set) of this
-	recording is a test set: its whole minute is, or isn't."""
-	name = os.path.basename(os.path.normpath(recording))
-	minute = int(time_s // 60)
+def IsTest(source, seconds, share=TEST_SHARE):
+	"""Whether the minute of source's clock that seconds falls in is a test
+	minute: a hash of the source's name (a recording folder's name, or a
+	replayed clip's, SplitClock) and the minute, so it is the same on every
+	computer and in every round."""
+	name = os.path.basename(os.path.normpath(source))
+	minute = int(seconds // 60)
 	h = hashlib.sha1("{}:{}".format(name, minute).encode()).digest()
 	return int.from_bytes(h[:4], "big") / 2 ** 32 < share
+
+
+class SplitClock:
+	"""
+	The clock the test split counts minutes on: the recording's own, campy's
+	frame number over its frame rate (frame 1 is 0 s), the same in every log
+	of the recording, whenever campy-live started. A recording of emulated
+	cameras (cameraMake emu) replays a clip: its clock is the clip's, keyed on
+	the clip (its folder's name and file name), and when the clip's
+	frametimes.npy is beside it, counted from the clip's start again on each
+	loop. So a clip replayed into any number of recordings has its frames on
+	the same side every time.
+	"""
+
+	def __init__(self, recording, camera, summary):
+		from campy.align import ReadMetadata
+		path = os.path.join(recording, camera, "metadata.csv")
+		meta = ReadMetadata(path) if os.path.isfile(path) else {}
+		try:
+			self.rate = float(meta.get("frameRate") or (summary or {}).get("frame_rate") or 0)
+		except (TypeError, ValueError):
+			self.rate = 0.0
+		if not self.rate > 0:
+			raise PackError("{}: no frame rate (metadata.csv's frameRate, or the log's summary), which the test "
+				"split counts minutes by".format(os.path.join(recording, camera)))
+		self.source = os.path.basename(os.path.normpath(recording))
+		self.clip_frames = None
+		if str(meta.get("cameraMake", "")).lower() == "emu" and len(str(meta.get("videoFilename", ""))) > 3:
+			clip = str(meta["videoFilename"])[3:] # emu.ClipPath: "emuclip.mp4" plays clip.mp4
+			root = str(meta.get("videoFolderRoot") or meta.get("videoFolder") or "")
+			self.source = "clip {} {}".format(os.path.basename(os.path.normpath(root)) if root else "", clip).replace(
+				"/", "_").replace("\\", "_")
+			times = os.path.join(root, str(meta.get("cameraName") or camera), "frametimes.npy")
+			if root and os.path.isfile(times):
+				try:
+					self.clip_frames = int(np.load(times, mmap_mode="r").shape[-1]) or None
+				except (OSError, ValueError):
+					self.clip_frames = None
+
+	def Seconds(self, frame):
+		n = int(frame) - 1
+		if self.clip_frames:
+			n %= self.clip_frames
+		return n / self.rate
+
+	def Same(self, other):
+		return (self.source, self.rate, self.clip_frames) == (other.source, other.rate, other.clip_frames)
+
+
+def TestSide(source, seconds, share=TEST_SHARE, guard_s=GUARD_S, tested=None, trained=None):
+	"""
+	Which side a set is on: (True, why) a test set, (False, why) a training
+	set, (None, why) left out, so that no training set is within guard_s of a
+	test set. A set in a test minute is a test set, unless a frame already
+	trained on (trained: {source: sorted seconds}) is within guard_s: then
+	it is left out. A set in a training minute is a training set, unless it
+	is within guard_s of a test minute, or of a frame already in the rig's
+	test package (tested, the same): then it is left out.
+	"""
+	def near(frames):
+		t = np.asarray((frames or {}).get(source, ()), float)
+		return len(t) > 0 and bool(np.any(np.abs(t - seconds) <= guard_s))
+
+	if IsTest(source, seconds, share):
+		if near(trained):
+			return None, "test minute, within {:g} s of a frame already trained on".format(guard_s)
+		return True, "test minute"
+	if guard_s > 0 and (IsTest(source, seconds - guard_s, share) or IsTest(source, seconds + guard_s, share)):
+		return None, "training minute, within {:g} s of a test minute".format(guard_s)
+	if near(tested):
+		return None, "training minute, within {:g} s of a frame in the test package".format(guard_s)
+	return False, "training minute"
+
+
+def PackageFrames(path, test, rates):
+	"""The frames of a training or test package made by campy-label-merge, as
+	{split source: sorted seconds}: test, the test sets (else the training
+	ones). Frames packed before the split had its own clock have no source:
+	their recording and campy frame stand in, at that recording's rate
+	(rates: {recording name: frame rate}, the recordings being packed)."""
+	import sleap_io as sio
+	from campy import labelmerge
+	labels = sio.load_slp(path, open_videos=False)
+	info, rounds = labelmerge.VideoInfo(labels)
+	out = {}
+	for lf in labels.labeled_frames:
+		i = info[labels.videos.index(lf.video)]
+		if not i:
+			continue
+		s = ((rounds.get(i["round"]) or {}).get("sets") or {}).get(str(lf.frame_idx))
+		if not s or bool(int(s.get("test", 0))) != test:
+			continue
+		if s.get("split_source") is not None and s.get("split_s") is not None:
+			out.setdefault(str(s["split_source"]), set()).add(float(s["split_s"]))
+		elif s.get("recording") in rates and s.get("campy_frame") is not None:
+			out.setdefault(str(s["recording"]), set()).add((int(s["campy_frame"]) - 1) / rates[s["recording"]])
+	return {k: sorted(v) for k, v in out.items()}
+
+
+def RoundName(sample_path, recording):
+	"""A round's default name: the recording's, and the start of a hash of
+	the sample, so two rounds of one recording have their own names, and
+	packing the same sample again gives the same one."""
+	with open(sample_path, "rb") as f:
+		digest = hashlib.sha1(f.read()).hexdigest()[:6]
+	return "{}_{}".format(os.path.basename(os.path.normpath(recording)), digest)
 
 
 def ReadSample(path):
@@ -186,8 +311,12 @@ def Int32Videos(f):
 
 
 def Pack(sample_path, recordings, out=None, name=None, skeleton=None, calibration=None, test_share=TEST_SHARE,
-		force=False):
-	"""Writes the package (the module's doc); returns a dict of what it wrote."""
+		force=False, guard_s=GUARD_S, test_package=None, train_package=None, old_split=False):
+	"""Writes the package (the module's doc); returns a dict of what it wrote.
+	test_package, train_package: the rig's (campy-label-merge's), whose
+	frames' neighbours are kept off the other side. old_split: the split of
+	campy before 2026-11, by seconds since the log's first set and no guard,
+	only to pack again a sample packed then."""
 	import h5py, imageio.v3 as iio, sleap_io as sio
 
 	sample = ReadSample(sample_path)
@@ -198,7 +327,7 @@ def Pack(sample_path, recordings, out=None, name=None, skeleton=None, calibratio
 	sets = sample["sets"]
 	if not sets:
 		raise PackError("the sample has no sets")
-	name = name or os.path.basename(os.path.normpath(recordings[0]))
+	name = name or RoundName(sample_path, recordings[0])
 	folder = os.path.join(out or os.path.dirname(os.path.abspath(sample_path)), name)
 	pkg = os.path.join(folder, name + ".pkg.slp")
 	if os.path.exists(pkg) and not force:
@@ -208,9 +337,16 @@ def Pack(sample_path, recordings, out=None, name=None, skeleton=None, calibratio
 	opened = []
 	for lg_path, rec in zip(logs, recordings):
 		if not os.path.isfile(lg_path):
+			# On another computer: the log beside the flags folder, as campy-live-flag puts it.
+			# Only one log can be there by that name (campy-session names each campy-live.npy)
 			alt = os.path.join(os.path.dirname(os.path.abspath(sample_path)), os.pardir, os.path.basename(lg_path))
-			if os.path.isfile(alt):
-				lg_path = os.path.normpath(alt)
+			if not os.path.isfile(alt):
+				raise PackError("no log at {} (nor at {})".format(lg_path, os.path.normpath(alt)))
+			if sum(os.path.basename(p) == os.path.basename(lg_path) for p in logs) > 1:
+				raise PackError("no log at {}, and the sample's other logs have its name ({}), so the one beside "
+					"the flags folder can't be told apart: put each log back where the sample says, or run "
+					"campy-live-flag again on this computer".format(lg_path, os.path.basename(lg_path)))
+			lg_path = os.path.normpath(alt)
 		try:
 			rows, summary = liveexport.ReadLog(lg_path)
 		except liveexport.ExportError as e:
@@ -220,8 +356,10 @@ def Pack(sample_path, recordings, out=None, name=None, skeleton=None, calibratio
 			raise PackError("{} has no summary saying its cameras".format(lg_path))
 		try:
 			cams = [liveexport.Camera(os.path.abspath(rec), n) for n in names]
+			# Is it this recording's log? Its frames' host times are the videos' (liveexport's check)
+			liveexport.Placement(rows, cams)
 		except liveexport.ExportError as e:
-			raise PackError(str(e))
+			raise PackError("{} and --recording {}: {}".format(os.path.basename(lg_path), rec, e))
 		calib = None
 		if "points3d" in rows.dtype.names:
 			cal, cal_names, _ = liveexport.SummaryCalibration(summary)
@@ -232,7 +370,10 @@ def Pack(sample_path, recordings, out=None, name=None, skeleton=None, calibratio
 				Say("{}: no calibration on this computer ({}): the package has the 2D only, no 3D to correct "
 					"against. Give it with --calibration.".format(os.path.basename(lg_path), cal or "none"))
 		opened.append(dict(path=lg_path, rows=rows, summary=summary or {}, names=names, cams=cams, calib=calib,
-			recording=os.path.abspath(rec)))
+			recording=os.path.abspath(rec), clock=SplitClock(os.path.abspath(rec), names[0], summary)))
+	if len({os.path.realpath(o["path"]) for o in opened}) < len(opened):
+		raise PackError("two of the sample's logs are the same file here: {}".format(", ".join(o["path"]
+			for o in opened)))
 	names = opened[0]["names"]
 	for o in opened[1:]:
 		if o["names"] != names:
@@ -241,6 +382,37 @@ def Pack(sample_path, recordings, out=None, name=None, skeleton=None, calibratio
 	log_nodes = opened[0]["summary"].get("nodes")
 	if not log_nodes:
 		raise PackError("{}'s summary has no node names".format(opened[0]["path"]))
+	# One skeleton and one calibration for the whole package: the logs' must be the same
+	for o in opened[1:]:
+		if o["summary"].get("nodes") != log_nodes:
+			raise PackError("{}'s nodes differ from {}'s: pack each log on its own".format(
+				os.path.basename(o["path"]), os.path.basename(opened[0]["path"])))
+		if o["calib"] != opened[0]["calib"]:
+			raise PackError("{}'s calibration differs from {}'s (the rig was calibrated again between them, or "
+				"one has none here): pack each log on its own".format(os.path.basename(o["path"]),
+				os.path.basename(opened[0]["path"])))
+	# Each set is its log's row, as the sample says
+	for s in sets:
+		if s["log"] not in logs:
+			raise PackError("a set's log {} isn't one of the sample's logs".format(s["log"]))
+		o = opened[logs.index(s["log"])]
+		row = int(s["row"])
+		if not 0 <= row < len(o["rows"]) or int(o["rows"][row]["frame"]) != int(s["frame"]):
+			raise PackError("{}: row {} isn't campy frame {}, as the sample says: is it the log campy-live-flag "
+				"read?".format(os.path.basename(o["path"]), row, s["frame"]))
+	# Frames already in the rig's test and training packages, to keep away from
+	rates = {os.path.basename(o["recording"]): o["clock"].rate for o in opened}
+	for path in (test_package, train_package):
+		if path and not os.path.isfile(path):
+			Say("{} isn't there yet: nothing to keep away from.".format(path))
+	tested = PackageFrames(test_package, True, rates) if test_package and os.path.isfile(test_package) else None
+	trained = PackageFrames(train_package, False, rates) if train_package and os.path.isfile(train_package) \
+		else None
+	if test_package and os.path.isfile(test_package):
+		from campy import labelmerge
+		import sleap_io as sio
+		if name in labelmerge.VideoInfo(sio.load_slp(test_package, open_videos=False))[1]:
+			raise PackError("{} already has a round named {}: give another --name".format(test_package, name))
 	skel = Skeleton(skeleton, log_nodes, opened[0]["summary"].get("edges"))
 	target = [n.name for n in skel.nodes]
 	where = [target.index(n) if n in target else -1 for n in log_nodes] # each log node's place in the skeleton
@@ -254,7 +426,7 @@ def Pack(sample_path, recordings, out=None, name=None, skeleton=None, calibratio
 	try:
 		videos_src = [[OpenVideo(os.path.join(c.folder, c.video), tmp) for c in o["cams"]] for o in opened]
 		images = [[] for _ in names]
-		table, skipped = [], 0
+		table, skipped, left_out = [], 0, 0
 		order = sorted(range(len(sets)), key=lambda i: (logs.index(sets[i]["log"]), sets[i]["row"]))
 		kept = []
 		for i in order:
@@ -267,18 +439,28 @@ def Pack(sample_path, recordings, out=None, name=None, skeleton=None, calibratio
 				Say("Set at campy frame {} left out: {}'s video lacks it.".format(frame,
 					", ".join(n for n, v in zip(names, vf) if v < 0)))
 				continue
+			if old_split:
+				source, at = os.path.basename(o["recording"]), float(s["time_s"])
+				test, split = IsTest(source, at, test_share), "old split (seconds since the log's first set)"
+			else:
+				source, at = o["clock"].source, o["clock"].Seconds(frame)
+				test, split = TestSide(source, at, test_share, guard_s, tested, trained)
+			if test is None:
+				left_out += 1
+				Say("Set at campy frame {} left out: {}.".format(frame, split))
+				continue
 			j = len(kept)
 			for c in range(len(names)):
 				p = os.path.join(tmp, "c{}_{:06d}.png".format(c, j))
 				img = Image(videos_src[logs.index(s["log"])][c], vf[c])
 				iio.imwrite(p, img[..., 0] if img.shape[-1] == 1 else img)
 				images[c].append(p)
-			test = IsTest(o["recording"], float(s["time_s"]), test_share)
 			kept.append((s, o, int(s["row"]), test))
 			table.append(dict(package_frame=j, log=os.path.basename(o["path"]), campy_frame=frame,
 				recording=os.path.basename(o["recording"]), time_s=s["time_s"], why=s["why"],
 				flags=";".join(sorted({"{}:{}".format(f["reason"], f["camera"] or "any") for f in s["flags"]})),
-				test=int(test), **{"video_frame_{}".format(n): v for n, v in zip(names, vf)}))
+				test=int(test), split_source=source, split_s=round(at, 3), split=split,
+				**{"video_frame_{}".format(n): v for n, v in zip(names, vf)}))
 		if not kept:
 			raise PackError("none of the sets is on every camera's video")
 
@@ -349,6 +531,7 @@ def Pack(sample_path, recordings, out=None, name=None, skeleton=None, calibratio
 			with open(os.path.join(tmp, "calibration.toml")) as f:
 				cal_text = f.read()
 		provenance = {"campy-label-pack": dict(sample=os.path.abspath(sample_path), test_share=test_share, name=name,
+			guard_s=None if old_split else guard_s, split="old" if old_split else "recording clock",
 			cameras=list(names), calibration=cal_text, sets=[{k: v for k, v in t.items() if k != "flags"}
 			for t in table])}
 		labels = sio.Labels(labeled_frames=lfs, videos=videos, skeletons=[skel], tracks=tracks, identities=identities,
@@ -380,8 +563,8 @@ def Pack(sample_path, recordings, out=None, name=None, skeleton=None, calibratio
 			liveexport.WriteCalibration(os.path.join(folder, "calibration.toml"), calib)
 	finally:
 		shutil.rmtree(tmp, ignore_errors=True)
-	return dict(package=pkg, folder=folder, sets=len(kept), test=sum(t for *_, t in kept), skipped=skipped,
-		cameras=len(names), with3d=with3d)
+	return dict(package=pkg, folder=folder, name=name, sets=len(kept), test=sum(t for *_, t in kept),
+		skipped=skipped, left_out=left_out, cameras=len(names), with3d=with3d)
 
 
 def Main(argv=None):
@@ -391,12 +574,21 @@ def Main(argv=None):
 	p.add_argument("--recording", action="append", default=[], help="The recording's folder (with a folder per "
 		"camera), once per log in the sample, in its order.")
 	p.add_argument("--out", default="", help="Where the package's folder goes (default: next to sample.json).")
-	p.add_argument("--name", default="", help="The package's name (default: the first recording's).")
+	p.add_argument("--name", default="", help="The package's name, which is also its round's in the training and "
+		"test packages (default: the first recording's, and the start of a hash of sample.json).")
 	p.add_argument("--skeleton", default="", help="The skeleton to label in: the training package (.slp), a model "
 		"folder or a skeleton .json; the log's nodes go to the nodes of the same name (default: the log's).")
 	p.add_argument("--calibration", default="", help="The calibration.toml, when the log's isn't on this computer.")
 	p.add_argument("--test-share", type=float, default=TEST_SHARE, help="The share of a recording's minutes kept "
 		"as test sets.")
+	p.add_argument("--guard-s", type=float, default=GUARD_S, help="A set this close (seconds) to a test minute, or "
+		"to a frame in --test-package, is a test set too.")
+	p.add_argument("--test-package", default="", help="The rig's test package (campy-label-merge --test-into): "
+		"sets near its frames are test sets, and its round names are taken.")
+	p.add_argument("--train-package", default="", help="The training package: a set that would be a test set but "
+		"is near a frame trained on is left out.")
+	p.add_argument("--old-split", action="store_true", help="The split campy used before 2026-11 (seconds since "
+		"the log's first set, no guard): only to pack again a sample packed with it.")
 	p.add_argument("--force", action="store_true", help="Replace a package already there.")
 	args = p.parse_args(argv)
 	try:
@@ -408,12 +600,13 @@ def Main(argv=None):
 	try:
 		out = Pack(args.sample, args.recording, out=args.out or None, name=args.name or None,
 			skeleton=args.skeleton or None, calibration=args.calibration or None, test_share=args.test_share,
-			force=args.force)
+			force=args.force, guard_s=args.guard_s, test_package=args.test_package or None,
+			train_package=args.train_package or None, old_split=args.old_split)
 	except (PackError, liveexport.ExportError) as e:
 		print("campy-label-pack: {}".format(e), file=sys.stderr)
 		return 1
-	Say("{} sets ({} of them test sets), {} cameras each{}: {}".format(out["sets"], out["test"], out["cameras"],
-		", with 3D" if out["with3d"] else "", out["package"]))
+	Say("Round {}: {} sets ({} of them test sets), {} cameras each{}: {}".format(out["name"], out["sets"],
+		out["test"], out["cameras"], ", with 3D" if out["with3d"] else "", out["package"]))
 	Say("  LUC3D: File > Load SLP > {}; correct each set, then save as {}.labels.slp next to it.".format(
 		os.path.basename(out["package"]), os.path.basename(out["package"])[:-len(".pkg.slp")]))
 	return 0
