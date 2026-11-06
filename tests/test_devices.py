@@ -65,6 +65,14 @@ def test_lengths_and_settings_are_checked():
 	assert [(l["name"], l["videoFolder"]) for l in p.lengths] == [("15 min", "D:/gate"), ("6 days", None)]
 
 
+def test_spikeglx_files_counted_once_per_gate_opening(tmp_path):
+	# One opening of the gate: a file per stream, the probe's and the OneBox's
+	for name in ("run_g0_t0.imec0.ap.bin", "run_g0_t0.obx0.obx.bin", "run_g0_t1.imec0.ap.bin", "run_g0_t1.obx0.obx.bin",
+			"run_g0_t2.obx0.obx.bin"):
+		(tmp_path / name).write_bytes(b"")
+	assert (spikeglx.Files(str(tmp_path)), spikeglx.Openings(str(tmp_path))) == (5, 3)
+
+
 def test_a_clock_time_for_the_picos_start():
 	at = devices.When("7:20 PM")
 	assert time.localtime(at)[3:5] == (19, 20) and 0 < at - time.time() <= 86400

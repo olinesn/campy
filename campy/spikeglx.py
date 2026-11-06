@@ -271,8 +271,18 @@ def ProgramRunning(exe):
 
 
 def Files(folder):
-	"""How many .bin files SpikeGLX has written in folder."""
+	"""How many .bin files SpikeGLX has written in folder (each gate opening writes one per stream: probe, OneBox)."""
 	return len(glob.glob(os.path.join(folder, "**", "*.bin"), recursive=True))
+
+
+def Openings(folder):
+	"""How many times SpikeGLX opened files in folder: its files' run_g<g>_t<t> trigger indices, each counted once."""
+	import re
+	found = set()
+	for path in glob.glob(os.path.join(folder, "**", "*.bin"), recursive=True):
+		m = re.search(r"_g(\d+)_t(\d+)\.", os.path.basename(path))
+		found.add(m.groups() if m else path)
+	return len(found)
 
 
 def Launch(exe):

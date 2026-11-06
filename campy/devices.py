@@ -416,6 +416,7 @@ class Devices:
 				status = self.sglx.Status() or dict(self.cached.get("spikeglx") or {"answers": True}, busy=True)
 				if self.folder:
 					status["files"] = sglxmod.Files(os.path.join(self.folder, sglxmod.FOLDER))
+					status["openings"] = sglxmod.Openings(os.path.join(self.folder, sglxmod.FOLDER))
 				cached["spikeglx"] = status
 			self.cached = cached
 		pico = dict(self.cached.get("pico") or {}) if self.pico is not None else None

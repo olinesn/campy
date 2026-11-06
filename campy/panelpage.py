@@ -198,7 +198,7 @@ function renderDevices(s, st){
   const G = D.spikeglx;
   $("sglxstate").innerHTML = !G ? "-" : G.busy && G.running==null ? tag("busy","warn")+" its run is starting" : !G.answers ? tag("not answering","warn")+" "+esc(G.error||"") :
     tag(G.running?"running":"idle", G.running?"ok":"")+(G.running? " "+(G.saving?"recording enabled, a file open (gate high)":"recording enabled, gate closed")+(G.samples!=null?" · "+Number(G.samples).toLocaleString()+" samples":"") : "")+
-    (G.files!=null?" · "+G.files+" files this recording":"")+(G.folder?'<div class="mono">'+esc(G.folder)+"</div>":"");
+    (G.openings!=null?" · "+G.openings+" gate opening"+(G.openings==1?"":"s")+" this recording ("+G.files+" files)":"")+(G.folder?'<div class="mono">'+esc(G.folder)+"</div>":"");
   const idle = ["ready","done","failed"].includes(st), picoLeft = idle && P && P.alive, sglxLeft = idle && G && G.running;
   $("left").hidden = !(picoLeft || sglxLeft);
   $("lefttext").textContent = D.left_running || ((picoLeft?"The Pico is running a session":"")+(picoLeft&&sglxLeft?", and ":"")+(sglxLeft?"SpikeGLX is running a run":"")+", with no recording on this panel.");
