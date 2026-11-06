@@ -136,8 +136,8 @@ def test_at_most_three_restarts_an_hour(tmp_path, monkeypatch, capsys, slow_star
 	(failure,) = run.recording.Failures()
 	assert failure.startswith("ffmpeg stopped after taking ") and " frames into 0.part4.mp4, with exit code" in failure
 	assert failure.endswith(". It was not restarted: it was restarted 3 times in the last hour, the most allowed")
-	assert re.search(r"Camera0 grabbed \d+ frames at \d+ fps\. Its video files hold \d+ of them: its ffmpeg stopped\.",
-		out), out
+	assert re.search(r"Camera0 grabbed \d+ frames at \d+ fps; its 4 video files hold \d+ \(([^)]*, )?\d+ lost in "
+		r"stopped ffmpegs(, \d+ after its ffmpeg stopped)?\)\.\n", out), out
 	assert "Stopping Camera0." in out and camera.closed
 	meta = run.Metadata()
 	assert int(meta["totalFrames"]) < 3000 and meta["videoError"] == failure
