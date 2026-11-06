@@ -792,6 +792,12 @@ class Panel:
 			self.wanted = None
 			if self.session is not None and self.session.folder:
 				self.last = self.session.StatusDict()
+				try:
+					from campy import post
+					clean, why = post.CleanStop(self.session.folder) # every camera closed its video, with its totals
+				except Exception as e:
+					clean, why = False, "could not be told ({})".format(e)
+				self.last["clean"] = {"clean": bool(clean), "why": why}
 			self.session = None
 			self.checks = self.Checks()
 

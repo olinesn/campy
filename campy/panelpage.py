@@ -173,7 +173,9 @@ function render(s){
   $("marks").innerHTML = s.bookmarks.map(m => "<li class=muted>"+m.number+" at "+m.time+", frame "+(m.frame!=null?m.frame.toLocaleString():"-")+(m.note?": "+esc(m.note):"")+"</li>").join("");
   const P = L.post || {};
   $("after").hidden = !(st=="post" || (["done","failed","ready"].includes(st) && L.folder));
-  $("aftertitle").textContent = st=="post" ? "After the recording" : "The last recording: " + (L.state=="done" ? "every camera recorded to the end" : L.state || "");
+  const C = L.clean; $("aftertitle").textContent = st=="post" ? "After the recording" : "The last recording: " +
+    (C ? (C.clean ? "every camera recorded to the end" : "it didn't end cleanly: " + (C.why||"").split(";")[0] + (String(C.why||"").includes(";") ? "; ..." : "")) :
+    L.state=="done" ? "campy-acquire ended" : L.state || "");
   $("post").innerHTML = ["remux","export","copy","run"].map(k => P[k] ? "<li>"+tag(P[k].state, P[k].state=="done"?"ok":P[k].state=="failed"?"bad":"warn")+" "+k+": "+esc(P[k].message)+"</li>"
     : "<li class=muted>"+k+(st=="post"?": waiting":"")+"</li>").join("");
 }

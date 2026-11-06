@@ -308,6 +308,7 @@ def test_a_bout_session_from_the_page(tmp_path, home, rig, sglx_state):
 			timeout=90)
 		assert steps(status)["Pico"] == "done" and steps(status)["End"] == "done"
 		assert status["launcher"]["parts"]["acquire"]["exit_code"] == 0
+		assert status["launcher"]["clean"]["clean"] is True # the page's "every camera recorded to the end"
 		# campy ended after its last frame; the Pico's last gate came later, then SpikeGLX's run stopped
 		assert not state(sglx_state)["running"] and state(sglx_state)["calls"][-1] == "stopRun"
 		assert len(list((folder / "spikeglx").glob("*.bin"))) == 3 # the blink, and one file per bout
@@ -355,6 +356,7 @@ def test_no_recording_when_spikeglx_misses_the_gate(tmp_path, home, rig, sglx_st
 		status = wait(url, lambda s: s["state"] == "ready" and s["launcher"] and s["launcher"]["state"] == "failed",
 			timeout=90)
 		assert steps(status)["Gate check"] == "failed"
+		assert status["launcher"]["clean"]["clean"] is False # nothing recorded: not "every camera recorded to the end"
 		assert "SpikeGLX opened no file" in status["launcher"]["problems"][-1]["text"]
 		assert "acquire" not in status["launcher"]["parts"] # campy never started
 		assert not state(sglx_state)["running"] # SpikeGLX's run stopped again
