@@ -34,8 +34,8 @@ environment of its own, uses it too.
 
 import re
 
-# The version the next release is planned as, for changes made since 2.4.0
-NEXT = "2.4.1"
+# The version the next release is planned as, for changes made since 2.5.0
+NEXT = "2.5.1"
 
 
 class Change:
