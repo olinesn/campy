@@ -1254,18 +1254,22 @@ def test_the_view_dims_by_the_last_half_second_not_one_row():
 
 def paced(writers, frames, fps, host_offset=None, skip=None, step=None):
 	# Frames 1..frames into each camera's ring at fps, as campy writes them (host_offset: {camera: ns};
-	# skip: (camera, frame) never written), calling step() after each
+	# skip: (camera, frame) never written), calling step() after each. Returns how late (s) the latest frame was
+	# written after its time: on a busy computer this thread can be held up, and its frames are then really late
 	period = 1.0 / fps
 	start = time.perf_counter()
+	late = 0.0
 	for n in range(1, frames + 1):
 		while time.perf_counter() < start + n * period:
 			time.sleep(0.0005)
+		late = max(late, time.perf_counter() - (start + n * period))
 		host = clock.HostNs()
 		for c, w in enumerate(writers):
 			if skip != (c, n):
 				w.Write(np.full(w.ring.shape[:2], 60, np.uint8), n, host + (host_offset or {}).get(c, 0), n * period)
 		if step:
 			step()
+	return late
 
 
 def tile_of(viewer, image, c):
@@ -1277,21 +1281,34 @@ def tile_of(viewer, image, c):
 def test_a_camera_one_frame_off_or_with_a_gap_is_warned_of_on_its_tile(rings, problem):
 	# Real rings, written at 100 fps: camera 2 a frame ahead (its host times 10 ms early, as a camera
 	# left grabbing after a double Ctrl+C was on 2026-10-20), or camera 1's frame 30 never in its feed
-	prefix = name()
-	writers = [rings(livefeed.RingName(prefix, c), (64, 80), np.uint8, slots=8, frameRate=100.0,
-		cameraName="Camera{}".format(c)) for c in range(3)]
-	viewer = liveview.Viewer(view_args(prefix))
+	# This test writes the frames from a loop timed to 100 fps. On a busy computer (a CI runner running other tests
+	# beside it) that loop can be held up for more than a frame: its frames are then late, and the viewer rightly
+	# says LATE on every tile. Such a run says nothing about what this test checks, so it is done again on fresh
+	# rings (at most 3 runs); the assertions below hold on a run whose frames all came on time
+	for attempt in range(3):
+		prefix = name()
+		writers = [rings(livefeed.RingName(prefix, c), (64, 80), np.uint8, slots=8, frameRate=100.0,
+			cameraName="Camera{}".format(c)) for c in range(3)]
+		viewer = liveview.Viewer(view_args(prefix))
+		try:
+			viewer.Check()
+			viewer.lastRow = time.monotonic() - 1 # no results: the frames alone
+			late = paced(writers, 60, 100.0, host_offset={2: -10_000_000} if problem == "ahead" else None,
+				skip=(1, 30) if problem == "gap" else None, step=viewer.Step)
+		except BaseException:
+			viewer.Close()
+			raise
+		if late < 0.01 or attempt == 2:
+			break
+		viewer.Close()
 	try:
-		viewer.Check()
-		viewer.lastRow = time.monotonic() - 1 # no results: the frames alone
-		paced(writers, 60, 100.0, host_offset={2: -10_000_000} if problem == "ahead" else None,
-			skip=(1, 30) if problem == "gap" else None, step=viewer.Step)
 		viewer.rig.Sample(viewer.readers)
 		image = viewer.Compose(viewer.Read(60), None)
 		warned = 2 if problem == "ahead" else 1
+		said = "frames up to {:.0f} ms late; the viewer says {}".format(late * 1e3, viewer.Alerts())
 		for c in range(3):
 			red = like(tile_of(viewer, image, c), liveview.WARN).sum()
-			assert (red > 200) if c == warned else (red == 0) # its mark, and a red frame round it
+			assert (red > 200) if c == warned else (red == 0), said # its mark, and a red frame round it
 		alerts = [text for text, color in viewer.Alerts()]
 		assert len(alerts) == 1 and all(color == liveview.WARN for _, color in viewer.Alerts())
 		if problem == "ahead":
@@ -1554,7 +1571,11 @@ def test_the_cameras_tiles_have_luc3ds_node_trails():
 	plain = viewer.Compose(frames, rows[-1]).astype(int)
 	viewer.trails = True
 	image = viewer.Compose(frames, rows[-1]).astype(int)
-	assert viewer.cameraTrailMs and viewer.Summary(1.0)["camera_trails_ms"]["p50"] < 20
+	# The trails' drawing time: the median of 7 draws (one alone can be held up on a busy computer)
+	for _ in range(6):
+		viewer.Compose(frames, rows[-1])
+	assert len(viewer.cameraTrailMs) == 7 and viewer.Summary(1.0)["camera_trails_ms"]["p50"] < 20, \
+		list(viewer.cameraTrailMs)
 	for c in range(3):
 		tile, before = tile_of(viewer, image, c), tile_of(viewer, plain, c)
 		moved = np.abs(tile - before).sum(-1) > 0
