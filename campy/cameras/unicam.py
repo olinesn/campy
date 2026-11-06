@@ -10,7 +10,7 @@ from collections import deque
 from scipy import io as sio
 from campy import clock, frametimes, newfiles, livefeed, status
 from campy.utils.utils import Say, ExitCodeText, ErrorText
-from campy import startup
+from campy import startup, statusline
 
 
 # Set in each camera process (campy.InitCameraProcess): where it reports that its
@@ -579,7 +579,8 @@ def CountFPS(grabdata, frameNumber, timeStamp):
 			grabdata["pausedSec"] += timeStamp - last - grabdata.get("framePeriod", 0.0) # the pulses missed only
 			grabdata["pauses"] += 1
 		grabdata["lastStamp"] = timeStamp
-	if frameNumber % grabdata["chunkLengthInFrames"] == 0:
+	# With campy's status line on the console (statusLine), the main process shows every camera's count in it
+	if frameNumber % grabdata["chunkLengthInFrames"] == 0 and not statusline.Shown():
 		timeElapsed = timeStamp - grabdata["frameTimes"].first
 		if timeElapsed <= 0:
 			return # the first frame, at a chunk of one frame: no rate yet

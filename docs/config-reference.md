@@ -108,6 +108,7 @@ Every key a campy config file can have, and its command-line option (`--key valu
 | Key | Default | Takes | Per camera | What it does |
 |---|---|---|---|---|
 | `chunkLengthInSec` | `5` | a number above 0 | one, or one per camera | Length of video chunks in seconds for reporting recording progress. |
+| `statusLine` | `"auto"` | "auto", "always" or "never" | one for the rig | While recording, one status line on the console, rewritten in place: the time, each camera's frames, the frame rate, the trigger's pauses (docs/acquire.md). It replaces each camera's 'collected N frames' line every chunkLengthInSec. Other messages still print as lines of their own. 'auto' (default): only when the output is a console, so a log file or a launcher's log keeps the lines as before; 'always'; 'never'. |
 | `displayFrameRate` | `10` | a number, 0 or more | one, or one per camera | Display frame rate in Hz. Max ~30. 0 = no display window (headless). |
 | `displayDownsample` | `2` | a whole number, 1 or more | one, or one per camera | Downsampling factor for displaying images. |
 

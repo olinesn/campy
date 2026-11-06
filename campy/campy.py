@@ -19,7 +19,7 @@ campy-acquire ./configs/campy_config.yaml
 import os, time, sys, copy, logging, threading, queue
 from collections import deque
 import multiprocessing as mp
-from campy import writer, configurator, preflight, newfiles, keepawake, stopfile, defaults, manifest, status, watch
+from campy import writer, configurator, preflight, newfiles, keepawake, stopfile, defaults, manifest, status, watch, statusline
 from campy.trigger import trigger
 from campy.cameras import unicam, emu
 from campy.utils.utils import HandleKeyboardInterrupt, Say, ErrorText, StartPrinter, StopPrinter
@@ -198,6 +198,8 @@ def RunCamera(n_cam, readyQueue, done, start=None, stop=None, counters=None):
 	# What it says is written by a thread of its own, so that a slow console
 	# or log file never holds up its camera; all of it, before it ends
 	StartPrinter()
+	# With the main process's status line on the console, each line clears it first (statusline.py)
+	statusline.Child()
 	try:
 		InitCameraProcess(readyQueue)
 		unicam.SetMainConnection(done)
@@ -300,11 +302,14 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 		start = ctx.Value("d", 0.0, lock=False)
 		# Each camera's counters, which the recording watch reads (status.py, watch.py)
 		counters = status.Make(ctx, params["numCams"])
+		# One status line on the console, rewritten in place, instead of each camera's progress lines
+		# (statusLine): decided before the camera processes start, which read it from their environment
+		lineMode = statusline.Prepare(params)
 		cameras = unicam.CameraProcesses(ctx, RunCamera, params, readyQueue, start=start, stop=stop,
 			counters=counters)
 
 		# The trigger stops and the systems close whatever happens here
-		guard = None
+		guard = line = None
 		try:
 			# Start the trigger only once every camera is grabbing, so that every
 			# camera's first frame is the trigger's first pulse, and once the
@@ -325,6 +330,11 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 					request_stop=lambda why: StopRequested(1, why)).Start()
 			except Exception as e:
 				Say("The recording watch did not start: {}. Recording without it.".format(ErrorText(e)))
+			if lineMode is not None:
+				try:
+					line = statusline.StatusLine(lineMode, counters, cameras.names, params.get("frameRate")).Start()
+				except Exception as e:
+					Say("The status line did not start: {}.".format(ErrorText(e)))
 			failures = cameras.Wait(interrupts)
 			if guard is not None and guard.stopped:
 				for name in cameras.names:
@@ -333,6 +343,8 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 			error = ErrorText(e)
 			raise
 		finally:
+			if line is not None:
+				line.Stop() # before the end is said
 			stopWatch.Stop()
 			if guard is not None:
 				guard.Stop(failures)
