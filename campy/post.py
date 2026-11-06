@@ -62,7 +62,7 @@ run      the config's own commands, each with {folder} replaced by the
 They run only after a clean stop: campy-acquire ended with exit code 0
 (campy-session's launcher.json says so), or, for a recording made without
 campy-session, every camera's metadata.csv has its totals and no
-cameraError or videoError. Otherwise each is skipped, with why and the
+cameraError, videoError or frameTimesError. Otherwise each is skipped, with why and the
 command that runs them anyway (--force) once the recording has been looked
 at. A crashed recording keeps its fragmented videos, which are readable up to
 their last second.
@@ -132,7 +132,7 @@ def CleanStop(folder):
 		values = Metadata(meta)
 		if "framesWritten" not in values:
 			problems.append("{} stopped without closing (no totals in its metadata.csv)".format(name))
-		for key in ("cameraError", "videoError"):
+		for key in ("cameraError", "videoError", "frameTimesError"):
 			if values.get(key):
 				problems.append("{}: {}".format(name, values[key]))
 	return (not problems), "; ".join(problems)

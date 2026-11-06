@@ -103,6 +103,9 @@ def test_a_killed_ffmpeg_is_restarted_and_every_frame_accounted_for(tmp_path, mo
 	assert numbers == expected # one row per video frame: the lost ones left out, and only those
 	assert len(np.load(os.path.join(folder, "hosttimes.npy"))) == len(expected)
 	assert meta["framesWritten"] == str(len(expected))
+	# The end line: what the camera grabbed, and what the two files hold
+	assert "Camera0 grabbed 600 frames at 100 fps; its 2 video files hold {} ({} lost in a stopped ffmpeg).\n".format(
+		len(expected), len(lost)) in out
 	levels = Levels(os.path.join(folder, "0.mp4")) + Levels(os.path.join(folder, "0.part2.mp4"))
 	assert len(levels) == len(expected)
 	assert [n for n, level in zip(expected, levels) if not Near(level, n)] == []

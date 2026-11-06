@@ -376,7 +376,8 @@ def test_campy_live_options_say_whether_they_were_given():
 
 # ------------------------------------------------------------------ campy-acquire, emulated cameras
 
-def record(tmp_path, cams=("Camera0", "Camera1"), seconds=2, extra=(), argv=(), clips=None, interrupt_after=None):
+def record(tmp_path, cams=("Camera0", "Camera1"), seconds=2, extra=(), argv=(), clips=None, interrupt_after=None,
+		pythonpath=(), environ=None):
 	"""
 	campy-acquire with emulated cameras, from a subprocess; returns (the
 	process, its output, the session folder)
@@ -392,7 +393,8 @@ def record(tmp_path, cams=("Camera0", "Camera1"), seconds=2, extra=(), argv=(), 
 		"frameRate: 20", "recTimeInSec: {}".format(seconds), "chunkLengthInSec: 1", "displayFrameRate: 0",
 		'pixelFormatInput: "gray"', 'pixelFormatOutput: "yuv420p"', "gpuID: -1", 'codec: "h264"',
 		'preflight: "off"', "readyTimeoutSec: 10"] + list(extra) + [""]))
-	env = dict(os.environ, PYTHONPATH=REPO, PYTHONUNBUFFERED="1", CAMPY_LAUNCHER="campy-session/test")
+	env = dict(os.environ, PYTHONPATH=os.pathsep.join(list(pythonpath) + [REPO]), PYTHONUNBUFFERED="1",
+		CAMPY_LAUNCHER="campy-session/test", **(environ or {}))
 	env.pop("IMAGEIO_FFMPEG_EXE", None)
 	code = "import sys; sys.argv = ['campy-acquire'] + sys.argv[1:]; from campy.campy import Main; Main()"
 	proc = subprocess.Popen([sys.executable, "-c", code, str(config)] + list(argv), cwd=str(tmp_path), env=env,

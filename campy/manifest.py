@@ -614,7 +614,7 @@ OPENED_KEYS = ("cameraModel", "cameraFirmware", "cameraSerialNo", "frameWidth", 
 TOTAL_KEYS = (("framesGrabbed", "totalFrames"), ("seconds", "totalTime"), ("framesWritten", "framesWritten"),
 	("framesDropped", "framesDropped"), ("framesLost", "flirFramesLost"), ("framesLost", "ratcamFramesLost"),
 	("framesIncomplete", "flirFramesIncomplete"),
-	("cameraError", "cameraError"), ("videoError", "videoError"),
+	("cameraError", "cameraError"), ("videoError", "videoError"), ("frameTimesError", "frameTimesError"),
 	# restartFfmpeg: the video in several files (campy/segments.py), and the frames lost in stopped ffmpegs
 	("ffmpegRestarts", "ffmpegRestarts"), ("videoFiles", "videoFiles"), ("framesLostInEncoder", "framesLostInEncoder"))
 

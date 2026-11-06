@@ -156,16 +156,174 @@ def test_close_waits_for_the_batches_still_queued_before_it_cuts(tmp_path, monke
 	assert list(frames[0]) == list(range(1, 24)) and list(hosts) == list(range(1001, 1024))
 
 
-def test_a_write_that_fails_is_raised_by_close(tmp_path, monkeypatch, caplog):
-	def Append(npy, values):
-		raise OSError(28, "No space left on device")
-	monkeypatch.setattr(frametimes.GrowingNpy, "Append", Append)
+class FlakyDisk:
+	"""
+	GrowingNpy.Append raising OSError for the writes `fails` says: fails(file
+	name, the write's number for that file, from 1) is True for one that fails.
+	"""
+	def __init__(self, monkeypatch, fails, error=OSError(5, "Input/output error")):
+		self.tries = {}
+		append = frametimes.GrowingNpy.Append
+		def Append(npy, values):
+			name = os.path.basename(npy.path)
+			self.tries[name] = self.tries.get(name, 0) + 1
+			if fails(name, self.tries[name]):
+				raise error
+			append(npy, values)
+		monkeypatch.setattr(frametimes.GrowingNpy, "Append", Append)
+		monkeypatch.setattr(frametimes, "CLOSE_WAIT_S", 0.01)
+
+
+def add(times, numbers, stamps, hosts):
+	for n, t, h in zip(numbers, stamps, hosts):
+		times.Add(n, t, h) # never raises: the camera goes on
+
+
+def test_a_failed_write_goes_in_with_the_next(tmp_path, monkeypatch, capsys):
+	# The 2nd batch's writes fail (a disk that dropped out for a moment, a
+	# file an antivirus held): its frames wait, and the 3rd batch's write puts
+	# them in first. The files come out whole, as if nothing had failed.
+	FlakyDisk(monkeypatch, lambda name, n: n == 2)
+	numbers, stamps, hosts = camera_times(400, drop=(17, 300))
+	times = frametimes.FrameTimes(str(tmp_path), 80, name="Camera0")
+	add(times, numbers, stamps, hosts)
+	times.Close()
+	old_frames, old_hosts = old_arrays(numbers, stamps, hosts)
+	assert np.array_equal(np.load(tmp_path / "frametimes.npy"), old_frames)
+	assert np.array_equal(np.load(tmp_path / "hosttimes.npy"), old_hosts)
+	assert times.error is None and times.failedWrites == 1 and times.saved == (len(numbers),) * 2
+	out = capsys.readouterr().out
+	assert out.count("Camera0: could not write frametimes.npy ({}): [Errno 5] Input/output error. Its frame times wait "
+		"in memory, and go in with the next write that works.\n".format(tmp_path)) == 1
+	assert "Camera0: frame times written again, after 1 failed write: frametimes.npy and hosttimes.npy have every " \
+		"frame so far.\n" in out
+
+
+def test_a_failed_last_write_is_tried_again_as_it_closes(tmp_path, monkeypatch):
+	# The last batch, and the first try again as it closes, fail; the second try works
+	FlakyDisk(monkeypatch, lambda name, n: n in (5, 6))
+	numbers, stamps, hosts = camera_times(330)
+	times = frametimes.FrameTimes(str(tmp_path), 80)
+	add(times, numbers, stamps, hosts) # 4 batches of 80; Close writes the last 10
+	times.Close()
+	old_frames, old_hosts = old_arrays(numbers, stamps, hosts)
+	assert np.array_equal(np.load(tmp_path / "frametimes.npy"), old_frames)
+	assert np.array_equal(np.load(tmp_path / "hosttimes.npy"), old_hosts)
+	assert times.error is None and times.failedWrites == 2
+
+
+def test_writes_that_keep_failing_are_the_error_close_gives(tmp_path, monkeypatch, capsys):
+	# From the 3rd batch on, nothing goes in. Close tries again CLOSE_TRIES
+	# times, then says what the files lack; they keep the frames they have,
+	# the video's first, one for one. Said once while it records, not at
+	# every batch.
+	disk = FlakyDisk(monkeypatch, lambda name, n: n >= 3, OSError(28, "No space left on device"))
+	numbers, stamps, hosts = camera_times(500)
+	times = frametimes.FrameTimes(str(tmp_path), 80, name="Camera0")
+	add(times, numbers, stamps, hosts)
+	times.Close() # never raises
+	frames, hosts_now = np.load(tmp_path / "frametimes.npy"), np.load(tmp_path / "hosttimes.npy")
+	old_frames, old_hosts = old_arrays(numbers, stamps, hosts)
+	assert np.array_equal(frames, old_frames[:, :160]) and np.array_equal(hosts_now, old_hosts[:160])
+	assert times.saved == (160, 160) and times.count == 500
+	failed = 5 + frametimes.CLOSE_TRIES # batches 3 to 7 (the 7th, of 20 frames, as it closed), then the tries again
+	assert disk.tries == {"frametimes.npy": 2 + failed, "hosttimes.npy": 2 + failed}
+	assert times.error == "could not write all its frame times: frametimes.npy and hosttimes.npy have 160 of the " \
+		"video's 500 frames (frametimes.npy: [Errno 28] No space left on device, {} failed writes)".format(failed)
+	assert capsys.readouterr().out.count("could not write") == 1
+
+
+def test_a_file_that_keeps_failing_alone(tmp_path, monkeypatch):
+	# Each file on its own: hosttimes.npy's writes go on while frametimes.npy's fail
+	FlakyDisk(monkeypatch, lambda name, n: name == "frametimes.npy" and n >= 2)
+	numbers, stamps, hosts = camera_times(200)
+	times = frametimes.FrameTimes(str(tmp_path), 80)
+	add(times, numbers, stamps, hosts)
+	times.Close()
+	assert times.saved == (80, 200) and len(np.load(tmp_path / "hosttimes.npy")) == 200
+	assert times.error.startswith("could not write all its frame times: frametimes.npy has 80 of the video's 200 "
+		"frames (frametimes.npy: [Errno 5] Input/output error")
+
+
+def test_files_short_of_frames_are_cut_as_the_video_is(tmp_path, monkeypatch):
+	# Frame times that never went in are the last ones: the frames the video
+	# lacks besides (keep, drop: its ffmpeg stopped) are left out of what the
+	# files have, as of whole files, so that their rows are still the
+	# video's first frames, one for one
+	FlakyDisk(monkeypatch, lambda name, n: n >= 3)
 	times = frametimes.FrameTimes(str(tmp_path), 10)
 	for k in range(1, 36):
-		times.Add(k, 100.0 + k / 80, 1000 + k) # never raises: the camera goes on
-	with pytest.raises(OSError, match="No space left"):
-		times.Close()
-	assert caplog.text.count("Could not write the frame times") == 1
+		times.Add(k, k / 80, 1000 + k)
+	times.Close(keep=30, drop=[4, 25, 25, 31]) # frames 5 and 26 lost in a stopped ffmpeg; 31-35 never in a video
+	video = [k for k in range(1, 31) if k not in (5, 26)]
+	assert times.count == len(video) == 28 and times.saved == (19, 19)
+	assert list(np.load(tmp_path / "frametimes.npy")[0]) == video[:19]
+	assert list(np.load(tmp_path / "hosttimes.npy")) == [1000 + k for k in video[:19]]
+	assert "have 19 of the video's 28 frames" in times.error
+
+
+def test_a_file_that_could_not_be_made_is_made_with_the_next_batch(tmp_path, monkeypatch):
+	made = frametimes.GrowingNpy.__init__
+	calls = []
+	def Init(npy, path, *a, **k):
+		calls.append(path)
+		if len(calls) == 1:
+			raise PermissionError(13, "Permission denied")
+		made(npy, path, *a, **k)
+	monkeypatch.setattr(frametimes.GrowingNpy, "__init__", Init)
+	numbers, stamps, hosts = camera_times(100)
+	times = frametimes.FrameTimes(str(tmp_path), 40)
+	add(times, numbers, stamps, hosts)
+	times.Close()
+	old_frames, old_hosts = old_arrays(numbers, stamps, hosts)
+	assert np.array_equal(np.load(tmp_path / "frametimes.npy"), old_frames)
+	assert np.array_equal(np.load(tmp_path / "hosttimes.npy"), old_hosts)
+	assert times.error is None and times.failedWrites == 1
+
+
+class CutFile:
+	"""
+	A GrowingNpy's file, whose next write puts in only its first `part` bytes
+	and raises (a disk that dropped out part-way), or whose next flush raises
+	with the bytes still held in the file object's buffer.
+	"""
+	def __init__(self, file, part=None, flush=False):
+		self.file, self.part, self.flush_fails = file, part, flush
+
+	def write(self, data):
+		if self.part is not None:
+			self.file.write(data[:self.part])
+			self.file.flush()
+			self.part = None
+			raise OSError(5, "Input/output error")
+		return self.file.write(data)
+
+	def flush(self):
+		if self.flush_fails:
+			self.flush_fails = False
+			raise OSError(5, "Input/output error")
+		self.file.flush()
+
+	def __getattr__(self, name):
+		return getattr(self.file, name)
+
+
+@pytest.mark.parametrize("cut", [dict(part=13), dict(part=200), dict(flush=True)])
+def test_a_write_cut_part_way_is_mended_before_the_next(tmp_path, cut):
+	# What the failed write left in the file, or in its file object, is left
+	# out: the same values written again come out once, after the ones before
+	two = frametimes.GrowingNpy(str(tmp_path / "two.npy"), np.float64, rows=2)
+	two.Append([(1, 0.1), (2, 0.2)])
+	two.file = CutFile(two.file, **cut)
+	with pytest.raises(OSError):
+		two.Append([(3, 0.3), (4, 0.4), (5, 0.5), (6, 0.6), (7, 0.7), (8, 0.8), (9, 0.9), (10, 1.0)])
+	assert two.count == 2 and two.broken
+	two.Append([(3, 0.3), (4, 0.4), (5, 0.5), (6, 0.6), (7, 0.7), (8, 0.8), (9, 0.9), (10, 1.0)])
+	two.Append([(11, 1.1)])
+	two.Close()
+	frames = np.load(tmp_path / "two.npy")
+	assert list(frames[0]) == list(range(1, 12)) and np.allclose(frames[1], np.arange(1, 12) / 10)
+	assert os.path.getsize(tmp_path / "two.npy") == frametimes.HEADER_BYTES + 11 * 16
 
 
 class Hold:

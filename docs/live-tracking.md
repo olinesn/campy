@@ -116,7 +116,7 @@ campy-session post <recording folder> --only join     # after an ffmpeg restart,
 campy-session post <recording folder> --force         # after a crash, or again
 ```
 
-`campy-session post` also works on a recording made with `campy-acquire` alone. There, every camera's `metadata.csv` must have its totals and no `cameraError` or `videoError`, unless you give `--force`. What each step did is kept in `<folder>/logs/post.json`, so running `post` again repeats nothing that is done. A Ctrl-C during the steps stops them after the current one.
+`campy-session post` also works on a recording made with `campy-acquire` alone. There, every camera's `metadata.csv` must have its totals and no `cameraError`, `videoError` or `frameTimesError`, unless you give `--force`. What each step did is kept in `<folder>/logs/post.json`, so running `post` again repeats nothing that is done. A Ctrl-C during the steps stops them after the current one.
 
 ### From a page in the browser: `campy-session panel`
 
