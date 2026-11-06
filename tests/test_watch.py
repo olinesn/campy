@@ -419,6 +419,42 @@ def test_a_disk_filled_in_bouts_is_counted_in_frames(monkeypatch, tmp_path):
 		"5 min 20 s of recording before it ends." in full[0]
 
 
+def bouts_with_spikeglx(rig, cycles):
+	# The ChronicRecord rig's kind of plan: one long bout then five short ones, one every 300 s. The cameras' videos
+	# fill the disk at 100 MB/s while they record, and SpikeGLX at 25 MB/s while the gate is open around them, frames
+	# or none (5 s before the cameras, 15 s after a short bout's, 5 s after a long one's)
+	def quiet(seconds):
+		for _ in range(seconds):
+			rig.disk.free -= 25e6
+			rig.Run(1, cameras=[])
+	def frames(seconds):
+		for _ in range(seconds):
+			rig.disk.free -= 100e6
+			rig.Run(1)
+	rig.Run(watch.DISK_EVERY_S, cameras=[]) # the watch's first look at the disk, before the first bout
+	for _ in range(cycles):
+		quiet(5); frames(100); quiet(5); rig.Run(190, cameras=[])
+		for _ in range(5):
+			quiet(5); frames(10); quiet(15); rig.Run(270, cameras=[])
+
+
+def test_a_disk_filled_in_bouts_with_planned_pauses_is_counted_over_the_whole_recording(monkeypatch, tmp_path):
+	# 2 cycles: 300 s of camera, 36.5 GB in all, with 40 GB free: it lasts (3.5 GB left). The last 5 minutes over a
+	# short bout's frames say 150 MB/s and that it does not (the alerts the rig sent all night); the whole
+	# recording's average says about 120 MB/s, and that it does
+	rig = Rig(monkeypatch, tmp_path, free=40e9, recTimeInSec=300, alertNoFramesSec=400, alertTriggerPauseSec=30,
+		alertDiskFreeGB=1).Start()
+	said = len(rig.Sent())
+	bouts_with_spikeglx(rig, 2)
+	assert not [t for t in rig.Sent()[said:] if "fills at" in t], rig.Sent()[said:]
+	assert rig.disk.free > 2e9 and rig.stops == []
+	# Without planned pauses, the last 5 minutes as before: here, wrongly, it doesn't last
+	rig = Rig(monkeypatch, tmp_path, free=40e9, recTimeInSec=300, alertNoFramesSec=400, alertDiskFreeGB=1).Start()
+	said = len(rig.Sent())
+	bouts_with_spikeglx(rig, 2)
+	assert [t for t in rig.Sent()[said:] if "fills at" in t]
+
+
 def test_a_disk_that_lasts(monkeypatch, tmp_path):
 	rig = Rig(monkeypatch, tmp_path, free=300e9, recTimeInSec=3600).Start()
 	for _ in range(60):
