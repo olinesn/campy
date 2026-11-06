@@ -45,9 +45,9 @@ def frames(n=300, period=P, ahead=None, lose=None, late=None, missing=None, slow
 	return out
 
 
-def sampled(feeds, every=50_000_000, slots=8, until=None):
+def sampled(feeds, every=50_000_000, slots=8, until=None, pause_s=None, stop_s=None):
 	# A Rig that read each camera's ring every 50 ms: the newest `slots` frames written by then
-	rig = livehealth.Rig(["Camera{}".format(c) for c in feeds], 30.0, slots)
+	rig = livehealth.Rig(["Camera{}".format(c) for c in feeds], 30.0, slots, pause_s, stop_s)
 	end = until or max(f[-1][3] for f in feeds.values())
 	t = T0
 	while t <= end:
@@ -194,3 +194,31 @@ def test_tracking_keeps_the_last_10_s():
 	for row in rows(n=5):
 		tracking.Add(row)
 	assert list(tracking.Arrays()[0]) == [1, 2, 3, 4, 5]
+
+
+def test_every_camera_quiet_at_once_is_a_planned_pause_with_alert_trigger_pause_sec():
+	# A bout session: the trigger stops between bouts, so every camera's frames stop together. With the
+	# config's alertTriggerPauseSec that is a pause (PAUSED, not NO FRAMES), as campy-acquire's watch counts it
+	feeds = frames()
+	end = max(f[-1][3] for f in feeds.values())
+	status = sampled(feeds, until=end + 20 * 10**9, pause_s=30, stop_s=400).Status()
+	assert problems(status) == [[], [], []]
+	assert all(s.paused_s is not None and 19 < s.paused_s < 21 for s in status.cameras)
+	assert status.paused_s is not None
+	# Without it (no bouts planned), the same is NO FRAMES on every camera, as before
+	status = sampled(feeds, until=end + 20 * 10**9).Status()
+	assert problems(status) == [["NO FRAMES"]] * 3 and status.paused_s is None
+
+
+def test_a_pause_longer_than_alert_no_frames_sec_is_no_frames():
+	feeds = frames()
+	end = max(f[-1][3] for f in feeds.values())
+	status = sampled(feeds, until=end + 20 * 10**9, pause_s=5, stop_s=15).Status()
+	assert problems(status) == [["NO FRAMES"]] * 3 and status.paused_s is None
+
+
+def test_one_camera_stopping_is_no_frames_even_in_a_bout_session():
+	# The others still get frames: not the trigger, a camera
+	status = sampled(frames(stop=(0, 200)), pause_s=30, stop_s=400).Status()
+	assert problems(status)[0] == ["NO FRAMES"] and status.cameras[0].paused_s is None
+	assert problems(status)[1:] == [[], []] and status.paused_s is None

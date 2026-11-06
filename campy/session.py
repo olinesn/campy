@@ -834,10 +834,22 @@ class Session:
 
 	def StartView(self):
 		view = Part("view", [self.ViewPython(), "-m", "campy.liveview", "--cameras", str(self.config.Cameras()[0]),
-			"--name", str(self.config.Value("liveFeedName", "campy-live"))] + [str(a) for a in self.config.view["args"]],
+			"--name", str(self.config.Value("liveFeedName", "campy-live"))] + self.PauseArgs() + [str(a) for a in self.config.view["args"]],
 			os.path.join(self.logs, "campy-live-view.log"), env=self.ViewEnv(), tied=True)
 		self.parts["view"] = view.Start()
 		return view
+
+	def PauseArgs(self):
+		# The viewer tells planned trigger pauses (all cameras at once) from a camera stopping, as the watch does
+		out = []
+		for key, option in (("alertTriggerPauseSec", "--pause-sec"), ("alertNoFramesSec", "--stop-sec")):
+			value = self.config.Value(key, None)
+			try:
+				if value not in (None, "None", "") and float(value) > 0:
+					out += [option, str(float(value))]
+			except (TypeError, ValueError):
+				pass
+		return out
 
 	def ReopenView(self):
 		# The panel's "Open viewer": a view again, while the cameras record, if the last one has closed

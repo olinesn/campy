@@ -113,6 +113,7 @@ async function post(path, body){
 }
 function hms(s){ if(s==null) return "-"; s=Number(s); if(!isFinite(s)) return s>0 ? "\u221e" : "-"; s=Math.max(0,Math.round(s)); return Math.floor(s/3600)+":"+String(Math.floor(s/60)%60).padStart(2,"0")+":"+String(s%60).padStart(2,"0"); }
 function esc(t){ return String(t==null?"":t).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function dur(s){ s = Math.max(0, Math.floor(s)); return Math.floor(s/60)+":"+String(s%60).padStart(2,"0"); }
 function tag(text, kind){ return '<span class="tag '+kind+'">'+esc(text)+'</span>'; }
 function render(s){
   last = s;
@@ -159,7 +160,7 @@ function render(s){
   const cams = H.cameras || [];
   if(cams.length != thumbs){ thumbs = cams.length; $("cams").innerHTML = cams.map((c,i) => '<div class="card cam"><img id="th'+i+'" alt="'+esc(c.name)+'"><div id="cm'+i+'"></div></div>').join(""); }
   cams.forEach((c,i) => { const k = counters[c.name] || {};
-    $("cm"+i).innerHTML = '<div class="row" style="margin-top:6px"><b class="grow">'+esc(c.name)+'</b>'+(c.problems.length ? c.problems.map(p => tag(p,"warn")).join(" ") : tag("OK","ok"))+'</div>'+
+    $("cm"+i).innerHTML = '<div class="row" style="margin-top:6px"><b class="grow">'+esc(c.name)+'</b>'+(c.problems.length ? c.problems.map(p => tag(p,"warn")).join(" ") : c.paused_s!=null ? tag("PAUSED "+dur(c.paused_s),"muted") : tag("OK","ok"))+'</div>'+
       '<div class="muted">'+(c.fps!=null?c.fps.toFixed(1):"-")+' frames/s · frame '+(c.frame||0).toLocaleString()+
       (k.dropped!=null?' · '+k.dropped+' dropped':'')+(k.write_queue_s!=null?' · queue '+k.write_queue_s.toFixed(1)+' s':'')+'</div>'; });
   const warn = [];

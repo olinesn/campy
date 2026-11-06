@@ -155,6 +155,14 @@ def Good3D(tracking):
 	return int(good.sum()), int(tracking.animals or err.shape[1])
 
 
+def Seconds(value):
+	# A config's number of seconds, or None ("None", unset, not a number)
+	try:
+		return float(value) if value not in (None, "None", "") else None
+	except (TypeError, ValueError):
+		return None
+
+
 class Health:
 	"""
 	The cameras' rings and campy-live's results, read from a thread of its
@@ -163,8 +171,9 @@ class Health:
 	when a recording's rings appear, and again for the next recording.
 	"""
 
-	def __init__(self, name, cameras, animals=0):
+	def __init__(self, name, cameras, animals=0, pause_s=None, stop_s=None):
 		self.names = [livefeed.RingName(name, c) for c in range(cameras)]
+		self.pause_s, self.stop_s = pause_s, stop_s # alertTriggerPauseSec, alertNoFramesSec (livehealth.Rig)
 		self.resultsName = liveresults.RingName(name)
 		self.animals = animals
 		self.readers = self.rig = self.results = self.tracking = None
@@ -213,7 +222,7 @@ class Health:
 		self.readers = readers
 		self.frameRate = float(readers[0].Info("frameRate") or 0) or 30.0
 		self.rig = livehealth.Rig([r.cameraName or n for r, n in zip(readers, self.names)], self.frameRate,
-			readers[0].slots)
+			readers[0].slots, self.pause_s, self.stop_s)
 		self.thumbs, self.lastRow = {}, 0
 		return True
 
@@ -237,7 +246,8 @@ class Health:
 		cameras = []
 		for r, c in zip(self.readers, status.cameras):
 			cameras.append({"name": c.name, "fps": round(c.fps, 1) if c.fps is not None else None, "frame": r.Latest(),
-				"problems": [tag for tag, _ in c.problems], "sentences": [text for _, text in c.problems]})
+				"problems": [tag for tag, _ in c.problems], "sentences": [text for _, text in c.problems],
+				"paused_s": round(c.paused_s, 1) if c.paused_s is not None else None})
 		self.Results()
 		now = time.monotonic()
 		if now - self.thumbAt >= THUMB_S:
@@ -374,7 +384,8 @@ class Panel:
 		self.lock = threading.Lock()
 		n = self.config.Cameras()[0]
 		live = self.config.live or {}
-		self.health = Health(str(self.config.Value("liveFeedName", "campy-live")), n, live.get("animals", 0))
+		self.health = Health(str(self.config.Value("liveFeedName", "campy-live")), n, live.get("animals", 0),
+			Seconds(self.config.Value("alertTriggerPauseSec", None)), Seconds(self.config.Value("alertNoFramesSec", None)))
 		self.marks = None
 		self.disk = collections.deque(maxlen=60) # (time, free bytes), for the rate the disk fills
 		# The Pico, SpikeGLX, Windows' settings, when the config has them (campy/devices.py)
