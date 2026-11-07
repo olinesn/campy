@@ -13,7 +13,10 @@ campy-session (and its panel) starts its own campy-live-view, with campy-live's
 results when it tracks; campy-acquire then opens none (manifest.LAUNCHER_ENV
 in its environment says campy-session started it).
 
-The view is a program of its own (python -m campy.liveview), at a low
+The view is campy-live-view's Qt window (PyQt5, campy/liveviewqt.py), drawn
+with OpenCV (opencv-python-headless, both in campy's requirements); without
+PyQt5, OpenCV's own window where it has one. It is a program of its own
+(python -m campy.liveview), at a low
 priority (its --priority low), tied to campy-acquire (campy/children.py): it
 dies with it, and is closed when the recording ends. Ctrl-C at the console
 does not reach it, only campy-acquire. Its python is this
@@ -63,8 +66,8 @@ def Python():
 		python = None
 	if python and os.path.exists(python):
 		return python, None
-	return None, "this environment has no OpenCV (pip install opencv-python, or pip install -e . again in the campy " \
-		"folder: campy needs it since 2.5.2), and no campy-live environment is registered (campy-session register-live)"
+	return None, "this environment has no OpenCV (pip install opencv-python-headless: campy needs it since 2.5.2), " \
+		"and no campy-live environment is registered (campy-session register-live)"
 
 
 def Args(params):

@@ -151,9 +151,14 @@ def test_its_python_has_opencv(monkeypatch):
 
 
 def test_campy_acquire_opens_one_view_that_reads_every_cameras_feed(tmp_path):
-	# A real recording: 2 emulated cameras, liveFeed left False, displayFrameRate 5. Its campy-live-view (without a
-	# window here: --no-window) reads both cameras' feeds, which the camera processes made from the environment.
+	# A real recording: 2 emulated cameras, liveFeed left False, displayFrameRate 5. Its campy-live-view, in Qt's
+	# window (on Qt's offscreen platform here) drawn with this environment's OpenCV (headless in the tests), reads
+	# both cameras' feeds, which the camera processes made from the environment.
 	pytest.importorskip("cv2")
+	pytest.importorskip("PyQt5")
+	from test_liveviewqt import OFFSCREEN, QtStarts
+	if not QtStarts():
+		pytest.skip("Qt's offscreen platform does not start here")
 	names = ["Camera0", "Camera1"]
 	for camera in names:
 		(tmp_path / camera).mkdir()
@@ -165,13 +170,13 @@ def test_campy_acquire_opens_one_view_that_reads_every_cameras_feed(tmp_path):
 		"frameRate: 20", "recTimeInSec: 4", "chunkLengthInSec: 1", "displayFrameRate: 5",
 		'pixelFormatInput: "gray"', 'pixelFormatOutput: "yuv420p"', "gpuID: -1", 'codec: "h264"',
 		'preflight: "off"', 'liveFeedName: "{}"'.format(feed), ""]))
-	env = dict(os.environ, PYTHONPATH=REPO, PYTHONUNBUFFERED="1")
+	env = dict(OFFSCREEN, PYTHONPATH=REPO, PYTHONUNBUFFERED="1")
 	for key in (manifest.LAUNCHER_ENV, livefeed.FEED_ENV, "IMAGEIO_FFMPEG_EXE"):
 		env.pop(key, None)
 	code = ("import sys; sys.argv = ['campy-acquire', sys.argv[1]]\n"
 		"from campy import acquireview\n"
 		"args = acquireview.Args\n"
-		"acquireview.Args = lambda p: args(p) + ['--no-window', '--gui', 'opencv', '--priority', 'normal']\n"
+		"acquireview.Args = lambda p: args(p) + ['--gui', 'qt', '--priority', 'normal']\n"
 		"from campy.campy import Main; Main()")
 	proc = subprocess.run([sys.executable, "-c", code, str(config)], cwd=str(tmp_path), env=env,
 		capture_output=True, text=True, timeout=120)
@@ -183,4 +188,5 @@ def test_campy_acquire_opens_one_view_that_reads_every_cameras_feed(tmp_path):
 		assert re.search(r"{}: live feed in shared memory {}-\d".format(camera, feed), out), out
 	log = (session / "campy-live-view.log").read_text()
 	assert re.search(r"Live feed: Camera0 64x48, Camera1 64x48", log), log
+	assert "No Qt here" not in log and "Cannot open a window" not in log, log
 	assert "campy-live-view stopped" not in out

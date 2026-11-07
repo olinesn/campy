@@ -15,9 +15,10 @@ setup(
 					'psutil',
 					'scikit-image',
 					'PyQt5',
-					# campy-live-view, the one window campy-acquire shows its cameras in (displayFrameRate):
-					# the full OpenCV, with windows, not opencv-python-headless
-					'opencv-python',
+					# campy-live-view, the one window campy-acquire shows its cameras in (displayFrameRate): it
+					# draws with OpenCV, in Qt's window (PyQt5, above). Headless: no GUI of its own, whose Qt
+					# would clash with PyQt5's
+					'opencv-python-headless',
 					],
 	extras_require={
 		# RatCam (cameraMake "ratcam"): the host package of nir-eye-cam
