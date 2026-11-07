@@ -13,7 +13,11 @@ after another, each into a folder of its own, until the panel is closed
 What the page shows, once a second:
 
 - before the start: the experiment's fields (experiment, animal IDs, notes,
-  for session.json) and the checks: what stops a start (campy-live's
+  for session.json); with trained models (live: model: sleap), the model
+  picker: the centroid and instance models campy-live tracks with, from the
+  config's pair, live.sets and the folders in live.models, each with its
+  settings and score (campy/livemodels.py), for this panel's recordings only
+  (the config is never changed); and the checks: what stops a start (campy-live's
   environment not found or not the same campy, another campy-session
   running) apart from what only warns (disk space). The recording's length
   is the config's recTimeInSec. With a Pico, the length is the page's choice,
@@ -57,8 +61,8 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from campy import bookmarks, children, clock, devices, livefeed, livehealth, liveresults, pico, session, stopfile, \
-	strictjson
+from campy import bookmarks, children, clock, devices, livefeed, livehealth, livemodels, liveresults, pico, session, \
+	stopfile, strictjson
 
 PORT = 8765
 THUMB_WIDTH = 192 # px, each camera's thumbnail
@@ -402,6 +406,9 @@ class Panel:
 		self.lengths = self.devices.Lengths() if self.devices is not None else []
 		self.length = self.lengths[0]["seconds"] if self.lengths else None # the page's choice
 		self.closing = False
+		# The model picker (campy/livemodels.py): with trained models only
+		live = self.config.live
+		self.picker = livemodels.Picker(self.config) if live is not None and live["model"] == "sleap" else None
 		self.checks = self.Checks()
 
 	# ---------------------------------------------------------- before the start
@@ -421,6 +428,8 @@ class Panel:
 					checks.append(("ok", "campy-live's environment: {} ({})".format(python, where)))
 			except session.SessionError as e:
 				checks.append(("block", str(e)))
+		if getattr(self, "picker", None) is not None:
+			checks += self.picker.Checks()
 		n, names = self.config.Cameras()
 		if self.devices is not None and self.devices.pico is not None:
 			checks.append(("ok", "{} cameras ({})".format(n, ", ".join(names))))
@@ -600,6 +609,21 @@ class Panel:
 		self.checks = self.Checks()
 		return None if ok else "Windows Update was not paused: {}".format(said)
 
+	def Models(self, body, scan=False):
+		# The page's model pick ({set} or {centroid[, instance]}), or a look through live.models again
+		if self.picker is None:
+			return "This config has no trained models to pick (live: model: sleap)."
+		if self.session is not None or self.wanted is not None:
+			return "A recording is running: the models change for the next one."
+		if scan:
+			self.picker.Scan()
+			error = None
+		else:
+			error = self.picker.Choose(body.get("centroid"), body.get("instance") if "instance" in body else None,
+				body.get("set"))
+		self.checks = self.Checks()
+		return error
+
 	def Close(self):
 		if self.session is not None or self.wanted is not None:
 			return "A recording is running: the panel closes once it has ended and you close it."
@@ -660,6 +684,7 @@ class Panel:
 			"lengths": [{"name": l["name"], "seconds": l["seconds"], "text": l["plan"].get("text") or l["plan"].get("error"),
 				"videoFolder": l["videoFolder"]} for l in self.lengths], "length": self.length,
 			"launcher": launcher, "health": self.health.snapshot, "recording": recording,
+			"models": self.picker.Status() if getattr(self, "picker", None) is not None else None,
 			"disk": self.Disk(free, rate, s),
 			"alerts": {"open": open_, "resolved": resolved}, "problems": problems, "bookmarks": marks,
 			"fields": {"experiment": str(self.config.Value("experiment", "") or "").replace("None", ""),
@@ -796,6 +821,10 @@ class Panel:
 					error = panel.Viewer()
 				elif url.path == "/bookmark":
 					error, mark = panel.Bookmark(body.get("note", ""))
+				elif url.path == "/models":
+					error = panel.Models(body)
+				elif url.path == "/models-scan":
+					error = panel.Models(body, scan=True)
 				elif url.path == "/check":
 					panel.checks, error = panel.Checks(), None
 				else:
@@ -862,7 +891,11 @@ class Panel:
 		# One recording, in this (the main) thread: campy-session's Ctrl-C and its tied children need it
 		fields, args = self.wanted, self.Args(self.wanted)
 		try:
-			config = session.Config(self.config_path, args)
+			pick = self.picker.Pick() if self.picker is not None else None
+			config = session.Config(self.config_path, args, live=pick)
+			if pick:
+				Say("Live models: centroid {}, instance {}".format(pick["centroid"], pick["instance"]))
+				self.picker.Remember()
 			if self.devices is not None:
 				self.devices.config = config
 				self.devices.Plan(self.length, fields.get("pico_at") or None)

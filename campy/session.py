@@ -92,6 +92,8 @@ LIVE = {
 	"model": ((str,), "sleap", "campy-live --model: sleap (trained models), random or none"),
 	"centroid": ((str,), "", "the trained centroid model's folder (--centroid)"),
 	"instance": ((str,), "", "the trained centered-instance model's folder (--instance)"),
+	"models": ((list, str), [], "folders the panel's model picker looks through for trained models (campy/livemodels.py)"),
+	"sets": ((dict,), {}, "named model pairs for the panel's picker: {name: {centroid: folder, instance: folder}}"),
 	"animals": ((int,), 0, "how many animals (--animals, and --max-instances unless args give it); 0: campy-live's default"),
 	"calibration": ((str,), "", "calibration.toml, for 3D (--calibration)"),
 	"frame_shape": ((str,), "", "--frame-shape, if not the cameras' frameHeight x frameWidth"),
@@ -224,9 +226,11 @@ class Config:
 	checked (live, view, post; live None when there is none).
 	"""
 
-	def __init__(self, path, overrides=()):
+	def __init__(self, path, overrides=(), live=None):
 		from campy import configurator
 		self.path = os.path.abspath(path)
+		# live: keys the panel's model picker set for this recording ({centroid, instance}), over the config's
+		self.picked = dict(live or {})
 		try:
 			with open(self.path, encoding="utf-8", errors="replace") as f:
 				self.text = f.read()
@@ -265,20 +269,48 @@ class Config:
 			raise SessionError("post.copy: it takes to: only (the folder the recording is copied into).")
 		for name, keys in DeviceSections().items():
 			setattr(self, name, Section(name, sections[name], keys) if name in sections else None)
-		if self.live is not None and self.live["model"] == "sleap" and not (self.live["centroid"] and self.live["instance"]):
+		if self.live is not None:
+			self.CheckPicker()
+		if self.live is not None and self.live["model"] == "sleap" and not (self.live["centroid"] and self.live["instance"]) \
+				and not (self.live["models"] or self.live["sets"]):
 			raise SessionError("live: give the trained models' folders, centroid: and instance: (or model: random, "
 				"or none).")
+
+	def CheckPicker(self):
+		# live.models: one folder or a list of them, from the folder of the config that says it; live.sets: {name: {centroid,
+		# instance}}
+		live = self.live
+		source = self.resolved.section_sources.get("live", {}).get("models")
+		here = os.path.dirname(source.path) if getattr(source, "path", None) else os.path.dirname(self.path)
+		if isinstance(live["models"], str):
+			live["models"] = [live["models"]] if live["models"] else []
+		for folder in live["models"]:
+			if not isinstance(folder, str):
+				raise SessionError("live.models: {!r} is not a folder.".format(folder))
+		live["models"] = [os.path.join(here, os.path.expanduser(f)) for f in live["models"]]
+		for name, pair in live["sets"].items():
+			if not isinstance(pair, dict) or set(pair) != {"centroid", "instance"} or not all(isinstance(v, str) and v
+					for v in pair.values()):
+				raise SessionError("live.sets.{}: give it centroid: and instance:, each a model's folder.".format(name))
 
 	def Resolve(self, more=()):
 		# campy's configurator's reading (configurator.Resolve): every setting, and where it came from
 		from campy import configurator
 		try:
-			return configurator.Resolve(self.path, self.args + list(more))
+			resolved = configurator.Resolve(self.path, self.args + list(more))
 		except configurator.ConfigError as e:
 			raise SessionError(str(e))
 		except SystemExit:
 			# argparse refused an option, and said which
 			raise SessionError("campy-acquire does not take these options: {}".format(" ".join(self.args)))
+		if self.picked and isinstance(resolved.sections.get("live"), dict):
+			# The panel's pick, as if the config said it, each line saying where it came from (session-config.yaml,
+			# campy-acquire.yaml and so session.json)
+			for key, value in self.picked.items():
+				resolved.sections["live"][key] = value
+				resolved.section_sources.setdefault("live", {})[key] = configurator.Source("panel",
+					note="picked on campy-session panel's page")
+		return resolved
 
 	def Value(self, key, default=None):
 		# What campy-acquire will use: the command line's, the config's (or its profile's), or campy's default
@@ -833,6 +865,9 @@ class Session:
 	def Steps(self):
 		config = self.config
 		if config.live is not None:
+			if config.live["model"] == "sleap" and not (config.live["centroid"] and config.live["instance"]):
+				raise SessionError("live: no centroid: and instance: in the config. live.models and live.sets are the "
+					"panel's (campy-session panel picks the models); campy-session run needs the two folders.")
 			self.live_python = self.live_python or LivePython(config.live)[0]
 			found = CheckLiveEnv(self.live_python, self.LiveEnv())
 			problem = LiveEnvProblem(self.live_python, found, config.live["model"])
@@ -1232,6 +1267,8 @@ class Session:
 			"parts": {name: part.Status() for name, part in self.parts.items() if not name.startswith("live")},
 			"live": [part.Status() for part in self.live_parts],
 			"live_restarts": len(self.live_parts) - 1 if self.live_parts else 0,
+			"live_models": {"centroid": self.config.live["centroid"], "instance": self.config.live["instance"],
+				"picked": bool(self.config.picked)} if self.config.live is not None else None,
 			"problems": [{"time": t, "text": text} for t, text in self.problems],
 			"post": {step: {"state": state, "message": message} for step, (state, message) in self.post_results.items()},
 			"devices": self.devices.Status() if self.devices is not None else None,

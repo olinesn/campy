@@ -138,6 +138,7 @@ What the page shows, refreshed every second:
 
 - **Before the start:**
   - the experiment's name, the animal IDs and notes, which go into the recording's `session.json`;
+  - with trained models (`live: model: sleap`), the **live models**: which centroid and instance models `campy-live` tracks with (the model picker, below);
   - the checks. Some stop a start: `campy-live`'s environment not found or not the same campy, or another `campy-session` running. Others only warn: less free disk space than `alertDiskFreeGB`. With a Pico (`pico:`), the disk line is what the chosen length's plan needs instead (SpikeGLX while the gate is open, at `spikeglx.write_mb_s`, and the videos at `panel.video_mb_s` a camera: an estimate), and a length that doesn't fit, keeping `stopAtFreeGB`, stops the start unless the page's confirm passes over it ([Recording a session](recording-a-session.md#on-the-chronicrecord-rig-the-pico-and-spikeglx)).
 - **While it records:**
   - **time:** elapsed, against the planned length;
@@ -148,6 +149,51 @@ What the page shows, refreshed every second:
   - **bookmarks:** a note box and an Add button. They write the same `bookmarks.csv` in the recording's folder as `campy-live-view`'s `m` key, and the two never give two bookmarks the same number;
   - **programs:** each one's state, and a button that opens `campy-live-view` again if it was closed.
 - **After it:** each step of `post:`, as it runs.
+
+#### Picking the live models on the panel
+
+The panel's **Live models** box chooses the trained models for the recordings it starts, so a newly trained pair can be tried without editing the config. It offers:
+
+- the config's own pair, `live.centroid` and `live.instance`;
+- named pairs, `live.sets`, for a rig profile to list the pairs that go together;
+- every trained model in the folders `live.models` names. The panel looks up to 4 folders down for sleap-nn model folders (a `best.ckpt` beside a `training_config.yaml` or `.json`). That includes the `models/` folder of a SLEAP training job.
+
+```yaml
+live:
+  centroid: "C:\\campy_data\\live\\models\\centroid"     # the config's pair: still the default
+  instance: "C:\\campy_data\\live\\models\\instance"
+  models: ["C:\\campy_data\\live\\models", "D:\\training\\models"]   # folders to pick from (one folder: no list needed)
+  sets:
+    old pair: {centroid: "C:\\campy_data\\live\\models\\centroid_old", instance: "C:\\campy_data\\live\\models\\instance_old"}
+```
+
+A relative folder in `live.models` is taken from the folder of the config file that names it. A config without `live.models` or `live.sets` works as before, and the box shows the config's pair alone. A config with `live.models` or `live.sets` can leave out `centroid:` and `instance:`. The panel then opens on the first set, or asks for a pick. `campy-session run` still needs the two folders.
+
+Each model is described from its own files, without loading it:
+
+- its kind: centroid, centered instance or multi-class top-down. Bottom-up and single-instance models are left out: `campy-live` runs top-down models;
+- its input: scale, the crop (instance models), and the frame size it was trained on;
+- its network: max stride, output stride, filters;
+- its skeleton's node count, and the date of its `best.ckpt`;
+- its validation score, when the folder has sleap-nn's `training_log.csv` (a SLEAP training job's folder does; the rigs' copied model folders usually don't). The score is taken at the epoch with the lowest validation loss, the one `best.ckpt` keeps: F1 for a centroid model, mAP and mOKS for an instance model.
+
+Folder names don't say which centroid model goes with which instance model, so the box pairs them by skeleton. The instance list puts the models with the centroid's skeleton first, newest first; the others are marked "(other skeleton)". Picking a centroid model alone also picks the instance model with its skeleton trained nearest to it in time.
+
+The checks list then says what the pick means:
+
+- **stops the start:**
+  - a folder, `best.ckpt` or training config missing;
+  - a model in the wrong place (a centroid model as the instance model);
+  - a centroid model whose anchor part the instance model's skeleton lacks.
+- **only warns:**
+  - skeletons that differ but share the anchor;
+  - a pair `--fixed-crops` can't run: a multi-class model, or box-scaled crops. `campy-live` then runs sleap-nn's own top-down layer, which is slower. If the config's `live.args` force `--fixed-crops on`, this one stops the start too;
+  - a model trained on another frame size than the cameras', or an instance crop larger than the frames.
+- **a note:** a pair new to the rig builds its compiled engines at its first start (`--engine`: about 26–28 s on the Windows rigs' NVIDIA GPUs), then loads them from the cache. `live.ready_timeout_s` (120 s) leaves room for it.
+
+The `campy-live` environment's sleap-nn version is checked as before.
+
+**A pick changes only the panel's recordings, never the config.** At Start, it goes into that recording's `live:` section. So the recording's `session-config.yaml` and `campy-acquire.yaml` (and through it `session.json`) say which models it used, each picked line marked `# panel (picked on campy-session panel's page)`. `campy-live-session.json` records the two folders and their `best.ckpt` hashes, as always, and `launcher.json` has `live_models`. The last pair started from each config is kept in `~/.campy/status/panel-models.json`. The next panel opened with that config starts on it, as long as both folders are still there. **Look again** looks through `live.models` again, for a model trained while the panel was open. While a recording runs, the pick can't change; it applies from the next recording.
 - **With a Pico and SpikeGLX** (the config's `pico:` and `spikeglx:` sections, the ChronicRecord rig's): the session's length to choose, their own checks, each step (SpikeGLX's run, the gate check, the Pico), the Pico's bout and pulses, SpikeGLX's run and files, a **Start the Pico** button once every camera is ready, and a Stop that asks whether to stop after the Pico's bout or now ([Recording a session from the desktop](recording-a-session.md#on-the-chronicrecord-rig-the-pico-and-spikeglx), [chronicrecord/README.md](../chronicrecord/README.md#from-the-panel)).
 
 **Stop** stops the recording exactly as Ctrl-C does: each camera closes its video. If a camera hangs while closing, the button turns into **Stop now, without closing**, for a few seconds. Closing the page stops nothing, and the page can be opened again at any time: from the printed address, or by running `campy-session panel` again (or double-clicking the icon). A panel that is already open writes its address into `~/.campy/status/panel.json`, readable by your user only, and a second launch that finds it answering opens that page in the browser and ends, instead of refusing with "Another campy-session is running".

@@ -392,6 +392,10 @@ Checked with stand-in labels: the predictions `campy-live` logged on a 5-mouse r
 
 That says the tool measures what it should, not which model is better: stand-in labels are the first model's own predictions. Real numbers need real corrected labels.
 
+## Trying a new model on a rig: the panel's model picker
+
+A newly trained pair doesn't need the config edited. Name the folders that hold trained models in the config's `live.models` (a rig profile is a good place). The recording panel then lists every centroid and instance model in them, with its settings, date and validation score, and the pick holds for the recordings that panel starts ([Picking the live models on the panel](live-tracking.md#picking-the-live-models-on-the-panel)). A SLEAP training job's `models/` folder can be named as it is: the panel reads sleap-nn's `training_log.csv` there for the score. A model copied to the rig with only `best.ckpt` and `training_config.yaml` is listed without one.
+
 ## Does a model suit a rig? (`campy-model-fit`)
 
 A model loses animals on frames that look unlike its training images: brighter, more saturated, recorded with another gamma ([Recording for a model](#recording-for-a-model)). `campy-model-fit` compares them before a recording, in two steps:
