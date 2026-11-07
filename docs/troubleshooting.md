@@ -6,7 +6,7 @@ Before recording, campy checks the config and the computer, and most problems sh
 
 ## Installing
 
-**`import PySpin` fails.** The PySpin wheel must match both the Python it is installed into (its `cp312` tag for Python 3.12) and the Spinnaker SDK installed on the computer (its version, e.g. 4.4.0.246). PySpin for Python 3.12 needs NumPy 2.x, and on Windows and macOS Spinnaker 4.4 or newer. An environment with an older PySpin works only with that older SDK, so upgrade a computer's Spinnaker and its campy environment together ([Installation](install.md#installation)).
+**`import PySpin` fails.** The PySpin wheel must match both the Python it is installed into (its `cp312` tag for Python 3.12) and the Spinnaker SDK installed on the computer (its version, e.g. 4.4.0.246). PySpin for Python 3.12 needs NumPy 2.x, and on Windows and macOS Spinnaker 4.4 or newer. On Linux, upgrade a computer's Spinnaker and its campy environment together. On Windows each PySpin wheel brings its own Spinnaker libraries and uses only the installed SDK's camera driver, so an older environment (PySpin 2.3.0.77) kept recording after its computer's Spinnaker went from 4.2.0.88 to 4.4.0.246 ([Installation](install.md#installation), [Updating Spinnaker on a Windows computer](install.md#updating-spinnaker-on-a-windows-computer)).
 
 **PySpin finds 0 cameras, or SpinView is missing, after installing Spinnaker 4.4 on Windows.** Its installer can fail halfway and still list the SDK in Settings ▸ Apps. The packages it saved can be installed directly, and the USB3 camera driver registered with `pnputil` ([Spinnaker 4.4 on Windows: when the installer fails](install.md#spinnaker-44-on-windows-when-the-installer-fails)).
 
