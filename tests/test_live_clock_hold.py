@@ -1,8 +1,9 @@
 """
-campy-live --hold-gpu-clock-blocks auto on an AMD integrated GPU (the
-EVO-X2's): at least one block keeps spinning while sets come (GpuClock's
-fewest), where elsewhere auto goes down to none at full clock. No GPU needed:
-torch is a stand-in.
+campy-live --hold-gpu-clock-blocks auto: 1 block spins while sets come, 2
+once the clock falls with 1, and never fewer while sets come, on every GPU
+(an RTX 6000 Ada's sets were 2-3 times slower for about 1 s at each try
+at none; the EVO-X2's whole chip slows down with none, its clock reading high).
+No GPU needed: torch is a stand-in.
 """
 import types
 
@@ -15,14 +16,6 @@ def fake_torch(hip, integrated):
 		device=lambda name: name, cuda=types.SimpleNamespace(get_device_properties=lambda device: props))
 
 
-def test_fewest_is_one_on_an_amd_integrated_gpu_only():
-	assert live.GpuClock.Fewest(fake_torch("6.4", True), "cuda") == 1 # EVO-X2: ROCm, integrated
-	assert live.GpuClock.Fewest(fake_torch("6.4", False), "cuda") == 0 # an AMD card
-	assert live.GpuClock.Fewest(fake_torch(None, True), "cuda") == 0 # NVIDIA (integrated, as a Jetson)
-	assert live.GpuClock.Fewest(fake_torch(None, False), "cuda") == 0 # NVIDIA
-	assert live.GpuClock.Fewest(types.SimpleNamespace(), "cuda") == 0 # can't tell: as before
-
-
 def clock(monkeypatch, hip, integrated, blocks="auto"):
 	monkeypatch.setitem(__import__("sys").modules, "torch", fake_torch(hip, integrated))
 	c = live.GpuClock("cuda", blocks, reader=types.SimpleNamespace(name="fake"))
@@ -32,32 +25,35 @@ def clock(monkeypatch, hip, integrated, blocks="auto"):
 
 def calm_looks(c, seconds):
 	# Adjust on a full clock, one look every LOOK_S: the blocks after each
-	state, t, blocks = (0, 0.0, None), 0.0, []
+	state, t, blocks = 0, 0.0, []
 	for _ in range(int(seconds / c.LOOK_S)):
 		t += c.LOOK_S
-		state = c.Adjust(2850.0, False, *state, t)
+		state = c.Adjust(2850.0, False, state)
 		blocks.append(c.busy)
 	return blocks
 
 
-def test_auto_keeps_one_block_on_an_amd_integrated_gpu(monkeypatch):
-	c = clock(monkeypatch, "6.4", True)
-	assert c.fewest == 1 and c.busy == 1
-	assert calm_looks(c, 10 * c.CALM_S) == [1] * int(10 * c.CALM_S / c.LOOK_S) # never 0, never a change
-	assert c.changes == 0
-	# a slow clock still adds the second block, and calm takes it away again, down to 1
-	state = c.Adjust(1500.0, False, 0, 0.0, None, 0.5)
-	c.Adjust(1500.0, False, *state, 1.0)
-	assert c.busy == 2
-	assert calm_looks(c, 2 * c.CALM_S)[-1] == 1
-	assert c.Describe()["fewest_blocks"] == 1
-
-
-def test_auto_still_goes_down_to_none_elsewhere(monkeypatch):
-	for hip, integrated in (("6.4", False), (None, False)):
+def test_auto_keeps_one_block_on_every_gpu(monkeypatch):
+	# NVIDIA, an AMD card, an AMD integrated GPU (the EVO-X2's, #141): 1 from
+	# the start, never 0, and no change at all while the clock holds
+	for hip, integrated in ((None, False), (None, True), ("6.4", False), ("6.4", True)):
 		c = clock(monkeypatch, hip, integrated)
-		assert c.fewest == 0 and calm_looks(c, c.CALM_S)[-1] == 0
-		assert "fewest_blocks" not in c.Describe()
+		assert c.fewest == 1 and c.busy == 1
+		assert calm_looks(c, 600) == [1] * int(600 / c.LOOK_S) # 10 minutes at full clock
+		assert c.changes == 0
+		assert c.Describe()["fewest_blocks"] == 1
+
+
+def test_a_block_added_stays(monkeypatch):
+	c = clock(monkeypatch, None, False)
+	low = c.Adjust(1500.0, False, 0)
+	assert c.busy == 1 and low == 1 # one slow look: not yet
+	assert c.Adjust(1500.0, False, low) == 0 and c.busy == 2 and c.fewest == 2
+	assert calm_looks(c, 600)[-1] == 2 and c.changes == 1 # never back to 1 in this run
+	low = 0
+	for _ in range(10):
+		low = c.Adjust(1500.0, False, low)
+	assert c.busy == c.MOST_BUSY == 2 and c.changes == 1 # and never more than MOST_BUSY
 
 
 def test_a_number_still_decides(monkeypatch):
