@@ -64,7 +64,7 @@ def test_one_view_for_every_camera_at_display_frame_rate(tmp_path, monkeypatch):
 	assert command == ["py", "-m", "campy.liveview", "--cameras", "3", "--name", "rigfeed", "--fps", "10",
 		"--pause-sec", "60.0", "--stop-sec", "900.0"]
 	assert livefeed.FEED_ENV not in kwargs["env"] # the view's own feed is campy-acquire's, not one it would make
-	assert kwargs["start_new_session"] or kwargs["creationflags"] # out of the console's Ctrl-C
+	assert kwargs.get("start_new_session") or kwargs.get("creationflags") # out of the console's Ctrl-C
 	assert said == ["All 3 cameras in one campy-live-view window, at 10 fps (displayFrameRate; 0 for none). Its "
 		"output: {}".format(tmp_path / "campy-live-view.log")]
 	view.Stop()
