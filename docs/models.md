@@ -235,13 +235,13 @@ Measured with `bench/tied_peaks_check.py` on the 5-mouse replay (3 cameras, all 
 | fp32, fixed crops and sleap-nn's own layer | identical | identical |
 | fp16, fixed crops in PyTorch: mice found only before; keypoints identical; moved > 1 px | 1; 99.99%; 0 | 1; 99.98%; 35 (up to 6.1 px) |
 | fp16, sleap-nn's own layer | 1; 99.65%; 8 (up to 3.3 px) | 1; 99.59%; 39 (up to 6.1 px) |
-| fp16, fixed crops with `torch.compile` (EVO-X2) / TensorRT (RTX 6000 Ada) | 2; 99.96%; 22 (up to 6.1 px) | TENSORRT_ROW |
+| fp16, fixed crops with `torch.compile` (EVO-X2) / TensorRT (RTX 6000 Ada) | 2; 99.96%; 22 (up to 6.1 px) | same engines: 0; 99.98%; 36 (up to 5.8 px). Engines built again: 0; every keypoint a little different (median 0.003 px), 1.2% > 1 px: a new TensorRT build of the same network rounds differently |
 | fp16 against fp32, fixed crops: mice missed / extra, before → after | PyTorch 0 / 2 → 0 / 1; `torch.compile` 0 / 2 → 1 / 1 | PyTorch 0 / 0 → 1 / 0; TensorRT 2 / 1 → 2 / 1 |
 | fp16 against fp32, fixed crops in PyTorch: keypoints moved > 1 px, before → after | 2.03% → 2.03% | 1.05% → 1.05% |
 
 So 0.3.5's rule drops a mouse now and then that campy's kept (a wider flat top, or one next to an equally high pixel), and finds fewer extra ones; the keypoints are as close to fp32's as before.
 
-Live, the rig check's 5-mouse replay with 3D (3 cameras, 60 fps, 3,600 sets), two runs each way: on the EVO-X2, tracking was exactly as close to offline SLEAP before and after (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches, nothing skipped), and a set took 0.1 ms longer (inference p50 5.5 → 5.6 ms, frame to 3D p50 7.1 → 7.2–7.3 ms): the flat-top rule takes a few more GPU steps than the old one. PRECISION_LIVE Offline, frames per second were within 1.5% of before on both machines (`torch.compile` 477 → 470 on the EVO-X2, TensorRT 547 → 547 on the RTX 6000 Ada).
+Live, the rig check's 5-mouse replay with 3D (3 cameras, 60 fps, 3,600 sets), two runs each way: on the EVO-X2, tracking was exactly as close to offline SLEAP before and after (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches, nothing skipped), and a set took 0.1 ms longer (inference p50 5.5 → 5.6 ms, frame to 3D p50 7.1 → 7.2–7.3 ms): the flat-top rule takes a few more GPU steps than the old one. On the RTX 6000 Ada (30 s replays, timing only: this rig's check has no offline comparison), nothing skipped either way, inference p50 1.6 → 1.7 ms and frame to 3D p50 4.6 → 4.6–4.7 ms; one of the two runs after had a p99 of 5.3 ms (the other 1.8 ms, before 1.7). Offline, frames per second were within 1.5% of before on both machines (`torch.compile` 477 → 470 on the EVO-X2, TensorRT 547 → 547 on the RTX 6000 Ada); fp16 fixed crops in plain PyTorch without a CUDA graph, which `campy-live` doesn't use by default, 461 → 445 on the RTX 6000 Ada (3.5% slower: the extra GPU steps, on Windows).
 
 To check a machine:
 ```
