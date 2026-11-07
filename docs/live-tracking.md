@@ -487,6 +487,18 @@ Notes on the measurements:
   |---|---|---|---|
   | Pro Tower Plus (RTX A2000) | 1,200 / 2.7 / 2.8 | 3,600 / 6.8 / 7.0 / 9.3 / 10.6 | 1,800 / 6.7 / 7.1 / 11.2 / 12.8 |
 
+- On 7 November, right after pull request 318 (campy needs sleap-nn 0.3.5) was merged, the three rigs moved to dev `c09dcc8` at 12:47 AM and ran their checks. On each, `campy-live`'s environment went from sleap-nn 0.3.3 to 0.3.5 with torch, torchvision, Triton, TensorRT, ONNX, the NVIDIA libraries, NumPy and OpenCV held at their installed versions (checked after the install: unchanged). The upgrade added `av`, `scikit-learn` and a few small packages, and on the EVO-X2 `sleap-io` 0.9.5 (the Windows rigs already had 0.9.3). Both environments on each rig run campy from the checkout, and each rig's lock needed nothing new. The move also brings pull request 315 (recording-quality scoring in one pass, the Basler grab wait, FLIR Bayer patterns). The Dell Pro Tower Plus and the Windows 11 VM were not updated and stay on 2.5.1; a machine that moves past pull request 318 needs sleap-nn 0.3.5 in its `campy-live` environment first (the recording panel says so before a recording starts).
+
+  Nothing was skipped or misaligned in any run, and every camera kept all its frames. Each set took up to 0.1 ms longer than on 2.5.1 at the median (up to 0.2 ms at p99 on the EVO-X2), as measured before the merge: sleap-nn 0.3.5's flat-top peak rule takes a few more GPU steps ([Models](models.md#running-the-models-faster-compiled-engines-on-by-default-in-campy-live)). The EVO-X2's replay agreed with the offline tracking as before: a median of 3.8 px in 2D and 4.2 mm in 3D, and 2 identity switches. Every run was tracked from frame 1, but for the Pro Max Slim's replay (frame 2, as on earlier first runs).
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | EVO-X2 | 1,800 / 3.1 / 3.2 | 3,600 / 5.7 / 6.0 / 7.8 / 8.7 | 3,600 / 5.6 / 5.8 / 7.3 / 8.3 |
+  | Pro Max Slim | 1,200 / 2.3 / 2.5 | 3,600 / 5.6 / 5.8 / 7.8 / 8.8 | 1,799 / 5.6 / 5.8 / 8.8 / 10.1 |
+  | Precision 7875 | 1,200 / 0.9 / 1.1 | 3,600 / 1.7 / 1.8 / 4.2 / 5.4 | 1,800 / 1.7 / 1.8 / 4.7 / 5.7 |
+
+  The Precision 7875's 3-camera run was `RIG_CONTAMINATED` the first time (one burst of other CPU use, same times) and clean on the rerun, which the table uses; its other runs and all the EVO-X2's were clean the first time. On the Pro Max Slim the first two rounds (12:48 and 1:00 AM) ran with an inference p99 about 1.4 ms higher than 2.5.1's (7.0–7.1 ms with 3 cameras, the median unchanged). To find out why, at 1:05–1:14 AM it ran the replay with three versions of the peak code (dev's, the first version of the flat-top rule, and campy's old rule) and then, alternating, 2.5.1 with sleap-nn 0.3.3 from a side folder against dev with 0.3.5. All three peak codes had the same high p99 at 1:05–1:09; by 1:12–1:14 it was gone, and 2.5.1 gave 5.5 / 5.7 ms against dev's 5.6 / 5.8. So it was something else running on the machine at the time, not the update. A third round of checks at 1:16–1:19 AM was clean, and the table uses it.
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
