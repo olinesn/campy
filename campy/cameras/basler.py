@@ -120,27 +120,6 @@ def GetTimeStamp(grabResult):
 	return grabResult.TimeStamp*1e-9
 
 
-def DisplayImage(cam_params, dispQueue, grabResult):
-	# On Windows, Pylon's own image window; elsewhere campy's (display.py)
-	if sys.platform == 'win32':
-		dispQueue.SetImage(grabResult)
-		dispQueue.Show()
-	else:
-		# If pixelformat is bayer, first convert result to RGB
-		if cam_params["pixelFormatInput"].find("bayer") != -1:
-			converter = pylon.ImageFormatConverter()
-			converter.OutputPixelFormat = pylon.PixelType_RGB8packed
-			img = converter.Convert(grabResult).GetArray()
-		else:
-			img = grabResult.GetArray()
-
-		# Downsample image
-		img = img[::cam_params["displayDownsample"],::cam_params["displayDownsample"]]
-
-		# Send image to display window thru queue
-		dispQueue.append(img)
-
-
 def ReleaseFrame(grabResult):
 
 	grabResult.Release()
@@ -162,9 +141,3 @@ def CloseSystem(system, device_list):
 	del device_list
 
 
-# Basler-Specific Functions
-def OpenPylonImageWindow(cam_params):
-	imageWindow = pylon.PylonImageWindow()
-	imageWindow.Create(cam_params["n_cam"])
-	imageWindow.Show()
-	return imageWindow

@@ -43,7 +43,7 @@ class FakeCamera:
 	         (each call times out, as FLIR's GetNextImage does), then frames again
 	  lost_after: after that many frames, the camera is gone (unicam.CameraLost)
 	  close_error: what CloseCamera raises
-	  bad_frames: grabs whose image cannot be read, or shown (counted from 1)
+	  bad_frames: grabs whose image cannot be read (counted from 1)
 	  on_frame: called with each grab's number
 	"""
 
@@ -87,10 +87,6 @@ class FakeCamera:
 
 	def GetTimeStamp(self, grab):
 		return grab * self.period
-
-	def DisplayImage(self, cam_params, dispQueue, grab):
-		if grab in self.bad_frames:
-			raise ValueError("frame {} cannot be shown".format(grab))
 
 	def ReleaseFrame(self, grab):
 		self.released.append(grab)
@@ -138,13 +134,13 @@ class CameraProcess:
 		monkeypatch.setattr(time, "sleep", lambda s: None if s >= 1 else sleep(s)) # the writer's 1 s wait to close
 		self.p, self.camera = p, camera
 		self.recording = unicam.Recording()
-		self.writeQueue, self.dispQueue = deque(), deque([], 2)
+		self.writeQueue = deque()
 		self.stopReadQueue, self.stopWriteQueue, self.openQueue = deque([], 1), deque([], 1), deque([], 1)
 
 	def Run(self, timeout=20, stop_after=None):
 		t0 = time.monotonic()
 		grab = threading.Thread(target=unicam.GrabFrames, daemon=True, args=(self.p, self.writeQueue,
-			self.dispQueue, self.stopReadQueue, self.stopWriteQueue, self.openQueue, self.recording))
+			self.stopReadQueue, self.stopWriteQueue, self.openQueue, self.recording))
 		write = threading.Thread(target=writer.WriteFrames, daemon=True, args=(self.p, self.writeQueue,
 			self.stopReadQueue, self.stopWriteQueue, self.openQueue), kwargs=dict(recording=self.recording))
 		grab.start()
@@ -190,12 +186,11 @@ def test_a_camera_that_fails_to_close_still_finishes_its_video_and_metadata(tmp_
 	assert "cameraError" not in meta and "videoError" not in meta # the recording itself is whole
 	assert os.path.exists(os.path.join(run.Folder(), "frametimes.mat"))
 	assert run.VideoFrames() == 50
-	assert list(run.dispQueue)[-1] == "STOP" # and the display was told
 	assert run.recording.Failures() == []
 
 
 def test_each_frame_is_released_whatever_happens_to_it(tmp_path, monkeypatch):
-	# A frame that could not be read or shown was never released: a FLIR
+	# A frame that could not be read was never released: a FLIR
 	# camera holds its buffer, and stops once they are all held
 	camera = FakeCamera(bad_frames={5, 20})
 	run = CameraProcess(monkeypatch, params(tmp_path), camera)
@@ -724,7 +719,7 @@ def test_a_ratcam_that_loses_its_link_ends_its_recording(tmp_path, monkeypatch, 
 	p = ratcam_params(tmp_path, recTimeInSec=60)
 	(tmp_path / "Camera0").mkdir()
 	t0 = time.monotonic()
-	unicam.GrabFrames(p, deque(), deque([], 2), deque([], 1), deque([], 1))
+	unicam.GrabFrames(p, deque(), deque([], 1), deque([], 1))
 	assert time.monotonic() - t0 < 15
 	why = "the camera is gone, after frame 10: lost the RatCam: [Errno 6] Device not configured"
 	assert "Camera0: {}. Its recording ends there.\n".format(why) in capsys.readouterr().out

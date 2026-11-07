@@ -75,7 +75,7 @@ def test_a_gray_emu_camera_opens_at_its_clips_size_and_fills_the_live_feed(tmp_p
 	write_clip(str(tmp_path / "Camera0" / "clip.mp4"))
 	cam_params = {"videoFilename": "emuclip.mp4", "videoFolder": str(tmp_path), "cameraName": "Camera0",
 		"frameRate": 100, "pixelFormatInput": "gray", "frameWidth": 1280, "frameHeight": 1024, "n_cam": 0,
-		"liveFeed": True, "liveFeedName": "campy-test-emu-{}".format(os.getpid()), "displayDownsample": 2}
+		"liveFeed": True, "liveFeedName": "campy-test-emu-{}".format(os.getpid())}
 	camera, cam_params = emu.OpenCamera(cam_params)
 	feed = livefeed.Feed(cam_params, say=lambda text: None)
 	try:
@@ -92,9 +92,6 @@ def test_a_gray_emu_camera_opens_at_its_clips_size_and_fills_the_live_feed(tmp_p
 			# which campy-live rejects
 			assert feed.writer is not None and feed.writer.ring is ring
 		assert ring.Get("written") == 3 and ring.Get("notWritten") == 0
-		shown = deque()
-		emu.DisplayImage(cam_params, shown, img) # the preview's downsampling, of a frame without channels
-		assert shown[0].shape == (24, 32)
 	finally:
 		feed.Close()
 		emu.CloseCamera(cam_params, camera)

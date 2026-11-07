@@ -22,7 +22,6 @@ def fake_camera_module():
 		GrabFrame=lambda camera, n: n,
 		GetImageArray=lambda grab: np.full((4, 4), grab % 256, dtype=np.uint8),
 		GetTimeStamp=lambda grab: grab * 0.01,
-		DisplayImage=lambda cam_params, q, grab: None,
 		ReleaseFrame=lambda grab: None,
 		CloseCamera=lambda cam_params, camera: None,
 		)
@@ -35,7 +34,7 @@ def grab(tmp_path, monkeypatch, max_sec):
 		recTimeInSec=0.2, chunkLengthInSec=1, displayFrameRate=0, writeQueueMaxSec=max_sec)
 	(tmp_path / "Camera0").mkdir()
 	writeQueue = deque() # never drained: an encoder that has stopped
-	unicam.GrabFrames(p, writeQueue, deque([], 2), deque([], 1), deque([], 1))
+	unicam.GrabFrames(p, writeQueue, deque([], 1), deque([], 1))
 	frametimes = np.load(tmp_path / "Camera0" / "frametimes.npy")
 	with open(tmp_path / "Camera0" / "metadata.csv") as f:
 		meta = dict(csv.reader(f))

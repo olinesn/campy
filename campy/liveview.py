@@ -14,6 +14,10 @@ environment (numpy, scipy and OpenCV; PyQt5 for Qt's window, else OpenCV's,
 priority (--priority): it reads campy-acquire's frames (campy-live-0, ...;
 campy/livefeed.py) and campy-live's results (campy-live-results;
 campy/liveresults.py) from shared memory, and neither of them waits for it.
+It is campy's only window on the cameras: campy-acquire run by itself opens
+one, for every camera, at displayFrameRate (campy/acquireview.py), and
+campy-session its own. A colour camera's raw Bayer frames are demosaiced by
+the pattern its feed says (pixelFormatInput), as ffmpeg does for its video.
 
 Each result is drawn on the frames it was made from. The view takes the
 newest row campy-live has made, then reads that row's frame number back from
@@ -628,9 +632,30 @@ class Layout:
 		return (k // self.cols) * self.tile[0], (k % self.cols) * self.tile[1]
 
 
-def Gray(img, shape, scale=None, origin=(0, 0)):
+# OpenCV's demosaicing code for each Bayer pixelFormatInput, to BGR. OpenCV names a pattern by the second row's
+# second and third pixels, not by the top left 2 x 2 as the cameras and ffmpeg do: a camera's RGGB (red at the top
+# left) is OpenCV's BG (tests/test_liveview_color.py checks it on a made-up mosaic).
+BAYER = {"bayer_rggb8": cv2.COLOR_BayerBG2BGR, "bayer_bggr8": cv2.COLOR_BayerRG2BGR,
+	"bayer_gbrg8": cv2.COLOR_BayerGR2BGR, "bayer_grbg8": cv2.COLOR_BayerGB2BGR}
+
+
+def Colours(img, pixelFormat):
 	"""
-	A frame (height x width x channels, mono or RGB) on a tile of shape
+	A camera's frame as the view shows it, and whether it is BGR: a Bayer
+	one (the feed holds the raw mosaic, one channel) demosaiced by its
+	pattern, a bgr24 one as it is; others gray (one channel) or RGB.
+	pixelFormat: the camera's pixelFormatInput, as its feed says it
+	(livefeed.PixelFormat).
+	"""
+	code = BAYER.get(pixelFormat)
+	if code is not None and (img.ndim == 2 or img.shape[2] == 1):
+		return cv2.cvtColor(np.ascontiguousarray(img.reshape(img.shape[:2])), code), True
+	return img, pixelFormat == "bgr24" and img.ndim == 3 and img.shape[2] == 3
+
+
+def Gray(img, shape, scale=None, origin=(0, 0), bgr=False):
+	"""
+	A frame (height x width x channels: mono, RGB, or BGR with bgr) on a tile of shape
 	(height, width), as BGR, at scale from origin as Place puts the drawing
 	(default: the whole frame in the tile). Halved by averaging while it is
 	twice the tile's size or more, then interpolated (averaging at a ratio
@@ -674,6 +699,8 @@ def Gray(img, shape, scale=None, origin=(0, 0)):
 			img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 	if img.ndim == 2:
 		return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+	if bgr:
+		return img.copy() # its own: the view draws on it
 	return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
 
@@ -1521,6 +1548,7 @@ class Viewer:
 			[livefeed.RingName(args.name, n) for n in range(args.cameras)]
 		self.resultsName = liveresults.RingName(args.name)
 		self.readers = None # each camera's RingReader, in feed order
+		self.pixelFormats = [] # each camera's pixelFormatInput, as its feed says it ("" when it does not)
 		self.results = None # liveresults.Results
 		self.description = {}
 		self.calibration = None # each feed camera's pose3d.Camera, or None (2D only)
@@ -1628,6 +1656,7 @@ class Viewer:
 				readers.append(reader)
 			if len(readers) == len(self.ringNames):
 				self.readers = readers
+				self.pixelFormats = [livefeed.PixelFormat(r) for r in readers]
 				self.buffers = [np.empty(r.shape, r.dtype) for r in readers]
 				self.ended = False
 				self.cameraTrails.fps = self.cameraTrails.fps or readers[0].Info("frameRate")
@@ -2176,7 +2205,8 @@ class Viewer:
 			# Zoomed: the part of the frame shown, cut out before it is scaled, and the drawing on it
 			zoom = self.ZoomOf(c)
 			scale, origin = zoom.Window(frame.image.shape, layout.tile, layout.scale)
-			tile = Gray(frame.image, layout.tile, scale, origin)
+			image, bgr = Colours(frame.image, self.pixelFormats[c] if c < len(self.pixelFormats) else "")
+			tile = Gray(image, layout.tile, scale, origin, bgr=bgr)
 			text = self.Header(c, frame, row, cameraNames, calibNames, zoom, rig)
 			header = TextBox(text, (PAD, PAD + 12), 0.5, words)
 			health = time.perf_counter()

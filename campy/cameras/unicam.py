@@ -495,15 +495,6 @@ def GrabData(cam_params):
 		name=cam_params["cameraName"])
 	grabdata["cameraName"] = cam_params["cameraName"]
 
-	# Calculate display rate
-	if cam_params["displayFrameRate"] <= 0:
-		grabdata["frameRatio"] = float('inf')
-	elif cam_params["displayFrameRate"] > 0 and cam_params["displayFrameRate"] <= cam_params['frameRate']:
-		grabdata["frameRatio"] = int(round(cam_params["frameRate"]/cam_params["displayFrameRate"]))
-	else:
-		# A preview asked to be faster than the camera shows every frame
-		grabdata["frameRatio"] = 1
-
 	# Calculate number of images and chunk length
 	grabdata["numImagesToGrab"] = int(round(cam_params["recTimeInSec"]*cam_params["frameRate"]))
 	# At least a frame: a chunkLengthInSec shorter than half a frame rounds to 0,
@@ -602,7 +593,7 @@ def CountFPS(grabdata, frameNumber, timeStamp):
 			.format(grabdata["cameraName"], frameNumber, fpsCount, round(timeElapsed)))
 
 
-def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue, openQueue=None, recording=None):
+def GrabFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=None, recording=None):
 	# recording: what this thread and the writer tell each other (Recording),
 	# when a writer runs alongside (campy.AcquireOneCamera). Metadata is then
 	# saved once the writer is done, with the frames it gave ffmpeg.
@@ -620,12 +611,7 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 		if openQueue is not None:
 			openQueue.append(camera is not None)
 	if camera is None:
-		dispQueue.append('STOP') # OpenCamera has said why, and stopped the writer
-		return
-
-	# Use Basler's default display window on Windows. Not supported on Linux
-	if sys.platform=='win32' and cam_params["cameraMake"] == 'basler':
-		dispQueue = cam.OpenPylonImageWindow(cam_params)
+		return # OpenCamera has said why, and stopped the writer
 
 	# Create dictionary for appending frame number and timestamp information
 	grabdata = GrabData(cam_params)
@@ -633,11 +619,11 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 	watch = FrameWatch(cam_params)
 	mine = status.This() # this camera's counters, for campy's recording watch (campy/watch.py)
 	gaps = frametimes.TriggerGaps() if Triggered(cam_params) else None # trigger pulses without a frame
-	feed = livefeed.Feed(cam_params, say=Say) # liveFeed: every frame into shared memory too
+	feed = livefeed.Feed(cam_params, say=Say) # liveFeed: every frame into shared memory too (campy-live-view shows it)
 	frameNumber = 0
 
-	# Whatever happens from here on, the camera is closed, the writer and the
-	# display are told to stop, and metadata is saved (finally, below). Without
+	# Whatever happens from here on, the camera is closed, the writer is told
+	# to stop, and metadata is saved (finally, below). Without
 	# its stop, the writer waits forever and the video is never finished.
 	try:
 		# The live feed's shared memory first (liveFeed), before campy is told
@@ -698,10 +684,6 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 					DropFrame(grabdata, frameNumber, maxQueue)
 				mine.Frame(frameNumber, len(writeQueue))
 
-				# Display converted, downsampled image in the Window
-				if frameNumber % grabdata["frameRatio"] == 0:
-					img = cam.DisplayImage(cam_params, dispQueue, grabResult)
-
 				CountFPS(grabdata, frameNumber, timeStamp)
 
 			except Exception as e:
@@ -725,15 +707,13 @@ def GrabFrames(cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue,
 		Say("{}: {}.".format(cam_params["cameraName"], recording.cameraError))
 
 	finally:
-		# Close the camera, tell the display and the writer to stop, and once
+		# Close the camera, tell the writer to stop, and once
 		# the writer has given ffmpeg the frames still queued, save metadata
 		grabdata["framesGrabbed"] = frameNumber
 		startup.Failed(cam_params, recording.cameraError) # a camera that stopped before it was ready: what it did
 		mine.State(status.ENDED, only_from=(status.WAITING, status.GRABBING))
 		CloseCamera(cam, cam_params, camera)
 		feed.Close()
-		if not sys.platform=='win32' or not cam_params['cameraMake'] == 'basler':
-			dispQueue.append('STOP')
 		stopWriteQueue.append('STOP')
 		if withWriter:
 			recording.written.wait()

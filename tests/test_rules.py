@@ -730,12 +730,25 @@ def test_refused_switch_ons_are_sent_again_with_the_next_sets(monkeypatch, tmp_p
 		return next(answers, None) if w[0] == "on" else None
 	port = SketchPort(refuse)
 
+	def refused(runner, count):
+		# The refusal heard and set to be sent again (runner.rules.retry), by the board's reading thread
+		return lambda: runner.counts[count] == 1 and bool(runner.rules.retry)
+
 	def feed_rows(feed, runner):
+		# Each set only once the refusal of the one before is in: the board's answer is read on a thread of its own,
+		# which polls every ms, and a ms is about 15 on Windows, so with sets 1/60 s apart a refusal could come after
+		# the next set, and the retry with the one after (the rule is the next set after the refusal, not a frame)
 		feed.Write(make_row(1, IN_NEST, t_ns=clock.HostNs() - 60_000_000)) # 60 ms old: over the 40 ms bound
-		for k in range(2, 8):
-			time.sleep(1 / 60)
+		assert until(refused(runner, "late_host"))
+		feed.Write(make_row(2, IN_NEST, t_ns=clock.HostNs()))
+		assert until(refused(runner, "late_board"))
+		feed.Write(make_row(3, IN_NEST, t_ns=clock.HostNs()))
+		assert until(refused(runner, "clash"))
+		for k in range(4, 8):
 			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
-		time.sleep(0.1)
+			time.sleep(1 / 60)
+		assert until(lambda: runner.counts["rows"] >= 7 and any(x.startswith("on 2 4") for _, x in port.Lines()))
+		time.sleep(0.1) # the 4th set's answer, ok
 	runner, events = run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows)
 	commands = [e for e in events if e["kind"] == "command" and e["output"] == "laser"]
 	assert [(e["frame"], e["answer"].split()[:2]) for e in commands] == [(1, ["late", "(campy-rules:"]),

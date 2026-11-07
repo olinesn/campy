@@ -19,7 +19,8 @@ campy-acquire ./configs/campy_config.yaml
 import os, time, sys, copy, logging, threading, queue
 from collections import deque
 import multiprocessing as mp
-from campy import writer, configurator, preflight, newfiles, keepawake, stopfile, defaults, manifest, status, watch, statusline
+from campy import writer, configurator, preflight, newfiles, keepawake, stopfile, defaults, manifest, status, watch, statusline, \
+	acquireview
 from campy.trigger import trigger
 from campy.cameras import unicam, emu
 from campy.utils.utils import HandleKeyboardInterrupt, Say, ErrorText, StartPrinter, StopPrinter
@@ -118,7 +119,7 @@ def AcquireOneCamera(n_cam):
 	# Initialize param dictionary for this camera stream
 	cam_params = configurator.ConfigureCamParams(systems, params, n_cam)
 
-	# Initialize queues for display, video writer, and stop messages, and for
+	# Initialize queues for the video writer and stop messages, and for
 	# whether the camera opened; and what the camera thread and the writer tell
 	# each other, and what went wrong (unicam.Recording)
 	recording = unicam.Recording()
@@ -133,26 +134,19 @@ def AcquireOneCamera(n_cam):
 		unicam.SignalReady(cam_params, False, "its files are already there")
 		return recording
 
-	dispQueue = deque([], 2)
 	writeQueue = deque()
 	stopReadQueue = deque([],1)
 	stopWriteQueue = deque([],1)
 	openQueue = deque([],1)
 
-	# Start image window display thread, unless running headless
-	# (displayFrameRate 0)
-	if cam_params["displayFrameRate"] > 0:
-		threading.Thread(
-			target = ShowPreview,
-			daemon = True,
-			args = (cam_params, dispQueue,),
-			).start()
+	# The cameras are shown in one campy-live-view window, from the live feed (Main, campy/acquireview.py),
+	# never in a window per camera
 
 	# Start grabbing frames ("producer" thread)
 	grab = threading.Thread(
 		target = unicam.GrabFrames,
 		daemon = True,
-		args = (cam_params, writeQueue, dispQueue, stopReadQueue, stopWriteQueue, openQueue, recording,),
+		args = (cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue, recording,),
 		)
 	grab.start()
 
@@ -170,15 +164,6 @@ def SessionFolder(params):
 	# This run's folder: its videoFolder, which is the session's own with sessionFolder (newfiles.UseSession)
 	folder = params.get("videoFolder")
 	return folder if isinstance(folder, str) else None
-
-
-def ShowPreview(cam_params, dispQueue):
-	# The display thread. Qt is imported here, not in the camera process's main
-	# thread: Qt takes the first thread that loads it as its main thread, and
-	# the preview's QApplication has to be made in that one ("QApplication was
-	# not created in the main() thread" otherwise). Headless runs load no Qt.
-	from campy import display
-	display.DisplayFrames(cam_params, dispQueue)
 
 
 def InitCameraProcess(readyQueue):
@@ -305,12 +290,16 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 		# One status line on the console, rewritten in place, instead of each camera's progress lines
 		# (statusLine): decided before the camera processes start, which read it from their environment
 		lineMode = statusline.Prepare(params)
+		# Every camera in one campy-live-view window (displayFrameRate), unless campy-session shows them: the live
+		# feed on for that, which the camera processes too read from their environment (campy/acquireview.py)
+		view = acquireview.View(params, SessionFolder(params)).Prepare()
 		cameras = unicam.CameraProcesses(ctx, RunCamera, params, readyQueue, start=start, stop=stop,
 			counters=counters)
 
 		# The trigger stops and the systems close whatever happens here
 		guard = line = None
 		try:
+			view.Start() # it waits for the feed; whatever happens to it, the recording goes on
 			# Start the trigger only once every camera is grabbing, so that every
 			# camera's first frame is the trigger's first pulse, and once the
 			# Arduino is done with the check's command (a few seconds after it)
@@ -345,6 +334,7 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 		finally:
 			if line is not None:
 				line.Stop() # before the end is said
+			view.Stop()
 			stopWatch.Stop()
 			if guard is not None:
 				guard.Halt() # its checks end before the trigger's port closes (no "the trigger is gone")

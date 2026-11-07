@@ -308,14 +308,6 @@ def GetTimeStamp(grabResult):
 	return time.perf_counter()
 
 
-def DisplayImage(cam_params, dispQueue, grabResult):
-	# Downsample image (a gray frame has no channel axis)
-	img = grabResult[::cam_params["displayDownsample"],::cam_params["displayDownsample"]]
-
-	# Send to display queue
-	dispQueue.append(img)
-
-
 def ReleaseFrame(grabResult):
 
 	del grabResult

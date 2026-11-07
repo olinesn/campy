@@ -129,7 +129,7 @@ Every `campy-acquire` then starts with a launch check, printed before recording:
 ```
 - **disk**: free space for the recording.
 
-With `preflight: "error"` (the default), a failed check stops campy before recording; `"warn"` records anyway; `"off"` (quoted or not) skips the check. `displayFrameRate: 0` runs without display windows, for example over SSH.
+With `preflight: "error"` (the default), a failed check stops campy before recording; `"warn"` records anyway; `"off"` (quoted or not) skips the check. `displayFrameRate: 0` runs without the cameras' window (campy-live-view), for example over SSH.
 
 ## Helpful tips
 - To debug broken ffmpeg pipe error, include this in config.yaml:

@@ -67,7 +67,7 @@ Both environments must have the same campy installed, or `campy-session` stops b
    - the same combined into one file (`session-config.yaml`): every setting, with the profile and the command-line options in it, each line saying where its value came from. `campy-session post` reads it again;
    - the config campy-acquire runs (`campy-acquire.yaml`): the same, with `liveFeed: True` when something reads the feed.
 3. It starts `campy-live` and waits until its models are warmed up: 5–40 s, longest the first time an engine is built (`live.ready_timeout_s`, default 120 s).
-4. It starts `campy-live-view` (with `view`), then `campy-acquire`, which records into that folder. `campy-live` tracks from its first frame.
+4. It starts `campy-live-view` (with `view`), then `campy-acquire`, which records into that folder. `campy-live` tracks from its first frame. Without a `view:` section, the view opens when `campy-live` tracks, or, without a `live:` section, when `displayFrameRate` is above 0: the cameras alone, at that many frames per second. `view: false` opens none. The `campy-acquire` it starts never opens a window of its own.
 5. The recording ends at `recTimeInSec`, or at Ctrl-C. `campy-live` tracks to the last frame and ends by itself. The view closes, unless `keep_open` is set.
 
 Each program's output is shown in the terminal, each line marked `[acquire]`, `[live]` or `[view]`, and kept in `<folder>/logs/<program>.log`. `campy-live`'s results go into the recording's folder (`campy-live.npy` and `.json`), ready for `campy-live-export`. `<folder>/launcher.json` records when each program started and ended, and its exit code. The exit code is campy-acquire's: 0 when every camera recorded to the end.

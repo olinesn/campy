@@ -89,7 +89,6 @@ def fake_camera_module():
 		GrabFrame=lambda camera, n: n,
 		GetImageArray=lambda grab: np.full((16, 16), grab % 256, dtype=np.uint8),
 		GetTimeStamp=lambda grab: grab * 0.01,
-		DisplayImage=lambda cam_params, q, grab: None,
 		ReleaseFrame=lambda grab: None,
 		CloseCamera=lambda cam_params, camera: None,
 		)
@@ -106,7 +105,7 @@ def test_a_recording_prints_whole_lines(tmp_path, monkeypatch):
 	out = Stdout()
 	monkeypatch.setattr(sys, "stdout", out)
 	writeQueue, stopWriteQueue = deque(), deque([], 1)
-	unicam.GrabFrames(p, writeQueue, deque([], 2), deque([], 1), stopWriteQueue)
+	unicam.GrabFrames(p, writeQueue, deque([], 1), stopWriteQueue)
 	writer.WriteFrames(p, writeQueue, deque([], 1), stopWriteQueue)
 	monkeypatch.undo()
 
@@ -140,7 +139,7 @@ def test_a_stuck_stdout_does_not_hold_up_the_camera_thread(tmp_path, monkeypatch
 	utils.StartPrinter()
 	try:
 		grab = threading.Thread(target=unicam.GrabFrames, daemon=True,
-			args=(p, deque(), deque([], 2), deque([], 1), deque([], 1)))
+			args=(p, deque(), deque([], 1), deque([], 1)))
 		grab.start()
 		grab.join(30)
 		assert not grab.is_alive(), "the camera thread waited on stdout"

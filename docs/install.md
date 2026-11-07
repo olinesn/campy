@@ -55,6 +55,7 @@ cd campy
 ```
 pip install -e .
 ```
+They include OpenCV (`opencv-python-headless`), which draws the one window that shows the cameras while campy records ([Seeing the cameras](acquire.md#seeing-the-cameras-displayframerate)); the window itself is Qt's (PyQt5). An environment set up before campy 2.5.2 doesn't have it yet: after updating campy, run `pip install opencv-python-headless`, or `pip install -e .` again. An environment that already has `opencv-python` (with OpenCV's own windows) works as it is: both are the same `cv2`, so don't add the headless one beside it.
 8. On Windows, keep Windows Search out of the conda environments and the recording folder. It indexes the user folder, where conda keeps its environments, and installing or updating one keeps its indexer busy for hours, during recordings too ([Troubleshooting](troubleshooting.md#timing-tests)). In a PowerShell window opened with "Run as administrator", from the campy folder:
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\exclude_from_search_index.ps1 -AlsoSoftware

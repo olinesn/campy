@@ -327,7 +327,6 @@ def fake_camera_module(seen, at=10, shape=(16, 20)):
 		GrabFrame=GrabFrame,
 		GetImageArray=lambda grab: np.full(shape, (grab + 1) % 256, dtype=np.uint8),
 		GetTimeStamp=lambda grab: (grab + 1) * 0.01,
-		DisplayImage=lambda cam_params, q, grab: None,
 		ReleaseFrame=lambda grab: None,
 		CloseCamera=lambda cam_params, camera: None,
 		)
@@ -342,7 +341,7 @@ def grab(tmp_path, monkeypatch, seen, **settings):
 	p.update(settings)
 	(tmp_path / "Camera0").mkdir()
 	writeQueue = deque()
-	unicam.GrabFrames(p, writeQueue, deque([], 2), deque([], 1), deque([], 1))
+	unicam.GrabFrames(p, writeQueue, deque([], 1), deque([], 1))
 	with open(tmp_path / "Camera0" / "metadata.csv") as f:
 		meta = dict(csv.reader(f))
 	return writeQueue, meta

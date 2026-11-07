@@ -25,7 +25,11 @@ together:
    models loaded and warmed up, 5 to 40 s. If it fails, the recording goes
    on without tracking (live.required false, the default), or does not
    start (true).
-4. It starts campy-live-view (view.show), then campy-acquire.
+4. It starts campy-live-view (view.show), then campy-acquire. Without a
+   view: section, the view shows when campy-live tracks, or when
+   displayFrameRate is above 0 (the cameras alone, at that rate). The
+   campy-acquire it starts opens no window of its own (CAMPY_LAUNCHER in its
+   environment: campy/acquireview.py).
 5. The recording ends at recTimeInSec, at Ctrl-C, or with campy-acquire's
    stop file (stopFile), which campy-session writes at Ctrl-C too.
    campy-live then ends by itself, once the feed has, with every frame
@@ -100,7 +104,8 @@ LIVE = {
 	"watch": ((bool,), True, "start campy-watch beside campy-live: alerts about the live tracking (docs/alerts.md)"),
 	}
 VIEW = {
-	"show": ((bool,), True, "start campy-live-view (view: true or false says it alone)"),
+	"show": ((bool,), True, "start campy-live-view (view: true or false says it alone; without a view: section, "
+		"when campy-live tracks or displayFrameRate is above 0)"),
 	"args": ((list,), [], "more campy-live-view options, as a list"),
 	"keep_open": ((bool,), False, "leave the view open once the recording has ended"),
 	}
@@ -248,7 +253,8 @@ class Config:
 		self.live = Section("live", sections["live"], LIVE) if "live" in sections else None
 		self.view = Section("view", sections.get("view"), VIEW)
 		if "view" not in sections:
-			self.view["show"] = self.live is not None # without tracking, the cameras' own preview is there
+			# Without tracking, the view shows the cameras alone, as campy-acquire's own window does (displayFrameRate)
+			self.view["show"] = self.live is not None or self.DisplayRate() > 0
 		self.post = Section("post", sections.get("post"), POST)
 		self.panel = Section("panel", sections.get("panel"), PANEL)
 		if self.post["remux"] not in (True, False, "keep"):
@@ -277,6 +283,13 @@ class Config:
 	def Value(self, key, default=None):
 		# What campy-acquire will use: the command line's, the config's (or its profile's), or campy's default
 		return self.acquire.get(key, default)
+
+	def DisplayRate(self):
+		# displayFrameRate: the view's frames per second without tracking; 0, no view unless view: says so
+		try:
+			return float(self.Value("displayFrameRate", 0) or 0)
+		except (TypeError, ValueError):
+			return 0.0
 
 	def Feed(self):
 		# The live feed is on whenever something reads it
@@ -937,10 +950,16 @@ class Session:
 
 	def StartView(self):
 		view = Part("view", [self.ViewPython(), "-m", "campy.liveview", "--cameras", str(self.config.Cameras()[0]),
-			"--name", str(self.config.Value("liveFeedName", "campy-live"))] + self.PauseArgs() + [str(a) for a in self.config.view["args"]],
+			"--name", str(self.config.Value("liveFeedName", "campy-live"))] + self.RateArgs() + self.PauseArgs() +
+			[str(a) for a in self.config.view["args"]],
 			os.path.join(self.logs, "campy-live-view.log"), env=self.ViewEnv(), tied=True)
 		self.parts["view"] = view.Start()
 		return view
+
+	def RateArgs(self):
+		# Without tracking, the cameras alone at displayFrameRate (with it, the view keeps up with campy-live's results)
+		rate = self.config.DisplayRate()
+		return ["--fps", "{:g}".format(rate)] if self.config.live is None and rate > 0 else []
 
 	def PauseArgs(self):
 		# The viewer tells planned trigger pauses (all cameras at once) from a camera stopping, as the watch does
