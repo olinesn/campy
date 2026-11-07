@@ -92,8 +92,6 @@ LIVE = {
 	"model": ((str,), "sleap", "campy-live --model: sleap (trained models), random or none"),
 	"centroid": ((str,), "", "the trained centroid model's folder (--centroid)"),
 	"instance": ((str,), "", "the trained centered-instance model's folder (--instance)"),
-	"models": ((list, str), [], "folders the panel's model picker looks through for trained models (campy/livemodels.py)"),
-	"sets": ((dict,), {}, "named model pairs for the panel's picker: {name: {centroid: folder, instance: folder}}"),
 	"animals": ((int,), 0, "how many animals (--animals, and --max-instances unless args give it); 0: campy-live's default"),
 	"calibration": ((str,), "", "calibration.toml, for 3D (--calibration)"),
 	"frame_shape": ((str,), "", "--frame-shape, if not the cameras' frameHeight x frameWidth"),
@@ -127,6 +125,10 @@ PANEL = {
 	"rig_lock": ((str,), "", "rig.py (bench/rig.py, installed on the rig): the panel holds the rig's lock while it is "
 		"open, and Ctrl-C in its window does nothing (the page's Close ends it); \"auto\": the rig's installed one"),
 	"owner": ((str,), "panel", "who holds the rig lock, as rig.py status shows it"),
+	"models": ((list, str), [], "folders the panel's model picker looks through for trained models, for live: model: "
+		"sleap (campy/livemodels.py); a rig profile's place, as it turns on nothing"),
+	"model_sets": ((dict,), {}, "named model pairs for the panel's model picker: {name: {centroid: folder, instance: "
+		"folder}}"),
 	"video_mb_s": ((int, float), 0.6, "each camera's video while it takes frames, in MB/s, for the panel's disk check "
 		"before a Pico's session: an estimate on the high side (0.6: 60 fps H.265 of mice in a lit cage; a still, "
 		"empty cage writes far less)"),
@@ -269,29 +271,29 @@ class Config:
 			raise SessionError("post.copy: it takes to: only (the folder the recording is copied into).")
 		for name, keys in DeviceSections().items():
 			setattr(self, name, Section(name, sections[name], keys) if name in sections else None)
-		if self.live is not None:
-			self.CheckPicker()
+		self.CheckPicker()
 		if self.live is not None and self.live["model"] == "sleap" and not (self.live["centroid"] and self.live["instance"]) \
-				and not (self.live["models"] or self.live["sets"]):
+				and not (self.panel["models"] or self.panel["model_sets"]):
 			raise SessionError("live: give the trained models' folders, centroid: and instance: (or model: random, "
 				"or none).")
 
 	def CheckPicker(self):
-		# live.models: one folder or a list of them, from the folder of the config that says it; live.sets: {name: {centroid,
-		# instance}}
-		live = self.live
-		source = self.resolved.section_sources.get("live", {}).get("models")
+		# The model picker's (campy/livemodels.py), in panel: rather than live:, so that a rig profile can name them without
+		# turning on live tracking for every experiment: panel.models, one folder or a list of them, from the folder of
+		# the config that says it; panel.model_sets, {name: {centroid, instance}}
+		panel = self.panel
+		source = self.resolved.section_sources.get("panel", {}).get("models")
 		here = os.path.dirname(source.path) if getattr(source, "path", None) else os.path.dirname(self.path)
-		if isinstance(live["models"], str):
-			live["models"] = [live["models"]] if live["models"] else []
-		for folder in live["models"]:
+		if isinstance(panel["models"], str):
+			panel["models"] = [panel["models"]] if panel["models"] else []
+		for folder in panel["models"]:
 			if not isinstance(folder, str):
-				raise SessionError("live.models: {!r} is not a folder.".format(folder))
-		live["models"] = [os.path.join(here, os.path.expanduser(f)) for f in live["models"]]
-		for name, pair in live["sets"].items():
+				raise SessionError("panel.models: {!r} is not a folder.".format(folder))
+		panel["models"] = [os.path.join(here, os.path.expanduser(f)) for f in panel["models"]]
+		for name, pair in panel["model_sets"].items():
 			if not isinstance(pair, dict) or set(pair) != {"centroid", "instance"} or not all(isinstance(v, str) and v
 					for v in pair.values()):
-				raise SessionError("live.sets.{}: give it centroid: and instance:, each a model's folder.".format(name))
+				raise SessionError("panel.model_sets.{}: give it centroid: and instance:, each a model's folder.".format(name))
 
 	def Resolve(self, more=()):
 		# campy's configurator's reading (configurator.Resolve): every setting, and where it came from
@@ -866,8 +868,8 @@ class Session:
 		config = self.config
 		if config.live is not None:
 			if config.live["model"] == "sleap" and not (config.live["centroid"] and config.live["instance"]):
-				raise SessionError("live: no centroid: and instance: in the config. live.models and live.sets are the "
-					"panel's (campy-session panel picks the models); campy-session run needs the two folders.")
+				raise SessionError("live: no centroid: and instance: in the config. panel.models and panel.model_sets are "
+					"the panel's (campy-session panel picks the models); campy-session run needs the two folders.")
 			self.live_python = self.live_python or LivePython(config.live)[0]
 			found = CheckLiveEnv(self.live_python, self.LiveEnv())
 			problem = LiveEnvProblem(self.live_python, found, config.live["model"])

@@ -155,19 +155,23 @@ What the page shows, refreshed every second:
 The panel's **Live models** box chooses the trained models for the recordings it starts, so a newly trained pair can be tried without editing the config. It offers:
 
 - the config's own pair, `live.centroid` and `live.instance`;
-- named pairs, `live.sets`, for a rig profile to list the pairs that go together;
-- every trained model in the folders `live.models` names. The panel looks up to 4 folders down for sleap-nn model folders (a `best.ckpt` beside a `training_config.yaml` or `.json`). That includes the `models/` folder of a SLEAP training job.
+- named pairs, `panel.model_sets`, the pairs that go together;
+- every trained model in the folders `panel.models` names. The panel looks up to 4 folders down for sleap-nn model folders (a `best.ckpt` beside a `training_config.yaml` or `.json`). That includes the `models/` folder of a SLEAP training job.
 
 ```yaml
-live:
-  centroid: "C:\\campy_data\\live\\models\\centroid"     # the config's pair: still the default
-  instance: "C:\\campy_data\\live\\models\\instance"
+# In the rig profile (~/.campy/configs/<rig>.yaml): the models this rig keeps
+panel:
   models: ["C:\\campy_data\\live\\models", "D:\\training\\models"]   # folders to pick from (one folder: no list needed)
-  sets:
+  model_sets:
     old pair: {centroid: "C:\\campy_data\\live\\models\\centroid_old", instance: "C:\\campy_data\\live\\models\\instance_old"}
+
+# In the experiment's config, as before: its own pair, still the default
+live:
+  centroid: "C:\\campy_data\\live\\models\\centroid"
+  instance: "C:\\campy_data\\live\\models\\instance"
 ```
 
-A relative folder in `live.models` is taken from the folder of the config file that names it. A config without `live.models` or `live.sets` works as before, and the box shows the config's pair alone. A config with `live.models` or `live.sets` can leave out `centroid:` and `instance:`. The panel then opens on the first set, or asks for a pick. `campy-session run` still needs the two folders.
+The two lists are `panel:` keys rather than `live:` ones so that a rig profile can hold them. A `live:` section in a profile would turn on live tracking for every experiment built on it; a `panel:` section turns on nothing, and the box shows only for a config with a `live:` section and `model: sleap`. An experiment's own `panel: models:` replaces the profile's. A relative folder in `panel.models` is taken from the folder of the config file that names it: the profile's folder, for a profile's. A config without `panel.models` or `panel.model_sets` works as before, and the box shows the config's pair alone. A config with either can leave out `live.centroid` and `live.instance`. The panel then opens on the first set, or asks for a pick. `campy-session run` still needs the two folders.
 
 Each model is described from its own files, without loading it:
 
@@ -193,7 +197,7 @@ The checks list then says what the pick means:
 
 The `campy-live` environment's sleap-nn version is checked as before.
 
-**A pick changes only the panel's recordings, never the config.** At Start, it goes into that recording's `live:` section. So the recording's `session-config.yaml` and `campy-acquire.yaml` (and through it `session.json`) say which models it used, each picked line marked `# panel (picked on campy-session panel's page)`. `campy-live-session.json` records the two folders and their `best.ckpt` hashes, as always, and `launcher.json` has `live_models`. The last pair started from each config is kept in `~/.campy/status/panel-models.json`. The next panel opened with that config starts on it, as long as both folders are still there. **Look again** looks through `live.models` again, for a model trained while the panel was open. While a recording runs, the pick can't change; it applies from the next recording.
+**A pick changes only the panel's recordings, never the config.** At Start, it goes into that recording's `live:` section. So the recording's `session-config.yaml` and `campy-acquire.yaml` (and through it `session.json`) say which models it used, each picked line marked `# panel (picked on campy-session panel's page)`. `campy-live-session.json` records the two folders and their `best.ckpt` hashes, as always, and `launcher.json` has `live_models`. The last pair started from each config is kept in `~/.campy/status/panel-models.json`. The next panel opened with that config starts on it, as long as both folders are still there. **Look again** looks through `panel.models` again, for a model trained while the panel was open. While a recording runs, the pick can't change; it applies from the next recording.
 - **With a Pico and SpikeGLX** (the config's `pico:` and `spikeglx:` sections, the ChronicRecord rig's): the session's length to choose, their own checks, each step (SpikeGLX's run, the gate check, the Pico), the Pico's bout and pulses, SpikeGLX's run and files, a **Start the Pico** button once every camera is ready, and a Stop that asks whether to stop after the Pico's bout or now ([Recording a session from the desktop](recording-a-session.md#on-the-chronicrecord-rig-the-pico-and-spikeglx), [chronicrecord/README.md](../chronicrecord/README.md#from-the-panel)).
 
 **Stop** stops the recording exactly as Ctrl-C does: each camera closes its video. If a camera hangs while closing, the button turns into **Stop now, without closing**, for a few seconds. Closing the page stops nothing, and the page can be opened again at any time: from the printed address, or by running `campy-session panel` again (or double-clicking the icon). A panel that is already open writes its address into `~/.campy/status/panel.json`, readable by your user only, and a second launch that finds it answering opens that page in the browser and ends, instead of refusing with "Another campy-session is running".

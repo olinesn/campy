@@ -56,7 +56,7 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
         <label for="mset">Pair</label><select id="mset"></select>
         <label for="mcen">Centroid model</label><select id="mcen"></select><div class="muted" id="mcentext"></div>
         <label for="mins">Instance model</label><select id="mins"></select><div class="muted" id="minstext"></div>
-        <div class="row" style="margin-top:4px"><span id="mscan" class="muted grow" style="font-size:12px"></span><button id="mrescan" title="Look through live.models' folders again">Look again</button></div></div>
+        <div class="row" style="margin-top:4px"><span id="mscan" class="muted grow" style="font-size:12px"></span><button id="mrescan" title="Look through panel.models' folders again">Look again</button></div></div>
       <div id="lengthbox" hidden><label for="length">Session length</label><select id="length"></select>
         <div class="muted" id="plantext"></div>
         <label for="picoat">Start the Pico at (optional: otherwise a button, once every camera is ready)</label><input id="picoat" placeholder="7:20 PM"></div>
@@ -222,7 +222,7 @@ function renderModels(M){
   const about = (list, folder) => { const m = list.find(x => x.folder == folder); return m ? esc(m.text) + (m.problems.length ? '<br><span class="err">'+esc(m.problems.join("; "))+'</span>' : "") : ""; };
   $("mcentext").innerHTML = about(M.centroids, M.pick.centroid); $("minstext").innerHTML = about(M.instances, M.pick.instance);
   $("mscan").textContent = (M.roots.length ? "Looked through "+M.roots.join(", ")+": "+M.scanned+" model"+(M.scanned==1?"":"s")+", "+M.scan_s+" s." :
-    "To pick from more models, add live.models: (their folders) to the config.") + (M.notes.length ? " "+M.notes.join("; ")+"." : "");
+    "To pick from more models, add panel: models: (their folders) to the config or its rig profile.") + (M.notes.length ? " "+M.notes.join("; ")+"." : "");
   $("mrescan").hidden = !M.roots.length;
 }
 async function pickModels(body){ const e = await post("/models", body); $("starterr").textContent = e || ""; modelSig = ""; tick(); }

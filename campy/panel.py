@@ -15,7 +15,7 @@ What the page shows, once a second:
 - before the start: the experiment's fields (experiment, animal IDs, notes,
   for session.json); with trained models (live: model: sleap), the model
   picker: the centroid and instance models campy-live tracks with, from the
-  config's pair, live.sets and the folders in live.models, each with its
+  config's pair, panel.model_sets and the folders in panel.models, each with its
   settings and score (campy/livemodels.py), for this panel's recordings only
   (the config is never changed); and the checks: what stops a start (campy-live's
   environment not found or not the same campy, another campy-session
@@ -610,7 +610,7 @@ class Panel:
 		return None if ok else "Windows Update was not paused: {}".format(said)
 
 	def Models(self, body, scan=False):
-		# The page's model pick ({set} or {centroid[, instance]}), or a look through live.models again
+		# The page's model pick ({set} or {centroid[, instance]}), or a look through panel.models again
 		if self.picker is None:
 			return "This config has no trained models to pick (live: model: sleap)."
 		if self.session is not None or self.wanted is not None:

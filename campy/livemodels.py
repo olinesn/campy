@@ -2,15 +2,20 @@
 campy-session panel's model picker: which trained models campy-live tracks
 with, chosen on the panel's page before the start, not by editing the config.
 
-Where the choices come from (the config's live: section):
+Where the choices come from:
 
-  centroid: / instance:   the config's own pair, always offered
-  models:                 folders looked through for trained sleap-nn model
-                          folders (best.ckpt beside training_config.yaml or
-                          .json), down to SCAN_DEPTH folders below each
-  sets:                   named pairs, {name: {centroid: folder, instance:
-                          folder}}, for a rig profile to list the pairs that
-                          go together
+  live.centroid / live.instance   the config's own pair, always offered
+  panel.models                    folders looked through for trained sleap-nn
+                                  model folders (best.ckpt beside
+                                  training_config.yaml or .json), down to
+                                  SCAN_DEPTH folders below each
+  panel.model_sets                named pairs, {name: {centroid: folder,
+                                  instance: folder}}, the pairs that go
+                                  together
+
+The two lists are panel: keys, not live: ones, so that a rig profile can
+hold them: a live: section in a profile would turn on live tracking for
+every experiment built on it, a panel: section turns on nothing.
 
 Each model folder is described from its own files, without torch or sleap-nn
 (the panel runs in the recording environment): its training config says what
@@ -52,7 +57,7 @@ opens on it the next time, while both folders are still there.
 import csv, os, time
 from datetime import datetime
 
-SCAN_DEPTH = 4 # folders below each live.models folder
+SCAN_DEPTH = 4 # folders below each panel.models folder
 SCAN_DIRS = 5000 # at most this many folders looked at, in all
 SCAN_S = 10.0 # and for at most this long
 CONFIG_NAMES = ("training_config.yaml", "training_config.json")
@@ -250,12 +255,12 @@ def Scan(roots, depth=SCAN_DEPTH, max_dirs=SCAN_DIRS, max_s=SCAN_S):
 	for root in roots:
 		root = os.path.abspath(os.path.expanduser(str(root)))
 		if not os.path.isdir(root):
-			notes.append("live.models: {} isn't there".format(root))
+			notes.append("panel.models: {} isn't there".format(root))
 			continue
 		stack = [(root, 0)]
 		while stack:
 			if looked >= max_dirs or time.monotonic() - t0 > max_s:
-				notes.append("live.models: stopped looking after {} folders ({:.0f} s): give the models' own folders"
+				notes.append("panel.models: stopped looking after {} folders ({:.0f} s): give the models' own folders"
 					.format(looked, time.monotonic() - t0))
 				stack = []
 				break
@@ -290,23 +295,24 @@ def Sameish(a, b):
 
 class Picker:
 	"""
-	The panel's choice of models: what it offers (the config's pair, live.sets,
-	live.models' folders), the pick, and its checks.
+	The panel's choice of models: what it offers (the config's pair,
+	panel.model_sets, panel.models' folders), the pick, and its checks.
 	"""
 
 	def __init__(self, config, remember=None):
 		self.config = config
 		self.live = config.live
+		self.folders = config.panel["models"]
 		self.remember = remember if remember is not None else RememberFile()
 		self.configured = {"centroid": self.live["centroid"], "instance": self.live["instance"]}
 		self.sets = [{"name": str(name), "centroid": str(pair["centroid"]), "instance": str(pair["instance"])}
-			for name, pair in self.live["sets"].items()]
+			for name, pair in config.panel["model_sets"].items()]
 		self.Scan()
 		self.pick, self.source = self.Default()
 
 	def Scan(self):
 		t0 = time.monotonic()
-		models, self.notes = Scan(self.live["models"])
+		models, self.notes = Scan(self.folders)
 		self.scan_s = time.monotonic() - t0
 		self.scanned = len(models)
 		# The config's pair and the sets' models, wherever they are
@@ -451,7 +457,7 @@ class Picker:
 		"""The pick's checks for the panel: [(level, text)], "block" stops a start, "warn" only warns."""
 		c, i = self.Model(self.pick["centroid"]), self.Model(self.pick["instance"])
 		if c is None or i is None:
-			return [("block", "Live models: pick a centroid model and an instance model (live.models, live.sets).")]
+			return [("block", "Live models: pick a centroid model and an instance model (panel.models, panel.model_sets).")]
 		out = []
 		for slot, m, role in (("centroid", c, "centroid"), ("instance", i, "instance")):
 			for problem in m["problems"]:
@@ -501,7 +507,7 @@ class Picker:
 			"sets": self.sets, "centroids": [Shown(m) for m in self.Centroids()],
 			"instances": [dict(Shown(m), same=bool(self.Model(self.pick["centroid"]) and m["node_names"] and
 				m["node_names"] == self.Model(self.pick["centroid"])["node_names"])) for m in self.Instances()],
-			"roots": [os.path.abspath(os.path.expanduser(str(r))) for r in self.live["models"]],
+			"roots": [os.path.abspath(os.path.expanduser(str(r))) for r in self.folders],
 			"scanned": self.scanned, "scan_s": round(self.scan_s, 2), "notes": self.notes,
 			"new": self.New()}
 

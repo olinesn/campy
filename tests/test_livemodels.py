@@ -53,9 +53,14 @@ def models_dir(tmp_path):
 	return root, c, i
 
 
-def live_config(tmp_path, **live):
+def live_config(tmp_path, models=None, sets=None, **live):
+	# A config with a live: section; the model picker's folders (models) and pairs (sets) in its panel: section
+	panel = {k: v for k, v in (("models", models), ("model_sets", sets)) if v is not None}
+	sections = {"live": dict({"python": sys.executable}, **live)}
+	if panel:
+		sections["panel"] = panel
 	path = write_config(tmp_path / "c.yaml", {"numCams": 2, "frameHeight": 1024, "frameWidth": 1280,
-		"pixelFormatInput": "gray", "videoFolder": str(tmp_path / "data")}, live=dict({"python": sys.executable}, **live))
+		"pixelFormatInput": "gray", "videoFolder": str(tmp_path / "data")}, **sections)
 	return session.Config(str(path))
 
 
@@ -179,7 +184,7 @@ def test_the_last_pair_started_is_where_the_next_panel_opens(tmp_path, home):
 	root, c, i = models_dir(tmp_path)
 	newi = model(root / "new_instance", "centered_instance", crop=256)
 	config = live_config(tmp_path, centroid=c, instance=i, models=str(root))
-	assert config.live["models"] == [str(root)] # one folder, as a list
+	assert config.panel["models"] == [str(root)] # one folder, as a list
 	p = livemodels.Picker(config)
 	assert p.Choose(centroid=c, instance=newi) is None and p.New()
 	p.Remember()
@@ -221,10 +226,28 @@ def test_a_config_with_sets_but_no_pair_is_the_panels_alone(tmp_path, home):
 	config = live_config(tmp_path, sets={"rig": {"centroid": c, "instance": i}})
 	with pytest.raises(session.SessionError, match="campy-session run needs the two folders"):
 		session.Session(config, live_python=sys.executable).Steps()
-	with pytest.raises(session.SessionError, match="live.sets.rig: give it centroid: and instance:"):
+	with pytest.raises(session.SessionError, match="panel.model_sets.rig: give it centroid: and instance:"):
 		live_config(tmp_path, sets={"rig": {"centroid": c}})
 	with pytest.raises(session.SessionError, match="give the trained models' folders"):
 		live_config(tmp_path)
+
+
+def test_a_rig_profile_names_the_models_without_turning_on_live_tracking(tmp_path, home):
+	# panel.models and panel.model_sets in a rig profile: an experiment without live: records without tracking, as
+	# before; one with live: gets the profile's folders, relative ones from the profile's own folder
+	profiles = home / ".campy" / "configs"
+	(profiles / "models").mkdir(parents=True)
+	model(profiles / "models" / "c", "centroid")
+	(profiles / "rig.yaml").write_text("numCams: 2\npanel:\n  models: models\n")
+	plain = tmp_path / "plain.yaml"
+	plain.write_text("extends: rig\nvideoFolder: {}\n".format((tmp_path / "data").as_posix()))
+	config = session.Config(str(plain))
+	assert config.live is None and config.panel["models"] == [str(profiles / "models")]
+	tracked = tmp_path / "tracked.yaml"
+	tracked.write_text(plain.read_text() + "live:\n  python: {}\n".format(sys.executable.replace("\\", "/")))
+	p = livemodels.Picker(session.Config(str(tracked)))
+	assert [m["name"] for m in p.Status()["centroids"]] == ["c"] and p.Pick() is None
+	assert p.Checks()[0][0] == "block"
 
 
 def picker_panel(tmp_path, monkeypatch, **live):
