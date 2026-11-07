@@ -67,7 +67,7 @@ Tried, and didn't help:
 
 ## Every machine
 
-Frames per second. "Small changes" means sleap-nn's own layer with the batch on the GPU, fp16 with tied peaks, and channels-last on NVIDIA. "Fastest" is campy's fixed crops with TensorRT on NVIDIA, or `torch.compile` on AMD.
+Frames per second. "Small changes" means sleap-nn's own layer with the batch on the GPU, fp16 with tied peaks, and channels-last on NVIDIA. "Fastest" is campy's fixed crops with TensorRT on NVIDIA, or `torch.compile` on AMD and Intel.
 
 | Machine | sleap-nn as-is | small changes | fastest | while recording 3 cameras (as-is / fastest) |
 |---|---:|---:|---:|---|
@@ -76,6 +76,9 @@ Frames per second. "Small changes" means sleap-nn's own layer with the batch on 
 | A100, larger model | 98 | 317 | 540 | – |
 | GMKtec EVO-X2 (AMD) | 68 | 186 | 453 | 62 / 433, all 3 × 14,400 frames saved |
 | Dell Pro Max Slim FCS1250 (RTX 2000 Ada) | 67 | 199 | 447 | 61 / 447, all 3 × 14,400 frames saved |
+| Intel Arc Pro B50, in a Windows 11 virtual machine | 46 | 70 ¹ | 320 | – |
+
+¹ The Intel Arc Pro B50 (7 November 2026, `--device xpu`, PyTorch 2.14.1+xpu, sleap-nn 0.3.5, the same models and settings) ran in a virtual machine with 8 virtual cores, so its numbers carry whatever the VM costs, which wasn't measured. It read a shorter video than the others: the rig checks' 60 s clip of one camera of a 5-mouse recording (3,600 frames, 1280×1024 gray), about 3,500 of them timed. So its row is close to, not exactly, like for like. Its "small changes" ran in fp32 and nchw: sleap-nn's layer switches to fp16 only on CUDA, and in channels-last it stopped with an error from Intel's oneDNN library ("could not create a primitive"). Its fixed crops gave 217 frames/s in plain PyTorch with one XPU graph (batches of 16 or 32), 287 with OpenVINO (batches of 32) and 320 with `torch.compile` and one XPU graph (batches of 32; 312 with 16), all fp16. `torch.compile` needs Microsoft's C++ Build Tools on Windows ([Live tracking](live-tracking.md#on-an-intel-gpu---device-xpu)), and compiled each batch size for 3–4 minutes the first time. The runs were flagged by small disk reads of Windows' SysMain service (under one core of other CPU use).
 
 On the benchtop PCs, `campy-acquire` recorded 3 emulated cameras at 60 fps for 4 minutes while the offline runs went: VA-API H.264 on the EVO-X2, Quick Sync H.265 on the Pro Max Slim. Each camera's file had all 14,400 frames. sleap-nn as-is kept 14–16 CPU threads busy there; the fast paths used about one.
 
@@ -93,6 +96,7 @@ Once the model is fast, decoding sets the pace. Gray frames per second from the 
 | L40S node | – | – | 615 | 2,702 (NVDEC) |
 | GMKtec EVO-X2 | 722 | 1,296 | 1,487 | 1,826 (VA-API) |
 | Dell Pro Max Slim FCS1250 | 272 | 415 | 701 | 707 (NVDEC), 666 (Quick Sync), 673 (D3D11VA on the Intel iGPU), all through ffmpeg |
+| Intel Arc Pro B50, in a VM | – | – | 1,020 (PyAV) | 563 (Quick Sync on the B50, through ffmpeg) |
 
 sleap-io's reader varied from run to run on network storage (12–480 frames/s). It checks that the file still exists, opening it again, for every frame it reads. A GPU decoder keeps up with every model path here using under one CPU core. On the benchtop PCs, ffmpeg on the CPU is already faster than the model. PyAV could not run in the same process as PyTorch and OpenCV: it hung on its first frames while holding Python's interpreter lock. The bench script runs it in a process of its own and hands frames over through shared memory.
 

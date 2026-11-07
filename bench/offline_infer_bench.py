@@ -438,6 +438,7 @@ class Stages:
 
 	def __init__(self, on):
 		self.on, self.t = on, {}
+		self.device = "cuda"
 
 	def Wrap(self, name, fn):
 		if not self.on:
@@ -445,10 +446,10 @@ class Stages:
 		import torch
 
 		def wrapped(*a, **k):
-			torch.cuda.synchronize()
+			Sync(self.device)
 			t = time.perf_counter()
 			out = fn(*a, **k)
-			torch.cuda.synchronize()
+			Sync(self.device)
 			self.t[name] = self.t.get(name, 0.0) + time.perf_counter() - t
 			return out
 		return wrapped
@@ -503,6 +504,17 @@ def SamePadInPython():
 	common.MaxPool2dWithSamePadding._calc_same_pad = _calc_same_pad
 
 
+def Sync(device):
+	# the GPU's queue: CUDA (ROCm) or an Intel GPU's (xpu)
+	import torch
+	(torch.xpu if str(device).startswith("xpu") else torch.cuda).synchronize()
+
+
+def GpuName(device):
+	import torch
+	return (torch.xpu if str(device).startswith("xpu") else torch.cuda).get_device_name(0)
+
+
 def Build(args):
 	import torch
 	import warnings
@@ -514,11 +526,13 @@ def Build(args):
 		raise SystemExit(SleapProblem())
 	with warnings.catch_warnings():
 		warnings.simplefilter("ignore", UserWarning)
-		predictor = Predictor.from_model_paths([args.centroid, args.instance], device="cuda", batch_size=args.batch,
+		predictor = Predictor.from_model_paths([args.centroid, args.instance], device=args.device, batch_size=args.batch,
 			max_instances=args.max_instances, peak_threshold=args.peak_threshold)
 	layer = predictor.layer
 	for backend in (layer.centroid_layer.backend, layer.centered_instance_layer.backend):
 		backend.use_fp16 = args.precision == "fp16"
+		if args.precision == "fp16" and args.device.startswith("xpu") and args.path != "fixed":
+			raise SystemExit("--precision fp16 on xpu: with --path fixed only (sleap-nn autocasts on cuda only)")
 		if args.memory_format == "channels_last":
 			backend.model.to(memory_format=torch.channels_last)
 		if args.sleapnn_compile:
@@ -561,13 +575,14 @@ def Run(args):
 		"tf32_cudnn_matmul": [torch.backends.cudnn.allow_tf32, torch.backends.cuda.matmul.allow_tf32]}
 	if args.decode_only:
 		return DecodeOnly(args, start, stop, B, report)
-	report["gpu"] = torch.cuda.get_device_name(0)
+	report["gpu"] = GpuName(args.device)
 	predictor, layer = Build(args)
 	stages = Stages(args.stage_timing)
+	stages.device = args.device
 	fixed = None
 	if args.path == "fixed":
 		from campy.live import FixedCrops
-		fixed = FixedCrops(layer, B, "cuda", args.max_instances, graph=args.cuda_graphs == "on",
+		fixed = FixedCrops(layer, B, args.device, args.max_instances, graph=args.cuda_graphs == "on",
 			engine=args.engine, cache=args.engine_cache)
 		host = torch.empty((B, H, W, 1), dtype=torch.uint8, pin_memory=True)
 	elif args.stage_timing:
@@ -609,7 +624,7 @@ def Run(args):
 				if pinned is None or pinned.shape[0] < b:
 					pinned = torch.empty((B,) + frames.shape[1:], dtype=torch.uint8, pin_memory=True)
 				pinned.numpy()[:b] = frames
-				frames = pinned[:b].to("cuda", non_blocking=True)
+				frames = pinned[:b].to(args.device, non_blocking=True)
 		elif not isinstance(frames, np.ndarray):
 			frames = frames.cpu().numpy()
 		stages.Add("upload", time.perf_counter() - t)
@@ -639,7 +654,8 @@ def Run(args):
 
 	batches = iter(Batches(args, start, stop, B))
 	# warm-up: the first batches, untimed (and their results kept)
-	sync = torch.cuda.synchronize
+	def sync():
+		Sync(args.device)
 	t0 = time.perf_counter()
 	done = 0
 	for _ in range(args.warmup):
@@ -836,7 +852,8 @@ def Main(argv=None):
 	r.add_argument("--memory-format", choices=("nchw", "channels_last"), default="nchw")
 	r.add_argument("--upload", choices=("host", "gpu"), default="host")
 	r.add_argument("--sleapnn-compile", action="store_true")
-	r.add_argument("--engine", choices=("eager", "compile", "tensorrt"), default="eager")
+	r.add_argument("--device", default="cuda", help="cuda (NVIDIA, ROCm) or xpu (an Intel GPU, PyTorch's xpu build)")
+	r.add_argument("--engine", choices=("eager", "compile", "tensorrt", "openvino"), default="eager")
 	r.add_argument("--engine-cache", default="")
 	r.add_argument("--cuda-graphs", choices=("on", "off"), default="off")
 	r.add_argument("--cudnn-benchmark", action="store_true")

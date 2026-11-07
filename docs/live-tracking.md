@@ -436,7 +436,7 @@ Notes on the measurements:
 
   The Pro Max Slim's third 3-camera try printed one line once: "Could not move campy-acquire onto CPUs 2-9,14-21 (--campy-cpus): ... [WinError 87] The parameter is incorrect." That run kept every set and was `RIG_CLEAN`, its times matched the others, and the other five 3-camera runs didn't print it.
 
-  The Windows 11 VM has no `campy-live`, because there is no device for its Intel Arc Pro B50. So it ran a recording check instead: `campy-acquire` recorded 1 and then 3 emulated cameras playing the same clips at 60 fps, for 20 s and 60 s, with Quick Sync H.265 on the B50. Each camera saved all its frames (1,200, then 3 × 3,600), with none dropped (`framesDropped` 0). The 3-camera run was `RIG_CLEAN`. The 1-camera run was flagged by one sighting of the security scanner.
+  The Windows 11 VM had no `campy-live` then, because campy had no device for its Intel Arc Pro B50 (it has since pull request PRNUM: [On an Intel GPU](#on-an-intel-gpu---device-xpu)). So it ran a recording check instead: `campy-acquire` recorded 1 and then 3 emulated cameras playing the same clips at 60 fps, for 20 s and 60 s, with Quick Sync H.265 on the B50. Each camera saved all its frames (1,200, then 3 × 3,600), with none dropped (`framesDropped` 0). The 3-camera run was `RIG_CLEAN`. The 1-camera run was flagged by one sighting of the security scanner.
 
 - On 5 November (12:26–12:53 AM) the Dell Pro Tower Plus, which records experiments every day, ran the same rig check on campy 2.4.0 (`95291b0`, both environments 2.4.0) for the first time. It ran under the experiment-machine rules (pull request 272): each check started only because it was night, nobody had used the machine for 15 minutes or more, no camera or campy was in use and tests weren't paused, and each was shown on the screen's banner with a Stop button. Its one NVIDIA GPU, the RTX A2000, ran the models, and the emulated cameras recorded H.265 with Quick Sync on the processor's integrated GPU, as on the Pro Max Slim. That needs an ffmpeg with Quick Sync (a BtbN 8.1 build, `ffmpegPath`): the recording environment's own ffmpeg has none, and on the first try `campy-acquire` stopped each camera after about 3 s. No real camera was opened.
 
@@ -643,6 +643,7 @@ Normally PyTorch runs each layer of the two networks as its own small GPU progra
 
 - **TensorRT** (NVIDIA's own) on an NVIDIA GPU, where the `tensorrt` and `onnx` packages are installed;
 - otherwise **`torch.compile`**, where Triton is installed. On Linux it comes with PyTorch, for AMD (ROCm) and NVIDIA alike. On Windows it is the `triton-windows` package (see below);
+- on an Intel GPU (`--device xpu`), **`torch.compile`** where Triton and a C++ compiler are installed, otherwise **OpenVINO** where the `openvino` and `onnx` packages are ([On an Intel GPU](#on-an-intel-gpu---device-xpu));
 - otherwise **none**. The networks run in plain PyTorch, as before, and `campy-live` says so once as it starts: `--engine auto: neither TensorRT (pip install tensorrt onnx) nor Triton (...) is installed; so the networks run in torch`.
 
 If the engine it picked can't be made, `campy-live` doesn't stop. A Triton that doesn't match PyTorch, a TensorRT build that fails, or any other error while the engine is made or first run: it says why in one line (`--engine auto: the torch.compile engine failed (...); so the networks run in torch`), and warms up again without the engine. All of this happens during the warm-up, before `Waiting for the live feed`, so it can never stall or slow a recording. Tested on the three machines with a deliberately broken `tensorrt` or `triton` package: one line, then exactly the default's output and speed (12.6 ms per set on the Pro Max Slim, 2.7 ms on the RTX 6000 Ada, 10.6 ms on the EVO-X2, where `--fast-upsample` comes back on), ready in 5.0–6.7 s. Without a GPU, or with `--fixed-crops off`, there is nothing to compile, and `auto` stays quiet.
@@ -833,6 +834,48 @@ Each run's recording goes into a new folder inside `videoFolder`, as usual, and 
   - On the Dell Pro Max Slim's RTX 2000 Ada (27 October, same replay, two runs each, every run `RIG_CLEAN`, GPU at 2,490 MHz), the interrupt CPU is CPU 1, one of the performance cores, so `campy-live` used to run on it. Before is `--cpus performance` (the old default: all 8 performance cores at High priority), after is the new default (the performance cores but CPU 1). The gain there is small, since the GPU's own work is most of each set: with the default TensorRT engines 5.5 / 6.3 and 5.5 / 5.7 ms before against 5.5 / 5.7 ms in both runs after; without engines or CUDA graphs 14.0 / 14.9–15.1 ms against 14.0 / 14.5–14.6 ms (frame to 3D p99 18.5–18.8 against 18.2–18.5 ms; 0–1 skipped sets either way); with CUDA graphs but no engine 12.4 / 12.6 ms either way. The test found CPU 1 in all 12 starts there (83% of its extra interrupts and DPCs).
   - Linux doesn't need it, and `campy-live` doesn't look there. On the EVO-X2 (27 October, Ubuntu, ROCm, same replay, every run `RIG_CLEAN`), the GPU's interrupts all go to CPU 30 (`/proc/interrupts`, IRQ 150; irqbalance is off), but ROCm raised only about 100 a second during a replay, against about 85,000 a second for the benchmark on Windows: it doesn't interrupt for each kernel. Keeping `campy-live` off CPU 30 changed nothing: with the default compiled models 5.5 / 5.6–5.7 ms per set either way (two runs each), and uncompiled 10.2 / 11.2–11.4 ms off CPU 30 against 10.2 / 11.3–11.5 ms as today. Pinned to one CPU, CPU 30 was no slower than CPU 29: uncompiled 11.7 / 14.4 ms on CPU 30 against 11.7 / 14.5 on CPU 29, compiled 5.5 / 5.6 against 6.0 / 7.9 (one run each; CPU 29 doesn't take the GPU's interrupts, so that difference is something else). One CPU is slower than many for the uncompiled models, wherever it is.
 - **Two GPUs**: run `campy-live` on one and let campy's encoders use the other. torch numbers GPUs fastest first unless told otherwise, and `nvidia-smi` by their slot, so start `campy-live` with `CUDA_DEVICE_ORDER=PCI_BUS_ID` and `CUDA_VISIBLE_DEVICES=<the GPU's nvidia-smi index>`. Give the cameras the other GPU's `gpuID` for NVENC. On the Precision 7875 that is `CUDA_VISIBLE_DEVICES=0` (RTX 6000 Ada) for `campy-live` and `gpuID: 1` (RTX 4000 Ada, which also drives the monitor) for the encoders; while it recorded, `nvidia-smi` listed `campy-live` only on the first and ffmpeg only on the second.
+
+## On an Intel GPU (`--device xpu`)
+
+Since pull request PRNUM, `campy-live` also runs on Intel's Arc GPUs, with PyTorch's build for Intel GPUs (PyTorch calls the device `xpu`). `--device auto` picks one when there is no NVIDIA or AMD GPU. Everything `campy-live` does on NVIDIA works there too: fixed crops, one graph for the whole set (PyTorch's XPU graphs, which work like CUDA graphs), fp16, and compiled networks with `torch.compile`. Intel's own inference library, OpenVINO, works as well (`--engine openvino`). Three things don't apply there:
+
+- **TensorRT**: NVIDIA only.
+- **The clock hold** (`--hold-gpu-clock`): NVIDIA and AMD only. The B50 below ran at 2,000–2,300 MHz under load without it, at 35–49 W of its 70 W.
+- **fp16 with `--fixed-crops off`**: sleap-nn's own layer switches to fp16 only on CUDA, so it runs in fp32 there whatever `--precision` says.
+
+### Installing
+
+Make a conda environment of its own for it (PyTorch's Intel build can't share one with the CUDA build), with Python 3.12:
+
+```
+conda create -n campy-live-xpu --override-channels -c conda-forge python=3.12 pip
+<env>\python.exe -m pip install torch==2.14.1+xpu torchvision==0.29.1+xpu --index-url https://download.pytorch.org/whl/xpu
+<env>\python.exe -m pip install sleap-nn==0.3.5 openvino==2026.4.1 onnx --extra-index-url https://download.pytorch.org/whl/xpu
+```
+
+then install campy into it as for the other `campy-live` environments ([Two Python environments](#two-python-environments)). Keep pip from replacing PyTorch with the CUDA build: if it tries, pin `torch==2.14.1+xpu` and `torchvision==0.29.1+xpu` with a constraints file (`-c`). PyTorch's Intel build brings its own Triton. Check it with `<env>\python.exe -c "import torch; print(torch.xpu.is_available(), torch.xpu.get_device_name(0))"`.
+
+On Windows, `torch.compile` also needs Microsoft's C++ compiler, from the free Visual Studio Build Tools with the "Desktop development with C++" workload (`vs_BuildTools.exe --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended`, about 3 minutes). It doesn't need to be on `PATH`: `campy-live` finds the Build Tools with Visual Studio's own `vswhere` and loads their environment itself. Without them, `--engine auto` uses OpenVINO, and `--engine compile` stops with the reason. On Linux (not tested) it needs a C++ compiler such as `g++`.
+
+### How fast (an Intel Arc Pro B50, in a virtual machine)
+
+Measured on 7 November 2026 with the benchmark (`bench/sleap_infer_bench.py --device xpu --fixed-crops --cuda-graphs --engine compile --cpus auto --precision fp16 --pace 60`, and `--engine off` or `openvino`), on a 16 GB, 70 W Intel Arc Pro B50 passed through to a Windows 11 virtual machine with 8 virtual cores of a Core i9-14900 and 31 GB of memory. Intel's driver was 1.15.39183, with PyTorch 2.14.1+xpu and sleap-nn 0.3.5. **Every number here was measured in that virtual machine.** There was no B50 outside one to compare against, so what the VM costs isn't known. The GPU is passed through to the VM, but its CPU cores are virtual. The VM has no cameras, so `campy-live` itself didn't run on frames there: the benchmark times a set with `campy-live`'s own code (`FixedCrops`), as for the other machines. Runs used 1,000 timed sets (the NVIDIA cards' sweeps used 2,000), through `bench/rig.py`.
+
+The trained 5-mouse pair (centroid scale 0.25, output stride 2; centered instance 320 px crop at scale 0.5, max stride 32, 24 filters), per set of 3 or 8 frames, p50 / p99:
+
+| How the networks ran | 3 cameras | 8 cameras |
+|---|---|---|
+| `torch.compile`, one XPU graph (`--engine auto` with the Build Tools) | **9.9 / 10.3 ms** | **23.5 / 23.8 ms** |
+| PyTorch, one XPU graph (`--engine off`) | 13.8 / 14.8 ms | 35.0 / 35.2 ms |
+| OpenVINO (`--engine openvino`; no graph) | 16.4 / 20.5 ms | 30.3 / 34.5 ms |
+| for comparison, compiled: RTX A2000 / RTX 2000 Ada / RTX 4000 Ada | 6.9 / 5.3–5.5 / 3.4 ms | 20.9 / 15.4 / 8.7 ms |
+
+So the B50 tracks this pair on 3 cameras at 60 fps with room to spare, and on 8 cameras at 30 fps, not 60. Every trained-pair run was `RIG_CLEAN`. Of the 32 model sizes in the hardware guide, compiled, it fit all 32 at 60 fps with 3 cameras (worst p99 16.5 ms, `RIG_CLEAN`), and 5 at 60 fps and 26 at 30 fps with 8 cameras (worst 41.5 ms; flagged by small disk reads of Windows' SysMain service, under one core of other CPU use). That is about the RTX A2000's count at 8 cameras, slower at 3.
+
+- **`torch.compile` is the fastest here**: about 30% less time per set than plain PyTorch. The first compile took 2–3.5 minutes per model pair, during the warm-up; later starts read the kernels back from `--engine-cache`, and the first set then took about 7 s.
+- **OpenVINO is slower live**, though its networks alone are faster than plain PyTorch's (1.7 + 6.5 ms against 3.2 + 10.0 ms for the two networks at 3 cameras). OpenVINO keeps its own GPU memory, so each network's input and output go through the computer's memory, about 0.7 ms each way, and its networks can't be recorded into the set's graph.
+- **Memory layout**: channels-last (the default) is faster in plain PyTorch (13.8 against 15.8 ms) and the same with `torch.compile` (9.9 either way).
+- **Accuracy**: in every run the graph gave exactly the same output as the same steps without it, compiled or not. campy's tests pass on the B50; in fp32 the fixed crops' centroids there can differ from sleap-nn's own layer by about 0.00001 px (with some of the tests' random weights), where on the CPU and CUDA they match exactly. Not checked: how far `torch.compile`'s or OpenVINO's fp16 moves the keypoints from fp32 on this GPU, and the B50's keypoints against an NVIDIA card's.
 
 ## A tracked recording in one command (campy-session)
 

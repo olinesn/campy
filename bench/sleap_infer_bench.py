@@ -145,6 +145,17 @@ Running on this Mac (smoke test)
     python bench/sleap_infer_bench.py --device cpu --iters 20 --warmup 3
     python bench/sleap_infer_bench.py --device mps --iters 50 --sweep
 
+On an Intel GPU (--device xpu)
+------------------------------
+PyTorch's Intel build (torch==2.14.1+xpu from download.pytorch.org/whl/xpu)
+in an environment of its own, sleap-nn 0.3.5, and for --engine openvino
+openvino and onnx (docs/live-tracking.md, "On an Intel GPU"). With
+--fixed-crops each set is one XPU graph (--cuda-graphs) and fp16 is campy's
+own autocast; without it, fp16 is this script's autocast (sleap-nn's is
+CUDA's only). --engine compile needs a C++ compiler (Windows: Visual
+Studio's Build Tools, found by campy-live itself). The clock and power come
+from Intel's Level Zero (ZesClockLog); there is no --hold-clock there.
+
 Installing on the EVO-X2 (Ryzen AI Max+ 395, Radeon 8060S = gfx1151)
 --------------------------------------------------------------------
 sleap-nn has no ROCm extra. Its plain requirement is an unpinned torch plus
@@ -377,10 +388,20 @@ def count_gflop_and_params(module, input_shape):
 # Device helpers
 # --------------------------------------------------------------------------
 
+def xpu_available():
+    xpu = getattr(torch, "xpu", None)
+    try:
+        return bool(xpu is not None and xpu.is_available())
+    except Exception:
+        return False
+
+
 def resolve_device(name):
     if name == "auto":
         if torch.cuda.is_available():
             return "cuda"
+        if xpu_available():
+            return "xpu"
         if torch.backends.mps.is_available():
             return "mps"
         return "cpu"
@@ -388,6 +409,9 @@ def resolve_device(name):
         sys.exit("--device cuda: torch.cuda.is_available() is False (on ROCm, is this a ROCm torch build?)")
     if name == "mps" and not torch.backends.mps.is_available():
         sys.exit("--device mps: MPS is not available")
+    if name == "xpu" and not xpu_available():
+        sys.exit("--device xpu: torch.xpu.is_available() is False (PyTorch's Intel GPU build: "
+                 "pip install torch --index-url https://download.pytorch.org/whl/xpu)")
     return name
 
 
@@ -396,13 +420,20 @@ def synchronize(device):
         # This stream only, as live inference waits for its results: a device-wide
         # sync would also wait for --hold-clock's spin on its own stream
         torch.cuda.current_stream().synchronize()
+    elif device.startswith("xpu"):
+        torch.xpu.current_stream().synchronize()
     elif device == "mps":
         torch.mps.synchronize()
 
 
+def accelerator(device):
+    """fp16 autocast's device type: cuda (NVIDIA, ROCm), xpu (Intel), or None."""
+    return "cuda" if device.startswith("cuda") else "xpu" if device.startswith("xpu") else None
+
+
 def default_memory_format(device):
-    """channels_last on an Nvidia CUDA GPU (cuDNN's layout); nchw on ROCm, MPS and CPU."""
-    if device.startswith("cuda") and torch.version.hip is None:
+    """channels_last on an Nvidia CUDA GPU (cuDNN's layout) and an Intel GPU (xpu); nchw on ROCm, MPS and CPU."""
+    if (device.startswith("cuda") and torch.version.hip is None) or device.startswith("xpu"):
         return "channels_last"
     return "nchw"
 
@@ -413,25 +444,30 @@ def device_description(device):
         arch = getattr(props, "gcnArchName", "")
         backend = f"ROCm/HIP {torch.version.hip}" if torch.version.hip else f"CUDA {torch.version.cuda}"
         return f"{torch.cuda.get_device_name(0)} {arch} ({backend})".strip()
+    if device.startswith("xpu"):
+        props = torch.xpu.get_device_properties(0)
+        driver = getattr(props, "driver_version", "")
+        return f"{torch.xpu.get_device_name(0)} (Intel xpu, driver {driver}, {props.total_memory / 2**30:.1f} GiB)"
     if device == "mps":
         return f"Apple MPS ({platform.machine()}, macOS {platform.mac_ver()[0]})"
     return f"CPU {platform.processor() or platform.machine()} ({torch.get_num_threads()} threads)"
 
 
 class MPSAutocast(torch.nn.Module):
-    """fp16 autocast for MPS, done the way TorchBackend does it on cuda.
+    """fp16 autocast for MPS (or xpu), done the way TorchBackend does it on cuda.
 
     TorchBackend only autocasts on cuda. Like it, run the forward under
     autocast and hand fp32 confmaps to the layer's peak finding (sleap-nn's
     scatter into fp32 output tensors fails on fp16 values).
     """
 
-    def __init__(self, inner):
+    def __init__(self, inner, device_type="mps"):
         super().__init__()
         self.inner = inner
+        self.device_type = device_type
 
     def forward(self, img):
-        with torch.autocast(device_type="mps", dtype=torch.float16):
+        with torch.autocast(device_type=self.device_type, dtype=torch.float16):
             out = self.inner(img)
         return out.float()
 
@@ -712,8 +748,129 @@ class SysfsClockLog:
                 "util_pct_p50": float(np.median(busy)) if busy else None}
 
 
+class ZesClockLog:
+    """Intel GPUs (xpu): the GPU clock and power from Level Zero Sysman (ze_loader, which Intel's driver installs).
+
+    zesFrequencyGetState's actual clock and its throttle reasons, and the power from the energy counter, read
+    every period_s in a thread. Sysman works on Windows too; nothing here sets the clock (there is no Intel
+    --hold-clock).
+    """
+
+    FREQ_PROPERTIES, FREQ_STATE = 0x9, 0x1b  # zes_structure_type_t
+    THROTTLE = {1: "avg_power", 2: "burst_power", 4: "current", 8: "thermal", 16: "psu", 32: "sw_range",
+                64: "hw_range"}
+
+    def __init__(self, period_s=0.2):
+        import ctypes
+        self.period_s, self.ct = period_s, ctypes
+        self.freq = self.power = None
+        self.stop = threading.Event()
+
+        class State(ctypes.Structure):
+            _fields_ = [("stype", ctypes.c_uint32), ("pNext", ctypes.c_void_p), ("voltage", ctypes.c_double),
+                        ("request", ctypes.c_double), ("tdp", ctypes.c_double), ("efficient", ctypes.c_double),
+                        ("actual", ctypes.c_double), ("throttle", ctypes.c_uint32)]
+
+        class Props(ctypes.Structure):
+            _fields_ = [("stype", ctypes.c_uint32), ("pNext", ctypes.c_void_p), ("type", ctypes.c_uint32),
+                        ("onSubdevice", ctypes.c_uint8), ("subdeviceId", ctypes.c_uint32),
+                        ("canControl", ctypes.c_uint8), ("throttleEvents", ctypes.c_uint8),
+                        ("min", ctypes.c_double), ("max", ctypes.c_double)]
+
+        class Energy(ctypes.Structure):
+            _fields_ = [("energy", ctypes.c_uint64), ("timestamp", ctypes.c_uint64)]
+        self.State, self.Energy = State, Energy
+        try:
+            os.environ.setdefault("ZES_ENABLE_SYSMAN", "1")
+            ze = self.ze = ctypes.CDLL("ze_loader.dll" if os.name == "nt" else "libze_loader.so.1")
+            if ze.zesInit(ctypes.c_uint32(0)) != 0:
+                return
+            n = ctypes.c_uint32(0)
+            ze.zesDriverGet(ctypes.byref(n), None)
+            drivers = (ctypes.c_void_p * n.value)()
+            ze.zesDriverGet(ctypes.byref(n), drivers)
+            device = None
+            for d in drivers:
+                m = ctypes.c_uint32(0)
+                ze.zesDeviceGet(ctypes.c_void_p(d), ctypes.byref(m), None)
+                if m.value:
+                    devs = (ctypes.c_void_p * m.value)()
+                    ze.zesDeviceGet(ctypes.c_void_p(d), ctypes.byref(m), devs)
+                    device = devs[0]
+                    break
+            if device is None:
+                return
+            for enum, slot in ((ze.zesDeviceEnumFrequencyDomains, "freq"), (ze.zesDeviceEnumPowerDomains, "power")):
+                n = ctypes.c_uint32(0)
+                if enum(ctypes.c_void_p(device), ctypes.byref(n), None) != 0 or not n.value:
+                    continue
+                handles = (ctypes.c_void_p * n.value)()
+                enum(ctypes.c_void_p(device), ctypes.byref(n), handles)
+                pick = handles[0]
+                if slot == "freq":
+                    for h in handles:
+                        props = Props(stype=self.FREQ_PROPERTIES)
+                        if ze.zesFrequencyGetProperties(ctypes.c_void_p(h), ctypes.byref(props)) == 0 and \
+                                props.type == 0:  # ZES_FREQ_DOMAIN_GPU
+                            pick = h
+                            break
+                setattr(self, slot, pick)
+        except (OSError, AttributeError):
+            self.freq = None
+
+    def ok(self):
+        return self.freq is not None and self._read() is not None
+
+    def _read(self):
+        ct = self.ct
+        state = self.State(stype=self.FREQ_STATE)
+        if self.ze.zesFrequencyGetState(ct.c_void_p(self.freq), ct.byref(state)) != 0:
+            return None
+        e = self.Energy()
+        energy = None
+        if self.power is not None and self.ze.zesPowerGetEnergyCounter(ct.c_void_p(self.power), ct.byref(e)) == 0:
+            energy = (e.energy, e.timestamp)
+        return state.actual, state.request, state.throttle, energy
+
+    def start(self):
+        self.samples = []
+        self.stop.clear()
+
+        def run():
+            while not self.stop.wait(self.period_s):
+                r = self._read()
+                if r is not None:
+                    self.samples.append(r)
+        self.thread = threading.Thread(target=run, daemon=True, name="clock-log")
+        self.thread.start()
+
+    def end(self):
+        self.stop.set()
+        self.thread.join()
+        mhz = [a for a, _, _, _ in self.samples if a > 0]
+        if not mhz:
+            return None
+        watts = []
+        energies = [e for _, _, _, e in self.samples if e is not None]
+        for (e0, t0), (e1, t1) in zip(energies, energies[1:]):
+            if t1 > t0:
+                watts.append((e1 - e0) / (t1 - t0))  # microjoules per microsecond = W
+        reasons = {}
+        for bit, name in self.THROTTLE.items():
+            n = sum(1 for _, _, t, _ in self.samples if t & bit)
+            if n:
+                reasons[name] = round(n / len(self.samples), 3)
+        return {"source": "Level Zero Sysman", "samples": len(mhz), "sm_mhz_p50": float(np.median(mhz)),
+                "sm_mhz_min": min(mhz), "sm_mhz_max": max(mhz),
+                "request_mhz_p50": float(np.median([r for _, r, _, _ in self.samples])),
+                "power_w_p50": float(np.median(watts)) if watts else None, "throttle_fraction": reasons}
+
+
 def make_clock_log(device):
-    """The clock log for this device, or None (no nvidia-smi / sysfs, or not a GPU)."""
+    """The clock log for this device, or None (no nvidia-smi / sysfs / Level Zero, or not a GPU)."""
+    if device.startswith("xpu"):
+        log = ZesClockLog()
+        return log if log.ok() else None
     if not device.startswith("cuda"):
         return None
     if torch.version.hip:
@@ -842,15 +999,17 @@ def make_layers(c, ci, args, device, precision, k, memory_format="nchw"):
     # whatever it finds; a TensorRT engine is made from the model itself)
     centroid_net = centroid_module if fixed else SyntheticCentroidPeaks(centroid_module, args.frames, cm_h, cm_w, k)
     instance_net = instance_module
-    if precision == "fp16" and device == "mps":
-        centroid_net, instance_net = MPSAutocast(centroid_net), MPSAutocast(instance_net)
+    if precision == "fp16" and (device == "mps" or (device.startswith("xpu") and not fixed)):
+        # (with --fixed-crops, FixedCrops autocasts on xpu itself, from use_fp16)
+        kind = "mps" if device == "mps" else "xpu"
+        centroid_net, instance_net = MPSAutocast(centroid_net, kind), MPSAutocast(instance_net, kind)
     # --fixed-crops records its own graph, of the whole set
     graphed = args.cuda_graphs and device.startswith("cuda") and not fixed
     if graphed:
         centroid_net = CUDAGraphed(centroid_net, precision == "fp16")
         instance_net = CUDAGraphed(instance_net, precision == "fp16")
 
-    use_fp16 = precision == "fp16" and device.startswith("cuda") and not graphed
+    use_fp16 = precision == "fp16" and not graphed and (device.startswith("cuda") or (device.startswith("xpu") and fixed))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)  # TorchBackend's fp16/compile notices
         centroid_backend = TorchBackend(
@@ -899,7 +1058,7 @@ def trained_layers(c, ci, args, device, precision, k, memory_format="nchw"):
     topdown = predictor.layer
     backends = (topdown.centroid_layer.backend, topdown.centered_instance_layer.backend)
     for backend in backends:
-        backend.use_fp16 = precision == "fp16" and device.startswith("cuda")
+        backend.use_fp16 = precision == "fp16" and accelerator(device) is not None
         if memory_format == "channels_last":
             backend.model.to(memory_format=torch.channels_last)
     return (topdown, topdown.centroid_layer, topdown.centered_instance_layer) + tuple(b.model for b in backends)
@@ -907,7 +1066,7 @@ def trained_layers(c, ci, args, device, precision, k, memory_format="nchw"):
 
 def run_fixed(topdown, args, device, k, frames_host):
     """--fixed-crops: campy-live's FixedCrops on the layer, and a set as campy-live runs it."""
-    fixed = _LIVE.FixedCrops(topdown, args.frames, device, k, graph=args.cuda_graphs and device.startswith("cuda"),
+    fixed = _LIVE.FixedCrops(topdown, args.frames, device, k, graph=args.cuda_graphs and accelerator(device) is not None,
                              engine=args.engine, cache=args.engine_cache)
 
     def fn():
@@ -991,6 +1150,8 @@ def run_one(c, ci, args, device, precision, k, frames_host, what, memory_format=
         gc.collect()
         if device.startswith("cuda"):
             torch.cuda.empty_cache()  # the row's engines and graph pool, before the next row's
+        elif device.startswith("xpu"):
+            torch.xpu.empty_cache()
     return result
 
 
@@ -1055,8 +1216,8 @@ def parse_args():
         description="Time random-weight SLEAP top-down models (sleap-nn) for live inference.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--device", default="auto", choices=["auto", "cuda", "mps", "cpu"],
-                   help="cuda is also the ROCm/HIP device")
+    p.add_argument("--device", default="auto", choices=["auto", "cuda", "xpu", "mps", "cpu"],
+                   help="cuda is also the ROCm/HIP device; xpu an Intel GPU (PyTorch's xpu build)")
     p.add_argument("--precision", default="fp32,fp16",
                    help="comma list of fp32, fp16 (fp16 = autocast; skipped on cpu)")
     p.add_argument("--memory-format", default="auto",
@@ -1078,9 +1239,9 @@ def parse_args():
     p.add_argument("--fixed-crops", action="store_true",
                    help="time campy-live's own set (campy/live.py FixedCrops): crops-per-frame crops per frame "
                         "whatever is found, fixed-shape peaks, with --cuda-graphs one graph per set; needs campy")
-    p.add_argument("--engine", default="off", choices=["off", "auto", "compile", "tensorrt"],
+    p.add_argument("--engine", default="off", choices=["off", "auto", "compile", "tensorrt", "openvino"],
                    help="with --fixed-crops: the networks as compiled engines, as campy-live --engine (auto: "
-                        "TensorRT on NVIDIA, torch.compile where only Triton is)")
+                        "TensorRT on NVIDIA, torch.compile where only Triton is, OpenVINO on an Intel GPU)")
     p.add_argument("--engine-cache", default="",
                    help="--engine's built engines (default: campy-live's, ~/.cache/campy/engines)")
     p.add_argument("--cpus", default="none",
@@ -1171,8 +1332,8 @@ def main():
         skipped.append("fp16 skipped on cpu")
     if args.cuda_graphs and args.compile:
         sys.exit("--cuda-graphs and --compile both capture graphs: choose one")
-    if args.cuda_graphs and not device.startswith("cuda"):
-        skipped.append("--cuda-graphs ignored: cuda only")
+    if args.cuda_graphs and not (device.startswith("cuda") or (device.startswith("xpu") and args.fixed_crops)):
+        skipped.append("--cuda-graphs ignored: cuda only (xpu: with --fixed-crops, one XPU graph per set)")
     if args.compile and device == "mps":
         skipped.append("--compile ignored on mps (sleap-nn's TorchBackend disables it)")
     holds = []
@@ -1184,8 +1345,8 @@ def main():
         holds = [False]
         skipped.append("--hold-clock ignored: cuda only")
     clock_log = None if args.no_clock_log else make_clock_log(device)
-    if clock_log is None and not args.no_clock_log and device.startswith("cuda"):
-        skipped.append("GPU clock not logged: no nvidia-smi / pp_dpm_sclk found")
+    if clock_log is None and not args.no_clock_log and accelerator(device):
+        skipped.append("GPU clock not logged: no nvidia-smi / pp_dpm_sclk / Level Zero Sysman found")
     ks = [int(s) for s in args.crops_per_frame.split(",")]
     if max(ks) > args.max_instances:
         sys.exit("--crops-per-frame cannot exceed --max-instances")
@@ -1244,7 +1405,7 @@ def main():
         print(f"note: {note}")
     print(f"{args.frames} frames {FRAME_W}x{FRAME_H} uint8 per set, {args.nodes} nodes, "
           f"iters {args.iters}, warmup {args.warmup}, compile {args.compile}, "
-          f"CUDA graphs {args.cuda_graphs and device.startswith('cuda')}, "
+          f"CUDA graphs {args.cuda_graphs and (device.startswith('cuda') or (device.startswith('xpu') and args.fixed_crops))}, "
           f"memory format {','.join(memory_formats)}, "
           f"hold clock {','.join('on' if h else 'off' for h in holds)}, "
           f"pace {f'{args.pace:g} sets/s' if args.pace else 'back to back'}, "
@@ -1262,6 +1423,11 @@ def main():
     frames_host = torch.from_numpy(frames_np)
     if device.startswith("cuda"):
         frames_host = frames_host.pin_memory()
+    elif device.startswith("xpu"):
+        try:
+            frames_host = frames_host.pin_memory()  # torch's xpu build pins for its own device
+        except RuntimeError as e:
+            skipped.append(f"frames not pinned on xpu ({e})")
 
     # (kind, centroid cfg or None, instance cfg or None)
     jobs = []
@@ -1332,7 +1498,7 @@ def row_cells(r):
         instance_label(r["instance"]) if r["instance"] else "-",
         r["precision"], "cl" if r.get("memory_format") == "channels_last" else "nchw",
         "y" if r.get("cuda_graphs") else "-",
-        {"tensorrt": "trt", "compile": "cmp", "eager": "fc"}.get(r.get("engine"), "-"),
+        {"tensorrt": "trt", "compile": "cmp", "openvino": "ov", "eager": "fc"}.get(r.get("engine"), "-"),
         "y" if r.get("hold_clock") else "-",
         str(r["crops_per_frame"]), f"{gflop:.1f}",
         f"{r['first_call_ms']:.0f}", f"{r['second_call_ms']:.1f}",
@@ -1359,7 +1525,7 @@ def print_row(r, header_needed):
 def print_table(results):
     print("\nSummary (latency per set in ms; GFLOP per set; mem = memory format, cl = "
           "channels_last; cg = CUDA graphs; eng = --fixed-crops with an engine (trt TensorRT, cmp torch.compile) or "
-          "none (fc); hc = --hold-clock; K = crops per frame; 1st/2nd = "
+          "OpenVINO (ov) or none (fc); hc = --hold-clock; K = crops per frame; 1st/2nd = "
           "first calls of the shape; MHz / W = median GPU clock and power over the timed sets; "
           "over = paced sets that ran over their slot):")
     print(format_row([name for name, _ in COLUMNS]))
