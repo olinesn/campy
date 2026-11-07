@@ -40,34 +40,28 @@ def FlatTopPeaks(cms, threshold):
 	"""
 	import torch
 	import torch.nn.functional as F
-	p = F.pad(cms, (1, 1, 1, 1), mode="constant", value=float("-inf"))
-
-	def At(padded, dr, dc): # each pixel's (dr, dc) neighbour, in a 1-pixel border
-		return padded[..., 1 + dr:(dr - 1) or None, 1 + dc:(dc - 1) or None]
-
-	before = torch.maximum(torch.maximum(At(p, -1, -1), At(p, -1, 0)), torch.maximum(At(p, -1, 1), At(p, 0, -1)))
-	after = torch.maximum(torch.maximum(At(p, 0, 1), At(p, 1, -1)), torch.maximum(At(p, 1, 0), At(p, 1, 1)))
+	shape = cms.shape
+	h, w = shape[-2:]
+	x = cms.reshape(-1, 1, h, w)
+	# each pixel's 3x3 neighbourhood in one step: (maps, 9, h*w), in reading
+	# order (NW, N, NE, W, the pixel, E, SW, S, SE); off the map is -inf
+	nb = F.unfold(F.pad(x, (1, 1, 1, 1), mode="constant", value=float("-inf")), 3)
+	c = nb[:, 4]
 	# greater than the 4 neighbours before it, at least equal to the 4 after:
 	# every flat top has one such pixel, its first
-	peak = (cms > before) & (cms >= after) & (cms > threshold)
+	peak = (c > nb[:, :4].amax(1)) & (c >= nb[:, 5:].amax(1)) & (c > threshold)
 	# each pixel's count of neighbours at least as high as it
-	ge = torch.zeros_like(cms, dtype=torch.float32)
-	for dr in (-1, 0, 1):
-		for dc in (-1, 0, 1):
-			if dr or dc:
-				ge = ge + (At(p, dr, dc) >= cms).float()
-	ge = F.pad(ge, (1, 1, 1, 1))
-	later = {"E": (0, 1), "SW": (1, -1), "S": (1, 0), "SE": (1, 1)}
-	tied = {k: At(p, *d) == cms for k, d in later.items()}
-	t = {k: v.float() for k, v in tied.items()}
-	n = t["E"] + t["SW"] + t["S"] + t["SE"] + 1 # the top's pixels
+	ge = (nb >= c[:, None]).sum(1, dtype=torch.float32) - 1
+	tied = nb[:, 5:] == c[:, None] # E, SW, S, SE: the rest of the top, if any
+	t = tied.float()
+	n = t.sum(1) + 1 # the top's pixels
 	# it fits in a 2x2 block unless it has SW and also E or SE; it is closed
 	# (no pixel around it as high) when each of its pixels has n - 1 such
 	# neighbours, the rest of the top
-	peak = peak & ~(tied["SW"] & (tied["E"] | tied["SE"]))
-	for k, d in later.items():
-		peak = peak & (~tied[k] | (At(ge, *d) == n - 1))
+	later = F.unfold(F.pad(ge.reshape(-1, 1, h, w), (1, 1, 1, 1)), 3)[:, 5:]
+	peak &= ~(tied[:, 1] & (tied[:, 0] | tied[:, 3]))
+	peak &= (~tied | (later == (n - 1)[:, None])).all(1)
 	zero = torch.zeros_like(n)
-	dx = torch.where(peak, (t["E"] + t["SE"] - t["SW"]) / n, zero)
-	dy = torch.where(peak, (t["SW"] + t["S"] + t["SE"]) / n, zero)
-	return peak, dx, dy
+	dx = torch.where(peak, (t[:, 0] + t[:, 3] - t[:, 1]) / n, zero)
+	dy = torch.where(peak, (t[:, 1] + t[:, 2] + t[:, 3]) / n, zero)
+	return peak.reshape(shape), dx.reshape(shape), dy.reshape(shape)
