@@ -5,7 +5,7 @@ Guides for recording with campy and tracking animals live while it records. The 
 | Page | What it covers |
 |---|---|
 | [Quickstart](quickstart.md) | A tracked recording in 15 minutes, with no camera: install, record three emulated cameras, track five mice in 3D with campy-live, open the result in LUC3D |
-| [Installation](install.md) | campy and the camera makers' software (Basler Pylon, FLIR Spinnaker and PySpin), and Spinnaker 4.4 on Windows when its installer fails |
+| [Installation](install.md) | campy and the camera makers' software (Basler Pylon, FLIR Spinnaker and PySpin), updating Spinnaker on a Windows computer, and Spinnaker 4.4 on Windows when its installer fails |
 | [Configs](configs.md) | Rig profiles (`extends:`, kept outside campy), what campy checks before any camera opens, and `campy-config show`, `diff` and `check` |
 | [Settings reference](config-reference.md) | Every config key: its default, what it takes, and what it does (generated from `campy/configschema.py`) |
 | [Recording with campy-acquire](acquire.md) | Starting and stopping a recording, what happens when a camera or its encoder fails, video that survives a crash (`fragmentedVideo`), keeping the computer awake (`keepAwake`), and emulated cameras (`cameraMake: "emu"`) |

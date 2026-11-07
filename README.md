@@ -48,7 +48,7 @@ Each run records into a new folder inside the config's `videoFolder`, named by t
 |---|---|
 | [Quickstart](docs/quickstart.md) | A tracked recording in 15 minutes, with no camera |
 | [Recording a session from the desktop](docs/recording-a-session.md) | For labmates who don't use a terminal: the desktop icon and the panel in the browser |
-| [Installation](docs/install.md) | campy, the camera makers' software, Spinnaker on Windows when its installer fails |
+| [Installation](docs/install.md) | campy, the camera makers' software, updating Spinnaker on Windows, and when its installer fails |
 | [Configs](docs/configs.md) and [Settings reference](docs/config-reference.md) | How campy reads a config, and every key |
 | [Recording with campy-acquire](docs/acquire.md) | Starting and stopping, failures, video that survives a crash, keeping the computer awake, emulated cameras |
 | [Recording folders](docs/recordings.md) | What a recording holds, and `session.json` |
