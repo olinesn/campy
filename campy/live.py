@@ -152,29 +152,34 @@ skipped; then it settled at 780 MHz of its 2500, and each set took 27 ms
 where 13 would do. The EVO-X2's AMD GPU ran light models at 2100 of its
 2900 MHz, 10% slower. So from the warm-up's end to the end, campy-live
 keeps a few of the GPU's blocks spinning (torch.cuda._sleep), on streams of
-the lowest priority: 4 while it waits for frames, and while they come, 0 to
+the lowest priority: 4 while it waits for frames, and while they come, 1 or
 2 (--hold-gpu-clock-blocks auto): it reads the GPU's clock every half
 second (NVML, through the nvidia-ml-py package's pynvml if installed, else
 nvidia-smi; on ROCm the driver's pp_dpm_sclk) and spins one block more
-when the clock falls below 90% of the fastest it has seen, one fewer after
-10 s at full clock. When one fewer turns out too few (the clock falls
-again within those 10 s: an RTX 6000 Ada's fell to 800-975 MHz for 1.3 s,
-every set 3-4 times slower), it puts the block back and never tries that
-count again on that GPU until the computer restarts (gpu_clock.json in
+when the clock falls below 90% of the fastest it has seen. It never spins
+fewer while sets come: it used to try none after 10 s at full clock, and
+on an RTX 6000 Ada, which needs 1, each try let its clock fall to about
+1000 MHz, every set 2-3 times slower for about 1 s (every few minutes
+until pull request 152; then once in the first run after each restart).
+A block it adds stays for the rest of the run, and later runs on that GPU
+start with it, until the computer restarts (gpu_clock.json in
 --engine-cache, by the GPU's UUID). The GPU then looks busy and stays at
-its full clock, for about 20 W while waiting (against 2.5 W idle). The model's work goes
-first, on the GPU's other blocks, but a spinning block still costs it
-about 0.3 ms a set (2, 0.55 ms), so none spin when the clock stays up
-without them (an RTX 2000 Ada did so after a restart, not after two days up). A clock that the
-GPU's power or heat limit holds down is left alone. On an AMD integrated
-GPU (the EVO-X2's, which shares its chip with the CPU) at least 1 spins
-while sets come: with none, its clock still read 2650-2850 MHz, yet each
-set took about 1 ms longer (13.7 against 12.8 ms, 5 mice, --fixed-crops
---cuda-graphs) and the CPU's 3D step too, so the whole chip slows down
-between sets, which its GPU clock doesn't show. Each spin is about 2 ms
-(on ROCm, whose counter runs at a fixed 100 MHz, fewer cycles: 50 ms
-spins made the feed's first set wait for one, 17-57 ms). auto: on with a GPU
-(NVIDIA's CUDA and AMD's ROCm); off with MPS and the CPU.
+its full clock, for about 20 W while waiting (against 2.5 W idle). The
+model's work goes first, on the GPU's other blocks, but a spinning block
+still costs it 0.02-0.16 ms a set (a second block: RTX 6000 Ada 1.67 to
+1.70 ms, RTX 2000 Ada 5.60 to 5.76), and an RTX 6000 Ada's one about 20 W; a GPU
+that keeps its clock with none (an RTX 2000 Ada did so after a restart,
+not after two days up) is better off with --hold-gpu-clock-blocks 0. A
+clock that the GPU's power or heat limit holds down is left alone. On an
+AMD integrated GPU (the EVO-X2's, which shares its chip with the CPU) the
+one block matters even though its clock reads high without it: with none,
+its clock still read 2650-2850 MHz, yet each set took about 1 ms longer
+(13.7 against 12.8 ms, 5 mice, --fixed-crops --cuda-graphs) and the CPU's
+3D step too, so the whole chip slows down between sets, which its GPU
+clock doesn't show. Each spin is about 2 ms (on ROCm, whose counter runs
+at a fixed 100 MHz, fewer cycles: 50 ms spins made the feed's first set
+wait for one, 17-57 ms). auto: on with a GPU (NVIDIA's CUDA and AMD's
+ROCm); off with MPS and the CPU.
 
 CPUs (--cpus, --priority, --campy-cpus): on a CPU with performance cores
 (P-cores) and efficiency cores (E-cores), as Intel's Core Ultra, campy-live
@@ -1812,11 +1817,11 @@ class GpuClock:
 	warm-up) takes 150-350 ms to get up to speed, the first sets 10 times
 	slower and 2-8 skipped. With no feed for WAITING_MOST_S none spin, till
 	FeedCame. While sets come (Busy), blocks
-	spin (--hold-gpu-clock-blocks): a number, or auto, from fewest to
-	MOST_BUSY as the GPU's clock needs (Adjust), read by a ClockReader:
-	fewest is 1 on an AMD integrated GPU (Fewest), else 0, or more where a
-	try at fewer turned out too few on this GPU since its computer started
-	(memory, Remember). Each spinner's thread waits on an event that lets it
+	spin (--hold-gpu-clock-blocks): a number, or auto: FIRST_BUSY, and one
+	more, up to MOST_BUSY, each time the GPU's clock falls (Adjust, read by
+	a ClockReader), never fewer while sets come. A count that let the clock
+	fall on this GPU since its computer started is not spun again (fewest,
+	memory: Remember). Each spinner's thread waits on an event that lets it
 	sleep, so they cost no CPU core. Each spins on a stream of its own, the
 	same at every Start (FixedStream).
 	"""
@@ -1830,12 +1835,13 @@ class GpuClock:
 	WAITING_MOST_S = 600.0 # with no feed: about 20 W, for nothing if none is coming
 	# auto, while sets come: at most 2 (in the benchmark, an RTX 2000 Ada that
 	# had fallen into its slow clock reached 1635 MHz with 1, 2295 with 2, and
-	# 8 left the model waiting, 37 ms a set instead of 12); 1 to begin with
+	# 8 left the model waiting, 37 ms a set instead of 12); 1 to begin with,
+	# and never fewer: a try at none slowed every set 2-3 times for about 1 s
+	# on an RTX 6000 Ada (Adjust)
 	MOST_BUSY, FIRST_BUSY = 2, 1
 	LOOK_S = 0.5 # how often auto reads the clock
 	LOW = 0.9 # a clock below this share of the fastest seen is too slow
 	LOW_LOOKS = 2 # this many slow looks in a row: one block more
-	CALM_S = 10.0 # at full clock this long: one block fewer, unless that count was too few before
 	BOOT_S = 120.0 # a remembered fewest with its computer's start this near now's is the same start
 
 	def __init__(self, device, blocks="auto", reader=None, fewest=None, memory=None):
@@ -1851,31 +1857,18 @@ class GpuClock:
 		self.auto = blocks == "auto"
 		self.reader = (reader or ClockReader.For(device)) if self.auto else None
 		# auto's fewest while sets come; without the clock to read, it spins FIRST_BUSY
-		self.fewest = (self.Fewest(torch, device) if fewest is None else fewest) if self.auto else 0
-		# memory: a JSON file of each GPU's fewest found too few to go below
+		self.fewest = max(self.FIRST_BUSY, fewest or 0) if self.auto else 0
+		# memory: a JSON file of each GPU's fewest: a count below it let the clock fall
 		self.memory, self.gpu, self.remembered, self.learned = (memory if self.auto else None), None, 0, 0
 		if self.memory:
 			self.gpu = self.GpuId(torch, device)
 			self.remembered = self.Recall()
 			self.fewest = max(self.fewest, self.remembered)
-		self.busy = max(self.FIRST_BUSY, self.fewest) if self.auto else int(blocks)
+		self.busy = self.fewest if self.auto else int(blocks)
 		self.fastest = self.mhz = 0.0 # MHz
 		self.clocks = [] # MHz, read while sets came
 		self.time = {} # blocks spinning while sets came: seconds
 		self.changes = 0
-		self.calm = self.CALM_S
-
-	@staticmethod
-	def Fewest(torch, device):
-		# 1 on an AMD integrated GPU (ROCm, is_integrated: the EVO-X2's
-		# Radeon 8060S): with no block spinning between sets, the chip, CPU
-		# and GPU, slows down though its GPU clock reads high (see the
-		# module's doc). 0 elsewhere: NVIDIA GPUs and AMD's own cards
-		try:
-			integrated = torch.cuda.get_device_properties(torch.device(device)).is_integrated
-		except Exception:
-			return 0
-		return 1 if getattr(torch.version, "hip", None) and integrated else 0
 
 	@staticmethod
 	def GpuId(torch, device):
@@ -1918,9 +1911,8 @@ class GpuClock:
 		return 0
 
 	def Remember(self):
-		# this GPU's fewest, from a try at fewer that was too few: not tried
-		# again (that try's slow sets: an RTX 6000 Ada fell to 800-975 MHz,
-		# every set 3-4 times slower, for ~1.3 s) until the computer restarts
+		# this GPU's fewest, once the clock fell with one block fewer: later
+		# runs on it start there until the computer restarts
 		self.learned = self.fewest
 		if not (self.memory and self.gpu):
 			return
@@ -1986,7 +1978,7 @@ class GpuClock:
 				self.spins += 1
 
 	def Watch(self):
-		low, calmSince, fewerAt = 0, time.monotonic(), None
+		low = 0
 		while not self.stop.wait(self.LOOK_S):
 			look = self.reader.Read()
 			if look is None:
@@ -1994,42 +1986,41 @@ class GpuClock:
 			mhz, limited = look
 			self.fastest = max(self.fastest, mhz)
 			if self.Waiting():
-				low, calmSince = 0, time.monotonic()
+				low = 0
 				continue
 			self.clocks.append(mhz)
 			self.mhz = mhz
 			self.time[self.busy] = self.time.get(self.busy, 0.0) + self.LOOK_S
 			fewest = self.fewest
-			low, calmSince, fewerAt = self.Adjust(mhz, limited, low, calmSince, fewerAt, time.monotonic())
+			low = self.Adjust(mhz, limited, low)
 			if self.fewest > fewest:
 				self.Remember()
 
-	def Adjust(self, mhz, limited, low, calmSince, fewerAt, now):
+	def Adjust(self, mhz, limited, low):
 		"""
-		One look at the clock while sets come: LOW_LOOKS in a row below LOW
-		of the fastest seen (which the WAITING_BLOCKS reach), one block more;
-		calm (at full clock) for self.calm, one fewer. A clock held down by
-		the GPU's power or heat (limited) is not raised: more blocks would
-		only take power from the model. When one fewer turned out too few
-		(the clock fell within self.calm), the block put back, that count
-		becomes this GPU's fewest: not tried again (Watch remembers it till
-		the computer restarts).
+		One look at the clock while sets come (low: the slow looks in a row
+		before it; gives them after it): LOW_LOOKS in a row below LOW of the
+		fastest seen (which the WAITING_BLOCKS reach), one block more, up to
+		MOST_BUSY. That count becomes this GPU's fewest: kept for the rest
+		of the run, and by later runs (Watch remembers it till the computer
+		restarts). Never one fewer while sets come. auto used to try one
+		fewer after 10 s at full clock (every few minutes until pull
+		request 152, then once in the first run after each restart), and
+		on an RTX 6000 Ada, which needs 1, the clock fell to about 1000 MHz
+		1.75 s after each try at none, every set 2-3 times slower for about
+		1 s, till the block was put back. A clock held
+		down by the GPU's power or heat (limited) is not raised: more blocks
+		would only take power from the model.
 		"""
-		trying = fewerAt is not None and now - fewerAt < self.calm
 		if mhz < self.LOW * self.fastest and not limited:
 			low += 1
 			if low >= self.LOW_LOOKS and self.busy < self.MOST_BUSY:
 				self.busy += 1
 				self.changes += 1
-				if trying:
-					self.fewest = max(self.fewest, self.busy)
-				return 0, now, None
-			return low, now, fewerAt
-		if now - calmSince >= self.calm and self.busy > self.fewest:
-			self.busy -= 1
-			self.changes += 1
-			return 0, now, now
-		return 0, calmSince, fewerAt
+				self.fewest = max(self.fewest, self.busy)
+				return 0
+			return low
+		return 0
 
 	def Now(self):
 		# for the progress line
@@ -3396,9 +3387,9 @@ def Parser():
 		the GPU spinning at the lowest priority from the warm-up's end (at most 10 minutes without a feed) to the end, so the GPU keeps its full clock \
 		(see campy-live's help). auto: on with a GPU (NVIDIA's CUDA or AMD's ROCm).")
 	p.add_argument("--hold-gpu-clock-blocks", default="auto", type=lambda v: v if v == "auto" else str(int(v)),
-		help="How many blocks spin while sets come: auto (0 to 2, as the GPU's clock needs, read through NVML, \
-		nvidia-smi or sysfs; 1 when it can't be read; at least 1 on an AMD integrated GPU, as the EVO-X2's; a count \
-		found too few on a GPU isn't tried again there until the computer restarts) or a number.")
+		help="How many blocks spin while sets come: auto (1, and 2 once the GPU's clock falls with 1, read \
+		through NVML, nvidia-smi or sysfs; never fewer while sets come; a GPU that needed 2 starts with 2 until \
+		the computer restarts) or a number (0: none, for a GPU that keeps its clock by itself).")
 	p.add_argument("--defaults-version", default="None", help="The campy version whose defaults the command \
 		that starts campy-live was written for, e.g. 2.1.0: campy-live then says only the defaults changed after \
 		it that this run relies on (campy/defaults.py). None: every one.")
