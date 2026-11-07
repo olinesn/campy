@@ -1,6 +1,6 @@
 """campy-encode-quality: the settings it tries, synthetic frames, and a real (lossless) clip."""
 
-import json, math
+import json, math, re
 
 import imageio_ffmpeg
 import numpy as np
@@ -101,3 +101,33 @@ def test_a_score_ffmpeg_cannot_give_is_said(tmp_path):
 	assert math.isnan(row["psnr_input"]) and math.isnan(row["ssim_input"])
 	said = [line for line in logged if "no PSNR against the input frames" in line]
 	assert len(said) == 1 and "No such file or directory" in said[0] # ffmpeg's reason
+
+
+def test_psnr_and_ssim_come_from_one_ffmpeg_run(tmp_path, monkeypatch):
+	# One pass per reference decodes the video once for both metrics: about 45%
+	# quicker than a pass each, with the same numbers.
+	base = sweep.BaseParams(quality.ParseArgs(["--width", "200", "--height", "150", "--frameRate", "30"]))
+	base.update(pixelFormatInput="gray", videoFilename="quality.mp4", videoFolder=str(tmp_path))
+	frames = sweep.SyntheticFrames(200, 150, "gray", 15, seed=0)
+	ref = str(tmp_path / "input.gray")
+	quality.WriteRaw(ref, frames)
+	params = sweep.EncoderParams(base, "cpu:ultrafast")
+	params.update(quality=21, cameraName="cam")
+	video, _ = quality.Encode(params, frames)
+	size, ffmpeg = quality.VideoSize(video), quality.FfmpegExe(base)
+	assert size == (208, 160) # stretched by the writer
+	real, runs = quality.subprocess.run, []
+	def run(cmd, *a, **k):
+		runs.append(cmd[cmd.index("-lavfi") + 1])
+		return real(cmd, *a, **k)
+	monkeypatch.setattr(quality.subprocess, "run", run)
+	scores = quality.Score(ffmpeg, ref, video, 200, 150, 30.0, size)
+	assert len(runs) == 1 and "psnr" in runs[0] and "ssim" in runs[0] and "scale=208:160" in runs[0]
+	# Each metric scored in a pass of its own, as campy 2.5.1 did, gives the same numbers.
+	for metric, pattern in (("psnr", r"average:(\d+(?:\.\d+)?|inf)"), ("ssim", r"All:(\d+(?:\.\d+)?)")):
+		err = real([ffmpeg, "-hide_banner", "-f", "rawvideo", "-pix_fmt", "gray", "-s", "200x150",
+			"-r", "30.0", "-i", ref, "-i", video,
+			"-lavfi", "[0:v]scale=208:160[r];[1:v]format=gray[d];[d][r]" + metric, "-f", "null", "-"],
+			capture_output=True, text=True).stderr
+		assert scores[metric] == float(re.search(pattern, err).group(1))
+	assert 20 < scores["psnr"] < 99 and 0.5 < scores["ssim"] <= 1

@@ -87,6 +87,15 @@ def test_bayer_frames_are_demosaiced(flir):
 		assert image.converted == [("RGB8", "HQ_LINEAR")]
 
 
+@pytest.mark.parametrize("pixel_format", ["bayer_rggb8", "bayer_bggr8", "bayer_gbrg8", "bayer_grbg8"])
+def test_every_bayer_pattern_is_demosaiced(flir, pixel_format):
+	queue = deque()
+	flir.DisplayImage({"pixelFormatInput": pixel_format, "displayDownsample": 1}, queue,
+		FakeImage(frame(), flir.BAYER[pixel_format]))
+	[img] = queue
+	assert img.shape == (8, 10, 3)
+
+
 def test_one_image_processor_per_process(flir):
 	if not hasattr(flir.PySpin, "ImageProcessor"):
 		pytest.skip("PySpin 2 has no ImageProcessor")

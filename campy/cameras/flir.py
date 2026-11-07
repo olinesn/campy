@@ -2,7 +2,7 @@
 """
 import PySpin
 from campy.cameras import unicam
-from campy.utils.utils import Say
+from campy.utils.utils import Say, ErrorText
 from campy import strictjson, startup
 import os, io, sys, json, time, logging, contextlib
 
@@ -331,9 +331,8 @@ def ConvertToRGB(image):
 
 def DisplayImage(cam_params, dispQueue, grabResult):
 	try:
-		if cam_params["pixelFormatInput"] == "bayer_rggb8" \
-		or cam_params["pixelFormatInput"] == "bayer_bggr8":
-			# Demosaic to RGB
+		if cam_params["pixelFormatInput"] in BAYER:
+			# Demosaic to RGB (by the image's own pattern)
 			grabResult = ConvertToRGB(grabResult)
 
 		# Convert to Numpy array
@@ -933,6 +932,13 @@ def ConfigureGamma(camera, cam_params):
 	return cam_params
 
 
+# pixelFormatInput is ffmpeg's name for the frames (writer.py) and campy sets
+# the camera to the same thing: a Bayer pattern by its name in each. campy set
+# BayerRG8 for bayer_bggr8 too, so ffmpeg demosaiced an RG camera's frames as
+# BG: red and blue swapped.
+BAYER = {"bayer_rggb8": "BayerRG8", "bayer_bggr8": "BayerBG8", "bayer_gbrg8": "BayerGB8", "bayer_grbg8": "BayerGR8"}
+
+
 def ConfigurePixelFormat(camera, cam_params):
 	"""
 	This function configures the camera pixel format.
@@ -950,8 +956,18 @@ def ConfigurePixelFormat(camera, cam_params):
 		if cam_params["cameraDebug"]:
 			Say("*** CONFIGURING PIXEL FORMAT ***\n")
 
-		if pixelFormat == "bayer_rggb8" or pixelFormat == "bayer_bggr8":
-			camera.PixelFormat.SetValue(PySpin.PixelFormat_BayerRG8)
+		if pixelFormat in BAYER:
+			try:
+				camera.PixelFormat.SetValue(getattr(PySpin, "PixelFormat_" + BAYER[pixelFormat]))
+			except Exception as e:
+				# A color camera offers the pattern its sensor has, which ReverseX
+				# and ReverseY change. ffmpeg would demosaic another one wrongly.
+				Say("{}: the camera did not take pixel format {} (pixelFormatInput \"{}\"): {}. Its Bayer "
+					"pattern is its sensor's, changed by ReverseX and ReverseY: set pixelFormatInput to the "
+					"one SpinView shows (BayerRG8 is \"bayer_rggb8\", BayerGB8 \"bayer_gbrg8\", and so on). The "
+					"camera keeps its own pixel format.".format(
+					cam_params["cameraName"], BAYER[pixelFormat], pixelFormat, ErrorText(e)))
+				return cam_params
 			camera.IspEnable.SetValue(False)
 		elif pixelFormat == "rgb24":
 			camera.PixelFormat.SetValue(PySpin.PixelFormat_RGB8Packed)
@@ -959,12 +975,12 @@ def ConfigurePixelFormat(camera, cam_params):
 			camera.PixelFormat.SetValue(PySpin.PixelFormat_Mono8)
 		else:
 			# pixelFormatInput is also ffmpeg's name for the frames (writer.py),
-			# so only the four above name a format that both ffmpeg and the
+			# so only the six above name a format that both ffmpeg and the
 			# camera have. (This branch looked up PySpin.PixelFormat_<name>, with
 			# a call never closed, so it always failed, and silently.)
 			Say("{}: campy does not set pixelFormatInput \"{}\" on a FLIR camera, only \"gray\", \"rgb24\", "
-				"\"bayer_rggb8\" or \"bayer_bggr8\". The camera keeps its own pixel format.".format(
-				cam_params["cameraName"], pixelFormat))
+				"\"bayer_rggb8\", \"bayer_bggr8\", \"bayer_gbrg8\" or \"bayer_grbg8\". The camera keeps its own "
+				"pixel format.".format(cam_params["cameraName"], pixelFormat))
 
 	except Exception as e:
 		logging.error("Error setting pixel format to {}: {}".format(pixelFormat, e))

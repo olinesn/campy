@@ -86,9 +86,16 @@ def StartGrabbing(camera):
 		return False
 
 
+# How long a grab waits for the next frame, in ms (flir.GrabFrame waits 50 too).
+# It returns as soon as a frame comes: a timeout of 0 had the grab thread ask
+# about a thousand times a second, an exception each time, and took a frame
+# up to the loop's 1 ms sleep after it came.
+GRAB_TIMEOUT_MS = 50
+
+
 def GrabFrame(camera, frameNumber):
 	try:
-		return camera.RetrieveResult(0, pylon.TimeoutHandling_ThrowException)
+		return camera.RetrieveResult(GRAB_TIMEOUT_MS, pylon.TimeoutHandling_ThrowException)
 	except Exception as e:
 		# No frame yet, unless pylon says the camera is gone (unplugged)
 		if Removed(camera):

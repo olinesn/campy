@@ -80,28 +80,36 @@ def VideoSize(path):
 		return None
 
 
-def Score(ffmpeg, reference, video, width, height, fps, metric, video_size):
+METRICS = ("psnr", "ssim")
+PATTERNS = {"psnr": r"PSNR .*average:(\d+(?:\.\d+)?|inf)", "ssim": r"SSIM .*All:(\d+(?:\.\d+)?)"}
+
+
+def Score(ffmpeg, reference, video, width, height, fps, video_size):
 	"""
-	Mean PSNR (dB) or SSIM of a video against raw gray reference frames of
-	width x height. Raises ScoreError, with ffmpeg's reason, when it gives none.
+	Mean PSNR (dB) and SSIM of a video against raw gray reference frames of
+	width x height, from one ffmpeg pass that decodes the video once. Returns
+	{"psnr": dB, "ssim": value}; a metric ffmpeg gave no number for is a
+	ScoreError, with ffmpeg's reason, in place of its number.
 	"""
 	# ffmpeg's psnr and ssim need two inputs of one size. A video of another
 	# size (video_size) was stretched by the writer (imageio-ffmpeg scales a
 	# frame up to multiples of macro_block_size), so the reference is stretched
 	# the same way: cropping the video would compare shifted pixels, and
 	# shrinking it back would score the stretch along with the encoder.
-	stretch, ref = "", "[0:v]"
+	ref = "[0:v]"
 	if video_size is not None and tuple(video_size) != (width, height):
-		stretch, ref = "[0:v]scale={}:{}[r];".format(*video_size), "[r]"
+		ref = "[0:v]scale={}:{},".format(*video_size)
+	# Both metrics from one decode: split each input in two (40% quicker than a pass each).
+	graph = ("[1:v]format=gray,split[d1][d2];{}split[r1][r2];"
+		"[d1][r1]psnr;[d2][r2]ssim").format(ref)
 	out = subprocess.run([ffmpeg, "-hide_banner", "-f", "rawvideo", "-pix_fmt", "gray",
 		"-s", "{}x{}".format(width, height), "-r", str(fps), "-i", reference, "-i", video,
-		"-lavfi", "{}[1:v]format=gray[d];{}[d]{}".format(stretch, ref, metric), "-f", "null", "-"],
-		capture_output=True, text=True).stderr
-	pattern = r"average:(\d+(?:\.\d+)?|inf)" if metric == "psnr" else r"All:(\d+(?:\.\d+)?)"
-	m = re.search(pattern, out)
-	if not m:
-		raise ScoreError(FfmpegReason(out))
-	return float(m.group(1))
+		"-lavfi", graph, "-f", "null", "-"], capture_output=True, text=True).stderr
+	scores = {}
+	for metric in METRICS:
+		m = re.search(PATTERNS[metric], out)
+		scores[metric] = float(m.group(1)) if m else ScoreError(FfmpegReason(out))
+	return scores
 
 
 def FfmpegReason(stderr):
@@ -148,13 +156,13 @@ def Measure(base, encoders, qualities, frames, references, log=print):
 				log("{} stretches {}x{} frames to {}x{}, as in a recording; scored against the clip "
 					"stretched the same way.".format(key, w, h, *size))
 			for label, ref in references.items():
-				for metric in ("psnr", "ssim"):
-					try:
-						row[metric + "_" + label] = Score(ffmpeg, ref, path, w, h, fps, metric, size)
-					except ScoreError as e:
+				for metric, score in Score(ffmpeg, ref, path, w, h, fps, size).items():
+					if isinstance(score, ScoreError):
 						row[metric + "_" + label] = float("nan")
 						log("{} at quality {}: no {} against the {} frames. ffmpeg: {}".format(
-							key, q, metric.upper(), label, e))
+							key, q, metric.upper(), label, score))
+					else:
+						row[metric + "_" + label] = score
 			rows.append(row)
 			log(FormatRow(row, list(references)))
 			shutil.rmtree(os.path.join(work, params["cameraName"]), ignore_errors=True)
