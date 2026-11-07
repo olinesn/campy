@@ -15,6 +15,8 @@
 
 ## The test
 
+These measurements were made with sleap-nn 0.3.3, with campy's own fixes for its two bugs (tied fp16 peaks, short crops). sleap-nn 0.3.5 fixed both itself, and since pull request PRNUM campy needs it; on the same replay, campy's fixed crops in fp32 gave the same output to the bit on 0.3.5 as on 0.3.3 with campy's fixes, and fp16 was as close to fp32 as before, at the same speed ([Models](models.md#running-the-models-faster-compiled-engines-on-by-default-in-campy-live)).
+
 - **Video:** one camera of a 5-mouse recording, 1280×1024 gray, HEVC, 30 fps, 10 minutes (18,000 frames).
 - **Models:** the live pair from [Models](models.md): a centroid model at 0.25 scale (output stride 2) and a centered-instance model with 320 px crops at 0.5 scale, max stride 32, 24 filters. The "larger model" rows use the same centered-instance model at full scale (4× the pixels).
 - **Settings:** as the lab's batch jobs: at most 5 animals, peak threshold 0.2, batches of 16, fp32.

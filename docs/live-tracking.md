@@ -193,7 +193,7 @@ To start the recording from a script once `campy-live` is ready, give `campy-liv
 
 `campy-live` ends with the recording, or at Ctrl-C. It writes `campy-live_<date_time>.npy`, with one row per set processed (keypoints, confidences, and the 3D poses and identities with `--calibration`), and a `.json` summary (strict JSON: an infinite or NaN number in it is the text `"Infinity"` or `"NaN"`, as in the [recording's manifests](recordings.md#infinity-and-nan-in-campys-json-files)). It also writes `campy-live-session.json` into the recording's folder: which models it ran (named by the SHA-256 of `best.ckpt`), with which calibration, options and environment ([Recording folders](recordings.md#campy-live-sessionjson)). To go through the results frame by frame, open the recording in LUC3D (below).
 
-`campy-live` runs the models in fp16 (`--precision fp16`, the default on NVIDIA and AMD GPUs). sleap-nn's own centroid peak finder lost about 0.7% of the mice per frame in fp16, wherever the two top pixels of a centroid rounded to the same value. `campy-live` keeps such a peak once instead, so fp16 finds the mice fp32 finds; `--strict-peaks` goes back to sleap-nn's own (see [Models](models.md)).
+`campy-live` runs the models in fp16 (`--precision fp16`, the default on NVIDIA and AMD GPUs). Up to 0.3.4, sleap-nn's centroid peak finder lost about 0.7% of the mice per frame in fp16, wherever the two top pixels of a centroid rounded to the same value. `campy-live` kept such a peak itself from pull request 132; sleap-nn 0.3.5, which `campy-live` needs now, keeps it, as one peak at the middle of its tied pixels, so fp16 finds the mice fp32 finds. `--strict-peaks` is gone (see [Models](models.md)).
 
 ## Checking that it keeps up
 

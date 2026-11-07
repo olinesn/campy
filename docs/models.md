@@ -209,20 +209,39 @@ Measured on 23 October 2026 on the same replay (5 mice, 3 cameras, 60 fps, 3D), 
 
 A compiled engine is built for a fixed number of crops, while the number of animals found changes from set to set. `campy-live --fixed-crops` (pull request 126, on by default with a GPU) always runs `--max-instances` crops per frame, padding the missing ones, which is what an engine needs. `campy-live --engine` (pull request 133) runs the networks this way, and since pull request 147 its default, `auto`, does so on every GPU with the packages: TensorRT on NVIDIA where it is installed, otherwise `torch.compile`. Live, with 5 mice on 3 cameras at 60 fps, a set took 10.6 → 5.9 ms on the EVO-X2, 12.6 → 5.8 ms on the RTX 2000 Ada, 6.4 → 3.4 ms on the RTX 4000 Ada and 2.7 → 1.6 ms on the RTX 6000 Ada, with tracking exactly as close to the offline SLEAP predictions as before. Where no engine can be made, `campy-live` says why and runs the networks in plain PyTorch. Start-up times, caches and the accuracy comparison: [Compiled networks](live-tracking.md#compiled-networks---engine-on-by-default-with-a-gpu).
 
-**fp16 used to lose a few animals; `campy-live` now keeps them.** sleap-nn's centroid peak finder keeps a pixel only if it is strictly higher than all 8 of its neighbours. In fp16 the two top pixels of a peak sometimes round to exactly the same value, and then that animal had no centroid in that frame. This happened to 0.6–0.9% of centroids in every fp16 engine, PyTorch included (`campy-live`'s default), always with exactly two tied pixels per lost centroid, and never in fp32.
+**fp16 used to lose a few animals; sleap-nn 0.3.5 keeps them.** Up to 0.3.4, sleap-nn's centroid peak finder kept a pixel only if it was strictly higher than all 8 of its neighbours. In fp16 the two top pixels of a peak sometimes round to exactly the same value, and then that animal had no centroid in that frame. This happened to 0.6–0.9% of centroids in every fp16 engine, PyTorch included (`campy-live`'s default), always with exactly two tied pixels per lost centroid, and never in fp32.
 
-Since pull request 132, `campy-live` breaks such a tie by position: of two equal top pixels it keeps the first in reading order (`campy/peaks.py`), so the peak is found once. A peak without a tie is found exactly as before. `--fixed-crops` finds its peaks the same way. `--strict-peaks` brings back sleap-nn's own peak finder, in both. Measured with `bench/tied_peaks_check.py` on the 5-mouse replay (3 cameras, all 3,600 sets, 53,652 centroids in fp32):
+From pull request 132, `campy-live` broke such a tie itself: of two equal top pixels it kept the first in reading order. sleap-nn 0.3.5 fixed it upstream ([talmolab/sleap-nn#782](https://github.com/talmolab/sleap-nn/pull/782), reported from campy) with a slightly different rule: a flat top of equal pixels that fits in a 2×2 block (2 pixels, an L of 3, or all 4), with every pixel around it lower, is one peak, at the mean of its pixels; a wider flat top, or one next to a higher pixel, gives none. sleap-nn then refines the peak around the pixel that mean rounds down to, which for most ties is the same first pixel campy kept. Since pull request PRNUM, `campy-live` needs sleap-nn 0.3.5 and uses its rule: campy's own patch and `--strict-peaks` are gone, and `--fixed-crops` finds its peaks by the same rule, with fixed shapes (`campy/peaks.py`), so both find the same peaks at the same points. A peak without a tie is found exactly as before.
+
+Measured with `bench/tied_peaks_check.py` on the 5-mouse replay (3 cameras, all 3,600 sets, 53,652 centroids in fp32), which runs sleap-nn 0.3.5 with each rule:
 
 | | EVO-X2 | RTX 6000 Ada |
 |---|---|---|
-| fp16, sleap-nn's peak finder: centroids lost | 397 (0.74%) | 359 (0.67%) |
-| fp16, `campy-live`'s: centroids lost | 0 | 1 |
-| fp32, `campy-live`'s vs sleap-nn's | identical | identical |
+| fp16, sleap-nn 0.3.3's rule: centroids lost | 397 (0.74%) | 359 (0.67%) |
+| fp16, campy's rule (pull request 132): lost / extra | 0 / 2 | 1 / 2 |
+| fp16, sleap-nn 0.3.5's rule: lost / extra | 1 / 0 | 2 / 1 |
+| campy's rule → 0.3.5's: keypoints moved, of 642,081 | 576 (87 by more than 1 px, the largest 159 px) | 108 (107 by more than 1 px, the largest 9.9 px) |
+| 0.3.5's rule run twice | identical | identical |
+| fp32, campy's rule vs 0.3.5's | identical | identical |
 
-- The one centroid still lost on the RTX 6000 Ada isn't a tie: that frame had six peaks for five places (`--max-instances 5`), the 5th and 6th scored 0.6560 and 0.6562, and fp16 kept the other one. sleap-nn's peak finder did the same.
-- In sets where both found the same mice, every keypoint was bit-identical.
-- A recovered mouse's centroid was up to 8.6 px from fp32's, because sleap-nn's sub-pixel refinement leans toward whichever of the two pixels is kept. Its crop moves with it, and its keypoints were 1.1–1.2 px from fp32's at the median (p99 6.6–6.8 px). Before the fix, that mouse had no keypoints at all in that frame.
-- When one more mouse is found in a set, the centered-instance model runs on one more crop, and in fp16 the other mice's keypoints in that set can then change: on the EVO-X2 all of them changed a little, on the RTX 6000 Ada 3% of them did. The largest change was 64 px on the EVO-X2 and 7.2 px on the RTX 6000 Ada, a node jumping between two nearly equal spots on its confidence map, as fp16 nodes sometimes do against fp32. The same happens in fp16 whenever the number of mice found in a set changes.
+- The centroids still lost aren't ties: the one on the RTX 6000 Ada with campy's rule was a frame with six peaks for five places (`--max-instances 5`), the 5th and 6th scored 0.6560 and 0.6562, and fp16 kept the other one. sleap-nn 0.3.3's peak finder did the same.
+- When one more or one fewer mouse is found in a set, the centered-instance model runs on a different number of crops, and in fp16 the other mice's keypoints in that set can then change, as they do in fp16 whenever the number of mice found in a set changes.
+- Before the tie fix, a recovered mouse's centroid was up to 8.6 px from fp32's, because sleap-nn's sub-pixel refinement leans toward whichever of the two pixels is kept. Its crop moves with it, and its keypoints were 1.1–1.2 px from fp32's at the median (p99 6.6–6.8 px). Without the fix, that mouse had no keypoints at all in that frame.
+
+`campy-live` and `campy-infer` before (sleap-nn 0.3.3 with campy's fixes) and after (sleap-nn 0.3.5), on one camera of the replay (3,600 frames, 17,866 mice in fp32), with `bench/offline_infer_bench.py compare`:
+
+| | EVO-X2 | RTX 6000 Ada |
+|---|---|---|
+| fp32, fixed crops and sleap-nn's own layer | identical | identical |
+| fp16, fixed crops in PyTorch: mice found only before; keypoints identical; moved > 1 px | 1; 99.99%; 0 | 1; 99.98%; 35 (up to 6.1 px) |
+| fp16, sleap-nn's own layer | 1; 99.65%; 8 (up to 3.3 px) | 1; 99.59%; 39 (up to 6.1 px) |
+| fp16, fixed crops with `torch.compile` (EVO-X2) / TensorRT (RTX 6000 Ada) | 2; 99.96%; 22 (up to 6.1 px) | TENSORRT_ROW |
+| fp16 against fp32, fixed crops: mice missed / extra, before → after | PyTorch 0 / 2 → 0 / 1; `torch.compile` 0 / 2 → 1 / 1 | PyTorch 0 / 0 → 1 / 0; TensorRT 2 / 1 → 2 / 1 |
+| fp16 against fp32, fixed crops in PyTorch: keypoints moved > 1 px, before → after | 2.03% → 2.03% | 1.05% → 1.05% |
+
+So 0.3.5's rule drops a mouse now and then that campy's kept (a wider flat top, or one next to an equally high pixel), and finds fewer extra ones; the keypoints are as close to fp32's as before.
+
+Live, the rig check's 5-mouse replay with 3D (3 cameras, 60 fps, 3,600 sets), two runs each way: on the EVO-X2, tracking was exactly as close to offline SLEAP before and after (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches, nothing skipped), and a set took 0.1 ms longer (inference p50 5.5 → 5.6 ms, frame to 3D p50 7.1 → 7.2–7.3 ms): the flat-top rule takes a few more GPU steps than the old one. PRECISION_LIVE Offline, frames per second were within 1.5% of before on both machines (`torch.compile` 477 → 470 on the EVO-X2, TensorRT 547 → 547 on the RTX 6000 Ada).
 
 To check a machine:
 ```
