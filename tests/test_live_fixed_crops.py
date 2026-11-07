@@ -57,10 +57,10 @@ def Mode(value):
 	return value if isinstance(value, str) else "on" if value else "off"
 
 
-def Model(device, fixed=True, graphs=False, precision="fp32", strict=False, engine="eager"):
+def Model(device, fixed=True, graphs=False, precision="fp32", engine="eager"):
 	args = live.ParseArgs(["--model", "random", "--device", device, "--frame-shape", SHAPE, "--precision", precision,
 		"--max-instances", str(MOST), "--animals", str(MOST), "--nodes", "6", "--engine", engine,
-		"--fixed-crops", Mode(fixed), "--cuda-graphs", Mode(graphs)] + (["--strict-peaks"] if strict else []))
+		"--fixed-crops", Mode(fixed), "--cuda-graphs", Mode(graphs)])
 	model = live.MODELS["random"](args, FRAMES, live.FrameShape(SHAPE))
 	backend = model.layer.centered_instance_layer.backend
 	backend.model = Sharp(6, model.layer.centered_instance_layer.output_stride).to(device)
@@ -125,16 +125,15 @@ def test_crops_are_the_padded_frames(channels):
 
 
 def test_reference_crops_at_crop_size():
-	# The reference is campy-live's own layer, whose crops live.ExactCropSize
-	# cuts at the crop size; sleap-nn's crop_bboxes alone, for this centroid,
-	# cuts them a pixel short before talmolab/sleap-nn#780
-	# (tests/test_live_exact_crops.py), and --fixed-crops always cuts the
-	# crop size
+	# The reference is campy-live's own layer, sleap-nn's, which cuts its
+	# crops at the crop size (0.3.5 on; for this centroid 0.3.3 cut them a
+	# pixel short, talmolab/sleap-nn#778: tests/test_live_sleap_version.py),
+	# as --fixed-crops does
 	from sleap_nn.inference.ops.crops import crop_bboxes, make_centered_bboxes
 	centroid = [221.54798889160156, 77.36744689941406]
 	image = torch.zeros(1, 1, 256, 320, dtype=torch.uint8)
 	boxes = make_centered_bboxes(torch.tensor([centroid]), 192, 192)
-	assert tuple(crop_bboxes(image, boxes, torch.tensor([0])).shape[-2:]) == ((192, 191) if live.SleapCutsShort() else (192, 192))
+	assert tuple(crop_bboxes(image, boxes, torch.tensor([0])).shape[-2:]) == (192, 192)
 	model, _ = Model("cpu", fixed=False)
 	instance, seen = model.layer.centered_instance_layer, []
 	predict = instance.predict
@@ -153,8 +152,6 @@ def test_reference_crops_at_crop_size():
 
 def Reference(model, frames):
 	# sleap-nn's TopDownLayer, as campy-live runs it without --fixed-crops
-	# (its crops cut at their real size by live.ExactCropSize, as
-	# --fixed-crops cuts them; tests/test_live_exact_crops.py checks that)
 	fixed, model.fixed = model.fixed, None
 	try:
 		return model.Predict(frames)
@@ -515,31 +512,32 @@ def test_auto_falls_back_when_the_model_cant(monkeypatch):
 		Model("cuda", fixed="on", graphs="auto")
 
 
-@pytest.mark.parametrize("strict", [False, True])
-def test_tied_centroid_tops(strict):
-	# Each frame's one animal has a top of two equal pixels (as fp16 rounds
-	# about 0.7% of them): campy-live keeps it once, --fixed-crops too, the
-	# same as the layer; --strict-peaks loses it, as sleap-nn does
-	from campy import peaks
-	model, host = Model("cpu", strict=strict)
-	assert model.fixed.tiedPeaks == (not strict) == peaks.TiedPeaksInUse()
+@pytest.mark.parametrize("top", [[(0, 0), (1, 0)], [(0, 0), (0, 1)], [(0, 0), (1, 1)], [(0, 0), (-1, 1)],
+	[(0, 0), (1, 0), (0, 1), (1, 1)], [(0, 0), (1, 0), (2, 0)]], ids=["E", "S", "SE", "SW", "2x2", "row of 3"])
+def test_tied_centroid_tops(top):
+	# Each frame's one animal has a flat top of equal pixels (as fp16 rounds
+	# about 0.7% of them): --fixed-crops finds it as sleap-nn's layer does
+	# (0.3.5 on: one peak at the pixels' mean, refined around the pixel that
+	# floors to, which for SW is not one of them; none for a row of 3)
+	model, host = Model("cpu")
 	net = model.layer.centroid_layer.backend.model
 	blobs = net.blobs
 	_, _, h, w = blobs.shape
 
-	class Flat(torch.nn.Module): # no random model output under the blobs, so the two pixels stay equal
+	class Flat(torch.nn.Module): # no random model output under the blobs, so the pixels stay equal
 		def forward(self, img):
 			return torch.zeros((img.shape[0], 1, h, w), device=img.device)
 	net.inner = Flat()
 	yy, xx = torch.meshgrid(torch.arange(h, dtype=torch.float32), torch.arange(w, dtype=torch.float32), indexing="ij")
 	new = torch.zeros(blobs.shape)
 	for f in range(FRAMES):
-		cx, cy = w // 2 + 0.5 + 3 * f, h // 2 # half way between two pixels
-		new[f, 0] = torch.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / 8)
-		assert new[f, 0, cy, int(cx)] == new[f, 0, cy, int(cx) + 1]
+		cx, cy = w // 2 + 3 * f, h // 2
+		new[f, 0] = 0.5 * torch.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / 8)
+		for dx, dy in top:
+			new[f, 0, cy + dy, cx + dx] = 0.9
 	blobs.copy_(new)
 	frames = model.Upload(host.tensor)
 	a, b = model.Predict(frames), Reference(model, frames)
-	assert list(Found(a)) == list(Found(b)) == [0 if strict else 1] * FRAMES
+	assert list(Found(a)) == list(Found(b)) == [0 if len(top) == 3 else 1] * FRAMES
 	for key in ("centroids", "centroid_vals"): # the same peak, refined the same (keypoints: test_matches_sleap)
 		assert np.array_equal(a[key], b[key], equal_nan=True), key

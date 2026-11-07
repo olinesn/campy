@@ -37,18 +37,18 @@ Then install PyTorch for your computer, sleap-nn and the viewer's packages:
 
 - **Mac** (Apple silicon; PyTorch uses the Mac's GPU):
   ```
-  pip install torch "sleap-nn==0.3.3" opencv-python PyQt5
+  pip install torch "sleap-nn>=0.3.5" opencv-python PyQt5
   ```
 - **Windows, NVIDIA GPU**: PyTorch's CUDA build first, then the rest:
   ```
   pip install torch --index-url https://download.pytorch.org/whl/cu128
-  pip install "sleap-nn==0.3.3" opencv-python PyQt5
+  pip install "sleap-nn>=0.3.5" opencv-python PyQt5
   ```
 - **Linux, NVIDIA GPU**: PyTorch from PyPI is already the CUDA build:
   ```
-  pip install torch "sleap-nn==0.3.3" opencv-python PyQt5
+  pip install torch "sleap-nn>=0.3.5" opencv-python PyQt5
   ```
-- **Linux, AMD GPU**: a ROCm build of PyTorch for your GPU first ([Live tracking](live-tracking.md#two-python-environments)), then `pip install "sleap-nn==0.3.3" opencv-python PyQt5`.
+- **Linux, AMD GPU**: a ROCm build of PyTorch for your GPU first ([Live tracking](live-tracking.md#two-python-environments)), then `pip install "sleap-nn>=0.3.5" opencv-python PyQt5`.
 - **No GPU**: as on Linux. It works, but tracks only a few sets of frames a second.
 
 Last, install campy into it without its dependencies, so it doesn't need the camera drivers:

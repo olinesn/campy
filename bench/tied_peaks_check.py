@@ -1,36 +1,46 @@
 #!/usr/bin/env python3
-"""Does campy's tie-tolerant peak finding (campy/peaks.py) find, in fp16, the centroids fp32 finds?
+"""How much do the centroids and keypoints move with sleap-nn 0.3.5's peak rule?
 
-sleap-nn keeps a centroid only where one pixel of the centroid model's
-confidence map is strictly greater than its 8 neighbours. In fp16 the two top
-pixels sometimes round to the same value and the animal is lost (about 0.7%
-of centroids, bench/compiled_bench.py, PR #127). campy-live now keeps such a
-peak once (campy/peaks.py; --strict-peaks for sleap-nn's own).
+The centroids of animals are the local peaks of the centroid model's
+confidence map. In fp16 (campy-live's default) the two top pixels of a peak
+sometimes round to the same value (fp32 never ties). Three rules for those:
+
+  strict  sleap-nn before 0.3.5: a peak is one pixel greater than all 8
+          neighbours, so a tied top gives no peak and the animal is lost
+          (about 0.7% of centroids on a 5-mouse replay, PR #127)
+  first   campy-live before it needed sleap-nn 0.3.5 (pull request 132):
+          the first tied pixel in reading order is the peak
+  flat    sleap-nn 0.3.5 on (talmolab/sleap-nn#782), what campy-live uses
+          now: a flat top that fits in a 2x2 block is one peak at the mean
+          of its pixels (half a pixel off the grid for a pair), and the
+          sub-pixel refinement is centred on the pixel that point floors to;
+          a wider flat top, or one next to a higher pixel, gives no peak
 
 This runs the trained top-down pair the way campy-live --model sleap does
 (sleap-nn's TopDownLayer, fp16 autocast in its TorchBackend) on sets of
-frames from the replay videos (--videos, one per camera), four ways:
+frames from the replay videos (--videos, one per camera), with sleap-nn
+0.3.5's own rule and with the two older ones put in its place by this script
+(sleap-nn's find_local_peaks_rough, which find_local_peaks calls):
 
-  fp32-strict   fp32, sleap-nn's peaks: the reference
-  fp32-tied     fp32, campy's peaks: should equal the reference (fp32 doesn't tie)
-  fp16-strict   fp16, sleap-nn's peaks: campy-live before this change
-  fp16-tied     fp16, campy's peaks: campy-live now
+  fp32-flat     the reference
+  fp32-first    fp32, campy's old rule: should equal the reference
+  fp16-strict   fp16, sleap-nn's rule before 0.3.5
+  fp16-first    fp16, campy-live before this change
+  fp16-flat     fp16, campy-live now
 
 and compares each with the reference, frame by frame (each camera's image):
 centroids matched to the nearest reference centroid within --match-px
 full-frame pixels (missed: a reference centroid with none; extra: one with no
-reference centroid), the centroid and keypoint shifts of matched animals, and,
-between fp16-strict and fp16-tied, whether the animals both found have the
-same keypoints: in sets whose centroids are all the same they should be
-identical; where fp16-tied found one more animal, the instance model (which
-runs on the crops of every camera's image at once) ran on one more crop, and fp16 results can differ with the batch. fp16-strict also
-runs twice: how often its keypoints differ from one run to the next (some GPU
-kernels are not deterministic). Recovered: the
-reference centroids fp16-strict missed and fp16-tied found, with their
-shifts from fp32.
+reference centroid), the centroid and keypoint shifts of matched animals.
+Then fp16-flat against fp16-first directly (what campy-live's results do on
+this change): animals found by each, and how far the keypoints of the
+animals both found moved (median, over 1 px, largest); and fp16-flat run
+twice, for how much fp16 keypoints move from one run to the next anyway
+(some GPU kernels are not deterministic, and the instance model's batch is
+every camera's crops at once).
 
 Run it under the rig lock (rig.sh / rig.py) like every GPU job on the rigs.
-Needs torch + sleap-nn + sleap_io, campy on the path (for campy.peaks).
+Needs torch, sleap-nn 0.3.5 or later and sleap_io, campy on the path.
 """
 
 import argparse
@@ -43,7 +53,28 @@ import warnings
 import numpy as np
 import torch
 
-MODES = ["fp32-strict", "fp32-tied", "fp16-strict", "fp16-tied"]
+MODES = ["fp32-flat", "fp32-first", "fp16-strict", "fp16-first", "fp16-flat"]
+
+
+def Rough(rule):
+    """find_local_peaks_rough with an older peak rule: "strict" (sleap-nn
+    before 0.3.5) or "first" (campy's, pull request 132). Integer points, so
+    sleap-nn 0.3.5's refinement (around the floored point) refines them where
+    the older code did."""
+    import torch.nn.functional as F
+
+    def rough(cms, threshold=0.2):
+        p = F.pad(cms, (1, 1, 1, 1), mode="constant", value=float("-inf"))
+        h, w = cms.shape[-2:]
+        n = [p[..., 1 + dr:1 + dr + h, 1 + dc:1 + dc + w] for dr in (-1, 0, 1) for dc in (-1, 0, 1) if dr or dc]
+        before = torch.stack(n[:4]).amax(0)
+        after = torch.stack(n[4:]).amax(0)
+        mask = (cms > before) & (cms > threshold)
+        mask &= (cms > after) if rule == "strict" else (cms >= after)
+        subs = torch.stack(torch.where(mask.permute(0, 2, 3, 1)), dim=-1)
+        vals = cms[subs[:, 0], subs[:, 3], subs[:, 1], subs[:, 2]]
+        return subs[:, [2, 1]].to(torch.float32), vals, subs[:, 0].to(torch.int32), subs[:, 3].to(torch.int32)
+    return rough
 
 
 def read_sets(videos, first, count):
@@ -119,6 +150,31 @@ class Compare:
                 "frames_with_misses": self.missed_frames[:200]}
 
 
+def Moved(a, b, px):
+    """Animals found by a and by b (per image, matched by centroid within
+    px), and the keypoint moves of those both found."""
+    out = {"a": 0, "b": 0, "both": 0, "kp": []}
+    for i in range(a["centroids"].shape[0]):
+        ai = np.flatnonzero(~np.isnan(a["centroids"][i, :, 0]))
+        bi = np.flatnonzero(~np.isnan(b["centroids"][i, :, 0]))
+        pairs = match(a["centroids"][i, ai], b["centroids"][i, bi], px)
+        out["a"] += len(ai)
+        out["b"] += len(bi)
+        out["both"] += len(pairs)
+        for j, k in pairs:
+            d = np.linalg.norm(a["keypoints"][i, ai[j]] - b["keypoints"][i, bi[k]], axis=-1)
+            out["kp"].extend(d[~np.isnan(d)].tolist())
+    return out
+
+
+def MoveSummary(m):
+    kp = np.asarray(m.pop("kp"))
+    return m | {"keypoints": len(kp), "keypoint_move_px_p50": float(np.median(kp)) if len(kp) else None,
+                "keypoint_move_px_p99": float(np.percentile(kp, 99)) if len(kp) else None,
+                "keypoint_move_px_max": float(kp.max()) if len(kp) else None,
+                "keypoints_moved": int((kp > 0).sum()), "keypoints_moved_over_1px": int((kp > 1).sum())}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--centroid", required=True, help="trained sleap-nn centroid model folder")
@@ -138,8 +194,12 @@ def main():
     torch.backends.cudnn.allow_tf32 = False
     torch.backends.cuda.matmul.allow_tf32 = False
     import sleap_nn
+    from sleap_nn.inference.ops import peaks as ops
     from sleap_nn.inference.predictor import Predictor
-    from campy import peaks
+    from campy import live
+    if live.SleapProblem():
+        sys.exit(live.SleapProblem())
+    rules = {"flat": ops.find_local_peaks_rough, "first": Rough("first"), "strict": Rough("strict")}
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         predictor = Predictor.from_model_paths([args.centroid, args.instance], device="cuda",
@@ -148,97 +208,57 @@ def main():
     backends = [layer.centroid_layer.backend, layer.centered_instance_layer.backend]
 
     def run(frames, mode):
-        precision, how = mode.split("-")
+        precision, rule = mode.split("-")
         for backend in backends:
             backend.use_fp16 = precision == "fp16"
-        peaks.UseTiedPeaks(how == "tied")
-        with torch.inference_mode():
-            out = layer.predict(frames)
+        ops.find_local_peaks_rough = rules[rule]
+        try:
+            with torch.inference_mode():
+                out = layer.predict(frames)
+        finally:
+            ops.find_local_peaks_rough = rules["flat"]
         return {k: getattr(out, f).detach().float().cpu().numpy() for k, f in (("centroids", "pred_centroids"),
             ("keypoints", "pred_keypoints"))}
 
     cmp = {m: Compare(args.match_px) for m in MODES[1:]}
+    change = {"a": 0, "b": 0, "both": 0, "kp": []} # a: fp16-first (before), b: fp16-flat (now)
+    again = {"a": 0, "b": 0, "both": 0, "kp": []} # fp16-flat run twice
     reference_total, sets, t0 = 0, 0, time.perf_counter()
-    recovered_cen, recovered_kp = [], [] # animals fp16-strict lost and fp16-tied found, against fp32
-    # fp16-strict vs fp16-tied, animals both found at the same centroid: keypoints
-    # in images whose centroids are all the same (the instance model got the
-    # same crops), and in images where fp16-tied found one more (one crop more
-    # in the instance model's batch: fp16 kernels may differ with the batch)
-    same = {"same_crops": [0, 0, 0.0], "one_more_crop": [0, 0, 0.0]} # animals, keypoints differ, largest px
-    # fp16-strict run twice, sets with the same centroids: how much fp16 keypoints vary run to run
-    again = [0, 0, 0.0]
     for i, host in read_sets(args.videos, args.first, args.sets):
         frames = torch.from_numpy(host).to("cuda")
         r = {m: run(frames, m) for m in MODES}
-        ref = r["fp32-strict"]
+        ref = r["fp32-flat"]
         reference_total += int((~np.isnan(ref["centroids"][..., 0])).sum())
-        got = {m: cmp[m].add(i, ref, r[m]) for m in MODES[1:]}
-        for b, (gs, gt) in enumerate(zip(got["fp16-strict"], got["fp16-tied"])):
-            for k in set(gt) - set(gs):
-                recovered_cen.append(gt[k][0])
-                recovered_kp.extend(gt[k][1])
-        s, t = r["fp16-strict"], r["fp16-tied"]
-        s2 = run(frames, "fp16-strict")
-        if np.array_equal(s["centroids"], s2["centroids"], equal_nan=True):
-            ok = ~np.isnan(s["centroids"][..., 0])
-            if ok.any():
-                d = np.abs(np.nan_to_num(s["keypoints"][ok], nan=-1e9) - np.nan_to_num(s2["keypoints"][ok], nan=-1e9))
-                d = d.reshape(int(ok.sum()), -1).max(-1)
-                again[0] += len(d)
-                again[1] += int((d > 0).sum())
-                again[2] = max(again[2], float(d.max()))
-        # the instance model runs on the crops of every camera's image at once: compare by set
-        ns, nt = int((~np.isnan(s["centroids"][..., 0])).sum()), int((~np.isnan(t["centroids"][..., 0])).sum())
-        group = "same_crops" if np.array_equal(s["centroids"], t["centroids"], equal_nan=True) else \
-            "one_more_crop" if nt == ns + 1 else None
-        for b in range(s["centroids"].shape[0]):
-            sc, tc = s["centroids"][b], t["centroids"][b]
-            for a in range(sc.shape[0]):
-                if group is None or np.isnan(sc[a, 0]):
-                    continue
-                hit = np.flatnonzero((tc == sc[a]).all(-1))
-                if len(hit):
-                    d = np.abs(np.nan_to_num(s["keypoints"][b, a], nan=-1e9) - np.nan_to_num(t["keypoints"][b, hit[0]], nan=-1e9))
-                    same[group][0] += 1
-                    same[group][1] += int(d.max() > 0)
-                    same[group][2] = max(same[group][2], float(d.max()))
+        for m in MODES[1:]:
+            cmp[m].add(i, ref, r[m])
+        for acc, m in ((change, Moved(r["fp16-first"], r["fp16-flat"], args.match_px)),
+                       (again, Moved(r["fp16-flat"], run(frames, "fp16-flat"), args.match_px))):
+            for k in acc:
+                acc[k] += m[k]
         sets += 1
         if sets % 500 == 0:
-            print("{} sets, {:.0f} s: fp16 strict missed {}, tied missed {}".format(
-                sets, time.perf_counter() - t0, cmp["fp16-strict"].missed, cmp["fp16-tied"].missed), flush=True)
-    peaks.UseTiedPeaks(False)
+            print("{} sets, {:.0f} s: fp16 missed: strict {}, first {}, flat {}".format(sets, time.perf_counter() - t0,
+                cmp["fp16-strict"].missed, cmp["fp16-first"].missed, cmp["fp16-flat"].missed), flush=True)
 
-    def pct(a, q):
-        return float(np.percentile(a, q)) if len(a) else None
     results = {"host": platform.node(), "device": torch.cuda.get_device_name(0), "torch": torch.__version__,
                "sleap_nn": sleap_nn.__version__, "args": vars(args), "sets": sets, "images": sets * len(args.videos),
-               "reference_centroids": reference_total, "recovered": len(recovered_cen),
-               "recovered_centroid_shift_px_p50": pct(recovered_cen, 50),
-               "recovered_centroid_shift_px_max": max(recovered_cen) if recovered_cen else None,
-               "recovered_keypoint_shift_px_p50": pct(recovered_kp, 50),
-               "recovered_keypoint_shift_px_p99": pct(recovered_kp, 99),
-               "fp16_strict_vs_tied": {g: {"animals": v[0], "keypoints_differ": v[1], "largest_px": v[2]}
-                                       for g, v in same.items()},
-               "fp16_strict_run_twice": {"animals": again[0], "keypoints_differ": again[1], "largest_px": again[2]},
+               "reference_centroids": reference_total,
+               "fp16_first_to_flat": MoveSummary(change), "fp16_flat_run_twice": MoveSummary(again),
                "modes": {m: c.summary() for m, c in cmp.items()}}
     from campy import strictjson
     with open(args.json, "w") as f:
         strictjson.dump(results, f, indent=1)
-    print("{} sets ({} images), {} centroids in fp32 (sleap-nn's peaks)".format(sets, results["images"], reference_total))
+    print("{} sets ({} images), {} centroids in fp32".format(sets, results["images"], reference_total))
     for m, c in results["modes"].items():
         print("  {:12s} missed {:4d}  extra {:4d}  centroid shift p50/p99 {}/{} px  keypoint shift p50/p99 {}/{} px".format(
             m, c["centroids_missed"], c["centroids_extra"], *("-" if v is None else "{:.3f}".format(v) for v in (
                 c["centroid_shift_px_p50"], c["centroid_shift_px_p99"], c["keypoint_shift_px_p50"], c["keypoint_shift_px_p99"]))))
-    print("recovered (fp16-strict lost, fp16-tied found): {}, centroid shift from fp32 p50 {} max {} px, "
-          "keypoint shift p50/p99 {}/{} px".format(results["recovered"], *("-" if v is None else "{:.2f}".format(v) for v in (
-              results["recovered_centroid_shift_px_p50"], results["recovered_centroid_shift_px_max"],
-              results["recovered_keypoint_shift_px_p50"], results["recovered_keypoint_shift_px_p99"]))))
-    for g, v in results["fp16_strict_vs_tied"].items():
-        print("fp16 strict vs tied, {}: {} animals, keypoints differ in {} (largest {:g} px)".format(
-            g.replace("_", " "), v["animals"], v["keypoints_differ"], v["largest_px"]))
-    v = results["fp16_strict_run_twice"]
-    print("fp16 strict run twice, same centroids: {} animals, keypoints differ in {} (largest {:g} px)".format(
-        v["animals"], v["keypoints_differ"], v["largest_px"]))
+    for name, v in (("fp16 first -> flat (this change)", results["fp16_first_to_flat"]),
+                    ("fp16 flat run twice", results["fp16_flat_run_twice"])):
+        print("{}: animals {} / {}, both {}; {} keypoints, moved {}, over 1 px {}, median {} max {} px".format(
+            name, v["a"], v["b"], v["both"], v["keypoints"], v["keypoints_moved"], v["keypoints_moved_over_1px"],
+            *("-" if x is None else "{:.3g}".format(x) for x in (v["keypoint_move_px_p50"], v["keypoint_move_px_max"]))))
+
 
 if __name__ == "__main__":
     main()

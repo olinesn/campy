@@ -27,15 +27,14 @@ What makes it fast (each measured in docs/offline-inference.md):
   copy;
 - the networks are compiled: TensorRT on an NVIDIA GPU, torch.compile on
   AMD (as campy-live's --engine auto), else run in PyTorch;
-- fp16, with campy's tied-peaks fix (fp16 otherwise loses animals whose
-  peak is two equal pixels), channels-last on NVIDIA.
+- fp16 (sleap-nn 0.3.5 keeps the animals whose peak is two equal pixels,
+  which fp16 makes; 0.3.3 lost them), channels-last on NVIDIA.
 
---exact runs sleap-nn's own top-down layer instead, fp32 with no TF32, its
-own (strict) peak finding, the frames copied to the GPU first and each crop
-cut at its true size: about 2x sleap-nn track, for reference runs that the
-fast runs are compared with (bench/offline_infer_bench.py compare).
+--exact runs sleap-nn's own top-down layer instead, fp32 with no TF32, the
+frames copied to the GPU first: about 2x sleap-nn track, for reference runs
+that the fast runs are compared with (bench/offline_infer_bench.py compare).
 
-Needs sleap-nn and PyTorch (campy-live's environment); TensorRT (pip install
+Needs sleap-nn 0.3.5 or later and PyTorch (campy-live's environment); TensorRT (pip install
 tensorrt onnx) on NVIDIA or Triton on AMD for the compiled networks;
 PyNvVideoCodec for NVDEC.
 """
@@ -54,7 +53,7 @@ def Say(text):
 
 def SamePadInPython():
 	"""
-	sleap-nn 0.3.3's MaxPool2dWithSamePadding pads by
+	sleap-nn's MaxPool2dWithSamePadding (0.3.3 to 0.3.5) pads by
 	torch.ceil(torch.tensor(i / s)).item(), which torch.compile on PyTorch 2.6
 	can't trace (newer PyTorch can); math.ceil gives the same number.
 	"""
@@ -82,9 +81,12 @@ class Model:
 
 	def __init__(self, args, predictor=None):
 		import torch, warnings
-		from campy import live, peaks
+		from campy import live
 		self.torch, self.live, self.args = torch, live, args
 		live.PROGRAM = "campy-infer"
+		problem = live.SleapProblem()
+		if problem:
+			raise SystemExit(problem.replace("campy-live", "campy-infer", 1))
 		self.device = live.ResolveDevice(args.device)
 		if self.device.startswith("cuda:"):
 			torch.cuda.set_device(torch.device(self.device))
@@ -97,10 +99,9 @@ class Model:
 			# fp32 as fp32: no TF32 in the convolutions or matrix products
 			torch.backends.cudnn.allow_tf32 = False
 			torch.backends.cuda.matmul.allow_tf32 = False
-			self.fp16, self.tied, self.channelsLast, self.engine = False, False, False, "eager"
+			self.fp16, self.channelsLast, self.engine = False, False, "eager"
 		else:
 			self.fp16 = gpu and args.precision == "fp16"
-			self.tied = not args.strict_peaks
 			self.channelsLast = self.nvidia if args.memory_format == "auto" else args.memory_format == "channels_last"
 			if args.engine == "auto":
 				self.engine, why = live.FixedEngine.Pick(self.device)
@@ -108,7 +109,6 @@ class Model:
 					self.notes.append("no compiled engine: {}".format(why))
 			else:
 				self.engine = live.FixedEngine.Choose(args.engine, self.device)
-		peaks.UseTiedPeaks(self.tied)
 		if self.engine == "compile":
 			SamePadInPython()
 		if predictor is None: # (the tests give one of random models)
@@ -124,7 +124,6 @@ class Model:
 			backend.use_fp16 = self.fp16
 			if self.channelsLast:
 				backend.model.to(memory_format=torch.channels_last)
-		live.ExactCropSize(layer)
 		self.pipeline = self.predictor.filter_pipeline
 		self.fixed = {} # (H, W): FixedCrops, for that frame size
 		self.host = {} # (H, W): pinned (B, H, W, 1) upload buffer
@@ -142,8 +141,8 @@ class Model:
 				{"tensorrt": "TensorRT", "compile": "torch.compile", "eager": "PyTorch"}[self.engine])
 		gpu = self.torch.cuda.get_device_name(self.torch.device(self.device)) if self.device.startswith("cuda") \
 			else self.device
-		return "{}; {}, {} peaks, {}, batches of {}, at most {} animals, peak threshold {:g}; on {}".format(how,
-			"fp16" if self.fp16 else "fp32", "tied" if self.tied else "strict",
+		return "{}; {}, {}, batches of {}, at most {} animals, peak threshold {:g}; on {}".format(how,
+			"fp16" if self.fp16 else "fp32",
 			"channels-last" if self.channelsLast else "NCHW", self.B, self.args.max_instances,
 			self.args.peak_threshold, gpu)
 
@@ -166,7 +165,7 @@ class Model:
 			return
 		try:
 			fixed = self.live.FixedCrops(self.layer, self.B, self.device, self.args.max_instances, graph=False,
-				tiedPeaks=self.tied, engine=self.engine, cache=self.args.engine_cache)
+				engine=self.engine, cache=self.args.engine_cache)
 		except SystemExit as e:
 			self.plain, self.plainWhy = True, "{}".format(e)
 			self.notes.append("fixed crops not used: {}; so sleap-nn's own layer".format(e))
@@ -270,7 +269,7 @@ class Model:
 		prov = dict(prov or {})
 		version = manifest.SetupVersion(manifest.CampyRoot()) or manifest.PackageVersion("campy")
 		prov["campy_infer"] = {"campy_version": version, "how": self.Describe(), "frames_limit": int(self.args.frames or 0),
-			"exact": bool(self.exact), "fp16": bool(self.fp16), "tied_peaks": bool(self.tied),
+			"exact": bool(self.exact), "fp16": bool(self.fp16),
 			"engine": self.engine, "notes": list(self.notes)}
 		labels.provenance = prov
 		return labels
@@ -476,16 +475,15 @@ def Parser():
 		"made by other models or from another number of frames, which is otherwise left, with exit status 1)")
 	p.add_argument("--batch", type=int, default=16, help="frames per batch (default 16: on an A100 and the EVO-X2 "
 		"as fast as 32 or 64, or faster, with less GPU memory)")
-	p.add_argument("--exact", action="store_true", help="a reference run: sleap-nn's own layer, fp32 without TF32, "
-		"strict peaks, every crop at its true size (about 2x sleap-nn track, not 10x)")
+	p.add_argument("--exact", action="store_true", help="a reference run: sleap-nn's own layer, fp32 without TF32 "
+		"(about 2x sleap-nn track, not 10x)")
 	p.add_argument("--device", default="auto", help="auto (the GPU: cuda, or ROCm's), cuda:N, cpu")
 	p.add_argument("--engine", default="auto", choices=["auto", "tensorrt", "compile", "off"],
 		help="the networks compiled: auto (TensorRT on NVIDIA, torch.compile on AMD, else PyTorch), or off")
 	p.add_argument("--engine-cache", default="", help="where TensorRT plans and torch.compile kernels are kept "
 		"(default ~/.cache/campy/engines)")
 	p.add_argument("--precision", default="fp16", choices=["fp16", "fp32"], help="fp16 (default) or fp32")
-	p.add_argument("--strict-peaks", action="store_true", help="sleap-nn's own peak finding (fp16 then loses "
-		"animals whose peak is two equal pixels)")
+	p.add_argument("--strict-peaks", action="store_true", help=argparse.SUPPRESS) # gone with sleap-nn 0.3.5 (Main)
 	p.add_argument("--memory-format", default="auto", choices=["auto", "nchw", "channels_last"],
 		help="auto: channels-last on NVIDIA, where it is faster")
 	p.add_argument("--decoder", default="auto", choices=["auto", "nvdec", "ffmpeg", "pyav"],
@@ -500,6 +498,9 @@ def Parser():
 
 def Main(argv=None):
 	args = Parser().parse_args(argv)
+	if args.strict_peaks:
+		raise SystemExit("--strict-peaks is gone: it was the old way sleap-nn found centroids, which lost a centroid "
+			"whose top is two equal pixels (fp16). sleap-nn 0.3.5, which campy-infer needs, keeps those itself")
 	if args.engine == "off":
 		args.engine = "eager"
 	if args.batch < 1 or args.max_instances < 1:

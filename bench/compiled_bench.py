@@ -540,7 +540,8 @@ def global_peaks(cm, threshold):
 
 def tied_peaks(cm, threshold):
     """Pixels above threshold that equal their largest neighbour: a plateau top, which
-    find_local_peaks (strictly greater than all 8 neighbours) drops, animal and all."""
+    find_local_peaks before sleap-nn 0.3.5 (strictly greater than all 8 neighbours) dropped,
+    animal and all; 0.3.5 keeps a top of up to 2x2 pixels, at its mean."""
     from sleap_nn.inference.ops.peaks import morphological_dilation
     neighbours = morphological_dilation(cm, None)
     return int(((cm == neighbours) & (cm > threshold)).sum())

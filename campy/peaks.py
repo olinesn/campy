@@ -1,94 +1,67 @@
 """
-Peak finding that keeps a peak whose top is two (or more) equal pixels.
+Centroid peak finding with fixed shapes, by sleap-nn's own rule (0.3.5 on).
 
-sleap-nn (0.3.3) finds the centroids of animals as the local peaks of the
-centroid model's confidence map: pixels strictly greater than all 8 of their
-neighbours (find_local_peaks_rough). In fp16 (campy-live's default) the map
+sleap-nn finds the centroids of animals as the local peaks of the centroid
+model's confidence map. Up to 0.3.4 a peak had to be one pixel strictly
+greater than all 8 of its neighbours. In fp16 (campy-live's default) the map
 has about 3 significant digits, and the two top pixels of a peak sometimes
-round to the same value: neither is greater than the other, so neither is
-kept, and that animal isn't found in that frame. On a 5-mouse replay that
-was about 0.7% of the centroids (45-64 of 7,466), always exactly two tied
-pixels each; fp32 never ties.
+round to the same value: neither was kept, and that animal wasn't found in
+that frame (about 0.7% of the centroids of a 5-mouse replay;
+talmolab/sleap-nn#781). sleap-nn 0.3.5 fixed it (#782): a flat top of equal
+pixels is one peak if it fits in a 2x2 block (2 pixels, an L of 3, or all
+4) and every pixel around it is lower, and the peak is at the mean of its
+pixels (so it can be half a pixel, or a third, off the grid). A wider flat
+top, or one next to a higher pixel, gives no peak. A pixel with no equal
+neighbour gets the same answer as before.
 
-LocalPeaks breaks ties by position instead: a pixel is kept if it is greater
-than its 4 neighbours that come before it in reading order (the row above,
-and the pixel to its left) and at least equal to its 4 neighbours after it.
-Of two equal top pixels, the first in reading order is kept, and the other
-is not, so a tied peak is found once. A pixel with no equal neighbour gets
-the same answer as sleap-nn's, so every peak sleap-nn finds is found the
-same. A flat top of 3 or more pixels shaped so that one of them has no
-equal neighbour before it (a V) still gives two peaks next to each other;
-that wasn't seen in fp16 maps, which tie in pairs.
+campy-live's layer (sleap-nn's own TopDownLayer) uses sleap-nn's peak
+finding as it is. FixedCrops (campy/live.py) finds the peaks itself, with
+fixed shapes and no wait for the host, so it can run in one CUDA graph:
+FlatTopPeaks is that rule as a whole-map computation, the way sleap-nn's
+exported models do it (#785, BaseExportWrapper._local_peaks), so FixedCrops
+finds the same peaks at the same points as the layer.
 
-UseTiedPeaks puts LocalPeaks in place of sleap-nn's find_local_peaks_rough
-for the whole process (campy-live does it unless --strict-peaks), which
-find_local_peaks, and so its centroid and bottom-up layers, call. The same
-shapes and types come back. The keypoints from the centered-instance model
-come from a global peak (an argmax), which ties don't affect.
+Before sleap-nn 0.3.5, campy patched sleap-nn's peak finding with its own
+tie-break (pull request 132: keep the first of two equal pixels). campy
+needs sleap-nn 0.3.5 or later now (campy/live.py: SleapProblem), and that
+patch is gone.
 """
 
 
-def PeakMask(cms, threshold):
+def FlatTopPeaks(cms, threshold):
 	"""
-	cms: (..., H, W) confidence maps. True where a pixel is a local peak
-	above threshold: greater than its neighbours before it in reading order,
-	at least equal to those after it. The same shape as cms; no host syncs
-	(captures in a CUDA graph, exports to ONNX).
+	cms: (..., H, W) confidence maps. Returns (peak, dx, dy), each the shape
+	of cms: whether a peak is marked at the pixel (the first pixel of its
+	flat top in reading order, which has the top's value), and the offset in
+	x and y (float32) from that pixel to the peak's point, the mean of the
+	top's pixels (0 for a one-pixel top). sleap-nn's find_local_peaks_rough
+	(0.3.5 on) finds the same peaks, in the same order, at the same points.
+	No host syncs (captures in a CUDA graph, exports to ONNX).
 	"""
 	import torch
 	import torch.nn.functional as F
-	h, w = cms.shape[-2:]
+	shape = cms.shape
+	h, w = shape[-2:]
 	x = cms.reshape(-1, 1, h, w)
-	p = F.pad(x, (1, 1, 1, 1), mode="constant", value=float("-inf"))
-	before = torch.stack([p[..., :-2, :-2], p[..., :-2, 1:-1], p[..., :-2, 2:], p[..., 1:-1, :-2]]).amax(0)
-	after = torch.stack([p[..., 1:-1, 2:], p[..., 2:, :-2], p[..., 2:, 1:-1], p[..., 2:, 2:]]).amax(0)
-	mask = (x > before) & (x >= after) & (x > threshold)
-	return mask.reshape(cms.shape)
-
-
-def LocalPeaks(cms, threshold=0.2):
-	"""
-	sleap-nn's find_local_peaks_rough, with ties kept once (PeakMask).
-	cms: (samples, channels, H, W). Returns peak_points (n, 2) x, y float32,
-	peak_vals (n,), peak_sample_inds (n,) int32, peak_channel_inds (n,) int32,
-	in sleap-nn's order (sample, row, column, channel).
-	"""
-	import torch
-	mask = PeakMask(cms, threshold)
-	subs = torch.stack(torch.where(mask.permute(0, 2, 3, 1)), dim=-1)
-	vals = cms[subs[:, 0], subs[:, 3], subs[:, 1], subs[:, 2]]
-	points = subs[:, [2, 1]].to(torch.float32)
-	return points, vals, subs[:, 0].to(torch.int32), subs[:, 3].to(torch.int32)
-
-
-_saved = {}
-
-
-def UseTiedPeaks(on=True):
-	"""
-	on: sleap-nn's find_local_peaks (and the layers that call it) use
-	LocalPeaks, in this process. False puts sleap-nn's own back. Returns
-	whether it could (False: this sleap-nn has no find_local_peaks_rough).
-	"""
-	import importlib
-	modules = []
-	for name in ("sleap_nn.inference.ops.peaks", "sleap_nn.inference.peak_finding"):
-		try:
-			module = importlib.import_module(name)
-		except ImportError:
-			continue
-		if hasattr(module, "find_local_peaks_rough"):
-			modules.append(module)
-	for module in modules:
-		if module.__name__ not in _saved:
-			_saved[module.__name__] = module.find_local_peaks_rough
-		module.find_local_peaks_rough = LocalPeaks if on else _saved[module.__name__]
-	return bool(modules)
-
-
-def TiedPeaksInUse():
-	try:
-		from sleap_nn.inference.ops import peaks
-	except ImportError:
-		return False
-	return peaks.find_local_peaks_rough is LocalPeaks
+	# each pixel's 3x3 neighbourhood in one step: (maps, 9, h*w), in reading
+	# order (NW, N, NE, W, the pixel, E, SW, S, SE); off the map is -inf
+	nb = F.unfold(F.pad(x, (1, 1, 1, 1), mode="constant", value=float("-inf")), 3)
+	c = nb[:, 4]
+	# greater than the 4 neighbours before it, at least equal to the 4 after:
+	# every flat top has one such pixel, its first
+	peak = (c > nb[:, :4].amax(1)) & (c >= nb[:, 5:].amax(1)) & (c > threshold)
+	# each pixel's count of neighbours at least as high as it
+	ge = (nb >= c[:, None]).sum(1, dtype=torch.float32) - 1
+	tied = nb[:, 5:] == c[:, None] # E, SW, S, SE: the rest of the top, if any
+	t = tied.float()
+	n = t.sum(1) + 1 # the top's pixels
+	# it fits in a 2x2 block unless it has SW and also E or SE; it is closed
+	# (no pixel around it as high) when each of its pixels has n - 1 such
+	# neighbours, the rest of the top
+	later = F.unfold(F.pad(ge.reshape(-1, 1, h, w), (1, 1, 1, 1)), 3)[:, 5:]
+	peak &= ~(tied[:, 1] & (tied[:, 0] | tied[:, 3]))
+	peak &= (~tied | (later == (n - 1)[:, None])).all(1)
+	zero = torch.zeros_like(n)
+	dx = torch.where(peak, (t[:, 0] + t[:, 3] - t[:, 1]) / n, zero)
+	dy = torch.where(peak, (t[:, 1] + t[:, 2] + t[:, 3]) / n, zero)
+	return peak.reshape(shape), dx.reshape(shape), dy.reshape(shape)
