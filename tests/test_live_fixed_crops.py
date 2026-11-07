@@ -14,7 +14,10 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("sleap_nn")
 
 GPU = torch.cuda.is_available()
-DEVICES = ["cpu"] + (["cuda"] if GPU else [])
+XPU = live.XpuAvailable() # an Intel GPU (PyTorch's xpu build)
+DEVICES = ["cpu"] + (["cuda"] if GPU else []) + (["xpu"] if XPU else [])
+# the devices FixedCrops records one graph per set on: CUDA (ROCm), and an Intel GPU with torch.xpu's graphs
+GRAPH_DEVICES = (["cuda"] if GPU else []) + (["xpu"] if XPU and live.XpuGraphs() else [])
 needs_gpu = pytest.mark.skipif(not GPU, reason="needs a CUDA (or ROCm) GPU")
 
 FRAMES, MOST, SHAPE = 2, 3, "256x320x1"
@@ -163,12 +166,18 @@ def Found(result):
 	return (~np.isnan(result["centroids"]).any(-1)).sum(-1)
 
 
-def Compare(a, b, counts):
-	# a: --fixed-crops, b: sleap-nn's. Returns the keypoints' largest difference.
+def Compare(a, b, counts, device="cpu"):
+	# a: --fixed-crops, b: sleap-nn's. Returns the keypoints' largest
+	# difference. The centroids are the same on the CPU and CUDA; on an
+	# Intel GPU (xpu) the same centroid network can round differently in
+	# the two (about 1e-5 px in fp32, with some of the random weights)
 	assert list(Found(a)) == [min(k, MOST) for k in counts]
 	assert list(Found(b)) == list(Found(a))
 	for key in ("centroids", "centroid_vals"):
-		assert np.array_equal(a[key], b[key], equal_nan=True), (counts, key)
+		if str(device).startswith("xpu"):
+			assert np.allclose(a[key], b[key], rtol=0, atol=TOL, equal_nan=True), (counts, key)
+		else:
+			assert np.array_equal(a[key], b[key], equal_nan=True), (counts, key)
 	assert np.array_equal(a["found_mask"], ~np.isnan(a["centroids"]).any(-1))
 	if not Found(b).sum(): # sleap-nn guesses the node count then: only check none came
 		assert np.isnan(a["keypoints"]).all() and np.isnan(a["peak_vals"]).all()
@@ -190,7 +199,7 @@ def test_matches_sleap(device):
 	frames = model.Upload(host.tensor)
 	for counts in SETS:
 		SetCounts(model, counts)
-		Compare(model.Predict(frames), Reference(model, frames), counts)
+		Compare(model.Predict(frames), Reference(model, frames), counts, device)
 	assert model.nodes == 6
 
 
@@ -208,13 +217,13 @@ def test_padded_crops_never_yield_keypoints(device):
 			assert np.isnan(r["centroids"][f, k:]).all() and np.isnan(r["centroid_vals"][f, k:]).all()
 
 
-@needs_gpu
+@pytest.mark.parametrize("device", GRAPH_DEVICES)
 @pytest.mark.parametrize("precision", ["fp32", "fp16"])
-def test_one_graph_replays_match(precision):
+def test_one_graph_replays_match(device, precision):
 	# One graph for every count of animals, replayed as the counts change
 	# (the centroid model's peaks changed in place): the same as the same
 	# steps run eagerly, and as sleap-nn's layer
-	model, host = Model("cuda", graphs=True, precision=precision)
+	model, host = Model(device, graphs=True, precision=precision)
 	model.Warm(host.tensor)
 	fixed = model.fixed
 	assert fixed.graph and fixed.max_abs_diff == 0
@@ -228,22 +237,22 @@ def test_one_graph_replays_match(precision):
 			eager = fixed.Pipeline(frames)
 		assert live.MaxAbsDiff(graphed, eager) == 0, counts
 		if precision == "fp32":
-			Compare(model.Predict(frames), Reference(model, model.Upload(host.tensor)), counts)
+			Compare(model.Predict(frames), Reference(model, model.Upload(host.tensor)), counts, device)
 		else: # fp16: the instance model's rounding differs with its batch; the animals found may not
 			assert list(Found(model.Predict(frames))) == list(Found(Reference(model, frames)))
 	assert fixed.graph is recorded
-	assert "one CUDA graph" in model.DescribeGraphs()
+	assert "one {} graph".format("CUDA" if device == "cuda" else "XPU") in model.DescribeGraphs()
 
 
-@needs_gpu
-def test_results_come_back_in_one_copy():
+@pytest.mark.parametrize("device", GRAPH_DEVICES)
+def test_results_come_back_in_one_copy(device):
 	# Predict: one copy from the GPU (into pinned memory), nothing else
-	model, host = Model("cuda", graphs=True)
+	model, host = Model(device, graphs=True)
 	model.Warm(host.tensor)
 	frames = model.Upload(host.tensor)
 	SetCounts(model, [2, 3])
 	model.Predict(frames)
-	torch.cuda.synchronize()
+	live.Synchronize(device)
 	with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU]) as prof:
 		model.Predict(frames) # frames: the graph's own input, already there
 	names = [e.name for e in prof.events()]
@@ -440,6 +449,60 @@ def test_engine_auto_falls_back_when_it_fails(monkeypatch, error, graphs):
 	explicit, host = Model("cuda", graphs=graphs, engine="compile")
 	with pytest.raises(type(error)):
 		explicit.Warm(host.tensor)
+
+
+def test_engine_on_an_intel_gpu(monkeypatch):
+	# xpu: auto is torch.compile where Triton and a C++ compiler are, else
+	# OpenVINO where openvino and onnx are installed, else none and why;
+	# tensorrt can't be had there, nor openvino off an Intel GPU; compile
+	# asks for Triton as on CUDA, and for the compiler
+	monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: object())
+	monkeypatch.setattr(live.FixedEngine, "Compiler", staticmethod(lambda: "cl.exe"))
+	assert live.FixedEngine.Pick("xpu") == ("compile", None)
+	assert live.FixedEngine.Choose("auto", "xpu") == live.FixedEngine.Choose("on", "xpu") == "compile"
+	assert live.FixedEngine.Choose("compile", "xpu") == "compile"
+	monkeypatch.setattr(live.FixedEngine, "Compiler", staticmethod(lambda: None))
+	assert live.FixedEngine.Pick("xpu") == ("openvino", None)
+	assert live.FixedEngine.Choose("auto", "xpu") == live.FixedEngine.Choose("on", "xpu") == "openvino"
+	assert live.FixedEngine.Choose("openvino", "xpu:0") == "openvino"
+	with pytest.raises(SystemExit, match="C\\+\\+ compiler"):
+		live.FixedEngine.Choose("compile", "xpu")
+	with pytest.raises(SystemExit, match="Intel GPUs only"):
+		live.FixedEngine.Choose("openvino", "cuda")
+	with pytest.raises(SystemExit):
+		live.FixedEngine.Choose("tensorrt", "xpu")
+	Hide(monkeypatch, "openvino")
+	kind, why = live.FixedEngine.Pick("xpu")
+	assert kind == "eager" and "OpenVINO" in why and "C++ compiler" in why
+	with pytest.raises(SystemExit, match="openvino"):
+		live.FixedEngine.Choose("openvino", "xpu")
+	with pytest.raises(SystemExit, match="--engine on: "):
+		live.FixedEngine.Choose("on", "xpu")
+
+
+def test_compiler_without_build_tools(monkeypatch, tmp_path):
+	# Windows without Visual Studio's Build Tools: no compiler, and
+	# vswhere looked for once
+	import shutil
+	monkeypatch.setattr(live.os, "name", "nt")
+	monkeypatch.setattr(shutil, "which", lambda name: None)
+	monkeypatch.setitem(live.os.environ, "ProgramFiles(x86)", str(tmp_path))
+	monkeypatch.setattr(live, "MSVC", {})
+	assert live.FixedEngine.Compiler() is None and live.MSVC == {"bat": None}
+
+
+def test_accelerators():
+	# fp16 autocast's device type, and --device xpu without an Intel GPU
+	assert live.Accelerator("cuda") == live.Accelerator("cuda:1") == "cuda"
+	assert live.Accelerator("xpu") == live.Accelerator("xpu:0") == "xpu"
+	assert live.Accelerator("cpu") is None and live.Accelerator("mps") is None
+	if not XPU:
+		with pytest.raises(SystemExit, match="xpu"):
+			live.ResolveDevice("xpu")
+	else:
+		assert live.ResolveDevice("xpu") == "xpu"
+		if not GPU:
+			assert live.ResolveDevice("auto") == "xpu"
 
 
 def test_plan_names():

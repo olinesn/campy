@@ -698,16 +698,87 @@ def ResolveDevice(name):
 	if name == "auto":
 		if torch.cuda.is_available():
 			return "cuda"
+		if XpuAvailable():
+			return "xpu"
 		if torch.backends.mps.is_available():
 			return "mps"
 		return "cpu"
+	if str(name).startswith("xpu") and not XpuAvailable():
+		raise SystemExit("--device xpu: PyTorch sees no Intel GPU (torch.xpu.is_available() is False; PyTorch's "
+			"Intel GPU build: pip install torch --index-url https://download.pytorch.org/whl/xpu)")
 	return name
+
+
+MSVC = {} # LoadMsvc's: vcvars64.bat's path, once looked for
+
+
+def LoadMsvc():
+	"""
+	Windows: Visual Studio's C++ build environment (vcvars64.bat's PATH,
+	INCLUDE, LIB...) into this process's, as a "Developer Command Prompt"
+	has it, for torch.compile on an Intel GPU. Found with vswhere; nothing
+	when the Build Tools aren't installed. Returns vcvars64.bat's path, or
+	None.
+	"""
+	import subprocess
+	if "bat" in MSVC:
+		return MSVC["bat"]
+	MSVC["bat"] = None
+	vswhere = os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+		"Microsoft Visual Studio", "Installer", "vswhere.exe")
+	try:
+		found = subprocess.run([vswhere, "-latest", "-products", "*", "-requires",
+			"Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-find", r"VC\Auxiliary\Build\vcvars64.bat"],
+			capture_output=True, text=True, timeout=60).stdout.split("\n")[0].strip()
+		if not found or not os.path.exists(found):
+			return None
+		out = subprocess.run('cmd /s /c ""{}" >nul && set"'.format(found), capture_output=True, text=True,
+			timeout=120).stdout
+	except (OSError, subprocess.SubprocessError):
+		return None
+	for line in out.splitlines():
+		key, eq, value = line.partition("=")
+		if eq and key:
+			os.environ[key] = value
+	MSVC["bat"] = found
+	return found
+
+
+def XpuAvailable():
+	# An Intel GPU in PyTorch's xpu build (torch 2.5 and later)
+	import torch
+	xpu = getattr(torch, "xpu", None)
+	try:
+		return bool(xpu is not None and xpu.is_available())
+	except Exception:
+		return False
+
+
+def XpuGraphs():
+	# torch.xpu's graphs (XPUGraph, as torch.cuda's CUDAGraph): PyTorch 2.10 and later
+	import torch
+	return all(hasattr(getattr(torch, "xpu", None), a) for a in ("XPUGraph", "graph", "graph_pool_handle"))
+
+
+def Accelerator(device):
+	"""
+	The autocast device type of a GPU device: "cuda" (NVIDIA, or AMD's ROCm),
+	"xpu" (Intel), or None (CPU, MPS: no fp16 autocast here).
+	"""
+	device = str(device)
+	if device.startswith("cuda"):
+		return "cuda"
+	if device.startswith("xpu"):
+		return "xpu"
+	return None
 
 
 def Synchronize(device):
 	import torch
 	if device.startswith("cuda"):
 		torch.cuda.synchronize()
+	elif device.startswith("xpu"):
+		torch.xpu.synchronize()
 	elif device == "mps":
 		torch.mps.synchronize()
 
@@ -747,15 +818,6 @@ class TopDown:
 		self.precision = args.precision
 		self.instances = args.max_instances
 		self.n_frames, self.shape = n_frames, shape
-		self.memoryFormat = args.memory_format
-		if self.memoryFormat == "auto":
-			nvidia = self.device.startswith("cuda") and not getattr(torch.version, "hip", None)
-			self.memoryFormat = "channels_last" if nvidia else "nchw"
-		self.nodes, self.nodeNames, self.edges = None, None, None
-		problem = SleapProblem()
-		if problem:
-			raise SystemExit(problem)
-		self.layer, self.text = self.Build(args)
 		# --engine: auto (the default) is FixedEngine.Pick's choice, and if
 		# that can't be made, the networks in torch, as off, said once
 		# (engineNote); any other choice that can't be made stops campy-live
@@ -768,6 +830,17 @@ class TopDown:
 				self.engineNote = "--engine auto: {}; so the networks run in torch".format(why)
 		else:
 			engine = FixedEngine.Choose(engine, self.device)
+		self.memoryFormat = args.memory_format
+		if self.memoryFormat == "auto":
+			nvidia = self.device.startswith("cuda") and not getattr(torch.version, "hip", None)
+			# channels_last on NVIDIA and on Intel GPUs (xpu: the trained pair 15.8 -> 13.8 ms a set of 3 frames
+			# in torch on an Arc Pro B50, the same with torch.compile), nchw on ROCm, MPS and the CPU
+			self.memoryFormat = "channels_last" if nvidia or self.device.startswith("xpu") else "nchw"
+		self.nodes, self.nodeNames, self.edges = None, None, None
+		problem = SleapProblem()
+		if problem:
+			raise SystemExit(problem)
+		self.layer, self.text = self.Build(args)
 		self.args = args
 		self.upsamples = []
 		if FastUpsample(args, self.device, self.memoryFormat, engine):
@@ -775,11 +848,15 @@ class TopDown:
 		self.graphs = []
 		self.fixed = None
 		self.fixedNote = None # why --fixed-crops auto left them off
-		gpu = self.device.startswith("cuda")
+		gpu = Accelerator(self.device) is not None # CUDA, ROCm or an Intel GPU (xpu)
+		cuda = self.device.startswith("cuda")
+		# an Intel GPU's graphs (torch.xpu's XPUGraph): with --fixed-crops, the set as one graph
+		xpuGraphs = self.device.startswith("xpu") and XpuGraphs()
 		graphs, fixed = OnOff(args.cuda_graphs), OnOff(getattr(args, "fixed_crops", "off"))
-		if graphs == "on" and not gpu:
-			raise SystemExit("--cuda-graphs: CUDA (or ROCm) only, not {}".format(self.device))
-		graphs = graphs == "on" or (graphs == "auto" and gpu)
+		if graphs == "on" and not (cuda or xpuGraphs):
+			raise SystemExit("--cuda-graphs: CUDA, ROCm or an Intel GPU with torch.xpu's graphs only, not {}".format(
+				self.device))
+		graphs = graphs == "on" or (graphs == "auto" and (cuda or xpuGraphs))
 		explicit = engine != "eager" and not self.engineAuto
 		if fixed == "on" or (fixed == "auto" and gpu):
 			try:
@@ -795,7 +872,7 @@ class TopDown:
 			self.engineNote = None # auto, without fixed crops: nothing to compile, nothing to say
 			if FastUpsample(args, self.device, self.memoryFormat, "eager") and not self.upsamples:
 				self.AddUpsamples()
-		if self.fixed is None and graphs:
+		if self.fixed is None and graphs and cuda: # (xpu: graphs with --fixed-crops only)
 			for backend in (self.layer.centroid_layer.backend, self.layer.centered_instance_layer.backend):
 				graphed = CUDAGraphed(backend.model, backend.use_fp16)
 				backend.model, backend.use_fp16 = graphed, False # fp16 now inside the graph
@@ -811,15 +888,16 @@ class TopDown:
 		# up, so the networks in torch, with --fast-upsample as it would be
 		# with --engine off
 		self.engineNote = "--engine auto: the {} engine failed ({}: {}); so the networks run in torch".format(
-			{"compile": "torch.compile", "tensorrt": "TensorRT"}.get(self.fixed.engine, self.fixed.engine),
+			FixedEngine.NAMES.get(self.fixed.engine, self.fixed.engine),
 			type(error).__name__, str(error).strip().splitlines()[0][:300] if str(error).strip() else "no message")
 		self.fixed.Plain()
 		if FastUpsample(self.args, self.device, self.memoryFormat, "eager") and not self.upsamples:
 			self.AddUpsamples()
 
 	def Fp16(self, backends):
-		# fp16 autocast inside sleap-nn's TorchBackend (cuda and ROCm only)
-		if self.precision == "fp16" and self.device.startswith("cuda"):
+		# fp16 autocast inside sleap-nn's TorchBackend (cuda and ROCm; on an
+		# Intel GPU, FixedCrops' own autocast reads it)
+		if self.precision == "fp16" and Accelerator(self.device):
 			for backend in backends:
 				backend.use_fp16 = True
 
@@ -864,8 +942,7 @@ class TopDown:
 		except (Exception, SystemExit) as e:
 			if not (self.engineAuto and self.fixed is not None and self.fixed.engine != "eager"):
 				raise
-			if self.device.startswith("cuda"):
-				self.torch.cuda.synchronize()
+			Synchronize(self.device)
 			self.EngineFallback(e)
 			self.WarmOnce(host, crops)
 
@@ -1140,17 +1217,20 @@ class LayoutUpsample:
 		return Upsample()
 
 
-def PoolBytes(pools):
+def PoolBytes(pools, device="cuda"):
 	"""
 	The GPU memory torch holds in these graph memory pools, in bytes (from
-	torch.cuda.memory_snapshot()); None if it can't say.
+	torch.cuda.memory_snapshot(), or torch.xpu's); None if it can't say.
 	"""
 	import torch
 	pools = {tuple(p) for p in pools}
+	api = torch.xpu if str(device).startswith("xpu") else torch.cuda
 	try:
-		return sum(s["total_size"] for s in torch.cuda.memory_snapshot() if tuple(s["segment_pool_id"]) in pools)
-	except (KeyError, TypeError, RuntimeError):
+		held = sum(s["total_size"] for s in api.memory_snapshot() if tuple(s["segment_pool_id"]) in pools)
+	except (KeyError, TypeError, RuntimeError, AttributeError):
 		return None
+	# torch.xpu's snapshot doesn't say which pool a segment is in (2.14): nothing found there is "can't say"
+	return None if held == 0 and api is not torch.cuda else held
 
 
 class FixedCrops:
@@ -1221,15 +1301,24 @@ class FixedCrops:
 		self.K = int(self.c.postprocess_config.max_instances or self.c.max_instances or instances)
 		self.cropH, self.cropW = (int(v) for v in layer.crop_size)
 		self.cuda = str(device).startswith("cuda")
-		if graph and not self.cuda:
-			raise SystemExit("--cuda-graphs: CUDA (or ROCm) only, not {}".format(device))
+		self.amp = Accelerator(device) # fp16 autocast's device type: cuda, xpu or None
+		# The graph API: torch.cuda's, or on an Intel GPU torch.xpu's XPUGraph (PyTorch 2.10 and later)
+		self.api = torch.cuda if self.cuda else torch.xpu if self.amp == "xpu" and XpuGraphs() else None
+		if graph and self.api is None:
+			raise SystemExit("--cuda-graphs: CUDA, ROCm or an Intel GPU with torch.xpu's graphs only, not {}".format(
+				device))
+		self.engine = FixedEngine.Choose(engine, device)
+		# OpenVINO's networks run outside PyTorch, through the computer's
+		# memory: no graph can record them, so the set runs without one
+		self.graphNote = None
+		if graph and self.engine == "openvino":
+			graph, self.graphNote = False, "no graph with OpenVINO's networks (they run outside PyTorch)"
 		self.graph = None if graph else False # None: to record at the first set
 		self.graphWanted = graph
 		self.static_in = self.static_out = self.pool = None
 		self.host = self.done = None
 		self.max_abs_diff = 0.0
 		self.nodes = None
-		self.engine = FixedEngine.Choose(engine, device)
 		self.cache = cache
 		self.engines = {} # id(layer): FixedEngine, made at its first input
 
@@ -1265,11 +1354,11 @@ class FixedCrops:
 		backend = layer.backend
 		if self.engine != "eager":
 			if id(layer) not in self.engines:
-				self.engines[id(layer)] = FixedEngine(self.engine, backend, x, bool(backend.use_fp16 and self.cuda),
+				self.engines[id(layer)] = FixedEngine(self.engine, backend, x, bool(backend.use_fp16 and self.amp),
 					self.cache, "centroid" if layer is self.c else "instance")
 			return self.engines[id(layer)](x)
-		with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=bool(backend.use_fp16 and self.cuda),
-				cache_enabled=False):
+		with torch.autocast(device_type=self.amp or "cpu", dtype=torch.float16,
+				enabled=bool(backend.use_fp16 and self.amp), cache_enabled=False):
 			out = backend.model(x)
 		if isinstance(out, dict):
 			out = layer._extract_confmaps(out)
@@ -1434,21 +1523,26 @@ class FixedCrops:
 
 	def Record(self, frames):
 		# The graph, recorded once, as CUDAGraphed.Capture records a model's
-		torch = self.torch
+		torch, api = self.torch, self.api
 		self.static_in = torch.empty_like(frames)
 		self.static_in.copy_(frames)
-		side = FixedStream("capture warm-up")
-		side.wait_stream(torch.cuda.current_stream())
-		with torch.cuda.stream(side), torch.inference_mode():
-			for _ in range(3): # cuDNN's (MIOpen's) and cuBLAS's first calls, outside the recording
+		side = FixedStream("capture warm-up", device=self.device)
+		side.wait_stream(api.current_stream())
+		with api.stream(side), torch.inference_mode():
+			for _ in range(3): # cuDNN's (MIOpen's, oneDNN's) and cuBLAS's first calls, outside the recording
 				warm = self.Pipeline(self.static_in)
-		torch.cuda.current_stream().wait_stream(side)
+		api.current_stream().wait_stream(side)
 		self.static_out = torch.empty_like(warm) # outside the pool
 		del warm
-		self.pool = torch.cuda.graph_pool_handle()
-		graph = torch.cuda.CUDAGraph()
-		with torch.cuda.graph(graph, pool=self.pool, stream=FixedStream("capture"), capture_error_mode="thread_local"), \
-				torch.inference_mode():
+		self.pool = api.graph_pool_handle()
+		if self.cuda:
+			graph = torch.cuda.CUDAGraph()
+			recording = torch.cuda.graph(graph, pool=self.pool, stream=FixedStream("capture"),
+				capture_error_mode="thread_local")
+		else:
+			graph = torch.xpu.XPUGraph()
+			recording = torch.xpu.graph(graph, pool=self.pool, stream=FixedStream("capture", device=self.device))
+		with recording, torch.inference_mode():
 			self.static_out.copy_(self.Pipeline(self.static_in))
 		graph.replay()
 		with torch.inference_mode():
@@ -1471,11 +1565,11 @@ class FixedCrops:
 	def Predict(self, frames):
 		torch = self.torch
 		out = self.Run(frames)
-		if self.cuda:
+		if self.api is not None:
 			# One copy back, into pinned memory, and one wait
 			if self.host is None:
 				self.host = torch.empty(out.shape, dtype=out.dtype, pin_memory=True)
-				self.done = torch.cuda.Event()
+				self.done = self.api.Event()
 			self.host.copy_(out, non_blocking=True)
 			self.done.record()
 			self.done.synchronize()
@@ -1490,7 +1584,10 @@ class FixedCrops:
 
 	def Plain(self):
 		# The networks in torch from now on (--engine auto, when an engine
-		# failed while warming up): nothing recorded or made yet
+		# failed while warming up): nothing recorded or made yet; a graph
+		# again if one was asked for and only OpenVINO kept it off
+		if self.graphNote and self.engine == "openvino":
+			self.graphWanted, self.graphNote = self.api is not None, None
 		self.engine, self.engines = "eager", {}
 		self.graph = None if self.graphWanted else False
 		self.static_in = self.static_out = self.pool = None
@@ -1500,10 +1597,11 @@ class FixedCrops:
 	def Describe(self):
 		engines = "" if not self.engines else "; networks: " + ", ".join(e.text for e in self.engines.values())
 		if not self.graph:
-			return "fixed crops: {} per set, without a graph{}".format(self.B * self.K, engines)
-		pooled = PoolBytes({self.pool})
-		return "fixed crops: one CUDA graph for the whole set ({} crops){}; its output {} (largest difference " \
-			"{:g}){}".format(self.B * self.K, "" if pooled is None else ", holding {:.0f} MB of GPU memory".format(
+			return "fixed crops: {} per set, without a graph{}{}".format(self.B * self.K,
+				" ({})".format(self.graphNote) if self.graphNote else "", engines)
+		pooled = PoolBytes({self.pool}, self.device)
+		return "fixed crops: one {} graph for the whole set ({} crops){}; its output {} (largest difference " \
+			"{:g}){}".format("CUDA" if self.cuda else "XPU", self.B * self.K, "" if pooled is None else ", holding {:.0f} MB of GPU memory".format(
 			pooled / 1e6), "the same as without" if self.max_abs_diff == 0 else "differs from without",
 			self.max_abs_diff, engines)
 
@@ -1530,22 +1628,60 @@ class FixedEngine:
 	torch's current stream, so --cuda-graphs records it too (TensorRT allows
 	its enqueue in a graph once it has run once, which the warm-up does).
 	The normalization (/ 255) stays in torch, before it.
+
+	openvino (Intel GPUs, --device xpu): the same ONNX, in float32, read by
+	Intel's OpenVINO and compiled for its GPU device, fp16 inside for
+	--precision fp16 (OpenVINO's INFERENCE_PRECISION_HINT), float32 out.
+	OpenVINO keeps its own GPU memory, not PyTorch's: the normalized batch
+	goes to it through the computer's memory and its confidence maps come
+	back the same way, two copies a call that TensorRT's shared memory
+	doesn't need. The compiled model is kept in OpenVINO's cache, in
+	--engine-cache's openvino folder.
 	"""
 
 	HEADS = ("CentroidConfmapsHead", "CenteredInstanceConfmapsHead")
 
+	NAMES = {"compile": "torch.compile", "tensorrt": "TensorRT", "openvino": "OpenVINO"}
+
 	TRITON = "Triton (Linux: it comes with PyTorch; Windows: pip install triton-windows, the version that " \
 		"matches your PyTorch: docs/live-tracking.md)"
+
+	COMPILER = "it needs a C++ compiler: on Windows, Visual Studio's Build Tools with the C++ workload"
+
+	@staticmethod
+	def Compiler():
+		"""
+		The C++ compiler torch.compile builds an Intel GPU's (xpu) host code
+		with, or None: cl on Windows, from Visual Studio's Build Tools (their
+		environment, vcvars64.bat's, loaded into this process when they're
+		installed but not on PATH), else g++ or clang++.
+		"""
+		import shutil
+		if os.name != "nt":
+			return shutil.which("g++") or shutil.which("clang++") or shutil.which("c++")
+		if not shutil.which("cl"):
+			LoadMsvc()
+		return shutil.which("cl")
 
 	@staticmethod
 	def Pick(device):
 		"""
 		--engine auto's choice on this device: (kind, None), kind tensorrt
 		where the GPU is NVIDIA's and tensorrt and onnx are installed, else
-		compile where Triton is; or ("eager", why not) with a GPU and
-		neither; ("eager", None) without a GPU.
+		compile where Triton is; on an Intel GPU (xpu), compile where Triton
+		and a C++ compiler are (FixedEngine.Compiler; faster than OpenVINO
+		on an Arc Pro B50), else openvino where openvino and onnx are
+		installed; or ("eager", why not) with a GPU and neither; ("eager",
+		None) without a GPU.
 		"""
 		import importlib.util
+		if str(device).startswith("xpu"):
+			if importlib.util.find_spec("triton") and FixedEngine.Compiler():
+				return "compile", None
+			if importlib.util.find_spec("openvino") and importlib.util.find_spec("onnx"):
+				return "openvino", None
+			return "eager", "neither torch.compile ({}) nor OpenVINO (pip install openvino onnx) can be had".format(
+				FixedEngine.COMPILER)
 		if not str(device).startswith("cuda"):
 			return "eager", None
 		import torch
@@ -1568,9 +1704,17 @@ class FixedEngine:
 		if engine == "auto":
 			return FixedEngine.Pick(device)[0]
 		import torch
-		if not str(device).startswith("cuda"):
-			raise SystemExit("--engine {}: CUDA or ROCm only, not {}".format(engine, device))
-		nvidia = not getattr(torch.version, "hip", None)
+		xpu = str(device).startswith("xpu")
+		if engine == "openvino":
+			if not xpu:
+				raise SystemExit("--engine openvino: Intel GPUs only (--device xpu), not {}".format(device))
+			for module in ("openvino", "onnx"):
+				if not importlib.util.find_spec(module):
+					raise SystemExit("--engine openvino needs the {0} package (pip install {0})".format(module))
+			return engine
+		if not str(device).startswith("cuda") and not (xpu and engine in ("on", "compile")):
+			raise SystemExit("--engine {}: CUDA, ROCm or an Intel GPU only, not {}".format(engine, device))
+		nvidia = not getattr(torch.version, "hip", None) and not xpu
 		if engine == "on":
 			kind, why = FixedEngine.Pick(device)
 			if kind == "eager":
@@ -1585,8 +1729,10 @@ class FixedEngine:
 		elif engine == "compile":
 			if not importlib.util.find_spec("triton"):
 				raise SystemExit("--engine compile needs {}".format(FixedEngine.TRITON))
+			if xpu and not FixedEngine.Compiler():
+				raise SystemExit("--engine compile on an Intel GPU: {}".format(FixedEngine.COMPILER))
 		else:
-			raise SystemExit("--engine: auto, on, off, compile or tensorrt, not {}".format(engine))
+			raise SystemExit("--engine: auto, on, off, compile, tensorrt or openvino, not {}".format(engine))
 		return engine
 
 	def __init__(self, kind, backend, x, fp16, cache, name):
@@ -1595,10 +1741,12 @@ class FixedEngine:
 		self.shape = tuple(x.shape)
 		t = time.perf_counter()
 		if kind == "compile":
-			self.Compile(backend.model, cache)
+			self.Compile(backend.model, cache, Accelerator(x.device) or "cuda")
+		elif kind == "openvino":
+			self.OpenVINO(backend.model, cache, x)
 		else:
 			self.TensorRT(backend.model, cache, x)
-		self.text = "{} {} {} {}".format(name, {"compile": "torch.compile", "tensorrt": "TensorRT"}[kind],
+		self.text = "{} {} {} {}".format(name, self.NAMES[kind],
 			"fp16" if fp16 else "fp32", "x".join(str(v) for v in self.shape[:1] + self.shape[2:]))
 		self.seconds = time.perf_counter() - t
 
@@ -1644,7 +1792,7 @@ class FixedEngine:
 			FixedEngine.PLAN_FORMAT).encode())
 		return "{}_{}".format(name, digest.hexdigest()[:16])
 
-	def Compile(self, model, cache):
+	def Compile(self, model, cache, amp="cuda"):
 		torch = self.torch
 		fp16 = self.fp16
 		self.PlainConfigs(model)
@@ -1662,7 +1810,7 @@ class FixedEngine:
 				flush=True)
 
 		def run(x):
-			with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=fp16, cache_enabled=False):
+			with torch.autocast(device_type=amp, dtype=torch.float16, enabled=fp16, cache_enabled=False):
 				out = model(x)
 			if isinstance(out, dict):
 				raise RuntimeError("--engine compile: the model gives a dict, not one confidence map")
@@ -1745,6 +1893,70 @@ class FixedEngine:
 		self.ctx.set_tensor_address("y", self.out.data_ptr())
 		self.fn = self.Enqueue
 
+	def OpenVINO(self, lightning, cache, x):
+		import copy, platform, warnings
+		import openvino as ov
+		torch = self.torch
+		body = getattr(lightning, "model", None)
+		if body is None:
+			raise SystemExit("--engine openvino: a trained sleap-nn model only (--model sleap), not {}".format(
+				type(lightning).__name__))
+		n, _, c, h, w = self.shape
+		with torch.inference_mode(False), torch.no_grad():
+			# exported on the CPU, in float32 (OpenVINO lowers it to fp16 itself)
+			cpu = copy.deepcopy(body).to("cpu").to(memory_format=torch.contiguous_format).float().eval()
+			probe = cpu(torch.zeros((1, c, h, w)))
+			heads = [k for k in probe if k in self.HEADS] if isinstance(probe, dict) else []
+			if len(heads) != 1:
+				raise SystemExit("--engine openvino: no confidence-map head in the {} model".format(self.name))
+			head = heads[0]
+
+			class Net(torch.nn.Module):
+				def __init__(self):
+					super().__init__()
+					self.body = cpu
+
+				def forward(self, x):
+					return self.body(x)[head].float()
+			net = Net().eval()
+			cache = os.path.join(self.CacheDir(cache), "openvino")
+			os.makedirs(cache, exist_ok=True)
+			stem = os.path.join(cache, self.PlanName(self.name, net.state_dict(), self.shape, self.fp16, ov.__version__,
+				"openvino"))
+			if not os.path.exists(stem + ".onnx"):
+				print("{}: exporting the {} network for OpenVINO ({}), once (kept in {})".format(PROGRAM, self.name,
+					"x".join(str(v) for v in (n, c, h, w)), cache), flush=True)
+				tmp = "{}.{}-{}.onnx".format(stem, platform.node(), os.getpid())
+				with warnings.catch_warnings():
+					warnings.simplefilter("ignore")
+					torch.onnx.export(net, (torch.zeros((n, c, h, w)),), tmp, input_names=["x"], output_names=["y"],
+						opset_version=17, dynamo=False, do_constant_folding=True)
+				os.replace(tmp, stem + ".onnx")
+			del net, probe, cpu
+		core = ov.Core()
+		core.set_property({"CACHE_DIR": cache})
+		target = os.environ.get("CAMPY_OPENVINO_DEVICE", "GPU")
+		config = {"INFERENCE_PRECISION_HINT": "f16" if self.fp16 else "f32", "PERFORMANCE_HINT": "LATENCY"}
+		self.compiled = core.compile_model(core.read_model(stem + ".onnx"), target, config)
+		self.request = self.compiled.create_infer_request()
+		self.ovDevice = target
+		self.device = x.device
+		self.fn = self.InferOpenVINO
+
+	def InferOpenVINO(self, x):
+		# sleap-nn's normalization in torch on the GPU, then the batch to
+		# OpenVINO through the computer's memory and its maps back
+		torch = self.torch
+		x = x.squeeze(1)
+		if torch.is_floating_point(x):
+			from sleap_nn.data.normalization import normalize_on_gpu
+			x = normalize_on_gpu(x)
+		else:
+			x = x.float() / 255.0
+		self.request.infer({0: x.contiguous().cpu().numpy()})
+		out = self.request.get_output_tensor(0).data
+		return torch.from_numpy(out).to(self.device, non_blocking=False)
+
 	def Enqueue(self, x):
 		# sleap-nn's normalize_on_gpu for uint8 (float32 / 255), then the
 		# engine on torch's stream; its output buffer is the same every call
@@ -1781,7 +1993,7 @@ def MaxAbsDiff(a, b):
 _STREAMS, _STREAMS_LOCK = {}, threading.Lock()
 
 
-def FixedStream(name, priority=0):
+def FixedStream(name, priority=0, device="cuda"):
 	"""
 	One CUDA stream per name (and device), made the first time and kept:
 	never torch.cuda.Stream() per use. torch hands out its pool of 32 streams
@@ -1792,6 +2004,13 @@ def FixedStream(name, priority=0):
 	here are also made distinct from each other.
 	"""
 	import torch
+	if str(device).startswith("xpu"):
+		# an Intel GPU's: the same, one per name, kept (torch.xpu.Stream)
+		key = (name, priority, "xpu", torch.xpu.current_device())
+		with _STREAMS_LOCK:
+			if key not in _STREAMS:
+				_STREAMS[key] = torch.xpu.Stream(priority=priority)
+			return _STREAMS[key]
 	key = (name, priority, torch.cuda.current_device())
 	with _STREAMS_LOCK:
 		if key not in _STREAMS:
@@ -3312,10 +3531,11 @@ def Parser():
 	p.add_argument("--instance", default="", help="--model sleap: the trained centered-instance model's folder.")
 	p.add_argument("--centroid-threshold", type=float, default=0.2, help="--model sleap: centroid peak threshold.")
 	p.add_argument("--peak-threshold", type=float, default=0.2, help="--model sleap: keypoint peak threshold.")
-	p.add_argument("--device", default="auto", help="auto, cuda (also ROCm), mps or cpu.")
-	p.add_argument("--precision", default="fp16", choices=["fp16", "fp32"], help="fp16: autocast, on cuda and ROCm only.")
+	p.add_argument("--device", default="auto", help="auto, cuda (also ROCm), xpu (an Intel GPU, \
+		with PyTorch's xpu build), mps or cpu.")
+	p.add_argument("--precision", default="fp16", choices=["fp16", "fp32"], help="fp16: autocast, on cuda, ROCm and xpu only.")
 	p.add_argument("--memory-format", default="auto", choices=["auto", "nchw", "channels_last"],
-		help="auto: channels_last on Nvidia GPUs, where it is faster, and nchw elsewhere (ROCm, MPS, CPU), \
+		help="auto: channels_last on Nvidia and Intel GPUs, where it is faster, and nchw elsewhere (ROCm, MPS, CPU), \
 			as bench/sleap_infer_bench.py.")
 	p.add_argument("--max-instances", type=int, default=5, help="Most animals per frame.")
 	p.add_argument("--strict-peaks", action="store_true", help=argparse.SUPPRESS) # gone with sleap-nn 0.3.5 (ParseArgs)
@@ -3370,11 +3590,13 @@ def Parser():
 		without the CPU waiting for the animals found, and its results come back in one copy (FixedCrops). With \
 		--cuda-graphs, the whole set is one graph. auto (the default): on with a GPU, when the models allow it \
 		(else sleap-nn's own layer, and campy-live says why). Set --max-instances to the animals there are.")
-	p.add_argument("--engine", default="auto", choices=["auto", "on", "off", "compile", "tensorrt", "eager"],
+	p.add_argument("--engine", default="auto", choices=["auto", "on", "off", "compile", "tensorrt", "openvino", "eager"],
 		help="With --fixed-crops (on by default with a GPU): run the two networks as compiled engines \
 		(FixedEngine), made while warming up, before the feed is waited for. compile: torch.compile (ROCm; NVIDIA \
-		with Triton); tensorrt: NVIDIA TensorRT. auto (the default): tensorrt on NVIDIA where tensorrt and onnx \
-		are installed, else compile where Triton is, else none; if the engine can't be made, the networks run in \
+		with Triton; Intel GPUs with a C++ compiler: on Windows, Visual Studio's Build Tools); tensorrt: NVIDIA \
+		TensorRT; openvino: Intel's OpenVINO on an Intel GPU (--device xpu). auto (the default): tensorrt on NVIDIA \
+		where tensorrt and onnx are installed, else compile where Triton is; on an Intel GPU compile where the C++ \
+		compiler is, else openvino where openvino and onnx are installed; else none; if the engine can't be made, the networks run in \
 		torch, and campy-live says why. on: auto's choice, and stop if it can't be made. off (or eager): none.")
 	p.add_argument("--engine-cache", default="", help="--engine: the folder its built engines are kept in and \
 		read back from: TensorRT's plans, and torch.compile's kernels in inductor/ unless TORCHINDUCTOR_CACHE_DIR \
