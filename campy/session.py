@@ -324,12 +324,47 @@ def FeedCode():
 
 
 PROBE = """
-import importlib.util, json, sys
+import importlib.metadata, importlib.util, json, sys
 from campy import session
 here, code = session.FeedCode()
+try:
+	version = importlib.metadata.version("sleap-nn")
+except importlib.metadata.PackageNotFoundError:
+	version = None
 print(json.dumps({"python": sys.executable, "campy": here, "feed": code,
-	"torch": importlib.util.find_spec("torch") is not None, "sleap_nn": importlib.util.find_spec("sleap_nn") is not None}))
+	"torch": importlib.util.find_spec("torch") is not None, "sleap_nn": importlib.util.find_spec("sleap_nn") is not None,
+	"sleap_nn_version": version}))
 """
+
+# The oldest sleap-nn campy-live runs a SLEAP model with (campy/live.py:
+# SLEAP_NN, which campy-live itself checks by the fixes it needs)
+LIVE_SLEAP_NN = "0.3.5"
+
+
+def LiveEnvProblem(python, found, model):
+	"""Why campy-live's environment (CheckLiveEnv's found) can't run model, or None."""
+	if model != "sleap":
+		return None
+	if not (found["torch"] and found["sleap_nn"]):
+		return "campy-live's environment ({}) has no torch or sleap-nn.".format(python)
+	version = found.get("sleap_nn_version")
+	if version is not None and Release(version) < Release(LIVE_SLEAP_NN):
+		return "campy-live's environment ({}) has sleap-nn {}; campy-live needs {} or later. In that environment: " \
+			"pip install -U 'sleap-nn>={}' (docs/live-tracking.md).".format(python, version, LIVE_SLEAP_NN, LIVE_SLEAP_NN)
+	return None
+
+
+def Release(version):
+	# "0.3.5", "0.3.6.dev1+g123", "0.4.0a1" -> (0, 3, 5), (0, 3, 6), (0, 4, 0)
+	parts = []
+	for part in version.split(".")[:3]:
+		digits = ""
+		for ch in part:
+			if not ch.isdigit():
+				break
+			digits += ch
+		parts.append(int(digits or 0))
+	return tuple(parts + [0] * (3 - len(parts)))
 
 
 def Probe(python, env=None, timeout=120):
@@ -787,8 +822,9 @@ class Session:
 		if config.live is not None:
 			self.live_python = self.live_python or LivePython(config.live)[0]
 			found = CheckLiveEnv(self.live_python, self.LiveEnv())
-			if config.live["model"] == "sleap" and not (found["torch"] and found["sleap_nn"]):
-				raise SessionError("campy-live's environment ({}) has no torch or sleap-nn.".format(self.live_python))
+			problem = LiveEnvProblem(self.live_python, found, config.live["model"])
+			if problem:
+				raise SessionError(problem)
 		self.MakeFolder()
 		Say("Recording into {}".format(self.folder))
 		Say("Logs: {}".format(self.logs))

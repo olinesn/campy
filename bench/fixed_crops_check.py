@@ -5,14 +5,10 @@ and how far apart the keypoints are. Also each way's time per set (upload,
 model, results back), with nothing else running: the --fixed-crops graph
 (--cuda-graphs), the same without a graph, and the default.
 
-sleap-nn 0.3.3 takes the crop size from the first crop's corners in float32,
-int(abs(right - left)) + 1, which for some centroids gives a pixel less (319
-for 320 px crops), and then cuts every crop of the set that size
-(talmolab/sleap-nn#778). campy-live corrects that for its own layers
-(live.ExactCropSize, pull request 131), and --fixed-crops always cuts the
-crop size, so both cut the same crops; the sets where sleap-nn alone would
-have cut them short are counted (ShortCrops). A sleap-nn with #780 (after
-0.3.4) cuts them at their real size itself, and the count is 0.
+Both cut every crop at the model's crop size (sleap-nn 0.3.5 on; before it,
+sleap-nn sometimes cut them a pixel short, talmolab/sleap-nn#778, and
+campy-live corrected that itself), and both find the centroids by sleap-nn's
+flat-top peak rule (campy/peaks.py), so the animals found should be the same.
 
     python bench/fixed_crops_check.py --centroid <model> --instance <model> \
         Camera1.mp4 Camera3.mp4 Camera4.mp4 [--sets 3600] [--out check.json]
@@ -46,28 +42,6 @@ def Frames(videos, shape):
 	finally:
 		for p in procs:
 			p.kill()
-
-
-class ShortCrops:
-	"""
-	Counts the calls of sleap-nn's crop_bboxes (in its top-down layer) whose
-	own crop size, from the boxes as sleap-nn made them, would be short. It
-	goes around campy-live's ExactCropSize, which then cuts the real size.
-	"""
-
-	def __init__(self):
-		import sleap_nn.inference.layers.topdown as topdown
-		self.original, self.short = topdown.crop_bboxes, 0
-		topdown.crop_bboxes = self
-
-	def __call__(self, images, bboxes, sample_inds, **kwargs):
-		import torch
-		# A sleap-nn that passes crop_size= (talmolab/sleap-nn#780, after
-		# 0.3.4) cuts that size: none of its crops are short
-		if len(bboxes) and kwargs.get("crop_size") is None:
-			sides = bboxes[0, 3, 1] - bboxes[0, 0, 1], bboxes[0, 1, 0] - bboxes[0, 0, 0]
-			self.short += int(any(bool(side.abs().to(torch.long) != torch.round(side).to(torch.long)) for side in sides))
-		return self.original(images, bboxes, sample_inds, **kwargs)
 
 
 def Compare(g, d):
@@ -178,13 +152,12 @@ def Main(argv=None):
 		eager.Predict(eager.Upload(host.tensor))
 	print("warmed up in {:.1f} s; {}".format(time.perf_counter() - t, model.DescribeGraphs()), flush=True)
 
-	short = ShortCrops()
 	times = {"fixed_graph": [], "fixed_eager": [], "default": []}
 	by_found = {}
 	diffs, diff_found = [], [] # each set's keypoint max diff, and the animals found in it
 	found_diff = missing = 0
 	cen_diff, eager_diff, found_total = [], [], []
-	moved = {"fixed_graph": Keypoints(), "fixed_eager_torch": Keypoints()} # vs the default (crops at their real size)
+	moved = {"fixed_graph": Keypoints(), "fixed_eager_torch": Keypoints()} # vs the default
 	sets = 0
 	for frames in Frames(a.videos, (h, w)):
 		host.array[:] = frames
@@ -217,8 +190,8 @@ def Main(argv=None):
 		eager_diff.append(float(np.nanmax(np.abs(g["keypoints"] - e["keypoints"]), initial=0)))
 		sets += 1
 		if sets % 600 == 0:
-			print("{} sets: found differs in {}; keypoints max diff {:.4g} px; sleap-nn alone would have cut short "
-				"crops in {} sets".format(sets, found_diff, max(diffs, default=0), short.short), flush=True)
+			print("{} sets: found differs in {}; keypoints max diff {:.4g} px".format(
+				sets, found_diff, max(diffs, default=0)), flush=True)
 		if a.sets and sets >= a.sets:
 			break
 
@@ -242,7 +215,6 @@ def Main(argv=None):
 		"found_per_set_mean": float(np.mean(found_total)) if found_total else 0.0,
 		"centroid_max_abs_diff_px": max(cen_diff, default=0.0),
 		"vs_default": Diffs(),
-		"sets_where_sleap_nn_alone_cuts_short": short.short,
 		"graph_vs_eager_fixed_max_abs_diff_px": max(eager_diff, default=0.0),
 		"time_ms": {k: Ms(v) for k, v in times.items()},
 		"time_ms_by_animals_found": {str(k): {m: Ms(v) for m, v in d.items()} | {"sets": len(d["default"])}

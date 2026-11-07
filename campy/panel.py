@@ -414,8 +414,9 @@ class Panel:
 			try:
 				python, where = session.LivePython(live)
 				found = session.CheckLiveEnv(python, dict(os.environ, **{str(k): str(v) for k, v in live["env"].items()}))
-				if live["model"] == "sleap" and not (found["torch"] and found["sleap_nn"]):
-					checks.append(("block", "campy-live's environment ({}) has no torch or sleap-nn".format(python)))
+				problem = session.LiveEnvProblem(python, found, live["model"])
+				if problem:
+					checks.append(("block", problem))
 				else:
 					checks.append(("ok", "campy-live's environment: {} ({})".format(python, where)))
 			except session.SessionError as e:

@@ -151,6 +151,21 @@ def test_the_live_environment_must_run_the_same_feed_code(tmp_path):
 		session.CheckLiveEnv(sys.executable, dict(os.environ, PYTHONPATH=str(other)))
 
 
+def test_the_live_environment_needs_sleap_nn_0_3_5(tmp_path):
+	found = session.CheckLiveEnv(sys.executable, dict(os.environ, PYTHONPATH=REPO))
+	assert "sleap_nn_version" in found
+	ok = {"torch": True, "sleap_nn": True, "sleap_nn_version": "0.3.5"}
+	assert session.LiveEnvProblem("py", ok, "sleap") is None
+	assert session.LiveEnvProblem("py", dict(ok, sleap_nn_version="0.3.6.dev2+gabc"), "sleap") is None
+	assert session.LiveEnvProblem("py", dict(ok, sleap_nn_version="0.4.0a1"), "sleap") is None
+	old = session.LiveEnvProblem("py", dict(ok, sleap_nn_version="0.3.3"), "sleap")
+	assert "has sleap-nn 0.3.3" in old and "sleap-nn>=0.3.5" in old
+	assert "has no torch or sleap-nn" in session.LiveEnvProblem("py", dict(ok, torch=False), "sleap")
+	assert session.LiveEnvProblem("py", {"torch": False, "sleap_nn": False, "sleap_nn_version": None}, "none") is None
+	from campy import live
+	assert session.LIVE_SLEAP_NN == live.SLEAP_NN
+
+
 def test_one_campy_session_at_a_time(home):
 	lock = session.Lock().Take()
 	other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)", "campy-session-standin"])
