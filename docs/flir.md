@@ -64,6 +64,30 @@ It changes Spinnaker's own setting, `EnumerateGEVInterfaces` (on the System's no
 
 On Windows, it was turned off on 29 October 2026 on the Dell Pro Max Slim FCS1250 (4 FLIR Blackfly S) and the Dell Pro Tower Plus (8 FLIR Blackfly S), both Windows 11 with campy's Spinnaker 4.4.0.246 for Python, through campy's own `SetGige` (what `campy-flir-reset --gige off` runs), after checking that Spinnaker listed every camera as USB3. A new Python process then read the search as off and still found all 4 and all 8 cameras, without opening any of them. Spinnaker writes the setting to `C:\ProgramData\Spinnaker\Shared\GenTLSysReg.ini`, a folder shared by every user of the computer, not to the user's own profile as on Linux. So on Windows it applies to every account there, and to other Spinnaker programs that read that file, SpinView included. On the Pro Tower Plus that includes the installed Spinnaker 4.2.0.88 SDK; whether that SDK reads the file wasn't checked. There `campy-flir-reset` says the search is off "for every user of this computer", and the launch check's `gige` line says "for this computer" where Linux says "for this user". What the search costs at startup on Windows was not measured. The GMKtec EVO-X2 already had it off.
 
+On 6 November 2026 the Pro Tower Plus's launch check (campy 2.5.0) gave the `gige` WARN again: Spinnaker read the search as on there. Why it was back on wasn't looked into, and it was left as it was. Opening Spinnaker and listing the 8 cameras still took only 0.54 s.
+
+## Opening the cameras in the launch check: one after another
+The launch check's camera check (the `camera` lines) opens each FLIR camera in turn, sets it up as a recording would, reads what limits its frame rate, puts back what it changed and closes it. That takes about 0.3 s per camera. Opening them all at once, from threads, would be quicker, but campy keeps opening them one after another: with 8 cameras, threads would save about 2 s, under the 3 s that would be worth the change.
+
+Measured on 6 November 2026 on the Dell Pro Tower Plus (Windows 11, 8 FLIR Blackfly S BFS-U3-13Y3M at 1280x1024 on one USB 3 controller, campy 2.5.0, Spinnaker 4.4.0.246 for Python), with the PC idle, twice each way. Each camera got the same settings and gave the same results both ways:
+
+| 8 cameras | Round 1 | Round 2 |
+|---|---:|---:|
+| One after another, as campy does it | 2.39 s | 2.44 s |
+| From 8 threads, sharing one Spinnaker System and camera list | 0.39 s | 0.35 s |
+
+So threads were 6.6x as fast and saved 2.0-2.1 s. The whole launch check took 1.95 s, 1.90 s of it the camera check.
+
+Where one camera's 0.3 s goes (median of the 8, one after another):
+- `Init` (opening it): 146-159 ms;
+- campy's settings: 111 ms. Almost half is the chunk data (49 ms): campy turns on, one at a time, every kind of extra data the camera can send with a frame. Then 12 ms each for the width and the height, 11 ms for the frame rate, and 3-7 ms each for the trigger, pixel format, exposure, gain and gamma;
+- `DeInit` (closing it): 17-33 ms;
+- the rest (checking for an acquisition an earlier run left on, reading the limits, putting the frame rate back): about 10 ms.
+
+PySpin lets other Python threads run while it works: during `Init`, a Python thread meant to wake every millisecond was held up for 2 ms at most. From threads each camera's `Init` took a little longer (median 180 ms against 152), but the cameras on the one USB controller didn't wait for each other. This follows FLIR's own AcquisitionMultipleThread example.
+
+At 0.3 s a camera, threads would save 3 s from about 12 cameras on. Measure again on a rig with that many.
+
 ## FLIR gamma (cameraGamma)
 `cameraGamma` sets the gamma a FLIR camera applies to each frame, before campy gets it: brightness out = brightness in ^ `cameraGamma`, on a 0-1 scale. Below 1 it brightens the dark and middle grays and leaves black and white where they are, so it does not clip a highlight that was not clipped already. The default is 0.6. `"Off"` turns the camera's gamma off (`GammaEnable` False), so that each gray level is in proportion to the light. One value applies to every camera, or give one per camera (`cameraGamma: [0.6, "Off"]`). A value the camera cannot take is set to the nearest it can, and campy says so. Each camera's `metadata.csv` keeps the value asked for (`cameraGamma`) and the one the camera has (`gamma`). Like gain and exposure, gamma is set at every open and not put back when campy closes the camera, so SpinView then shows campy's gamma. Basler cameras take their gamma from their `.pfs` file.
 
