@@ -189,6 +189,27 @@ Measured on 23 October 2026 on the same replay (5 mice, 3 cameras, 60 fps, 3D), 
 
 - **What's left.** The copy out of shared memory (0.17–0.28 ms) could be skipped by registering the shared-memory rings as pinned GPU memory and uploading straight from a ring's slot, but that saves less than 0.3 ms of latency. Peak finding (0.3 + 0.3 ms on the EVO-X2) could go inside the `torch.compile` region, but compiled floating-point sums may round differently, so the keypoints would no longer be exactly today's.
 
+#### The clock hold's last try at fewer blocks, gone (pull request 325)
+
+Pull request 152 left one slow stretch: in the first run on a GPU after its computer restarts, `--hold-gpu-clock-blocks auto` still tried spinning no block, 10 s in, to learn whether the GPU kept its clock without one. On these three cards it didn't, and that run had about 1–2 s of slow sets. For closed-loop work the worst case counts, not the median, so since this pull request `auto` never spins fewer blocks while the frames come: it starts at 1, adds a second if the clock still falls, and keeps it. Nothing else changed: the same models, the same work, the same order.
+
+Measured on 7 November 2026 on campy 2.6.0 (dev `ec48d0a`, "before") and the same with this change ("after"), 12-minute replays of the 5-mouse recording (3 cameras, 60 fps, 3D, the replay starting over every 60 s), about 43,200 sets each, under the rig lock, every run `RIG_CLEAN`. "First run" means the hold's memory of the GPU (`gpu_clock.json`) was emptied first, as after a restart. ms per set, as `campy-live` logs it (upload to results back); the GPU's clock and power were read every 50 ms (`bench/live_clock_hold_check.py`).
+
+| | First run, before | First run, after | Later runs, before (1 remembered) |
+|---|---|---|---|
+| **RTX 6000 Ada** (Precision 7875), p50 / p99 / p99.9 | 1.69 / 1.80 / **3.45** | 1.69 / 1.79 / **1.94** | 1.69 / 1.79 / 1.88 |
+| RTX 6000 Ada, slowest set | **6.38** | 4.60 | 5.40 |
+| RTX 6000 Ada, the try's slow stretch | 1.0 s, 60 sets of 3.2–5.3 ms, clock down to 975 MHz | none (clock never below 2,505 MHz) | none |
+| **RTX 4000 Ada** (Precision 7875), p50 / p99 / p99.9 | 3.34 / 3.50 / **5.26** | 3.34 / 3.49 / **3.63** | not measured |
+| RTX 4000 Ada, the try's slow stretch | 1.4 s, 84 sets of 3.7–5.9 ms, clock down to 1,215 MHz | none (clock never below 2,385 MHz) | |
+| **RTX 2000 Ada** (Pro Max Slim), p50 / p99 / slowest | 5.59 / 5.80 / 6.87 | 5.60 / 5.76 / 6.71 | 5.60 / 5.76 / 6.25 |
+| RTX 2000 Ada, the try's slow stretch | 2.0 s, 114 sets of 6.2–6.9 ms (clock 2,010 MHz), then 10 s of 2 blocks (+0.17 ms a set) | none (no block change) | none |
+
+- **What a try did.** On the RTX 6000 Ada, `auto` dropped its block at 10.0 s. For 1.75 s nothing happened (the sets stayed at 1.67 ms, the clock at 2,730 MHz, the power fell from 128 to 108 W); then the clock fell to 975–1,035 MHz, and every set took 3.2–5.3 ms. Half a second later `auto` saw it (two slow reads) and put the block back, and the clock was up again 0.5 s after that. On the Pro Max Slim the clock only fell to about 2,000 MHz, but it came back slowly, so `auto` added a second block too, which it then spun for 10 s.
+- **The keypoints are identical.** Every set with the same frame number in a before and an after run had the same centroids, keypoints and confidences, to the bit: 43,199 of 43,199 sets on the RTX 6000 Ada and on the RTX 4000 Ada, 43,197 of 43,197 on the Pro Max Slim.
+- **What the block costs.** A spinning block costs the models 0.02–0.16 ms a set when the clock is up anyway. Measured with a second block, 3 minutes each, `--hold-gpu-clock-blocks 1` against `2`: RTX 6000 Ada 1.67 → 1.70 ms, RTX 4000 Ada 3.31 → 3.41 ms (55.6 → 58.8 W), Pro Max Slim 5.60 → 5.76 ms (p99 5.76 → 5.99, 41–42 W either way). The RTX 6000 Ada's power moves 123–136 W from one run to the next at the same setting, so the best measure of its block is the try itself: 128 W with it, 108 W in the 1.75 s without it before the clock fell, about 20 W. With no block at all, the Pro Max Slim's card ran at 1,845 MHz and 6.86 ms a set (p99 7.32 ms, 4 sets skipped in 3 minutes) at 28.7 W: today it needs its block. A GPU that keeps its clock with none, as this card did right after a restart in October, can still run with none: `--hold-gpu-clock-blocks 0`.
+- **What's left on the Precision 7875.** Nearly every 12-minute run on either of its cards, before or after, had one stretch of about 8 s, 6–8 minutes in, in which one set every 0.4–0.55 s took 2–6 ms, at full clock and with no block change. It isn't the clock hold; its cause is not known yet. The few slow frame-to-3D times (up to 21 ms) are the replay's: they come in the first frames after it opens its videos again, every 60 s; without those, frame to 3D was at most 8.4–10.1 ms on the RTX 6000 Ada and 11.5–12.1 ms on the Pro Max Slim.
+
 ## Running the models faster: compiled engines (on by default in campy-live)
 
 `campy-live` used to run both models in plain PyTorch, in fp16. In PyTorch every layer of a network is its own small GPU program: a convolution writes its result to memory, and the step after it (adding the bias, the activation, the upsampling) reads it back. A *compiled engine* fuses those steps into one program and picks the fastest one for the exact image size, so far less goes to and from memory. CUDA graphs (`campy-live --cuda-graphs`) only cut the cost of *starting* each program; fusing is the other half.
