@@ -189,7 +189,7 @@ Measured on 23 October 2026 on the same replay (5 mice, 3 cameras, 60 fps, 3D), 
 
 - **What's left.** The copy out of shared memory (0.17–0.28 ms) could be skipped by registering the shared-memory rings as pinned GPU memory and uploading straight from a ring's slot, but that saves less than 0.3 ms of latency. Peak finding (0.3 + 0.3 ms on the EVO-X2) could go inside the `torch.compile` region, but compiled floating-point sums may round differently, so the keypoints would no longer be exactly today's.
 
-#### The clock hold's last try at fewer blocks, gone (pull request PRNUM)
+#### The clock hold's last try at fewer blocks, gone (pull request 325)
 
 Pull request 152 left one slow stretch: in the first run on a GPU after its computer restarts, `--hold-gpu-clock-blocks auto` still tried spinning no block, 10 s in, to learn whether the GPU kept its clock without one. On these three cards it didn't, and that run had about 1–2 s of slow sets. For closed-loop work the worst case counts, not the median, so since this pull request `auto` never spins fewer blocks while the frames come: it starts at 1, adds a second if the clock still falls, and keeps it. Nothing else changed: the same models, the same work, the same order.
 
