@@ -236,6 +236,45 @@ def test_without_the_wait_a_basler_video_was_scrambled(basler, monkeypatch, tmp_
 	assert opened == (1152, 1024)
 
 
+class PacedBasler(FakeBasler):
+	"""
+	A Basler whose frames come at 40 fps, as a triggered camera's do. Like
+	pylon's RetrieveResult, a grab waits up to its timeout for the next frame
+	and raises when none comes.
+	"""
+	def __init__(self):
+		super().__init__()
+		self.start, self.timeouts = None, []
+
+	def StartGrabbing(self, strategy):
+		self.start = time.monotonic() + 0.1 # the first frame 100 ms after the start
+
+	def RetrieveResult(self, timeout, handling):
+		self.timeouts.append(timeout)
+		due = self.start + self.grabbed * 0.025
+		wait = due - time.monotonic()
+		if wait > timeout / 1000:
+			time.sleep(timeout / 1000)
+			raise RuntimeError("Grab timed out")
+		time.sleep(max(0, wait))
+		self.grabbed += 1
+		return Grab(self.Width.GetValue(), self.Height.GetValue(), self.grabbed)
+
+
+def test_a_basler_grab_waits_for_its_frame(basler, monkeypatch, tmp_path):
+	# RetrieveResult(0) had the grab thread ask ~1,000 times a second, an
+	# exception each time
+	camera = PacedBasler()
+	opened, sent = record(monkeypatch, tmp_path, "basler", camera,
+		cameraSettings=os.path.join(REPO, "configs", "mono8.pfs"), recTimeInSec=0.25)
+	assert len(sent) == 10 # 0.25 s at 40 fps: every frame
+	assert set(camera.timeouts) == {basler.GRAB_TIMEOUT_MS} and basler.GRAB_TIMEOUT_MS == 50
+	# One grab per frame, and a few while waiting for the first: 267 at a timeout of 0.
+	# (How soon after it came each frame was taken isn't checked: here that is the
+	# stand-in's own sleep, up to 56 ms late on a busy Windows runner.)
+	assert len(camera.timeouts) <= len(sent) + 5
+
+
 # ------------------------------------------------------------------ emu
 
 def write_clip(path, size=(64, 48), frames=10):

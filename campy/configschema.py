@@ -181,7 +181,8 @@ SETTINGS = [
 			(real-time stats))."),
 	Setting("ffmpegPath", "None", TEXT, section=ENC, per_camera=ONE, help="Location of ffmpeg binary for imageio."),
 	Setting("pixelFormatInput", "rgb24", str, section=ENC,
-		help="Pixel format input. Use 'rgb24' for RGB or 'bayer_bggr8' for 8-bit bayer pattern."),
+		help="Pixel format input. Use 'gray' for mono, 'rgb24' for RGB, or the 8-bit Bayer pattern the camera \
+			has: 'bayer_rggb8', 'bayer_bggr8', 'bayer_gbrg8' or 'bayer_grbg8' (a FLIR camera is set to it)."),
 	Setting("pixelFormatOutput", "rgb0", str, section=ENC,
 		help="Pixel format output. Use 'rgb0' for best results."),
 	Setting("colorRange", "limited", str, section=ENC, choices=("limited", "full"), fold_case=True,

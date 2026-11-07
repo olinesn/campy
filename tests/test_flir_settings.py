@@ -36,7 +36,7 @@ def FakePySpin():
 	spin = types.ModuleType("PySpin")
 	spin.RW = "RW"
 	spin.SpinnakerException = type("SpinnakerException", (Exception,), {})
-	for name in ("Mono8", "RGB8Packed", "BayerRG8", "BayerBG8", "Mono16"):
+	for name in ("Mono8", "RGB8Packed", "BayerRG8", "BayerBG8", "BayerGB8", "BayerGR8", "Mono16"):
 		setattr(spin, "PixelFormat_" + name, name)
 	for name in ("Line0", "Line1", "Line2", "Line3", "Software"):
 		setattr(spin, "TriggerSource_" + name, name)
@@ -60,12 +60,38 @@ def params(**values):
 
 
 @pytest.mark.parametrize("pixel_format, expected", [
-	("gray", "Mono8"), ("rgb24", "RGB8Packed"), ("bayer_rggb8", "BayerRG8"), ("bayer_bggr8", "BayerRG8")])
+	("gray", "Mono8"), ("rgb24", "RGB8Packed"), ("bayer_rggb8", "BayerRG8"), ("bayer_bggr8", "BayerBG8"),
+	("bayer_gbrg8", "BayerGB8"), ("bayer_grbg8", "BayerGR8")])
 def test_the_pixel_formats_campy_sets(flir, pixel_format, expected, capsys):
+	# A Bayer pattern is the one pixelFormatInput names, which is what ffmpeg is
+	# told the frames are (writer.py): campy set BayerRG8 for bayer_bggr8 too,
+	# and ffmpeg then swapped red and blue
 	camera = FakeCamera()
-	flir.ConfigurePixelFormat(camera, params(pixelFormatInput=pixel_format))
+	p = flir.ConfigurePixelFormat(camera, params(pixelFormatInput=pixel_format))
 	assert camera.PixelFormat.set == [expected]
+	assert p["pixelFormatInput"] == pixel_format # what the writer gives ffmpeg, unchanged
+	assert camera.IspEnable.set == ([False] if pixel_format.startswith("bayer_") else [])
 	assert capsys.readouterr().out == ""
+
+
+class Refuses(Node):
+	# A color camera's PixelFormat, which offers only its sensor's pattern
+	def SetValue(self, value):
+		if value != "BayerRG8":
+			raise sys.modules["PySpin"].SpinnakerException(
+				"Spinnaker: GenICam::OutOfRangeException= Failed to write enumeration value. [-2002]")
+		super().SetValue(value)
+
+
+def test_a_bayer_pattern_the_camera_does_not_have_is_said(flir, capsys, caplog):
+	camera = FakeCamera()
+	camera.PixelFormat = Refuses("BayerRG8")
+	flir.ConfigurePixelFormat(camera, params(pixelFormatInput="bayer_gbrg8"))
+	assert camera.PixelFormat.value == "BayerRG8" and camera.IspEnable.set == []
+	out = capsys.readouterr().out
+	assert 'Camera0: the camera did not take pixel format BayerGB8 (pixelFormatInput "bayer_gbrg8"): ' in out
+	assert "set pixelFormatInput to the one SpinView shows" in out and "The camera keeps its own pixel format." in out
+	assert not caplog.records
 
 
 @pytest.mark.parametrize("pixel_format", ["gray16le", "Mono16", "yuv420p"])

@@ -59,7 +59,7 @@ Every key a campy config file can have, and its command-line option (`--key valu
 |---|---|---|---|---|
 | `ffmpegLogLevel` | `"quiet"` | "quiet", "panic", "fatal", "error", "warning", "info", "verbose", "debug" or "trace" | one, or one per camera | Sets verbosity level for ffmpeg logging. ('quiet' (no warnings), 'warning', 'info' (real-time stats)). |
 | `ffmpegPath` | `"None"` | text, as typed | one for the rig | Location of ffmpeg binary for imageio. |
-| `pixelFormatInput` | `"rgb24"` | text | one, or one per camera | Pixel format input. Use 'rgb24' for RGB or 'bayer_bggr8' for 8-bit bayer pattern. |
+| `pixelFormatInput` | `"rgb24"` | text | one, or one per camera | Pixel format input. Use 'gray' for mono, 'rgb24' for RGB, or the 8-bit Bayer pattern the camera has: 'bayer_rggb8', 'bayer_bggr8', 'bayer_gbrg8' or 'bayer_grbg8' (a FLIR camera is set to it). |
 | `pixelFormatOutput` | `"rgb0"` | text | one, or one per camera | Pixel format output. Use 'rgb0' for best results. |
 | `colorRange` | `"limited"` | "limited" or "full" | one, or one per camera | Video color range: 'limited' (16-235, the default) or 'full' (0-255: every gray level of the camera, and less CPU for ffmpeg; raise quality by about 2 for the same file size). |
 | `gpuID` | `-1` | a whole number, -1 or more | one, or one per camera | List of integers assigning the gpu index to stream each camera. Set to -1 to stream with CPU. |
