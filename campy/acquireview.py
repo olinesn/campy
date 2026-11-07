@@ -63,8 +63,8 @@ def Python():
 		python = None
 	if python and os.path.exists(python):
 		return python, None
-	return None, "this environment has no OpenCV (pip install opencv-python), and no campy-live environment is " \
-		"registered (campy-session register-live)"
+	return None, "this environment has no OpenCV (pip install opencv-python, or pip install -e . again in the campy " \
+		"folder: campy needs it since 2.5.2), and no campy-live environment is registered (campy-session register-live)"
 
 
 def Args(params):
