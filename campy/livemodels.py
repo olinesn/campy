@@ -26,9 +26,10 @@ so they have no score.
 Folder names don't say which centroid model goes with which instance model
 (realtime_centroid_os2_s25 with realtime_i320_s050_ms32_sg5_f24; a training
 job's 261030_201359.centroid with 261030_210618.centered_instance), so the
-picker pairs them by their skeleton: the instance list puts the models with
-the centroid's skeleton first, and a centroid picked alone gets the one of
-those trained nearest to it in time.
+picker pairs them by their skeleton and their time: the instance list puts
+the models with the centroid's skeleton first, and a centroid picked alone
+gets the one of those trained nearest to it in time (an instance model
+picked after it stays as picked).
 
 The checks before a start (Picker.Checks, the panel's checks list): a
 missing folder, best.ckpt or training config, a model in the wrong role, or
@@ -367,12 +368,11 @@ class Picker:
 		return None
 
 	def Partner(self, centroid):
-		# The instance model for a centroid picked alone: the one picked, if it has the same skeleton; else, of those
-		# that have it, the one trained nearest in time
+		# The instance model for a centroid picked alone: of those with its skeleton, the one trained nearest to it in
+		# time (a training job's two halves; one skeleton is often every model's, so not merely the one picked before);
+		# without any, the one picked
 		c = self.Model(centroid)
 		now = self.Model(self.pick["instance"])
-		if now is not None and now["node_names"] == c["node_names"]:
-			return now["folder"]
 		same = [m for m in self.Instances() if m["node_names"] and m["node_names"] == c["node_names"]]
 		if not same:
 			return now["folder"] if now is not None else ""

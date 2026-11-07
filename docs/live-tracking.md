@@ -177,7 +177,7 @@ Each model is described from its own files, without loading it:
 - its skeleton's node count, and the date of its `best.ckpt`;
 - its validation score, when the folder has sleap-nn's `training_log.csv` (a SLEAP training job's folder does; the rigs' copied model folders usually don't). The score is taken at the epoch with the lowest validation loss, the one `best.ckpt` keeps: F1 for a centroid model, mAP and mOKS for an instance model.
 
-Folder names don't say which centroid model goes with which instance model, so the box pairs them by skeleton. The instance list puts the models with the centroid's skeleton first, newest first; the others are marked "(other skeleton)". Picking a centroid model alone also picks the instance model with its skeleton trained nearest to it in time.
+Folder names don't say which centroid model goes with which instance model, so the box pairs them by skeleton. The instance list puts the models with the centroid's skeleton first, newest first; the others are marked "(other skeleton)". Picking a centroid model also picks, of the instance models with its skeleton, the one trained nearest to it in time: a training job's two halves, as a rule. An instance model picked after that stays as picked.
 
 The checks list then says what the pick means:
 

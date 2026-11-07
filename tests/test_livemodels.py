@@ -146,7 +146,8 @@ def test_sets_and_folders_and_a_centroid_picked_alone(tmp_path, home):
 	# A centroid picked alone gets the instance model with its skeleton trained nearest to it
 	assert p.Choose(centroid=newc) is None
 	assert p.pick == {"centroid": newc, "instance": newi} and p.source == "picked" and p.SetName() is None
-	assert p.Choose(centroid=c) is None and p.pick["instance"] == newi # the one picked has the same skeleton: kept
+	# ... even when the instance model picked before has its skeleton too
+	assert p.Choose(centroid=c) is None and p.pick["instance"] == i
 	assert p.Choose(centroid=c, instance=i) is None and p.pick == {"centroid": c, "instance": i}
 	# Only the picker's own models
 	assert p.Choose(centroid=str(tmp_path / "elsewhere")).startswith("Not one of the picker's models")
