@@ -277,7 +277,8 @@ SETTINGS = [
 	Setting("liveFeed", False, bool, section=LIVE,
 		help="Also copy every frame each camera grabs into shared memory, for a program that reads them \
 			live, such as campy-live (default: False). One copy per frame: campy never waits for the \
-			reader."),
+			reader. campy-acquire turns it on by itself for its campy-live-view window (displayFrameRate \
+			above 0), and campy-session when something reads it."),
 	Setting("liveFeedName", "campy-live", TEXT, section=LIVE,
 		help="Name of the live feed's shared memory: camera n's is <liveFeedName>-<n> (default: \
 			campy-live). Two campys running at once each need their own."),
@@ -306,9 +307,13 @@ SETTINGS = [
 			lines of their own. 'auto' (default): only when the output is a console, so a log file or a \
 			launcher's log keeps the lines as before; 'always'; 'never'."),
 	Setting("displayFrameRate", 10, float, section=DISPLAY, low=0,
-		help="Display frame rate in Hz. Max ~30. 0 = no display window (headless)."),
+		help="Frames per second of the one campy-live-view window that shows every camera (default: 10). \
+			campy-acquire run by itself opens it, with the live feed on (liveFeed); campy-session opens its \
+			own instead (its view: section; without one, the view shows when this is above 0). 0 = no window \
+			(over SSH, headless). There is no window per camera."),
 	Setting("displayDownsample", 2, int, section=DISPLAY, low=1,
-		help="Downsampling factor for displaying images."),
+		help="Ignored: it set the old per-camera preview windows' downsampling, and campy has none any more \
+			(campy-live-view scales each camera to its tile). Still accepted, so older configs load."),
 
 	# Trigger
 	Setting("triggerController", "arduino", str, section=TRIGGER, per_camera=ONE,

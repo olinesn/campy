@@ -96,10 +96,48 @@ def test_campy_session_sets_the_folder_and_stop_file_itself(tmp_path):
 		session.Config(str(config), ["--sessionPath", "x"])
 
 
-def test_without_a_live_section_the_view_is_off_and_the_feed_as_configured(tmp_path):
-	c = session.Config(str(write_config(tmp_path / "c.yaml", {"numCams": 1})))
+def test_without_a_live_section_the_view_follows_display_frame_rate(tmp_path):
+	# displayFrameRate 0: no view, and the feed as configured
+	c = session.Config(str(write_config(tmp_path / "c.yaml", {"numCams": 1, "displayFrameRate": 0})))
 	assert c.live is None and c.view["show"] is False and not c.Feed()
 	assert yaml.safe_load(c.AcquireYaml())["liveFeed"] is False
+	# Above 0 (campy's default, 10): the view shows the cameras alone, from the feed
+	c = session.Config(str(write_config(tmp_path / "c.yaml", {"numCams": 1})))
+	assert c.live is None and c.view["show"] is True and c.Feed()
+	acquire = yaml.safe_load(c.AcquireYaml())
+	assert acquire["liveFeed"] is True and acquire["displayFrameRate"] == 10
+	# view: says it alone
+	c = session.Config(str(write_config(tmp_path / "c.yaml", {"numCams": 1, "displayFrameRate": 10}, view=False)))
+	assert c.view["show"] is False and not c.Feed()
+	c = session.Config(str(write_config(tmp_path / "c.yaml", {"numCams": 1, "displayFrameRate": 0}, view=True)))
+	assert c.view["show"] is True and c.Feed()
+
+
+def test_the_view_without_tracking_runs_at_display_frame_rate(tmp_path, monkeypatch):
+	started = []
+	monkeypatch.setattr(session.Part, "Start", lambda part: started.append(part.command) or part)
+	config = write_config(tmp_path / "c.yaml", {"numCams": 2, "displayFrameRate": 7.5, "liveFeedName": "rig",
+		"alertTriggerPauseSec": 60})
+	s = session.Session(session.Config(str(config)), live_python="py")
+	s.folder, s.logs = str(tmp_path), str(tmp_path / "logs")
+	s.StartView()
+	assert started == [["py", "-m", "campy.liveview", "--cameras", "2", "--name", "rig", "--fps", "7.5",
+		"--pause-sec", "60.0", "--stop-sec", "10.0"]] # alertNoFramesSec: campy's default
+	# With tracking, the view keeps up with campy-live's results: no --fps
+	config = write_config(tmp_path / "c.yaml", {"numCams": 2, "displayFrameRate": 7.5}, live={"model": "none"})
+	s = session.Session(session.Config(str(config)), live_python="py")
+	assert s.RateArgs() == []
+
+
+def test_campy_acquire_under_campy_session_opens_no_view_of_its_own(monkeypatch):
+	# campy-session starts campy-acquire with CAMPY_LAUNCHER in its environment (manifest.LAUNCHER_ENV)
+	from campy import acquireview, configurator, manifest
+	assert session.LAUNCHER_ENV == manifest.LAUNCHER_ENV
+	p = configurator.DefaultParams()
+	monkeypatch.delenv(manifest.LAUNCHER_ENV, raising=False)
+	assert p["displayFrameRate"] > 0 and acquireview.Wanted(p)
+	monkeypatch.setenv(manifest.LAUNCHER_ENV, session.VERSION)
+	assert not acquireview.Wanted(p)
 
 
 def test_campy_lives_options_come_from_the_config(tmp_path):

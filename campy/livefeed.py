@@ -104,6 +104,9 @@ HEADER_BYTES = 4096
 SLOT_HEADER_BYTES = 64
 DEFAULT_NAME = "campy-live"
 DEFAULT_SLOTS = 8
+# Set by campy-acquire's main process for its camera processes, which read the config again: "1" turns the feed on
+# whatever liveFeed says, for the campy-live-view window it opens itself (displayFrameRate, campy/acquireview.py)
+FEED_ENV = "CAMPY_LIVE_FEED"
 
 RECORDING, ENDED = 1, 2
 
@@ -580,7 +583,7 @@ class Feed:
 	"""
 
 	def __init__(self, cam_params, say=print):
-		self.on = bool(cam_params.get("liveFeed", False))
+		self.on = bool(cam_params.get("liveFeed", False)) or os.environ.get(FEED_ENV) == "1"
 		self.cameraName = cam_params.get("cameraName", "")
 		self.name = RingName(str(cam_params.get("liveFeedName", DEFAULT_NAME)), cam_params.get("n_cam", 0))
 		self.slots = int(cam_params.get("liveFeedSlots", DEFAULT_SLOTS))
@@ -589,6 +592,8 @@ class Feed:
 		# The camera's folder in the recording, said in the ring's description: where the recording is
 		folder = cam_params.get("videoFolder")
 		self.folder = os.path.abspath(os.path.join(str(folder), str(self.cameraName))) if folder else None
+		# What the camera sends (pixelFormatInput), said in the description too: campy-live-view demosaics Bayer frames
+		self.pixelFormat = str(cam_params.get("pixelFormatInput", "") or "")
 		self.say = say
 		self.writer = None
 
@@ -602,8 +607,11 @@ class Feed:
 
 	def Description(self):
 		# The ring's: the camera's folder, and the processes that record it (this camera process, and campy-acquire's
-		# main one, its parent), for campy-live and campy-live-view to put on the efficiency cores (campy/cpus.py)
+		# main one, its parent), for campy-live and campy-live-view to put on the efficiency cores (campy/cpus.py);
+		# and the camera's pixel format (pixelFormatInput: gray, bayer_rggb8, rgb24...), for campy-live-view's colours
 		description = {"kind": CAMERA_KIND, "pid": os.getpid(), "parent_pid": os.getppid()}
+		if self.pixelFormat:
+			description["pixelFormat"] = self.pixelFormat
 		if self.folder and len(self.folder.encode("utf-8")) < DESCRIPTION_BYTES - 200:
 			description["folder"] = self.folder # a path of over 3 kB: said nowhere rather than cut
 		return strictjson.dumps(description)
@@ -641,6 +649,17 @@ class Feed:
 				writer.Close()
 			except Exception:
 				pass
+
+
+def PixelFormat(reader):
+	"""
+	The camera's pixel format (pixelFormatInput), as its feed's description
+	says it (Feed.Description), or "" from a campy from before it said it.
+	"""
+	try:
+		return str(strictjson.loads(reader.Description() or "{}").get("pixelFormat") or "")
+	except (ValueError, AttributeError, TypeError):
+		return ""
 
 
 def RecordingFolder(readers):

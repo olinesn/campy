@@ -315,39 +315,6 @@ def GetFrameID(chunkData):
 	return chunkData.GetFrameID()
 
 
-_imageProcessor = None
-
-def ConvertToRGB(image):
-	# Spinnaker 3 and newer (e.g. PySpin 4.4, the one for Python 3.12) convert
-	# with an ImageProcessor; older PySpin has only the image's own Convert.
-	global _imageProcessor
-	if hasattr(PySpin, "ImageProcessor"):
-		if _imageProcessor is None:
-			_imageProcessor = PySpin.ImageProcessor()
-			_imageProcessor.SetColorProcessing(PySpin.SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR)
-		return _imageProcessor.Convert(image, PySpin.PixelFormat_RGB8)
-	return image.Convert(PySpin.PixelFormat_RGB8, PySpin.HQ_LINEAR)
-
-
-def DisplayImage(cam_params, dispQueue, grabResult):
-	try:
-		if cam_params["pixelFormatInput"] in BAYER:
-			# Demosaic to RGB (by the image's own pattern)
-			grabResult = ConvertToRGB(grabResult)
-
-		# Convert to Numpy array
-		img = GetImageArray(grabResult)
-
-		# Downsample image (the display shows a mono image as gray as it is)
-		img = img[::cam_params["displayDownsample"], ::cam_params["displayDownsample"]]
-
-		# Send to display queue
-		dispQueue.append(img)
-
-	except Exception as e:
-		logging.error('Caught exception at cameras/flir.py DisplayImage: {}.'.format(e))
-
-
 def ReleaseFrame(grabResult):
 
 	grabResult.Release()

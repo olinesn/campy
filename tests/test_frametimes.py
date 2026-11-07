@@ -369,7 +369,6 @@ def fake_camera_module(hold=None):
 		GrabFrame=GrabFrame,
 		GetImageArray=lambda grab: np.full((4, 4), grab % 256, dtype=np.uint8),
 		GetTimeStamp=lambda grab: 5000.0 + grab * 0.01,
-		DisplayImage=lambda cam_params, q, grab: None,
 		ReleaseFrame=lambda grab: None,
 		CloseCamera=lambda cam_params, camera: None,
 		)
@@ -380,7 +379,7 @@ def record(tmp_path, monkeypatch, hold=None):
 	p = configurator.DefaultParams()
 	p.update(cameraMake="fake", cameraName="Camera0", videoFolder=str(tmp_path), frameRate=100,
 		recTimeInSec=3, chunkLengthInSec=1, displayFrameRate=0, writeQueueMaxSec="None")
-	unicam.GrabFrames(p, deque(), deque([], 2), deque([], 1), deque([], 1))
+	unicam.GrabFrames(p, deque(), deque([], 1), deque([], 1))
 	folder = tmp_path / "Camera0"
 	with open(folder / "metadata.csv") as f:
 		meta = dict(csv.reader(f))

@@ -34,7 +34,7 @@ def record(tmp_path, **values):
 	p = cam_params(tmp_path, **values)
 	(tmp_path / "Camera0").mkdir()
 	writeQueue = deque() # what the encoder would get
-	unicam.GrabFrames(p, writeQueue, deque([], 2), deque([], 1), deque([], 1))
+	unicam.GrabFrames(p, writeQueue, deque([], 1), deque([], 1))
 	folder = tmp_path / "Camera0"
 	with open(folder / "metadata.csv") as f:
 		meta = dict(csv.reader(f))
@@ -305,7 +305,7 @@ def test_a_recording_that_dies_keeps_its_rows_up_to_the_last_second(tmp_path):
 				os._exit(3)
 			return grab(camera, n)
 		ratcam.GrabFrame = GrabFrame
-		unicam.GrabFrames(p, deque(), deque([], 2), deque([], 1), deque([], 1))
+		unicam.GrabFrames(p, deque(), deque([], 1), deque([], 1))
 		""")
 	done = subprocess.run([sys.executable, "-c", script, str(tmp_path)], capture_output=True, text=True, timeout=60)
 	assert done.returncode == 3, done.stderr

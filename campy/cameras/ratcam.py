@@ -398,12 +398,6 @@ def GetTimeStamp(grabResult):
 	return grabResult.t_us * 1e-6
 
 
-def DisplayImage(cam_params, dispQueue, grabResult):
-	# Mono: the display shows it as gray
-	step = cam_params["displayDownsample"]
-	dispQueue.append(grabResult.image()[::step, ::step])
-
-
 def ReleaseFrame(grabResult):
 
 	del grabResult

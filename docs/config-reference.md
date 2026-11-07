@@ -77,7 +77,7 @@ Every key a campy config file can have, and its command-line option (`--key valu
 
 | Key | Default | Takes | Per camera | What it does |
 |---|---|---|---|---|
-| `liveFeed` | `False` | True or False | one, or one per camera | Also copy every frame each camera grabs into shared memory, for a program that reads them live, such as campy-live (default: False). One copy per frame: campy never waits for the reader. |
+| `liveFeed` | `False` | True or False | one, or one per camera | Also copy every frame each camera grabs into shared memory, for a program that reads them live, such as campy-live (default: False). One copy per frame: campy never waits for the reader. campy-acquire turns it on by itself for its campy-live-view window (displayFrameRate above 0), and campy-session when something reads it. |
 | `liveFeedName` | `"campy-live"` | text, as typed | one, or one per camera | Name of the live feed's shared memory: camera n's is &lt;liveFeedName&gt;-&lt;n&gt; (default: campy-live). Two campys running at once each need their own. |
 | `liveFeedSlots` | `8` | a whole number, 1 or more | one for the rig | Frames each camera's live feed holds (default: 8): how far behind a reader can be and still read a frame. |
 
@@ -109,8 +109,8 @@ Every key a campy config file can have, and its command-line option (`--key valu
 |---|---|---|---|---|
 | `chunkLengthInSec` | `5` | a number above 0 | one, or one per camera | Length of video chunks in seconds for reporting recording progress. |
 | `statusLine` | `"auto"` | "auto", "always" or "never" | one for the rig | While recording, one status line on the console, rewritten in place: the time, each camera's frames, the frame rate, the trigger's pauses (docs/acquire.md). It replaces each camera's 'collected N frames' line every chunkLengthInSec. Other messages still print as lines of their own. 'auto' (default): only when the output is a console, so a log file or a launcher's log keeps the lines as before; 'always'; 'never'. |
-| `displayFrameRate` | `10` | a number, 0 or more | one, or one per camera | Display frame rate in Hz. Max ~30. 0 = no display window (headless). |
-| `displayDownsample` | `2` | a whole number, 1 or more | one, or one per camera | Downsampling factor for displaying images. |
+| `displayFrameRate` | `10` | a number, 0 or more | one, or one per camera | Frames per second of the one campy-live-view window that shows every camera (default: 10). campy-acquire run by itself opens it, with the live feed on (liveFeed); campy-session opens its own instead (its view: section; without one, the view shows when this is above 0). 0 = no window (over SSH, headless). There is no window per camera. |
+| `displayDownsample` | `2` | a whole number, 1 or more | one, or one per camera | Ignored: it set the old per-camera preview windows' downsampling, and campy has none any more (campy-live-view scales each camera to its tile). Still accepted, so older configs load. |
 
 ## Trigger
 

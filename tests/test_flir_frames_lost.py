@@ -433,7 +433,7 @@ def grab_frames(flir, tmp_path, camera, frames_to_grab):
 	p.update(cameraMake="flir", cameraName="Camera0", camera=camera, cameraSerialNo="24243505", cameraSelection=0,
 		videoFolder=str(tmp_path), frameRate=100, recTimeInSec=frames_to_grab / 100, chunkLengthInSec=10,
 		displayFrameRate=0, writeQueueMaxSec="None")
-	unicam.GrabFrames(p, deque(), deque([], 2), deque([], 1), deque([], 1))
+	unicam.GrabFrames(p, deque(), deque([], 1), deque([], 1))
 	with open(tmp_path / "Camera0" / "metadata.csv") as f:
 		return dict(csv.reader(f))
 
