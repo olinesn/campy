@@ -505,6 +505,22 @@ Notes on the measurements:
 
   The Pro Tower Plus's daily config (`doublepoke_daily.yaml`) then went from `view: false`, `displayFrameRate: 10` to `view: true`, `displayFrameRate: 0`. With `view: false`, its panel would have opened no window at all, where it used to open a preview window for each of its 8 cameras. A test recording from the panel's desktop icon followed at 2:28 AM, over Remote Desktop: 8 real cameras at 60 fps on the trigger for 1 min 19 s. One campy-live-view window opened with all 8 cameras in a grid, each showing 60.0 fps, and no per-camera windows. Every camera saved all 4,218 of its frames, with none dropped or lost. `campy-align` put all 8 on the trigger's timeline, from trigger 1, with no trigger pulse missing a frame. The window closed by itself when the recording ended.
 
+- On the evening of 7 November, after pull request 325 (the clock hold never spins fewer blocks while the frames come) was merged, the three rigs and the Windows 11 VM moved to dev `0466082` at 4:52–4:53 PM. Since 2.6.0 only `campy-live`'s clock hold had changed, with no new requirements, so each checkout was fast-forwarded and nothing was reinstalled. At 6:23–6:27 PM each machine ran its rig check under its lock, the same scripts as before: 1 emulated camera, 3 emulated cameras with 3D, and the 3-camera replay of 5 mice. Every run was `RIG_CLEAN` the first time. Nothing was skipped or misaligned, and every camera kept all its frames. Every set was tracked from frame 1, but for the replay on the two Windows rigs (frame 2, as on every earlier replay there). Times in ms, as on `c09dcc8` to within 0.1 ms but for the Pro Max Slim's 3-camera frame to 3D p99 (9.0 against 8.8):
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | EVO-X2 | 1,800 / 3.1 / 3.2 | 3,600 / 5.7 / 6.0 / 7.8 / 8.8 | 3,600 / 5.6 / 5.8 / 7.3 / 8.2 |
+  | Pro Max Slim | 1,200 / 2.3 / 2.4 | 3,600 / 5.6 / 5.8 / 7.8 / 9.0 | 1,799 / 5.6 / 5.7 / 8.8 / 10.0 |
+  | Precision 7875 | 1,200 / 0.9 / 1.1 | 3,600 / 1.7 / 1.8 / 4.2 / 5.4 | 1,799 / 1.7 / 1.8 / 4.6 / 5.6 |
+
+  Each NVIDIA card spun 1 block the whole time and held its clock (2,745–2,760 MHz on the RTX 6000 Ada, 2,505–2,520 on the RTX 2000 Ada); these runs last 20–60 s, so the old try at no block, 10 s in, could have come up only on a first run after a restart. The EVO-X2's replay agreed with the offline tracking as before: a median of 3.8 px in 2D and 4.2 mm in 3D, and 2 identity switches. The slowest replay set on the Precision 7875 took 17.1 ms frame to 3D (one set, in the first 10 s). The VM's recording checks kept every frame (1,200, then 3 × 3,600), both `RIG_CLEAN`.
+
+  The Dell Pro Tower Plus updated and ran the same checks at 8:00–8:03 PM, as its test hours opened, under the experiment-machine rules (nobody had used it for 8 hours, the banner showing each run with a Stop button). The update and the replay were `RIG_CLEAN`; the 1- and 3-camera checks each saw the endpoint security software using about 2 CPU cores as they started, so they ran again at 8:05–8:07 PM, `RIG_CLEAN`, which the table uses (the first runs' times were the same within 0.1 ms). Nothing was skipped or misaligned, every camera kept all its frames, and every set was tracked from frame 1 (frame 2 for the replay, as before). The times match `c09dcc8`'s to within 0.1 ms but for the 3-camera frame to 3D p99 (10.6 against 10.4); the card's clock ran about 1,730 MHz with 3 cameras, held down by its power limit, as before.
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | Pro Tower Plus (RTX A2000) | 1,200 / 2.7 / 2.9 | 3,600 / 6.9 / 7.2 / 9.3 / 10.6 | 1,799 / 6.9 / 7.2 / 11.4 / 12.9 |
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
