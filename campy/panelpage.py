@@ -52,6 +52,11 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
   <h2>Before the start</h2>
   <div class="two">
     <div>
+      <div id="modelbox" hidden style="margin-bottom:10px"><h2>Live models</h2>
+        <label for="mset">Pair</label><select id="mset"></select>
+        <label for="mcen">Centroid model</label><select id="mcen"></select><div class="muted" id="mcentext"></div>
+        <label for="mins">Instance model</label><select id="mins"></select><div class="muted" id="minstext"></div>
+        <div class="row" style="margin-top:4px"><span id="mscan" class="muted grow" style="font-size:12px"></span><button id="mrescan" title="Look through panel.models' folders again">Look again</button></div></div>
       <div id="lengthbox" hidden><label for="length">Session length</label><select id="length"></select>
         <div class="muted" id="plantext"></div>
         <label for="picoat">Start the Pico at (optional: otherwise a button, once every camera is ready)</label><input id="picoat" placeholder="7:20 PM"></div>
@@ -81,7 +86,7 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
 <div id="during" hidden>
   <div class="tiles" style="margin-bottom:12px">
     <div class="tile"><label>Disk free</label><div class="big" id="disk">-</div><div class="muted" id="diskleft"></div></div>
-    <div class="tile"><label>Tracked in 3D</label><div class="big" id="good3d">-</div><div class="muted">animals, last second</div></div>
+    <div class="tile"><label>Tracked in 3D</label><div class="big" id="good3d">-</div><div class="muted">animals, last second</div><div class="muted mono" id="usedmodels"></div></div>
     <div class="tile"><label>Programs</label><div id="programs"></div></div>
     <div class="tile"><label>Bookmarks</label><div class="big" id="nmarks">0</div><div class="muted" id="lastmark"></div></div>
   </div>
@@ -150,6 +155,8 @@ function render(s){
     " (its window was closed; the recording went on). Stop it, or wait for it to end, before starting another.";
   $("checks").innerHTML = s.checks.map(c => "<li>"+tag(c.level=="block"?"stops the start":c.level=="warn"?"warning":"ok",
     c.level=="block"?"bad":c.level=="warn"?"warn":"ok")+" "+esc(c.text)+(c.action=="pause-updates"?' <button onclick="pauseUpdates(this)">Pause Windows Update</button>':"")+"</li>").join("");
+  renderModels(s.models);
+  const LM = L.live_models; $("usedmodels").textContent = LM && LM.centroid ? base(LM.centroid)+" + "+base(LM.instance) : "";
   const lengths = s.lengths || []; $("lengthbox").hidden = !lengths.length;
   if(lengths.length && $("length").options.length != lengths.length){ $("length").innerHTML = lengths.map(l => '<option value="'+l.seconds+'">'+esc(l.name)+'</option>').join(""); }
   if(lengths.length && document.activeElement != $("length")) $("length").value = String(s.length);
@@ -195,6 +202,30 @@ function render(s){
   $("post").innerHTML = ["remux","export","copy","run"].map(k => P[k] ? "<li>"+tag(P[k].state, P[k].state=="done"?"ok":P[k].state=="failed"?"bad":"warn")+" "+k+": "+esc(P[k].message)+"</li>"
     : "<li class=muted>"+k+(st=="post"?": waiting":"")+"</li>").join("");
 }
+function base(p){ return String(p||"").split(/[\\/]/).filter(x => x).pop() || ""; }
+let modelSig = "";
+function renderModels(M){
+  $("modelbox").hidden = !M; if(!M) return;
+  // The lists only when they change, so a list being opened isn't redrawn under the pointer
+  const sig = JSON.stringify([M.sets, M.config, M.centroids.map(m => m.folder), M.instances.map(m => [m.folder, m.same])]);
+  if(sig != modelSig && ![$("mset"), $("mcen"), $("mins")].includes(document.activeElement)){
+    modelSig = sig;
+    $("mset").innerHTML = (M.config ? '<option value="config">The config\'s pair</option>' : "") +
+      M.sets.map(x => '<option value="'+esc(x.name)+'">'+esc(x.name)+'</option>').join("") + '<option value="">Other: pick them below</option>';
+    const opt = (m, other) => '<option value="'+esc(m.folder)+'">'+(other ? "(other skeleton) " : "")+esc(m.name)+(m.date ? " · "+esc(m.date) : "")+'</option>';
+    $("mcen").innerHTML = '<option value="" disabled>Pick a centroid model</option>' + M.centroids.map(m => opt(m, false)).join("");
+    $("mins").innerHTML = '<option value="" disabled>Pick an instance model</option>' + M.instances.map(m => opt(m, !m.same && M.pick.centroid)).join("");
+  }
+  if(document.activeElement != $("mset")) $("mset").value = M.set || "";
+  if(document.activeElement != $("mcen")) $("mcen").value = M.pick.centroid || "";
+  if(document.activeElement != $("mins")) $("mins").value = M.pick.instance || "";
+  const about = (list, folder) => { const m = list.find(x => x.folder == folder); return m ? esc(m.text) + (m.problems.length ? '<br><span class="err">'+esc(m.problems.join("; "))+'</span>' : "") : ""; };
+  $("mcentext").innerHTML = about(M.centroids, M.pick.centroid); $("minstext").innerHTML = about(M.instances, M.pick.instance);
+  $("mscan").textContent = (M.roots.length ? "Looked through "+M.roots.join(", ")+": "+M.scanned+" model"+(M.scanned==1?"":"s")+", "+M.scan_s+" s." :
+    "To pick from more models, add panel: models: (their folders) to the config or its rig profile.") + (M.notes.length ? " "+M.notes.join("; ")+"." : "");
+  $("mrescan").hidden = !M.roots.length;
+}
+async function pickModels(body){ const e = await post("/models", body); $("starterr").textContent = e || ""; modelSig = ""; tick(); }
 function renderDevices(s, st){
   const D = s.devices; $("devs").hidden = !D;
   if(!D){ $("left").hidden = true; return; }
@@ -248,6 +279,10 @@ $("start").onclick = async () => { $("starterr").textContent = "";
   const e = await post("/start", {experiment:$("experiment").value, animal_ids:$("ids").value, notes:$("notes").value,
     length: $("length").value || null, pico_at: $("picoat").value.trim() || null, disk_override: override});
   $("starterr").textContent = e || ""; tick(); };
+$("mset").onchange = () => { if($("mset").value) pickModels({set: $("mset").value}); };
+$("mcen").onchange = () => pickModels({centroid: $("mcen").value});
+$("mins").onchange = () => pickModels({centroid: $("mcen").value, instance: $("mins").value});
+$("mrescan").onclick = async () => { $("mrescan").disabled = true; $("mscan").textContent = "Looking…"; const e = await post("/models-scan"); $("mrescan").disabled = false; $("starterr").textContent = e || ""; modelSig = ""; tick(); };
 $("length").onchange = async () => { const e = await post("/length", {seconds: $("length").value}); $("starterr").textContent = e || ""; tick(); };
 let closed = false;
 $("close").onclick = async () => { if(!confirm("Close the panel? Nothing is recording.")) return; const e = await post("/close"); if(e){ alert(e); return; }
