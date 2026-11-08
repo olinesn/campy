@@ -173,6 +173,8 @@ live:
 
 The two lists are `panel:` keys rather than `live:` ones so that a rig profile can hold them. A `live:` section in a profile would turn on live tracking for every experiment built on it; a `panel:` section turns on nothing, and the box shows only for a config with a `live:` section and `model: sleap`. An experiment's own `panel: models:` replaces the profile's. A relative folder in `panel.models` is taken from the folder of the config file that names it: the profile's folder, for a profile's. A config without `panel.models` or `panel.model_sets` works as before, and the box shows the config's pair alone. A config with either can leave out `live.centroid` and `live.instance`. The panel then opens on the first set, or asks for a pick. `campy-session run` still needs the two folders.
 
+Since 8 November 2026 the rig profiles of the EVO-X2, the Pro Max Slim, the Precision 7875 and the Pro Tower Plus each set `panel: models:` to the rig's own model folder (`C:\campy_data\live\models`, or `~/sleap-bench/live/models` on the EVO-X2). The Precision 7875's also names the folder where its SLEAP training jobs are saved. The Windows 11 VM's has none, because it keeps no models.
+
 Each model is described from its own files, without loading it:
 
 - its kind: centroid, centered instance or multi-class top-down. Bottom-up and single-instance models are left out: `campy-live` runs top-down models;
@@ -570,6 +572,19 @@ Notes on the measurements:
   | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
   |---|---|---|---|
   | Pro Tower Plus (RTX A2000) | 1,200 / 2.7 / 2.9 | 3,600 / 6.9 / 7.2 / 9.3 / 10.6 | 1,799 / 6.9 / 7.2 / 11.4 / 12.9 |
+
+- Late on 7 November, after pull request 324 (picking the live models on the panel) was merged, all five machines moved to dev `78d146b` at 11:43–11:44 PM, each idle at the time. The move also brings pull request 326 (`campy-live` on Intel GPUs), which changed `campy-live`'s code for running a set as one GPU graph. Neither brought new requirements, so each checkout was fast-forwarded and nothing was reinstalled. Each rig's profile then got its `panel: models:` folder ([Picking the live models on the panel](#picking-the-live-models-on-the-panel)). Every config built on each profile loaded as before, and on the Pro Max Slim and the EVO-X2 the live panel configs listed the rig's 4 models.
+
+  At 12:04–12:08 AM on 8 November each machine ran its rig check under its lock, the same scripts as before; the Pro Tower Plus ran under the experiment-machine rules, inside its test hours. Nothing was skipped or misaligned, every camera kept all its frames, and every set was tracked from frame 1, but for the replay on the Windows rigs (frame 2, as before). On the Precision 7875 the 1- and 3-camera checks each saw one burst of other CPU use the first time (same times), so they ran again at 12:08–12:14 AM, `RIG_CLEAN`, which the table uses; every other run was `RIG_CLEAN` the first time. Times in ms. They match `0466082`'s to within 0.2 ms, but for the Pro Max Slim's frame to 3D p99, which was 0.3–0.4 ms lower:
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | EVO-X2 | 1,800 / 3.1 / 3.2 | 3,600 / 5.7 / 6.0 / 7.8 / 8.7 | 3,600 / 5.6 / 5.8 / 7.3 / 8.2 |
+  | Pro Max Slim | 1,200 / 2.3 / 2.5 | 3,600 / 5.6 / 5.8 / 7.9 / 8.7 | 1,799 / 5.6 / 5.7 / 8.8 / 9.6 |
+  | Precision 7875 | 1,200 / 0.9 / 1.1 | 3,600 / 1.7 / 1.8 / 4.2 / 5.4 | 1,799 / 1.7 / 1.8 / 4.6 / 5.6 |
+  | Pro Tower Plus (RTX A2000) | 1,200 / 2.7 / 2.9 | 3,600 / 6.9 / 7.1 / 9.3 / 10.7 | 1,799 / 6.9 / 7.2 / 11.3 / 12.7 |
+
+  The EVO-X2's replay agreed with the offline tracking as before: a median of 3.8 px in 2D and 4.2 mm in 3D, and 2 identity switches. The slowest replay set on the Precision 7875 took 22.6 ms frame to 3D (one set, in the first 10 s). The VM's recording checks kept every frame (1,200, then 3 × 3,600), both `RIG_CLEAN`.
 
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
