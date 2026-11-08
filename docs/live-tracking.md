@@ -515,6 +515,12 @@ Notes on the measurements:
 
   Each NVIDIA card spun 1 block the whole time and held its clock (2,745–2,760 MHz on the RTX 6000 Ada, 2,505–2,520 on the RTX 2000 Ada); these runs last 20–60 s, so the old try at no block, 10 s in, could have come up only on a first run after a restart. The EVO-X2's replay agreed with the offline tracking as before: a median of 3.8 px in 2D and 4.2 mm in 3D, and 2 identity switches. The slowest replay set on the Precision 7875 took 17.1 ms frame to 3D (one set, in the first 10 s). The VM's recording checks kept every frame (1,200, then 3 × 3,600), both `RIG_CLEAN`.
 
+  The Dell Pro Tower Plus updated and ran the same checks at 8:00–8:03 PM, as its test hours opened, under the experiment-machine rules (nobody had used it for 8 hours, the banner showing each run with a Stop button). The update and the replay were `RIG_CLEAN`; the 1- and 3-camera checks each saw the endpoint security software using about 2 CPU cores as they started, so they ran again at 8:05–8:07 PM, `RIG_CLEAN`, which the table uses (the first runs' times were the same within 0.1 ms). Nothing was skipped or misaligned, every camera kept all its frames, and every set was tracked from frame 1 (frame 2 for the replay, as before). The times match `c09dcc8`'s to within 0.1 ms but for the 3-camera frame to 3D p99 (10.6 against 10.4); the card's clock ran about 1,730 MHz with 3 cameras, held down by its power limit, as before.
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | Pro Tower Plus (RTX A2000) | 1,200 / 2.7 / 2.9 | 3,600 / 6.9 / 7.2 / 9.3 / 10.6 | 1,799 / 6.9 / 7.2 / 11.4 / 12.9 |
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
