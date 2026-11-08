@@ -4,7 +4,8 @@
 # reads the embedded controller through Dell's BIOS WMI interface (root\dcim\sysman) twice every 15 minutes. Each
 # read runs in the BIOS firmware, which can stop every CPU core for up to about a millisecond. On the Dell Precision
 # 7875 that slowed campy-live's sets 2-4 times for about 9 s every 15 minutes. See docs/hardware-guide.html, "On a
-# Dell PC, Dell's TechHub agent slows live tracking every 15 minutes", and docs/troubleshooting.md.
+# Dell PC, Dell's TechHub agent slows live tracking every 15 minutes", and docs/troubleshooting.md. With the service
+# stopped AND its helper programs ended, the 9 s stretch was gone; stopping only the service changed nothing.
 #
 # It changes nothing on the PC. Run it in PowerShell opened as administrator (Windows shows the WMI log to administrators):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File <campy folder>\tools\windows\check_firmware_pauses.ps1
@@ -46,6 +47,12 @@ try {
 	}
 	$p = Get-Process -Name 'Dell.TechHub.Instrumentation.SubAgent' -ErrorAction SilentlyContinue
 	Say $(if ($p) { "Dell.TechHub.Instrumentation.SubAgent.exe runs (pid $($p.Id -join ', '))" } else { 'Dell.TechHub.Instrumentation.SubAgent.exe does not run' })
+	$hub = Get-Service -Name 'DellTechHub' -ErrorAction SilentlyContinue
+	if ($p -and $hub -and $hub.Status -ne 'Running') {
+		# seen on the Precision 7875 (7 November 2026): Stop-Service left the helpers running, and they kept reading
+		Say '  The DellTechHub service is stopped but this helper still runs, and it still reads every 15 minutes.'
+		Say '  To stop the reads until the service starts again: Get-Process Dell.TechHub* | Stop-Process -Force'
+	}
 	if ($Probe -gt 0) {
 		$n = [Environment]::ProcessorCount
 		$cpu = if ($Cpus) { [int[]]($Cpus -split ',') } else { @(($n - 4), ($n - 2)) | Where-Object { $_ -ge 0 } }
