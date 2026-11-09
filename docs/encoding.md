@@ -224,6 +224,16 @@ AV1 as the arena records it (Quick Sync on the Dell Pro Max Slim FCS1250, which 
 | side C | 2.08 | 1.64 (−21%) | −1.0% |
 | top R | 2.19 | 1.75 (−20%) | −0.9% |
 
+**A longer window** (`s=9` or `s=13`: 4 or 6 frames each side instead of 2) saved little more, because the sum limit (9 levels a side) usually stops the averaging before the extra frames. Same clips and AV1 settings, and CPU on the Dell Pro Max Slim FCS1250 with `-filter_threads 1` (one burst of other CPU use flagged; every case kept 60 fps):
+
+| | no filter | `s=5` | `s=9` | `s=13` |
+|---|---|---|---|---|
+| AV1 file size, 4 cameras | – | −20 to −28% | −21 to −29% | −21 to −29% |
+| filter time per frame, one thread | – | 0.50 ms | 1.09 ms | 2.54 ms |
+| CPU cores, 8 cameras at 60 fps with AV1 | 1.2–1.5 | 2.0 | 2.1 | 3.3 |
+
+`s=9` saved 1.1–1.5 points more than `s=5` and `s=13` another 0.2, so `s=5` is the one to use. What the filter did to the pixels hardly changed with the window either (the same 4 cameras, six 50-frame windows each, checked pixel for pixel against ffmpeg's own output): no pixel changed by more than 3 levels at any `s`, mice changed by the same 0.35–0.79 levels on average to within 0.01, and the background noise came out the same (1.4–1.5 levels).
+
 AV1 at quality 88 changes pixels far more than the filter does: 1.8–2.1 gray levels on average in the background and 2.0–3.2 on mice, against the near-raw frames. With the filter first, the AV1 frames were just as close to the near-raw ones (within 0.05 level in every region, every camera). The filtered and unfiltered AV1 files differ from each other by 1–2.5 levels on average, mostly because the encoder makes different choices once the noise is gone.
 
 Tracking (the same centroid and centered-instance models as above, sleap-nn 0.3.5 in fp32 on an NVIDIA GPU, up to 5 animals; 600 frames per camera), keypoint shift against the near-raw frames, median / 90th / 99th percentile:
