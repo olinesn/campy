@@ -539,7 +539,7 @@ def test_after_a_clean_stop_the_post_steps_run(tmp_path, home):
 	status = json.loads((folder / "launcher.json").read_text())
 	assert status["state"] == "done"
 	assert {k: v["state"] for k, v in status["post"].items()} == {"remux": "done", "join": "done", "align": "skipped",
-		"export": "skipped", "copy": "done", "run": "done"}
+		"calibrate": "skipped", "export": "skipped", "copy": "done", "run": "done"}
 
 
 def test_the_post_section_is_checked(tmp_path):
@@ -550,7 +550,8 @@ def test_the_post_section_is_checked(tmp_path):
 	with pytest.raises(session.SessionError, match="post.copy: it takes to: only"):
 		session.Config(str(config))
 	c = session.Config(str(write_config(tmp_path / "c.yaml", {"numCams": 1})))
-	assert c.post == {"remux": True, "join": True, "align": True, "export": True, "copy": {}, "run": [], "ffmpeg": ""}
+	assert c.post == {"remux": True, "join": True, "align": True, "calibrate": {}, "export": True, "copy": {}, "run": [],
+		"ffmpeg": ""}
 
 
 def test_a_campy_live_that_hangs_is_stopped_to_be_started_again(tmp_path, monkeypatch):

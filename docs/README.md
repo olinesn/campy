@@ -11,7 +11,7 @@ Guides for recording with campy and tracking animals live while it records. The 
 | [Recording with campy-acquire](acquire.md) | Starting and stopping a recording, what happens when a camera or its encoder fails, video that survives a crash (`fragmentedVideo`), keeping the computer awake (`keepAwake`), and emulated cameras (`cameraMake: "emu"`) |
 | [Recording folders](recordings.md) | What a recording folder holds, `session.json` (how the recording was made), the experiment's details and notes, and the warnings for defaults that changed |
 | [Alerts](alerts.md) | Slack direct messages and a healthchecks.io heartbeat for unattended recordings: setting them up, and how the messages behave |
-| [Video encoding](encoding.md) | NVIDIA NVENC, Intel Quick Sync, VA-API on Linux, full-range video, H.265 on a Mac, how many cameras an encoder keeps up with (`campy-encode-sweep`, `campy-encode-quality`, the launch check), and building ffmpeg |
+| [Video encoding](encoding.md) | NVIDIA NVENC, Intel Quick Sync, VA-API on Linux, full-range video, H.265 on a Mac, denoising (atadenoise: what it does to animals, what it costs), how many cameras an encoder keeps up with (`campy-encode-sweep`, `campy-encode-quality`, the launch check), and building ffmpeg |
 | [FLIR cameras](flir.md) | Cameras left at 43 MB/s by a restart (`campy-flir-reset`), Spinnaker's search for GigE cameras, gamma, and the frame rate, frame size and USB limit campy sets |
 | [Triggering and synchronization](sync.md) | Arduino, Teensy and external triggers, `campy-align` and `campy-synctest` |
 | [RatCam cameras](ratcam.md) | nir-eye-cam's NIR eye cameras, alongside the others and on the same timeline |

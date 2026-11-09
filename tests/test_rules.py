@@ -498,15 +498,15 @@ def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, ou
 		# The pin rose after the frame's trigger, by the trigger's report, the
 		# row, campy-rules' and the board's own time
 		assert 0 < e["after_us"] / 1e3 <= 60, e
-	pulses = [e for e in events if e["kind"] == "pulse"]
-	# 2 ms each (the live simulation's clock reads sleep 50 us, and macOS can
-	# wake it later; the simulated clock's tests check the widths exactly). A
-	# busy CI runner (other test workers beside this one) can hold up the
-	# simulated board's process mid-pulse, so one pulse may run long: the
-	# median must stay 2 ms, single pulses only never short
-	widths = sorted(p["fall_us"] - p["rise_us"] for p in pulses)
-	assert len(pulses) == 10, pulses
-	assert 1900 <= widths[len(widths) // 2] <= 6000 and 1900 <= widths[0] and widths[-1] <= 25000, widths
+	pulses = sorted((e for e in events if e["kind"] == "pulse"), key=lambda p: p["rise_us"])
+	# 2 ms each: never shorter, most within a few tenths of a ms, and every one over before the next rose (100 ms
+	# later). The simulated clock's tests check the widths exactly. Here the live simulation ends a pulse at its first
+	# clock read past 2 ms, and each read sleeps 50 us: when the computer is busy (other tests beside this one) the
+	# process can wake much later. On GitHub's Linux runner, 120 runs: at most 2.1 ms alone, at most 5 ms beside 3
+	# busy loops, and once 6.6 and 54 ms beside other campy tests; every run's median at most 2.12 ms
+	widths = [p["fall_us"] - p["rise_us"] for p in pulses]
+	assert len(pulses) == 10 and min(widths) >= 1900 and np.median(widths) <= 3000, widths
+	assert all(a["fall_us"] < b["rise_us"] for a, b in zip(pulses, pulses[1:])), pulses
 	summary = json.load(open(out + ".json"))
 	assert summary["frame_offset"] == 0 and summary["frame_offset_changes"] == 0
 	assert summary["latency_ms"]["trigger_to_pin"]["n"] == 10
