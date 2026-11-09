@@ -79,9 +79,22 @@ Scored on the validation frames at the end of each run:
 
 - **The centroid difference is small.** It is one run of each, so it may be no more than run-to-run variation. Position error didn't change.
 - **The centered instance table doesn't measure JPEG against original images.** The two runs differ in image format, in enlargement (which clips far more body parts) and in training length: the JPEG run was stopped after two full passes through the data and part of a third. At about 28,000 steps the two were close by the check run during training: mOKS 0.617 for the new run against 0.613, and 70.4% against 67.7% within 10 px. So most of the gain above comes from training longer, and those two numbers still mix format and enlargement.
-- **Each model was scored alone,** not with the two chained as they run on new frames.
+- **Each model was scored alone** in the table above, not with the two chained as they run on new frames. The chained scores are below.
 - **The last third of the centered instance run added almost nothing.** By the check run during training, mOKS was 0.778 at epoch 50 (4 h), 0.835 at epoch 100 (7.9 h), 0.840 at epoch 125 (9.9 h) and 0.841 at epoch 192 (15.2 h). Its largest late gain came between epochs 75 and 100, when the learning rate first dropped. A stricter early stopping setting would have saved about 5 hours (replayed on this log below, under [Checking a config before a long run](#checking-a-config-before-a-long-run)).
 - **With original images, validation is the slow part.** 4 workers managed about 35 crops/s, while the GPU sat at 11–32%, so 175 of each 285 s went to validation. During training it was 75–80% busy. 12 validation workers brought it to 50 s (measured below).
+
+**The two models chained, as they run on new frames.** The centroid model finds each animal, and the centered instance model then places its body parts in a crop around that point. Scored alone, the centered instance model is handed crops centred on the labelled animals instead. Both retrained models were run together with `sleap-nn track` (sleap-nn 0.3.5, default settings, fp32 on the RTX 6000 Ada, 9 November) on the centered instance model's 3,086 validation frames, and scored with sleap-nn's own evaluation:
+
+| | Centered instance alone | Chained, all 3,086 frames | Chained, 318 frames neither model trained on |
+|---|---|---|---|
+| mOKS / mAP (OKS) | 0.836 / 0.667 | 0.790 / 0.592 | 0.780 / 0.574 |
+| Error p50 / p95 / p99 | 1.76 / 11.3 / 30.7 px | 2.14 / 16.9 / 97.6 px | 2.21 / 19.3 / 160.7 px |
+| Within 5 px / 10 px | 80.2% / 89.7% | 74.3% / 86.0% | 73.3% / 84.8% |
+| Body parts found, of those labeled visible | 95.7% | 95.3% | 94.9% |
+
+- **Chaining costs about 0.05 mOKS, mostly in the worst cases.** The median error grows by 0.4 px, but the 99th percentile triples. That's what a centroid that lands off the animal, or on the wrong one, does to a crop. The chained run gave 6,065 skeletons for 6,163 labelled animals. To improve the pair on new frames, the centroid model is the place to look first.
+- **2,768 of these 3,086 frames (90%) were training frames for the centroid model.** sleap-nn 0.3.5 holds out a different random set of frames for each model type, even with the same seed and fraction. That is fixed in the next sleap-nn release (sleap-nn pull request 835). Only 318 frames were held out from both models; on those, the pair scored 0.780. With only 318 frames the 99th percentile there rests on a handful of animals.
+- **Read the third column as the pair's accuracy on frames it has never seen,** with the caveat that 318 frames is a small sample.
 
 ### Checking a config before a long run
 
