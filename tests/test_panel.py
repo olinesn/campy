@@ -67,6 +67,17 @@ def test_a_thumbnail_is_grey_and_about_192_px_wide():
 
 # ------------------------------------------------------------------ bookmarks from two programs
 
+def test_the_page_has_the_luc3d_logo_inline_and_fetches_nothing_from_elsewhere():
+	import base64
+	from campy import panellogo, panelpage
+	page = panelpage.PAGE
+	assert '<img class="logo" src="' + panellogo.LOGO in page and 'rel="icon" type="image/png" href="' + panellogo.ICON in page
+	for uri in (panellogo.LOGO, panellogo.ICON):
+		assert base64.b64decode(uri.split(",", 1)[1])[:8] == b"\x89PNG\r\n\x1a\n"
+	assert not re.search(r"""(src|href)=["']?(https?:)?//""", page) # a rig may have no internet
+	assert "Previous recording: " in page and "@LOGO@" not in page
+
+
 def mark(note, cameras=2):
 	return {"time": "2026-10-23 10:00:00.000", "host_ns": 1, "event": "mark", "note": note, "frame": 5,
 		"cameras": [(5, 1)] * cameras, "recording": ""}

@@ -6,9 +6,11 @@ second, and each camera's thumbnail (/thumb/<n>.png) once a second, with the
 key from its own address on every request.
 """
 
+from campy import panellogo
+
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>campy session</title>
+<title>campy session</title><link rel="icon" type="image/png" href="@ICON@">
 <style>
 :root{--bg:#f7f6f2;--card:#fff;--soft:#f0eee8;--text:#1f1e1c;--muted:#6b6a65;--line:#e2e0d9;--ok:#2f6d12;--okbg:#e6f1dc;
 --warn:#80500b;--warnbg:#fbefd8;--bad:#a32d2d;--badbg:#fbe9e9;--accent:#185fa5}
@@ -31,7 +33,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;display:flex;flex-direction:col
 button{font:inherit;padding:6px 14px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer}
 button:hover{background:var(--soft)}button.stop{color:var(--bad);border-color:var(--bad)}button.go{color:var(--ok);border-color:var(--ok)}
 input{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
-label{font-size:12px;color:var(--muted)}h2{font-size:15px;font-weight:500;margin:0 0 6px}
+label{font-size:12px;color:var(--muted)}h2{font-size:15px;font-weight:500;margin:0 0 6px}h3{font-size:13px;font-weight:600;margin:0 0 4px}.logo{width:44px;height:44px;flex:none;display:block}
 .bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden}.bar div{height:6px;background:var(--ok)}
 .copybar{max-width:420px;margin:4px 0 2px}.copybar div{background:var(--accent)}
 .bgcopy{border-left:4px solid var(--accent)}.bgcopy .copybar{max-width:none;height:10px}.bgcopy .copybar div{height:10px}
@@ -46,9 +48,10 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
 </style></head><body><main>
 
 <div class="card row">
+  <img class="logo" src="@LOGO@" alt="LUC3D" width="44" height="44">
   <div class="grow"><div id="rig" style="font-weight:500">campy session</div><div id="where" class="mono muted"></div></div>
   <span id="state" class="tag">connecting</span>
-  <div style="min-width:180px"><div id="clock"></div><div class="bar"><div id="progress" style="width:0"></div></div></div>
+  <div id="clockbox" style="min-width:180px"><div id="clock"></div><div class="bar"><div id="progress" style="width:0"></div></div></div>
   <button id="stop" class="stop" hidden>Stop</button>
   <button id="close" hidden title="Close the panel (nothing is recording)">Close the panel</button>
 </div>
@@ -59,7 +62,7 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
   <div id="bgcopytext" style="margin-top:6px"></div></div>
 
 <div id="typebox" class="card" hidden>
-  <div class="row"><div class="grow"><label for="type">Experiment</label><select id="type"></select>
+  <div class="row"><div class="grow"><label for="type">Experiment: the rig's settings to record with</label><select id="type"></select>
     <div class="muted" id="typetext"></div></div>
     <button id="typeall" title="Every config in the folder: star the ones the Experiment list shows">Show all configs</button></div>
   <div id="typeerr" class="err"></div>
@@ -68,7 +71,7 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
 </div>
 
 <div id="before" class="card" hidden>
-  <h2>Before the start</h2>
+  <h2>Next recording</h2>
   <div class="two">
     <div>
       <div id="modelbox" hidden style="margin-bottom:10px"><h2>Live models</h2>
@@ -83,14 +86,17 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
           <div class="muted" id="boutshape" style="font-size:12px"></div>
           <div class="row" style="margin-top:4px"><span class="muted grow" style="font-size:12px">The config file isn't changed: these are for the recordings started here, and the next panel opened with this config starts from them. Each recording's session-config.yaml says which came from here.</span><button id="boutreset" hidden>Back to the config's</button></div></details>
         <label for="picoat">Start the Pico at (optional: otherwise a button, once every camera is ready)</label><input id="picoat" placeholder="7:20 PM"></div>
-      <label for="experiment">Experiment</label><input id="experiment" placeholder="Social hierarchy, week 3">
+      <h3 style="margin-top:4px">Saved with the recording</h3>
+      <label for="experiment">Experiment name</label><input id="experiment" placeholder="Social hierarchy, week 3">
       <label for="ids">Animal IDs, comma-separated</label><input id="ids" placeholder="M12, M14, M15">
       <label for="notes">Notes</label><input id="notes" placeholder="Cage 2, new bedding">
       <label for="copyto">Copy each recording to (optional)</label><input id="copyto" placeholder="\\server\share\my folder">
       <div class="muted" style="font-size:12px">After each recording, its folder is copied into this one in the background, while the next records. Nothing is deleted. Empty: no copy.</div>
     </div>
     <div><div id="orphan" class="err" hidden></div><button id="stoporphan" class="stop" hidden>Stop that recording</button>
-      <ul id="checks"></ul><p class="muted" id="length"></p><button id="start" class="go">Start recording</button>
+      <h3 style="margin-top:4px">Checks</h3>
+      <div class="muted" style="font-size:12px">Green: fine. Yellow: you can record, but read it. Red: it stops the start until it is fixed.</div>
+      <ul id="checks"></ul><button id="start" class="go">Start recording</button>
       <div id="starterr" class="err"></div></div>
   </div>
 </div>
@@ -117,21 +123,24 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
   </div>
   <div class="cams" id="cams" style="margin-bottom:12px"></div>
   <div class="two">
-    <div class="card"><h2>Warnings</h2><ul id="warnings"><li class="muted">None</li></ul></div>
+    <div class="card"><h2>Warnings</h2><div class="muted" style="font-size:12px">Problems now, and the ones that went away (in grey). They stay in the recording's alerts.log.</div>
+      <ul id="warnings"><li class="muted">None</li></ul></div>
     <div class="card"><h2>Bookmark</h2>
+      <div class="muted" style="font-size:12px">A moment to find later: type what happened and press Add. It is saved with its exact time and frame in the recording's bookmarks.csv.</div>
       <div class="row"><input id="note" class="grow" placeholder="Mouse 3 rears at the feeder"><button id="mark">Add</button></div>
       <ul id="marks"></ul><div id="markerr" class="err"></div>
-      <div style="margin-top:8px"><button id="viewer">Open the viewer again</button></div></div>
+      <div style="margin-top:8px"><button id="viewer" title="The window with every camera's picture. Closing it never affects the recording.">Open the viewer again</button></div></div>
   </div>
 </div>
 
-<div id="copies" class="card" hidden><h2>Copies</h2><div id="copywait" class="muted" hidden></div>
+<div id="copies" class="card" hidden><h2>Copies</h2><div class="muted" style="font-size:12px">Each recording's folder, copied into the folder in "Copy each recording to", one at a time.</div><div id="copywait" class="muted" hidden></div>
   <ul id="copylist"></ul><button id="closenow" class="stop" hidden>Close now, without the copies</button></div>
 
-<div id="after" class="card" hidden><h2 id="aftertitle">After the recording</h2>
+<div id="after" class="card" hidden><h2 id="aftertitle">After the recording</h2><div id="afterwhen" class="muted"></div>
+  <h3 id="summaryhead" style="margin-top:10px">How it went</h3>
   <ul id="summary"></ul><div id="summarynote" class="muted" hidden>From each camera's metadata.csv and the recording's alerts.log, in its folder.</div>
-  <h2 style="margin-top:10px">Steps</h2><ul id="post"></ul>
-  <p class="muted">Closing this page never stops a recording or its steps. The panel is ready for the next recording.</p></div>
+  <h3 style="margin-top:10px">Steps after the recording</h3><ul id="post"></ul>
+  <p class="muted">Closing this page never stops a recording or these steps. You can start the next recording above at any time.</p></div>
 
 <div id="stopdlg" class="modal" hidden><div class="card"><h2>End the recording?</h2>
   <p class="muted" id="stoptext"></p>
@@ -160,11 +169,14 @@ function render(s){
   const L = s.launcher || {}, rec = L.recording || {}, H = s.health || {};
   const TY = s.types, chosen = TY ? TY.all.find(x => x.path == TY.chosen) : null;
   $("rig").textContent = s.rig + " · " + (chosen ? chosen.title : s.config.split(/[\\/]/).pop());
-  $("where").textContent = L.folder || s.config;
   const st = s.state, live = ["checking","starting","preparing","starting live","recording","stopping","post","finishing"].includes(st);
+  const running = ["checking","starting","preparing","starting live","recording","stopping"].includes(st);
+  // The line under the title says what the path is: the folder being recorded into, the previous recording's, or the config
+  $("where").textContent = L.folder ? (running ? "Recording into " : st=="post" ? "This recording's folder: " : "Previous recording's folder: ") + L.folder :
+    "Settings file: " + s.config;
   $("state").className = "tag " + (st=="recording" ? "ok" : st=="failed" ? "bad" : live ? "warn" : "");
-  $("state").textContent = {ready:"Ready", starting:"Starting", checking:"Checking", preparing:"Starting SpikeGLX, gate check", finishing:"Finishing", "starting live":"Starting campy-live",
-    recording:"Recording", stopping:"Stopping", post:"After the recording", done:"Done", failed:"Failed"}[st] || st;
+  $("state").textContent = {ready:"Ready to record", starting:"Starting", checking:"Checking", preparing:"Starting SpikeGLX, gate check", finishing:"Finishing", "starting live":"Starting campy-live",
+    recording:"Recording", stopping:"Stopping", post:"Finishing the recording's files", done:"Done", failed:"Failed"}[st] || st;
   $("stop").hidden = !(st=="recording" || st=="stopping");
   $("close").hidden = !(st=="ready" || st=="done" || st=="failed");
   renderDevices(s, st);
@@ -172,12 +184,14 @@ function render(s){
   $("stop").textContent = stopArmed ? "Stop now, without closing" : (rec.stop_asked ? "Stopping…" : "Stop");
   const DP = s.devices && s.devices.plan ? s.devices.pico : null;
   if(DP){ // a Pico's session: its time against its plan (campy's recTimeInSec is camera time, not the clock's)
-    const on = DP.alive && s.devices.pico_started && DP.mode != "wiring";
+    const on = DP.alive && s.devices.pico_started && DP.mode != "wiring"; $("clockbox").hidden = !on && !live;
     $("clock").innerHTML = on ? "<b>"+hms(DP.session_s)+"</b> <span class=muted>of "+hms(DP.ends_s)+", the Pico's</span>" : (live ? "<span class=muted>"+(s.devices.pico_started ? "the Pico's session has ended" : "the Pico hasn't started")+"</span>" : "");
     $("progress").style.width = on && DP.ends_s ? Math.min(100, 100*DP.session_s/DP.ends_s)+"%" : "0";
   } else {
-  $("clock").innerHTML = rec.elapsed_s!=null ? "<b>"+hms(rec.elapsed_s)+"</b> <span class=muted>of "+hms(rec.planned_s)+"</span>" : "";
-  $("progress").style.width = rec.elapsed_s && rec.planned_s ? Math.min(100, 100*rec.elapsed_s/rec.planned_s)+"%" : "0";
+  // Only while it records: after it, the previous recording's time against its length meant nothing (1:19 of 1:00)
+  const shown = running && rec.elapsed_s!=null; $("clockbox").hidden = !shown;
+  $("clock").innerHTML = shown ? "<b>"+hms(rec.elapsed_s)+"</b> <span class=muted>recorded, of "+hms(rec.planned_s)+"</span>" : "";
+  $("progress").style.width = shown && rec.planned_s ? Math.min(100, 100*rec.elapsed_s/rec.planned_s)+"%" : "0";
   }
   $("error").hidden = !s.error; $("error").textContent = s.error || "";
   $("before").hidden = !(st=="ready" || st=="done" || st=="failed");
@@ -208,7 +222,7 @@ function render(s){
     D_.hours_left!=null ? "about "+D_.hours_left+" h at this rate" : "";
   const T = H.tracking; $("good3d").textContent = T && T.good3d!=null ? T.good3d+" of "+T.animals : "-";
   const parts = Object.assign({}, L.parts||{}); if((L.live||[]).length) parts["campy-live"] = L.live[L.live.length-1];
-  $("programs").innerHTML = Object.entries(parts).map(([n,p]) => tag(p.state, p.state=="running"?"ok":p.exit_code?"bad":"warn")+" "+esc(n=="acquire"?"campy-acquire":n=="view"?"viewer":n=="watch"?"campy-watch":n)).join("<br>") || "-";
+  $("programs").innerHTML = Object.entries(parts).map(([n,p]) => tag(p.state, p.state=="running"?"ok":p.exit_code?"bad":"warn")+" "+esc(PROGRAMS[n] || n)).join("<br>") || "-";
   const R = s.recording || {}, counters = {}; (R.cameras||[]).forEach(c => counters[c.name] = c);
   const cams = H.cameras || [];
   if(cams.length != thumbs){ thumbs = cams.length; $("cams").innerHTML = cams.map((c,i) => '<div class="card cam"><div class="ph" id="ph'+i+'"></div><img id="th'+i+'" alt="'+esc(c.name)+'" hidden><div id="cm'+i+'"></div></div>').join(""); }
@@ -235,7 +249,10 @@ function render(s){
   $("after").hidden = !(st=="post" || (["done","failed","ready","finishing"].includes(st) && L.folder));
   // What went wrong in it, from the files in its folder: until the next recording starts, and after the page or the panel is opened again
   const SM = s.summary, hurt = SM && SM.level != "ok";
-  const C = L.clean; $("aftertitle").textContent = st=="post" ? "After the recording" : "The last recording: " +
+  const AQ = (L.parts||{}).acquire || {};
+  $("afterwhen").textContent = AQ.ended ? "Ended at "+when(AQ.ended)+(rec.elapsed_s!=null ? ", after "+mins(rec.elapsed_s) : "") : "";
+  $("summaryhead").hidden = !SM;
+  const C = L.clean; $("aftertitle").textContent = st=="post" ? "After the recording" : "Previous recording: " +
     (C ? (C.clean ? "every camera recorded to the end" + (hurt ? ", with problems" : "") : "it didn't end cleanly: " + (C.why||"").split(";")[0] + (String(C.why||"").includes(";") ? "; ..." : "")) :
     L.state=="done" ? "campy-acquire ended" : L.state || "");
   $("summary").innerHTML = SM ? SM.lines.map(x => "<li>"+tag(x.level=="ok"?"ok":x.level=="bad"?"problem":"warning", x.level)+" "+esc(x.text)+"</li>").join("") : "";
@@ -243,10 +260,22 @@ function render(s){
   const CJ = ((s.copies||{}).jobs||[]).find(j => L.folder && j.folder == L.folder);
   // The panel's own copy, in the background: copying (with how far it has got), waiting behind another, done or failed
   if(CJ) P.copy = {state: ["done","failed","copying"].includes(CJ.state) ? CJ.state : "waiting", message: copyText(CJ), bar: copyBar(CJ)};
-  $("post").innerHTML = ["remux","export","copy","run"].map(k => P[k] ? "<li>"+tag(P[k].state, P[k].state=="done"?"ok":P[k].state=="failed"?"bad":"warn")+" "+k+": "+esc(P[k].message)+(P[k].bar||"")+"</li>"
-    : "<li class=muted>"+k+(st=="post"?": waiting":"")+"</li>").join("");
+  $("post").innerHTML = ["remux","export","copy","run"].map(k => P[k] ? "<li>"+tag(P[k].state, P[k].state=="done"?"ok":P[k].state=="failed"?"bad":"warn")+" "+STEPS[k]+": "+esc(P[k].message)+(P[k].bar||"")+"</li>"
+    : "<li class=muted>"+STEPS[k]+(st=="post"?": waiting":"")+"</li>").join("");
 }
 let typeSig = "", listSig = "", choosing = false, refill = false;
+const PROGRAMS = {acquire: "Cameras and video files (campy-acquire)", view: "Viewer window", watch: "Alerts (campy-watch)",
+  "campy-live": "Live tracking (campy-live)"};
+const STEPS = {remux: "Video files", export: "Tracking files for LUC3D", copy: "Copy", run: "Extra commands"};
+function mins(s){ // 80 s as "1 min 20 s", 4000 s as "1 h 6 min"
+  s = Math.round(s); const h = Math.floor(s/3600), m = Math.floor(s%3600/60);
+  return h ? h+" h "+m+" min" : m ? m+" min"+(s%60 ? " "+s%60+" s" : "") : s+" s";
+}
+function when(iso){ // an ISO time as 2:40 PM (with the day, when not today)
+  const d = new Date(iso); if(isNaN(d)) return "";
+  const t = d.toLocaleTimeString([], {hour:"numeric", minute:"2-digit", hour12:true});
+  return d.toDateString()==new Date().toDateString() ? t : d.toLocaleDateString([], {month:"short", day:"numeric"})+", "+t;
+}
 function renderTypes(T, st, s){
   $("typebox").hidden = !T; if(!T) return;
   // Changed only while nothing records: no recording, no earlier panel's, no Pico or SpikeGLX left running
@@ -459,3 +488,6 @@ $("viewer").onclick = async () => { const e = await post("/viewer"); if(e) alert
 tick(); setInterval(tick, 1000); setInterval(images, 1000);
 </script></body></html>
 """
+
+# The LUC3D logo in the header, and as the tab's icon (campy/panellogo.py: inline, nothing fetched)
+PAGE = PAGE.replace("@LOGO@", panellogo.LOGO).replace("@ICON@", panellogo.ICON)

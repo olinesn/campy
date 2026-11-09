@@ -127,7 +127,7 @@ def CameraLines(cams):
 	dropped = [c for c in closed if c["dropped"]]
 	if dropped:
 		behind = Seconds(c["queue_s"] for c in dropped)
-		lines.append(("bad", "{} of {} dropped frames: {} (the encoder fell more than {} behind: writeQueueMaxSec)"
+		lines.append(("bad", "{} of {} dropped frames: {} (the video encoder fell more than {} behind: writeQueueMaxSec)"
 			.format(len(dropped), Plural(n, "camera"), listing(dropped, "dropped"),
 			behind or "its writeQueueMaxSec")))
 	lost = [c for c in closed if c["lost"]]
@@ -161,8 +161,12 @@ def CameraLines(cams):
 # ------------------------------------------------------------------ the alerts
 
 def Clock(stamp):
-	# An alert's ISO time as the page shows it: 14:34:53
-	return str(stamp or "")[11:19]
+	# An alert's ISO time as the page shows it, 12-hour: 2:34:53 PM
+	try:
+		h, m, s = (int(x) for x in str(stamp)[11:19].split(":"))
+	except ValueError:
+		return str(stamp or "")[11:19]
+	return "{}:{:02d}:{:02d} {}".format(h % 12 or 12, m, s, "AM" if h < 12 else "PM")
 
 
 def First(text):

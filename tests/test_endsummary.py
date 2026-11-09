@@ -70,11 +70,11 @@ def test_dropped_frames_and_the_critical_alerts_still_open(tmp_path):
 	assert s["level"] == "bad"
 	assert texts(s)[0] == ("6 of 8 cameras dropped frames: Camera1_topC 506 of 3,285, Camera2_mid 501 of 3,285, "
 		"Camera3_sideC 556 of 3,285, Camera5_topL 563 of 3,285, Camera6_sideR 536 of 3,285, Camera7_sideL 539 of 3,285 "
-		"(the encoder fell more than 5 s behind: writeQueueMaxSec)")
+		"(the video encoder fell more than 5 s behind: writeQueueMaxSec)")
 	assert texts(s)[1:] == [
-		"Critical at 14:34:53, still open at the end: 6 cameras at once: frames waiting for ffmpeg. The disk or the encoder "
+		"Critical at 2:34:53 PM, still open at the end: 6 cameras at once: frames waiting for ffmpeg. The disk or the encoder "
 		"has stalled.",
-		"Critical at 14:34:51, still open at the end: 2 cameras at once: frames dropped: more than writeQueueMaxSec (5 s) of "
+		"Critical at 2:34:51 PM, still open at the end: 2 cameras at once: frames dropped: more than writeQueueMaxSec (5 s) of "
 		"frames were waiting for ffmpeg."]
 
 
@@ -90,8 +90,8 @@ def test_a_critical_alert_resolved_while_it_recorded_is_kept_and_warnings_only_w
 	s = endsummary.Summary(recording(tmp_path, dropped={}, alerts=log))
 	assert s["level"] == "bad"
 	assert texts(s) == ["All 8 cameras: every frame saved (3,285 frames each)",
-		"Critical at 14:34:40, resolved at 14:34:52: Camera3_sideC: no frames for 10 s",
-		"Warning at 14:34:51, still open at the end: Disk: 40 GB free"]
+		"Critical at 2:34:40 PM, resolved at 2:34:52 PM: Camera3_sideC: no frames for 10 s",
+		"Warning at 2:34:51 PM, still open at the end: Disk: 40 GB free"]
 	assert [x["level"] for x in s["lines"]] == ["ok", "bad", "warn"]
 
 
@@ -106,7 +106,7 @@ def test_a_camera_without_totals_takes_them_from_the_acquire_log(tmp_path):
 			"a stopped ffmpeg).\n")
 	s = endsummary.Summary(folder)
 	assert texts(s) == [
-		"1 of 8 cameras dropped frames: Camera2_mid 501 of 3,285 (the encoder fell more than 5 s behind: "
+		"1 of 8 cameras dropped frames: Camera2_mid 501 of 3,285 (the video encoder fell more than 5 s behind: "
 		"writeQueueMaxSec)",
 		"1 of 8 cameras lost frames in a stopped ffmpeg: Camera2_mid 84 of 3,285",
 		"Camera4_topR stopped without closing (no totals in its metadata.csv)"]
