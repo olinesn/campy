@@ -106,7 +106,10 @@ which the others agree) gets its cross where the others put it, and a line
 to it from its click. The panel says, in green, that Enter saves the cage,
 or, in red, what is missing. Enter saves it as JSON beside the calibration
 (<calibration>.cage.json, or campy-live's --cage file), x removes it (kept as
-.old), Esc or k stops without saving. The cage is then drawn on every tile
+.old). Esc or k stops drawing, and saves the cage too when its corners
+agree, and so do the recording's end and closing the view: a cage drawn is
+drawn once for its calibration, never lost for want of Enter (one that isn't
+ready is said, and dropped). The cage is then drawn on every tile
 and in 3D, in teal; campy-live uses it within a second, and the panel says
 which identities it set aside ("outside the cage: not found").
 
@@ -1631,6 +1634,7 @@ class Viewer:
 			self.readers = None
 			self.ended = True
 			Say("The recording ended.")
+			self.FinishCage("the recording ended") # a cage being drawn isn't lost with the recording
 		if self.results is None:
 			try:
 				self.results = liveresults.Results(self.resultsName)
@@ -1741,9 +1745,9 @@ class Viewer:
 		self.panned = True # drawn again, paused too
 
 	def StartCage(self):
-		# k: drawing the cage begins (its height from the cage there is), or ends, nothing saved
+		# k: drawing the cage begins (its height from the cage there is), or ends, saving a cage that is ready
 		if self.drawing is not None:
-			self.StopCage("The cage: nothing saved.")
+			self.FinishCage("you stopped drawing")
 			return
 		if not self.calibration:
 			Say("k: the cage needs campy-live's calibration (3D).")
@@ -1755,6 +1759,22 @@ class Viewer:
 			"this camera does not see); Backspace undoes the last, [ and ] its height ({:g} mm), Enter saves it to {}, "
 			"x removes the cage, Esc or k stops. Space pauses the frames.".format(self.cageHeight, self.cagePath))
 		self.panned = True
+
+	def FinishCage(self, why):
+		"""
+		Drawing the cage ends (k or Esc, the recording ended, the view closed): a cage whose corners agree is saved,
+		as Enter saves it, so a cage drawn is never lost for want of Enter; one that isn't ready is said and dropped.
+		"""
+		if self.drawing is None:
+			return False
+		if not any(self.drawing.values()):
+			self.StopCage("The cage: nothing drawn, nothing saved.")
+			return False
+		if self.SaveCage():
+			Say("(Saved as {}.)".format(why))
+			return True
+		self.StopCage("The cage: not saved ({}): {}.".format(why, self.cageSaid or "not ready"))
+		return False
 
 	def StopCage(self, text=None):
 		self.drawing = self.draft = self.cageSaid = None
@@ -1873,7 +1893,7 @@ class Viewer:
 	def CageKey(self, key):
 		# A key while drawing the cage: True if it was the cage's
 		if key in (27, ord("k")):
-			self.StopCage("The cage: nothing saved.")
+			self.FinishCage("you stopped drawing")
 		elif key in (8, 127): # Backspace (Delete on macOS)
 			points = self.drawing.get(self.drawCamera)
 			if points:
@@ -2029,13 +2049,15 @@ class Viewer:
 		if problems:
 			lines = [("Not ready, Enter does not save yet: " + problems[0], WARN)]
 		else:
-			lines = [("Ready: Enter saves the cage ({} corners, {:g} mm high)".format(n, self.cageHeight), FINE)]
+			lines = [("Ready: Enter saves the cage ({} corners, {:g} mm high); stopping (k, Esc), the recording's end "
+				"or closing the view saves it too".format(n, self.cageHeight), FINE)]
 		lines += each
 		if self.cageSaid:
 			lines.append((self.cageSaid, WARN))
 		return lines
 
 	def Close(self):
+		self.FinishCage("the view closed")
 		for r in self.readers or ():
 			r.Close()
 		if self.results is not None:
