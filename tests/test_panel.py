@@ -613,7 +613,12 @@ def test_a_folder_panel_records_with_the_experiment_picked_on_its_page(tmp_path,
 			all(c["frame"] > 10 for c in s["health"]["cameras"]))
 		assert [c["name"] for c in status["health"]["cameras"]] == NAMES
 		assert call(url, "/stop", {}) == (200, {"ok": True})
-		status = wait(url, lambda s: s["state"] == "ready" and s["launcher"] and s["launcher"]["state"] == "done")
+		# A clean stop, on a CI runner busy with 3 other workers, can take more than a minute (the ARM runner's did)
+		try:
+			status = wait(url, lambda s: s["state"] == "ready" and s["launcher"] and s["launcher"]["state"] == "done",
+				timeout=180)
+		except AssertionError as e:
+			raise AssertionError("{}\nThe panel's output:\n{}".format(e, "".join(lines)[-6000:]))
 		assert status["launcher"]["parts"]["acquire"]["exit_code"] == 0
 		assert min(recorded(the_folder(clips))) > 10
 		# Back to the first, once it has ended; the next panel opens on it
