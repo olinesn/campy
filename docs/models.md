@@ -166,6 +166,86 @@ Accuracy on the same 293 validation mice (11 body parts, median / 90th / 99th pe
 
 With compiled models, as `campy-live` runs them by default, the trained 5-mouse pair (the 160 px model below) took 5.3–5.5 ms per set on 3 cameras (p99 5.4–5.7) on both the EVO-X2 and the Pro Max Slim's RTX 2000 Ada, and 14.1–15.8 ms on 8 cameras, just under the 16.7 ms of 60 fps; on the Precision 7875's RTX 6000 Ada, 1.6 and 3.2 ms (28 October; [hardware guide](hardware.md)). Before compiled models, timing sleap-nn's own layer in plain PyTorch: on the EVO-X2 with 5 mice and 3 cameras, the benchmark p99s were 14.0 ms for the 160 px model, 15.3 ms for the 24-filter 192 px model and 10.6 ms for the 16-filter one. In the full live pipeline the 160 px model skipped nothing. The 24-filter 192 px model, with less room, still skipped a set now and then, and the 16-filter one kept up easily but was less accurate. On the Pro Max Slim (RTX 2000 Ada) the 160 px model took 16.5 ms per set with 5 mice, which is too close to the 16.7 ms between frames: it skipped 4–6% of the sets. Use the 16-filter 192 px model there, or 30 fps. The [hardware guide](hardware.md) has the live measurements.
 
+## Lighter models for 8 cameras on an RTX A2000 (2 mice, 7–9 November 2026)
+
+**In short:** the Dell Pro Tower Plus films one box with 8 cameras at 60 fps, 2 mice at a time. With the pair it had (160 px centered-instance model), its RTX A2000 took 14.7 ms at p99 from a frame to its 2D poses: too slow to track every set. Keeping that pair's settings, the centroid model was fine-tuned on pseudo-labels from a larger teacher model, and the centered-instance model was shrunk to a 128 px input and fine-tuned the same way. That pair takes 12.3 ms at p99 on the A2000 and tracks every set. On a session none of the models trained on, it misses one mouse fewer, puts fewer skeletons on the wrong mouse, and places body parts a little closer than the round-1 pair of the same size. Making a model smaller costs less accuracy than training it on a session it hasn't seen.
+
+**The budget.** At 60 fps a set of 8 frames comes every 16.7 ms. The aim was 2D poses within 13.3 ms (80% of that) at p99, measured live with `campy-live`'s defaults (fixed crops, CUDA graphs, TensorRT fp16, the GPU clock held).
+
+**How every model was trained and scored:**
+- **Data.** Every model trained on the same frames:
+  - the 30,869-frame top-view package above;
+  - 4 of the box's 5 labelled sessions: 720 frames to train on and 80 to check training against.
+  
+  All runs used the same split, seed and augmentation. The settings are 12 body parts, centroid anchored on the trunk, as in [Settings that worked](#settings-that-worked) unless a table says otherwise.
+- **Held-out session.** The fifth session was held out to score the models: 2 mice filmed by all 8 cameras, 200 labelled frames (25 per camera), 400 mice.
+- **Scoring.** The scores below run each pair through `campy-live`'s own code (fixed crops, TensorRT fp16) on a cluster GPU, with 2 animals per frame:
+  - *Missed*: a labelled mouse with no skeleton.
+  - *Extra*: a skeleton with no mouse under it.
+  - *Wrong mouse*: a skeleton on the other mouse.
+  - *Error*: the distance between each predicted body part and its label, in full-size pixels.
+- **The previous pair can't be scored here.** The pair the Tower Plus had was trained on all 5 sessions, including the held-out one. On those frames it scores 2.0 px at the median, from memory, not skill. Round 1's 320 → 160 px pair has its settings and was trained without that session; it is the baseline.
+
+**Round 1: smaller sizes (7 November).** The sizes were timed untrained on the A2000 (`bench/sleap_infer_bench.py`, 8 frames, 2 mice, p99 of a set), then trained and scored on the held-out session:
+
+| Centroid | Centered instance | Benchmark p99 | Missed / extra / wrong mouse of 400 | Error p50 / p99 |
+|---|---|---|---|---|
+| scale 0.25, 16 filters, output stride 2 | 320 → 160 px, 24 filters | 11.1 ms | 7 / 2 / 29 | 6.12 / 82.6 px |
+| same | 320 → 128 px, 24 filters | 8.7 ms | 7 / 2 / 26 | 6.37 / 79.9 px |
+| same | 320 → 160 px, 16 filters | 8.2 ms | 7 / 2 / 27 | 6.68 / 80.4 px |
+| same | 320 → 128 px, 16 filters | 6.9 ms | 7 / 2 / 29 | 6.95 / 84.2 px |
+| scale 0.1875 | 320 → 160 px, 24 filters | 9.4 ms | 12 / 6 / 23 | 6.17 / 76.0 px |
+| output stride 4 | 320 → 160 px, 24 filters | 9.7 ms | 18 / 3 / 18 | 6.13 / 71.5 px |
+| scale 0.1875, output stride 4 | 320 → 128 px, 16 filters | 4.7 ms | 26 / 3 / 23 | 7.19 / 75.6 px |
+
+- **A smaller centered-instance model costs little.** Going from 160 to 128 px moved the median error by 0.25 px.
+- **A smaller centroid model loses mice.** Each smaller centroid missed 12 to 26 mice instead of 7. A missed centroid is a whole missing skeleton, so the centroid stayed at scale 0.25, output stride 2.
+- **New sessions are the larger gap.** On frames from the training sessions the same 320 → 160 px pair is within 3.5 px at the median. On the held-out session it is 6.1 px.
+
+**Round 2: fine-tuning on the box's labels alone did nothing.** Each round-1 model was trained further (learning rate 2e-5, 40 epochs of 500 steps):
+- on the box's 720 frames alone;
+- or on those frames mixed with 2,160 top-view frames.
+
+Every score stayed within 0.15 px of round 1. 720 frames from 4 sessions are too few to teach more.
+
+**Round 3: bigger crops didn't help either.** In the training labels the nose reaches up to 182 px from the trunk, past the 160 px half-width of a 320 px crop. So 384 and 448 px crops were tried, shrunk to 128–224 px, with 24 and 16 filters (12 models, each with the round-1 centroid). None was more accurate than 320 → 160 px at the same speed:
+- At the same model input size, a bigger crop is shrunk more, so the model sees less detail. For example, 384 → 128 scored 6.55 px against 6.37 for 320 → 128.
+- Body parts that far out are rare: 0.05% of training labels are 150 px or more from the trunk.
+- The larger inputs were too slow. 384 → 192 and 448 → 224 with 24 filters skipped sets live.
+
+**Crops shrunk by an uneven factor lose nothing for it.** 320 → 128 is a 2.5 times shrink, not a whole number. Both sleap-nn's training and `campy-live` shrink crops with torchvision's bilinear resize with antialiasing on, which smooths before it samples, so an uneven factor doesn't alias fine detail. The error grew steadily with the shrink factor. For example, 384 px crops shrunk to 192, 160 and 128 px (2, 2.4 and 3 times) scored 5.93, 6.32 and 6.55 px.
+
+**Round 4: pseudo-labels from a larger model (9 November).** A larger top-down pair served as the teacher. Its backbone is DINOv2, and it was fine-tuned on the box's labels. On the held-out session it was within 3.9 px at the median, against 6.1, but too slow to run live. Pseudo-labels were made like this:
+1. The teacher ran on 4 unlabelled recordings of the box. Three had 2 mice and one had 4.
+2. Only frames where the 8 cameras' poses agreed in 3D were kept.
+3. From each camera of each session, 100 frames were picked: half where the round-1 pair disagreed with the teacher, half spread through the session.
+
+That gave 3,100 pseudo-labelled frames. Two ways of using them were tried:
+- **Fine-tuned:** each round-1 model was trained further on the box's labels, 2,160 top-view frames and the pseudo-labels (learning rate 2e-5, 40 epochs of 500 steps).
+- **From scratch:** the round-1 recipe was rerun with the pseudo-labels added to its training data.
+
+| Pair (each fine-tuned unless marked) | Missed / extra / wrong mouse of 400 | Error p50 / p90 / p99 | Within 5 px |
+|---|---|---|---|
+| Round 1, 320 → 128 px, 24 filters (baseline) | 7 / 2 / 26 | 6.37 / 28.6 / 79.9 px | 40.8% |
+| **Centroid without the 4-mouse session + 320 → 128 px, 24 filters** | **6 / 2 / 22** | **6.00 / 27.1 / 77.9 px** | 43.1% |
+| Centroid without the 4-mouse session + 320 → 128 px, 16 filters | 6 / 2 / 22 | 6.42 / 29.1 / 80.5 px | 41.1% |
+| Centroid without the 4-mouse session + 320 → 160 px, 24 filters (too slow) | 6 / 2 / 16 | 5.58 / 25.6 / 71.2 px | 46.2% |
+| Centroid with all 4 sessions + 320 → 128 px, 24 filters | 9 / 6 / 18 | 5.89 / 26.1 / 75.1 px | 44.0% |
+| From scratch, both models, 320 → 128 px, 24 filters | 8 / 6 / 27 | 5.90 / 28.0 / 84.2 px | 43.4% |
+| From scratch without the 4-mouse session, both models, 320 → 128 px, 24 filters | 12 / 5 / 18 | 5.80 / 26.5 / 72.9 px | 44.1% |
+| Round 1, 320 → 128 px, 16 filters (for the 16-filter row) | 7 / 2 / 29 | 6.95 / 32.0 / 84.2 px | 37.2% |
+
+- **Pseudo-labels help where more of the same labels didn't.** The fine-tuned pairs place body parts closer and put fewer skeletons on the wrong mouse. Most of the wrong-mouse gain comes from the centroid model: a better centre gives a better crop.
+- **Leave out the 4-mouse session when the box holds 2.** With it, the fine-tuned centroid model missed 9 mice and added 6 extra skeletons. Without it, it missed 6 and added 2 (round 1: 7 and 2). The centered-instance models above were fine-tuned with all 4 sessions; only the centroid model leaves it out.
+- **Fine-tune; don't retrain from scratch.** Retrained from scratch with the pseudo-labels, the centroid model missed 8–12 mice.
+- **What runs on the Tower Plus now:**
+  - The centroid fine-tuned without the 4-mouse session, with the fine-tuned 320 → 128 px, 24-filter model.
+  - The 16-filter model as the faster spare. It is about as accurate as round 1's 160 px pair and leaves 2.6 ms of headroom.
+
+  Live timings for both are in [Live tracking](live-tracking.md#lighter-models-for-2-mice-november-2026).
+
+**Precision.** The scores ran TensorRT fp16 on a cluster GPU, and live runs TensorRT fp16 on the A2000. Two GPUs in fp16 don't give bit-identical keypoints. Live against offline was checked on the earlier pair (7 November, 8 cameras, 57,600 camera frames): body parts within 0.03 px at the median and 94.5% within 0.5 px. In 2.4% of mice the two GPUs picked a different centroid peak, and those skeletons differed more. That check wasn't repeated for the new pairs. Each model was trained once, so a difference of one or two mice, or under about 0.2 px, may be run-to-run noise.
+
 ## Where a set's time goes
 
 `bench/live_stage_timing.py run` runs `campy-live` itself with a timer around each stage of each set. Before and after each stage it waits for the GPU to finish, so each stage counts only its own work. Its docstring lists the stages. `bench/live_stage_timing.py kernels` profiles the two models layer by layer: GPU time per layer, against the bytes each layer moves and the arithmetic it does.

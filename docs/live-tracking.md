@@ -681,7 +681,30 @@ A Dell Pro Tower Plus (Intel Core Ultra 9 285, NVIDIA RTX A2000 12 GB, a 70 W ca
 - **Other programs.** Both runs ended `RIG_CONTAMINATED`, by other programs' CPU use only. At 30 fps the antivirus and Windows Search used 2–2.5 cores while the models loaded and as the cameras started; after the first 10 s, each 10 s report's p99 inference was 22.2–23.3 ms. At 60 fps Windows' app and device-enrollment services used 4–5 cores at times. Each run was measured once.
 - **Played at half speed.** The clips were recorded at 60 fps, so at 30 fps the mice moved half as fast as in life; that does not change the work per set.
 
-To track 8 cameras at 60 fps here, the A2000 would need a lighter model or a faster card: the guide's model-size sweep has what each GPU does with 8 cameras ([Hardware guide](hardware.md)).
+To track 8 cameras at 60 fps here, the A2000 needs a lighter model or a faster card. The guide's model-size sweep has what each GPU does with 8 cameras ([Hardware guide](hardware.md)). With 2 mice, lighter models do it (below).
+
+### Lighter models for 2 mice (November 2026)
+
+The box this computer films holds 2 mice. Pairs trained for it were replayed on the Tower Plus, with the setup above:
+- 8 emulated cameras played all 8 views of a 2-mouse session from that box, at 60 fps for 120 s, recording AV1 on Quick Sync.
+- `campy-live` tracked in 3D on the A2000 with its defaults.
+
+Every run tracked all 7,200 sets, skipped none and misaligned none. Times are in ms, median / p99 / max. The centroid model is the same size in every row (scale 0.25, 16 filters, output stride 2). How each pair was trained and how accurate it is: [Pose models](models.md#lighter-models-for-8-cameras-on-an-rtx-a2000-2-mice-79-november-2026).
+
+| Centered-instance model | Inference | Frame to 2D | Frame to 3D | GPU clock (median) |
+|---|---|---|---|---|
+| 320 → 160 px, 24 filters (the earlier pair's size; 7 Nov) | 10.6 / 11.4 | 13.0 / 14.7 / 19.9 | 15.4 / 20.2 / 24.0 | 1,537 MHz |
+| 320 → 128 px, 24 filters, round 1 (7 Nov) | 8.5 / 8.9 | 10.7 / 12.4 / 14.4 | 13.4 / 17.0 / 19.9 | 1,605 MHz |
+| 320 → 128 px, 16 filters, round 1 (7 Nov) | 6.9 / 7.3 | 9.2 / 10.8 / 13.8 | 12.1 / 15.9 / 21.1 | 1,695 MHz |
+| 320 → 160 px, 24 filters, fine-tuned with pseudo-labels (9 Nov) | 10.5 / 11.3 | 13.3 / 14.8 / 17.6 | 15.4 / 19.0 / 26.2 | 1,552 MHz |
+| **320 → 128 px, 24 filters, fine-tuned with pseudo-labels (9 Nov; now on the Tower Plus)** | 8.5 / 8.9 | **11.1 / 12.3** / 16.8 | 13.4 / 16.6 / 23.2 | 1,605 MHz |
+| 320 → 128 px, 16 filters, fine-tuned with pseudo-labels (9 Nov; the faster spare) | 6.9 / 7.4 | 9.5 / 10.7 / 13.7 | 12.2 / 16.1 / 20.0 | 1,687 MHz |
+
+- **The 128 px pairs fit; 160 px doesn't.** The aim was 2D poses within 13.3 ms at p99 (80% of the 16.7 ms between sets). The 160 px model never skipped a set, but at 14.7–14.8 ms it leaves too little margin. The 128 px models have 1.0 ms (24 filters) and 2.6 ms (16 filters) to spare.
+- **Speed depends on the model's size, not its training.** Fine-tuned and round-1 models of the same size ran within 0.4 ms of each other, at the median and at p99.
+- **Each 9 November run ran twice; neither was `RIG_CLEAN`.** Each run was marked `RIG_CONTAMINATED` both times, by the endpoint security software using 1.3–1.8 CPU cores, and only that. The two runs of each pair agreed within 0.05 ms at p99, so the table gives the second. The 7 November runs were `RIG_CLEAN`.
+- **The A2000's power limit sets its clock.** Its median clock was 1,550–1,700 MHz, lower for the heavier models, and in the 7 November runs it was at its 70 W limit about 87% of the time. `campy-live` ran on the performance cores except CPU 1, which handles the card's interrupts.
+- **Live accuracy wasn't measured here.** Only on the earlier pair (7 November) was live compared with offline SLEAP on the same frames: within 0.03 px at the median ([Pose models](models.md#lighter-models-for-8-cameras-on-an-rtx-a2000-2-mice-79-november-2026)).
 
 ## Fixed crops (`--fixed-crops`, on by default with a GPU)
 
