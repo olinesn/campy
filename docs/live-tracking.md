@@ -586,6 +586,8 @@ Notes on the measurements:
 
   The EVO-X2's replay agreed with the offline tracking as before: a median of 3.8 px in 2D and 4.2 mm in 3D, and 2 identity switches. The slowest replay set on the Precision 7875 took 22.6 ms frame to 3D (one set, in the first 10 s). The VM's recording checks kept every frame (1,200, then 3 × 3,600), both `RIG_CLEAN`.
 
+- On 9 November, after pull requests 331 and 333 (the ChronicRecord rig's bout settings on the recording page) were merged, all five machines moved to dev `d03d158` at 7:33–7:34 AM, each idle and each under its lock (`RIG_CLEAN`). The move also brings pull requests 330 and 332, whose `rig.py` the machines already had (`rig.py install --check`: nothing to install). None of the four brought new requirements, so each checkout was fast-forwarded and nothing was reinstalled. None of them changes `campy-live`, so the machines didn't run their rig checks again: the 8 November numbers above still stand. On the Pro Max Slim, the bout session's panel config loaded with this campy and planned every length on its page as before (6 days: 1,728 bouts and 5,011,200 camera pulses), with the bout settings at the config's values.
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
