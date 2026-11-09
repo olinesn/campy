@@ -1272,11 +1272,29 @@ def paced(writers, frames, fps, host_offset=None, skip=None, step=None):
 	return late
 
 
+def warmed_up(rings):
+	# A viewer's first view takes 15-30 ms more than the next ones: OpenCV loads its font at the first text it
+	# measures, and readies its colour conversion at the first frame it converts. campy-live-view does that in its own
+	# process, but a test that calls viewer.Step from its frame-writing loop would write its next frame that much
+	# late. So a throwaway viewer draws one view first, on rings of its own
+	prefix = name()
+	writer = rings(livefeed.RingName(prefix, 0), (64, 80), np.uint8, slots=8, frameRate=100.0, cameraName="Camera0")
+	writer.Write(np.full(writer.ring.shape[:2], 60, np.uint8), 1, clock.HostNs(), 0.01)
+	viewer = liveview.Viewer(view_args(prefix))
+	try:
+		viewer.Check()
+		viewer.lastRow = time.monotonic() - 1
+		assert viewer.Step() is not None
+	finally:
+		viewer.Close()
+
+
 def tile_of(viewer, image, c):
 	_, y, x, h, w = [cell for cell in viewer.cells if cell[0] == c][0]
 	return image[y:y + h, x:x + w]
 
 
+@pytest.mark.alone
 @pytest.mark.parametrize("problem", ["ahead", "gap"])
 def test_a_camera_one_frame_off_or_with_a_gap_is_warned_of_on_its_tile(rings, problem):
 	# Real rings, written at 100 fps: camera 2 a frame ahead (its host times 10 ms early, as a camera
@@ -1284,7 +1302,12 @@ def test_a_camera_one_frame_off_or_with_a_gap_is_warned_of_on_its_tile(rings, pr
 	# This test writes the frames from a loop timed to 100 fps. On a busy computer (a CI runner running other tests
 	# beside it) that loop can be held up for more than a frame: its frames are then late, and the viewer rightly
 	# says LATE on every tile. Such a run says nothing about what this test checks, so it is done again on fresh
-	# rings (at most 3 runs); the assertions below hold on a run whose frames all came on time
+	# rings (at most 3 runs); the assertions below hold on a run whose frames all came on time.
+	# It runs alone (not on pytest-xdist's workers): on GitHub's Windows runner (2 cores, 4 threads) beside 3 other
+	# workers, the loop was held up 10-32 ms in all 3 runs now and then (2026-11-08/09), and beside 4 busy processes
+	# in every run. And the viewer draws one view before the loop starts, so that its first view's extra time doesn't
+	# make the loop's second frame late (it did, by 13-17 ms on the Windows runner, in each new process's first run)
+	warmed_up(rings)
 	for attempt in range(3):
 		prefix = name()
 		writers = [rings(livefeed.RingName(prefix, c), (64, 80), np.uint8, slots=8, frameRate=100.0,

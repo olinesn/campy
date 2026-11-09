@@ -58,7 +58,7 @@ def test_a_serial_twice_is_refused(tmp_path):
 
 
 def test_serials_with_a_selection_too_are_refused(tmp_path):
-	text = problems(tmp_path, "cameraSerials: [11, 22, 33]\ncameraSelection: [0, 1, 2]\n")
+	text = problems(tmp_path, "cameraSerials: [11, 22, 33]\ncameraSelection: [1, 2, 0]\n")
 	assert "cameraSerials and cameraSelection both pick the cameras" in text
 
 
@@ -150,3 +150,52 @@ def test_a_missing_serial_stops_before_anything_records(tmp_path):
 	assert "Side: its camera (serial emu7) isn't connected, or isn't found." in proc.stdout
 	assert "2 emu cameras found: emu0, emu1." in proc.stdout
 	assert not any(s.glob("*/*.mp4") for s in sessions(tmp_path))
+
+
+# ------------------------------------------------------------------ through campy-session (the panel's way)
+
+def test_serials_with_the_default_selection_written_out_are_taken(tmp_path):
+	# campy-session writes the config campy-acquire runs with every setting in it, cameraSelection's default
+	# 0, 1, 2 too (logs/campy-acquire.yaml): with cameraSerials, that stopped every panel recording (9 November 2026)
+	p = resolve(tmp_path, "cameraSerials: [11, 22, 33]\ncameraSelection: [0, 1, 2]\n").params
+	assert p["cameraSerials"] == ["11", "22", "33"]
+	assert "both pick the cameras" in problems(tmp_path, "cameraSerials: [11, 22, 33]\ncameraSelection: [2, 0, 1]\n")
+
+
+def test_the_config_campy_session_writes_for_campy_acquire_reads_again(tmp_path):
+	from campy import session
+	path = tmp_path / "rig.yaml"
+	path.write_text("numCams: 3\ncameraMake: flir\ncameraNames: [Top, Side, Front]\ncameraSerials: [11, 22, 33]\n")
+	acquire = tmp_path / "campy-acquire.yaml"
+	acquire.write_text(session.Config(str(path)).AcquireYaml())
+	again = configurator.Resolve(str(acquire)).params
+	assert again["cameraSerials"] == ["11", "22", "33"] and again["cameraSelection"] == [0, 1, 2]
+
+
+def test_a_campy_session_recording_names_each_camera_by_its_serial(tmp_path, monkeypatch):
+	# The whole way, as the panel runs it: campy-session run -> campy-acquire with its written config
+	names = ["Top", "Side"]
+	for name in names:
+		(tmp_path / name).mkdir(exist_ok=True)
+		write_clip(str(tmp_path / name / "clip.mp4"))
+	config = tmp_path / "config.yaml"
+	config.write_text("\n".join([
+		"numCams: 2", 'cameraMake: "emu"', "cameraNames: [Top, Side]", "cameraSerials: [emu1, emu0]",
+		'videoFolder: "{}"'.format(tmp_path.as_posix()), 'videoFilename: "emuclip.mp4"', "frameRate: 20",
+		"recTimeInSec: 1", "displayFrameRate: 0", 'pixelFormatInput: "gray"', 'pixelFormatOutput: "yuv420p"',
+		"gpuID: -1", 'codec: "h264"', 'preflight: "off"', "alerts: False",
+		"post: {remux: false, export: false, align: false}", ""]))
+	home = tmp_path / "home"
+	home.mkdir()
+	env = dict(os.environ, PYTHONPATH=REPO, PYTHONUNBUFFERED="1", HOME=str(home), USERPROFILE=str(home),
+		CAMPY_STATUS_DIR=str(home / "status"))
+	env.pop("IMAGEIO_FFMPEG_EXE", None)
+	env.pop("CAMPY_LIVE_PYTHON", None)
+	proc = subprocess.run([sys.executable, "-m", "campy.session", "run", str(config)], cwd=str(tmp_path), env=env,
+		capture_output=True, text=True, timeout=180)
+	assert proc.returncode == 0, proc.stdout + proc.stderr
+	session_folder, = sessions(tmp_path)
+	for name, serial in (("Top", "emu1"), ("Side", "emu0")):
+		with open(str(session_folder / name / "metadata.csv")) as f:
+			meta = dict(row for row in csv.reader(f) if len(row) == 2)
+		assert meta["cameraSerialNo"] == serial, name

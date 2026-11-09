@@ -20,13 +20,15 @@ def Compile(sketch, exe, *flags):
 
 def pytest_configure(config):
 	config.addinivalue_line("markers", "alone: uses the whole machine (bench/rig.py looks at every process on it, and "
-		"its CPU and disk load), so it runs with no other test beside it: not on pytest-xdist's workers")
+		"its CPU and disk load; a frame writer kept to 100 fps needs a free core), so it runs with no other test "
+		"beside it: not on pytest-xdist's workers")
 
 
 def pytest_collection_modifyitems(config, items):
 	# Run in parallel (pytest -n, pytest-xdist), the other workers are Python processes, some with ffmpegs, that the
-	# 'alone' tests' rig.py would see as foreign GPU and encoder users. There they are skipped, and run on their own
-	# after: pytest -m alone tests (.github/workflows/tests.yml, docs/development.md)
+	# 'alone' tests' rig.py would see as foreign GPU and encoder users, and that hold up the viewer test's 100 fps
+	# frame writer. There they are skipped, and run on their own after: pytest -m alone tests
+	# (.github/workflows/tests.yml, docs/development.md)
 	if not os.environ.get("PYTEST_XDIST_WORKER"):
 		return
 	skip = pytest.mark.skip(reason="runs alone, not beside other tests: pytest -m alone tests")

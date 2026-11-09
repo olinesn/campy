@@ -125,6 +125,8 @@ PANEL = {
 	"rig_lock": ((str,), "", "rig.py (bench/rig.py, installed on the rig): the panel holds the rig's lock while it is "
 		"open, and Ctrl-C in its window does nothing (the page's Close ends it); \"auto\": the rig's installed one"),
 	"owner": ((str,), "panel", "who holds the rig lock, as rig.py status shows it"),
+	"title": ((str,), "", "the experiment's name on a panel opened with a folder of configs (its Experiment list; "
+		"default: the file's name); before any star on that page, the configs with a title are its favourites"),
 	"models": ((list, str), [], "folders the panel's model picker looks through for trained models, for live: model: "
 		"sleap (campy/livemodels.py); a rig profile's place, as it turns on nothing"),
 	"model_sets": ((dict,), {}, "named model pairs for the panel's model picker: {name: {centroid: folder, instance: "
@@ -1328,8 +1330,9 @@ def Main(argv=None):
 		print("usage: campy-session run <config>.yaml [--key value ...]\n"
 			"       campy-session post <recording folder> [--only remux,export] [--force]\n"
 			"       campy-session note <recording folder> \"text\"   (a dated note in its session.json)\n"
-			"       campy-session panel <config>.yaml [--port 8765] [--no-browser]\n"
-			"       campy-session shortcut <config>.yaml [--name ...]   (a desktop shortcut that opens the panel)\n"
+			"       campy-session panel <config>.yaml|<folder of configs> [--port 8765] [--no-browser]\n"
+			"       campy-session shortcut <config>.yaml|<folder of configs> [--name ...]   (a desktop shortcut that "
+			"opens the panel)\n"
 			"       campy-session register-live   (once, in campy-live's environment)", file=sys.stderr)
 		sys.exit(2)
 	sys.exit(commands[argv[0]](argv[1:]))
