@@ -76,7 +76,7 @@ Press **Start recording**. Within about a minute, depending on the rig, the page
 
 The recording stops by itself at its set length. To stop earlier, press **Stop** at the top. Each camera then finishes its video, which takes a few seconds. If a camera hangs, the button turns into **Stop now, without closing** for a few seconds: press it only if the page has been stuck on **Stopping** for more than a minute.
 
-After the recording, the page shows **After the recording** (at the top: **Finishing the recording's files**). Once those steps are done, the box is called **Previous recording**, with when it ended and how long it lasted. Under **How it went**, a few lines say what went wrong while it recorded, so the problems shown under **Warnings** aren't lost when the recording ends:
+After the recording, the page shows **After the recording** (at the top: **Finishing the recording's files**, with a progress bar and which step of how many is running, for example `Step 4 of 7 · Calibration (calibrat3) · 0:47`). Under **Steps after the recording**, the running step says what it is doing and for how long. Once those steps are done, the box is called **Previous recording**, with when it ended and how long it lasted. Under **How it went**, a few lines say what went wrong while it recorded, so the problems shown under **Warnings** aren't lost when the recording ends:
 
 - the cameras that dropped frames, each with how many of the frames it took: `6 of 8 cameras dropped frames: Camera2_mid 501 of 3,285, ... (the video encoder fell more than 5 s behind: writeQueueMaxSec)`;
 - frames lost in a stopped video encoder (ffmpeg) or before they reached the computer, a camera's error, a camera that stopped without closing its video;
