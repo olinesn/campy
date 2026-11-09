@@ -287,8 +287,8 @@ def ResolveClargs(clargs):
 	params = FillCameraLists(params)
 	problems += EveryCamera(params, sources)
 
-	for check in (lambda p: ValidateCameraLists(p, sources, notes), ValidateColorRange, ValidateGamma,
-			ValidateExperiment):
+	for check in (lambda p: ValidateCameraLists(p, sources, notes), lambda p: ValidateSerials(p, sources),
+			ValidateColorRange, ValidateGamma, ValidateExperiment):
 		try:
 			check(params)
 		except ValueError as e:
@@ -330,7 +330,7 @@ def ConfigureCamParams(systems, params, n_cam):
 # Lists that are not one value per camera
 NON_CAMERA_LISTS = ("digitalPins", "ratcamPorts", "animalIds")
 # Lists that need a value for every camera: one name or index cannot be shared
-EVERY_CAMERA_LISTS = ("cameraNames", "cameraSelection")
+EVERY_CAMERA_LISTS = ("cameraNames", "cameraSelection", "cameraSerials")
 
 
 def OptParams(cam_params):
@@ -363,7 +363,7 @@ def EveryCamera(params, sources=None):
 	# recorded into T/, and cameraSelection: 1 opened device 1 for each camera.)
 	num_cams, problems = params["numCams"], []
 	for key in EVERY_CAMERA_LISTS:
-		if key not in params or isinstance(params[key], list):
+		if key not in params or params[key] in (None, "None") or isinstance(params[key], list):
 			continue
 		if num_cams == 1:
 			params[key] = [params[key]]
@@ -411,6 +411,23 @@ def ValidateCameraLists(params, sources=None, notes=None):
 			Say(note)
 		else:
 			notes.append(note)
+
+
+def ValidateSerials(params, sources=None):
+	# cameraSerials picks each camera by its serial number (unicam.SelectBySerial, once the cameras are found): no
+	# serial twice, and not with a cameraSelection the config gives too, since only one of them can pick the cameras
+	serials = params.get("cameraSerials")
+	if serials in (None, "None"):
+		return
+	given = [str(s).strip() for s in serials[:params["numCams"]]]
+	twice = sorted(set(s for s in given if given.count(s) > 1))
+	if twice:
+		raise ValueError("cameraSerials lists {} twice: each camera has a serial of its own.{}".format(
+			" and ".join(twice), SetWhere("cameraSerials", sources)))
+	if sources is not None and "cameraSelection" in sources and sources["cameraSelection"].kind != Source.DEFAULT:
+		raise ValueError("cameraSerials and cameraSelection both pick the cameras: give one of them (cameraSerials "
+			"is from {}, cameraSelection from {}).".format(sources["cameraSerials"].Where() if "cameraSerials" in
+			sources else "the config", sources["cameraSelection"].Where()))
 
 
 def ValidateColorRange(params):
@@ -652,6 +669,8 @@ def SettingError(setting, item):
 		except ValueError as e:
 			return item, str(e)
 	if setting.kind is configschema.ID:
+		if setting.default == "None" and (item is None or item == "None"):
+			return "None", None # none given (cameraSerials), as campy writes it into the configs it saves
 		if isinstance(item, bool) or not isinstance(item, (str, int, float)):
 			return item, "{!r} is not an ID (text or a number)".format(item)
 		return str(item), None

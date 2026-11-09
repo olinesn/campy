@@ -85,6 +85,13 @@ def OpenSystems():
 	# Load Camera Systems and Devices
 	systems = unicam.LoadSystems(params)
 	systems = unicam.GetDeviceList(systems, params)
+	try:
+		params = unicam.SelectBySerial(systems, params) # cameraSerials: each name to its own camera
+	except unicam.CameraMissing as e:
+		if mp.current_process().name == "MainProcess":
+			print(e, flush=True)
+		unicam.CloseSystems(systems, params)
+		sys.exit(1)
 
 	# Check that this configuration fits this computer, before anything starts.
 	# Every camera process re-imports this module, so only the parent checks.

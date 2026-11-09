@@ -104,6 +104,11 @@ SETTINGS = [
 	Setting("cameraSelection", FILLED, int, section=REC, per_camera=EVERY_CAMERA, low=0,
 		help="Selects and orders camera indices to include in the recording. List length must be equal to \
 			numCams. Default: 0, 1, ..."),
+	Setting("cameraSerials", "None", ID, section=REC, per_camera=EVERY_CAMERA,
+		help="Each camera's serial number, in the order of cameraNames: each name then goes to the camera with \
+			that serial, wherever the camera driver lists it, instead of to cameraSelection's place in the \
+			list. A serial that isn't connected stops campy before anything records, naming the camera and the \
+			serials found. Default: none (cameras are picked by cameraSelection)."),
 	Setting("videoFolder", "./test", TEXT, section=REC,
 		help="Folder in which to save videos. Each run records into a new folder inside it, named by the \
 			date and time it started (sessionFolder)."),
