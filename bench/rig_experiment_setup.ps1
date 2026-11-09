@@ -8,7 +8,7 @@
 #   - puts two shortcuts on the desktop: "Stop campy test" and "Resume campy tests";
 #   - (re)starts the banner in the logged-on session, if there is one.
 #
-#   powershell -NoProfile -ExecutionPolicy Bypass -File rig_experiment_setup.ps1 [-Hours 22:00-06:00] [-IdleMinutes 15] [-PauseUntil 08:00]
+#   powershell -NoProfile -ExecutionPolicy Bypass -File rig_experiment_setup.ps1 [-Hours 22:00-06:00] [-IdleMinutes 15] [-PauseUntil 09:00]
 #   powershell -NoProfile -ExecutionPolicy Bypass -File rig_experiment_setup.ps1 -Undo     everything above removed again
 #
 #   -Root  the lock's folder; otherwise RIG_ROOT, otherwise C:\campy_data\live
@@ -17,7 +17,7 @@ param(
 	[string]$Root = '',
 	[string]$Hours = '22:00-06:00',
 	[int]$IdleMinutes = 15,
-	[string]$PauseUntil = '08:00',
+	[string]$PauseUntil = '09:00',
 	[switch]$Undo,
 	[switch]$NoStart
 )
