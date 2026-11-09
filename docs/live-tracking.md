@@ -683,6 +683,28 @@ A Dell Pro Tower Plus (Intel Core Ultra 9 285, NVIDIA RTX A2000 12 GB, a 70 W ca
 
 To track 8 cameras at 60 fps here, the A2000 would need a lighter model or a faster card: the guide's model-size sweep has what each GPU does with 8 cameras ([Hardware guide](hardware.md)).
 
+### Two real mice at 60 fps, with a lighter pair (9 November 2026)
+
+A lighter pair does fit. On 9 November the same computer recorded its 8 real FLIR cameras at 60 fps, on the trigger, for 5 minutes, with 2 mice in the box, while `campy-live` tracked them in 3D on the A2000. The recording was started from the panel (`campy-session panel`), as the box's daily recordings are, and encoded AV1 with Quick Sync on the integrated GPU, so the A2000 only ran the models. campy was dev `2b72a38` with the panel changes of pull request 358, which don't touch tracking.
+
+- **The models**, trained for this box with two-mouse pseudo-labels: the centroid model at 0.25 scale with 16 filters, max stride 16 and output stride 2; the instance model on 320 px crops at 0.5 scale (160 px), with 24 filters, max stride 32 and output stride 2; 12 body points. TensorRT fp16, fixed crops, one CUDA graph a set (the defaults).
+- **The calibration**: the box's newest, from July. The box's older recordings and calibrations name some cameras differently, so before the run each camera's view was compared with the same-named camera's calibration video: all 8 matched.
+
+| 8 real cameras, 2 mice, 60 fps, 300 s | Result |
+|---|---|
+| Sets tracked | 18,000 of 18,000: none skipped, none misaligned |
+| Inference, median / p99 | 11.4 / 13.4 ms |
+| Last frame to keypoints, median / p99 / max | 14.3 / 16.7 / 21.6 ms |
+| Last frame to 3D pose, median / p99 / max | 19.1 / 25.3 / 31.0 ms |
+| 3D step alone, median / p99 | 4.5 / 10.1 ms |
+| Frames recorded | 18,000 of 18,000 per camera, none dropped; all 8 on the trigger's timeline, no pulse without a frame |
+| Both mice with a 3D pose | every set, with all 12 points |
+
+- **About 3 ms to spare.** The A2000's clock started at 1,882 MHz and settled at 1,440–1,575 MHz within the first minute, at its 70 W power limit (64 °C). Inference went from 10.5 to 11.6 ms at the median as it did, still well inside the 16.7 ms between frames.
+- **Task Manager shows the GPU about 97% busy.** That is not the models alone: `campy-live`'s clock hold keeps one small block running on the GPU at all times ("1 block spinning" in its log; [On Windows](#on-windows-nvidia-cuda), "The GPU's clock"), and Task Manager counts it as busy. The models took about two thirds of each frame's time.
+- **Not checked:** whether each mouse kept its identity through the 5 minutes, and how close the points are to where a person would put them. Both need the recording looked at in LUC3D. This was one run, a real recording, not under the rig lock.
+
+
 ## Fixed crops (`--fixed-crops`, on by default with a GPU)
 
 Normally `campy-live` runs the centroid model, waits for the GPU to say how many animals it found, and only then cuts that many crops for the instance model. That wait in the middle of every set costs time, and it is why `--cuda-graphs` needs a separate graph for every number of animals. With `--fixed-crops`, every frame always gets `--max-instances` crops. When fewer animals are there, the missing ones get a padding crop whose keypoints are thrown away. Nothing in a set then depends on how many animals were found, so:
