@@ -126,7 +126,8 @@ PANEL = {
 		"open, and Ctrl-C in its window does nothing (the page's Close ends it); \"auto\": the rig's installed one"),
 	"owner": ((str,), "panel", "who holds the rig lock, as rig.py status shows it"),
 	"title": ((str,), "", "the experiment's name on a panel opened with a folder of configs (its Experiment list; "
-		"default: the file's name); before any star on that page, the configs with a title are its favourites"),
+		"default: the file's name); before any star on that page, the configs with a title are its favourites. Only "
+		"the file that says it: a config that extends it isn't given its title"),
 	"models": ((list, str), [], "folders the panel's model picker looks through for trained models, for live: model: "
 		"sleap (campy/livemodels.py); a rig profile's place, as it turns on nothing"),
 	"model_sets": ((dict,), {}, "named model pairs for the panel's model picker: {name: {centroid: folder, instance: "

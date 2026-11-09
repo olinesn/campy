@@ -419,8 +419,8 @@ def Same(a, b):
 def Describe(path, args=()):
 	"""
 	A config of the folder, for the Experiment list: {path, file, title
-	(panel.title, else the file's name), titled, error (why campy-session
-	can't use it, or None), rig_lock, owner}.
+	(panel.title set in that file itself, else the file's name), titled,
+	error (why campy-session can't use it, or None), rig_lock, owner}.
 	"""
 	path = os.path.abspath(path)
 	entry = {"path": path, "file": os.path.basename(path), "title": os.path.splitext(os.path.basename(path))[0],
@@ -431,8 +431,11 @@ def Describe(path, args=()):
 		text = str(e) if isinstance(e, session.SessionError) else "{}: {}".format(type(e).__name__, e)
 		entry["error"] = text if len(text) <= 400 else text[:400] + "..."
 		return entry
+	# Its own title only: a config built on another with extends: (a trial of the daily one, say) doesn't take the
+	# other's, which would put two lines of one name on the list
 	title = " ".join(str(config.panel["title"] or "").split())
-	if title:
+	source = config.resolved.section_sources.get("panel", {}).get("title")
+	if title and getattr(source, "path", None) and Same(source.path, path):
 		entry["title"], entry["titled"] = title, True
 	entry["rig_lock"], entry["owner"] = config.panel["rig_lock"], config.panel["owner"]
 	return entry
