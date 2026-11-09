@@ -82,8 +82,8 @@ def test_closing_leaves_the_copies_not_done_and_says_how_to_make_them(tmp_path, 
 	queue.Add(a, str(to))
 	queue.Add(b, str(to))
 	t0 = time.monotonic()
-	while queue.Status()["jobs"][-1]["state"] != "copying":
-		assert time.monotonic() - t0 < 10
+	while [j["state"] for j in queue.Status()["jobs"]] != ["waiting", "copying"]: # newest first: b waits while a copies
+		assert time.monotonic() - t0 < 10, queue.Status()
 		time.sleep(0.02)
 	left = queue.Leave()
 	assert [j.name for j in left] == ["2026-11-09_12-00-00", "2026-11-09_12-20-00"]
@@ -122,6 +122,19 @@ def bare_panel(queue):
 	p.copies, p.close_when_copied, p.closing = queue, False, False
 	p.session = p.wanted = None
 	return p
+
+
+def test_the_page_lists_the_newest_first_even_within_one_clock_tick(tmp_path, monkeypatch):
+	# Windows' time.time() moves in steps of about 16 ms: recordings queued within one step keep their order
+	release = threading.Event()
+	monkeypatch.setattr(post, "StepCopy", lambda folder, settings, log, stop=None: (release.wait(10), ("done", "ok"))[1])
+	monkeypatch.setattr(copyqueue.time, "time", lambda: 1000.0)
+	queue = quiet()
+	names = ["2026-11-09_15-00-0{}".format(n) for n in range(4)]
+	for name in names:
+		queue.Add(recording(tmp_path, name), str(tmp_path))
+	assert [j["name"] for j in queue.Status()["jobs"]] == names[::-1]
+	release.set()
 
 
 def test_close_waits_for_the_copies_or_leaves_them(tmp_path, monkeypatch):

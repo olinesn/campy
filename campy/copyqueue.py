@@ -21,7 +21,7 @@ The folder a page last copied into is remembered for each config, as the
 bout settings are (campy/pico.py): RememberFile(), keyed by the config's path.
 """
 
-import os, sys, threading, time
+import itertools, os, sys, threading, time
 from datetime import datetime
 
 REMEMBER = "panel_copy.json"
@@ -94,8 +94,13 @@ def Size(folder):
 	return total
 
 
+_ORDER = itertools.count() # the order recordings were queued in: two queued within one tick of Windows' clock
+                            # (about 16 ms) have the same time.time()
+
+
 class Job:
 	def __init__(self, folder, to):
+		self.order = next(_ORDER)
 		self.folder, self.to = os.path.abspath(folder), str(to)
 		self.name = os.path.basename(os.path.normpath(self.folder))
 		self.state, self.message = "waiting", ""
@@ -220,4 +225,4 @@ class CopyQueue:
 		shown = [j for j in jobs if j.state in ("waiting", "copying")] + \
 			[j for j in jobs if j.state not in ("waiting", "copying")][-KEEP:]
 		return {"pending": sum(j.state in ("waiting", "copying") for j in jobs),
-			"jobs": [j.Dict(now) for j in sorted(shown, key=lambda j: j.added, reverse=True)]}
+			"jobs": [j.Dict(now) for j in sorted(shown, key=lambda j: j.order, reverse=True)]}
