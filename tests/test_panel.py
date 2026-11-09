@@ -462,3 +462,168 @@ def test_the_disk_tile_counts_the_rest_of_a_picos_plan(tmp_path, home, monkeypat
 	assert p.Disk(378e9, 1.0e6, s)["plan_left_gb"] == round(p.devices.Need(28800, 4, 14400)["total_b"] / 1e9, 1) == 80.8
 	p.devices.cached = {"pico": {"alive": False}} # its session has ended
 	assert p.Disk(378e9, 1.0e6, s) == {"free_gb": 378.0, "hours_left": None, "plan_left_gb": None}
+
+
+# ------------------------------------------------------------------ one panel for a folder of configs
+
+def configs_folder(tmp_path):
+	# A rig's folder of configs: two experiments with a title, one without, one campy-session can't use, a note
+	from test_session import write_config
+	folder = tmp_path / "configs"
+	folder.mkdir()
+	data = str(tmp_path / "data")
+	write_config(folder / "look.yaml", {"numCams": 2, "videoFolder": data, "recTimeInSec": 300},
+		panel={"title": "Look at the cameras", "rig_lock": "auto", "owner": "panel-look"})
+	write_config(folder / "live.yaml", {"numCams": 3, "videoFolder": data, "recTimeInSec": 3600},
+		panel={"title": "  Live tracking,\n 3 mice "})
+	write_config(folder / "old_v02.yml", {"numCams": 4, "videoFolder": data, "recTimeInSec": 60})
+	(folder / "broken.yaml").write_text("numCams: 2\npanel: {nonsense: 1}\n")
+	(folder / "notes.txt").write_text("not a config")
+	return folder
+
+
+def test_a_folders_configs_titles_and_favourites(tmp_path, home):
+	folder = configs_folder(tmp_path)
+	t = panel.Types(str(folder))
+	assert [c["file"] for c in t.configs] == ["broken.yaml", "live.yaml", "look.yaml", "old_v02.yml"]
+	broken, live, look, old = t.configs
+	assert broken["error"] and "nonsense" in broken["error"]
+	assert (live["title"], live["titled"]) == ("Live tracking, 3 mice", True) # its spaces and line break: one line
+	assert (old["title"], old["titled"], old["error"]) == ("old_v02", False, None) # untitled: its file's name
+	# Before any star, the configs with a title; the panel opens on the first that can be used
+	assert [c["file"] for c in t.Favorites()] == ["live.yaml", "look.yaml"]
+	assert t.First() == live["path"]
+	assert t.RigLock() == ("auto", "panel-look")
+	# Stars, kept for the next panel (a new Types reads them back), in the order they were given
+	assert t.Star(old["path"], True) is None and t.Star(live["path"], False) is None
+	t2 = panel.Types(str(folder))
+	assert [c["file"] for c in t2.Favorites()] == ["look.yaml", "old_v02.yml"]
+	assert t2.First() == look["path"]
+	t2.Save(last=old["path"])
+	assert panel.Types(str(folder)).First() == old["path"]
+	# A favourite, or the last pick, that has gone from the folder is passed over
+	os.rename(folder / "old_v02.yml", tmp_path / "old_v02.yml")
+	t3 = panel.Types(str(folder))
+	assert [c["file"] for c in t3.Favorites()] == ["look.yaml"] and t3.First() == look["path"]
+	assert t3.Star(str(tmp_path / "old_v02.yml"), True).startswith("No config")
+	status = t3.Status(look["path"])
+	assert status["chosen"] == look["path"] and [x["favorite"] for x in status["all"]] == [False, False, True]
+
+
+def test_a_folder_with_nothing_usable(tmp_path, home):
+	empty = tmp_path / "empty"
+	empty.mkdir()
+	with pytest.raises(panel.session.SessionError, match="No config in"):
+		panel.Types(str(empty)).First()
+	(empty / "bad.yaml").write_text("panel: {nonsense: 1}\n")
+	with pytest.raises(panel.session.SessionError, match="can be used: bad.yaml"):
+		panel.Types(str(empty)).First()
+
+
+def test_one_panel_picks_among_a_folders_experiments(tmp_path, home):
+	folder = configs_folder(tmp_path)
+	p = panel.Panel(str(folder), browser=False)
+	assert p.opened == str(folder) and p.config.path == str(folder / "live.yaml")
+	assert len(p.health.names) == 3
+	status = p.Status()
+	assert status["types"]["chosen"] == str(folder / "live.yaml")
+	assert [x["title"] for x in status["types"]["favorites"]] == ["Live tracking, 3 mice", "Look at the cameras"]
+	# Another experiment: its cameras, its checks; remembered as the folder's last
+	assert p.Choose(str(folder / "look.yaml")) is None
+	assert p.config.path == str(folder / "look.yaml") and len(p.health.names) == 2
+	assert any("2 cameras" in c[1] for c in p.checks)
+	assert panel.Types(str(folder)).First() == str(folder / "look.yaml")
+	# One that isn't in the folder, or can't be used: refused, and the panel stays as it was
+	assert p.Choose(str(tmp_path / "elsewhere.yaml")).startswith("No config")
+	assert "can't be used" in p.Choose(str(folder / "broken.yaml"))
+	assert p.config.path == str(folder / "look.yaml")
+	# Not while a recording starts or runs
+	assert p.Start({}) is None
+	assert "A recording is running" in p.Choose(str(folder / "old_v02.yml"))
+	p.wanted = None
+	assert p.Choose(str(folder / "old_v02.yml")) is None and len(p.health.names) == 4
+	# A panel opened with one config has no list
+	one = panel.Panel(str(folder / "look.yaml"), browser=False)
+	assert one.Status()["types"] is None and one.Choose(str(folder / "live.yaml")).startswith("This panel was opened")
+
+
+def test_a_switch_while_the_panel_is_open_follows_the_new_cameras(tmp_path, home):
+	# The health thread of the old config stops; the new config's starts
+	folder = configs_folder(tmp_path)
+	p = panel.Panel(str(folder), browser=False)
+	p.health.Start()
+	old = p.health
+	try:
+		assert p.Choose(str(folder / "look.yaml")) is None
+		assert old.done.is_set() and p.health is not old and p.health.thread.is_alive()
+	finally:
+		p.health.Stop()
+
+
+def test_the_page_picks_and_stars_over_http(tmp_path, home):
+	folder = configs_folder(tmp_path)
+	p = panel.Panel(str(folder), browser=False)
+	p.Serve()
+	try:
+		url = p.url
+		assert call(url, "/type", {"path": str(folder / "look.yaml")}) == (200, {"ok": True})
+		assert call(url, "/favorite", {"path": str(folder / "old_v02.yml"), "on": True}) == (200, {"ok": True})
+		(folder / "new.yaml").write_text("numCams: 1\nvideoFolder: x\npanel: {title: New}\n")
+		assert call(url, "/types-scan", {}) == (200, {"ok": True})
+		T = call(url, "/status.json")[1]["types"]
+		assert T["chosen"] == str(folder / "look.yaml")
+		assert [x["file"] for x in T["favorites"]] == ["live.yaml", "look.yaml", "old_v02.yml"] # stars saved: new's
+		# title doesn't star it
+		assert "new.yaml" in [x["file"] for x in T["all"]]
+		code, said = call(url, "/type", {"path": str(folder / "broken.yaml")})
+		assert code == 409 and "can't be used" in said["error"]
+	finally:
+		p.server.shutdown()
+		p.server.server_close()
+
+
+def test_a_folder_panel_takes_the_rig_lock_when_a_config_asks(tmp_path, home, monkeypatch):
+	folder = configs_folder(tmp_path)
+	ran = []
+	monkeypatch.setattr(panel, "UnderRig", lambda *a: ran.append(a[:3]) or 0)
+	monkeypatch.setattr(panel, "Running", lambda: None)
+	assert panel.Main([str(folder), "--no-browser"]) == 0
+	assert ran == [("auto", "panel-look", "configs")]
+
+
+@POSIX
+def test_a_folder_panel_records_with_the_experiment_picked_on_its_page(tmp_path, home):
+	# Opened on one experiment (3 cameras that never take a frame), switched on the page to the emulated cameras'
+	# config: its cameras' health and its recording, with no stale reader of the first
+	config, clips = emu_session(tmp_path, home, 60, live={"model": "none"}, feed="campy-test-folder")
+	folder = tmp_path / "configs"
+	folder.mkdir()
+	os.rename(config, folder / "emu.yaml")
+	from test_session import write_config
+	write_config(folder / "first.yaml", {"numCams": 3, "videoFolder": str(tmp_path / "x"), "recTimeInSec": 60},
+		panel={"title": "First"})
+	proc, lines, url = start_panel(tmp_path, home, folder)
+	try:
+		status = call(url, "/status.json")[1]
+		assert status["types"]["chosen"] == str(folder / "first.yaml") # the only title: the favourite
+		assert call(url, "/type", {"path": str(folder / "emu.yaml")}) == (200, {"ok": True})
+		assert call(url, "/start", {"experiment": "Folder test"}) == (200, {"ok": True})
+		assert call(url, "/type", {"path": str(folder / "first.yaml")})[0] == 409 # not while it records
+		status = wait(url, lambda s: s["state"] == "recording" and s["health"].get("feed") and
+			all(c["frame"] > 10 for c in s["health"]["cameras"]))
+		assert [c["name"] for c in status["health"]["cameras"]] == NAMES
+		assert call(url, "/stop", {}) == (200, {"ok": True})
+		status = wait(url, lambda s: s["state"] == "ready" and s["launcher"] and s["launcher"]["state"] == "done")
+		assert status["launcher"]["parts"]["acquire"]["exit_code"] == 0
+		assert min(recorded(the_folder(clips))) > 10
+		# Back to the first, once it has ended; the next panel opens on it
+		assert call(url, "/type", {"path": str(folder / "first.yaml")}) == (200, {"ok": True})
+		assert panel.Types(str(folder)).First() == str(folder / "first.yaml")
+	finally:
+		if proc.poll() is None:
+			os.killpg(proc.pid, signal.SIGINT)
+		try:
+			proc.wait(timeout=30)
+		except subprocess.TimeoutExpired:
+			os.killpg(proc.pid, signal.SIGKILL)
+	assert proc.returncode == 0, "".join(lines)

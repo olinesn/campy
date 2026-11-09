@@ -1,6 +1,6 @@
 # Recording a session from the desktop
 
-This page is for anyone who records on a rig that someone has already set up: no terminal needed. Every campy recording on the rigs starts this way, live tracking (`campy-live`) included, and so do the ChronicRecord rig's sessions with its Pico and SpikeGLX ([below](#on-the-chronicrecord-rig-the-pico-and-spikeglx)). You double-click an icon, check that the cameras look right, press **Start recording**, and press **Stop** at the end (or let it stop at the set length). The person who set up the rig makes the icon once; how is at the end of this page.
+This page is for anyone who records on a rig that someone has already set up: no terminal needed. Every campy recording on the rigs starts this way, live tracking (`campy-live`) included, and so do the ChronicRecord rig's sessions with its Pico and SpikeGLX ([below](#on-the-chronicrecord-rig-the-pico-and-spikeglx)). You double-click the rig's one icon, pick the experiment, check that the cameras look right, press **Start recording**, and press **Stop** at the end (or let it stop at the set length). The person who set up the rig makes the icon once; how is at the end of this page.
 
 ## Before you start
 
@@ -9,7 +9,7 @@ This page is for anyone who records on a rig that someone has already set up: no
 
 ## 1. Open the panel
 
-Double-click the icon on the desktop, named something like **Record with campy (rig)**.
+Double-click **campy recording** on the desktop. It is the rig's one icon, for every kind of experiment. (A rig not yet changed over may still have one icon per experiment, named something like **Record with campy (rig)**: double-click the one for your experiment, and skip the Experiment list below.)
 
 - A black window opens and fills with lines of text. Leave it open: it is the panel itself. You don't need to read it.
 - Your web browser opens the panel's page. If it doesn't, the black window's first lines show its address (`http://127.0.0.1:8765/?t=...`): copy the whole address, key included, into the browser.
@@ -17,6 +17,14 @@ Double-click the icon on the desktop, named something like **Record with campy (
 The page is only for this computer. Working over Remote Desktop, open it in the rig's own browser, inside the Remote Desktop window.
 
 On a rig that other tests share (most of them), the panel first waits for the rig to be free, then holds it for as long as it is open, so that no test runs while you record. While it holds the rig, Ctrl-C in the black window does nothing: close the panel with **Close the panel** at the top of the page once nothing is recording.
+
+### Pick the experiment
+
+The first box on the page, **Experiment**, lists the rig's kinds of recording, for example *ChronicRecord session (Pico + SpikeGLX)*, *Live tracking, 3 mice* or *Look at the cameras (5 min)*. The panel opens on the one picked last on this computer. Pick yours: the rest of the page changes to it (its cameras, its models, its session lengths and bout settings, its checks), and says which config file it is.
+
+- **You can only change it while nothing is recording.** That includes a recording an earlier panel left running, and a Pico or SpikeGLX still running (the page's **Still running** box). Stop those first.
+- **Each experiment keeps its own settings.** Bout settings and the live-model pair you change on the page are remembered for that experiment only, as before.
+- **Missing from the list?** Press **Show all configs**. It lists every config in the rig's configs folder, and says why any of them can't be used. The star (☆/★) adds a config to the Experiment list or takes it off. **Use** records with one that isn't on the list, without starring it. **Look again** reads the folder again after someone adds or edits a config. The stars are kept for this computer, in `~/.campy/status/panel-types.json`.
 
 ## 2. Fill in the experiment and check the list
 
@@ -144,16 +152,20 @@ At the top of the page, under the rig's name, is the recording's folder, for exa
 
 ## For the person who sets up the rig
 
-Make the icon once per config, in the recording environment (the one with `campy-acquire`):
+Make the icon once, in the recording environment (the one with `campy-acquire`), for the rig's folder of configs:
 
 ```
-campy-session shortcut <config>.yaml --name "Record: 3 cameras"
+campy-session shortcut <folder of configs>
 ```
+
+It is named **campy recording** (`--name` gives another name), and opens one panel for every config in the folder, picked on the page's Experiment list. Before anyone stars a config on the page, the list shows the configs that have a title, `panel: {title: "Live tracking, 3 mice"}`, by that title; so give a title to each config people should record with, and leave it out of old or test configs. A config without a title shows under **Show all configs** by its file name. The panel holds the rig's lock (below) when any config in the folder asks for it.
+
+An icon for one config still works: `campy-session shortcut <config>.yaml --name "Record: 3 cameras"` opens the panel with that config alone, with no Experiment list.
 
 - **Windows**: a shortcut on the desktop (OneDrive's desktop too).
 - **Linux**: a `.desktop` icon on the desktop, and an entry in the applications menu. GNOME may ask once to **Allow Launching** it.
 - **macOS**: a `.command` file on the desktop.
 
-The icon runs `campy-session panel <config>` with that environment's Python, by its full path. So make it again after moving the environment or the config. Options after the config are `campy-acquire`'s, for every recording the icon starts. For example, `--recTimeInSec 3600` records an hour.
+The icon runs `campy-session panel <folder or config>` with that environment's Python, by its full path. So make it again after moving the environment, the folder or the config. Options after the folder or config are `campy-acquire`'s, for every recording the icon starts. For example, `--recTimeInSec 3600` records an hour.
 
 The config needs everything the recording needs: a `live:` section for the tracking, `post:` for what happens after, and `campy-session register-live` run once in the tracking environment (see [Live tracking](live-tracking.md#in-one-command-campy-session)). The view (`campy-live-view`) runs in that registered environment too, or in `view.python`. On a rig shared with tests, add `panel: {rig_lock: auto}`: the panel then holds the rig's lock (`rig.py`) while it is open. A Pico, SpikeGLX and the Windows checks are the `pico:`, `spikeglx:` and `windows:` sections; the ChronicRecord rig's config, [`chronicrecord/chronic_session.yaml`](../chronicrecord/chronic_session.yaml), has each, with a comment on every line. A key campy-session doesn't know is refused, with the list of the keys that section takes. The panel starts `campy-acquire` and `campy-live` apart from its own window, so closing that window, or the terminal on Linux, never ends a recording. Its Stop reaches them through `campy-acquire`'s stop file.
