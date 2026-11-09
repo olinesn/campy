@@ -47,6 +47,7 @@ windows:
   usb_suspend: true
 
 panel:
+  title: "ChronicRecord session (Pico + SpikeGLX)" # its name on the rig's one panel (campy-session panel <folder>)
   rig_lock: auto # C:\campy_data\live\rig.py: the rig is held while the panel is open; close it from its page
   # The disk check's videos: MB/s per camera while the cameras take frames. On the high side: 60 fps H.265 of mice in a
   # lit cage is about 0.4-0.5 (worked out from 30 fps recordings); the empty cage of 6 Nov wrote about 0.1.
