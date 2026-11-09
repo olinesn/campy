@@ -34,7 +34,7 @@ no browser download); Chrome, which decodes the recordings' H.265 and AV1
 (Playwright's own Chromium has no H.265).
 """
 
-import argparse, datetime, functools, importlib.util, json, os, sys, threading, time
+import argparse, datetime, functools, importlib.util, os, sys, threading, time
 
 from campy import newfiles, strictjson
 
@@ -119,12 +119,21 @@ def Describe(summary):
 		return "no calibration_summary.json beside it"
 	cams = summary.get("cameras") or {}
 	errors = {n: c.get("median_px") for n, c in cams.items() if c.get("median_px") is not None}
-	text = "made {}".format(str(summary.get("made", "?"))[:16].replace("T", " "))
+	text = "made {}".format(When(summary.get("made")))
 	if errors:
 		worst = max(errors, key=errors.get)
 		text += ", {} cameras, reprojection median {:.2f}-{:.2f} px (worst {})".format(len(errors),
 			min(errors.values()), max(errors.values()), worst)
 	return text
+
+
+def When(stamp):
+	# An ISO time as people read it on the panel: 9 Nov 5:05 PM
+	try:
+		t = datetime.datetime.fromisoformat(str(stamp))
+	except ValueError:
+		return str(stamp or "?")
+	return "{} {} {}:{:02d} {}".format(t.day, t.strftime("%b"), t.hour % 12 or 12, t.minute, "AM" if t.hour < 12 else "PM")
 
 
 def AgeHours(summary, now=None):
@@ -234,7 +243,8 @@ def Calibrate(folder, calibrat3, board=None, target=DEFAULT_TARGET, browser="chr
 				wait("() => !window.__calibrat3.state.detectionRunning && window.__calibrat3.state.detections && "
 					"window.__calibrat3.state.detections !== window.__campyBefore", 3600, "finding the board")
 				found = page.evaluate("() => window.__calibrat3.state.detections.summary(6)")
-				step("board found: {}".format(json.dumps(found.get("perView"))))
+				step("board found: {}".format(", ".join("{} {}".format(n, k) for n, k in zip(info["views"],
+					found.get("perView") or []))))
 				blind = [name for name, n in zip(info["views"], found.get("perView") or []) if not n]
 				if blind:
 					raise CalibrateError("the board was found in no frame of {}: was it in view, and is the board "

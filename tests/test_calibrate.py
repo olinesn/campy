@@ -54,7 +54,7 @@ def test_the_newest_whole_calibration_of_a_folder(tmp_path):
 	(tmp_path / "empty").mkdir()
 	with pytest.raises(session.SessionError, match="holds no calibration campy-calibrate made whole"):
 		session.LiveCalibration(str(tmp_path / "empty"))
-	assert calibrate.Describe(summary) == ("made 2026-11-09 09:01, 2 cameras, reprojection median 0.10-0.20 px "
+	assert calibrate.Describe(summary) == ("made 9 Nov 9:01 AM, 2 cameras, reprojection median 0.10-0.20 px "
 		"(worst Camera1_topC)")
 	now = datetime.datetime.fromisoformat("2026-11-10T09:01:00-05:00")
 	assert calibrate.AgeHours(summary, now) == 24.0
@@ -65,7 +65,8 @@ def test_the_panels_check_says_which_calibration_and_wants_one_a_day(tmp_path):
 	calibration_recording(str(root / "2026-11-09_09-00-00"), made="2026-11-09T09:01:00-05:00")
 	at = lambda text: datetime.datetime.fromisoformat(text)
 	level, text = panel.CalibrationCheck(str(root), now=at("2026-11-09T16:00:00-05:00"))
-	assert level == "ok" and "2026-11-09_09-00-00" in text and "made 2026-11-09 09:01" in text
+	assert level == "ok" and "2026-11-09_09-00-00" in text and "made 9 Nov 9:01 AM" in text
+	assert calibrate.When("2026-11-09T17:05:00-05:00") == "9 Nov 5:05 PM"
 	level, text = panel.CalibrationCheck(str(root), now=at("2026-11-10T12:00:00-05:00"))
 	assert level == "warn" and "27 hours old. Record a calibration today" in text
 	level, text = panel.CalibrationCheck(str(root), now=at("2026-11-13T12:00:00-05:00"))
