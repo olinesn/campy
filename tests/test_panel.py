@@ -293,6 +293,8 @@ def test_a_recording_from_the_page(tmp_path, home):
 		status = wait(url, lambda s: s["state"] == "ready" and s["launcher"] and s["launcher"]["state"] == "done")
 		assert status["launcher"]["parts"]["acquire"]["exit_code"] == 0
 		assert status["launcher"]["post"]["remux"]["state"] == "done"
+		# What went wrong in it (campy/endsummary.py): with the emulated cameras, nothing
+		assert status["summary"]["lines"][0]["text"].startswith("All {} cameras: every frame saved".format(len(NAMES)))
 		counts = recorded(the_folder(clips))
 		assert min(counts) > 20 and max(counts) < 60 * 20, counts
 		manifest = json.load(open(os.path.join(folder, "session.json")))
@@ -307,6 +309,17 @@ def test_a_recording_from_the_page(tmp_path, home):
 	assert proc.returncode == 0, "".join(lines)
 	assert "[panel] Closed." in "".join(lines)
 	assert not (home / ".campy" / "status" / "launcher.lock").exists()
+
+	# A panel opened again shows that recording as the last one, with its steps and its summary
+	proc, lines, url = start_panel(tmp_path, home, config)
+	try:
+		status = call(url, "/status.json")[1]
+		assert status["state"] == "ready" and status["launcher"]["folder"] == folder
+		assert status["launcher"]["post"]["remux"]["state"] == "done" and status["launcher"]["clean"]["clean"]
+		assert status["summary"]["lines"][0]["text"].startswith("All {} cameras".format(len(NAMES)))
+	finally:
+		os.killpg(proc.pid, signal.SIGINT)
+		proc.wait(timeout=30)
 
 
 @POSIX

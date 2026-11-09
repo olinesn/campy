@@ -83,8 +83,8 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from campy import bookmarks, children, clock, copyqueue, devices, livefeed, livehealth, livemodels, liveresults, pico, session, \
-	stopfile, strictjson
+from campy import bookmarks, children, clock, copyqueue, devices, endsummary, livefeed, livehealth, livemodels, \
+	liveresults, pico, session, stopfile, strictjson
 
 PORT = 8765
 THUMB_WIDTH = 192 # px, each camera's thumbnail
@@ -373,6 +373,37 @@ def Alerts(folder, keep=200):
 	return open_, resolved
 
 
+def Ended(status):
+	"""A recording's launcher status once it has ended, with whether it stopped cleanly (post.CleanStop): "clean"."""
+	try:
+		from campy import post
+		clean, why = post.CleanStop(status["folder"]) # every camera closed its video, with its totals
+	except Exception as e:
+		clean, why = False, "could not be told ({})".format(e)
+	status["clean"] = {"clean": bool(clean), "why": why}
+	return status
+
+
+def Previous():
+	"""
+	The last recording this computer's campy-session made, from
+	~/.campy/status/launcher.json, when it has ended and its folder is still
+	there: a panel opened again shows it as the last recording, with its
+	steps and what went wrong. None otherwise (one still running is Orphan's).
+	"""
+	try:
+		with open(os.path.join(session.CampyFolder(), "status", "launcher.json")) as f:
+			status = strictjson.load(f)
+	except (OSError, ValueError):
+		return None
+	acquire = (status.get("parts") or {}).get("acquire") or {}
+	folder = status.get("folder")
+	if status.get("state") not in ("done", "failed") or acquire.get("state") != "ended" or not folder or \
+			not os.path.isdir(folder):
+		return None
+	return Ended(status)
+
+
 def Orphan():
 	"""
 	A recording an earlier campy-session started that is still running,
@@ -558,6 +589,7 @@ class Panel:
 		self.token = secrets.token_urlsafe(18)
 		self.session = None
 		self.last = None # the last recording's launcher status, after it
+		self.summaries = endsummary.Cache() # what went wrong in it, for the page's After the recording
 		self.error = None # why the last start failed, before it recorded
 		self.wanted = None # the Start button's fields, for the main thread
 		self.lock = threading.Lock()
@@ -569,6 +601,8 @@ class Panel:
 		self.types = Types(config_path, self.args) if os.path.isdir(config_path) else None
 		# A config campy-session can't use stops here
 		self.Use(self.types.First() if self.types is not None else config_path)
+		# A panel opened again after a recording has ended: that recording's steps and summary, as the last panel left them
+		self.last = Previous()
 
 	def Use(self, config_path):
 		"""
@@ -955,6 +989,9 @@ class Panel:
 			rate = (self.disk[0][1] - self.disk[-1][1]) / (self.disk[-1][0] - self.disk[0][0])
 		recording = RecordingStatus(folder) if folder else None
 		open_, resolved = Alerts(folder) if folder else ([], [])
+		# Once it has ended (its post steps too): what went wrong in it, until the next recording starts
+		ended = folder and (s is None or s.state in ("post", "done", "failed", "stopped"))
+		summary = self.summaries.Get(folder) if ended else None
 		problems = list((launcher or {}).get("problems") or [])
 		marks = [{"number": m["number"], "time": m["time"][11:19], "frame": m["frame"], "note": m["note"]}
 			for m in reversed(self.marks.recent)] if self.marks is not None and folder and \
@@ -974,7 +1011,7 @@ class Panel:
 			"launcher": launcher, "health": self.health.snapshot, "recording": recording,
 			"models": self.picker.Status() if getattr(self, "picker", None) is not None else None,
 			"disk": self.Disk(free, rate, s),
-			"alerts": {"open": open_, "resolved": resolved}, "problems": problems, "bookmarks": marks,
+			"alerts": {"open": open_, "resolved": resolved}, "problems": problems, "bookmarks": marks, "summary": summary,
 			"copies": dict(self.copies.Status(), close_when_copied=self.close_when_copied),
 			"fields": {"experiment": str(self.config.Value("experiment", "") or "").replace("None", ""),
 				"animal_ids": ", ".join(str(a) for a in (self.config.Value("animalIds", []) or [])),
@@ -1229,13 +1266,7 @@ class Panel:
 		finally:
 			self.wanted = None
 			if self.session is not None and self.session.folder:
-				self.last = self.session.StatusDict()
-				try:
-					from campy import post
-					clean, why = post.CleanStop(self.session.folder) # every camera closed its video, with its totals
-				except Exception as e:
-					clean, why = False, "could not be told ({})".format(e)
-				self.last["clean"] = {"clean": bool(clean), "why": why}
+				self.last = Ended(self.session.StatusDict())
 				if copy_to:
 					self.copies.Add(self.session.folder, copy_to)
 			self.session = None

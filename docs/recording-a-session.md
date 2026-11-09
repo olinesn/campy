@@ -76,10 +76,19 @@ Press **Start recording**. Within about a minute, depending on the rig, the page
 
 The recording stops by itself at its set length. To stop earlier, press **Stop** at the top. Each camera then finishes its video, which takes a few seconds. If a camera hangs, the button turns into **Stop now, without closing** for a few seconds: press it only if the page has been stuck on **Stopping** for more than a minute.
 
-After the recording, the page shows **After the recording** while the computer:
+After the recording, the page shows **After the recording**. At its top, a few lines say what went wrong while it recorded, so the problems shown under **Warnings** aren't lost when the recording ends:
+
+- the cameras that dropped frames, each with how many of the frames it took: `6 of 8 cameras dropped frames: Camera2_mid 501 of 3,285, ... (the encoder fell more than 5 s behind: writeQueueMaxSec)`;
+- frames lost in a stopped video encoder (ffmpeg) or before they reached the computer, a camera's error, a camera that stopped without closing its video;
+- each critical alert, with the time it turned critical and whether it was resolved or still open at the end, and the warnings still open at the end. An alert's text is as it was at that time, so its counts can be lower than the totals above.
+
+A recording without a problem says so in one line: `All 8 cameras: every frame saved (3,285 frames each)`. The lines come from the files in the recording's folder (each camera's `metadata.csv`, `logs/campy-acquire.log` and `alerts.log`). They stay on the page until the next recording starts, also when you open the page again, or close the panel and open it again. If a line is red, tell the person in charge of the rig.
+
+Below them, under **Steps**, the computer:
 
 - turns the videos into ordinary video files (checked to be identical to what was recorded);
-- writes the tracking in the files LUC3D opens;
+- writes the tracking in the files LUC3D opens.
+
 Each step turns green when done. Then the page says **Ready**, for the next recording.
 
 **Copies.** With a folder in **Copy each recording to**, the page then lists the recording under **Copies**: waiting, copying (how many GB so far), done, or failed with the reason. Copies go one at a time, so a recording waits while the one before it copies. You can start the next recording right away: copying doesn't disturb it. On the 8-camera rig, a 2.1 GB recording (about 15 minutes) took under 2 minutes to copy to the network share.

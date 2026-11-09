@@ -122,7 +122,9 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
 <div id="copies" class="card" hidden><h2>Copies</h2><div id="copywait" class="muted" hidden></div>
   <ul id="copylist"></ul><button id="closenow" class="stop" hidden>Close now, without the copies</button></div>
 
-<div id="after" class="card" hidden><h2 id="aftertitle">After the recording</h2><ul id="post"></ul>
+<div id="after" class="card" hidden><h2 id="aftertitle">After the recording</h2>
+  <ul id="summary"></ul><div id="summarynote" class="muted" hidden>From each camera's metadata.csv and the recording's alerts.log, in its folder.</div>
+  <h2 style="margin-top:10px">Steps</h2><ul id="post"></ul>
   <p class="muted">Closing this page never stops a recording or its steps. The panel is ready for the next recording.</p></div>
 
 <div id="stopdlg" class="modal" hidden><div class="card"><h2>End the recording?</h2>
@@ -225,9 +227,13 @@ function render(s){
   $("marks").innerHTML = s.bookmarks.map(m => "<li class=muted>"+m.number+" at "+m.time+", frame "+(m.frame!=null?m.frame.toLocaleString():"-")+(m.note?": "+esc(m.note):"")+"</li>").join("");
   const P = L.post || {};
   $("after").hidden = !(st=="post" || (["done","failed","ready","finishing"].includes(st) && L.folder));
+  // What went wrong in it, from the files in its folder: until the next recording starts, and after the page or the panel is opened again
+  const SM = s.summary, hurt = SM && SM.level != "ok";
   const C = L.clean; $("aftertitle").textContent = st=="post" ? "After the recording" : "The last recording: " +
-    (C ? (C.clean ? "every camera recorded to the end" : "it didn't end cleanly: " + (C.why||"").split(";")[0] + (String(C.why||"").includes(";") ? "; ..." : "")) :
+    (C ? (C.clean ? "every camera recorded to the end" + (hurt ? ", with problems" : "") : "it didn't end cleanly: " + (C.why||"").split(";")[0] + (String(C.why||"").includes(";") ? "; ..." : "")) :
     L.state=="done" ? "campy-acquire ended" : L.state || "");
+  $("summary").innerHTML = SM ? SM.lines.map(x => "<li>"+tag(x.level=="ok"?"ok":x.level=="bad"?"problem":"warning", x.level)+" "+esc(x.text)+"</li>").join("") : "";
+  $("summarynote").hidden = !hurt;
   const CJ = ((s.copies||{}).jobs||[]).find(j => L.folder && j.folder == L.folder);
   if(CJ) P.copy = {state: CJ.state=="done" ? "done" : CJ.state=="failed" ? "failed" : "waiting", message: copyText(CJ)};
   $("post").innerHTML = ["remux","export","copy","run"].map(k => P[k] ? "<li>"+tag(P[k].state, P[k].state=="done"?"ok":P[k].state=="failed"?"bad":"warn")+" "+k+": "+esc(P[k].message)+"</li>"
