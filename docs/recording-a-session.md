@@ -14,7 +14,7 @@ Double-click **campy recording** on the desktop. It is the rig's one icon, for e
 - A black window opens and fills with lines of text. Leave it open: it is the panel itself. You don't need to read it.
 - Your web browser opens the panel's page. If it doesn't, the black window's first lines show its address (`http://127.0.0.1:8765/?t=...`): copy the whole address, key included, into the browser.
 
-The page is only for this computer. Working over Remote Desktop, open it in the rig's own browser, inside the Remote Desktop window.
+The page's top right corner says which version of the software it runs, for example `v2.7.0 · dev · 874060ba`: give it when you report a problem. The page is only for this computer. Working over Remote Desktop, open it in the rig's own browser, inside the Remote Desktop window.
 
 On a rig that other tests share (most of them), the panel first waits for the rig to be free, then holds it for as long as it is open, so that no test runs while you record. While it holds the rig, Ctrl-C in the black window does nothing: close the panel with **Close the panel** at the top of the page once nothing is recording.
 

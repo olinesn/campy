@@ -373,6 +373,37 @@ def Alerts(folder, keep=200):
 	return open_, resolved
 
 
+def VersionLabel():
+	"""
+	Which campy the panel runs, for the page's top right corner (as LUC3D shows its own): {text, title}, e.g.
+	text "v2.7.0 · dev · 874060ba" (version, branch, commit; "modified" when the checkout's files differ from the
+	commit), title the whole of it. Read once as the panel starts: a checkout updated under it shows only once the
+	panel is opened again, and so does the label.
+	"""
+	try:
+		from campy import manifest
+		info = manifest.CampyInfo()
+	except Exception as e: # never the panel's start for it
+		return {"text": "version unknown", "title": "Could not tell which campy this is: {}".format(e)}
+	version, commit, branch = info.get("version"), info.get("commit"), info.get("branch")
+	parts = ["v{}".format(version) if version else "version unknown"]
+	if branch and branch != "HEAD":
+		parts.append(branch)
+	if commit:
+		parts.append(commit[:8])
+	if info.get("dirty"):
+		parts.append("modified")
+	title = "campy {}".format(version or "(version unknown)")
+	if commit:
+		title += ", commit {}{}".format(commit, " on branch " + branch if branch and branch != "HEAD" else "")
+		if info.get("describe"):
+			title += " ({})".format(info["describe"])
+	if info.get("dirty"):
+		title += ", with files changed since that commit"
+	title += ", from " + str(info.get("path"))
+	return {"text": " \u00b7 ".join(parts), "title": title}
+
+
 def Ended(status):
 	"""A recording's launcher status once it has ended, with whether it stopped cleanly (post.CleanStop): "clean"."""
 	try:
@@ -590,6 +621,7 @@ class Panel:
 		self.session = None
 		self.last = None # the last recording's launcher status, after it
 		self.summaries = endsummary.Cache() # what went wrong in it, for the page's After the recording
+		self.version = VersionLabel() # which campy this panel runs, for the page's top right corner
 		self.error = None # why the last start failed, before it recorded
 		self.wanted = None # the Start button's fields, for the main thread
 		self.lock = threading.Lock()
@@ -1007,6 +1039,7 @@ class Panel:
 		if s is not None and state in ("done", "failed", "stopped"):
 			state = "finishing" # the recording has ended, and the panel is letting go of it: Start can't take one yet
 		return {"state": state, "rig": platform.node(), "config": self.config.path, "error": self.error,
+			"version": getattr(self, "version", None),
 			"types": self.types.Status(self.config.path) if getattr(self, "types", None) is not None else None,
 			"orphan": Orphan() if s is None else None,
 			"checks": [{"level": c[0], "text": c[1], "action": c[2] if len(c) > 2 else None} for c in self.checks],

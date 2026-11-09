@@ -78,6 +78,26 @@ def test_the_page_has_the_luc3d_logo_inline_and_fetches_nothing_from_elsewhere()
 	assert "Previous recording: " in page and "@LOGO@" not in page
 
 
+def test_the_page_says_which_campy_it_runs(monkeypatch):
+	# Version, branch and commit in the page's top right corner, as LUC3D shows its own
+	from campy import manifest, panelpage
+	assert 'id="version"' in panelpage.PAGE and "s.version" in panelpage.PAGE
+	monkeypatch.setattr(manifest, "CampyInfo", lambda: {"version": "2.7.0", "commit": "874060ba82e8b4e27c120330934dc802e5780aa6",
+		"branch": "pr358", "dirty": False, "describe": "v2.7.0-57-g874060b", "path": "/campy"})
+	label = panel.VersionLabel()
+	assert label["text"] == "v2.7.0 \u00b7 pr358 \u00b7 874060ba"
+	assert "874060ba82e8b4e27c120330934dc802e5780aa6" in label["title"] and "pr358" in label["title"]
+	monkeypatch.setattr(manifest, "CampyInfo", lambda: {"version": "2.7.0", "commit": "874060ba82e8", "branch": "HEAD",
+		"dirty": True, "path": "/campy"})
+	assert panel.VersionLabel()["text"] == "v2.7.0 \u00b7 874060ba \u00b7 modified" # a detached checkout: no branch
+	monkeypatch.setattr(manifest, "CampyInfo", lambda: {"version": "2.7.0", "installedFrom": "package", "path": "/campy"})
+	assert panel.VersionLabel()["text"] == "v2.7.0"
+	def broken():
+		raise OSError("no git")
+	monkeypatch.setattr(manifest, "CampyInfo", broken)
+	assert panel.VersionLabel()["text"] == "version unknown"
+
+
 def mark(note, cameras=2):
 	return {"time": "2026-10-23 10:00:00.000", "host_ns": 1, "event": "mark", "note": note, "frame": 5,
 		"cameras": [(5, 1)] * cameras, "recording": ""}

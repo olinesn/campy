@@ -33,7 +33,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;display:flex;flex-direction:col
 button{font:inherit;padding:6px 14px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer}
 button:hover{background:var(--soft)}button.stop{color:var(--bad);border-color:var(--bad)}button.go{color:var(--ok);border-color:var(--ok)}
 input{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
-label{font-size:12px;color:var(--muted)}h2{font-size:15px;font-weight:500;margin:0 0 6px}h3{font-size:13px;font-weight:600;margin:0 0 4px}.logo{width:44px;height:44px;flex:none;display:block}.okmsg{color:var(--ok);margin-left:8px}
+label{font-size:12px;color:var(--muted)}h2{font-size:15px;font-weight:500;margin:0 0 6px}h3{font-size:13px;font-weight:600;margin:0 0 4px}.logo{width:44px;height:44px;flex:none;display:block}.okmsg{color:var(--ok);margin-left:8px}.version{text-align:right;font-size:12px;margin:-8px 2px -6px}
 .bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden}.bar div{height:6px;background:var(--ok)}
 .copybar{max-width:420px;margin:4px 0 2px}.copybar div{background:var(--accent)}
 .bgcopy{border-left:4px solid var(--accent)}.bgcopy .copybar{max-width:none;height:10px}.bgcopy .copybar div{height:10px}
@@ -46,6 +46,7 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
 .types li span{flex:1}.star{padding:0 8px;font-size:16px;line-height:1.4;border:none;background:none;color:var(--accent)}
 .bgrid>div{display:flex;flex-direction:column;justify-content:flex-end}.bgrid input.changed{border-color:var(--accent);border-width:2px}details summary{cursor:pointer;font-size:13px;margin-top:6px}
 </style></head><body><main>
+<div id="version" class="mono muted version"></div>
 
 <div class="card row">
   <img class="logo" src="@LOGO@" alt="LUC3D" width="44" height="44">
@@ -176,6 +177,8 @@ function chime(){ try { const a = new (window.AudioContext||window.webkitAudioCo
 function tag(text, kind){ return '<span class="tag '+kind+'">'+esc(text)+'</span>'; }
 function render(s){
   last = s;
+  // Which campy the panel runs (version, branch, commit), in the top right corner, as LUC3D shows its own
+  const V = s.version || {}; $("version").textContent = V.text || ""; $("version").title = V.title || "";
   const L = s.launcher || {}, rec = L.recording || {}, H = s.health || {};
   const TY = s.types, chosen = TY ? TY.all.find(x => x.path == TY.chosen) : null;
   $("rig").textContent = s.rig + " · " + (chosen ? chosen.title : s.config.split(/[\\/]/).pop());
