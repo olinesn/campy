@@ -69,6 +69,8 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
       <label for="experiment">Experiment</label><input id="experiment" placeholder="Social hierarchy, week 3">
       <label for="ids">Animal IDs, comma-separated</label><input id="ids" placeholder="M12, M14, M15">
       <label for="notes">Notes</label><input id="notes" placeholder="Cage 2, new bedding">
+      <label for="copyto">Copy each recording to (optional)</label><input id="copyto" placeholder="\\server\share\my folder">
+      <div class="muted" style="font-size:12px">After each recording, its folder is copied into this one in the background, while the next records. Nothing is deleted. Empty: no copy.</div>
     </div>
     <div><div id="orphan" class="err" hidden></div><button id="stoporphan" class="stop" hidden>Stop that recording</button>
       <ul id="checks"></ul><p class="muted" id="length"></p><button id="start" class="go">Start recording</button>
@@ -105,6 +107,9 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
       <div style="margin-top:8px"><button id="viewer">Open the viewer again</button></div></div>
   </div>
 </div>
+
+<div id="copies" class="card" hidden><h2>Copies</h2><div id="copywait" class="muted" hidden></div>
+  <ul id="copylist"></ul><button id="closenow" class="stop" hidden>Close now, without the copies</button></div>
 
 <div id="after" class="card" hidden><h2 id="aftertitle">After the recording</h2><ul id="post"></ul>
   <p class="muted">Closing this page never stops a recording or its steps. The panel is ready for the next recording.</p></div>
@@ -168,7 +173,8 @@ function render(s){
   if(lengths.length && document.activeElement != $("length")) $("length").value = String(s.length);
   renderBouts(s.bouts);
   const L0 = lengths.find(l => l.seconds == s.length); $("plantext").textContent = L0 ? L0.text + (L0.videoFolder ? ", into "+L0.videoFolder : "") : "";
-  if(!$("experiment").dataset.set){ $("experiment").value = s.fields.experiment||""; $("ids").value = s.fields.animal_ids||""; $("experiment").dataset.set=1; }
+  if(!$("experiment").dataset.set){ $("experiment").value = s.fields.experiment||""; $("ids").value = s.fields.animal_ids||""; $("copyto").value = s.fields.copy_to||""; $("experiment").dataset.set=1; }
+  renderCopies(s.copies || {jobs: []}, L.folder);
   $("during").hidden = !(st=="recording" || st=="stopping" || st=="starting live");
   $("disk").textContent = s.disk.free_gb!=null ? Math.round(s.disk.free_gb)+" GB" : "-";
   // With a Pico's plan: what the rest of it still needs (SpikeGLX and the videos, estimated), not hours at the rate so far
@@ -206,10 +212,24 @@ function render(s){
   const C = L.clean; $("aftertitle").textContent = st=="post" ? "After the recording" : "The last recording: " +
     (C ? (C.clean ? "every camera recorded to the end" : "it didn't end cleanly: " + (C.why||"").split(";")[0] + (String(C.why||"").includes(";") ? "; ..." : "")) :
     L.state=="done" ? "campy-acquire ended" : L.state || "");
+  const CJ = ((s.copies||{}).jobs||[]).find(j => L.folder && j.folder == L.folder);
+  if(CJ) P.copy = {state: CJ.state=="done" ? "done" : CJ.state=="failed" ? "failed" : "waiting", message: copyText(CJ)};
   $("post").innerHTML = ["remux","export","copy","run"].map(k => P[k] ? "<li>"+tag(P[k].state, P[k].state=="done"?"ok":P[k].state=="failed"?"bad":"warn")+" "+k+": "+esc(P[k].message)+"</li>"
     : "<li class=muted>"+k+(st=="post"?": waiting":"")+"</li>").join("");
 }
 function base(p){ return String(p||"").split(/[\\/]/).filter(x => x).pop() || ""; }
+function gb(b){ return b==null ? "?" : (b/1e9).toFixed(1); }
+function copyText(j){
+  if(j.state=="copying") return "copying into "+j.to+": "+gb(j.done_bytes)+" of "+gb(j.bytes)+" GB, "+dur(j.seconds||0);
+  if(j.state=="waiting") return "waits for the copies before it, into "+j.to;
+  return j.message || j.state;
+}
+function renderCopies(C, folder){
+  const jobs = C.jobs || []; $("copies").hidden = !jobs.length && !C.close_when_copied;
+  $("copywait").hidden = $("closenow").hidden = !C.close_when_copied;
+  if(C.close_when_copied) $("copywait").textContent = C.pending ? "The panel closes by itself once these copies are done ("+C.pending+" left)." : "Closing…";
+  $("copylist").innerHTML = jobs.map(j => "<li>"+tag(j.state, j.state=="done"?"ok":j.state=="failed"||j.state=="left"?"bad":"warn")+" <b>"+esc(j.name)+"</b> "+esc(copyText(j))+"</li>").join("");
+}
 let modelSig = "";
 function renderModels(M){
   $("modelbox").hidden = !M; if(!M) return;
@@ -307,7 +327,7 @@ $("start").onclick = async () => { $("starterr").textContent = "";
   const override = !!disk && blocks.length == 1;
   if(override && !confirm("This session doesn't fit on the disk.\n\n" + disk.text + "\n\nStart anyway? Only if data will be moved off "+
     "this disk during the session. Otherwise the disk fills up: campy stops cleanly near the end of the space, but SpikeGLX doesn't.")) return;
-  const e = await post("/start", {experiment:$("experiment").value, animal_ids:$("ids").value, notes:$("notes").value,
+  const e = await post("/start", {experiment:$("experiment").value, animal_ids:$("ids").value, notes:$("notes").value, copy_to:$("copyto").value.trim(),
     length: $("length").value || null, pico_at: $("picoat").value.trim() || null, disk_override: override});
   $("starterr").textContent = e || ""; tick(); };
 $("mset").onchange = () => { if($("mset").value) pickModels({set: $("mset").value}); };
@@ -317,9 +337,16 @@ $("mrescan").onclick = async () => { $("mrescan").disabled = true; $("mscan").te
 $("boutreset").onclick = async () => { const e = await post("/bouts", {reset: true}); $("starterr").textContent = e || ""; tick(); };
 $("length").onchange = async () => { const e = await post("/length", {seconds: $("length").value}); $("starterr").textContent = e || ""; tick(); };
 let closed = false;
-$("close").onclick = async () => { if(!confirm("Close the panel? Nothing is recording.")) return; const e = await post("/close"); if(e){ alert(e); return; }
-  closed = true; document.querySelector("main").innerHTML = '<div class="card"><h2>The panel is closed</h2><p class="muted">You can close this tab. '+
-    'To record again, open the panel from its desktop icon.</p></div>'; };
+function closedPage(){ closed = true; document.querySelector("main").innerHTML = '<div class="card"><h2>The panel is closed</h2><p class="muted">You can close this tab. '+
+    'To record again, open the panel from its desktop icon.</p></div>'; }
+$("close").onclick = async () => {
+  const C = (last||{}).copies || {};
+  if(!confirm(C.pending ? "Close the panel? Nothing is recording, but "+C.pending+" recording"+(C.pending==1?" is":"s are")+" still being copied: the panel closes by itself once the copies are done." : "Close the panel? Nothing is recording.")) return;
+  const r = await fetch(q("/close"), {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"}); const j = await r.json().catch(() => ({}));
+  if(j.error){ alert(j.error); return; } if(j.waiting){ tick(); return; } closedPage(); };
+$("closenow").onclick = async () => {
+  if(!confirm("Close the panel now? The recordings not copied yet stay on this computer; each one's post.log says how to copy it by hand.")) return;
+  const e = await post("/close", {leave: true}); if(e){ alert(e); return; } closedPage(); };
 $("keep").onclick = () => { $("stopdlg").hidden = true; };
 async function stopMode(mode){ $("stopdlg").hidden = true; const e = await post("/stop", {mode}); if(e) alert(e); tick(); }
 $("stopbout").onclick = () => stopMode("bout"); $("stopnow").onclick = () => stopMode("now");

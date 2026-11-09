@@ -310,6 +310,36 @@ def test_a_recording_from_the_page(tmp_path, home):
 
 
 @POSIX
+def test_each_recording_is_copied_into_the_pages_folder(tmp_path, home):
+	# The page's "Copy each recording to": checked at Start, remembered for the next panel, and each recording copied
+	# in the background once it has ended (not by the post copy step, which would keep the next recording waiting)
+	config, clips = emu_session(tmp_path, home, 3, post={"remux": True, "export": False})
+	share = tmp_path / "share"
+	share.mkdir()
+	proc, lines, url = start_panel(tmp_path, home, config)
+	try:
+		assert call(url, "/status.json")[1]["fields"]["copy_to"] == ""
+		code, said = call(url, "/start", {"copy_to": str(tmp_path / "nowhere")})
+		assert code == 409 and said["error"].startswith("Can't reach ")
+		assert call(url, "/start", {"experiment": "Copy test", "copy_to": str(share)}) == (200, {"ok": True})
+		status = wait(url, lambda s: s["state"] == "ready" and s["launcher"] and s["launcher"]["state"] == "done" and
+			s["copies"]["jobs"] and s["copies"]["jobs"][0]["state"] == "done")
+		folder = status["launcher"]["folder"]
+		assert status["launcher"]["post"]["copy"]["state"] == "skipped" # the panel's copy, not post's
+		name = os.path.basename(folder)
+		for cam in NAMES:
+			assert os.path.getsize(str(share / name / cam / "emuclip.mp4")) == os.path.getsize(
+				os.path.join(folder, cam, "emuclip.mp4"))
+		assert json.load(open(os.path.join(folder, "logs", "post.json")))["steps"]["copy"]["to"] == str(share)
+		assert status["fields"]["copy_to"] == str(share) # remembered for this config
+	finally:
+		if proc.poll() is None:
+			os.killpg(proc.pid, signal.SIGINT)
+		proc.wait(timeout=30)
+	assert proc.returncode == 0, "".join(lines)
+
+
+@POSIX
 def test_a_start_that_a_check_stops(tmp_path, home):
 	config, clips = emu_session(tmp_path, home, 5, live={"model": "none", "python": str(tmp_path / "no-python")})
 	proc, lines, url = start_panel(tmp_path, home, config)
