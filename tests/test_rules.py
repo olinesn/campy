@@ -894,7 +894,10 @@ def test_campy_live_restarting_keeps_the_session_trains_and_the_rules_resume(mon
 			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
 			time.sleep(1 / 60)
 		time.sleep(0.1)
-	runner, events = run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows, cameras=True)
+	# --bound-ms 0: no limit on a set's age, which isn't what this test checks (the refused switch-ons' test does).
+	# On a busy CI runner (Windows, 4 workers) sets 1 and 2 were now and then decided over 40 ms after they were
+	# written: rightly refused as late, so the laser came on with set 3 ("on 2 3"), and this test failed
+	runner, events = run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows, cameras=True, bound_ms=0)
 	lines = port.Lines()
 	switches = [(t, x) for t, x in lines if x.split()[0] in ("on", "off", "run", "alloff")]
 	texts = [x for _, x in switches]
