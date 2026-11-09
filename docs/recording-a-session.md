@@ -14,7 +14,7 @@ Double-click **campy recording** on the desktop. It is the rig's one icon, for e
 - A black window opens and fills with lines of text. Leave it open: it is the panel itself. You don't need to read it.
 - Your web browser opens the panel's page. If it doesn't, the black window's first lines show its address (`http://127.0.0.1:8765/?t=...`): copy the whole address, key included, into the browser.
 
-The page is only for this computer. Working over Remote Desktop, open it in the rig's own browser, inside the Remote Desktop window.
+The page's top right corner says which version of the software it runs, for example `v2.7.0 · dev · 874060ba`: give it when you report a problem. The page is only for this computer. Working over Remote Desktop, open it in the rig's own browser, inside the Remote Desktop window.
 
 On a rig that other tests share (most of them), the panel first waits for the rig to be free, then holds it for as long as it is open, so that no test runs while you record. While it holds the rig, Ctrl-C in the black window does nothing: close the panel with **Close the panel** at the top of the page once nothing is recording.
 
@@ -28,16 +28,16 @@ The first box on the page, **Experiment**, lists the rig's kinds of recording, f
 
 ## 2. Fill in the experiment and check the list
 
-At the top of the page, under **Before the start**:
+At the top of the page, under **Next recording** and **Saved with the recording**:
 
-- **Experiment**: the experiment's name, for example `Social hierarchy, week 3`.
+- **Experiment name**: for example `Social hierarchy, week 3`.
 - **Animal IDs**: the animals in the cage, separated by commas: `M12, M14, M15`.
 - **Notes**: anything worth knowing later: `cage 2, new bedding`.
 - **Copy each recording to** (optional): a folder for the copies, for example the lab's network share, `\\server\share\your folder`. After each recording ends, the computer copies its folder there, in the background, while the next recording goes on. Nothing is deleted, here or there. The page remembers the folder for next time; empty the box for no copies.
 
-These are saved with the recording, so you can find it again. If the page can't reach the copy folder when you press Start, it says so and doesn't start: check the address, or open the share once in File Explorer.
+These are saved with the recording, so you can find it again. If the page can't reach the copy folder when you press Start, it says so and doesn't start: check the address, or open the share once in File Explorer. If only the last folder is missing (for example a new `\\server\share\your folder\new-project` in a folder that is there), it says the folder doesn't exist yet and shows **Create this folder**: press it, then **Start recording** again. It makes only that last folder, so a mistyped share or parent folder makes nothing.
 
-Next to them is a list of checks:
+Next to them, under **Checks**, is a list of checks:
 
 - **ok** (green): fine.
 - **warning** (yellow): you can still record, but read it. The usual one: less free disk space than usual.
@@ -76,13 +76,24 @@ Press **Start recording**. Within about a minute, depending on the rig, the page
 
 The recording stops by itself at its set length. To stop earlier, press **Stop** at the top. Each camera then finishes its video, which takes a few seconds. If a camera hangs, the button turns into **Stop now, without closing** for a few seconds: press it only if the page has been stuck on **Stopping** for more than a minute.
 
-After the recording, the page shows **After the recording** while the computer:
+After the recording, the page shows **After the recording** (at the top: **Finishing the recording's files**). Once those steps are done, the box is called **Previous recording**, with when it ended and how long it lasted. Under **How it went**, a few lines say what went wrong while it recorded, so the problems shown under **Warnings** aren't lost when the recording ends:
 
-- turns the videos into ordinary video files (checked to be identical to what was recorded);
-- writes the tracking in the files LUC3D opens;
-Each step turns green when done. Then the page says **Ready**, for the next recording.
+- the cameras that dropped frames, each with how many of the frames it took: `6 of 8 cameras dropped frames: Camera2_mid 501 of 3,285, ... (the video encoder fell more than 5 s behind: writeQueueMaxSec)`;
+- frames lost in a stopped video encoder (ffmpeg) or before they reached the computer, a camera's error, a camera that stopped without closing its video;
+- each critical alert, with the time it turned critical and whether it was resolved or still open at the end, and the warnings still open at the end. An alert's text is as it was at that time, so its counts can be lower than the totals above.
 
-**Copies.** With a folder in **Copy each recording to**, the page then lists the recording under **Copies**: waiting, copying (how many GB so far), done, or failed with the reason. Copies go one at a time, so a recording waits while the one before it copies. You can start the next recording right away: copying doesn't disturb it. On the 8-camera rig, a 2.1 GB recording (about 15 minutes) took under 2 minutes to copy to the network share.
+A recording without a problem says so in one line: `All 8 cameras: every frame saved (3,285 frames each)`. The lines come from the files in the recording's folder (each camera's `metadata.csv`, `logs/campy-acquire.log` and `alerts.log`). They stay on the page until the next recording starts, also when you open the page again, or close the panel and open it again. If a line is red, tell the person in charge of the rig.
+
+Below them, under **Steps after the recording**, the computer:
+
+- **Video files**: turns the videos into ordinary video files (checked to be identical to what was recorded);
+- **Tracking files for LUC3D**: writes the tracking in the files LUC3D opens;
+- **Copy**: with a folder in **Copy each recording to** (below);
+- **Extra commands**: any the rig's settings add.
+
+Each step turns green when done (grey **skipped** when it has nothing to do). The top of the page then says **Ready to record**: you can start the next recording.
+
+**Copies.** With a folder in **Copy each recording to**, the page then lists the recording under **Copies**, and as the **Copy** step under **Steps after the recording**: waiting, copying (how many GB so far, with a progress bar and about how long is left, at the rate so far, with the time it should be done), done, or failed with the reason. Copies go one at a time, so a recording waits while the one before it copies. You can start the next recording right away: copying doesn't disturb it. While a copy is running or waiting, a **Copying in the background** strip at the top of the page shows it, with its progress bar and time left, and says you can start a new recording; it stays during the next recording, until the last copy is done. Leave the computer on and the panel's black window open until then. On the 8-camera rig, a 2.1 GB recording (about 15 minutes) took under 2 minutes to copy to the network share.
 
 When you are done for the day, press **Close the panel** at the top of the page (or, on a rig that doesn't hold the rig's lock, Ctrl-C in the black window), then close the browser tab. If recordings are still being copied, the panel stays open until the copies are done, then closes by itself; leave the computer on until then. **Close now, without the copies** closes it at once: the recordings not copied stay on this computer, and each one's `logs/post.log` gives the command that copies it by hand.
 

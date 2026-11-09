@@ -83,8 +83,8 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from campy import bookmarks, children, clock, copyqueue, devices, livefeed, livehealth, livemodels, liveresults, pico, session, \
-	stopfile, strictjson
+from campy import bookmarks, children, clock, copyqueue, devices, endsummary, livefeed, livehealth, livemodels, \
+	liveresults, pico, session, stopfile, strictjson
 
 PORT = 8765
 THUMB_WIDTH = 192 # px, each camera's thumbnail
@@ -373,6 +373,68 @@ def Alerts(folder, keep=200):
 	return open_, resolved
 
 
+def VersionLabel():
+	"""
+	Which campy the panel runs, for the page's top right corner (as LUC3D shows its own): {text, title}, e.g.
+	text "v2.7.0 · dev · 874060ba" (version, branch, commit; "modified" when the checkout's files differ from the
+	commit), title the whole of it. Read once as the panel starts: a checkout updated under it shows only once the
+	panel is opened again, and so does the label.
+	"""
+	try:
+		from campy import manifest
+		info = manifest.CampyInfo()
+	except Exception as e: # never the panel's start for it
+		return {"text": "version unknown", "title": "Could not tell which campy this is: {}".format(e)}
+	version, commit, branch = info.get("version"), info.get("commit"), info.get("branch")
+	parts = ["v{}".format(version) if version else "version unknown"]
+	if branch and branch != "HEAD":
+		parts.append(branch)
+	if commit:
+		parts.append(commit[:8])
+	if info.get("dirty"):
+		parts.append("modified")
+	title = "campy {}".format(version or "(version unknown)")
+	if commit:
+		title += ", commit {}{}".format(commit, " on branch " + branch if branch and branch != "HEAD" else "")
+		if info.get("describe"):
+			title += " ({})".format(info["describe"])
+	if info.get("dirty"):
+		title += ", with files changed since that commit"
+	title += ", from " + str(info.get("path"))
+	return {"text": " \u00b7 ".join(parts), "title": title}
+
+
+def Ended(status):
+	"""A recording's launcher status once it has ended, with whether it stopped cleanly (post.CleanStop): "clean"."""
+	try:
+		from campy import post
+		clean, why = post.CleanStop(status["folder"]) # every camera closed its video, with its totals
+	except Exception as e:
+		clean, why = False, "could not be told ({})".format(e)
+	status["clean"] = {"clean": bool(clean), "why": why}
+	return status
+
+
+def Previous():
+	"""
+	The last recording this computer's campy-session made, from
+	~/.campy/status/launcher.json, when it has ended and its folder is still
+	there: a panel opened again shows it as the last recording, with its
+	steps and what went wrong. None otherwise (one still running is Orphan's).
+	"""
+	try:
+		with open(os.path.join(session.CampyFolder(), "status", "launcher.json")) as f:
+			status = strictjson.load(f)
+	except (OSError, ValueError):
+		return None
+	acquire = (status.get("parts") or {}).get("acquire") or {}
+	folder = status.get("folder")
+	if status.get("state") not in ("done", "failed") or acquire.get("state") != "ended" or not folder or \
+			not os.path.isdir(folder):
+		return None
+	return Ended(status)
+
+
 def Orphan():
 	"""
 	A recording an earlier campy-session started that is still running,
@@ -558,6 +620,8 @@ class Panel:
 		self.token = secrets.token_urlsafe(18)
 		self.session = None
 		self.last = None # the last recording's launcher status, after it
+		self.summaries = endsummary.Cache() # what went wrong in it, for the page's After the recording
+		self.version = VersionLabel() # which campy this panel runs, for the page's top right corner
 		self.error = None # why the last start failed, before it recorded
 		self.wanted = None # the Start button's fields, for the main thread
 		self.lock = threading.Lock()
@@ -569,6 +633,8 @@ class Panel:
 		self.types = Types(config_path, self.args) if os.path.isdir(config_path) else None
 		# A config campy-session can't use stops here
 		self.Use(self.types.First() if self.types is not None else config_path)
+		# A panel opened again after a recording has ended: that recording's steps and summary, as the last panel left them
+		self.last = Previous()
 
 	def Use(self, config_path):
 		"""
@@ -907,6 +973,13 @@ class Panel:
 		self.closing = True
 		return None
 
+	def MakeCopyFolder(self, path):
+		# The page's Create this folder, for a "Copy each recording to" folder that isn't there yet
+		error = copyqueue.Create(path, self.config.Value("videoFolder", "."))
+		if not error:
+			Say("Made the copy folder {} (Create this folder, on the page).".format(str(path).strip()))
+		return error
+
 	def CopyTo(self):
 		# What the page's box starts from: the folder this config's recordings were last copied into from a page, or
 		# the config's own post copy.to
@@ -955,6 +1028,9 @@ class Panel:
 			rate = (self.disk[0][1] - self.disk[-1][1]) / (self.disk[-1][0] - self.disk[0][0])
 		recording = RecordingStatus(folder) if folder else None
 		open_, resolved = Alerts(folder) if folder else ([], [])
+		# Once it has ended (its post steps too): what went wrong in it, until the next recording starts
+		ended = folder and (s is None or s.state in ("post", "done", "failed", "stopped"))
+		summary = self.summaries.Get(folder) if ended else None
 		problems = list((launcher or {}).get("problems") or [])
 		marks = [{"number": m["number"], "time": m["time"][11:19], "frame": m["frame"], "note": m["note"]}
 			for m in reversed(self.marks.recent)] if self.marks is not None and folder and \
@@ -963,6 +1039,7 @@ class Panel:
 		if s is not None and state in ("done", "failed", "stopped"):
 			state = "finishing" # the recording has ended, and the panel is letting go of it: Start can't take one yet
 		return {"state": state, "rig": platform.node(), "config": self.config.path, "error": self.error,
+			"version": getattr(self, "version", None),
 			"types": self.types.Status(self.config.path) if getattr(self, "types", None) is not None else None,
 			"orphan": Orphan() if s is None else None,
 			"checks": [{"level": c[0], "text": c[1], "action": c[2] if len(c) > 2 else None} for c in self.checks],
@@ -974,7 +1051,7 @@ class Panel:
 			"launcher": launcher, "health": self.health.snapshot, "recording": recording,
 			"models": self.picker.Status() if getattr(self, "picker", None) is not None else None,
 			"disk": self.Disk(free, rate, s),
-			"alerts": {"open": open_, "resolved": resolved}, "problems": problems, "bookmarks": marks,
+			"alerts": {"open": open_, "resolved": resolved}, "problems": problems, "bookmarks": marks, "summary": summary,
 			"copies": dict(self.copies.Status(), close_when_copied=self.close_when_copied),
 			"fields": {"experiment": str(self.config.Value("experiment", "") or "").replace("None", ""),
 				"animal_ids": ", ".join(str(a) for a in (self.config.Value("animalIds", []) or [])),
@@ -1134,10 +1211,15 @@ class Panel:
 					error = panel.Favorite(body.get("path"), body.get("on"))
 				elif url.path == "/types-scan":
 					error = panel.Rescan()
+				elif url.path == "/copy-folder":
+					error = panel.MakeCopyFolder(body.get("path"))
 				elif url.path == "/check":
 					panel.checks, error = panel.Checks(), None
 				else:
 					return self.Send(404, {"error": "no such action"})
+				if error and url.path == "/start" and copyqueue.Creatable(body.get("copy_to")):
+					# The copy folder isn't there yet, though the folder it goes in is: the page offers to make it
+					return self.Send(409, {"error": error, "create": str(body.get("copy_to")).strip()})
 				return self.Send(409 if error else 200, {"error": error} if error else {"ok": True})
 
 		for port in range(self.port, self.port + 20):
@@ -1229,13 +1311,7 @@ class Panel:
 		finally:
 			self.wanted = None
 			if self.session is not None and self.session.folder:
-				self.last = self.session.StatusDict()
-				try:
-					from campy import post
-					clean, why = post.CleanStop(self.session.folder) # every camera closed its video, with its totals
-				except Exception as e:
-					clean, why = False, "could not be told ({})".format(e)
-				self.last["clean"] = {"clean": bool(clean), "why": why}
+				self.last = Ended(self.session.StatusDict())
 				if copy_to:
 					self.copies.Add(self.session.folder, copy_to)
 			self.session = None

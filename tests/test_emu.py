@@ -277,7 +277,11 @@ def test_campy_acquire_with_emulated_cameras_for_a_live_test(tmp_path):
 	host = np.array([np.load(str(session / name / "hosttimes.npy")) for name in names]) / 1e9
 	assert host.shape == (3, 60) # 3 s at 20 fps, every frame
 	spread = host.max(axis=0) - host.min(axis=0)
-	assert np.median(spread) < 0.01 and spread.max() < 0.04, spread # 1.5-1.8 ms and at most 5 ms, on a Mac; 0.63 s before
+	# 1.5-1.8 ms and at most 5 ms, on a Mac; 0.63 s before the fix. hosttimes.npy is when each camera's process took
+	# its frame, so a process the computer held up stamps that frame late: on the Windows CI runner one frame of the
+	# 60 was 54 ms apart, the rest within 1 ms. As in the test above, the median (10 ms) catches any steady offset, and
+	# no single frame may be a quarter of the bug's 0.63 s apart
+	assert np.median(spread) < 0.01 and spread.max() < 0.15, spread
 	import imageio
 	for name in names:
 		video = imageio.get_reader(str(session / name / "emuclip.mp4"))

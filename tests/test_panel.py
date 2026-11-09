@@ -67,6 +67,37 @@ def test_a_thumbnail_is_grey_and_about_192_px_wide():
 
 # ------------------------------------------------------------------ bookmarks from two programs
 
+def test_the_page_has_the_luc3d_logo_inline_and_fetches_nothing_from_elsewhere():
+	import base64
+	from campy import panellogo, panelpage
+	page = panelpage.PAGE
+	assert '<img class="logo" src="' + panellogo.LOGO in page and 'rel="icon" type="image/png" href="' + panellogo.ICON in page
+	for uri in (panellogo.LOGO, panellogo.ICON):
+		assert base64.b64decode(uri.split(",", 1)[1])[:8] == b"\x89PNG\r\n\x1a\n"
+	assert not re.search(r"""(src|href)=["']?(https?:)?//""", page) # a rig may have no internet
+	assert "Previous recording: " in page and "@LOGO@" not in page
+
+
+def test_the_page_says_which_campy_it_runs(monkeypatch):
+	# Version, branch and commit in the page's top right corner, as LUC3D shows its own
+	from campy import manifest, panelpage
+	assert 'id="version"' in panelpage.PAGE and "s.version" in panelpage.PAGE
+	monkeypatch.setattr(manifest, "CampyInfo", lambda: {"version": "2.7.0", "commit": "874060ba82e8b4e27c120330934dc802e5780aa6",
+		"branch": "pr358", "dirty": False, "describe": "v2.7.0-57-g874060b", "path": "/campy"})
+	label = panel.VersionLabel()
+	assert label["text"] == "v2.7.0 \u00b7 pr358 \u00b7 874060ba"
+	assert "874060ba82e8b4e27c120330934dc802e5780aa6" in label["title"] and "pr358" in label["title"]
+	monkeypatch.setattr(manifest, "CampyInfo", lambda: {"version": "2.7.0", "commit": "874060ba82e8", "branch": "HEAD",
+		"dirty": True, "path": "/campy"})
+	assert panel.VersionLabel()["text"] == "v2.7.0 \u00b7 874060ba \u00b7 modified" # a detached checkout: no branch
+	monkeypatch.setattr(manifest, "CampyInfo", lambda: {"version": "2.7.0", "installedFrom": "package", "path": "/campy"})
+	assert panel.VersionLabel()["text"] == "v2.7.0"
+	def broken():
+		raise OSError("no git")
+	monkeypatch.setattr(manifest, "CampyInfo", broken)
+	assert panel.VersionLabel()["text"] == "version unknown"
+
+
 def mark(note, cameras=2):
 	return {"time": "2026-10-23 10:00:00.000", "host_ns": 1, "event": "mark", "note": note, "frame": 5,
 		"cameras": [(5, 1)] * cameras, "recording": ""}
@@ -125,6 +156,29 @@ def stub_panel():
 	p.Checks = lambda: []
 	p.Serve()
 	return p, calls
+
+
+def test_a_start_refused_for_a_copy_folder_not_there_yet_offers_to_make_it(tmp_path):
+	from campy import copyqueue
+	p, calls = stub_panel()
+	try:
+		key = "?t=" + p.token
+		new = tmp_path / "luc3d-live"
+		p.Start = lambda body: copyqueue.Problem(body.get("copy_to"))
+		p.MakeCopyFolder = lambda path: copyqueue.Create(path)
+		code, said = raw(p, "POST", "/start" + key, {"Content-Type": "application/json"}, json.dumps({"copy_to": str(new)}))
+		assert code == 409 and said["create"] == str(new) and "doesn't exist yet" in said["error"]
+		code, said = raw(p, "POST", "/start" + key, {"Content-Type": "application/json"},
+			json.dumps({"copy_to": str(tmp_path / "no" / "where")}))
+		assert code == 409 and "create" not in said # nothing to offer: the folder it goes in isn't there
+		assert raw(p, "POST", "/copy-folder" + key, {"Content-Type": "application/json"}, json.dumps({"path": str(new)})) == \
+			(200, {"ok": True})
+		assert new.is_dir()
+		assert raw(p, "POST", "/start" + key, {"Content-Type": "application/json"}, json.dumps({"copy_to": str(new)})) == \
+			(200, {"ok": True})
+	finally:
+		p.server.shutdown()
+		p.server.server_close()
 
 
 def raw(p, method, path, headers=None, body=None):
@@ -293,6 +347,8 @@ def test_a_recording_from_the_page(tmp_path, home):
 		status = wait(url, lambda s: s["state"] == "ready" and s["launcher"] and s["launcher"]["state"] == "done")
 		assert status["launcher"]["parts"]["acquire"]["exit_code"] == 0
 		assert status["launcher"]["post"]["remux"]["state"] == "done"
+		# What went wrong in it (campy/endsummary.py): with the emulated cameras, nothing
+		assert status["summary"]["lines"][0]["text"].startswith("All {} cameras: every frame saved".format(len(NAMES)))
 		counts = recorded(the_folder(clips))
 		assert min(counts) > 20 and max(counts) < 60 * 20, counts
 		manifest = json.load(open(os.path.join(folder, "session.json")))
@@ -308,6 +364,17 @@ def test_a_recording_from_the_page(tmp_path, home):
 	assert "[panel] Closed." in "".join(lines)
 	assert not (home / ".campy" / "status" / "launcher.lock").exists()
 
+	# A panel opened again shows that recording as the last one, with its steps and its summary
+	proc, lines, url = start_panel(tmp_path, home, config)
+	try:
+		status = call(url, "/status.json")[1]
+		assert status["state"] == "ready" and status["launcher"]["folder"] == folder
+		assert status["launcher"]["post"]["remux"]["state"] == "done" and status["launcher"]["clean"]["clean"]
+		assert status["summary"]["lines"][0]["text"].startswith("All {} cameras".format(len(NAMES)))
+	finally:
+		os.killpg(proc.pid, signal.SIGINT)
+		proc.wait(timeout=30)
+
 
 @POSIX
 def test_each_recording_is_copied_into_the_pages_folder(tmp_path, home):
@@ -319,8 +386,13 @@ def test_each_recording_is_copied_into_the_pages_folder(tmp_path, home):
 	proc, lines, url = start_panel(tmp_path, home, config)
 	try:
 		assert call(url, "/status.json")[1]["fields"]["copy_to"] == ""
-		code, said = call(url, "/start", {"copy_to": str(tmp_path / "nowhere")})
-		assert code == 409 and said["error"].startswith("Can't reach ")
+		code, said = call(url, "/start", {"copy_to": str(tmp_path / "no" / "where")})
+		assert code == 409 and said["error"].startswith("Can't reach ") and "create" not in said
+		# A folder not there yet, in one that is: refused, with the offer to make it (the page's Create this folder)
+		code, said = call(url, "/start", {"copy_to": str(share / "new")})
+		assert code == 409 and said["create"] == str(share / "new") and "doesn't exist yet" in said["error"]
+		assert call(url, "/copy-folder", {"path": str(share / "new")}) == (200, {"ok": True}) and (share / "new").is_dir()
+		(share / "new").rmdir()
 		assert call(url, "/start", {"experiment": "Copy test", "copy_to": str(share)}) == (200, {"ok": True})
 		status = wait(url, lambda s: s["state"] == "ready" and s["launcher"] and s["launcher"]["state"] == "done" and
 			s["copies"]["jobs"] and s["copies"]["jobs"][0]["state"] == "done")

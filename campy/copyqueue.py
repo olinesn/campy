@@ -73,6 +73,8 @@ def Problem(to, video_folder=None):
 		return None if sys.platform != "win32" else "{} is an rsync address: on Windows, give a folder (a network " \
 			"share as \\\\server\\share\\folder).".format(to)
 	if not os.path.isdir(to):
+		if Creatable(to):
+			return "{} doesn't exist yet. Press Create this folder, or check the address.".format(to)
 		return "Can't reach {} from this computer. Check the address; a network share may need opening once in " \
 			"File Explorer (or signing in) first.".format(to)
 	if video_folder:
@@ -81,6 +83,34 @@ def Problem(to, video_folder=None):
 		if a == b or a.startswith(b.rstrip("\\/") + os.sep):
 			return "{} is where the recordings are made: copy them somewhere else.".format(to)
 	return None
+
+
+def Creatable(to):
+	"""
+	Whether the page may make the folder to: it isn't there, and the folder it goes in is (one level only, so a
+	mistyped share or parent never makes a tree of wrong folders). Not an rsync address.
+	"""
+	to = str(to or "").strip()
+	if not to or (":" in to and "@" in to.split(":", 1)[0]):
+		return False
+	path = to.rstrip("\\/")
+	parent, name = os.path.dirname(path), os.path.basename(path)
+	return bool(name) and name not in (".", "..") and not os.path.exists(path) and bool(parent) and \
+		os.path.isdir(parent)
+
+
+def Create(to, video_folder=None):
+	"""Make the folder to (Creatable's), for the page's Create this folder: None, or why not."""
+	to = str(to or "").strip()
+	if os.path.isdir(to):
+		return None
+	if not Creatable(to):
+		return Problem(to, video_folder) or "Can't make {}.".format(to)
+	try:
+		os.mkdir(to.rstrip("\\/"))
+	except OSError as e:
+		return "Couldn't make {}: {}".format(to, e)
+	return Problem(to, video_folder) # made: still not one to copy into if it's inside the recordings' folder
 
 
 def Size(folder):
