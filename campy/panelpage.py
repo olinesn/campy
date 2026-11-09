@@ -273,13 +273,13 @@ function render(s){
   const CJ = ((s.copies||{}).jobs||[]).find(j => L.folder && j.folder == L.folder);
   // The panel's own copy, in the background: copying (with how far it has got), waiting behind another, done or failed
   if(CJ) P.copy = {state: ["done","failed","copying"].includes(CJ.state) ? CJ.state : "waiting", message: copyText(CJ), bar: copyBar(CJ)};
-  $("post").innerHTML = ["remux","export","copy","run"].map(k => P[k] ? "<li>"+tag(P[k].state, P[k].state=="done"?"ok":P[k].state=="failed"?"bad":"warn")+" "+STEPS[k]+": "+esc(P[k].message)+(P[k].bar||"")+"</li>"
+  $("post").innerHTML = ["remux","calibrate","export","copy","run"].filter(k => k != "calibrate" || P.calibrate && P.calibrate.state != "skipped" || P.calibrate && /calibrate is off/.test(P.calibrate.message||"")).map(k => P[k] ? "<li>"+tag(P[k].state, P[k].state=="done"?"ok":P[k].state=="failed"?"bad":"warn")+" "+STEPS[k]+": "+esc(P[k].message)+(P[k].bar||"")+"</li>"
     : "<li class=muted>"+STEPS[k]+(st=="post"?": waiting":"")+"</li>").join("");
 }
 let typeSig = "", listSig = "", choosing = false, refill = false;
 const PROGRAMS = {acquire: "Cameras and video files (campy-acquire)", view: "Viewer window", watch: "Alerts (campy-watch)",
   "campy-live": "Live tracking (campy-live)"};
-const STEPS = {remux: "Video files", export: "Tracking files for LUC3D", copy: "Copy", run: "Extra commands"};
+const STEPS = {remux: "Video files", calibrate: "Calibration (calibrat3)", export: "Tracking files for LUC3D", copy: "Copy", run: "Extra commands"};
 function mins(s){ // 80 s as "1 min 20 s", 4000 s as "1 h 6 min"
   s = Math.round(s); const h = Math.floor(s/3600), m = Math.floor(s%3600/60);
   return h ? h+" h "+m+" min" : m ? m+" min"+(s%60 ? " "+s%60+" s" : "") : s+" s";

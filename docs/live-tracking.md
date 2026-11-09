@@ -89,6 +89,7 @@ post:
   remux: true          # true (the default), keep, or false
   join: true           # a camera's video files after an ffmpeg restart, joined into one (the default)
   align: true          # campy-align: every camera on the trigger's timeline, and where the trigger paused (the default)
+  calibrate: {}        # for a calibration recording: {calibrat3: <checkout>} makes calibration.toml (off by default)
   export: true         # campy-live-export, when campy-live ran (the default)
   copy: "\\\\nas\\share\\recordings"   # optional: copies the recording's folder into this one
   run: ["python C:\\tools\\notify.py {folder}"]   # optional: your own commands
@@ -105,6 +106,7 @@ post:
   - A file that holds no frame (its ffmpeg stopped before it wrote its first fragment) is left out. A recording without a restart has nothing to join.
   - After a crash (with `--force`), the join counts which frames each file holds, the cut last file too, and leaves out the rows of frames that never reached them ([Recordings](recordings.md#what-is-in-the-folder)).
 - **align** runs `campy-align` ([Aligning cameras after recording](sync.md#aligning-cameras-after-recording)): `aligned.csv` in each camera's folder and `alignment.json` in the recording's, with each frame's trigger and its time. The log says where the trigger paused (pulses no camera has a frame for: no frame is lost, but every frame after is later than its number says) and which camera missed pulses the others got. It is skipped when no camera is triggered and none is a RatCam: there is no timeline to put them on.
+- **calibrate**, for a calibration recording only (its videos in `<camera>/calibration_images/`) and only when `calibrate:` names a calibrat3 checkout: calibrat3, headless in the computer's Chrome, makes the recording's `calibration.toml` and `calibration_summary.json` ([A calibration every day](calibration.md#a-calibration-every-day-made-by-itself-calibrat3)).
 - **export** runs `campy-live-export` in the inference environment, so the recording opens in LUC3D with the tracking on it (below). If `campy-live` was started again during the recording, its logs are joined first, in order.
 - **copy** copies the whole recording folder into `copy.to`: with robocopy on Windows, with rsync on Linux and macOS (rsync also takes `user@host:/path`). Then it checks every file's size. **Nothing is deleted**, on either side. In the panel, the page's **Copy each recording to** box takes the place of this step (below): it starts from `copy.to`, and copies in the background instead, so the next recording doesn't wait.
 - **run** runs your own commands in a shell, with `{folder}` replaced by the recording's folder. One that fails is logged, and the next one still runs.
