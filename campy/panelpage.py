@@ -53,9 +53,10 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
   <button id="close" hidden title="Close the panel (nothing is recording)">Close the panel</button>
 </div>
 <div id="error" class="err" hidden></div>
-<div id="bgcopy" class="card bgcopy" hidden><div class="row"><b class="grow" id="bgcopytitle">Copying in the background</b>
-  <span class="muted">Leave the computer on, and the panel's black window open, until it is done.</span></div>
-  <div id="bgcopytext"></div></div>
+<div id="bgcopy" class="card bgcopy" hidden><div class="row"><b class="grow" id="bgcopytitle">Copying in the background</b></div>
+  <div id="bgcopyok" style="font-weight:500"></div>
+  <div class="muted">Leave the computer on, and the panel's black window open, until it is done.</div>
+  <div id="bgcopytext" style="margin-top:6px"></div></div>
 
 <div id="typebox" class="card" hidden>
   <div class="row"><div class="grow"><label for="type">Experiment</label><select id="type"></select>
@@ -197,7 +198,7 @@ function render(s){
     if(s.fields.experiment) $("experiment").value = s.fields.experiment; if(s.fields.animal_ids) $("ids").value = s.fields.animal_ids;
     $("copyto").value = s.fields.copy_to||""; } // the copy destination is each config's own
   if(!$("experiment").dataset.set){ $("experiment").value = s.fields.experiment||""; $("ids").value = s.fields.animal_ids||""; $("copyto").value = s.fields.copy_to||""; $("experiment").dataset.set=1; }
-  renderCopies(s.copies || {jobs: []}, L.folder);
+  renderCopies(s.copies || {jobs: []}, L.folder, st);
   $("during").hidden = !(st=="recording" || st=="stopping" || st=="starting live");
   $("disk").textContent = s.disk.free_gb!=null ? Math.round(s.disk.free_gb)+" GB" : "-";
   // With a Pico's plan: what the rest of it still needs (SpikeGLX and the videos, estimated), not hours at the rate so far
@@ -294,13 +295,16 @@ function copyBar(j){
   if(j.state!="copying" || !j.bytes) return "";
   return '<div class="bar copybar"><div style="width:'+Math.min(100, 100*(j.done_bytes||0)/j.bytes).toFixed(1)+'%"></div></div>';
 }
-function renderCopies(C, folder){
+function renderCopies(C, folder, st){
   const jobs = C.jobs || [];
   // Copies still to do, at the top of the page in every state (a new recording too) until the last is done: not only in
   // the Copies card, below the cameras while one records
   const now = jobs.filter(j => j.state=="copying"), queued = jobs.filter(j => j.state=="waiting");
   $("bgcopy").hidden = !now.length && !queued.length;
   $("bgcopytitle").textContent = now.length ? "Copying in the background" : "Copies waiting to start";
+  // Said plainly: the copy is no reason to wait (it keeps going while the next one records)
+  $("bgcopyok").textContent = ["ready","done","failed"].includes(st) ? "You can start a new recording now: the copy goes on beside it and doesn't disturb it." :
+    ["recording","starting","checking","preparing","starting live","stopping"].includes(st) ? "It doesn't disturb this recording." : "";
   $("bgcopytext").innerHTML = now.map(j => "<div><b>"+esc(j.name)+"</b> "+esc(copyText(j))+copyBar(j)+"</div>").join("") +
     (queued.length ? '<div class="muted">'+(now.length ? "Then " : "")+queued.map(j => esc(j.name)).join(", ")+(queued.length==1 ? " waits" : " wait")+" to be copied.</div>" : ""); $("copies").hidden = !jobs.length && !C.close_when_copied;
   $("copywait").hidden = $("closenow").hidden = !C.close_when_copied;

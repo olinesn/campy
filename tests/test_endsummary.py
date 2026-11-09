@@ -181,3 +181,4 @@ def test_copies_still_to_do_show_at_the_top_of_the_page_in_every_state():
 	page = panelpage.PAGE
 	assert page.index('id="bgcopy"') < page.index('id="typebox"') < page.index('id="during"')
 	assert '$("bgcopy").hidden = !now.length && !queued.length' in page
+	assert "You can start a new recording now" in page # and it says so
