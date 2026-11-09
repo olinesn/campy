@@ -328,6 +328,7 @@ def Sweep(cam_params, encoders, counts, settings, keep_going=False, log=print):
 			"pix_fmt_out": cam_params["pixelFormatOutput"],
 			"quality": cam_params["quality"],
 			"keyframeInterval": cam_params.get("keyframeInterval", "None"),
+			"denoise": cam_params.get("denoise", "None"),
 			"headroom": settings["headroom"],
 			"max_streams": max_streams,
 			"max_tested": max(r["streams"] for r in rows),
@@ -386,6 +387,8 @@ def ParseArgs(argv=None):
 	parser.add_argument("--codec", choices=configschema.BY_NAME["codec"].choices)
 	parser.add_argument("--quality", type=int)
 	parser.add_argument("--keyframeInterval", type=float)
+	parser.add_argument("--denoise", choices=configschema.BY_NAME["denoise"].choices,
+		help="filter before the encoder, as the config's denoise (default: the config's, else None)")
 	parser.add_argument("--ffmpegPath")
 	parser.add_argument("--vaapiDevice")
 	parser.add_argument("--encoder", action="append", dest="encoders",
@@ -419,7 +422,7 @@ def BaseParams(args):
 		params = configurator.FillCameraLists(params)
 		params = configurator.CameraParams(params, 0)
 	for key in ("frameWidth", "frameHeight", "frameRate", "pixelFormatInput", "pixelFormatOutput",
-			"codec", "quality", "keyframeInterval", "ffmpegPath", "vaapiDevice"):
+			"codec", "quality", "keyframeInterval", "denoise", "ffmpegPath", "vaapiDevice"):
 		value = getattr(args, key)
 		if value is not None:
 			params[key] = value

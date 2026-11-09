@@ -186,6 +186,24 @@ def EncoderArgs(cam_params):
 		gop = max(1, int(round(float(cam_params["frameRate"]) * float(keyframe_interval))))
 		gpu_params.extend(["-g", str(gop)])
 
+	# Temporal denoising before encoding (denoise). "atadenoise" averages each
+	# pixel with the same pixel in the 2 frames before and the 2 after (s=5),
+	# but only while they differ from it by at most 4 gray levels (of 255,
+	# ffmpeg's default thresholds), so no pixel moves by more than 4 and a
+	# moving mouse's edges, which change by tens of levels, are left alone.
+	# Measured (docs/encoding.md, "Denoising before encoding"): AV1 on Quick
+	# Sync at quality 88 wrote 20-28% smaller files of mice, with no
+	# measurable change in 2D keypoints or 3D. It runs on the CPU, first in
+	# the chain, on the frames as the camera sent them (gray), before the
+	# conversion to the encoder's format (ffmpeg's own, for -pix_fmt, or
+	# VA-API's format=nv12,hwupload). -filter_threads 1: ffmpeg otherwise
+	# starts one filter thread per CPU core for each camera, which cost ~1.5
+	# more cores for 8 cameras at 60 fps; on one thread, about the CPU of no
+	# filter. It is a global option: anywhere on the command line does.
+	denoise = DenoiseFilters(cam_params)
+	if denoise:
+		input_params += ["-filter_threads", "1"]
+
 	# Color range (colorRange). "limited" is video's usual range, 16-235, and
 	# what campy has always written: ffmpeg rescales every pixel of a camera's
 	# 0-255 frame into it. "full" keeps 0-255: a mono frame goes into the video
@@ -212,16 +230,26 @@ def EncoderArgs(cam_params):
 			to_nv12 = ["format=yuv420p", "scale=in_range=full:out_range=full"]
 		if pix_fmt_out == "vaapi":
 			vf = gpu_params.index("-vf") + 1
-			gpu_params[vf] = ",".join(["scale=out_range=full"] + to_nv12 + [gpu_params[vf]])
+			gpu_params[vf] = ",".join(denoise + ["scale=out_range=full"] + to_nv12 + [gpu_params[vf]])
 		else:
 			# imageio-ffmpeg pads a frame to macro_block_size with a -vf of its
 			# own, which this one would replace (ffmpeg keeps the last -vf), so
 			# the padding is done here instead
 			size = PaddedSize(cam_params, macro_block_size)
 			scale = "scale=out_range=full" if size is None else "scale={}:{}:out_range=full".format(*size)
-			gpu_params.extend(["-vf", ",".join([scale] + to_nv12)])
+			gpu_params.extend(["-vf", ",".join(denoise + [scale] + to_nv12)])
 			macro_block_size = 1
 		gpu_params.extend(["-color_range", "pc"])
+	elif denoise:
+		if "-vf" in gpu_params:
+			# VA-API's format=nv12,hwupload: one chain (ffmpeg keeps only the last -vf)
+			vf = gpu_params.index("-vf") + 1
+			gpu_params[vf] = ",".join(denoise + [gpu_params[vf]])
+		else:
+			# imageio-ffmpeg's padding -vf would be replaced by this one, as above
+			size = PaddedSize(cam_params, macro_block_size)
+			gpu_params.extend(["-vf", ",".join(denoise + ([] if size is None else ["scale={}:{}".format(*size)]))])
+			macro_block_size = 1
 
 	# Fragmented MP4 (fragmentedVideo, on by default), for .mp4 and .mov. A
 	# plain MP4 keeps its index (the moov atom) in memory and writes it when
@@ -286,6 +314,20 @@ def EncoderArgs(cam_params):
 
 
 RGB_FORMATS = ("rgb0", "bgr0", "rgb24", "bgr24", "rgba", "bgra")
+
+
+# denoise: the ffmpeg filters each setting runs before the encoder
+DENOISE_FILTERS = {
+	"None": [],
+	"atadenoise": ["atadenoise=s=5"],
+	}
+
+
+def DenoiseFilters(cam_params):
+	value = str(cam_params.get("denoise", "None"))
+	if value not in DENOISE_FILTERS:
+		raise ValueError('denoise is "None" or "atadenoise", not "{}".'.format(value))
+	return list(DENOISE_FILTERS[value])
 
 
 def FullRange(cam_params):
