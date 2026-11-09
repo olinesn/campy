@@ -415,7 +415,9 @@ def ValidateCameraLists(params, sources=None, notes=None):
 
 def ValidateSerials(params, sources=None):
 	# cameraSerials picks each camera by its serial number (unicam.SelectBySerial, once the cameras are found): no
-	# serial twice, and not with a cameraSelection the config gives too, since only one of them can pick the cameras
+	# serial twice, and not with a cameraSelection the config gives too, since only one of them can pick the cameras.
+	# A cameraSelection of 0, 1, 2, ... is the default's, which campy-session (its campy-acquire.yaml) and campy-config
+	# write into the configs they save: that one picks nothing, as cameraSerials replaces it.
 	serials = params.get("cameraSerials")
 	if serials in (None, "None"):
 		return
@@ -424,7 +426,10 @@ def ValidateSerials(params, sources=None):
 	if twice:
 		raise ValueError("cameraSerials lists {} twice: each camera has a serial of its own.{}".format(
 			" and ".join(twice), SetWhere("cameraSerials", sources)))
-	if sources is not None and "cameraSelection" in sources and sources["cameraSelection"].kind != Source.DEFAULT:
+	selection = params.get("cameraSelection")
+	default = isinstance(selection, list) and [s for s in selection[:params["numCams"]]] == list(range(params["numCams"]))
+	if sources is not None and "cameraSelection" in sources and sources["cameraSelection"].kind != Source.DEFAULT and \
+			not default:
 		raise ValueError("cameraSerials and cameraSelection both pick the cameras: give one of them (cameraSerials "
 			"is from {}, cameraSelection from {}).".format(sources["cameraSerials"].Where() if "cameraSerials" in
 			sources else "the config", sources["cameraSelection"].Where()))

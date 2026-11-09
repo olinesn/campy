@@ -53,7 +53,7 @@ Camera1_mid: its camera (serial 19060810) isn't connected, or isn't found.
 Check the camera's cable and USB port. If a camera was swapped for another, put the new one's serial in cameraSerials. Nothing was recorded.
 ```
 
-`cameraSerials` takes the place of `cameraSelection`: give one of them, not both. The serials are on each camera's label, in SpinView or pylon, and in campy-acquire's "ready to trigger" lines and every camera's `metadata.csv` (`cameraSerialNo`) from an earlier recording. A camera swapped for a new one needs its new serial in the list.
+`cameraSerials` takes the place of `cameraSelection`: give one of them, not both. A `cameraSelection` of `[0, 1, 2, ...]`, the default, counts as none, since `campy-session` and `campy-config` write it into the configs they save (`logs/campy-acquire.yaml`). The serials are on each camera's label, in SpinView or pylon, and in campy-acquire's "ready to trigger" lines and every camera's `metadata.csv` (`cameraSerialNo`) from an earlier recording. A camera swapped for a new one needs its new serial in the list.
 
 In campy 2.5.0 and older, one name alone was read letter by letter: with one camera, `cameraNames: Top` recorded into a folder `T`, while session.json said `Top`; with two, `cameraNames: Cam` stopped campy with `C and a would both write ...`, and `cameraSelection: 1` opened device 1 for both cameras.
 

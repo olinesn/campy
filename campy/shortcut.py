@@ -1,14 +1,17 @@
 """
-campy-session shortcut: a desktop shortcut that opens the panel with a config.
+campy-session shortcut: a desktop shortcut that opens the panel with a config,
+or with a folder of configs (one icon for every experiment on the rig).
 
   campy-session shortcut <config>.yaml [--name "Record: 3 cameras"] [--folder <where>] [--key value ...]
+  campy-session shortcut <folder of configs> [--name "campy recording"] [--folder <where>] [--key value ...]
 
 Double-clicking it runs, in a window of its own (its console, which shows
 the programs' output):
 
   <this environment's python> -m campy.session panel <config> [--key value ...]
 
-and the panel opens its page in the browser (campy/panel.py). So someone who
+and the panel opens its page in the browser (campy/panel.py); with a folder,
+the page's Experiment list picks among its configs. So someone who
 does not use a terminal records by double-clicking an icon, pressing Start
 and, at the end, Stop. Closing that window closes the panel, never the
 recording: the panel runs campy-acquire apart from it, and a panel opened
@@ -21,8 +24,8 @@ again finds the recording still running, and can stop it.
   in the applications menu too.
 - macOS: a .command file on the desktop, which Terminal runs.
 
-The shortcut names this environment's python and the config by their full
-paths: make it again after moving either.
+The shortcut names this environment's python and the config (or folder) by
+their full paths: make it again after moving either.
 """
 
 import argparse, os, re, shlex, subprocess, sys
@@ -88,16 +91,19 @@ def Mac(path, python, arguments, folder, name):
 
 
 def Make(config, name=None, folder=None, extra=(), python=None):
-	"""Makes the shortcut; returns the paths it wrote."""
+	"""Makes the shortcut; returns the paths it wrote. config: a config, or a folder of configs."""
 	config = os.path.abspath(config)
-	if not os.path.isfile(config):
-		raise OSError("no config {}".format(config))
-	name = name or "Record with campy ({})".format(os.path.splitext(os.path.basename(config))[0])
+	many = os.path.isdir(config)
+	if not many and not os.path.isfile(config):
+		raise OSError("no config or folder of configs {}".format(config))
+	name = name or ("campy recording" if many else "Record with campy ({})".format(
+		os.path.splitext(os.path.basename(config))[0]))
 	folder = folder or Desktop()
 	os.makedirs(folder, exist_ok=True)
 	python = python or Python()
 	arguments = ["-m", "campy.session", "panel", config] + list(extra)
-	where = os.path.dirname(config) # relative paths in the config (videoFolder) mean what they mean beside it
+	where = config if many else os.path.dirname(config) # relative paths in a config (videoFolder) mean what they mean
+	# beside it
 	paths = []
 	if sys.platform == "win32":
 		path = os.path.join(folder, FileName(name) + ".lnk")
@@ -122,10 +128,13 @@ def Make(config, name=None, folder=None, extra=(), python=None):
 
 def Main(argv=None):
 	p = argparse.ArgumentParser(prog="campy-session shortcut", description="Make a desktop shortcut that opens "
-		"campy-session's panel with this config (python -m pydoc campy.shortcut).",
+		"campy-session's panel with this config, or with a folder of configs (one icon for every experiment; python -m "
+		"pydoc campy.shortcut).",
 		epilog="Any other --key value is campy-acquire's, for every recording the shortcut's panel starts.")
-	p.add_argument("config", help="the config the panel records with")
-	p.add_argument("--name", default="", help="the shortcut's name (default: Record with campy (<config>))")
+	p.add_argument("config", help="the config the panel records with, or a folder of configs (the page's Experiment "
+		"list picks one)")
+	p.add_argument("--name", default="", help="the shortcut's name (default: Record with campy (<config>); for a "
+		"folder, campy recording)")
 	p.add_argument("--folder", default="", help="where to put it (default: the desktop)")
 	args, rest = p.parse_known_args(argv)
 	try:
@@ -135,5 +144,9 @@ def Main(argv=None):
 		return 1
 	for path in paths:
 		print("Made {}".format(path))
-	print("Double-click it to open the panel in the browser; it records with {}.".format(os.path.abspath(args.config)))
+	if os.path.isdir(args.config):
+		print("Double-click it to open the panel in the browser; its Experiment list picks a config of {}.".format(
+			os.path.abspath(args.config)))
+	else:
+		print("Double-click it to open the panel in the browser; it records with {}.".format(os.path.abspath(args.config)))
 	return 0
