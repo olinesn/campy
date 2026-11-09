@@ -403,7 +403,9 @@ def test_a_recording_cut_short_keeps_its_settings_and_frames(tmp_path, monkeypat
 		frames = written(folder / "frametimes.npy", 200)
 		assert list(frames[0]) == list(range(1, 201))
 		assert np.allclose(frames[1], np.arange(200) * 0.01)
-		assert len(np.load(folder / "hosttimes.npy")) == 200
+		# hosttimes.npy too, waited for: the writer thread writes it just after frametimes.npy, and a busy CI runner
+		# (Python 3.9, 4 workers) now and then read it between the two, with only the first batch's 100
+		assert len(written(folder / "hosttimes.npy", 200)) == 200
 		assert not (folder / "frametimes.mat").exists() # written when the recording closes
 	finally:
 		hold.go.set()
