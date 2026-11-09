@@ -150,7 +150,7 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 
 ## Recording a long session
 
-[`chronic_pico.yaml`](chronic_pico.yaml) is the campy profile the rig uses for bout sessions of several days. It extends the rig's own profile (`extends: chronicrecord`: four cameras, Quick Sync H.265) and changes only what the Pico needs. Each line's comment says why.
+[`chronic_pico.yaml`](chronic_pico.yaml) is the campy profile the rig uses for bout sessions of several days. It extends the rig's own profile (`extends: chronicrecord`: four cameras, Quick Sync H.265) and changes only what the Pico needs, plus the denoise filter. Each line's comment says why.
 
 | Setting | Value | Why |
 |---|---|---|
@@ -162,6 +162,7 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 | `alertTriggerPauseSec` | `30` | gaps of 30 s or more are planned: logged, not sent. Below the shortest gap, 60 s (after a 240 s bout) |
 | `alertExternalWaitSec` | `3600` | campy is started well before the Pico's session (16 minutes before it in the 1-hour rehearsal on 4 November, whose only false alarm was this warning at 10 minutes); an hour still catches a session that was never started |
 | `alertDiskFreeGB` | `500` | warns with about a day's room left: SpikeGLX fills the same disk at about 475 GB a day, which campy's default (20 GB) would announce only an hour ahead |
+| `denoise` | `"atadenoise"` | smaller videos: ffmpeg's temporal denoiser before the encoder changes no pixel by more than 4 gray levels and left tracking unchanged; on H.265 Quick Sync it saved 6-22% in a test, more for a still scene ([Denoising before encoding](../docs/encoding.md#denoising-before-encoding-denoise)). Turned on 9 November 2026 |
 | `stopFile` | a file | creating it stops the recording cleanly, from SSH or a script |
 
 **`recTimeInSec` for another length.** campy counts camera time, not the wall clock. `python chronic_control.py plan --set TOTAL_DURATION=<seconds>` ends with the session's camera pulses; `recTimeInSec` is that number divided by 60. By hand, with the default settings: bouts = `TOTAL_DURATION` / 300, of which every 6th (bouts 1, 7, 13, ...) is 240 s of camera and the rest 10 s.
