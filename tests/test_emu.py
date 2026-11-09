@@ -204,7 +204,11 @@ def test_the_same_frame_comes_at_the_same_time_from_every_camera(clip):
 	got = np.array([results[d] for d in (0, 0.3, 0.6)]) # camera x frame
 	assert got.shape == (3, 10)
 	spread = got.max(axis=0) - got.min(axis=0)
-	assert np.median(spread) < 0.01 and spread.max() < 0.03, spread # 0.6-2.4 ms and at most 4 ms, on a Mac
+	# 0.6-2.4 ms and at most 4 ms, on a Mac. The time is when each process got its frame, so a process the computer
+	# held up records that frame late: on a busy Windows CI runner (2 cores, 4 test workers) one frame of the 10 was
+	# 40 ms apart, the rest within 3 ms. The bug this test was written for put every frame 0.3-0.6 s apart: the
+	# median (10 ms) catches any steady offset, and no single frame may be half the smallest stagger (0.3 s) apart
+	assert np.median(spread) < 0.01 and spread.max() < 0.15, spread
 	# On the shared schedule: frame n at the start plus n / 50 s
 	late = got - (start.value + np.arange(10) / 50.0)
 	assert late.min() >= 0 and np.median(late) < 0.01, late

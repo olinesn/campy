@@ -1508,7 +1508,10 @@ def test_the_view_of_campy_live_as_it_runs(tmp_path, monkeypatch):
 		view.join(30)
 	assert codes == [0]
 	summary = json.load(open(tmp_path / "view.json"))
-	assert summary["results_drawn"] > 20 and summary["results_gone"] == 0
+	# At least 10 of campy-live's results drawn over the 2 s recording (5 a second, the newest each time): it keeps
+	# following campy-live, and draws none whose frames were gone. Not more than 20: on GitHub's Windows runner
+	# beside 3 other test workers a view took 63-71 ms to draw (p50), and it drew exactly 20 (2026-11-06 and 11-09)
+	assert summary["results_drawn"] >= 10 and summary["results_gone"] == 0, summary
 	assert summary["draw_3d_ms"]["p50"] > 0 # with the 3D tile
 	saved = sorted(os.listdir(png))
 	assert saved and all(f.startswith("view_") and f.endswith(".png") for f in saved)
