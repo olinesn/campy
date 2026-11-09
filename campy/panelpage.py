@@ -64,7 +64,7 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
         <details id="boutbox" open hidden><summary>Bout settings <span id="boutsum" class="muted"></span></summary>
           <div id="boutfields" class="bgrid"></div>
           <div class="muted" id="boutshape" style="font-size:12px"></div>
-          <div class="row" style="margin-top:4px"><span class="muted grow" style="font-size:12px">For this panel's recordings only: the config file isn't changed. Each recording's session-config.yaml says which came from here.</span><button id="boutreset" hidden>Back to the config's</button></div></details>
+          <div class="row" style="margin-top:4px"><span class="muted grow" style="font-size:12px">The config file isn't changed: these are for the recordings started here, and the next panel opened with this config starts from them. Each recording's session-config.yaml says which came from here.</span><button id="boutreset" hidden>Back to the config's</button></div></details>
         <label for="picoat">Start the Pico at (optional: otherwise a button, once every camera is ready)</label><input id="picoat" placeholder="7:20 PM"></div>
       <label for="experiment">Experiment</label><input id="experiment" placeholder="Social hierarchy, week 3">
       <label for="ids">Animal IDs, comma-separated</label><input id="ids" placeholder="M12, M14, M15">
@@ -249,7 +249,7 @@ function renderBouts(B){
     el.classList.toggle("changed", f.changed);
     $("bc_"+f.key).textContent = f.changed ? "the config's: "+f.config : ""; });
   const n = (B.changed || []).length;
-  $("boutsum").textContent = n ? "· "+n+" changed on this page" : "· as the config says";
+  $("boutsum").textContent = n ? "· "+n+" changed"+(B.remembered ? ", as the last panel left them ("+B.remembered+")" : " on this page") : "· as the config says";
   $("boutreset").hidden = !n;
   const b = B.bout;
   $("boutshape").innerHTML = B.error ? '<span class="err">'+esc(B.error)+'</span>' : !b ? "" : b.error ? '<span class="err">'+esc(b.error)+'</span>' :

@@ -23,8 +23,9 @@ it, which needs nothing.
 """
 
 import importlib.util, math, os, subprocess, sys, time
+from datetime import datetime
 
-# The bout settings the panel's page can change, for that panel's recordings only (otherwise pico.set, then
+# The bout settings the panel's page can change, without changing the config (otherwise pico.set, then
 # chronic_control.py's own defaults): (setting, the page's label, the page's unit, the setting's value times this is
 # the page's). The others (CAMERA_FPS, which must be campy's frameRate; the camera pulse; the LEDs' lead) stay in pico.set.
 PAGE = [
@@ -40,6 +41,8 @@ PAGE = [
 # The Pico's room for a session (chronicrecord/chronic_timer/chronic_timer.ino: MAX_TRAINS, one camera train a bout, and
 # MAX_EDGES, 6 a bout): a session with more bouts is refused at its start, so the plan refuses it first
 MAX_BOUTS = 2048
+# The page's last bout settings for each config, which the next panel opened with it starts from
+REMEMBER = "panel-bouts.json"
 
 # The pico: section's keys: (the kinds it takes, its default, what it is)
 KEYS = {
@@ -116,6 +119,59 @@ def Room(s, seconds):
 			s["INTERVAL"], s["INTERVAL"], MAX_BOUTS))
 
 
+def RememberFile():
+	from campy import session
+	return os.path.join(session.StatusDir(), REMEMBER)
+
+
+def ConfigKey(path):
+	return os.path.normcase(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def Remembered(path, config):
+	"""The page's last bout settings with this config ({page, at}), or None."""
+	from campy import strictjson
+	try:
+		with open(path) as f:
+			got = strictjson.load(f).get(ConfigKey(config))
+		return got if isinstance(got, dict) else None
+	except (OSError, ValueError, AttributeError):
+		return None
+
+
+def Remember(path, config, page):
+	"""This config's page settings, for the next panel opened with it (none: the config's)."""
+	from campy import session, strictjson
+	try:
+		with open(path) as f:
+			everything = strictjson.load(f)
+		if not isinstance(everything, dict):
+			everything = {}
+	except (OSError, ValueError):
+		everything = {}
+	if page:
+		everything[ConfigKey(config)] = {"page": dict(page), "at": datetime.now().astimezone().isoformat(
+			timespec="seconds")}
+	else:
+		everything.pop(ConfigKey(config), None)
+	try:
+		os.makedirs(os.path.dirname(path), exist_ok=True)
+		session.WriteJson(path, everything)
+	except OSError:
+		pass
+
+
+def Shown(at):
+	# An ISO time as the page says it: "Mon 9 Nov, 3:12 PM"
+	if not at:
+		return None
+	try:
+		t = datetime.fromisoformat(str(at))
+	except ValueError:
+		return str(at)
+	return "{} {} {}, {}".format(t.strftime("%a"), t.day, t.strftime("%b"), t.strftime("%I:%M %p").lstrip("0"))
+
+
 class Pico:
 	"""The pico: section, checked (its keys filled in), and what campy-session asks of the Pico."""
 
@@ -127,6 +183,7 @@ class Pico:
 		self.module = Module(self.control)
 		self.spans = {} # Spans' answers, by length
 		self.page = {} # the page's bout settings ({setting: its value}), over pico.set: Choose
+		self.remembered = None # when the page's settings were last set, if they come from an earlier panel: Restore
 		self.state_dir = section["state_dir"] or self.module.STATE_DIR
 		self.lengths = []
 		for n, length in enumerate(section["lengths"]):
@@ -204,7 +261,29 @@ class Pico:
 				page[key] = number
 		self.page = page
 		self.spans = {}
+		self.remembered = None
 		return None
+
+	def Restore(self, last):
+		"""
+		The page's settings as the last panel with this config left them
+		({page: {setting: value}, at}, Remembered): those a bout setting can
+		still be, over the config's. One the config now has itself is the
+		config's; any other is left out.
+		"""
+		base = self.Base()
+		keys = {key for key, _, _, _ in PAGE}
+		page = {}
+		given = (last or {}).get("page")
+		for key, value in (given.items() if isinstance(given, dict) else ()):
+			if key not in keys or isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) \
+					or value <= 0 or key == "EXTENDED_EVERY" and value != int(value):
+				continue
+			value = int(value) if key == "EXTENDED_EVERY" else round(float(value), 6)
+			if value != base[key]:
+				page[key] = value
+		self.page, self.spans = page, {}
+		self.remembered = (last or {}).get("at") if page else None
 
 	def PageStatus(self):
 		"""The page's bout settings box: each setting (in the page's unit, with the config's), and what one bout does."""
@@ -218,7 +297,7 @@ class Pico:
 		shown = lambda v, scale: round(v * scale, 6)
 		return {"fields": [{"key": key, "label": label, "unit": unit, "value": shown(now[key], scale),
 			"config": shown(base[key], scale), "changed": key in self.page} for key, label, unit, scale in PAGE],
-			"changed": sorted(self.page), "bout": self.Bout()}
+			"changed": sorted(self.page), "bout": self.Bout(), "remembered": Shown(self.remembered)}
 
 	def Bout(self):
 		"""
