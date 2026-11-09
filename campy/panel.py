@@ -941,6 +941,13 @@ class Panel:
 		self.closing = True
 		return None
 
+	def MakeCopyFolder(self, path):
+		# The page's Create this folder, for a "Copy each recording to" folder that isn't there yet
+		error = copyqueue.Create(path, self.config.Value("videoFolder", "."))
+		if not error:
+			Say("Made the copy folder {} (Create this folder, on the page).".format(str(path).strip()))
+		return error
+
 	def CopyTo(self):
 		# What the page's box starts from: the folder this config's recordings were last copied into from a page, or
 		# the config's own post copy.to
@@ -1171,10 +1178,15 @@ class Panel:
 					error = panel.Favorite(body.get("path"), body.get("on"))
 				elif url.path == "/types-scan":
 					error = panel.Rescan()
+				elif url.path == "/copy-folder":
+					error = panel.MakeCopyFolder(body.get("path"))
 				elif url.path == "/check":
 					panel.checks, error = panel.Checks(), None
 				else:
 					return self.Send(404, {"error": "no such action"})
+				if error and url.path == "/start" and copyqueue.Creatable(body.get("copy_to")):
+					# The copy folder isn't there yet, though the folder it goes in is: the page offers to make it
+					return self.Send(409, {"error": error, "create": str(body.get("copy_to")).strip()})
 				return self.Send(409 if error else 200, {"error": error} if error else {"ok": True})
 
 		for port in range(self.port, self.port + 20):

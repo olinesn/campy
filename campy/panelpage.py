@@ -33,7 +33,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;display:flex;flex-direction:col
 button{font:inherit;padding:6px 14px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer}
 button:hover{background:var(--soft)}button.stop{color:var(--bad);border-color:var(--bad)}button.go{color:var(--ok);border-color:var(--ok)}
 input{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
-label{font-size:12px;color:var(--muted)}h2{font-size:15px;font-weight:500;margin:0 0 6px}h3{font-size:13px;font-weight:600;margin:0 0 4px}.logo{width:44px;height:44px;flex:none;display:block}
+label{font-size:12px;color:var(--muted)}h2{font-size:15px;font-weight:500;margin:0 0 6px}h3{font-size:13px;font-weight:600;margin:0 0 4px}.logo{width:44px;height:44px;flex:none;display:block}.okmsg{color:var(--ok);margin-left:8px}
 .bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden}.bar div{height:6px;background:var(--ok)}
 .copybar{max-width:420px;margin:4px 0 2px}.copybar div{background:var(--accent)}
 .bgcopy{border-left:4px solid var(--accent)}.bgcopy .copybar{max-width:none;height:10px}.bgcopy .copybar div{height:10px}
@@ -154,9 +154,19 @@ const key = new URLSearchParams(location.search).get("t") || "";
 const $ = id => document.getElementById(id);
 let thumbs = 0, last = null, stopArmed = 0;
 function q(path){ return path + (path.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(key); }
-async function post(path, body){
+async function postFull(path, body){
   const r = await fetch(q(path), {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body||{})});
-  const j = await r.json().catch(() => ({})); return j.error || null;
+  return await r.json().catch(() => ({}));
+}
+async function post(path, body){ const j = await postFull(path, body); return j.error || null; }
+function offerCreate(path){
+  // The copy folder isn't there yet, but the folder it goes in is: a button that makes it (one level), then Start again
+  const b = document.createElement("button"); b.textContent = "Create this folder"; b.style.marginLeft = "8px";
+  b.title = "Make " + path + " (only this last folder: the one it goes in is already there)";
+  b.onclick = async () => { b.disabled = true; const e = await post("/copy-folder", {path});
+    $("starterr").textContent = e || ""; if(!e){ const ok = document.createElement("span"); ok.className = "okmsg";
+      ok.textContent = "Made " + path + ". Press Start recording again."; $("starterr").appendChild(ok); } };
+  $("starterr").appendChild(b);
 }
 function hms(s){ if(s==null) return "-"; s=Number(s); if(!isFinite(s)) return s>0 ? "\u221e" : "-"; s=Math.max(0,Math.round(s)); return Math.floor(s/3600)+":"+String(Math.floor(s/60)%60).padStart(2,"0")+":"+String(s%60).padStart(2,"0"); }
 function esc(t){ return String(t==null?"":t).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
@@ -437,9 +447,9 @@ $("start").onclick = async () => { $("starterr").textContent = "";
   const override = !!disk && blocks.length == 1;
   if(override && !confirm("This session doesn't fit on the disk.\n\n" + disk.text + "\n\nStart anyway? Only if data will be moved off "+
     "this disk during the session. Otherwise the disk fills up: campy stops cleanly near the end of the space, but SpikeGLX doesn't.")) return;
-  const e = await post("/start", {experiment:$("experiment").value, animal_ids:$("ids").value, notes:$("notes").value, copy_to:$("copyto").value.trim(),
+  const j = await postFull("/start", {experiment:$("experiment").value, animal_ids:$("ids").value, notes:$("notes").value, copy_to:$("copyto").value.trim(),
     length: $("length").value || null, pico_at: $("picoat").value.trim() || null, disk_override: override});
-  $("starterr").textContent = e || ""; tick(); };
+  $("starterr").textContent = j.error || ""; if(j.create) offerCreate(j.create); tick(); };
 $("mset").onchange = () => { if($("mset").value) pickModels({set: $("mset").value}); };
 $("mcen").onchange = () => pickModels({centroid: $("mcen").value});
 $("mins").onchange = () => pickModels({centroid: $("mcen").value, instance: $("mins").value});

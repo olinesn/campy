@@ -35,7 +35,7 @@ At the top of the page, under **Next recording** and **Saved with the recording*
 - **Notes**: anything worth knowing later: `cage 2, new bedding`.
 - **Copy each recording to** (optional): a folder for the copies, for example the lab's network share, `\\server\share\your folder`. After each recording ends, the computer copies its folder there, in the background, while the next recording goes on. Nothing is deleted, here or there. The page remembers the folder for next time; empty the box for no copies.
 
-These are saved with the recording, so you can find it again. If the page can't reach the copy folder when you press Start, it says so and doesn't start: check the address, or open the share once in File Explorer.
+These are saved with the recording, so you can find it again. If the page can't reach the copy folder when you press Start, it says so and doesn't start: check the address, or open the share once in File Explorer. If only the last folder is missing (for example a new `\\server\share\your folder\new-project` in a folder that is there), it says the folder doesn't exist yet and shows **Create this folder**: press it, then **Start recording** again. It makes only that last folder, so a mistyped share or parent folder makes nothing.
 
 Next to them, under **Checks**, is a list of checks:
 

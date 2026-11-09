@@ -102,10 +102,30 @@ def test_the_folder_is_checked_before_a_start(tmp_path):
 	videos.mkdir()
 	assert copyqueue.Problem("", str(videos)) is None
 	assert copyqueue.Problem(str(tmp_path), str(videos)) is None
-	assert copyqueue.Problem(str(tmp_path / "nowhere"), str(videos)).startswith("Can't reach ")
+	assert copyqueue.Problem(str(tmp_path / "no" / "where"), str(videos)).startswith("Can't reach ")
 	assert "where the recordings are made" in copyqueue.Problem(str(videos), str(videos))
 	(videos / "inside").mkdir()
 	assert "where the recordings are made" in copyqueue.Problem(str(videos / "inside"), str(videos))
+
+
+def test_a_copy_folder_not_there_yet_can_be_made_one_level_only(tmp_path):
+	# The page's Create this folder: only the last folder, in one that is there (a mistyped share or parent makes nothing)
+	videos = tmp_path / "videos"
+	videos.mkdir()
+	new = tmp_path / "share" / "luc3d-live"
+	(tmp_path / "share").mkdir()
+	assert copyqueue.Creatable(str(new)) and copyqueue.Creatable(str(new) + os.sep)
+	assert "doesn't exist yet. Press Create this folder" in copyqueue.Problem(str(new), str(videos))
+	assert not copyqueue.Creatable(str(tmp_path / "nowhere" / "luc3d-live")) # its parent isn't there either
+	assert copyqueue.Problem(str(tmp_path / "nowhere" / "x"), str(videos)).startswith("Can't reach ")
+	assert not copyqueue.Creatable("") and not copyqueue.Creatable("me@host:/data/x")
+	assert copyqueue.Create(str(new), str(videos)) is None and new.is_dir()
+	assert not copyqueue.Creatable(str(new)) and copyqueue.Problem(str(new), str(videos)) is None
+	assert copyqueue.Create(str(new), str(videos)) is None # there already: nothing to do
+	assert copyqueue.Create(str(tmp_path / "nowhere" / "x"), str(videos)).startswith("Can't reach ")
+	assert not (tmp_path / "nowhere").exists()
+	# Inside the recordings' folder: made, but still refused as a copy folder
+	assert "where the recordings are made" in copyqueue.Create(str(videos / "copies"), str(videos))
 
 
 def test_the_folder_is_remembered_for_each_config(tmp_path):

@@ -138,6 +138,29 @@ def stub_panel():
 	return p, calls
 
 
+def test_a_start_refused_for_a_copy_folder_not_there_yet_offers_to_make_it(tmp_path):
+	from campy import copyqueue
+	p, calls = stub_panel()
+	try:
+		key = "?t=" + p.token
+		new = tmp_path / "luc3d-live"
+		p.Start = lambda body: copyqueue.Problem(body.get("copy_to"))
+		p.MakeCopyFolder = lambda path: copyqueue.Create(path)
+		code, said = raw(p, "POST", "/start" + key, {"Content-Type": "application/json"}, json.dumps({"copy_to": str(new)}))
+		assert code == 409 and said["create"] == str(new) and "doesn't exist yet" in said["error"]
+		code, said = raw(p, "POST", "/start" + key, {"Content-Type": "application/json"},
+			json.dumps({"copy_to": str(tmp_path / "no" / "where")}))
+		assert code == 409 and "create" not in said # nothing to offer: the folder it goes in isn't there
+		assert raw(p, "POST", "/copy-folder" + key, {"Content-Type": "application/json"}, json.dumps({"path": str(new)})) == \
+			(200, {"ok": True})
+		assert new.is_dir()
+		assert raw(p, "POST", "/start" + key, {"Content-Type": "application/json"}, json.dumps({"copy_to": str(new)})) == \
+			(200, {"ok": True})
+	finally:
+		p.server.shutdown()
+		p.server.server_close()
+
+
 def raw(p, method, path, headers=None, body=None):
 	c = http.client.HTTPConnection("127.0.0.1", p.port, timeout=10)
 	try:
@@ -343,8 +366,13 @@ def test_each_recording_is_copied_into_the_pages_folder(tmp_path, home):
 	proc, lines, url = start_panel(tmp_path, home, config)
 	try:
 		assert call(url, "/status.json")[1]["fields"]["copy_to"] == ""
-		code, said = call(url, "/start", {"copy_to": str(tmp_path / "nowhere")})
-		assert code == 409 and said["error"].startswith("Can't reach ")
+		code, said = call(url, "/start", {"copy_to": str(tmp_path / "no" / "where")})
+		assert code == 409 and said["error"].startswith("Can't reach ") and "create" not in said
+		# A folder not there yet, in one that is: refused, with the offer to make it (the page's Create this folder)
+		code, said = call(url, "/start", {"copy_to": str(share / "new")})
+		assert code == 409 and said["create"] == str(share / "new") and "doesn't exist yet" in said["error"]
+		assert call(url, "/copy-folder", {"path": str(share / "new")}) == (200, {"ok": True}) and (share / "new").is_dir()
+		(share / "new").rmdir()
 		assert call(url, "/start", {"experiment": "Copy test", "copy_to": str(share)}) == (200, {"ok": True})
 		status = wait(url, lambda s: s["state"] == "ready" and s["launcher"] and s["launcher"]["state"] == "done" and
 			s["copies"]["jobs"] and s["copies"]["jobs"][0]["state"] == "done")
