@@ -71,6 +71,18 @@ It sets "USB selective suspend" to Disabled in the active power plan (plugged in
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\pause_windows_update.ps1 -Days 14
 ```
 It asks for administrator rights itself, does what Settings > Windows Update > Pause updates does (1 to 35 days), prints the date it's paused until, and warns if a restart is already pending (restart first, while nothing records). When the pause ends, Windows installs the waiting updates and usually restarts before it allows another pause: let it, between recordings, then pause again. Settings > Windows Update > Resume updates undoes it.
+11. On a Dell PC used for live tracking, check whether Dell's agent pauses it every 15 minutes (it does on the Precision 7875 and the Pro Max Slim):
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\check_firmware_pauses.ps1
+```
+In a PowerShell window opened with "Run as administrator" (it reads Windows' WMI log). It changes nothing: it lists when Dell's BIOS interface was last used and whether the DellTechHub service runs. With `-Probe 1200` (through `bench/rig.py` on a shared rig) it also spins two CPUs for 20 minutes and logs every pause of the whole computer. Each pause slows the sets running at that moment ([Hardware guide](hardware-guide.html), "On a Dell PC, Dell's TechHub agent slows live tracking every 15 minutes").
+If it does, and nothing else on the PC needs Dell Optimizer, turn the agent off, in PowerShell run as administrator, while nothing records:
+```
+Set-Service DellTechHub -StartupType Disabled
+Stop-Service DellTechHub -Force
+Get-Process Dell.TechHub*, DellOptimizer*, Dell.Update.SubAgent, Dell.CoreServices.Client -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+The last line ends the programs the service started, which otherwise keep reading until the PC restarts. Dell Optimizer and the updates and diagnostics that come through it stop too; SupportAssist and Dell's other services keep running. `Set-Service DellTechHub -StartupType Automatic; Start-Service DellTechHub` undoes it. It is off on the Precision 7875, the Pro Max Slim FCS1250 and the Pro Tower Plus QBT1250 since 7 November 2026.
 
 ## Updating Spinnaker on a Windows computer
 How to replace an older Spinnaker SDK (and its SpinView) with a newer one on a Windows computer that already records, as done on the Dell Pro Tower Plus on 7 November 2026 (Spinnaker 4.2.0.88 to 4.4.0.246, 8 FLIR Blackfly S on USB3). Do it at the computer or over Remote Desktop, while nothing records.

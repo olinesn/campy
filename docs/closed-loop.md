@@ -189,6 +189,8 @@ The steps, with estimates for the EVO-X2 at 60 fps, until they are measured on a
 
 `campy-rules` prints each step's p50, p99 and worst case at the end, and writes them to its summary.
 
+On a Dell PC, the worst case comes every 15 minutes: Dell Optimizer's TechHub agent makes the BIOS work for about 9 s and then 2 s more, which slows the sets running then. On the Precision 7875 that added up to 2.5 ms to frame-to-3D ([Hardware guide](hardware-guide.html), "On a Dell PC, Dell's TechHub agent slows live tracking every 15 minutes").
+
 To check the whole chain with your own eyes:
 1. Put a test rule (`test: {every: 30}`, `action: pulse`) on an output that drives an LED all the cameras see.
 2. The first frame showing the LED lit must match the board's pin time, as `campy-synctest` checks the trigger with its LED.
