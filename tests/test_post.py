@@ -371,3 +371,27 @@ def test_campy_session_post_by_hand(tmp_path):
 	out = subprocess.run([sys.executable, "-m", "campy.session", "post", str(crashed)], capture_output=True, text=True,
 		env=env, timeout=120)
 	assert out.returncode == 1 and "did not stop cleanly" in out.stdout
+
+
+def test_while_the_steps_run_post_json_says_which_and_how_far(tmp_path, monkeypatch):
+	# For the panel's progress bar: the plan, the running step, its latest line and progress, written as it goes
+	folder = recording(tmp_path)
+	seen = {}
+
+	def align(folder_, settings, log, stop=None):
+		log.Say("lining up the cameras")
+		seen["during"] = json.load(open(os.path.join(folder_, "logs", post.POST_JSON)))
+		log.Progress("half way", 0.5)
+		seen["progress"] = json.load(open(os.path.join(folder_, "logs", post.POST_JSON)))
+		return "done", "aligned"
+	monkeypatch.setattr(post, "StepAlign", align)
+	post.Run(str(folder), {"remux": False, "join": False, "export": False}, only=["remux", "align", "run"])
+	during = seen["during"]
+	assert during["plan"] == ["remux", "align", "run"] and during["running"] == "align"
+	assert during["steps"]["align"]["state"] == "running" and during["steps"]["remux"]["state"] == "skipped"
+	assert seen["progress"]["steps"]["align"]["fraction"] == 0.5
+	assert seen["progress"]["steps"]["align"]["message"] == "half way"
+	after = json.load(open(os.path.join(str(folder), "logs", post.POST_JSON)))
+	assert after["running"] is None and after["steps"]["align"] == dict(after["steps"]["align"], state="done",
+		message="aligned")
+	assert "fraction" not in after["steps"]["align"]

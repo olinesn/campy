@@ -98,6 +98,7 @@ class Log:
 		self.path = os.path.join(folder, "logs", POST_LOG)
 		os.makedirs(os.path.dirname(self.path), exist_ok=True)
 		self.out = out or sys.stdout
+		self.on_line = None # Run's: each line also becomes the running step's latest, for the panel
 
 	def Say(self, text):
 		for line in str(text).splitlines() or [""]:
@@ -107,7 +108,15 @@ class Log:
 			except OSError:
 				pass
 			self.out.write("[post] {}\n".format(line))
+			if self.on_line is not None:
+				self.on_line(line.strip(), None)
 		self.out.flush()
+
+	def Progress(self, text, fraction):
+		# How far the running step has got (0-1), with what it says: post.json, for the panel's progress bar
+		self.Say(text)
+		if self.on_line is not None:
+			self.on_line(str(text).strip(), fraction)
 
 
 # ------------------------------------------------------------------ clean stop
@@ -569,10 +578,15 @@ def StepCalibrate(folder, settings, log, stop=None):
 		return "skipped", "calibrate is off (post: calibrate: {calibrat3: <checkout>} turns it on)"
 	if stop and stop():
 		return "failed", "stopped (Ctrl-C)"
+	def say(text):
+		# calibrat3's stages, as far as the step has got: opened, board found, positions, bundle adjustment done
+		fraction = next((f for word, f in (("board found", 0.45), ("positions", 0.75), ("made ", 1.0), ("cameras (", 0.1))
+			if word in text), None)
+		log.Progress("  " + text, fraction)
 	try:
 		summary = calibrate.Calibrate(folder, options.get("calibrat3"), board=options.get("board"),
 			target=options.get("target", calibrate.DEFAULT_TARGET), browser=options.get("browser", "chrome"),
-			say=lambda text: log.Say("  " + text), force=True)
+			say=say, force=True)
 	except calibrate.CalibrateError as e:
 		return "failed", str(e)
 	if not summary["ok"]:
@@ -724,6 +738,25 @@ def Run(folder, settings, live_python=None, only=None, force=False, ffmpeg=None,
 	state = Load(folder)
 	results = {}
 	steps = [s for s in STEPS if only is None or s in only]
+	# For the panel while they run: the steps in order (plan), the one running, and its latest line and progress
+	state.update(plan=steps, running=None, started=Stamp())
+	saved = [0.0]
+
+	def line(text, fraction):
+		step = state.get("running")
+		if not step or not text:
+			return
+		entry = state["steps"].setdefault(step, {"state": "running"})
+		entry["message"] = text
+		if fraction is not None:
+			entry["fraction"] = fraction
+		if time.monotonic() - saved[0] > 0.5 or fraction is not None: # at most twice a second, but every stage
+			saved[0] = time.monotonic()
+			try:
+				Save(folder, state)
+			except OSError:
+				pass
+	log.on_line = line
 	clean, why = CleanStop(folder)
 	if not clean and not force:
 		log.Say("Post-steps skipped: the recording did not stop cleanly: {}.".format(why))
@@ -744,6 +777,9 @@ def Run(folder, settings, live_python=None, only=None, force=False, ffmpeg=None,
 			results[step] = ("skipped", "stopped (Ctrl-C)")
 			continue
 		t0 = time.monotonic()
+		state["running"] = step
+		state["steps"][step] = {"state": "running", "message": "", "time": Stamp(), "fraction": 0.0}
+		Save(folder, state)
 		log.Say("{}...".format(step))
 		try:
 			if step == "remux":
@@ -763,6 +799,7 @@ def Run(folder, settings, live_python=None, only=None, force=False, ffmpeg=None,
 		except Exception as e:
 			result = ("failed", "{}: {}".format(type(e).__name__, e))
 		results[step] = result
+		state["running"] = None
 		state["steps"][step] = {"state": result[0], "message": result[1], "time": Stamp(),
 			"seconds": round(time.monotonic() - t0, 1)}
 		Save(folder, state)

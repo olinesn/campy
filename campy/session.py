@@ -812,6 +812,7 @@ class Session:
 		self.status_at = 0
 		self.stop_written = 0 # what campy-session asked of campy-acquire's stop file: 1 stop, 2 now
 		self.post_results = {}
+		self.post_plan = None # the steps after the recording, in order, once they have started
 
 	# ---------------------------------------------------------- setup
 
@@ -1287,6 +1288,18 @@ class Session:
 
 	# ---------------------------------------------------------- status
 
+	def PostStatus(self):
+		# The steps after the recording: while they run, as post.Run writes them (logs/post.json: the running step, its
+		# latest line and progress), so the panel follows them; after, their results
+		if self.state == "post" and self.folder:
+			from campy import post
+			state = post.Load(self.folder)
+			steps = state.get("steps") or {}
+			self.post_plan = state.get("plan") or self.post_plan
+			return {step: {k: v for k, v in entry.items() if k in ("state", "message", "fraction", "time", "seconds")}
+				for step, entry in steps.items()}
+		return {step: {"state": state, "message": message} for step, (state, message) in self.post_results.items()}
+
 	def StatusDict(self):
 		acquire = self.parts.get("acquire")
 		started = acquire.started if acquire is not None else None
@@ -1304,7 +1317,8 @@ class Session:
 			"live_models": {"centroid": self.config.live["centroid"], "instance": self.config.live["instance"],
 				"picked": bool(self.config.picked)} if self.config.live is not None else None,
 			"problems": [{"time": t, "text": text} for t, text in self.problems],
-			"post": {step: {"state": state, "message": message} for step, (state, message) in self.post_results.items()},
+			"post": self.PostStatus(),
+			"post_plan": self.post_plan,
 			"devices": self.devices.Status() if self.devices is not None else None,
 			"recording": {"started": Stamp(started), "elapsed_s": round((ended or time.time()) - started, 1) if started else
 				None, "planned_s": planned, "stop_asked": self.stop_written}}
