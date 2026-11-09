@@ -802,7 +802,18 @@ def test_a_stuck_decision_loop_lets_the_board_watchdog_fire(monkeypatch, tmp_pat
 	monkeypatch.setattr(rules.Runner, "Row", Row)
 
 	def feed_rows(feed, runner):
-		for k in range(1, 8):
+		for k in range(1, 5):
+			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
+			time.sleep(1 / 60)
+		# The laser on and the loop going round: heartbeats, as usual (the first comes 50 ms after the board last
+		# heard anything). Waited for, not raced: set 5 used to come about 67 ms after the laser's on, 17 ms after the
+		# first heartbeat was due, and a busy CI runner (Windows, 4 workers) now and then held it up before one went
+		def beat_since_on():
+			said = [x for _, x in port.Lines()]
+			on = [i for i, x in enumerate(said) if x.startswith("on 2 ")] # set 1's, or a later one's if 1 came late
+			return bool(on) and "hb" in said[on[0]:]
+		assert until(beat_since_on)
+		for k in range(5, 8):
 			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
 			time.sleep(1 / 60)
 		time.sleep(1.3)
