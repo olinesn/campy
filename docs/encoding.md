@@ -132,7 +132,7 @@ Every `campy-acquire` then starts with a launch check, printed before recording:
 With `preflight: "error"` (the default), a failed check stops campy before recording; `"warn"` records anyway; `"off"` (quoted or not) skips the check. `displayFrameRate: 0` runs without the cameras' window (campy-live-view), for example over SSH.
 
 ## Denoising before encoding (atadenoise)
-campy has no denoise filter. Measured on 9 November 2026: a temporal denoiser (`atadenoise`) changes mouse pixels by a few gray levels at most, a SLEAP model trained on denoised video tracks undenoised video just as well, and the filter's real effect is on file size: on near-raw frames it made campy's files 4–33% smaller at the same quality setting, more for a still scene and more on NVENC than on Quick Sync. Older campy code carries the line `-vf atadenoise=...` commented out in its NVENC settings; a setup that turns it on (`-vf atadenoise=s=5`, ffmpeg 4.2, H.265 NVENC at constant QP 24) is what these numbers compare against.
+campy has no denoise filter. Measured on 9 November 2026: a temporal denoiser (`atadenoise`) changes mouse pixels by a few gray levels at most, a SLEAP model trained on denoised video tracks undenoised video just as well, and the filter's real effect is on file size: on near-raw frames it made campy's files 4–33% smaller at the same quality setting, more for a still scene and more on NVENC than on Quick Sync, and AV1 recordings of mice 20–28% smaller with no measurable change in 2D or 3D tracking (see "With mice", below). Older campy code carries the line `-vf atadenoise=...` commented out in its NVENC settings; a setup that turns it on (`-vf atadenoise=s=5`, ffmpeg 4.2, H.265 NVENC at constant QP 24) is what these numbers compare against.
 
 **What atadenoise does.** For each pixel it looks at the same pixel in the 2 frames before and the 2 after (`s=5`), and averages in each of those frames only while it differs from the pixel by at most 4 gray levels (of 255), and only while the differences on that side add up to at most 9. It stops at the first frame that differs more. The thresholds come from the defaults `0a=0.02` and `0b=0.04`: 0.02 × 256 − 1 = 4 and 0.04 × 256 − 1 = 9 for 8-bit video. So **no pixel can change by more than 4 gray levels**, wherever it is, and it can't leave a trail or a smear brighter than that. A still background is averaged over all 5 frames; a mouse's moving edge, which changes by tens of levels from frame to frame, isn't averaged at all.
 
@@ -202,7 +202,46 @@ At 120 fps the savings were within 2 points of these. NVENC at a constant QP spe
 
 So on real recordings the filter mainly buys smaller files: roughly a tenth to a fifth on Quick Sync and a fifth to a third on NVENC for a quiet scene, less with more movement. It costs changes of at most 3 levels on anything that moves and, in these tests, nothing in tracking. Raising `quality` saves bits too, but on every pixel.
 
-**Not yet measured.** No unfiltered 60 fps recording of white mice on light bedding existed yet, the hardest case for telling fur from bedding (the filter still can't move any pixel by more than 4 levels there).
+**With mice, on near-raw frames (9 November 2026).** Two white mice in the 8-camera arena on the Dell Pro Tower Plus (no bedding, a dark floor), 4 of its cameras recorded for 65 s at 60 fps with H.265 on its RTX A2000 at constant QP 5: about 200–245 Mbit/s per camera, which keeps the sensor noise (about 1.9 gray levels in the still background, at gain 5 dB). All 8 cameras at QP 5 were too much for the A2000's encoder: 6 of them got only about 45 frames a second into their encoders and dropped 15–17% of their frames, so the test used 4 (no frame dropped).
+
+The filter on these frames (six 40-frame windows per camera; gray levels of 255):
+
+| Pixels, 4 cameras | Mean change | Largest | Averaged |
+|---|---|---|---|
+| background | 0.59–0.84 | 3 | 88–90% |
+| still mouse | 0.70–0.79 | 3 | 85–88% |
+| moving mouse | 0.34–0.38 | 3 | 34–37% |
+| mouse edge (7 px band) | 0.56–0.64 | 3 | 61–71% |
+
+It took the background noise from 1.8–2.0 levels to 1.4–1.5.
+
+AV1 as the arena records it (Quick Sync on the Dell Pro Max Slim FCS1250, which has the same Core Ultra 9 285 graphics; quality 88, preset faster, no B-frames, a keyframe every 0.5 s, `-filter_threads 1`), 10 s of each camera:
+
+| Camera | AV1 | atadenoise + AV1 | atadenoise at half thresholds + AV1 |
+|---|---|---|---|
+| top B | 1.63 Mbit/s | 1.17 (−28%) | −1.5% |
+| mid | 2.29 | 1.77 (−23%) | −1.2% |
+| side C | 2.08 | 1.64 (−21%) | −1.0% |
+| top R | 2.19 | 1.75 (−20%) | −0.9% |
+
+AV1 at quality 88 changes pixels far more than the filter does: 1.8–2.1 gray levels on average in the background and 2.0–3.2 on mice, against the near-raw frames. With the filter first, the AV1 frames were just as close to the near-raw ones (within 0.05 level in every region, every camera). The filtered and unfiltered AV1 files differ from each other by 1–2.5 levels on average, mostly because the encoder makes different choices once the noise is gone.
+
+Tracking (the same centroid and centered-instance models as above, sleap-nn 0.3.5 in fp32 on an NVIDIA GPU, up to 5 animals; 600 frames per camera), keypoint shift against the near-raw frames, median / 90th / 99th percentile:
+
+| Camera | AV1 | atadenoise + AV1 |
+|---|---|---|
+| top B | 0.24 / 4.1 / 37 px | 0.26 / 4.3 / 39 px |
+| mid | 0.36 / 6.3 / 92 px | 0.39 / 6.6 / 99 px |
+| side C | 0.37 / 5.0 / 36 px | 0.41 / 5.0 / 39 px |
+| top R | 0.26 / 4.4 / 16 px | 0.26 / 4.4 / 15 px |
+
+The large 99th percentiles are frames where a mouse is hard to see in that camera, with or without the filter. The filter alone, on the near-raw frames, shifted keypoints by a median of 0.06–0.11 px.
+
+In 3D (the 4 cameras matched and triangulated by campy's own code, `campy/pose3d.py`, with a calibration from 4 months earlier), the views agreed as well with the filter as without it: median reprojection error 10.5 px on the near-raw frames, 10.7 with AV1 and 10.8 with atadenoise + AV1 (99th percentile 29.6, 29.0 and 28.3), and 57–60% of the mouse-sets had 3D in each. The 3D points of AV1 and of atadenoise + AV1 were 1.3 mm from the near-raw ones (median; 14 mm at the 90th percentile). The reprojection error itself says the calibration no longer fits these cameras exactly, so a difference under about half a pixel would not show.
+
+So for AV1 on Quick Sync, the filter makes files about a fifth to a quarter smaller on this rig with mice, at no measurable cost to tracking in 2D or 3D, and, run on one thread, for about the CPU of no filter.
+
+**Not yet measured.** White mice on light bedding (the hardest case for telling fur from bedding; the filter still can't move any pixel by more than 4 levels there), more than two mice, and longer stretches.
 
 ## Helpful tips
 - To debug broken ffmpeg pipe error, include this in config.yaml:
