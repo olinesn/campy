@@ -131,6 +131,57 @@ Every `campy-acquire` then starts with a launch check, printed before recording:
 
 With `preflight: "error"` (the default), a failed check stops campy before recording; `"warn"` records anyway; `"off"` (quoted or not) skips the check. `displayFrameRate: 0` runs without the cameras' window (campy-live-view), for example over SSH.
 
+## Denoising before encoding (atadenoise)
+campy has no denoise filter, and doesn't need one: measured on 9 November 2026, the encoder already removes most of the sensor noise, a temporal denoiser changes mouse pixels by a few gray levels at most, and a SLEAP model trained on denoised video tracks undenoised video just as well. Older campy code carries the line `-vf atadenoise=...` commented out in its NVENC settings; a setup that turns it on (`-vf atadenoise=s=5`, ffmpeg 4.2, H.265 NVENC at constant QP 24) is what these numbers compare against.
+
+**What atadenoise does.** For each pixel it looks at the same pixel in the 2 frames before and the 2 after (`s=5`), and averages in each of those frames only while it differs from the pixel by at most 4 gray levels (of 255), and only while the differences on that side add up to at most 9. It stops at the first frame that differs more. The thresholds come from the defaults `0a=0.02` and `0b=0.04`: 0.02 × 256 − 1 = 4 and 0.04 × 256 − 1 = 9 for 8-bit video. So **no pixel can change by more than 4 gray levels**, wherever it is, and it can't leave a trail or a smear brighter than that. A still background is averaged over all 5 frames; a mouse's moving edge, which changes by tens of levels from frame to frame, isn't averaged at all.
+
+**What it changes, measured.** Unfiltered recordings, scored pixel by pixel against themselves after the filter: four cameras of a 5-mouse recording (white mice on dark bedding, 1280 × 1024 mono, 30 fps, H.265 on Quick Sync at quality 26, about 1.9 Mbit/s per camera; five 32-frame windows each), and a 60 fps arena recording with a spinning fan. Gray levels of 255; "averaged" = pixels averaged with at least one other frame:
+
+| Pixels | Mean change | 99th percentile | Largest | Averaged | Frames used, mean |
+|---|---|---|---|---|---|
+| background (more than 15 px from any mouse) | 0.05 | 1.1 | 3 | 100% | 5.0 |
+| still mouse | 0.56 | 2.1 | 3 | 92% | 4.2 |
+| moving mouse | 0.33 | 2.0 | 3 | 33% | 1.5 |
+| mouse edge (7 px band) | 0.39 | 2.0 | 3 | 65% | 3.1 |
+| where a mouse was or will be within 2 frames | 0.38 | 2.0 | 3 | 53% | 2.1 |
+
+- **So it doesn't only touch the background.** A mouse that holds still is averaged like the background; a moving one mostly isn't. Either way the change is under one gray level on average and 3 at most. At 60 fps a moving animal changes less between frames than at 30 fps, so more of it would be averaged, still by at most 4 levels. The fan's blades were averaged only where they were flat and even.
+- **Other settings.** `s=3` or `s=9` changed this little. Half the thresholds (`0.01/0.02`) changed no pixel by more than 1 level but removed almost no noise; double (`0.04/0.08`) changed moving mice by up to 7 levels (10% of their pixels by 4 or more).
+- **Other filters.** `hqdn3d` (spatial and temporal) moved the background by about 0.5 level and mice by 1.2 on average, up to 4. Quick Sync's own denoise (`vpp_qsv=denoise=10` to `100` on a Core Ultra 9 285's graphics) moved mouse pixels by 0.5–1.7 on average and up to 4–9 levels (up to 1 of that from the conversion to the encoder's NV12 and back, which alone moves pixels by 0.14 on average), more than atadenoise for about the same noise removed (0.47 to 0.36–0.40 levels, atadenoise 0.43, on the same frames). `tmedian` (a 3-frame median) wiped out moving mice (up to 209 levels) and isn't a denoiser for animals. `nlmeans` is spatial only: it blurred fur and edges (up to 19 levels on mice).
+- **Noise.** In these already-encoded recordings the still background's frame-to-frame noise was only 0.41 gray levels; the filter took it to 0.36. Encoders keep a still background still by themselves. In 60 fps arena recordings from the same camera, the old videos (filter + H.265 QP 24) had 0.27–0.54 levels of background noise and the new ones (AV1 on Quick Sync, quality 88, no filter) 0.50–0.67: both under one level.
+
+**Tracking.** The same 720 frames (4 cameras × 3 windows × 60 frames of the 5-mouse recording), unfiltered and filtered, were run through a centroid model (input scale 0.25, output stride 2) and a centered-instance model (crop 320, input scale 0.5, max stride 32, 24 filters) trained mostly on 8-camera arena videos that had been through atadenoise (sleap-nn 0.3.5 on the CPU, up to 5 animals). To show how much keypoints move from any small change to a picture, the same frames were also encoded with AV1 on Quick Sync at quality 88 (the new arena settings), with and without the filter first.
+
+| Compared | Animals found | Keypoint shift, median / 90th / 99th percentile | Keypoints moved > 1 px | > 5 px |
+|---|---|---|---|---|
+| unfiltered vs filtered | 3511 vs 3510 | 0.11 / 3.0 / 6.5 px | 16% | 1.9% |
+| unfiltered vs AV1 | 3511 vs 3513 | 0.27 / 3.7 / 12.4 px | 31% | 4.5% |
+| AV1 vs filter + AV1 | 3513 vs 3512 | 0.23 / 3.5 / 10.9 px | 28% | 3.8% |
+
+The filter moves keypoints less than encoding does, the models found the same animals with the same scores (mean change under 0.001), and nothing suggests they need filtered video. Filtering before AV1 made the file 2% smaller.
+
+**CPU cost.** ffmpeg runs the filter on the CPU, for each camera. Eight 1280 × 1024 gray streams paced at 60 fps, as 8 cameras would send them, CPU cores used by all 8 ffmpeg processes together (every case kept 60 fps, so the filter never held an encoder back). The EVO-X2 run had the machine to itself; on the Windows PC each run saw a burst or two of other CPU use (1–2 cores, from its endpoint security software), and two runs a few minutes apart agreed within half a core, so each cell gives both:
+
+| Computer and encoder | No filter | atadenoise | atadenoise without SIMD |
+|---|---|---|---|
+| Dell Pro Max Slim FCS1250 (Core Ultra 9 285), AV1 on Quick Sync, quality 88 | 1.6–2.0 | 3.0 | 6.9–7.1 |
+| the same, H.265 on its RTX 2000 Ada (NVENC, QP 24) | 1.2–1.3 | 1.7–2.1 | 5.1–5.3 |
+| GMKtec EVO-X2 (Ryzen AI Max+ 395), H.264 on VA-API, QP 21 | 1.4 | 3.0 | 6.9 |
+
+- "Without SIMD" (`-cpuflags 0`) is close to ffmpeg 4.2, whose atadenoise had no SIMD code: about 5 more cores for 8 cameras. ffmpeg 8.1 (and 6.1) costs about 1.5 more.
+- One thread does the filter for about 0.9 ms a frame with SIMD and 3–4.5 ms without (0.45 and 1.5–2.2 cores for 8 cameras at 60 fps). Most of the extra cost above is ffmpeg's default of one filter thread per CPU core, for each camera. With `-filter_threads 1`, 8 cameras with atadenoise used 1.8 cores on Quick Sync (no filter in the same run: 1.8) and 1.6 on NVENC (no filter: 1.2–1.3). A filter added to campy should run that way.
+- The Dell Pro Tower Plus has the same CPU and integrated graphics as the Pro Max Slim. Its RTX A2000 wasn't measured; NVENC's work is the same with or without the filter, since the filter runs before it.
+
+**On the GPU instead.** None of ffmpeg's GPU filters does what atadenoise does:
+- Quick Sync's denoise (`hwupload,vpp_qsv=denoise=30`) costs no more CPU than uploading the frames (8 streams: 2.2–2.4 cores, 60 fps), but changes mice more, as above. On Windows, `hwupload=extra_hw_frames=64` fails with "Could not create the texture"; plain `hwupload` works.
+- `nlmeans_vulkan` managed 17 frames a second for one stream and `nlmeans_opencl` 58 (8 cameras at 60 fps need 480 in all), and both are spatial.
+- `bilateral_cuda` keeps up (1,300 fps for one stream) but is spatial too.
+- NVENC's temporal filter (`hevc_nvenc -tf_level 4`) needs B-frames, which campy's GPU encoders don't use, and with them it cut one stream from 1,600 to 415 fps.
+- VA-API's `denoise_vaapi` isn't implemented by AMD's Mesa driver ("the requested function is not implemented").
+
+**Not yet measured.** All of this used recordings that had already been encoded once, which had removed most of the sensor noise. The filter sees the camera's raw frames, with more noise, so on a real recording it averages a little less often and may save more bits than the 2% here. A few seconds of lossless video (FFV1) from the arena cameras, with mice, would measure that. No unfiltered 60 fps recording of white mice on light bedding existed yet, the hardest case for telling fur from bedding. The filter still can't move any pixel by more than 4 levels there.
+
 ## Helpful tips
 - To debug broken ffmpeg pipe error, include this in config.yaml:
 ```
