@@ -188,6 +188,9 @@ def Plan(s):
 			blue=None, yellow=None, gate_off=end))
 		trains.append((CAMERA, 0, count, rate, s["CAMERA_PULSE_US"]))
 		return bouts, trains, edges
+	if s["CAMERA_LEAD_IN"] > s["TOTAL_BASELINE"]:
+		raise SystemExit("CAMERA_LEAD_IN ({:g} s) is longer than TOTAL_BASELINE ({:g} s): the camera would start before "
+			"the gate opens.".format(s["CAMERA_LEAD_IN"], s["TOTAL_BASELINE"]))
 	for i in range(int(s["TOTAL_DURATION"] // s["INTERVAL"])):
 		extended = i % s["EXTENDED_EVERY"] == 0
 		b0 = Us(i * s["INTERVAL"])

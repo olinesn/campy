@@ -228,11 +228,13 @@ class Config:
 	checked (live, view, post; live None when there is none).
 	"""
 
-	def __init__(self, path, overrides=(), live=None):
+	def __init__(self, path, overrides=(), live=None, pico_set=None):
 		from campy import configurator
 		self.path = os.path.abspath(path)
 		# live: keys the panel's model picker set for this recording ({centroid, instance}), over the config's
 		self.picked = dict(live or {})
+		# pico.set's settings the panel's page set for this recording ({setting: value}), over the config's
+		self.pico_page = dict(pico_set or {})
 		try:
 			with open(self.path, encoding="utf-8", errors="replace") as f:
 				self.text = f.read()
@@ -312,6 +314,12 @@ class Config:
 				resolved.sections["live"][key] = value
 				resolved.section_sources.setdefault("live", {})[key] = configurator.Source("panel",
 					note="picked on campy-session panel's page")
+		if self.pico_page and isinstance(resolved.sections.get("pico"), dict):
+			# The page's bout settings, in pico.set over the config's, the line saying which came from the page
+			given = resolved.sections["pico"].get("set")
+			resolved.sections["pico"]["set"] = dict(given if isinstance(given, dict) else {}, **self.pico_page)
+			resolved.section_sources.setdefault("pico", {})["set"] = configurator.Source("panel",
+				note="bout settings set on campy-session panel's page: {}".format(", ".join(sorted(self.pico_page))))
 		return resolved
 
 	def Value(self, key, default=None):
