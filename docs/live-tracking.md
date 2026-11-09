@@ -601,6 +601,11 @@ Notes on the measurements:
   - With this campy, every config in each folder loaded. The exception is the Pro Max Slim's PowerShell-launcher config for the Pico, which campy-session never could use (it sets its own stop file); it shows only under **Show all configs**, with that reason.
   - The panel holds each rig's lock, as the old icons' panels did.
   - The old icons, 5 on the Pro Max Slim and 2 on the EVO-X2, moved into a folder of old icons, where each still works.
+- At 12:17 PM the same day the Dell Pro Tower Plus moved to `9146c18` too, with campy reinstalled in both of its campy environments (the older environments of its earlier campy versions untouched).
+  - It didn't go under its lock. The experiment-machine rules had paused tests for the day, because someone was using the computer. With the user's go-ahead, the update ran at once instead. It touched no camera or trigger, and nothing was recording.
+  - Its daily config got the title *DoublePoke recording*, and its desktop the one **campy recording** icon. The old icon moved to the folder of old icons.
+  - Its 2-minute trial config, built on the daily one with `extends:`, inherited that title, so it showed on the list twice. It was taken off the list by unstarring it. Pull request 348 makes a title count only in the file that sets it.
+  - Its rig profile then got `cameraSerials` (pull request 338), all 8 cameras' serial numbers in the order of their names, checked against that day's recordings. Every config built on it passes `campy-config check`. The next recording is the first to pick the cameras by serial.
 
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
