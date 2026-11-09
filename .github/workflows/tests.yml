@@ -80,10 +80,11 @@ jobs:
         # it) auto counts physical cores, which is 2 on GitHub's x64 runners (2 cores of 2 threads) and 4 on ARM.
         # --dist worksteal: a worker that has run out of tests takes some queued on another, so none waits behind
         # a long test while others idle. --durations lists the 25 slowest, to see where the time goes when the job
-        # grows. The 'alone' tests (bench/rig.py's, which look at every process on the machine) are skipped there,
-        # and run on their own in the next step
+        # grows. The 'alone' tests (bench/rig.py's, which look at every process on the machine, and campy-live-view's
+        # 100 fps frame-writer test, which the other workers' load holds up) are skipped there, and run on their own
+        # in the next step
         run: |
           python -m pytest -q -rs -n 4 --dist worksteal --durations=25 -m "not alone" tests
-      - name: Test (rig.py's, alone)
+      - name: Test (rig.py's and the viewer's 100 fps test, alone)
         if: success() || failure()
         run: python -m pytest -q -rs --durations=10 -m alone tests
