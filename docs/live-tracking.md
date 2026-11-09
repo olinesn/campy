@@ -616,6 +616,17 @@ Notes on the measurements:
   - The Dell Pro Tower Plus was already on `8d5265e` (pull request 345). Its tests were paused for the day, so with the user's go-ahead its fast-forward ran at once, after its panel was closed, with nothing running.
   - None of these changes `campy-live`'s tracking, so the machines didn't run their rig checks again: the 8 November numbers above still stand.
 
+- At 5:14–5:27 PM on 9 November, after pull requests 358 (the panel's after-recording summary and copy progress), 340 (the denoise study) and 361 (the `denoise` setting) were merged, four machines moved to dev `4ff6d52`: the Pro Max Slim, Precision 7875, EVO-X2 and Windows 11 VM. The spock cluster's campy copy for `campy-infer` moved with them.
+  - Each was idle and ran the fast-forward under its lock. None of the three pull requests changes `setup.py`, `rig.py` or campy's defaults, so nothing was reinstalled.
+  - The Dell Pro Tower Plus was already running 358 and 361 together, on a branch made for it, since about 4:15 PM.
+  - Denoising (`denoise: "atadenoise"`, [Denoising before encoding](encoding.md#denoising-before-encoding-denoise)) was then turned on, at the user's request, on four rigs:
+    - the Pro Tower Plus: its daily config;
+    - the Pro Max Slim: the Pico bout sessions' profile, `chronicrecord/chronic_pico.yaml` (pull request 364), not its calibration, look or live-tracking configs;
+    - the Precision 7875 and the EVO-X2: their rig profiles, so every recording on them.
+  - `campy-config check` passed for every config on those rigs, and each camera's ffmpeg command has `-filter_threads 1` and the filter at the start of its one `-vf` chain. On the EVO-X2 (VA-API, Ubuntu's ffmpeg 6.1), 3 s of noisy frames went through that chain into `h264_vaapi` with every frame written.
+  - The rig checks write their own configs, which don't use the rig profiles, so they still record without the filter and their numbers stay comparable. None of these changes touch `campy-live`'s tracking, so the rig checks weren't run again.
+  - No recording of animals with the filter on had been checked on these rigs yet.
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
