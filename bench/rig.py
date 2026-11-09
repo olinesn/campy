@@ -91,7 +91,7 @@ up) must show the test first. The test ends within 2 s, every process of it, whe
 (the banner's Stop button, the "Stop campy test" shortcut, keyboard or mouse input at the machine, an
 unlock, a Remote Desktop connect, a logon), when anything outside it starts using the GPU, a camera, the
 encoder or the trigger (campy, SpinView, a Python), or when quser shows a session in use; the log's last
-line is then RIG_STOPPED, run exits 75, and PAUSE keeps new tests away until 8 AM ("pause_until").
+line is then RIG_STOPPED, run exits 75, and PAUSE keeps new tests away until 9 AM ("pause_until").
 
 Installing and versions. Each machine runs one installed copy, in RIG_ROOT, which every
 script calls (a campy checkout can be on any branch or commit, and every lock user on a
@@ -1167,7 +1167,7 @@ def cmd_install(args):
 EXPERIMENT_DEFAULTS = {
 	"hours": "22:00-06:00",       # when tests may start: "HH:MM-HH:MM[,...]", "any" for always
 	"idle_minutes": 15,           # every session idle at least this long
-	"pause_until": "08:00",       # a stop pauses tests until this time (the next morning)
+	"pause_until": "09:00",       # a stop pauses tests until this time (the next morning)
 	"banner": WINDOWS,            # need the banner showing the test (Windows)
 	"banner_task": "campy test banner",  # the Task Scheduler task that starts it in the session
 	"session_every": 10,          # s between looks at the sessions (quser) during a test
@@ -1232,7 +1232,7 @@ def remove_marker(name):
 		retry(os.remove, os.path.join(ROOT, name))
 
 def pause_until(cfg, now):
-	"""The next pause_until time after now, as 'YYYY-MM-DD HH:MM' (a stop at 11 PM pauses until 8 AM)."""
+	"""The next pause_until time after now, as 'YYYY-MM-DD HH:MM' (a stop at 11 PM pauses until 9 AM)."""
 	t = now.replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=minutes(cfg["pause_until"]))
 	if t <= now:
 		t += datetime.timedelta(days=1)

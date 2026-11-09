@@ -293,7 +293,7 @@ every test and spoil every timing.
 - **When someone connects with Remote Desktop or unlocks the screen.** The banner script hears Windows' session
   events (unlock, Remote Desktop connect) and writes STOP itself. The test ends as the person arrives, not after.
 - **Taking control lasts.** A stop also writes a PAUSE file: no new tests on that machine until the user clicks "Resume
-  campy tests" or the pause runs out. The banner offers 2 hours, until 8 AM the next morning (the default, decided 2026-11-05), or until
+  campy tests" or the pause runs out. The banner offers 2 hours, until 9 AM the next morning (the default; decided 2026-11-05 as 8 AM, moved to 9 AM on 2026-11-09), or until
   resumed (the "Resume campy tests" shortcut). The Mac reads PAUSE before every start, and the dashboard shows "paused until <time>" and how it was stopped.
 - A stopped test is reported to you (Slack, through campy.notify) as "stopped at the machine" with how. It's not a failure and not a
   drift.
@@ -508,7 +508,7 @@ live-tracking.md's "after each update" steps point to it. Nothing public about h
    no SSH yet. SSH was set up on 2026-10-28. Answered 2026-11-05: nights only, 10 PM to 6 AM.)
 9. **Should any keyboard or mouse input at the Tower stop a test by itself**, or only the Stop button, unlocking,
    Remote Desktop, opening a camera and starting campy? (Answered 2026-11-05: any input stops it.)
-10. **Default pause after a stop:** until the next morning, or something else? (Answered 2026-11-05: until 8 AM.)
+10. **Default pause after a stop:** until the next morning, or something else? (Answered 2026-11-05: until 8 AM. Changed 2026-11-09: until 9 AM.)
 11. **The virtual machine:** do you revert `campy-clean` yourself, or may the Mac have a Proxmox API token limited to
     this one VM? (Answered 2026-10-29: Proxmox; Intel Arc Pro B50 passed through, 8 threads of an i9-14900, 32 GB,
     all adjustable; processor type `host`; its disk is on LVM-thin, which snapshots; its adapter is bridged onto the

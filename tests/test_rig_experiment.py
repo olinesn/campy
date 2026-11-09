@@ -58,14 +58,15 @@ def root(tmp_path, monkeypatch):
 def test_pause_until_the_next_morning_then_it_ends(root):
 	cfg = dict(rig.EXPERIMENT_DEFAULTS)
 	night = datetime.datetime(2026, 11, 4, 23, 40)
-	assert rig.pause_until(cfg, night) == "2026-11-05 08:00"
-	assert rig.pause_until(cfg, datetime.datetime(2026, 11, 5, 3, 0)) == "2026-11-05 08:00"
+	assert rig.pause_until(cfg, night) == "2026-11-05 09:00"
+	assert rig.pause_until(cfg, datetime.datetime(2026, 11, 5, 3, 0)) == "2026-11-05 09:00"
 	rig.write_pause(cfg, "the Stop button on the banner", night)
 	text = rig.read_pause(night)
-	assert "until=2026-11-05 08:00" in text and "how=the Stop button on the banner" in text
+	assert "until=2026-11-05 09:00" in text and "how=the Stop button on the banner" in text
 	rig.write_pause(cfg, "again", night)  # a pause in place stays as it is
 	assert "again" not in rig.read_pause(night)
-	assert rig.read_pause(datetime.datetime(2026, 11, 5, 8, 0)) is None  # over: removed
+	assert rig.read_pause(datetime.datetime(2026, 11, 5, 8, 59)) is not None  # not over yet
+	assert rig.read_pause(datetime.datetime(2026, 11, 5, 9, 0)) is None  # over: removed
 	assert not (root / "PAUSE").exists()
 	(root / "PAUSE").write_text("until=resume; how=the banner (until resumed)\n")
 	assert rig.read_pause(datetime.datetime(2030, 1, 1)) is not None
