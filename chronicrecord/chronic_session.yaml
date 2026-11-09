@@ -26,6 +26,9 @@ pico:
     - {name: "Gate test (15 min, 3 bouts)", seconds: 900, videoFolder: "C:\\data\\gatetest"}
     - {name: "1 hour (12 bouts)", seconds: 3600}
     - {name: "Overnight rehearsal (8 h, 96 bouts)", seconds: 28800, videoFolder: "C:\\data\\rehearsal"} # 152 GB on 6 Nov (SpikeGLX 150, videos 2 with no animal)
+  # The bouts: chronic_control.py's settings (INTERVAL 300 s, LEDs 30 ms, ...), unless set: changes them for every
+  # session here, e.g. set: {INTERVAL: 600, PULSE_WIDTH_C: 0.05}. The page's "Bout settings" change them for its own
+  # recordings only, and each recording's session-config.yaml says which.
   gate_check: true # the gate blinks once before campy starts; SpikeGLX must open a file for it
   last_gate_s: 120 # campy ends after the last bout's last frame; the Pico's gate falls 10 s later
 

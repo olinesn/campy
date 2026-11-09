@@ -37,6 +37,8 @@ label{font-size:12px;color:var(--muted)}h2{font-size:15px;font-weight:500;margin
 select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
 .steps li{list-style:none;margin-left:-18px}.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px}
 .modal .card{max-width:520px}[hidden]{display:none!important}
+.bgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:4px 10px;margin:4px 0}
+.bgrid>div{display:flex;flex-direction:column;justify-content:flex-end}.bgrid input.changed{border-color:var(--accent);border-width:2px}details summary{cursor:pointer;font-size:13px;margin-top:6px}
 </style></head><body><main>
 
 <div class="card row">
@@ -59,6 +61,10 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
         <div class="row" style="margin-top:4px"><span id="mscan" class="muted grow" style="font-size:12px"></span><button id="mrescan" title="Look through panel.models' folders again">Look again</button></div></div>
       <div id="lengthbox" hidden><label for="length">Session length</label><select id="length"></select>
         <div class="muted" id="plantext"></div>
+        <details id="boutbox" open hidden><summary>Bout settings <span id="boutsum" class="muted"></span></summary>
+          <div id="boutfields" class="bgrid"></div>
+          <div class="muted" id="boutshape" style="font-size:12px"></div>
+          <div class="row" style="margin-top:4px"><span class="muted grow" style="font-size:12px">For this panel's recordings only: the config file isn't changed. Each recording's session-config.yaml says which came from here.</span><button id="boutreset" hidden>Back to the config's</button></div></details>
         <label for="picoat">Start the Pico at (optional: otherwise a button, once every camera is ready)</label><input id="picoat" placeholder="7:20 PM"></div>
       <label for="experiment">Experiment</label><input id="experiment" placeholder="Social hierarchy, week 3">
       <label for="ids">Animal IDs, comma-separated</label><input id="ids" placeholder="M12, M14, M15">
@@ -160,6 +166,7 @@ function render(s){
   const lengths = s.lengths || []; $("lengthbox").hidden = !lengths.length;
   if(lengths.length && $("length").options.length != lengths.length){ $("length").innerHTML = lengths.map(l => '<option value="'+l.seconds+'">'+esc(l.name)+'</option>').join(""); }
   if(lengths.length && document.activeElement != $("length")) $("length").value = String(s.length);
+  renderBouts(s.bouts);
   const L0 = lengths.find(l => l.seconds == s.length); $("plantext").textContent = L0 ? L0.text + (L0.videoFolder ? ", into "+L0.videoFolder : "") : "";
   if(!$("experiment").dataset.set){ $("experiment").value = s.fields.experiment||""; $("ids").value = s.fields.animal_ids||""; $("experiment").dataset.set=1; }
   $("during").hidden = !(st=="recording" || st=="stopping" || st=="starting live");
@@ -225,6 +232,30 @@ function renderModels(M){
     "To pick from more models, add panel: models: (their folders) to the config or its rig profile.") + (M.notes.length ? " "+M.notes.join("; ")+"." : "");
   $("mrescan").hidden = !M.roots.length;
 }
+let boutSig = "";
+function renderBouts(B){
+  $("boutbox").hidden = !B; if(!B) return;
+  const fields = B.fields || [];
+  // The fields only when the settings change, so a field being typed in isn't redrawn under the cursor
+  const sig = JSON.stringify(fields.map(f => f.key));
+  if(sig != boutSig){
+    boutSig = sig;
+    $("boutfields").innerHTML = fields.map(f => '<div><label for="b_'+f.key+'" title="'+f.key+'">'+esc(f.label)+(f.unit ? " ("+esc(f.unit)+")" : "")+
+      '</label><input id="b_'+f.key+'" type="number" min="0" step="any" data-key="'+f.key+'"><div class="muted" id="bc_'+f.key+'" style="font-size:11px;min-height:16px"></div></div>').join("");
+    fields.forEach(f => { $("b_"+f.key).onchange = e => setBout(f.key, e.target.value); });
+  }
+  fields.forEach(f => { const el = $("b_"+f.key); if(!el) return;
+    if(document.activeElement != el) el.value = f.value;
+    el.classList.toggle("changed", f.changed);
+    $("bc_"+f.key).textContent = f.changed ? "the config's: "+f.config : ""; });
+  const n = (B.changed || []).length;
+  $("boutsum").textContent = n ? "· "+n+" changed on this page" : "· as the config says";
+  $("boutreset").hidden = !n;
+  const b = B.bout;
+  $("boutshape").innerHTML = B.error ? '<span class="err">'+esc(B.error)+'</span>' : !b ? "" : b.error ? '<span class="err">'+esc(b.error)+'</span>' :
+    esc(b.text) + (b.warnings.length ? '<br><span class="err">Warning: '+esc(b.warnings.join("; "))+'</span>' : "");
+}
+async function setBout(key, value){ const e = await post("/bouts", {values: {[key]: value}}); $("starterr").textContent = e || ""; tick(); }
 async function pickModels(body){ const e = await post("/models", body); $("starterr").textContent = e || ""; modelSig = ""; tick(); }
 function renderDevices(s, st){
   const D = s.devices; $("devs").hidden = !D;
@@ -283,6 +314,7 @@ $("mset").onchange = () => { if($("mset").value) pickModels({set: $("mset").valu
 $("mcen").onchange = () => pickModels({centroid: $("mcen").value});
 $("mins").onchange = () => pickModels({centroid: $("mcen").value, instance: $("mins").value});
 $("mrescan").onclick = async () => { $("mrescan").disabled = true; $("mscan").textContent = "Looking…"; const e = await post("/models-scan"); $("mrescan").disabled = false; $("starterr").textContent = e || ""; modelSig = ""; tick(); };
+$("boutreset").onclick = async () => { const e = await post("/bouts", {reset: true}); $("starterr").textContent = e || ""; tick(); };
 $("length").onchange = async () => { const e = await post("/length", {seconds: $("length").value}); $("starterr").textContent = e || ""; tick(); };
 let closed = false;
 $("close").onclick = async () => { if(!confirm("Close the panel? Nothing is recording.")) return; const e = await post("/close"); if(e){ alert(e); return; }

@@ -624,6 +624,24 @@ class Panel:
 		self.checks = self.Checks()
 		return error
 
+	def Bouts(self, body):
+		# The page's bout settings ({values: {setting: value}}, or {reset: true} for the config's), for this panel's
+		# recordings: every length's plan, the disk check and the checks again
+		if self.devices is None or self.devices.pico is None:
+			return "This config has no Pico."
+		if self.session is not None or self.wanted is not None:
+			return "A recording is running: the bout settings change for the next one."
+		if body.get("reset"):
+			self.devices.pico.page, self.devices.pico.spans, error = {}, {}, None
+		else:
+			values = body.get("values")
+			if not isinstance(values, dict):
+				return "No bout settings given."
+			error = self.devices.pico.Choose(values)
+		self.lengths = self.devices.Lengths()
+		self.checks = self.Checks()
+		return error
+
 	def Close(self):
 		if self.session is not None or self.wanted is not None:
 			return "A recording is running: the panel closes once it has ended and you close it."
@@ -683,12 +701,22 @@ class Panel:
 				self.devices.Status() if self.devices is not None else None,
 			"lengths": [{"name": l["name"], "seconds": l["seconds"], "text": l["plan"].get("text") or l["plan"].get("error"),
 				"videoFolder": l["videoFolder"]} for l in self.lengths], "length": self.length,
+			"bouts": self.BoutStatus(),
 			"launcher": launcher, "health": self.health.snapshot, "recording": recording,
 			"models": self.picker.Status() if getattr(self, "picker", None) is not None else None,
 			"disk": self.Disk(free, rate, s),
 			"alerts": {"open": open_, "resolved": resolved}, "problems": problems, "bookmarks": marks,
 			"fields": {"experiment": str(self.config.Value("experiment", "") or "").replace("None", ""),
 				"animal_ids": ", ".join(str(a) for a in (self.config.Value("animalIds", []) or []))}}
+
+	def BoutStatus(self):
+		# The page's bout settings box, with a Pico's bouts (none for a camera-only session)
+		if self.devices is None or self.devices.pico is None:
+			return None
+		try:
+			return self.devices.pico.PageStatus()
+		except pico.PicoError as e:
+			return {"error": str(e), "fields": [], "changed": [], "bout": None}
 
 	def Disk(self, free, rate, s):
 		"""
@@ -821,6 +849,8 @@ class Panel:
 					error = panel.Viewer()
 				elif url.path == "/bookmark":
 					error, mark = panel.Bookmark(body.get("note", ""))
+				elif url.path == "/bouts":
+					error = panel.Bouts(body)
 				elif url.path == "/models":
 					error = panel.Models(body)
 				elif url.path == "/models-scan":
@@ -892,7 +922,10 @@ class Panel:
 		fields, args = self.wanted, self.Args(self.wanted)
 		try:
 			pick = self.picker.Pick() if self.picker is not None else None
-			config = session.Config(self.config_path, args, live=pick)
+			page = dict(self.devices.pico.page) if self.devices is not None and self.devices.pico is not None else None
+			config = session.Config(self.config_path, args, live=pick, pico_set=page)
+			if page:
+				Say("Bout settings from the page: {}".format(self.devices.PageText()))
 			if pick:
 				Say("Live models: centroid {}, instance {}".format(pick["centroid"], pick["instance"]))
 				self.picker.Remember()

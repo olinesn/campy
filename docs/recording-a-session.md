@@ -89,6 +89,27 @@ On the ChronicRecord rig the same page also runs the Pico (which makes the camer
 - USB selective suspend is off (a warning if not);
 - **the disk:** how much the chosen length needs, against the free space where it records, for example `Disk: this length needs about 162 GB of the 370 GB free` for the overnight rehearsal. It counts SpikeGLX (24 MB/s while the gate is open, plus its 1 s margin before and after each bout) and the videos (0.6 MB/s a camera while the cameras take frames, more than a cage with mice usually writes), so it is an estimate, and it keeps `stopAtFreeGB` (2 GB) free on top. A length that doesn't fit is red and stops the start: 6 days need about 2,910 GB, so on the PC's own disk the page says how many GB short it is and asks for a shorter length or a data disk. If you really mean to start it anyway (data will be moved off the disk during the session), **Start recording** asks first, naming the shortfall; nothing else that stops the start can be passed over. Above 80% of the free space it is a warning.
 
+**The bouts.** Under the length, **Bout settings** shows what each bout does, and each setting can be changed there:
+
+| On the page | The Pico's setting | The config's (chronic_control.py's default) |
+|---|---|---|
+| A bout every (s) | `INTERVAL` | 300 |
+| Baseline: gate open to the LEDs, and camera off to gate closed (s) | `TOTAL_BASELINE` | 10 |
+| Camera on before the LEDs (s) | `CAMERA_LEAD_IN` | 5 |
+| Camera time, normal bout (s) | `STANDARD_STIM_DURATION` | 10 |
+| Camera time, long bout (s) | `EXTENDED_STIM_DURATION` | 240 |
+| A long bout every (bouts; the first is long) | `EXTENDED_EVERY` | 6 |
+| Blue LED on (ms) | `PULSE_WIDTH_C` | 30 |
+| Yellow LED on, as blue ends (ms) | `PULSE_WIDTH_D` | 30 |
+
+Below them a line says what one bout does from the gate's opening, for example *camera on at 5 s; blue LED at 9.999 s for 30 ms (frames 300-301), then yellow for 30 ms (frames 302-303); camera off at 245 s and gate closed at 255 s in a long bout, at 15 s and 25 s in a normal one*, with a warning if an LED would switch during a frame's exposure. Each LED lights once a bout. The length's plan (number of bouts, camera time), the disk check and campy's recording time follow at once.
+
+- **A change is for this panel's recordings only.** The config file isn't changed, and the next panel opened starts from the config again. A changed setting is outlined, with the config's value under it. **Back to the config's** undoes every change; an emptied field undoes its own.
+- **The checks list says what was changed**, and a setting a bout can't have stops the start with the reason: an LED outside the camera's time, a bout that runs into the next, the camera starting before the gate opens, or more bouts than the Pico holds (2,048: 7.1 days at one bout every 300 s).
+- **The recording says which settings it ran with.** Its `logs\session-config.yaml` has them in `pico:`'s `set:`, the line marked `# panel (bout settings set on campy-session panel's page: ...)`, and its `launcher.json` has every setting the Pico ran with. The Pico's own log, in the session's `pico\` folder, lists each bout's times, as always.
+- **They can't change while a recording runs.** The Pico starts with the settings the recording was started with.
+- **To keep settings for every session,** put them in the config's `pico:` section, in `set:` (for example `set: {INTERVAL: 600}`; the LEDs' in seconds there, `PULSE_WIDTH_C: 0.05`). The camera's rate (`CAMERA_FPS`, which must match campy's `frameRate`) and the finer timing settings are in `set:` only.
+
 You can also give a time for the Pico to start (`7:20 PM`); otherwise you start it yourself.
 
 **Start.** The page shows each step as it goes:

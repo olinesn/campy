@@ -79,6 +79,8 @@ def test_settings_on_the_command_line():
 		cc.Settings(["NO_SUCH=1"])
 	with pytest.raises(SystemExit, match="INTERVAL"):
 		cc.Plan(cc.Settings(["INTERVAL=200"])) # the 255 s extended bout runs into the next
+	with pytest.raises(SystemExit, match="before the gate opens"):
+		cc.Plan(cc.Settings(["CAMERA_LEAD_IN=12"])) # the camera 12 s before the LEDs, the gate only 10 s
 
 
 def test_plan_command_touches_no_board():

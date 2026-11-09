@@ -65,6 +65,73 @@ def test_lengths_and_settings_are_checked():
 	assert [(l["name"], l["videoFolder"]) for l in p.lengths] == [("15 min", "D:/gate"), ("6 days", None)]
 
 
+def test_the_pages_bout_settings():
+	# The page's settings, in its units (ms for the LEDs), over pico.set, for the panel's recordings
+	p = a_pico(set={"INTERVAL": 600})
+	shown = {f["key"]: f for f in p.PageStatus()["fields"]}
+	assert (shown["INTERVAL"]["value"], shown["PULSE_WIDTH_C"]["value"], shown["PULSE_WIDTH_C"]["unit"]) == (600, 30, "ms")
+	assert not any(f["changed"] for f in shown.values()) and p.Plan(518400)["bouts"] == 864
+	assert p.Choose({"PULSE_WIDTH_C": "50", "PULSE_WIDTH_D": 40, "INTERVAL": 300}) is None
+	assert p.page == {"PULSE_WIDTH_C": 0.05, "PULSE_WIDTH_D": 0.04, "INTERVAL": 300}
+	assert p.Sets(900) == ["INTERVAL=300", "PULSE_WIDTH_C=0.05", "PULSE_WIDTH_D=0.04", "TOTAL_DURATION=900"]
+	assert p.Plan(518400)["bouts"] == 1728
+	status = p.PageStatus()
+	assert status["changed"] == ["INTERVAL", "PULSE_WIDTH_C", "PULSE_WIDTH_D"]
+	assert {f["key"]: f["config"] for f in status["fields"]}["INTERVAL"] == 600
+	# What one bout does: the 50 ms blue LED lights frames 300-302, the 40 ms yellow 303-305
+	assert "blue LED at 9.999 s for 50 ms (frames 300-302), then yellow for 40 ms (frames 303-305)" in status["bout"]["text"]
+	assert "camera off at 245 s and gate closed at 255 s in a long bout, at 15 s and 25 s in a normal one" in \
+		status["bout"]["text"]
+	# The config's value again, or none: the config's
+	assert p.Choose({"INTERVAL": 600, "PULSE_WIDTH_D": ""}) is None and p.page == {"PULSE_WIDTH_C": 0.05}
+	# Refused, and nothing changed
+	for values, why in (({"LED_LEAD_US": 2}, "not a bout setting"), ({"INTERVAL": "soon"}, "not a number"),
+			({"INTERVAL": 0}, "more than 0"), ({"PULSE_WIDTH_C": -30}, "more than 0"),
+			({"EXTENDED_EVERY": 2.5}, "whole number"), ({"PULSE_WIDTH_C": 0.0001}, "a microsecond")):
+		assert why in p.Choose(dict(values, PULSE_WIDTH_D=99)) and p.page == {"PULSE_WIDTH_C": 0.05}
+	# Settings a bout can't have: each plan says why (and stops the start), as does the bout's description
+	assert p.Choose({"CAMERA_LEAD_IN": 20}) is None
+	assert "before the gate opens" in p.PageStatus()["bout"]["error"]
+	with pytest.raises(pico.PicoError, match="before the gate opens"):
+		p.Plan(900)
+
+
+def test_the_pico_holds_2048_bouts():
+	# Refused before planning each bout, rather than by the board once the session starts
+	p = a_pico()
+	assert p.Plan(2048 * 300)["bouts"] == 2048
+	p.Choose({"INTERVAL": 200})
+	t0 = time.monotonic()
+	with pytest.raises(pico.PicoError, match="2,592 bouts, one every 200 s, and it holds 2,048"):
+		p.Plan(518400)
+	with pytest.raises(pico.PicoError, match="it holds 2,048"):
+		p.Spans(518400)
+	p.Choose({"INTERVAL": 0.001}) # a billion bouts: refused at once
+	with pytest.raises(pico.PicoError, match="it holds 2,048"):
+		p.Plan(518400)
+	assert time.monotonic() - t0 < 1
+
+
+def test_a_setting_as_chronic_control_reads_it():
+	assert [pico.SetText(v) for v in (300, 300.0, 0.05, 0.00001, 1.5, 6)] == ["300", "300", "0.05", "0.00001", "1.5", "6"]
+
+
+def test_the_recording_keeps_the_settings_it_planned():
+	# The page's later changes don't reach a recording's Pico: it starts with what was planned
+	d = a_devices()
+	d.pico.Choose({"PULSE_WIDTH_C": 50})
+	d.Plan(900)
+	assert "PULSE_WIDTH_C=0.05" in d.sets and d.settings["from_page"] == ["PULSE_WIDTH_C"]
+	assert d.settings["settings"]["PULSE_WIDTH_C"] == 0.05 and d.settings["settings"]["TOTAL_DURATION"] == 900
+	d.pico.Choose({"PULSE_WIDTH_C": 70})
+	started = []
+	d.pico.Start = lambda seconds, folder, sets=None: started.append(sets) or (True, "Session started")
+	d.folder, d.lock, d.say = "/nowhere", threading.Lock(), lambda text: None
+	d.CanStartPico = lambda s=None: None
+	d.StartPico(types.SimpleNamespace(state="recording"))
+	assert "PULSE_WIDTH_C=0.05" in started[0]
+
+
 def test_spikeglx_files_counted_once_per_gate_opening(tmp_path):
 	# One opening of the gate: a file per stream, the probe's and the OneBox's
 	for name in ("run_g0_t0.imec0.ap.bin", "run_g0_t0.obx0.obx.bin", "run_g0_t1.imec0.ap.bin", "run_g0_t1.obx0.obx.bin",
@@ -295,6 +362,16 @@ def test_a_bout_session_from_the_page(tmp_path, home, rig, sglx_state):
 		assert all(c["level"] == "ok" for c in status["checks"]), texts
 		assert any(t.startswith("The Pico answers, idle") for t in texts) and any(t.startswith("SpikeGLX: idle") for t in texts)
 		assert call(url, "/pico-start", {})[0] == 409 # nothing records
+		# The bout settings, on the page: the LEDs longer (SHORT's 20 fps: blue from pulse 10, 50 ms = 1 frame more)
+		bouts = status["bouts"]
+		assert {f["key"]: f["value"] for f in bouts["fields"]}["PULSE_WIDTH_C"] == 30 and bouts["changed"] == []
+		assert call(url, "/bouts", {"values": {"PULSE_WIDTH_C": "nope"}})[0] == 409
+		assert call(url, "/bouts", {"values": {"PULSE_WIDTH_C": 80, "PULSE_WIDTH_D": 60}}) == (200, {"ok": True})
+		status = call(url, "/status.json")[1]
+		assert status["bouts"]["changed"] == ["PULSE_WIDTH_C", "PULSE_WIDTH_D"]
+		assert "blue LED at 0.999 s for 80 ms" in status["bouts"]["bout"]["text"]
+		assert any(c["text"].startswith("Bout settings changed on this page") and "Blue LED on 80 ms (the config's 30)"
+			in c["text"] for c in status["checks"])
 
 		assert call(url, "/start", {"experiment": "Gate test", "length": 12}) == (200, {"ok": True})
 		status = recording_with_cameras_ready(url)
@@ -306,6 +383,14 @@ def test_a_bout_session_from_the_page(tmp_path, home, rig, sglx_state):
 		assert sglx["running"] and sglx["dir"] == str(folder / "spikeglx") and sglx["run"] == "chronic_" + folder.name
 		assert len(list((folder / "spikeglx").glob("*.bin"))) == 1 # the gate check's blink
 		assert status["launcher"]["recording"]["planned_s"] == 4 # recTimeInSec, from the Pico's plan
+		assert call(url, "/bouts", {"reset": True})[0] == 409 # not while it records
+		# The recording says which settings came from the page; the config file is unchanged
+		used = status["launcher"]["devices"]["settings"]
+		assert used["from_page"] == ["PULSE_WIDTH_C", "PULSE_WIDTH_D"] and used["settings"]["PULSE_WIDTH_C"] == 0.08
+		recorded = (folder / "logs" / "session-config.yaml").read_text()
+		assert re.search(r"set: .*PULSE_WIDTH_C: 0.08.*# panel \(bout settings set on campy-session panel's page: "
+			r"PULSE_WIDTH_C, PULSE_WIDTH_D\)", recorded), recorded
+		assert "PULSE_WIDTH_C" not in config.read_text()
 
 		assert call(url, "/pico-start", {}) == (200, {"ok": True})
 		status = wait(url, lambda s: s["state"] == "ready" and s["launcher"] and s["launcher"]["state"] == "done",
@@ -319,6 +404,9 @@ def test_a_bout_session_from_the_page(tmp_path, home, rig, sglx_state):
 		pico_status = json.loads((tmp_path / "pico-state" / "status.json").read_text())
 		assert pico_status["state"] == "done" and "pulses=80" in pico_status["done"]
 		assert "Session started" in (folder / "pico" / "session.out").read_text()
+		# The Pico ran the page's LEDs: 80 ms of blue, then 60 ms of yellow
+		ran = json.loads((tmp_path / "pico-state" / "session.json").read_text())["settings"]
+		assert (ran["PULSE_WIDTH_C"], ran["PULSE_WIDTH_D"]) == (0.08, 0.06)
 		assert status["devices"]["pico"]["state"] == "done"
 	finally:
 		close_panel(proc, url, lines)

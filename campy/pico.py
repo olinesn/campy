@@ -22,7 +22,24 @@ environment's python: it needs only pyserial. Its plan is read by importing
 it, which needs nothing.
 """
 
-import importlib.util, os, subprocess, sys, time
+import importlib.util, math, os, subprocess, sys, time
+
+# The bout settings the panel's page can change, for that panel's recordings only (otherwise pico.set, then
+# chronic_control.py's own defaults): (setting, the page's label, the page's unit, the setting's value times this is
+# the page's). The others (CAMERA_FPS, which must be campy's frameRate; the camera pulse; the LEDs' lead) stay in pico.set.
+PAGE = [
+	("INTERVAL", "A bout every", "s", 1),
+	("TOTAL_BASELINE", "Baseline: gate open to the LEDs, and camera off to gate closed", "s", 1),
+	("CAMERA_LEAD_IN", "Camera on before the LEDs", "s", 1),
+	("STANDARD_STIM_DURATION", "Camera time, normal bout", "s", 1),
+	("EXTENDED_STIM_DURATION", "Camera time, long bout", "s", 1),
+	("EXTENDED_EVERY", "A long bout every (bouts; the first is long)", "", 1),
+	("PULSE_WIDTH_C", "Blue LED on", "ms", 1000),
+	("PULSE_WIDTH_D", "Yellow LED on, as blue ends", "ms", 1000),
+	]
+# The Pico's room for a session (chronicrecord/chronic_timer/chronic_timer.ino: MAX_TRAINS, one camera train a bout, and
+# MAX_EDGES, 6 a bout): a session with more bouts is refused at its start, so the plan refuses it first
+MAX_BOUTS = 2048
 
 # The pico: section's keys: (the kinds it takes, its default, what it is)
 KEYS = {
@@ -81,6 +98,24 @@ def Clock(seconds):
 	return " ".join(parts) or "0 s"
 
 
+def SetText(value):
+	# A setting as chronic_control.py's --set reads it: a whole number without a point (it reads one with a point as a
+	# float), and a fraction to the microsecond, never in exponent form
+	if isinstance(value, float) and math.isfinite(value):
+		if value == int(value):
+			return str(int(value))
+		return "{:.6f}".format(value).rstrip("0")
+	return str(value)
+
+
+def Room(s, seconds):
+	# The Pico's room: a session of more bouts than it holds is refused (before planning each of them)
+	if not s["CAMERA_ONLY"] and s["INTERVAL"] > 0 and s["TOTAL_DURATION"] // s["INTERVAL"] > MAX_BOUTS:
+		raise PicoError("The Pico can't run {}: {:,.0f} bouts, one every {:g} s, and it holds {:,} (7.1 days at one every "
+			"300 s). Make the bouts further apart, or the session shorter.".format(Clock(seconds), s["TOTAL_DURATION"] //
+			s["INTERVAL"], s["INTERVAL"], MAX_BOUTS))
+
+
 class Pico:
 	"""The pico: section, checked (its keys filled in), and what campy-session asks of the Pico."""
 
@@ -91,6 +126,7 @@ class Pico:
 		self.fps = fps
 		self.module = Module(self.control)
 		self.spans = {} # Spans' answers, by length
+		self.page = {} # the page's bout settings ({setting: its value}), over pico.set: Choose
 		self.state_dir = section["state_dir"] or self.module.STATE_DIR
 		self.lengths = []
 		for n, length in enumerate(section["lengths"]):
@@ -112,8 +148,9 @@ class Pico:
 	# ---------------------------------------------------------- the plan
 
 	def Sets(self, seconds):
-		# chronic_control.py's --set NAME=VALUE for a session of seconds
-		sets = ["{}={}".format(k, v) for k, v in self.section["set"].items()]
+		# chronic_control.py's --set NAME=VALUE for a session of seconds: pico.set, with the page's over it
+		values = dict(self.section["set"], **self.page)
+		sets = ["{}={}".format(k, SetText(v)) for k, v in values.items()]
 		return sets + (["TOTAL_DURATION={}".format(int(seconds))] if seconds is not None else [])
 
 	def Settings(self, seconds):
@@ -122,12 +159,102 @@ class Pico:
 		except SystemExit as e:
 			raise PicoError(str(e))
 
+	def Base(self):
+		# The bout settings without the page's: pico.set, then chronic_control.py's own
+		try:
+			return self.module.Settings(["{}={}".format(k, SetText(v)) for k, v in self.section["set"].items()])
+		except SystemExit as e:
+			raise PicoError(str(e))
+
+	def Choose(self, values):
+		"""
+		The page's bout settings, for this panel's recordings: {setting: its
+		value in the page's unit (PAGE), or None for the config's}. A value
+		equal to the config's is the config's. An error text (nothing
+		changed), or None. A plan they make impossible isn't refused here:
+		each length's plan says why, and stops the start.
+		"""
+		pages = {key: (label, unit, scale) for key, label, unit, scale in PAGE}
+		base = self.Base()
+		page = dict(self.page)
+		for key, value in values.items():
+			if key not in pages:
+				return "{} is not a bout setting the page can change ({}).".format(key, ", ".join(pages))
+			label, unit, scale = pages[key]
+			if value is None or str(value).strip() == "":
+				page.pop(key, None)
+				continue
+			try:
+				number = float(value)
+			except (TypeError, ValueError):
+				return "{}: {!r} is not a number.".format(label, value)
+			if not math.isfinite(number) or number <= 0:
+				return "{}: it must be more than 0.".format(label)
+			if key == "EXTENDED_EVERY":
+				if number != int(number):
+					return "{}: a whole number of bouts.".format(label)
+				number = int(number)
+			else:
+				number = round(number / scale, 6) # to the microsecond
+				if number <= 0:
+					return "{}: it must be at least a microsecond.".format(label)
+			if number == base[key]:
+				page.pop(key, None)
+			else:
+				page[key] = number
+		self.page = page
+		self.spans = {}
+		return None
+
+	def PageStatus(self):
+		"""The page's bout settings box: each setting (in the page's unit, with the config's), and what one bout does."""
+		base = self.Base()
+		if base["CAMERA_ONLY"]:
+			return None # camera pulses only: no bouts
+		try:
+			now = self.Settings(None)
+		except PicoError:
+			now = dict(base, **self.page)
+		shown = lambda v, scale: round(v * scale, 6)
+		return {"fields": [{"key": key, "label": label, "unit": unit, "value": shown(now[key], scale),
+			"config": shown(base[key], scale), "changed": key in self.page} for key, label, unit, scale in PAGE],
+			"changed": sorted(self.page), "bout": self.Bout()}
+
+	def Bout(self):
+		"""
+		What one bout does, from the gate's opening, as the page says it: {text,
+		warnings} (an LED switching during a frame's exposure), or {error}.
+		"""
+		try:
+			s = self.Settings(None)
+			two = 2 if s["EXTENDED_EVERY"] > 1 else 1 # a long bout, then a normal one
+			bouts, _, _ = self.module.Plan(dict(s, TOTAL_DURATION=s["INTERVAL"] * two))
+		except (PicoError, SystemExit) as e:
+			return {"error": "These bout settings can't run: {}".format(e)}
+		fps = float(s["CAMERA_FPS"])
+		at = lambda b, us: "{:g} s".format(round((us - b["gate_on"]) / 1e6, 3))
+		lit = lambda b, colour: self.module.LitFrames(b, b[colour][0], b[colour][1], s)
+		first = bouts[0]
+		blue, blue_part = lit(first, "blue")
+		yellow, yellow_part = lit(first, "yellow")
+		ends = lambda b: (at(b, b["camera_start"] + b["pulses"] / fps * 1e6), at(b, b["gate_off"]))
+		text = ("From the gate's opening: camera on at {}; blue LED at {} for {:g} ms (frames {}), then yellow for {:g} ms "
+			"(frames {}); camera off at {} and gate closed at {} in a long bout{}. The next bout starts {:g} s after the "
+			"gate opened.".format(at(first, first["camera_start"]), at(first, first["blue"][0]),
+			round(s["PULSE_WIDTH_C"] * 1000, 3), self.module.Frames(blue), round(s["PULSE_WIDTH_D"] * 1000, 3),
+			self.module.Frames(yellow), *ends(first), ", at {} and {} in a normal one".format(*ends(bouts[1]))
+			if len(bouts) > 1 else " (every bout is long)", s["INTERVAL"]))
+		warnings = ["the {} LED switches during the exposure of frame(s) {}".format(name, self.module.Frames(part))
+			for name, part in (("blue", blue_part), ("yellow", yellow_part)) if part]
+		return {"text": text, "warnings": warnings}
+
 	def Plan(self, seconds):
 		"""
 		{seconds, bouts, pulses, camera_s, ends_s, text}: the session of
 		that length; camera_s is campy's recTimeInSec for it.
 		"""
 		s = self.Settings(seconds)
+		Room(s, seconds)
 		try:
 			bouts, trains, edges = self.module.Plan(s)
 		except SystemExit as e:
@@ -153,6 +280,7 @@ class Pico:
 		key = int(seconds)
 		if key not in self.spans:
 			s = self.Settings(seconds)
+			Room(s, seconds)
 			try:
 				_, trains, edges = self.module.Plan(s)
 			except SystemExit as e:
@@ -205,13 +333,14 @@ class Pico:
 			return 1, "chronic_control.py {}: {}".format(words[0], e)
 		return out.returncode, (out.stdout + out.stderr).strip()
 
-	def Start(self, seconds, log_dir):
-		"""The session, on the board: (ok, what chronic_control.py said)."""
+	def Start(self, seconds, log_dir, sets=None):
+		"""The session, on the board (sets: Sets(seconds) as the recording planned it): (ok, what chronic_control.py
+		said)."""
 		try:
 			self.out_from = os.path.getsize(os.path.join(self.state_dir, "session.out"))
 		except OSError:
 			self.out_from = 0
-		code, said = self.Command(["start"] + sum((["--set", s] for s in self.Sets(seconds)), []), log_dir)
+		code, said = self.Command(["start"] + sum((["--set", s] for s in (sets or self.Sets(seconds))), []), log_dir)
 		return code == 0, said
 
 	def Blink(self, log_dir, high_s=4.0):
