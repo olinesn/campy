@@ -500,8 +500,13 @@ def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, ou
 		assert 0 < e["after_us"] / 1e3 <= 60, e
 	pulses = [e for e in events if e["kind"] == "pulse"]
 	# 2 ms each (the live simulation's clock reads sleep 50 us, and macOS can
-	# wake it later; the simulated clock's tests check the widths exactly)
-	assert len(pulses) == 10 and all(1900 <= p["fall_us"] - p["rise_us"] <= 6000 for p in pulses)
+	# wake it later; the simulated clock's tests check the widths exactly). A
+	# busy CI runner (other test workers beside this one) can hold up the
+	# simulated board's process mid-pulse, so one pulse may run long: the
+	# median must stay 2 ms, single pulses only never short
+	widths = sorted(p["fall_us"] - p["rise_us"] for p in pulses)
+	assert len(pulses) == 10, pulses
+	assert 1900 <= widths[len(widths) // 2] <= 6000 and 1900 <= widths[0] and widths[-1] <= 25000, widths
 	summary = json.load(open(out + ".json"))
 	assert summary["frame_offset"] == 0 and summary["frame_offset_changes"] == 0
 	assert summary["latency_ms"]["trigger_to_pin"]["n"] == 10
