@@ -93,7 +93,8 @@ LIVE = {
 	"centroid": ((str,), "", "the trained centroid model's folder (--centroid)"),
 	"instance": ((str,), "", "the trained centered-instance model's folder (--instance)"),
 	"animals": ((int,), 0, "how many animals (--animals, and --max-instances unless args give it); 0: campy-live's default"),
-	"calibration": ((str,), "", "calibration.toml, for 3D (--calibration)"),
+	"calibration": ((str,), "", "calibration.toml, for 3D (--calibration); or a folder of calibration recordings: "
+		"the newest one's calibration.toml that campy-calibrate made whole (campy/calibrate.py's Newest)"),
 	"frame_shape": ((str,), "", "--frame-shape, if not the cameras' frameHeight x frameWidth"),
 	"args": ((list,), [], "more campy-live options, as a list: [\"--engine\", \"off\"]"),
 	"env": ((dict,), {}, "environment variables for campy-live: {CUDA_VISIBLE_DEVICES: \"0\"}"),
@@ -117,6 +118,10 @@ POST = {
 	"align": ((bool,), True, "campy-align: every camera on the trigger's timeline (aligned.csv, alignment.json), and "
 		"where the trigger paused"),
 	"export": ((bool,), True, "campy-live-export, when campy-live ran"),
+	"calibrate": ((dict,), {}, "for a calibration recording: calibrat3 (headless, in this computer's Chrome) makes its "
+		"calibration.toml: {calibrat3: <its checkout>, board: {board_x: 14, board_y: 9, square_length: 20, "
+		"marker_length: 15, marker_bits: 5, dict_size: 1000}, target: 300 (frames sampled), browser: chrome} "
+		"(campy/calibrate.py); {} (the default): off"),
 	"copy": ((dict, str), {}, "copy the recording to copy.to/<its folder's name> (robocopy or rsync); nothing deleted"),
 	"run": ((list,), [], "your own commands, {folder} replaced by the recording's folder"),
 	"ffmpeg": ((str,), "", "the ffmpeg to remux with (default: imageio-ffmpeg's)"),
@@ -361,6 +366,22 @@ class Config:
 
 
 # ------------------------------------------------------------------ campy-live's environment
+
+def LiveCalibration(where):
+	"""
+	live: calibration: as campy-live takes it: a calibration.toml as it is; a folder of calibration recordings, the
+	newest one campy-calibrate made whole (campy/calibrate.py). SessionError when that folder has none.
+	"""
+	if not os.path.isdir(str(where)):
+		return str(where)
+	from campy import calibrate
+	path, summary = calibrate.Newest(where)
+	if path is None:
+		raise SessionError("live: calibration: {} holds no calibration campy-calibrate made whole (a recording folder "
+			"with calibration.toml and calibration_summary.json saying ok). Record one (videoFilename with "
+			"\"calibration\" in it, post: calibrate: on), or name a calibration.toml.".format(where))
+	return path
+
 
 def CampyFolder():
 	return os.path.expanduser(os.path.join("~", ".campy"))
@@ -791,6 +812,7 @@ class Session:
 		self.status_at = 0
 		self.stop_written = 0 # what campy-session asked of campy-acquire's stop file: 1 stop, 2 now
 		self.post_results = {}
+		self.post_plan = None # the steps after the recording, in order, once they have started
 
 	# ---------------------------------------------------------- setup
 
@@ -842,7 +864,7 @@ class Session:
 			if "--max-instances" not in live["args"]:
 				command += ["--max-instances", str(live["animals"])]
 		if live["calibration"]:
-			command += ["--calibration", live["calibration"]]
+			command += ["--calibration", LiveCalibration(live["calibration"])]
 		shape = live["frame_shape"] or self.FrameShape()
 		if shape and "--frame-shape" not in live["args"]:
 			command += ["--frame-shape", shape]
@@ -1266,6 +1288,18 @@ class Session:
 
 	# ---------------------------------------------------------- status
 
+	def PostStatus(self):
+		# The steps after the recording: while they run, as post.Run writes them (logs/post.json: the running step, its
+		# latest line and progress), so the panel follows them; after, their results
+		if self.state == "post" and self.folder:
+			from campy import post
+			state = post.Load(self.folder)
+			steps = state.get("steps") or {}
+			self.post_plan = state.get("plan") or self.post_plan
+			return {step: {k: v for k, v in entry.items() if k in ("state", "message", "fraction", "time", "seconds")}
+				for step, entry in steps.items()}
+		return {step: {"state": state, "message": message} for step, (state, message) in self.post_results.items()}
+
 	def StatusDict(self):
 		acquire = self.parts.get("acquire")
 		started = acquire.started if acquire is not None else None
@@ -1283,7 +1317,8 @@ class Session:
 			"live_models": {"centroid": self.config.live["centroid"], "instance": self.config.live["instance"],
 				"picked": bool(self.config.picked)} if self.config.live is not None else None,
 			"problems": [{"time": t, "text": text} for t, text in self.problems],
-			"post": {step: {"state": state, "message": message} for step, (state, message) in self.post_results.items()},
+			"post": self.PostStatus(),
+			"post_plan": self.post_plan,
 			"devices": self.devices.Status() if self.devices is not None else None,
 			"recording": {"started": Stamp(started), "elapsed_s": round((ended or time.time()) - started, 1) if started else
 				None, "planned_s": planned, "stop_asked": self.stop_written}}

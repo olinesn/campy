@@ -202,7 +202,7 @@ function render(s){
     $("progress").style.width = on && DP.ends_s ? Math.min(100, 100*DP.session_s/DP.ends_s)+"%" : "0";
   } else {
   // Only while it records: after it, the previous recording's time against its length meant nothing (1:19 of 1:00)
-  const shown = running && rec.elapsed_s!=null; $("clockbox").hidden = !shown;
+  const shown = (running && rec.elapsed_s!=null) || st=="post"; $("clockbox").hidden = !shown;
   $("clock").innerHTML = shown ? "<b>"+hms(rec.elapsed_s)+"</b> <span class=muted>recorded, of "+hms(rec.planned_s)+"</span>" : "";
   $("progress").style.width = shown && rec.planned_s ? Math.min(100, 100*rec.elapsed_s/rec.planned_s)+"%" : "0";
   }
@@ -273,13 +273,40 @@ function render(s){
   const CJ = ((s.copies||{}).jobs||[]).find(j => L.folder && j.folder == L.folder);
   // The panel's own copy, in the background: copying (with how far it has got), waiting behind another, done or failed
   if(CJ) P.copy = {state: ["done","failed","copying"].includes(CJ.state) ? CJ.state : "waiting", message: copyText(CJ), bar: copyBar(CJ)};
-  $("post").innerHTML = ["remux","export","copy","run"].map(k => P[k] ? "<li>"+tag(P[k].state, P[k].state=="done"?"ok":P[k].state=="failed"?"bad":"warn")+" "+STEPS[k]+": "+esc(P[k].message)+(P[k].bar||"")+"</li>"
-    : "<li class=muted>"+STEPS[k]+(st=="post"?": waiting":"")+"</li>").join("");
+  // Every step, in order: the running one with its latest line, time so far and progress; those with nothing to do greyed
+  const plan = (L.post_plan || STEP_ORDER).filter(k => STEPS[k]);
+  $("post").innerHTML = plan.map(k => { const e = P[k];
+    if(!e) return "<li class=muted>"+STEPS[k]+(st=="post"?": waiting":"")+"</li>";
+    if(e.state=="running"){ const t = since(e.time);
+      return "<li>"+tag("running","warn")+" <b>"+STEPS[k]+"</b>"+(t!=null ? " <span class=muted>"+dur(t)+" so far</span>" : "")+(e.message ? ": "+esc(String(e.message).replace(/^\[\d+ s\] /, "")) : "")+
+        (e.fraction!=null && e.fraction > 0 ? '<div class="bar copybar"><div style="width:'+(100*e.fraction).toFixed(0)+'%"></div></div>' : "")+"</li>"; }
+    const idle = e.state=="skipped" && NOTHING.test(e.message||"");
+    return "<li"+(idle ? " class=muted" : "")+">"+tag(e.state, e.state=="done"||e.state=="copying"?"ok":e.state=="failed"?"bad":idle?"":"warn")+" "+STEPS[k]+": "+esc(e.message)+(e.bar||"")+"</li>"; }).join("");
+  if(st=="post"){ // the header: which step of how many, and a bar of the whole
+    const G = postProgress(P, plan);
+    $("clock").innerHTML = "<b>Step "+G.i+" of "+G.n+"</b> <span class=muted>"+(G.running ? esc(STEPS[G.running]) : "starting")+
+      (G.running && since(P[G.running].time)!=null ? " · "+dur(since(P[G.running].time)) : "")+"</span>";
+    $("progress").style.width = (100*G.fraction).toFixed(0)+"%";
+  }
 }
 let typeSig = "", listSig = "", choosing = false, refill = false;
 const PROGRAMS = {acquire: "Cameras and video files (campy-acquire)", view: "Viewer window", watch: "Alerts (campy-watch)",
   "campy-live": "Live tracking (campy-live)"};
-const STEPS = {remux: "Video files", export: "Tracking files for LUC3D", copy: "Copy", run: "Extra commands"};
+const STEPS = {remux: "Video files", join: "Joined video files", align: "Cameras on the trigger's timeline", calibrate: "Calibration (calibrat3)",
+  export: "Tracking files for LUC3D", copy: "Copy", run: "Extra commands"};
+const STEP_ORDER = ["remux","join","align","calibrate","export","copy","run"];
+const FINISHED = ["done","skipped","failed"];
+function since(iso){ const t = Date.parse(iso); return isNaN(t) ? null : Math.max(0, (Date.now() - t) / 1000); }
+// Steps with nothing to do: shown greyed, with why
+const NOTHING = /not a calibration recording|no camera's video is in more than one file|campy-live did not run|no commands|no copy\.to|calibrate is off/;
+function postProgress(P, plan){
+  // How far the steps after the recording have got: finished steps, plus the running one's own progress (half way
+  // when it doesn't say). {n, i (1-based, the running one), running, fraction}
+  const n = plan.length; let done = 0, running = null;
+  plan.forEach(k => { const e = P[k]; if(e && FINISHED.includes(e.state)) done++; else if(e && e.state=="running") running = k; });
+  const part = running ? (P[running].fraction!=null && P[running].fraction > 0 ? P[running].fraction : 0.5) : 0;
+  return {n, i: Math.min(n, done + 1), running, fraction: n ? Math.min(1, (done + part) / n) : 0};
+}
 function mins(s){ // 80 s as "1 min 20 s", 4000 s as "1 h 6 min"
   s = Math.round(s); const h = Math.floor(s/3600), m = Math.floor(s%3600/60);
   return h ? h+" h "+m+" min" : m ? m+" min"+(s%60 ? " "+s%60+" s" : "") : s+" s";

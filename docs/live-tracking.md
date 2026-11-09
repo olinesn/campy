@@ -89,6 +89,7 @@ post:
   remux: true          # true (the default), keep, or false
   join: true           # a camera's video files after an ffmpeg restart, joined into one (the default)
   align: true          # campy-align: every camera on the trigger's timeline, and where the trigger paused (the default)
+  calibrate: {}        # for a calibration recording: {calibrat3: <checkout>} makes calibration.toml (off by default)
   export: true         # campy-live-export, when campy-live ran (the default)
   copy: "\\\\nas\\share\\recordings"   # optional: copies the recording's folder into this one
   run: ["python C:\\tools\\notify.py {folder}"]   # optional: your own commands
@@ -105,6 +106,7 @@ post:
   - A file that holds no frame (its ffmpeg stopped before it wrote its first fragment) is left out. A recording without a restart has nothing to join.
   - After a crash (with `--force`), the join counts which frames each file holds, the cut last file too, and leaves out the rows of frames that never reached them ([Recordings](recordings.md#what-is-in-the-folder)).
 - **align** runs `campy-align` ([Aligning cameras after recording](sync.md#aligning-cameras-after-recording)): `aligned.csv` in each camera's folder and `alignment.json` in the recording's, with each frame's trigger and its time. The log says where the trigger paused (pulses no camera has a frame for: no frame is lost, but every frame after is later than its number says) and which camera missed pulses the others got. It is skipped when no camera is triggered and none is a RatCam: there is no timeline to put them on.
+- **calibrate**, for a calibration recording only (its videos in `<camera>/calibration_images/`) and only when `calibrate:` names a calibrat3 checkout: calibrat3, headless in the computer's Chrome, makes the recording's `calibration.toml` and `calibration_summary.json` ([A calibration every day](calibration.md#a-calibration-every-day-made-by-itself-calibrat3)).
 - **export** runs `campy-live-export` in the inference environment, so the recording opens in LUC3D with the tracking on it (below). If `campy-live` was started again during the recording, its logs are joined first, in order.
 - **copy** copies the whole recording folder into `copy.to`: with robocopy on Windows, with rsync on Linux and macOS (rsync also takes `user@host:/path`). Then it checks every file's size. **Nothing is deleted**, on either side. In the panel, the page's **Copy each recording to** box takes the place of this step (below): it starts from `copy.to`, and copies in the background instead, so the next recording doesn't wait.
 - **run** runs your own commands in a shell, with `{folder}` replaced by the recording's folder. One that fails is logged, and the next one still runs.
@@ -157,7 +159,7 @@ What the page shows, refreshed every second:
 - **Everywhere:** the LUC3D logo in the page's header and as its browser-tab icon (inline in the page: nothing is fetched); in the top right corner, which campy the panel runs, as LUC3D shows its own: version, git branch and commit, for example `v2.7.0 · dev · 874060ba` (and `modified` when the checkout's files differ from that commit; the full commit in its tooltip). It is read as the panel starts, so after an update it changes once the panel is opened again; under the title, what the folder or file shown is (the folder being recorded into, the previous recording's, or the settings file).
 - **After it:**
   - **what went wrong while it recorded**, in a few lines: the cameras that dropped frames (`framesDropped` of `totalFrames`, with `writeQueueMaxSec`), lost frames in a stopped ffmpeg (`framesLostInEncoder`) or before they reached campy (`flirFramesLost`), a camera's `cameraError`, `videoError` or `frameTimesError`, a camera with no totals (it didn't close), each critical alert (when it turned critical, and whether it was resolved or still open at the end) and the warnings still open at the end. One line when there was nothing: `All 8 cameras: every frame saved (3,285 frames each)`. It is read from the recording's folder: each camera's `metadata.csv` (for a camera whose `metadata.csv` has no totals, its end line in `logs/campy-acquire.log`), `alerts.log` and `alerts-live.log`. It stays until the next recording starts. A panel opened again after a recording has ended shows that recording as the previous one (from `~/.campy/status/launcher.json`), with its steps and this summary;
-  - each step of `post:`, as it runs.
+  - each step of `post:`, as it runs: which one is running ("Step 4 of 7", with a progress bar in the header), for how long, and its latest line, from `logs/post.json`, which `campy-session post` rewrites as each step starts and as it goes (`plan`, `running`, each step's `state`, `message` and, for `calibrate`, `fraction`).
 
 #### Picking the live models on the panel
 
