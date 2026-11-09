@@ -662,3 +662,22 @@ def test_a_folder_panel_records_with_the_experiment_picked_on_its_page(tmp_path,
 		except subprocess.TimeoutExpired:
 			os.killpg(proc.pid, signal.SIGKILL)
 	assert proc.returncode == 0, "".join(lines)
+
+
+def test_a_title_is_only_the_file_that_gives_it(tmp_path, home):
+	# A trial built on the daily config with extends: is not a second "Daily" on the list
+	from test_session import write_config
+	folder = tmp_path / "configs"
+	folder.mkdir()
+	write_config(folder / "daily.yaml", {"numCams": 2, "videoFolder": str(tmp_path / "d"), "recTimeInSec": 60},
+		panel={"title": "Daily"})
+	(folder / "trial.yaml").write_text("extends: daily.yaml\nrecTimeInSec: 120\n")
+	t = panel.Types(str(folder))
+	daily, trial = t.Find(str(folder / "daily.yaml")), t.Find(str(folder / "trial.yaml"))
+	assert (daily["title"], daily["titled"]) == ("Daily", True)
+	assert (trial["title"], trial["titled"], trial["error"]) == ("trial", False, None)
+	assert [c["file"] for c in t.Favorites()] == ["daily.yaml"]
+	# Its own title makes it one
+	(folder / "trial.yaml").write_text("extends: daily.yaml\nrecTimeInSec: 120\npanel: {title: Trial}\n")
+	t.Scan()
+	assert [c["title"] for c in t.Favorites()] == ["Daily", "Trial"]

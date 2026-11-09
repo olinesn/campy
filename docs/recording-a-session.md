@@ -159,7 +159,7 @@ Make the icon once, in the recording environment (the one with `campy-acquire`),
 campy-session shortcut <folder of configs>
 ```
 
-It is named **campy recording** (`--name` gives another name), and opens one panel for every config in the folder, picked on the page's Experiment list. Before anyone stars a config on the page, the list shows the configs that have a title, `panel: {title: "Live tracking, 3 mice"}`, by that title; so give a title to each config people should record with, and leave it out of old or test configs. A config without a title shows under **Show all configs** by its file name. The panel holds the rig's lock (below) when any config in the folder asks for it.
+It is named **campy recording** (`--name` gives another name), and opens one panel for every config in the folder, picked on the page's Experiment list. Before anyone stars a config on the page, the list shows the configs that have a title, `panel: {title: "Live tracking, 3 mice"}`, by that title; so give a title to each config people should record with, and leave it out of old or test configs. A config without a title shows under **Show all configs** by its file name. A title belongs to the file that gives it: a config built on a titled one with `extends:` (a short trial of the daily config, say) doesn't take that title, so it stays off the list until it gets a title of its own or a star. The panel holds the rig's lock (below) when any config in the folder asks for it.
 
 An icon for one config still works: `campy-session shortcut <config>.yaml --name "Record: 3 cameras"` opens the panel with that config alone, with no Experiment list.
 
