@@ -632,7 +632,7 @@ The six good runs above were copied off the Pro Max Slim and looked at set by se
 
 What changes with a camera more:
 
-- **campy's config**: `numCams: 4`, and per-camera lists such as `cameraGain` need a fourth value. campy picks cameras by their place in the FLIR driver's list (`cameraSelection`), not by serial, so check with `campy-config show <config> --cameras`, or with campy-acquire's "Camera0 ready to trigger: flir ... serial ..." lines, that the older cameras kept their names. Their calibration is matched by name.
+- **campy's config**: `numCams: 4`, and per-camera lists such as `cameraGain` need a fourth value. By default campy picks cameras by their place in the FLIR driver's list (`cameraSelection`), not by serial: give `cameraSerials` to tie each name to its camera ([Configs](configs.md#names-that-follow-the-cameras-serial-numbers)), or check with `campy-config show <config> --cameras`, or with campy-acquire's "Camera0 ready to trigger: flir ... serial ..." lines, that the older cameras kept their names. Their calibration is matched by name.
 - **A new calibration** with all four cameras: `campy-live` matches the calibration's cameras to the feed's by name, and stops if one is missing.
 - **`--cameras 4`** for `campy-live`, `campy-live-view` and `campy-watch` run by hand (3 by default). `campy-session` passes `numCams` itself.
 - **New TensorRT plans**, built once at the first start (below).
