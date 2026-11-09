@@ -33,8 +33,9 @@ At the top of the page, under **Before the start**:
 - **Experiment**: the experiment's name, for example `Social hierarchy, week 3`.
 - **Animal IDs**: the animals in the cage, separated by commas: `M12, M14, M15`.
 - **Notes**: anything worth knowing later: `cage 2, new bedding`.
+- **Copy each recording to** (optional): a folder for the copies, for example the lab's network share, `\\server\share\your folder`. After each recording ends, the computer copies its folder there, in the background, while the next recording goes on. Nothing is deleted, here or there. The page remembers the folder for next time; empty the box for no copies.
 
-These are saved with the recording, so you can find it again.
+These are saved with the recording, so you can find it again. If the page can't reach the copy folder when you press Start, it says so and doesn't start: check the address, or open the share once in File Explorer.
 
 Next to them is a list of checks:
 
@@ -79,11 +80,11 @@ After the recording, the page shows **After the recording** while the computer:
 
 - turns the videos into ordinary video files (checked to be identical to what was recorded);
 - writes the tracking in the files LUC3D opens;
-- copies the recording elsewhere, if the rig is set up to.
-
 Each step turns green when done. Then the page says **Ready**, for the next recording.
 
-When you are done for the day, press **Close the panel** at the top of the page (or, on a rig that doesn't hold the rig's lock, Ctrl-C in the black window), then close the browser tab.
+**Copies.** With a folder in **Copy each recording to**, the page then lists the recording under **Copies**: waiting, copying (how many GB so far), done, or failed with the reason. Copies go one at a time, so a recording waits while the one before it copies. You can start the next recording right away: copying doesn't disturb it. On the 8-camera rig, a 2.1 GB recording (about 15 minutes) took under 2 minutes to copy to the network share.
+
+When you are done for the day, press **Close the panel** at the top of the page (or, on a rig that doesn't hold the rig's lock, Ctrl-C in the black window), then close the browser tab. If recordings are still being copied, the panel stays open until the copies are done, then closes by itself; leave the computer on until then. **Close now, without the copies** closes it at once: the recordings not copied stay on this computer, and each one's `logs/post.log` gives the command that copies it by hand.
 
 ## On the ChronicRecord rig: the Pico and SpikeGLX
 
