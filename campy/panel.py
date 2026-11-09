@@ -37,6 +37,12 @@ What the page shows, once a second:
   recording's bookmarks.csv as campy-live-view writes them; each program's
   state, and a button to open the view again.
 - after it: each post-step's progress (campy/post.py).
+- copies: with a folder in the page's "Copy each recording to" box, each
+  recording is copied into it once it and its post-steps have ended, in the
+  background, one at a time, while the next records (campy/copyqueue.py; the
+  config's own post copy step is off in the panel, the box takes its place and
+  starts from its copy.to). Closing the panel waits for copies still running,
+  unless the page leaves them.
 
 The page is served from this computer only (127.0.0.1): over Remote
 Desktop, open it in the rig's browser; from another computer, through an SSH
@@ -61,7 +67,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from campy import bookmarks, children, clock, devices, livefeed, livehealth, livemodels, liveresults, pico, session, \
+from campy import bookmarks, children, clock, copyqueue, devices, livefeed, livehealth, livemodels, liveresults, pico, session, \
 	stopfile, strictjson
 
 PORT = 8765
@@ -384,6 +390,10 @@ def Orphan():
 
 class Panel:
 	def __init__(self, config_path, args=(), port=PORT, browser=True):
+		# The copies of finished recordings (the page's "Copy each recording to"): the panel's for as long as it is
+		# open, whichever config it records with
+		self.copies = copyqueue.CopyQueue(say=Say)
+		self.close_when_copied = False # the page's Close while copies were running: close once they are done
 		self.config_path, self.args = config_path, list(args)
 		self.config = session.Config(config_path, self.args) # a config campy-session can't use stops here
 		self.port, self.browser = port, browser
@@ -530,6 +540,13 @@ class Panel:
 			if fields.get("disk_override") and any(c[0] == "block" for c in self.checks):
 				Say("Started though the disk check says it doesn't fit (confirmed on the page): {}".format(next(
 					c[1] for c in self.checks if c[0] == "block")))
+			# The page's "Copy each recording to": a folder this computer reaches, kept for the next panel too
+			to = str(fields.get("copy_to") or "").strip()
+			problem = copyqueue.Problem(to, self.config.Value("videoFolder", "."))
+			if problem:
+				return problem
+			copyqueue.Remember(copyqueue.RememberFile(), self.config.path, to)
+			self.close_when_copied = False # recording again: the page's earlier Close no longer stands
 			self.wanted = fields
 			self.error = None
 		return None
@@ -650,11 +667,29 @@ class Panel:
 		self.checks = self.Checks()
 		return error
 
-	def Close(self):
+	def Close(self, leave=False):
+		"""The page's Close. With copies still running, the panel closes by itself once they are done
+		(close_when_copied); leave closes it now, and each folder not copied says how to copy it by hand."""
 		if self.session is not None or self.wanted is not None:
 			return "A recording is running: the panel closes once it has ended and you close it."
+		if self.copies.Pending() and not leave:
+			if not self.close_when_copied:
+				Say("Closing once the copies are done ({} left).".format(len(self.copies.Pending())))
+			self.close_when_copied = True
+			return None
+		for job in self.copies.Leave():
+			Say("Not copied: {} ({}).".format(job.folder, job.message))
 		self.closing = True
 		return None
+
+	def CopyTo(self):
+		# What the page's box starts from: the folder this config's recordings were last copied into from a page, or
+		# the config's own post copy.to
+		remembered = copyqueue.Remembered(copyqueue.RememberFile(), self.config.path)
+		if remembered is not None:
+			return remembered
+		copy = (self.config.post or {}).get("copy") or {}
+		return str(copy.get("to") or "") if isinstance(copy, dict) else str(copy or "")
 
 	def Viewer(self):
 		s = self.session
@@ -714,8 +749,10 @@ class Panel:
 			"models": self.picker.Status() if getattr(self, "picker", None) is not None else None,
 			"disk": self.Disk(free, rate, s),
 			"alerts": {"open": open_, "resolved": resolved}, "problems": problems, "bookmarks": marks,
+			"copies": dict(self.copies.Status(), close_when_copied=self.close_when_copied),
 			"fields": {"experiment": str(self.config.Value("experiment", "") or "").replace("None", ""),
-				"animal_ids": ", ".join(str(a) for a in (self.config.Value("animalIds", []) or []))}}
+				"animal_ids": ", ".join(str(a) for a in (self.config.Value("animalIds", []) or [])),
+				"copy_to": self.CopyTo()}}
 
 	def BoutStatus(self):
 		# The page's bout settings box, with a Pico's bouts (none for a camera-only session)
@@ -850,7 +887,9 @@ class Panel:
 						except session.SessionError as e:
 							error = str(e)
 				elif url.path == "/close":
-					error = panel.Close()
+					error = panel.Close(bool(body.get("leave")))
+					if not error and not panel.closing:
+						return self.Send(200, {"ok": True, "waiting": len(panel.copies.Pending())})
 				elif url.path == "/stop-orphan":
 					error = panel.StopOrphan(bool(body.get("now")))
 				elif url.path == "/viewer":
@@ -905,8 +944,13 @@ class Panel:
 			while True:
 				try:
 					while self.wanted is None and not self.closing:
+						if self.close_when_copied and not self.copies.Pending():
+							self.closing = True
+							break
 						time.sleep(0.2)
 				except KeyboardInterrupt:
+					for job in self.copies.Leave():
+						Say("Not copied: {} ({}).".format(job.folder, job.message))
 					Say("Closed.")
 					return 0
 				if self.closing:
@@ -928,10 +972,14 @@ class Panel:
 	def Record(self):
 		# One recording, in this (the main) thread: campy-session's Ctrl-C and its tied children need it
 		fields, args = self.wanted, self.Args(self.wanted)
+		copy_to = str(fields.get("copy_to") or "").strip()
 		try:
 			pick = self.picker.Pick() if self.picker is not None else None
 			page = dict(self.devices.pico.page) if self.devices is not None and self.devices.pico is not None else None
 			config = session.Config(self.config_path, args, live=pick, pico_set=page)
+			# The page's box copies it, in the background, once it has ended: not the post copy step, which would keep
+			# the next recording waiting
+			config.post["copy"] = {}
 			if page:
 				Say("Bout settings from the page: {}".format(self.devices.PageText()))
 			if pick:
@@ -957,6 +1005,8 @@ class Panel:
 				except Exception as e:
 					clean, why = False, "could not be told ({})".format(e)
 				self.last["clean"] = {"clean": bool(clean), "why": why}
+				if copy_to:
+					self.copies.Add(self.session.folder, copy_to)
 			self.session = None
 			self.checks = self.Checks()
 

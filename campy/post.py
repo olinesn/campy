@@ -750,6 +750,8 @@ def Main(argv=None):
 	p.add_argument("--only", default="", help="these steps only, comma-separated: " + ", ".join(STEPS))
 	p.add_argument("--force", action="store_true", help="run them after an unclean stop too, and again when done")
 	p.add_argument("--ffmpeg", default="", help="the ffmpeg to remux with (default: imageio-ffmpeg's)")
+	p.add_argument("--to", default="", help="the copy step copies into this folder (as copy.to: it makes "
+		"<folder>/<the recording's name>), in place of the config's; the panel's \"Copy each recording to\" box says it")
 	args = p.parse_args(argv)
 	folder = os.path.abspath(args.folder)
 	if not os.path.isdir(folder):
@@ -768,6 +770,8 @@ def Main(argv=None):
 			print("campy-session post: {}".format(e), file=sys.stderr)
 			return 1
 		settings, live = config.post, config.live or {}
+	if args.to:
+		settings = dict(settings, copy={"to": args.to})
 	try:
 		live_python = session.LivePython(live)[0]
 	except session.SessionError:
