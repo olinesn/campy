@@ -31,6 +31,7 @@ setup(
 			"campy-encode-sweep = campy.sweep:Main",
 			"campy-encode-quality = campy.quality:Main",
 			"campy-align = campy.align:Main",
+			"campy-calibrate = campy.calibrate:Main",
 			"campy-synctest = campy.synctest:Main",
 			"campy-flir-reset = campy.flirreset:Main",
 			"campy-live = campy.live:Main",

@@ -78,7 +78,7 @@ from datetime import datetime
 from campy import align, segments, strictjson
 
 POST_LOG, POST_JSON = "post.log", "post.json"
-STEPS = ("remux", "join", "align", "export", "copy", "run")
+STEPS = ("remux", "join", "align", "calibrate", "export", "copy", "run")
 VIDEO_EXTENSIONS = (".mp4", ".m4v", ".mov")
 SPARE_BYTES = 200 * 1024 ** 2 # left free on the disk besides the remuxed copy
 
@@ -554,6 +554,35 @@ def StepAlign(folder, settings, log, stop=None):
 	return "done", text
 
 
+def StepCalibrate(folder, settings, log, stop=None):
+	"""
+	A calibration recording (its videos in <camera>/calibration_images/): calibrat3, headless in this computer's
+	Chrome, makes calibration.toml (campy/calibrate.py), when the post: section asks for it (calibrate: {calibrat3:
+	<checkout>, board: {...}, target: 300, browser: chrome}).
+	"""
+	from campy import calibrate
+	videos = calibrate.CalibrationVideos(folder)
+	if not videos:
+		return "skipped", "not a calibration recording"
+	options = settings.get("calibrate") or {}
+	if not options or options is False:
+		return "skipped", "calibrate is off (post: calibrate: {calibrat3: <checkout>} turns it on)"
+	if stop and stop():
+		return "failed", "stopped (Ctrl-C)"
+	try:
+		summary = calibrate.Calibrate(folder, options.get("calibrat3"), board=options.get("board"),
+			target=options.get("target", calibrate.DEFAULT_TARGET), browser=options.get("browser", "chrome"),
+			say=lambda text: log.Say("  " + text), force=True)
+	except calibrate.CalibrateError as e:
+		return "failed", str(e)
+	if not summary["ok"]:
+		return "failed", "calibration.toml incomplete: {}".format(summary.get("why"))
+	cams = summary["cameras"]
+	worst = max(cams, key=lambda n: cams[n]["median_px"])
+	return "done", "calibration.toml for {} cameras, by calibrat3: reprojection median {:.2f} px, worst {} {:.2f} px " \
+		"({:.0f} s)".format(len(cams), summary["median_px"], worst, cams[worst]["median_px"], summary["seconds"])
+
+
 def StepExport(folder, settings, log, live_python=None, force=False, stop=None):
 	if not settings.get("export", True):
 		return "skipped", "export is off"
@@ -723,6 +752,8 @@ def Run(folder, settings, live_python=None, only=None, force=False, ffmpeg=None,
 				result = StepJoin(folder, settings, log, ffmpeg=ffmpeg, stop=stop)
 			elif step == "align":
 				result = StepAlign(folder, settings, log, stop=stop)
+			elif step == "calibrate":
+				result = StepCalibrate(folder, settings, log, stop=stop)
 			elif step == "export":
 				result = StepExport(folder, settings, log, live_python=live_python, force=force or bool(before), stop=stop)
 			elif step == "copy":

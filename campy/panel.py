@@ -373,6 +373,35 @@ def Alerts(folder, keep=200):
 	return open_, resolved
 
 
+CALIBRATION_MAX_AGE_H = 24 # a 3D calibration older than this is a warning: one is recorded each day
+
+
+def CalibrationCheck(where, now=None):
+	"""
+	The check line for live: calibration: which calibration.toml the next recording uses (a folder of calibration
+	recordings: the newest whole one), how old, and its cameras' reprojection error. Older than a day: a warning
+	(record a calibration today); none: it stops the start.
+	"""
+	from campy import calibrate
+	path, summary = calibrate.Newest(where)
+	if path is None:
+		return ("block", "3D calibration: none in {} that campy-calibrate made whole: record a calibration (the "
+			"Calibration experiment) first".format(where) if os.path.isdir(str(where)) else
+			"3D calibration: {} isn't there".format(where))
+	age = calibrate.AgeHours(summary, now) if summary else None
+	if age is None:
+		try:
+			age = ((now.timestamp() if now else time.time()) - os.path.getmtime(path)) / 3600
+		except OSError:
+			age = None
+	text = "3D calibration: {} ({})".format(path, calibrate.Describe(summary) if summary else "no summary beside it")
+	if age is not None and age > CALIBRATION_MAX_AGE_H:
+		return ("warn", "{}: {:.0f} days old. Record a calibration today (the Calibration experiment), so the 3D "
+			"follows any camera that moved".format(text, age / 24) if age >= 48 else
+			"{}: {:.0f} hours old. Record a calibration today (the Calibration experiment)".format(text, age))
+	return ("ok", text)
+
+
 def VersionLabel():
 	"""
 	Which campy the panel runs, for the page's top right corner (as LUC3D shows its own): {text, title}, e.g.
@@ -737,6 +766,8 @@ class Panel:
 				checks.append(("block", str(e)))
 		if getattr(self, "picker", None) is not None:
 			checks += self.picker.Checks()
+		if live is not None and live.get("calibration"):
+			checks.append(CalibrationCheck(live["calibration"]))
 		n, names = self.config.Cameras()
 		if self.devices is not None and self.devices.pico is not None:
 			checks.append(("ok", "{} cameras ({})".format(n, ", ".join(names))))
