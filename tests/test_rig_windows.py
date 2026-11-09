@@ -39,6 +39,35 @@ def dead_pid():
 
 # Pure functions
 
+def test_console_close_ends_the_run_and_ctrl_c_stays_pythons():
+	# A close, logoff or shutdown of rig.py's console (CTRL_CLOSE/LOGOFF/SHUTDOWN_EVENT) says why in got,
+	# sets closing and waits for the run to release the rig; Ctrl-C (0) and Ctrl-Break (1) go to Python
+	import threading
+	called = []
+	for event in (0, 1):
+		got, closing, done = [None], threading.Event(), threading.Event()
+		assert rig.console_event(event, got, closing, done, lambda: called.append(1), wait=0.01) is False
+		assert got == [None] and not closing.is_set() and not called
+	got, closing, done = [None], threading.Event(), threading.Event()
+	threading.Timer(0.1, done.set).start()  # the run releases the rig in time
+	t0 = time.monotonic()
+	assert rig.console_event(2, got, closing, done, lambda: called.append(1), wait=5) is True
+	assert got == ["the console window closing"] and closing.is_set() and not called
+	assert time.monotonic() - t0 < 2
+	got, closing, done = ["SIGINT"], threading.Event(), threading.Event()  # the first reason stays
+	assert rig.console_event(5, got, closing, done, lambda: called.append(1), wait=0.05) is True
+	assert got == ["SIGINT"] and called == [1]  # not done in time: abandoned from the handler
+	def fails():
+		raise OSError("gone")
+	assert rig.console_event(6, [None], threading.Event(), threading.Event(), fails, wait=0.01) is True
+	assert rig.CLOSE_EVENTS == {2: "the console window closing", 5: "a logoff", 6: "a shutdown"}
+
+
+def test_catch_console_close_off_windows_only_makes_the_events(monkeypatch):
+	monkeypatch.setattr(rig, "WINDOWS", False)
+	closing, done = rig.catch_console_close([None], lambda: None)
+	assert not closing.is_set() and not done.is_set()
+
 def test_classify_names_dlls_ports_and_jobs(monkeypatch):
 	monkeypatch.setattr(rig_windows, "GPU_NAMES", ["python*.exe"])
 	monkeypatch.setattr(rig_windows, "ENCODER_NAMES", ["ffmpeg*.exe"])
@@ -696,3 +725,35 @@ def test_rig_hold_ps1_holds_the_rig_until_it_ends(run):
 	closed.wait(60)
 	s = run("status")
 	assert s.stdout.startswith("rig free (stale gpu.lock cleared: tester training"), s.stdout
+
+
+CLOSE_WINDOW = """import ctypes, sys
+k32, u32 = ctypes.WinDLL("kernel32"), ctypes.WinDLL("user32")
+k32.GetConsoleWindow.restype = ctypes.c_void_p
+u32.PostMessageW.argtypes = (ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p)
+ok = k32.AttachConsole(int(sys.argv[1]))
+hwnd = k32.GetConsoleWindow()
+k32.FreeConsole()  # off that console first, or its closing would end this script too
+with open(sys.argv[2], "w") as f:
+	f.write("%s %s" % (ok, hwnd))
+u32.PostMessageW(hwnd, 0x0010, None, None)  # WM_CLOSE: as the window's X
+"""
+
+
+@windows
+def test_closing_the_console_window_releases_gpu_lock(run):
+	# rig.py run in a console window of its own (conhost, as a desktop shortcut to python.exe opens), its
+	# window closed: within Windows' 5 s rig.py ends the job, writes its last line and removes gpu.lock
+	go, said = run.tmp / "go", run.tmp / "closed.txt"
+	p = subprocess.Popen(["conhost.exe", sys.executable, RIG, "run", "s1", "closed", "--", sys.executable, "-c",
+		WAIT_FOR, str(go)], env=run.env, cwd=str(run.tmp))
+	job = lock_job(run)
+	rigpid = int(re.search(r"rigpid=(\d+)", run.lock.read_text()).group(1))
+	closer = subprocess.run([sys.executable, "-c", CLOSE_WINDOW, str(rigpid), str(said)], env=run.env,
+		creationflags=subprocess.DETACHED_PROCESS, timeout=60)  # no console of its own: it attaches to rig.py's
+	attached, hwnd = said.read_text().split()
+	assert closer.returncode == 0 and attached != "0" and hwnd != "None", said.read_text()
+	until(lambda: not run.lock.exists(), timeout=10)
+	until(lambda: not rig.alive(*job), timeout=10)
+	p.wait(30)
+	assert last(run.log("closed")).startswith("RIG_ABORTED by the console window closing"), run.log("closed")

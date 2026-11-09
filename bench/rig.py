@@ -839,8 +839,10 @@ def watch(w, alive, log, args, on_signal, lock, stopper=None):
 			note(("lock",), "LOCK changed by someone else during the run: %s" % lock.text())
 		if on_signal[0]:
 			break
-		if stopper is None:
-			time.sleep(PERIOD)
+		if stopper is None:  # a signal (a console closing: seconds to go) ends the wait at once
+			t = time.monotonic() + PERIOD
+			while time.monotonic() < t and not on_signal[0]:
+				time.sleep(0.2)
 			continue
 		if stopper.check(users):
 			break
@@ -885,12 +887,12 @@ def logger(path):
 def log_path(args, tag):
 	return os.path.join(args.log_dir or os.getcwd(), re.sub(r"[^\w.+-]", "_", tag) + ".rig.log")
 
-def catch_signals():
+def catch_signals(got=None):
 	"""got[0] becomes the name of the first stopping signal (Ctrl-C, Ctrl-Break, SIGTERM, SIGHUP). One
 	ignored when rig.py started stays ignored, by rig.py and by its job: under nohup a hangup (the
 	terminal or the ssh closing) stops neither, and a script's background job (cmd &) keeps out of the
 	script's Ctrl-C, as any program would."""
-	got = [None]
+	got = [None] if got is None else got
 	def on(sig, frame):
 		got[0] = got[0] or signal.Signals(sig).name
 	for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"):
@@ -898,6 +900,56 @@ def catch_signals():
 		if sig is not None and signal.getsignal(sig) is not signal.SIG_IGN:
 			signal.signal(sig, on)
 	return got
+
+# Windows: rig.py's console window closing (its X, or Task Manager's End task on it), a logoff or a shutdown.
+# Windows ends every process in that console about 5 s after the event, and Python has no signal for it
+# (only Ctrl-C and Ctrl-Break), so rig.py used to end there and then: no last log line, and gpu.lock left
+# behind. That file counts as free once both its pids have ended, but it stays until the next rig.py clears
+# it, and anything that only looks for the file takes the rig for busy (2026-11-09, a panel's window closed).
+CLOSE_EVENTS = {2: "the console window closing", 5: "a logoff", 6: "a shutdown"}  # CTRL_CLOSE, _LOGOFF, _SHUTDOWN_EVENT
+CLOSE_WAIT = 4.0  # s rig.py holds Windows off for, inside its 5 s, to end the job and release the rig
+CONSOLE_HANDLERS = []  # the ctypes callbacks, kept alive while rig.py runs
+
+def console_event(event, got, closing, done, abandon, wait=CLOSE_WAIT):
+	"""A console control event. Ctrl-C and Ctrl-Break: False (Python's own handlers take them, as
+	catch_signals). A close, logoff or shutdown: got[0] says which, closing is set (the run ends its job
+	at once, not after 30 s, and releases the rig), and this waits up to wait s for done; if the run hasn't
+	finished by then (it was still waiting for the rig to be quiet, say), abandon() ends the job and
+	releases the rig from here. True: handled, and Windows ends rig.py when this returns."""
+	why = CLOSE_EVENTS.get(event)
+	if why is None:
+		return False
+	got[0] = got[0] or why
+	closing.set()
+	if not done.wait(wait):
+		with contextlib.suppress(Exception):
+			abandon()
+	return True
+
+def catch_console_close(got, abandon):
+	"""(closing, done), two threading.Events: on Windows, a close, logoff or shutdown of rig.py's console
+	goes to console_event. The caller sets done once the rig is released."""
+	import threading
+	closing, done = threading.Event(), threading.Event()
+	if WINDOWS:
+		import ctypes
+		from ctypes import wintypes
+		routine = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+		k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+		k32.SetConsoleCtrlHandler.argtypes = (routine, wintypes.BOOL)
+		k32.SetConsoleCtrlHandler.restype = wintypes.BOOL
+		handler = routine(lambda event: bool(console_event(event, got, closing, done, abandon)))
+		if k32.SetConsoleCtrlHandler(handler, True):
+			CONSOLE_HANDLERS.append(handler)
+	return closing, done
+
+def abandon_run(lock):
+	"""The console is closing and the run didn't finish in time: end the job (its job object) and release
+	the rig, from the console handler's thread."""
+	for job in list(JOBS.values()):
+		with contextlib.suppress(Exception):
+			job.terminate()
+	lock.release()
 
 def outlive(error, running, log, got, what, stop=None):
 	"""rig.py failed while the job runs (an error in its watch, a log it can't write). Releasing the rig
@@ -1422,6 +1474,8 @@ def cmd_run(args):
 			say("rig.py run: not now on this experiment machine: %s" % "; ".join(why))
 			sys.exit(75)
 	lock.acquire(args.owner, args.tag, args.no_wait)
+	got = [None]
+	closing, done = catch_console_close(got, lambda: abandon_run(lock))
 	proc, found = None, []
 	try:
 		lock.record(note=WAITING)
@@ -1437,7 +1491,7 @@ def cmd_run(args):
 		# The log's first line before the job starts: a run whose job ran has a log, even when rig.py
 		# is killed (SIGKILL) the moment RIG_BUSY names the job, and the log says nothing more then
 		log("rig.py " + version_text())
-		got = catch_signals()
+		catch_signals(got)
 		env = dict(os.environ, RIG_JOB=job, RIG_OWNER=args.owner, RIG_TAG=args.tag)
 		# The lock names the job before the job starts: a guarded script (rig_guard.sh, .ps1) checks
 		# at once whether it runs in the rig's job, and if it looked before the lock named its job, it
@@ -1465,13 +1519,17 @@ def cmd_run(args):
 			remove_marker("STOP")
 			log("tests paused: %s" % read_pause(datetime.datetime.now()))
 		elif got[0]:
-			stop_job(proc, got[0])
+			if closing.is_set():  # the console is closing: Windows ends rig.py in seconds, so no 30 s for the job
+				end_job(proc)
+			else:
+				stop_job(proc, got[0])
 		code = proc.wait()
-		# Whatever the job left running on a device keeps the rig until it ends (at most 60 s)
+		# Whatever the job left running on a device keeps the rig until it ends (at most 60 s; not
+		# while the console closes, when the job object has ended all of it)
 		def leftovers():
 			return [p for p in scan().values() if p.job == job and p.kinds]
 		t0 = time.monotonic()
-		while leftovers() and time.monotonic() - t0 < 60:
+		while not closing.is_set() and leftovers() and time.monotonic() - t0 < 60:
 			time.sleep(PERIOD)
 		for p in leftovers():
 			log("LEFTOVER still running after the job: %s" % describe(p))
@@ -1491,6 +1549,7 @@ def cmd_run(args):
 		for j in JOBS.values():
 			j.close()
 		JOBS.clear()
+		done.set()
 	sys.exit(code if code >= 0 else 128 - code)
 
 def cmd_hold(args):
@@ -1499,6 +1558,8 @@ def cmd_hold(args):
 		sys.exit("rig.py hold: pid %d is not running" % args.pid)
 	lock = make_lock()
 	lock.acquire(args.owner, args.tag, args.no_wait)
+	got = [None]
+	closing, done = catch_console_close(got, lock.release)  # the held pid is left running, as on a signal
 	held = False
 	def running():
 		return alive(args.pid, start)
@@ -1511,7 +1572,7 @@ def cmd_hold(args):
 		job = (p and p.job) or "hold-%d" % args.pid
 		log = logger(log_path(args, args.tag))
 		log("rig.py " + version_text())  # before RIG_BUSY names the pid, as in run
-		got = catch_signals()
+		catch_signals(got)
 		lock.record(job, args.pid, " (held for a running pid)")
 		held = True
 		log("rig held by %s for %s (running pid %d): %s" % (args.owner, args.tag, args.pid, cmdline(p) if p else "?"))
@@ -1526,6 +1587,7 @@ def cmd_hold(args):
 		raise
 	finally:
 		lock.release()
+		done.set()
 
 def cmd_status(args):
 	lock = make_lock()
