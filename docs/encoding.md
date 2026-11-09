@@ -132,7 +132,7 @@ Every `campy-acquire` then starts with a launch check, printed before recording:
 With `preflight: "error"` (the default), a failed check stops campy before recording; `"warn"` records anyway; `"off"` (quoted or not) skips the check. `displayFrameRate: 0` runs without the cameras' window (campy-live-view), for example over SSH.
 
 ## Denoising before encoding (atadenoise)
-campy has no denoise filter. Measured on 9 November 2026: a temporal denoiser (`atadenoise`) changes mouse pixels by a few gray levels at most, a SLEAP model trained on denoised video tracks undenoised video just as well, and the filter's real effect is on file size: on near-raw frames it made constant-quality files 7–30% smaller, more for a still scene. Older campy code carries the line `-vf atadenoise=...` commented out in its NVENC settings; a setup that turns it on (`-vf atadenoise=s=5`, ffmpeg 4.2, H.265 NVENC at constant QP 24) is what these numbers compare against.
+campy has no denoise filter. Measured on 9 November 2026: a temporal denoiser (`atadenoise`) changes mouse pixels by a few gray levels at most, a SLEAP model trained on denoised video tracks undenoised video just as well, and the filter's real effect is on file size: on near-raw frames it made campy's files 4–33% smaller at the same quality setting, more for a still scene and more on NVENC than on Quick Sync. Older campy code carries the line `-vf atadenoise=...` commented out in its NVENC settings; a setup that turns it on (`-vf atadenoise=s=5`, ffmpeg 4.2, H.265 NVENC at constant QP 24) is what these numbers compare against.
 
 **What atadenoise does.** For each pixel it looks at the same pixel in the 2 frames before and the 2 after (`s=5`), and averages in each of those frames only while it differs from the pixel by at most 4 gray levels (of 255), and only while the differences on that side add up to at most 9. It stops at the first frame that differs more. The thresholds come from the defaults `0a=0.02` and `0b=0.04`: 0.02 × 256 − 1 = 4 and 0.04 × 256 − 1 = 9 for 8-bit video. So **no pixel can change by more than 4 gray levels**, wherever it is, and it can't leave a trail or a smear brighter than that. A still background is averaged over all 5 frames; a mouse's moving edge, which changes by tens of levels from frame to frame, isn't averaged at all.
 
@@ -188,9 +188,21 @@ The filter moves keypoints less than encoding does, the models found the same an
 | medium | 1.19 → 0.90 | 0.34 / 3 / 44% | −17% |
 | fast | 0.82 → 0.61 | 0.29 / 3 / 40% | −7% |
 
-At 120 fps the numbers were nearly the same (−32%, −19%, −7%). Half the thresholds (`0.01/0.02`) changed no pixel by more than 1 level and saved only 2%; double (`0.04/0.08`) removed most of the noise (to 0.3–0.4) but moved pixels by up to 7 levels. So on real recordings the filter mainly buys smaller files, by roughly a fifth for a quiet cage, at the cost of changes of at most 3 levels on anything that moves and none on tracking that these tests could see. Raising `quality` saves bits too, but on every pixel.
+At 120 fps the numbers were nearly the same (−32%, −19%, −7%). Half the thresholds (`0.01/0.02`) changed no pixel by more than 1 level and saved only 2%; double (`0.04/0.08`) removed most of the noise (to 0.3–0.4) but moved pixels by up to 7 levels.
 
-**Not yet measured.** No unfiltered 60 fps recording of white mice on light bedding existed yet, the hardest case for telling fur from bedding (the filter still can't move any pixel by more than 4 levels there), and the file-size saving wasn't measured with the rigs' own encoders (Quick Sync AV1 and NVENC) on near-raw frames.
+The same clips through campy's own encoders on the Dell Pro Max Slim (BtbN ffmpeg 8.1, `-filter_threads 1`, 60 fps, 3 s each), bitrate without → with the filter:
+
+| Fan, 60 fps | AV1 on Quick Sync, quality 88, preset faster | H.265 on NVENC (RTX 2000 Ada), QP 24, preset fast | H.265 on Quick Sync, quality 26 |
+|---|---|---|---|
+| slow | 1.28 → 1.01 Mbit/s (−21%) | 1.95 → 1.31 (−33%) | 1.08 → 0.84 (−22%) |
+| medium | 1.60 → 1.42 (−11%) | 2.23 → 1.75 (−22%) | 1.42 → 1.24 (−13%) |
+| fast | 2.39 → 2.29 (−4%) | 3.06 → 2.73 (−11%) | 2.09 → 1.97 (−6%) |
+
+At 120 fps the savings were within 2 points of these. NVENC at a constant QP spends the most bits on noise, so it gains the most; Quick Sync gains about two-thirds as much. AV1 on Quick Sync without the filter already wrote smaller files than H.265 on NVENC with it, for every fan speed.
+
+So on real recordings the filter mainly buys smaller files: roughly a tenth to a fifth on Quick Sync and a fifth to a third on NVENC for a quiet scene, less with more movement. It costs changes of at most 3 levels on anything that moves and, in these tests, nothing in tracking. Raising `quality` saves bits too, but on every pixel.
+
+**Not yet measured.** No unfiltered 60 fps recording of white mice on light bedding existed yet, the hardest case for telling fur from bedding (the filter still can't move any pixel by more than 4 levels there).
 
 ## Helpful tips
 - To debug broken ffmpeg pipe error, include this in config.yaml:
