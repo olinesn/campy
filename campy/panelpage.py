@@ -34,6 +34,7 @@ input{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line
 label{font-size:12px;color:var(--muted)}h2{font-size:15px;font-weight:500;margin:0 0 6px}
 .bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden}.bar div{height:6px;background:var(--ok)}
 .copybar{max-width:420px;margin:4px 0 2px}.copybar div{background:var(--accent)}
+.bgcopy{border-left:4px solid var(--accent)}.bgcopy .copybar{max-width:none;height:10px}.bgcopy .copybar div{height:10px}
 .err{color:var(--bad);font-size:13px}ul{margin:4px 0 0;padding-left:18px}li{margin:2px 0}
 select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
 .steps li{list-style:none;margin-left:-18px}.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px}
@@ -52,6 +53,9 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
   <button id="close" hidden title="Close the panel (nothing is recording)">Close the panel</button>
 </div>
 <div id="error" class="err" hidden></div>
+<div id="bgcopy" class="card bgcopy" hidden><div class="row"><b class="grow" id="bgcopytitle">Copying in the background</b>
+  <span class="muted">Leave the computer on, and the panel's black window open, until it is done.</span></div>
+  <div id="bgcopytext"></div></div>
 
 <div id="typebox" class="card" hidden>
   <div class="row"><div class="grow"><label for="type">Experiment</label><select id="type"></select>
@@ -291,7 +295,14 @@ function copyBar(j){
   return '<div class="bar copybar"><div style="width:'+Math.min(100, 100*(j.done_bytes||0)/j.bytes).toFixed(1)+'%"></div></div>';
 }
 function renderCopies(C, folder){
-  const jobs = C.jobs || []; $("copies").hidden = !jobs.length && !C.close_when_copied;
+  const jobs = C.jobs || [];
+  // Copies still to do, at the top of the page in every state (a new recording too) until the last is done: not only in
+  // the Copies card, below the cameras while one records
+  const now = jobs.filter(j => j.state=="copying"), queued = jobs.filter(j => j.state=="waiting");
+  $("bgcopy").hidden = !now.length && !queued.length;
+  $("bgcopytitle").textContent = now.length ? "Copying in the background" : "Copies waiting to start";
+  $("bgcopytext").innerHTML = now.map(j => "<div><b>"+esc(j.name)+"</b> "+esc(copyText(j))+copyBar(j)+"</div>").join("") +
+    (queued.length ? '<div class="muted">'+(now.length ? "Then " : "")+queued.map(j => esc(j.name)).join(", ")+(queued.length==1 ? " waits" : " wait")+" to be copied.</div>" : ""); $("copies").hidden = !jobs.length && !C.close_when_copied;
   $("copywait").hidden = $("closenow").hidden = !C.close_when_copied;
   if(C.close_when_copied) $("copywait").textContent = C.pending ? "The panel closes by itself once these copies are done ("+C.pending+" left)." : "Closing…";
   $("copylist").innerHTML = jobs.map(j => "<li>"+tag(j.state, j.state=="done"?"ok":j.state=="failed"||j.state=="left"?"bad":"warn")+" <b>"+esc(j.name)+"</b> "+esc(copyText(j))+copyBar(j)+"</li>").join("");

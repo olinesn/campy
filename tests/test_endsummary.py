@@ -172,3 +172,12 @@ def test_the_pages_copy_step_says_copying_with_a_bar_and_the_time_left():
 	assert '["done","failed","copying"].includes(CJ.state)' in panelpage.PAGE
 	assert "function copyBar(j)" in panelpage.PAGE and "function copyEta(j)" in panelpage.PAGE
 	assert "copyBar(j)+" in panelpage.PAGE # in the Copies card too
+
+
+def test_copies_still_to_do_show_at_the_top_of_the_page_in_every_state():
+	# A copy still running when the next recording starts stays obvious: a strip under the page's header, not only the
+	# Copies card below the cameras
+	from campy import panelpage
+	page = panelpage.PAGE
+	assert page.index('id="bgcopy"') < page.index('id="typebox"') < page.index('id="during"')
+	assert '$("bgcopy").hidden = !now.length && !queued.length' in page
