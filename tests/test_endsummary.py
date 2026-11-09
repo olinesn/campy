@@ -164,3 +164,11 @@ def test_a_panel_opened_again_shows_the_last_recording_that_ended(tmp_path, monk
 def test_the_page_shows_the_summary():
 	from campy import panelpage
 	assert 'id="summary"' in panelpage.PAGE and "s.summary" in panelpage.PAGE
+
+
+def test_the_pages_copy_step_says_copying_with_a_bar_and_the_time_left():
+	# A copy under way was "waiting" on the After the recording card; now "copying", with a bar and an estimate
+	from campy import panelpage
+	assert '["done","failed","copying"].includes(CJ.state)' in panelpage.PAGE
+	assert "function copyBar(j)" in panelpage.PAGE and "function copyEta(j)" in panelpage.PAGE
+	assert "copyBar(j)+" in panelpage.PAGE # in the Copies card too

@@ -33,6 +33,7 @@ button:hover{background:var(--soft)}button.stop{color:var(--bad);border-color:va
 input{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
 label{font-size:12px;color:var(--muted)}h2{font-size:15px;font-weight:500;margin:0 0 6px}
 .bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden}.bar div{height:6px;background:var(--ok)}
+.copybar{max-width:420px;margin:4px 0 2px}.copybar div{background:var(--accent)}
 .err{color:var(--bad);font-size:13px}ul{margin:4px 0 0;padding-left:18px}li{margin:2px 0}
 select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
 .steps li{list-style:none;margin-left:-18px}.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px}
@@ -235,8 +236,9 @@ function render(s){
   $("summary").innerHTML = SM ? SM.lines.map(x => "<li>"+tag(x.level=="ok"?"ok":x.level=="bad"?"problem":"warning", x.level)+" "+esc(x.text)+"</li>").join("") : "";
   $("summarynote").hidden = !hurt;
   const CJ = ((s.copies||{}).jobs||[]).find(j => L.folder && j.folder == L.folder);
-  if(CJ) P.copy = {state: CJ.state=="done" ? "done" : CJ.state=="failed" ? "failed" : "waiting", message: copyText(CJ)};
-  $("post").innerHTML = ["remux","export","copy","run"].map(k => P[k] ? "<li>"+tag(P[k].state, P[k].state=="done"?"ok":P[k].state=="failed"?"bad":"warn")+" "+k+": "+esc(P[k].message)+"</li>"
+  // The panel's own copy, in the background: copying (with how far it has got), waiting behind another, done or failed
+  if(CJ) P.copy = {state: ["done","failed","copying"].includes(CJ.state) ? CJ.state : "waiting", message: copyText(CJ), bar: copyBar(CJ)};
+  $("post").innerHTML = ["remux","export","copy","run"].map(k => P[k] ? "<li>"+tag(P[k].state, P[k].state=="done"?"ok":P[k].state=="failed"?"bad":"warn")+" "+k+": "+esc(P[k].message)+(P[k].bar||"")+"</li>"
     : "<li class=muted>"+k+(st=="post"?": waiting":"")+"</li>").join("");
 }
 let typeSig = "", listSig = "", choosing = false, refill = false;
@@ -272,15 +274,27 @@ async function chooseType(path){
 function base(p){ return String(p||"").split(/[\\/]/).filter(x => x).pop() || ""; }
 function gb(b){ return b==null ? "?" : (b/1e9).toFixed(1); }
 function copyText(j){
-  if(j.state=="copying") return "copying into "+j.to+": "+gb(j.done_bytes)+" of "+gb(j.bytes)+" GB, "+dur(j.seconds||0);
+  if(j.state=="copying") return "copying into "+j.to+": "+gb(j.done_bytes)+" of "+gb(j.bytes)+" GB, "+dur(j.seconds||0)+copyEta(j);
   if(j.state=="waiting") return "waits for the copies before it, into "+j.to;
   return j.message || j.state;
+}
+function copyEta(j){
+  // How long the rest takes at the copy's average rate so far, and the clock time it should end: once there is a rate
+  if(!j.bytes || !j.done_bytes || (j.seconds||0) < 5 || j.done_bytes >= j.bytes) return "";
+  const left = (j.bytes - j.done_bytes) / (j.done_bytes / j.seconds), m = Math.round(left/60);
+  const end = new Date(Date.now() + left*1000).toLocaleTimeString([], {hour:"numeric", minute:"2-digit", hour12:true});
+  return ", " + (left < 60 ? "under a minute" : m < 60 ? "about "+m+" min" : "about "+Math.floor(m/60)+" h "+(m%60)+" min") + " left (done around "+end+")";
+}
+function copyBar(j){
+  // A copy under way: a bar of the bytes copied so far (none until its size is known)
+  if(j.state!="copying" || !j.bytes) return "";
+  return '<div class="bar copybar"><div style="width:'+Math.min(100, 100*(j.done_bytes||0)/j.bytes).toFixed(1)+'%"></div></div>';
 }
 function renderCopies(C, folder){
   const jobs = C.jobs || []; $("copies").hidden = !jobs.length && !C.close_when_copied;
   $("copywait").hidden = $("closenow").hidden = !C.close_when_copied;
   if(C.close_when_copied) $("copywait").textContent = C.pending ? "The panel closes by itself once these copies are done ("+C.pending+" left)." : "Closing…";
-  $("copylist").innerHTML = jobs.map(j => "<li>"+tag(j.state, j.state=="done"?"ok":j.state=="failed"||j.state=="left"?"bad":"warn")+" <b>"+esc(j.name)+"</b> "+esc(copyText(j))+"</li>").join("");
+  $("copylist").innerHTML = jobs.map(j => "<li>"+tag(j.state, j.state=="done"?"ok":j.state=="failed"||j.state=="left"?"bad":"warn")+" <b>"+esc(j.name)+"</b> "+esc(copyText(j))+copyBar(j)+"</li>").join("");
 }
 let modelSig = "";
 function renderModels(M){
