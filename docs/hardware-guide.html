@@ -578,6 +578,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
   </div>
   <ul class="plain col">
     <li><b>30 fps fits; 60 fps doesn't with this model.</b> A set needs about 18–20 ms of the A2000 with 8 cameras and 5 mice, more than the 16.7 ms between frames at 60 fps, so <code>campy-live</code> skips the sets it can't reach. In the benchmark only the lightest model sizes fit 8 cameras at 60 fps on this card (5 of 32: centroid at 0.25 scale with output stride 4, 192 px crops; the default size took 13.0 ms, p99 13.4).</li>
+    <li><b>With 2 mice, lighter models track all 8 cameras at 60 fps (7–9 November).</b> The box this computer films holds 2 mice. A pair trained for it, with the centroid model unchanged in size and a centered-instance model that sees a 320 px crop at 128 px (24 filters), tracked every one of 7,200 sets of 8 emulated cameras at 60 fps, recording AV1 on Quick Sync: 2D poses 11.1 ms after the frames at the median and 12.3 ms at p99. That is within the 13.3 ms aimed for (80% of the 16.7 ms between sets). The 160 px model the computer had took 14.7 ms at p99. A 16-filter version of the 128 px model took 10.7 ms. Both 128 px models were fine-tuned on pseudo-labels from a larger model. On a session none of the models trained on, the 24-filter pair missed fewer mice, put fewer skeletons on the wrong mouse and placed body parts closer than the same size before fine-tuning (campy's <code>docs/models.md</code>).</li>
     <li><b>Moving the encoding off the A2000 saves 4–5 ms a set.</b> NVENC is a separate part of the chip, but encoding 8 streams there slowed the models: inference took 21.5 ms at 30 fps with NVENC and 17.7 ms with Quick Sync, 25.3 and 20.0 ms at 60 fps. In the benchmark, recording 8 cameras on the iGPU changed the A2000's median time per set by 0.35 ms at most, for any model size.</li>
     <li><b>The A2000 is held back by its power limit.</b> At 8 cameras it ran at its 70 W cap, at about 1,090–1,330 MHz in the benchmark and 1,280–1,310 MHz live at 60 fps, against about 1,800 MHz at 3 cameras with the clock held. Without <code>campy-live</code>'s clock hold it fell to 990 MHz at 3 cameras, and the default size took 6.9 ms instead of 4.8.</li>
     <li><b>The A2000 can't encode AV1.</b> NVIDIA's encoders gained AV1 with the Ada generation; on the A2000 <code>av1_nvenc</code> reports that no capable device was found. The CPU's integrated GPU encodes it, with an ffmpeg built with Intel's oneVPL (campy's <code>docs/encoding.md</code>).</li>
@@ -723,8 +724,8 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 </section>
 
 <footer>
-  <p>Measured 18–29 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250, a Dell Precision 7875 and a Dell Pro Tower Plus, and on 7 November 2026 on an Intel Arc Pro B50 in a Windows 11 virtual machine and (the Dell agent's pauses) on the Dell Precision 7875.</p>
-  <p class="meta">Version 66 · updated 7 November 2026 · reflects campy changes through pull request 328 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p>Measured 18–29 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250, a Dell Precision 7875 and a Dell Pro Tower Plus, on 7 November 2026 on an Intel Arc Pro B50 in a Windows 11 virtual machine and (the Dell agent's pauses) on the Dell Precision 7875, and on 7–9 November 2026 (lighter models for 2 mice) on the Dell Pro Tower Plus.</p>
+  <p class="meta">Version 67 · updated 9 November 2026 · reflects campy changes through pull request 359 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 
