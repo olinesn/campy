@@ -371,6 +371,8 @@ class Cameras:
 		self.readers = [None] * len(self.names)
 		self.buffer = None # the out array of the last NextSet: a camera left out has its frame zeroed there
 		self.last = 0 # the last set's number
+		self.passed = 0 # sets passed since it, none of them whole (counted as skipped with the next set read)
+		self.returned = False # whether a set was read yet (sets before the first aren't skipped: not in the run)
 		n = len(self.names)
 		self.offset = [0] * n # each camera's frame number for set n is n + offset
 		self.active = list(range(n)) # the cameras in the sets
@@ -519,11 +521,14 @@ class Cameras:
 				for n in range(newest, oldest - 1, -1):
 					frames = self.ReadSet(n, out)
 					if frames is not None:
-						skipped = n - self.last - 1 if self.last else 0
-						self.last = n
+						skipped = n - self.last - 1 + self.passed if self.returned else 0
+						self.last, self.passed, self.returned = n, 0, True
 						self.Check(frames)
 						return frames, skipped
-				self.last = newest # none whole: look again at the next frame
+				# None whole (all replaced as they were copied): look again at the next frame, and count these as
+				# skipped with the next set read. Before, they were never counted
+				self.passed += newest - self.last
+				self.last = newest
 				continue
 			now = time.monotonic()
 			if now - self.watched >= WATCH_S:
