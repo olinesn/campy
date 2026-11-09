@@ -803,6 +803,11 @@ def test_a_stuck_decision_loop_lets_the_board_watchdog_fire(monkeypatch, tmp_pat
 
 	def feed_rows(feed, runner):
 		for k in range(1, 8):
+			if k == 5:
+				# The hold only once the heartbeat has gone out as usual. It goes after 50 ms with nothing else written
+				# (outputs.HEARTBEAT_S), so when a busy CI runner (Windows, 4 workers) decided sets 1-5 in a burst just
+				# after the laser's "on", the hold began before any "hb", and the check below failed
+				assert until(lambda: any(x == "hb" for _, x in port.Lines()))
 			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
 			time.sleep(1 / 60)
 		time.sleep(1.3)
