@@ -144,7 +144,7 @@ class Devices:
 				checks.append(("ok", "The Pico's plan: {}; campy records {} s of it (recTimeInSec), into {}".format(
 					plan["text"], plan["camera_s"], folder or self.config.Value("videoFolder")), None))
 				if self.pico.page:
-					checks.append(("ok", "Bout settings changed on this page, for its recordings only: {}".format(
+					checks.append(("ok", "Bout settings changed on this page (the config file is unchanged): {}".format(
 						self.PageText()), None))
 			except sessionmod.SessionError as e:
 				checks.append(("block", str(e), None))

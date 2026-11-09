@@ -403,6 +403,12 @@ class Panel:
 		self.devices = devices.Devices(self.config, say=Say)
 		if not self.devices.Enabled():
 			self.devices = None
+		if self.devices is not None and self.devices.pico is not None:
+			# The bout settings the last panel with this config left on its page
+			try:
+				self.devices.pico.Restore(pico.Remembered(pico.RememberFile(), self.config.path))
+			except pico.PicoError:
+				pass
 		self.lengths = self.devices.Lengths() if self.devices is not None else []
 		self.length = self.lengths[0]["seconds"] if self.lengths else None # the page's choice
 		self.closing = False
@@ -632,12 +638,14 @@ class Panel:
 		if self.session is not None or self.wanted is not None:
 			return "A recording is running: the bout settings change for the next one."
 		if body.get("reset"):
-			self.devices.pico.page, self.devices.pico.spans, error = {}, {}, None
+			self.devices.pico.page, self.devices.pico.spans, self.devices.pico.remembered, error = {}, {}, None, None
 		else:
 			values = body.get("values")
 			if not isinstance(values, dict):
 				return "No bout settings given."
 			error = self.devices.pico.Choose(values)
+		if error is None:
+			pico.Remember(pico.RememberFile(), self.config.path, self.devices.pico.page) # for the next panel
 		self.lengths = self.devices.Lengths()
 		self.checks = self.Checks()
 		return error

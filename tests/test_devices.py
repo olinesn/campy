@@ -112,6 +112,34 @@ def test_the_pico_holds_2048_bouts():
 	assert time.monotonic() - t0 < 1
 
 
+def test_the_last_bout_settings_are_remembered(tmp_path):
+	# For each config, the page's settings as the last panel left them; the next panel starts from them
+	where = str(tmp_path / "status" / pico.REMEMBER)
+	assert pico.Remembered(where, "a.yaml") is None
+	pico.Remember(where, "a.yaml", {"PULSE_WIDTH_C": 0.05, "INTERVAL": 600})
+	pico.Remember(where, "b.yaml", {"EXTENDED_EVERY": 3})
+	last = pico.Remembered(where, "a.yaml")
+	assert last["page"] == {"PULSE_WIDTH_C": 0.05, "INTERVAL": 600} and last["at"]
+	p = a_pico(set={"INTERVAL": 600})
+	p.Restore(last)
+	assert p.page == {"PULSE_WIDTH_C": 0.05} # the config says 600 itself now
+	status = p.PageStatus()
+	assert status["changed"] == ["PULSE_WIDTH_C"] and status["remembered"]
+	assert "blue LED at 9.999 s for 50 ms" in status["bout"]["text"]
+	p.Choose({"PULSE_WIDTH_D": 40}) # changed on this page again
+	assert p.PageStatus()["remembered"] is None and p.page == {"PULSE_WIDTH_C": 0.05, "PULSE_WIDTH_D": 0.04}
+	# What a bout setting can't be is left out: another setting, not a number, 0 or less, a part of a bout
+	p.Restore({"page": {"LED_LEAD_US": 5, "INTERVAL": "soon", "PULSE_WIDTH_D": 0, "EXTENDED_EVERY": 2.5,
+		"CAMERA_FPS": 30, "PULSE_WIDTH_C": 0.07}, "at": "2026-11-09T15:12:00-05:00"})
+	assert p.page == {"PULSE_WIDTH_C": 0.07} and p.PageStatus()["remembered"] == "Mon 9 Nov, 3:12 PM"
+	for nothing in (None, {}, {"page": None}, {"page": [1]}):
+		p.Restore(nothing)
+		assert p.page == {} and p.remembered is None
+	# Back to the config's: nothing to remember
+	pico.Remember(where, "a.yaml", {})
+	assert pico.Remembered(where, "a.yaml") is None and pico.Remembered(where, "b.yaml")["page"] == {"EXTENDED_EVERY": 3}
+
+
 def test_a_setting_as_chronic_control_reads_it():
 	assert [pico.SetText(v) for v in (300, 300.0, 0.05, 0.00001, 1.5, 6)] == ["300", "300", "0.05", "0.00001", "1.5", "6"]
 
@@ -412,6 +440,19 @@ def test_a_bout_session_from_the_page(tmp_path, home, rig, sglx_state):
 		close_panel(proc, url, lines)
 	assert proc.returncode == 0, "".join(lines)
 	assert "[panel] Closed from the page." in "".join(lines)
+	# The next panel with this config starts from the page's last bout settings
+	assert json.loads((home / "status" / pico.REMEMBER).read_text())[pico.ConfigKey(config)]["page"] == \
+		{"PULSE_WIDTH_C": 0.08, "PULSE_WIDTH_D": 0.06}
+	proc, lines, url = start_panel(tmp_path, home, config, FAKE_SGLX_STATE=str(sglx_state))
+	try:
+		bouts = call(url, "/status.json")[1]["bouts"]
+		assert bouts["changed"] == ["PULSE_WIDTH_C", "PULSE_WIDTH_D"] and bouts["remembered"]
+		assert {f["key"]: f["value"] for f in bouts["fields"]}["PULSE_WIDTH_C"] == 80
+		assert call(url, "/bouts", {"reset": True}) == (200, {"ok": True})
+		assert call(url, "/status.json")[1]["bouts"]["changed"] == []
+	finally:
+		close_panel(proc, url, lines)
+	assert pico.ConfigKey(config) not in json.loads((home / "status" / pico.REMEMBER).read_text())
 
 
 @POSIX
