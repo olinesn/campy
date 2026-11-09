@@ -132,7 +132,7 @@ Every `campy-acquire` then starts with a launch check, printed before recording:
 With `preflight: "error"` (the default), a failed check stops campy before recording; `"warn"` records anyway; `"off"` (quoted or not) skips the check. `displayFrameRate: 0` runs without the cameras' window (campy-live-view), for example over SSH.
 
 ## Denoising before encoding (atadenoise)
-campy has no denoise filter, and doesn't need one: measured on 9 November 2026, the encoder already removes most of the sensor noise, a temporal denoiser changes mouse pixels by a few gray levels at most, and a SLEAP model trained on denoised video tracks undenoised video just as well. Older campy code carries the line `-vf atadenoise=...` commented out in its NVENC settings; a setup that turns it on (`-vf atadenoise=s=5`, ffmpeg 4.2, H.265 NVENC at constant QP 24) is what these numbers compare against.
+campy has no denoise filter. Measured on 9 November 2026: a temporal denoiser (`atadenoise`) changes mouse pixels by a few gray levels at most, a SLEAP model trained on denoised video tracks undenoised video just as well, and the filter's real effect is on file size: on near-raw frames it made constant-quality files 7–30% smaller, more for a still scene. Older campy code carries the line `-vf atadenoise=...` commented out in its NVENC settings; a setup that turns it on (`-vf atadenoise=s=5`, ffmpeg 4.2, H.265 NVENC at constant QP 24) is what these numbers compare against.
 
 **What atadenoise does.** For each pixel it looks at the same pixel in the 2 frames before and the 2 after (`s=5`), and averages in each of those frames only while it differs from the pixel by at most 4 gray levels (of 255), and only while the differences on that side add up to at most 9. It stops at the first frame that differs more. The thresholds come from the defaults `0a=0.02` and `0b=0.04`: 0.02 × 256 − 1 = 4 and 0.04 × 256 − 1 = 9 for 8-bit video. So **no pixel can change by more than 4 gray levels**, wherever it is, and it can't leave a trail or a smear brighter than that. A still background is averaged over all 5 frames; a mouse's moving edge, which changes by tens of levels from frame to frame, isn't averaged at all.
 
@@ -159,7 +159,7 @@ campy has no denoise filter, and doesn't need one: measured on 9 November 2026, 
 | unfiltered vs AV1 | 3511 vs 3513 | 0.27 / 3.7 / 12.4 px | 31% | 4.5% |
 | AV1 vs filter + AV1 | 3513 vs 3512 | 0.23 / 3.5 / 10.9 px | 28% | 3.8% |
 
-The filter moves keypoints less than encoding does, the models found the same animals with the same scores (mean change under 0.001), and nothing suggests they need filtered video. Filtering before AV1 made the file 2% smaller.
+The filter moves keypoints less than encoding does, the models found the same animals with the same scores (mean change under 0.001), and nothing suggests they need filtered video. Filtering before AV1 made this already-encoded clip's file only 2% smaller; see near-raw frames below.
 
 **CPU cost.** ffmpeg runs the filter on the CPU, for each camera. Eight 1280 × 1024 gray streams paced at 60 fps, as 8 cameras would send them, CPU cores used by all 8 ffmpeg processes together (every case kept 60 fps, so the filter never held an encoder back). The EVO-X2 run had the machine to itself; on the Windows PC each run saw a burst or two of other CPU use (1–2 cores, from its endpoint security software), and two runs a few minutes apart agreed within half a core, so each cell gives both:
 
@@ -180,7 +180,17 @@ The filter moves keypoints less than encoding does, the models found the same an
 - NVENC's temporal filter (`hevc_nvenc -tf_level 4`) needs B-frames, which campy's GPU encoders don't use, and with them it cut one stream from 1,600 to 415 fps.
 - VA-API's `denoise_vaapi` isn't implemented by AMD's Mesa driver ("the requested function is not implemented").
 
-**Not yet measured.** All of this used recordings that had already been encoded once, which had removed most of the sensor noise. The filter sees the camera's raw frames, with more noise, so on a real recording it averages a little less often and may save more bits than the 2% here. A few seconds of lossless video (FFV1) from the arena cameras, with mice, would measure that. No unfiltered 60 fps recording of white mice on light bedding existed yet, the hardest case for telling fur from bedding. The filter still can't move any pixel by more than 4 levels there.
+**On near-raw frames.** The recordings above had already been encoded once at an everyday quality, which removes most of the sensor noise before the filter sees it, so they understate what the filter does. Recordings of a spinning fan from a 1.3 MP mono camera (1280 × 1024, 120 fps, H.265 at constant QP 5, about 176 Mbit/s, which keeps nearly all the noise; three fan speeds, 2 s each, also taken every other frame as 60 fps) show what it does to frames close to what the camera sends. Gray levels of 255; "moving" = pixels that change by more than 12 levels within the 5 frames the filter looks at; file size = the same frames with and without the filter, encoded with libx265 at constant QP 24 and no B-frames (a CPU stand-in for NVENC at QP 24):
+
+| Fan, 60 fps | Still background noise, before → after | Moving pixels: mean change / largest / averaged | File size with the filter |
+|---|---|---|---|
+| slow | 1.46 → 1.09 | 0.35 / 3 / 45% | −30% |
+| medium | 1.19 → 0.90 | 0.34 / 3 / 44% | −17% |
+| fast | 0.82 → 0.61 | 0.29 / 3 / 40% | −7% |
+
+At 120 fps the numbers were nearly the same (−32%, −19%, −7%). Half the thresholds (`0.01/0.02`) changed no pixel by more than 1 level and saved only 2%; double (`0.04/0.08`) removed most of the noise (to 0.3–0.4) but moved pixels by up to 7 levels. So on real recordings the filter mainly buys smaller files, by roughly a fifth for a quiet cage, at the cost of changes of at most 3 levels on anything that moves and none on tracking that these tests could see. Raising `quality` saves bits too, but on every pixel.
+
+**Not yet measured.** No unfiltered 60 fps recording of white mice on light bedding existed yet, the hardest case for telling fur from bedding (the filter still can't move any pixel by more than 4 levels there), and the file-size saving wasn't measured with the rigs' own encoders (Quick Sync AV1 and NVENC) on near-raw frames.
 
 ## Helpful tips
 - To debug broken ffmpeg pipe error, include this in config.yaml:
