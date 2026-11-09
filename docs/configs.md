@@ -35,6 +35,26 @@ cameraNames: 'Cam' is one value for 2 cameras. It takes one per camera, e.g. cam
 cameraSelection: 1 is one value for 2 cameras. It takes one per camera, e.g. cameraSelection: [0, 1]. (cameraSelection is from my_rig.yaml:3, numCams from my_rig.yaml:1)
 ```
 
+### Names that follow the cameras' serial numbers
+
+By default campy gives `cameraNames` to the cameras in the order the camera driver lists them (`cameraSelection` 0 is the first camera listed). That order can change when a cable or a USB port changes, and then two cameras swap names without a warning. Their videos still look fine, but a calibration or a model that goes by camera name then gets the wrong views. `cameraSerials` ties each name to a camera's serial number instead, in the order of `cameraNames`:
+
+```yaml
+numCams: 3
+cameraNames: [Camera0_top, Camera1_mid, Camera2_side]
+cameraSerials: [19490066, 19060810, 18475377]
+```
+
+Each name then goes to the camera with that serial, wherever the driver lists it. A serial that isn't connected stops campy before anything records, and says which camera and which serials it found:
+
+```
+Camera1_mid: its camera (serial 19060810) isn't connected, or isn't found.
+2 flir cameras found: 19490066, 18475377.
+Check the camera's cable and USB port. If a camera was swapped for another, put the new one's serial in cameraSerials. Nothing was recorded.
+```
+
+`cameraSerials` takes the place of `cameraSelection`: give one of them, not both. A `cameraSelection` of `[0, 1, 2, ...]`, the default, counts as none, since `campy-session` and `campy-config` write it into the configs they save (`logs/campy-acquire.yaml`). The serials are on each camera's label, in SpinView or pylon, and in campy-acquire's "ready to trigger" lines and every camera's `metadata.csv` (`cameraSerialNo`) from an earlier recording. A camera swapped for a new one needs its new serial in the list.
+
 In campy 2.5.0 and older, one name alone was read letter by letter: with one camera, `cameraNames: Top` recorded into a folder `T`, while session.json said `Top`; with two, `cameraNames: Cam` stopped campy with `C and a would both write ...`, and `cameraSelection: 1` opened device 1 for both cameras.
 
 A few settings take one value for the whole rig and refuse a list: `numCams`, `recTimeInSec`, `keepAwake`, `ffmpegPath`, `liveFeedSlots`, the launch check's, and the trigger's. The reference's "Per camera" column says which. (In campy 2.5.0 and older, `ffmpegPath` took a list, which then stopped campy with `TypeError: str expected, not list` after the check.)

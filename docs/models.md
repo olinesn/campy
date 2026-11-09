@@ -55,7 +55,7 @@ What this size changes:
 - **How many validation workers depends on the pipeline.** With the JPEG cache and 12 of each, the validation workers used 0.05 of a core each during centered instance training, and each one costs several seconds to start and 2.7 GB of committed memory. Reading the original images, 4 validation workers were too few (below). The worker count for validation alone needs the YAML (`val_data_loader.num_workers`), because the dialog has one box for both.
 - **The centroid model's epochs can slow down partway, and the GPU clock is the likely cause.** In the retrain below, epochs went from 12.1 to 16.3 s at epoch 84 and stayed there. At that moment the GPU clock fell from about 2110 to about 1550 MHz, 36% less, and validation took 36% longer. The GPU was about 35% busy and cooling down, so this looks like the lower clock a part-time load can settle at, not overheating. In the JPEG run, epochs went from 10.3 to 11.4 s at epoch 70 and stayed there; the clock wasn't checked for that one.
 
-**Retraining on the original images.** Same package, split (seed 0) and machine, started with a script rather than the GUI, on 30 and 31 October. The config set `data_pipeline_fw: torch_dataset`, 12 training and 4 validation workers. The centered instance model also set `max_height: 1024` and `max_width: 1280`, so frames aren't enlarged, and `train_steps_per_epoch: 2000`. The larger frames (0.7%) are affected by that size limit, which wasn't looked at separately. Starting took about 2.5 min per model, against about 5.
+**Retraining on the original images.** Same package, split (seed 0) and machine, started with a script rather than the GUI, on 30 and 31 October. The config set `data_pipeline_fw: torch_dataset`, 12 training and 4 validation workers. The centered instance model also set `max_height: 1024` and `max_width: 1280`, so frames aren't enlarged, and `train_steps_per_epoch: 2000`. The larger frames (348 of the 30,869, 1.1%) are shrunk to that size, which wasn't looked at separately. Starting took about 2.5 min per model, against about 5.
 
 | Model | Speed | Time |
 |---|---|---|
@@ -79,9 +79,56 @@ Scored on the validation frames at the end of each run:
 
 - **The centroid difference is small.** It is one run of each, so it may be no more than run-to-run variation. Position error didn't change.
 - **The centered instance table doesn't measure JPEG against original images.** The two runs differ in image format, in enlargement (which clips far more body parts) and in training length: the JPEG run was stopped after two full passes through the data and part of a third. At about 28,000 steps the two were close by the check run during training: mOKS 0.617 for the new run against 0.613, and 70.4% against 67.7% within 10 px. So most of the gain above comes from training longer, and those two numbers still mix format and enlargement.
-- **Each model was scored alone,** not with the two chained as they run on new frames.
-- **The last third of the centered instance run added almost nothing.** By the check run during training, mOKS was 0.778 at epoch 50 (4 h), 0.835 at epoch 100 (7.9 h), 0.840 at epoch 125 (9.9 h) and 0.841 at epoch 192 (15.2 h). Its largest late gain came between epochs 75 and 100, when the learning rate first dropped. A stricter early stopping setting would have saved about 5 hours; none was tried.
-- **With original images, validation is the slow part.** 4 workers managed about 35 crops/s, while the GPU sat at 11–32%, so 175 of each 285 s went to validation. During training it was 75–80% busy. More validation workers should shorten this: 12 might bring validation to about 60 s, which is an estimate, not a measurement.
+- **Each model was scored alone** in the table above, not with the two chained as they run on new frames. The chained scores are below.
+- **The last third of the centered instance run added almost nothing.** By the check run during training, mOKS was 0.778 at epoch 50 (4 h), 0.835 at epoch 100 (7.9 h), 0.840 at epoch 125 (9.9 h) and 0.841 at epoch 192 (15.2 h). Its largest late gain came between epochs 75 and 100, when the learning rate first dropped. A stricter early stopping setting would have saved about 5 hours (replayed on this log below, under [Checking a config before a long run](#checking-a-config-before-a-long-run)).
+- **With original images, validation is the slow part.** 4 workers managed about 35 crops/s, while the GPU sat at 11–32%, so 175 of each 285 s went to validation. During training it was 75–80% busy. 12 validation workers brought it to 50 s (measured below).
+
+**The two models chained, as they run on new frames.** The centroid model finds each animal, and the centered instance model then places its body parts in a crop around that point. Scored alone, the centered instance model is handed crops centred on the labelled animals instead. Both retrained models were run together with `sleap-nn track` (sleap-nn 0.3.5, default settings, fp32 on the RTX 6000 Ada, 9 November) on the centered instance model's 3,086 validation frames, and scored with sleap-nn's own evaluation:
+
+| | Centered instance alone | Chained, all 3,086 frames | Chained, 318 frames neither model trained on |
+|---|---|---|---|
+| mOKS / mAP (OKS) | 0.836 / 0.667 | 0.790 / 0.592 | 0.780 / 0.574 |
+| Error p50 / p95 / p99 | 1.76 / 11.3 / 30.7 px | 2.14 / 16.9 / 97.6 px | 2.21 / 19.3 / 160.7 px |
+| Within 5 px / 10 px | 80.2% / 89.7% | 74.3% / 86.0% | 73.3% / 84.8% |
+| Body parts found, of those labeled visible | 95.7% | 95.3% | 94.9% |
+
+- **Chaining costs about 0.05 mOKS, mostly in the worst cases.** The median error grows by 0.4 px, but the 99th percentile triples. That's what a centroid that lands off the animal, or on the wrong one, does to a crop. The chained run gave 6,065 skeletons for 6,163 labelled animals. To improve the pair on new frames, the centroid model is the place to look first.
+- **2,768 of these 3,086 frames (90%) were training frames for the centroid model.** sleap-nn 0.3.5 holds out a different random set of frames for each model type, even with the same seed and fraction. That is fixed in the next sleap-nn release (sleap-nn pull request 835). Only 318 frames were held out from both models; on those, the pair scored 0.780. With only 318 frames the 99th percentile there rests on a handful of animals.
+- **Read the third column as the pair's accuracy on frames it has never seen,** with the caveat that 318 frames is a small sample.
+
+### Checking a config before a long run
+
+`campy-train-check` reads sleap-nn training configs and says which settings will cost hours or change what the model sees, before anything starts:
+
+```
+campy-train-check centroid.yaml centered_instance.yaml --labels project.pkg.slp
+```
+
+It reads the labelled frames' sizes and points, not the images, which took 5 s for the 30,000-frame package above. Each check prints `ok`, `WARN` or `FAIL`:
+
+- **Workers:** no training or validation workers fails. Fewer validation workers than training ones warns, if the images are read as they are (`torch_dataset`).
+- **Data pipeline:** "Cache in Memory" warns when the images won't fit, counting one copy per worker on Windows, because sleap-nn would then switch to the JPEG disk cache. A disk cache warns because it's JPEG.
+- **Frame size:** empty `max_height` / `max_width` warn when the most common frames would be enlarged. The check gives the size to set.
+- **Steps per epoch:** an empty `train_steps_per_epoch` gives the steps a full pass takes, and warns above 5,000. It also warns when validation takes more steps than training.
+- **Early stopping:** off, or a `min_delta` under 1e-7, warns. `--like <an earlier run's folder>` suggests 0.5% of that run's best validation loss.
+- **Crop:** for a centered instance model, it counts the labelled animals that reach outside the crop, as the GUI's "clipped" warning does. On the package above it found the same 20,524 of 61,371 with the frames enlarged as the GUI did, and 2,142 (3.5%) at their own size.
+- **Run folder:** one that already exists fails.
+
+It exits 0 when everything is ok, 1 on a warning and 2 on a failure. On Windows, `tools/windows/train_sleap.ps1 -Config a.yaml, b.yaml` runs the check, asks before starting if it warned, then trains the configs one after another with SLEAP's own Python, without the Run Training dialog.
+
+**Early stopping, replayed.** sleap-nn stops when the validation loss hasn't improved by `min_delta` for `patience` epochs. The configs above had `min_delta: 1e-8`, so any change counted. Replaying other settings on the centered instance retrain's log, the epoch-by-epoch check during training gives:
+
+| `min_delta` / `patience` | Stops after epoch | Training time | mOKS of the model kept |
+|---|---|---|---|
+| 1e-8 / 20 (as run) | 192 | 15.2 h | 0.841 |
+| 1e-7 / 10 | 148 | 11.7 h | 0.841 |
+| 3e-7 / 10 | 132 | 10.4 h | 0.840 |
+| 1e-6 / 20 | 131 | 10.3 h | 0.838 |
+| 3e-6 / 10 | 63 | 4.9 h | 0.790 |
+
+3e-7 is about 0.5% of that model's best validation loss (6.45e-5). The centroid model's loss is about 7 times as large (4.3e-4), so the same number does far less there. Replayed on its log, 0.5% of its loss with patience 10 stopped at epoch 154 instead of 196, with F1 0.939 instead of 0.941. That run took 48 minutes, so there is little to save. These replays come from one run of each model: a different package or model can level off differently.
+
+**12 validation workers instead of 4, measured.** The same centered instance config with `val_data_loader.num_workers: 12` (9 November, 2 short epochs of 2,000 steps on the same machine) validated in 45 and 50 s, against 167 and 175 s with 4 workers. An epoch took 141 s instead of 274–283 s, and its training part 92 s instead of 100–109 s. Validation workers only read and prepare the validation images, so the model and its numbers don't change; the validation loss after each epoch came out within about 1% of the 4-worker run's (0.3% and 1.0%), as GPU training differs slightly from run to run. Together with `min_delta: 3e-7` and patience 10, the retrain above would have taken about 132 epochs of 141 s, about 5.2 hours instead of 15.2. That combination is an estimate from the replay; it wasn't run in full. The test didn't run under the rig lock, though no other job used the machine meanwhile.
 
 ## Settings that worked
 

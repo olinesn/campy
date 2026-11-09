@@ -477,6 +477,49 @@ def GetDeviceList(systems, params):
 	return systems
 
 
+class CameraMissing(Exception):
+	"""A camera that cameraSerials names isn't among the cameras found."""
+
+
+def SelectBySerial(systems, params):
+	"""
+	With cameraSerials: each camera's cameraSelection becomes the place of its
+	serial number in its make's list of cameras found, so a name always goes to
+	the same camera, in whatever order the driver lists them (the order can
+	change when a cable or a USB port changes). Runs in every process, after
+	GetDeviceList, since each lists the cameras again. A serial that isn't
+	there raises CameraMissing, naming the camera and the serials found.
+	Without cameraSerials, nothing changes.
+	"""
+	wanted = params.get("cameraSerials")
+	if wanted in (None, "None"):
+		return params
+	num_cams = params["numCams"]
+	makes = params["cameraMake"]
+	names = params["cameraNames"]
+	selection, missing = [], []
+	for n in range(num_cams):
+		make = makes[n] if isinstance(makes, list) else makes
+		serial = str(wanted[n]).strip()
+		found = [str(s).strip() for s in (systems.get(make) or {}).get("serials", [])]
+		if serial in found:
+			selection.append(found.index(serial))
+		else:
+			missing.append((names[n], make, serial, found))
+	if missing:
+		lines = ["{}: its camera (serial {}) isn't connected, or isn't found.".format(name, serial)
+			for name, _, serial, _ in missing]
+		for make in sorted(set(m for _, m, _, _ in missing)):
+			found = next(f for _, m, _, f in missing if m == make)
+			lines.append("{} {} camera{} found: {}.".format(len(found), make, "" if len(found) == 1 else "s",
+				", ".join(found) if found else "none"))
+		lines.append("Check the camera's cable and USB port. If a camera was swapped for another, put the new "
+			"one's serial in cameraSerials. Nothing was recorded.")
+		raise CameraMissing("\n".join(lines))
+	params["cameraSelection"] = selection
+	return params
+
+
 def GetMakeList(params):
 	if type(params["cameraMake"]) is list:
 		cameraMakes = [params["cameraMake"][m] for m in range(len(params["cameraMake"]))]

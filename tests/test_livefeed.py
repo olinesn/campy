@@ -436,6 +436,76 @@ def test_the_newest_set_all_cameras_hold(rings):
 		cams.Close()
 
 
+def test_sets_none_could_be_read_whole_are_counted_as_skipped(rings, monkeypatch):
+	# campy-live held up long enough that every set its rings still held was replaced as it copied it: it looks
+	# again from the next frame, and the sets it passed are counted as skipped with the next set it reads. Before,
+	# they were never counted (a busy Windows CI runner: 113 sets + 4 skipped of a recording's 120 frames)
+	prefix = name()
+	writers = [rings(livefeed.RingName(prefix, c), (16, 20), np.uint8, slots=4, frameRate=60) for c in range(3)]
+	cams = live.Cameras([livefeed.RingName(prefix, c) for c in range(3)], poll=0.0001)
+	try:
+		assert cams.Attach(wait=5)
+		out = np.empty((3, 16, 20, 1), np.uint8)
+		for n in range(1, 5):
+			for c, w in enumerate(writers):
+				w.Write(frame(n), n, 1000 * n + c)
+		frames, skipped = cams.NextSet(out)
+		assert frames.number == 4 and skipped == 0
+		for n in range(5, 10):
+			for c, w in enumerate(writers):
+				w.Write(frame(n), n, 1000 * n + c)
+		real, tried = cams.ReadSet, []
+
+		def ReadSet(n, out):
+			# Sets 9, 8 and 7 (all the rings hold) replaced as they are copied; frame 10 comes meanwhile
+			if len(tried) < 3:
+				tried.append(n)
+				if len(tried) == 3:
+					for c, w in enumerate(writers):
+						w.Write(frame(10), 10, 10000 + c)
+				return None
+			return real(n, out)
+		monkeypatch.setattr(cams, "ReadSet", ReadSet)
+		frames, skipped = cams.NextSet(out)
+		assert tried == [9, 8, 7]
+		assert frames.number == 10 and skipped == 5 # 5-9
+		monkeypatch.setattr(cams, "ReadSet", real)
+		for c, w in enumerate(writers):
+			w.Write(frame(11), 11, 11000 + c)
+		assert cams.NextSet(out)[1] == 0 # counted once
+	finally:
+		cams.Close()
+
+
+def test_no_set_before_the_first_one_read_is_counted_as_skipped(rings, monkeypatch):
+	# The same before campy-live's first set: the sets it passed came before the first one it read, and a
+	# recording's summary counts from that first one (frames_spanned), so none are skipped
+	prefix = name()
+	writers = [rings(livefeed.RingName(prefix, c), (16, 20), np.uint8, slots=4, frameRate=60) for c in range(3)]
+	cams = live.Cameras([livefeed.RingName(prefix, c) for c in range(3)], poll=0.0001)
+	try:
+		assert cams.Attach(wait=5)
+		out = np.empty((3, 16, 20, 1), np.uint8)
+		for n in range(1, 5):
+			for c, w in enumerate(writers):
+				w.Write(frame(n), n, 1000 * n + c)
+		real, tried = cams.ReadSet, []
+
+		def ReadSet(n, out):
+			if len(tried) < 3:
+				tried.append(n)
+				if len(tried) == 3:
+					for c, w in enumerate(writers):
+						w.Write(frame(5), 5, 5000 + c)
+				return None
+			return real(n, out)
+		monkeypatch.setattr(cams, "ReadSet", ReadSet)
+		frames, skipped = cams.NextSet(out)
+		assert tried == [4, 3, 2] and frames.number == 5 and skipped == 0
+	finally:
+		cams.Close()
+
+
 def test_rings_left_by_a_killed_recording_are_passed_by(rings, capsys):
 	# A campy-acquire killed mid-recording left its rings RECORDING: their camera processes (the descriptions' pid)
 	# are gone. campy-live waits for the next recording's, rather than track old frames and then take the new

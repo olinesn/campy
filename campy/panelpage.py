@@ -38,6 +38,8 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
 .steps li{list-style:none;margin-left:-18px}.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px}
 .modal .card{max-width:520px}[hidden]{display:none!important}
 .bgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:4px 10px;margin:4px 0}
+.types li{list-style:none;margin-left:-18px;display:flex;gap:8px;align-items:baseline;padding:3px 0;border-top:1px solid var(--line)}
+.types li span{flex:1}.star{padding:0 8px;font-size:16px;line-height:1.4;border:none;background:none;color:var(--accent)}
 .bgrid>div{display:flex;flex-direction:column;justify-content:flex-end}.bgrid input.changed{border-color:var(--accent);border-width:2px}details summary{cursor:pointer;font-size:13px;margin-top:6px}
 </style></head><body><main>
 
@@ -49,6 +51,15 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
   <button id="close" hidden title="Close the panel (nothing is recording)">Close the panel</button>
 </div>
 <div id="error" class="err" hidden></div>
+
+<div id="typebox" class="card" hidden>
+  <div class="row"><div class="grow"><label for="type">Experiment</label><select id="type"></select>
+    <div class="muted" id="typetext"></div></div>
+    <button id="typeall" title="Every config in the folder: star the ones the Experiment list shows">Show all configs</button></div>
+  <div id="typeerr" class="err"></div>
+  <div id="typelist" hidden><ul id="types" class="types"></ul>
+    <div class="row" style="margin-top:4px"><span class="muted grow mono" id="typefolder"></span><button id="typescan" title="Read the folder's configs again (a new or changed file)">Look again</button></div></div>
+</div>
 
 <div id="before" class="card" hidden>
   <h2>Before the start</h2>
@@ -69,6 +80,8 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
       <label for="experiment">Experiment</label><input id="experiment" placeholder="Social hierarchy, week 3">
       <label for="ids">Animal IDs, comma-separated</label><input id="ids" placeholder="M12, M14, M15">
       <label for="notes">Notes</label><input id="notes" placeholder="Cage 2, new bedding">
+      <label for="copyto">Copy each recording to (optional)</label><input id="copyto" placeholder="\\server\share\my folder">
+      <div class="muted" style="font-size:12px">After each recording, its folder is copied into this one in the background, while the next records. Nothing is deleted. Empty: no copy.</div>
     </div>
     <div><div id="orphan" class="err" hidden></div><button id="stoporphan" class="stop" hidden>Stop that recording</button>
       <ul id="checks"></ul><p class="muted" id="length"></p><button id="start" class="go">Start recording</button>
@@ -106,6 +119,9 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
   </div>
 </div>
 
+<div id="copies" class="card" hidden><h2>Copies</h2><div id="copywait" class="muted" hidden></div>
+  <ul id="copylist"></ul><button id="closenow" class="stop" hidden>Close now, without the copies</button></div>
+
 <div id="after" class="card" hidden><h2 id="aftertitle">After the recording</h2><ul id="post"></ul>
   <p class="muted">Closing this page never stops a recording or its steps. The panel is ready for the next recording.</p></div>
 
@@ -134,7 +150,8 @@ function tag(text, kind){ return '<span class="tag '+kind+'">'+esc(text)+'</span
 function render(s){
   last = s;
   const L = s.launcher || {}, rec = L.recording || {}, H = s.health || {};
-  $("rig").textContent = s.rig + " · " + s.config.split(/[\\/]/).pop();
+  const TY = s.types, chosen = TY ? TY.all.find(x => x.path == TY.chosen) : null;
+  $("rig").textContent = s.rig + " · " + (chosen ? chosen.title : s.config.split(/[\\/]/).pop());
   $("where").textContent = L.folder || s.config;
   const st = s.state, live = ["checking","starting","preparing","starting live","recording","stopping","post","finishing"].includes(st);
   $("state").className = "tag " + (st=="recording" ? "ok" : st=="failed" ? "bad" : live ? "warn" : "");
@@ -143,6 +160,7 @@ function render(s){
   $("stop").hidden = !(st=="recording" || st=="stopping");
   $("close").hidden = !(st=="ready" || st=="done" || st=="failed");
   renderDevices(s, st);
+  renderTypes(TY, st, s);
   $("stop").textContent = stopArmed ? "Stop now, without closing" : (rec.stop_asked ? "Stopping…" : "Stop");
   const DP = s.devices && s.devices.plan ? s.devices.pico : null;
   if(DP){ // a Pico's session: its time against its plan (campy's recTimeInSec is camera time, not the clock's)
@@ -168,7 +186,11 @@ function render(s){
   if(lengths.length && document.activeElement != $("length")) $("length").value = String(s.length);
   renderBouts(s.bouts);
   const L0 = lengths.find(l => l.seconds == s.length); $("plantext").textContent = L0 ? L0.text + (L0.videoFolder ? ", into "+L0.videoFolder : "") : "";
-  if(!$("experiment").dataset.set){ $("experiment").value = s.fields.experiment||""; $("ids").value = s.fields.animal_ids||""; $("experiment").dataset.set=1; }
+  if(refill){ refill = false; // another experiment picked: its config's fields, where it has them (what was typed stays otherwise)
+    if(s.fields.experiment) $("experiment").value = s.fields.experiment; if(s.fields.animal_ids) $("ids").value = s.fields.animal_ids;
+    $("copyto").value = s.fields.copy_to||""; } // the copy destination is each config's own
+  if(!$("experiment").dataset.set){ $("experiment").value = s.fields.experiment||""; $("ids").value = s.fields.animal_ids||""; $("copyto").value = s.fields.copy_to||""; $("experiment").dataset.set=1; }
+  renderCopies(s.copies || {jobs: []}, L.folder);
   $("during").hidden = !(st=="recording" || st=="stopping" || st=="starting live");
   $("disk").textContent = s.disk.free_gb!=null ? Math.round(s.disk.free_gb)+" GB" : "-";
   // With a Pico's plan: what the rest of it still needs (SpikeGLX and the videos, estimated), not hours at the rate so far
@@ -206,10 +228,54 @@ function render(s){
   const C = L.clean; $("aftertitle").textContent = st=="post" ? "After the recording" : "The last recording: " +
     (C ? (C.clean ? "every camera recorded to the end" : "it didn't end cleanly: " + (C.why||"").split(";")[0] + (String(C.why||"").includes(";") ? "; ..." : "")) :
     L.state=="done" ? "campy-acquire ended" : L.state || "");
+  const CJ = ((s.copies||{}).jobs||[]).find(j => L.folder && j.folder == L.folder);
+  if(CJ) P.copy = {state: CJ.state=="done" ? "done" : CJ.state=="failed" ? "failed" : "waiting", message: copyText(CJ)};
   $("post").innerHTML = ["remux","export","copy","run"].map(k => P[k] ? "<li>"+tag(P[k].state, P[k].state=="done"?"ok":P[k].state=="failed"?"bad":"warn")+" "+k+": "+esc(P[k].message)+"</li>"
     : "<li class=muted>"+k+(st=="post"?": waiting":"")+"</li>").join("");
 }
+let typeSig = "", listSig = "", choosing = false, refill = false;
+function renderTypes(T, st, s){
+  $("typebox").hidden = !T; if(!T) return;
+  // Changed only while nothing records: no recording, no earlier panel's, no Pico or SpikeGLX left running
+  const idle = ["ready","done","failed"].includes(st) && !s.orphan && $("left").hidden;
+  const list = T.favorites.slice(); if(!list.some(x => x.path == T.chosen)){ const c = T.all.find(x => x.path == T.chosen); if(c) list.push(c); }
+  const sig = JSON.stringify([list.map(x => [x.path, x.title]), T.chosen]);
+  if(sig != typeSig && document.activeElement != $("type")){ typeSig = sig;
+    $("type").innerHTML = list.map(x => '<option value="'+esc(x.path)+'">'+esc(x.title)+'</option>').join(""); $("type").value = T.chosen; }
+  $("type").disabled = !idle || choosing;
+  const cur = T.all.find(x => x.path == T.chosen);
+  if(!choosing) $("typetext").textContent = (cur ? cur.file : "") + (idle ? "" : " · another experiment can be picked once nothing is recording");
+  $("typefolder").textContent = T.folder;
+  if($("typelist").hidden) return;
+  const lsig = JSON.stringify([T.all, T.chosen, idle]);
+  if(lsig == listSig) return; listSig = lsig;
+  $("types").innerHTML = T.all.map((x,i) => '<li><button class="star" data-star="'+i+'" title="'+(x.favorite ? "Take it off" : "Add it to")+' the Experiment list">'+(x.favorite ? "\u2605" : "\u2606")+'</button>'+
+    '<span><b>'+esc(x.title)+'</b> <span class="muted mono">'+esc(x.file)+'</span>'+(x.error ? '<br><span class="err">'+esc(x.error)+'</span>' : "")+'</span>'+
+    (x.path == T.chosen ? tag("in use","ok") : x.error ? "" : '<button data-use="'+i+'"'+(idle ? "" : " disabled")+'>Use</button>')+'</li>').join("") ||
+    '<li class="muted">No config (*.yaml, *.yml) in this folder.</li>';
+  $("types").querySelectorAll("[data-star]").forEach(b => { const x = T.all[+b.dataset.star]; b.onclick = async () => {
+    const e = await post("/favorite", {path: x.path, on: !x.favorite}); $("typeerr").textContent = e || ""; listSig = ""; tick(); }; });
+  $("types").querySelectorAll("[data-use]").forEach(b => { b.onclick = () => chooseType(T.all[+b.dataset.use].path); });
+}
+async function chooseType(path){
+  choosing = true; $("type").disabled = true; $("typetext").textContent = "Loading the experiment's config and its checks…";
+  const e = await post("/type", {path}); choosing = false; $("typeerr").textContent = e || "";
+  if(!e){ refill = true; modelSig = ""; boutSig = ""; typeSig = ""; listSig = ""; $("length").innerHTML = ""; $("starterr").textContent = ""; }
+  typeSig = ""; tick();
+}
 function base(p){ return String(p||"").split(/[\\/]/).filter(x => x).pop() || ""; }
+function gb(b){ return b==null ? "?" : (b/1e9).toFixed(1); }
+function copyText(j){
+  if(j.state=="copying") return "copying into "+j.to+": "+gb(j.done_bytes)+" of "+gb(j.bytes)+" GB, "+dur(j.seconds||0);
+  if(j.state=="waiting") return "waits for the copies before it, into "+j.to;
+  return j.message || j.state;
+}
+function renderCopies(C, folder){
+  const jobs = C.jobs || []; $("copies").hidden = !jobs.length && !C.close_when_copied;
+  $("copywait").hidden = $("closenow").hidden = !C.close_when_copied;
+  if(C.close_when_copied) $("copywait").textContent = C.pending ? "The panel closes by itself once these copies are done ("+C.pending+" left)." : "Closing…";
+  $("copylist").innerHTML = jobs.map(j => "<li>"+tag(j.state, j.state=="done"?"ok":j.state=="failed"||j.state=="left"?"bad":"warn")+" <b>"+esc(j.name)+"</b> "+esc(copyText(j))+"</li>").join("");
+}
 let modelSig = "";
 function renderModels(M){
   $("modelbox").hidden = !M; if(!M) return;
@@ -307,7 +373,7 @@ $("start").onclick = async () => { $("starterr").textContent = "";
   const override = !!disk && blocks.length == 1;
   if(override && !confirm("This session doesn't fit on the disk.\n\n" + disk.text + "\n\nStart anyway? Only if data will be moved off "+
     "this disk during the session. Otherwise the disk fills up: campy stops cleanly near the end of the space, but SpikeGLX doesn't.")) return;
-  const e = await post("/start", {experiment:$("experiment").value, animal_ids:$("ids").value, notes:$("notes").value,
+  const e = await post("/start", {experiment:$("experiment").value, animal_ids:$("ids").value, notes:$("notes").value, copy_to:$("copyto").value.trim(),
     length: $("length").value || null, pico_at: $("picoat").value.trim() || null, disk_override: override});
   $("starterr").textContent = e || ""; tick(); };
 $("mset").onchange = () => { if($("mset").value) pickModels({set: $("mset").value}); };
@@ -315,11 +381,21 @@ $("mcen").onchange = () => pickModels({centroid: $("mcen").value});
 $("mins").onchange = () => pickModels({centroid: $("mcen").value, instance: $("mins").value});
 $("mrescan").onclick = async () => { $("mrescan").disabled = true; $("mscan").textContent = "Looking…"; const e = await post("/models-scan"); $("mrescan").disabled = false; $("starterr").textContent = e || ""; modelSig = ""; tick(); };
 $("boutreset").onclick = async () => { const e = await post("/bouts", {reset: true}); $("starterr").textContent = e || ""; tick(); };
+$("type").onchange = () => chooseType($("type").value);
+$("typeall").onclick = () => { const open = $("typelist").hidden; $("typelist").hidden = !open; $("typeall").textContent = open ? "Hide the list" : "Show all configs"; listSig = ""; tick(); };
+$("typescan").onclick = async () => { $("typescan").disabled = true; const e = await post("/types-scan"); $("typescan").disabled = false; $("typeerr").textContent = e || ""; listSig = ""; typeSig = ""; tick(); };
 $("length").onchange = async () => { const e = await post("/length", {seconds: $("length").value}); $("starterr").textContent = e || ""; tick(); };
 let closed = false;
-$("close").onclick = async () => { if(!confirm("Close the panel? Nothing is recording.")) return; const e = await post("/close"); if(e){ alert(e); return; }
-  closed = true; document.querySelector("main").innerHTML = '<div class="card"><h2>The panel is closed</h2><p class="muted">You can close this tab. '+
-    'To record again, open the panel from its desktop icon.</p></div>'; };
+function closedPage(){ closed = true; document.querySelector("main").innerHTML = '<div class="card"><h2>The panel is closed</h2><p class="muted">You can close this tab. '+
+    'To record again, open the panel from its desktop icon.</p></div>'; }
+$("close").onclick = async () => {
+  const C = (last||{}).copies || {};
+  if(!confirm(C.pending ? "Close the panel? Nothing is recording, but "+C.pending+" recording"+(C.pending==1?" is":"s are")+" still being copied: the panel closes by itself once the copies are done." : "Close the panel? Nothing is recording.")) return;
+  const r = await fetch(q("/close"), {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"}); const j = await r.json().catch(() => ({}));
+  if(j.error){ alert(j.error); return; } if(j.waiting){ tick(); return; } closedPage(); };
+$("closenow").onclick = async () => {
+  if(!confirm("Close the panel now? The recordings not copied yet stay on this computer; each one's post.log says how to copy it by hand.")) return;
+  const e = await post("/close", {leave: true}); if(e){ alert(e); return; } closedPage(); };
 $("keep").onclick = () => { $("stopdlg").hidden = true; };
 async function stopMode(mode){ $("stopdlg").hidden = true; const e = await post("/stop", {mode}); if(e) alert(e); tick(); }
 $("stopbout").onclick = () => stopMode("bout"); $("stopnow").onclick = () => stopMode("now");

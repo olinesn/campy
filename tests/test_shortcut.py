@@ -88,3 +88,15 @@ def test_a_windows_shortcut(tmp_path):
 	target, arguments = out.stdout.strip().splitlines()[:2]
 	assert target.lower().endswith("python.exe")
 	assert arguments == subprocess.list2cmdline(["-m", "campy.session", "panel", str(config)])
+
+
+def test_one_icon_for_a_folder_of_configs(tmp_path):
+	folder = tmp_path / "configs"
+	folder.mkdir()
+	paths = shortcut.Make(str(folder), folder=str(tmp_path / "desk"))
+	assert len(paths) == 1 and os.path.basename(paths[0]).startswith("campy recording")
+	if sys.platform != "win32": # a Windows .lnk is binary: its target is checked in test_a_windows_shortcut
+		text = open(paths[0]).read()
+		assert str(folder) in text and "panel" in text
+	with pytest.raises(OSError, match="no config or folder"):
+		shortcut.Make(str(tmp_path / "missing"), folder=str(tmp_path))

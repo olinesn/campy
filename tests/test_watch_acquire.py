@@ -198,9 +198,19 @@ def test_ffmpeg_killed(tmp_path, service):
 
 @pytest.mark.skipif(sys.platform == "win32", reason="SIGSTOP")
 def test_ffmpeg_frozen(tmp_path, service):
-	proc = Start(tmp_path, service, rec=14, writeQueueMaxSec=2)
+	proc = Start(tmp_path, service, rec=16, writeQueueMaxSec=2)
 	ffmpegs = Ffmpegs(proc)
-	time.sleep(1.5)
+	# Stopped once its frames have come for longer than STALL_START_S (1 s here), when its encoder has opened and a
+	# stall is warned of. Before, it was stopped 1.5 s after the ffmpegs started, before the trigger's first frame
+	# on a busy CI runner now and then: the warning (a quarter of writeQueueMaxSec) came in those first frames' second,
+	# so wasn't said, and the stall was first said already critical, with no "worse:" (Linux, Python 3.9)
+	video = ffmpegs["Camera0"].cmdline()[-1]
+	video = video if os.path.isabs(video) else os.path.join(ffmpegs["Camera0"].cwd(), video)
+	deadline = time.monotonic() + 20
+	while not (os.path.exists(video) and os.path.getsize(video) > 0) and time.monotonic() < deadline:
+		time.sleep(0.05)
+	assert os.path.getsize(video) > 0, video
+	time.sleep(2.0) # STALL_START_S, the watch's next look (EVERY_S 0.25 s) and a margin
 	ffmpegs["Camera0"].suspend() # SIGSTOP: it takes no frames, as when the disk stops taking writes
 	time.sleep(5)
 	ffmpegs["Camera0"].resume()
@@ -213,7 +223,7 @@ def test_ffmpeg_frozen(tmp_path, service):
 	assert any(t.startswith("resolved, after ") and "Camera0: caught up" in t for t in texts), texts
 	assert any(t.startswith("resolved, after ") and "Camera0: no frame dropped for 3 s" in t for t in texts), texts
 	assert not any("Camera1" in t for t in texts[1:-1]), texts
-	assert re.search(r"- Camera0: 420 frames, \d+ dropped", texts[-1]), texts[-1]
+	assert re.search(r"- Camera0: 480 frames, \d+ dropped", texts[-1]), texts[-1]
 	assert code == 0, out
 
 
