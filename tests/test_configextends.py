@@ -278,3 +278,54 @@ def test_paths_in_the_home_folder_are_shown_with_a_tilde(tmp_path, monkeypatch):
 	inside = os.path.join(str(tmp_path), ".campy", "configs", "rig.yaml")
 	assert configurator.Shown(inside) == os.path.join("~", ".campy", "configs", "rig.yaml")
 	assert configurator.Shown("exp.yaml") == "exp.yaml" # as given
+
+
+# ------------------------------------------------------------------ one trigger board per rig
+
+def test_one_trigger_board_per_rig(tmp_path, profiles):
+	# The rig profile names the board that pulses its cameras (triggerController). On 10 Nov 2026 every
+	# ChronicRecord calibration from the panel stopped 2 s in: the Pico had taken over the cameras' trigger, but the
+	# calibration config still started the Arduino on COM9, unplugged since 2 Nov
+	(profiles / "rig.yaml").write_text("numCams: 2\ntriggerController: pico\nstartArduino: False\ncameraTrigger: Line3\n")
+	rig = str(profiles / "rig.yaml")
+	ok = configurator.Resolve(write(tmp_path / "ok.yaml", "extends: rig\nframeRate: 10\npico:\n  set: {CAMERA_ONLY: 60}\n"))
+	assert ok.params["triggerController"] == "pico" and ok.sections["pico"] == {"set": {"CAMERA_ONLY": 60}}
+	# No trigger at all (free-running cameras) is still a config's own choice
+	assert configurator.Resolve(write(tmp_path / "free.yaml", "extends: rig\ntriggerController: None\n"
+		"cameraTrigger: None\n")).params["triggerController"] == "None"
+	# The other board, named in a config: refused, naming the profile
+	with pytest.raises(configurator.ConfigError) as e:
+		configurator.Resolve(write(tmp_path / "other.yaml", "extends: rig\ntriggerController: arduino\n"))
+	assert "triggerController: arduino ({}:2), but this rig's profile {} says pico".format(
+		str(tmp_path / "other.yaml"), rig) in str(e.value)
+	# Or on the command line
+	with pytest.raises(configurator.ConfigError, match="triggerController: Arduino \\(command line\\), but this rig's"):
+		configurator.Resolve(str(tmp_path / "ok.yaml"), ["--triggerController", "Arduino"])
+	# Starting the Arduino on a Pico rig: refused
+	with pytest.raises(configurator.ConfigError) as e:
+		configurator.Resolve(write(tmp_path / "arduino.yaml", "extends: rig\nstartArduino: True\n"))
+	assert "the Pico makes this rig's camera pulses, and campy starts no Arduino, but startArduino is True ({}:2)".format(
+		str(tmp_path / "arduino.yaml")) in str(e.value)
+
+
+def test_a_pico_section_on_an_arduino_rig(tmp_path, profiles):
+	(profiles / "rig.yaml").write_text("numCams: 2\ntriggerController: arduino\nstartArduino: True\nserialPort: COM9\n")
+	assert configurator.DrivesTrigger(configurator.Resolve(write(tmp_path / "a.yaml", "extends: rig\n")).params)
+	# Both boards would pulse the cameras
+	with pytest.raises(configurator.ConfigError, match=r"A pico: section \(.*both.yaml:2\) and startArduino: True "
+			r"\(.*rig.yaml:3\): the Pico and the Arduino would both pulse the cameras"):
+		configurator.Resolve(write(tmp_path / "both.yaml", "extends: rig\npico:\n  set: {CAMERA_ONLY: 60}\n"))
+	# The Arduino not started, but the rig's board is still the Arduino
+	with pytest.raises(configurator.ConfigError, match=r"A pico: section .*, but triggerController: arduino "
+			r"\(.*rig.yaml:2\): this rig's camera pulses come from its Arduino"):
+		configurator.Resolve(write(tmp_path / "pico.yaml", "extends: rig\nstartArduino: False\npico:\n  set: {}\n"))
+
+
+def test_a_rig_that_names_no_board_is_as_before(tmp_path, profiles):
+	# Without triggerController in the profile, a Pico config only needs startArduino False (chronic_pico.yaml as it
+	# was), and the Arduino may still be started without a pico: section
+	(profiles / "rig.yaml").write_text("numCams: 2\nstartArduino: True\ncameraTrigger: Line3\n")
+	assert configurator.Resolve(write(tmp_path / "p.yaml", "extends: rig\nstartArduino: False\npico:\n  set: {}\n"))
+	assert configurator.Resolve(write(tmp_path / "a.yaml", "extends: rig\n")).params["startArduino"] is True
+	with pytest.raises(configurator.ConfigError, match="the Pico and the Arduino would both pulse the cameras"):
+		configurator.Resolve(write(tmp_path / "b.yaml", "extends: rig\npico:\n  set: {}\n"))

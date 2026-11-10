@@ -328,9 +328,13 @@ SETTINGS = [
 
 	# Trigger
 	Setting("triggerController", "arduino", str, section=TRIGGER, per_camera=ONE,
-		choices=("arduino", "Arduino", "None", "none"),
-		help="Microcontroller make for camera triggering. Currently supported: 'arduino'. 'None' (or 'none'): \
-			campy starts no trigger, even with startArduino True."),
+		choices=("arduino", "Arduino", "pico", "Pico", "None", "none"),
+		help="The board that makes the cameras' trigger pulses. 'arduino': campy's Arduino, which campy starts \
+			itself with startArduino True. 'pico': the ChronicRecord Pico (campy-session's pico: section, or \
+			chronic_control.py), never started by campy-acquire: startArduino must be False. 'None' (or 'none'): \
+			campy starts no trigger, even with startArduino True. One board per rig: set it in the rig profile, \
+			and a config that extends the profile can't name the other board (only None), nor start the \
+			Arduino or have a pico: section when the profile names the other one."),
 	Setting("startArduino", False, bool, section=TRIGGER, per_camera=ONE,
 		help="If True, start Arduino after initializing cameras."),
 	Setting("serialPort", "COM3", str, section=TRIGGER, per_camera=ONE,

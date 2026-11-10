@@ -148,6 +148,8 @@ python3 chronic_control.py start --set CAMERA_ONLY=3600 --set CAMERA_FPS=30
 
 `stop` ends one at once, on a whole pulse (a few ms to 20 ms later, what's already queued).
 
+**From campy's panel**, a config's `pico:` section runs one with `set: {CAMERA_ONLY: <seconds>, CAMERA_FPS: <campy's frameRate>}` and one length (`lengths: [{name: "1 min", seconds: 60}]`), `gate_check: false` (no SpikeGLX). campy's `recTimeInSec` is `CAMERA_ONLY`, from the Pico's plan. Since 10 November 2026 the rig's calibration (60 s at 10 fps), look and live-tracking experiments are camera-only Pico sessions like this. Before that they still started the Arduino, which hadn't been on the PC since 2 November, and every one stopped 2 s in ([One trigger board per rig](../docs/sync.md#one-trigger-board-per-rig)).
+
 ## Checking the wiring
 
 ```bash
@@ -168,7 +170,7 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 4. **A 50 Ω resistor in series with GP3** (the camera output). Without it, the camera cable rings as each pulse falls, and the Pico's own input counts a second rise on every pulse (`bounces=` equal to `pulses=`). The cameras didn't see that ring, but the resistor stops it: see "The 50 Ω resistor on the camera pin" near the top.
 5. **Voltage.** The Pico's outputs are 3.3 V, the same as the Pi 3B's GPIO that drove these inputs before. The Blackfly S Line3 counts 2.6 V or more as high, so 3.3 V works, with a small margin. With the cameras and the 50 Ω resistor on it, the camera line reads 2.97 V high on the OneBox.
 6. **Plug the Pico into the recording PC by USB.** On Windows it is a COM port ("USB Serial Device"), which `chronic_control.py` finds by the Pico's USB IDs; on Linux it shows up in `/dev/serial/by-id/`, which it finds by name.
-7. **On the PC,** record with `cameraTrigger: "Line3"`, `startArduino: False`, and `frameRate` matching `CAMERA_FPS`. For bouts:
+7. **On the PC,** record with `cameraTrigger: "Line3"`, `startArduino: False`, and `frameRate` matching `CAMERA_FPS`. Put `triggerController: "pico"` and `startArduino: False` in the rig profile itself, so that no config on the PC can start an Arduino on the same cameras ([One trigger board per rig](../docs/sync.md#one-trigger-board-per-rig)). For bouts:
    - `alertNoFramesSec` above the longest gap between bouts (about 300 s), or campy reports "the trigger has stopped" in every gap.
    - `alertTriggerPauseSec` below the shortest gap between bouts (60 s, after a 240 s bout), or campy sends a "trigger paused" warning for every gap.
    - `alertExternalWaitSec` above how long campy waits before the Pico's `start` (default 10 minutes), or campy sends "No frame yet ... is it running?" while it waits.

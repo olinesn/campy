@@ -112,6 +112,8 @@ ffmpegPath: 'C:\ffmpeg-btbn-8.1\bin\ffmpeg.exe'
 campy-config new evox2 --from configs/campy_config_evox2.yaml
 ```
 
+The board that pulses the rig's cameras is one of those settings: `triggerController` in the profile names it (`arduino` or `pico`), and campy refuses a config that would use the other one ([One trigger board per rig](sync.md#one-trigger-board-per-rig)).
+
 Keep the rig's own settings in a profile, not as an edit of a config in `configs/`. Those are examples, which a campy update may change: an edited one makes every update stop to ask what to do with the edit.
 
 **What `extends:` names**
