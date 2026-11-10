@@ -120,7 +120,7 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
       <div class="muted note">After each recording, its folder is copied into this one in the background, while the next records, and every file is read back and checked byte for byte. Empty: no copy.</div>
       <label class="tick" style="display:flex;gap:8px;align-items:flex-start;margin-top:6px;font-weight:500"><input type="checkbox" id="copydelete" style="width:auto;margin-top:3px">
         <span>Delete each recording from this computer once its copy is checked</span></label>
-      <div class="muted note" id="copydeletenote">Off: every recording stays here too. On: once every file is the same in the copy, the recording's folder is deleted here. It is kept if any file differs, if a program still has a file in it open, or if anything in it changed after the check. This can't be undone.</div>
+      <div class="muted note" id="copydeletenote">Off: every recording stays here too. On: once every file is the same in the copy, the recording's folder is deleted here. It is kept if the recording didn't end cleanly, if any file differs, if a program still has a file in it open, or if anything in it changed after the check. This can't be undone.</div>
     </div>
     <div><div id="orphan" class="err" hidden></div><button id="stoporphan" class="stop" hidden>Stop that recording</button>
       <h3 style="margin-top:4px">Checks</h3>

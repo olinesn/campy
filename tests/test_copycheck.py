@@ -18,13 +18,17 @@ def status_dir(tmp_path, monkeypatch):
 	monkeypatch.setenv("CAMPY_STATUS_DIR", str(tmp_path / "status"))
 
 
-def recording(tmp_path, name, size=300000):
-	# A recording's folder as the rig makes them: cameras, SpikeGLX's and the Pico's folders, logs
+def recording(tmp_path, name, size=300000, exit_code=0):
+	# A recording's folder as the rig makes them: cameras, SpikeGLX's and the Pico's folders, logs; stopped cleanly
+	# (campy-session's launcher.json, each camera's totals in its metadata.csv) unless exit_code says otherwise
 	folder = tmp_path / "rec" / name
 	for sub in ("Camera0", "Camera1", "spikeglx", "pico", "logs"):
 		(folder / sub).mkdir(parents=True)
 	(folder / "Camera0" / "0.mp4").write_bytes(os.urandom(size))
 	(folder / "Camera1" / "1.mp4").write_bytes(os.urandom(size // 3))
+	for cam in ("Camera0", "Camera1"):
+		(folder / cam / "metadata.csv").write_text("framesWritten,120\n" if exit_code == 0 else "")
+	(folder / "launcher.json").write_text(json.dumps({"parts": {"acquire": {"state": "ended", "exit_code": exit_code}}}))
 	(folder / "spikeglx" / "run_g0_t0.imec0.ap.bin").write_bytes(os.urandom(size // 2))
 	(folder / "pico" / "bouts.csv").write_text("bout,start\n1,0\n")
 	(folder / "logs" / "campy-acquire.log").write_text("its log\n")
@@ -97,6 +101,57 @@ def test_a_clean_copy_is_checked_then_deleted_here(tmp_path):
 	log = open(os.path.join(dest, "logs", "post.log"), encoding="utf-8").read()
 	assert "verified  spikeglx/run_g0_t0.imec0.ap.bin" in log and "deleted from this computer" in log
 	assert sent == []
+
+
+def test_a_recording_that_didnt_stop_cleanly_is_copied_and_checked_but_kept_here(tmp_path):
+	# campy-acquire failed two seconds in: its folder is copied and checked as any, but stays here, box ticked or not,
+	# with an alert (the disk isn't freed), as well as the page saying why
+	share = tmp_path / "share"
+	share.mkdir()
+	folder = recording(tmp_path, "2026-11-10_13-01-57", exit_code=1)
+	before = contents(folder)
+	sent = []
+	queue = queue_with(sent)
+	queue.Add(folder, str(share), delete=True)
+	job = finished(queue)
+	assert job["state"] == "done" and job["verified"] == len(before) and job["mismatched"] == 0, job
+	assert "didn't stop cleanly: campy-acquire ended with exit code 1" in job["message"]
+	assert contents(folder) == before # all of it still here
+	dest = str(share / "2026-11-10_13-01-57")
+	assert contents(dest) == before
+	assert "didn't stop cleanly" in post.Load(folder)["steps"]["copy"]["local"]
+	assert "didn't stop cleanly" in post.Load(dest)["steps"]["copy"]["local"] # the copy's logs say it too
+	assert len(sent) == 1 and sent[0][0] == "copy/2026-11-10_13-01-57" and sent[0][2] == "warning", sent
+	assert "didn't stop cleanly" in sent[0][1] and "campy-acquire ended with exit code 1" in sent[0][1]
+	assert "kept on this computer" in sent[0][1] and sent[0][1].count("delete it by hand") == 1
+
+
+def test_post_by_hand_never_deletes_a_recording_that_didnt_stop_cleanly(tmp_path):
+	share = tmp_path / "share"
+	share.mkdir()
+	folder = recording(tmp_path, "2026-11-10_13-05-00", exit_code=1)
+	code = post.Main([folder, "--only", "copy", "--to", str(share), "--delete-after-verify", "--force"])
+	assert code == 1 and os.path.isdir(folder) # asked to delete, kept: not a success
+	assert "didn't stop cleanly" in post.Load(folder)["steps"]["copy"]["local"]
+	assert post.Load(folder)["steps"]["copy"]["state"] == "done"
+
+
+def test_an_unclean_recording_whose_logs_dont_copy_still_says_why_it_is_kept(tmp_path, monkeypatch):
+	# The second copy of post's logs failing doesn't hide the reason: still kept for the unclean stop, the alert says so
+	share = tmp_path / "share"
+	share.mkdir()
+	folder = recording(tmp_path, "2026-11-10_13-10-00", exit_code=1)
+	real = copycheck.CopyFiles
+	monkeypatch.setattr(copycheck, "CopyFiles", lambda folder, dest, names: (False, "the share went away", {})
+		if any(n.endswith("post.log") for n in names) else real(folder, dest, names))
+	sent = []
+	queue = queue_with(sent)
+	queue.Add(folder, str(share), delete=True)
+	job = finished(queue)
+	assert job["state"] == "done" and os.path.isdir(folder), job
+	assert "didn't stop cleanly" in job["message"] and "the share went away" in job["message"]
+	assert "didn't stop cleanly" in post.Load(folder)["steps"]["copy"]["local"]
+	assert len(sent) == 1 and "didn't stop cleanly" in sent[0][1] and "the share went away" in sent[0][1]
 
 
 def test_a_flipped_bit_is_caught_and_nothing_is_deleted(tmp_path, monkeypatch):
@@ -208,13 +263,13 @@ def test_without_the_box_ticked_the_copy_is_checked_and_kept_here(tmp_path):
 	queue = queue_with([])
 	queue.Add(folder, str(share))
 	job = finished(queue)
-	assert job["state"] == "done" and job["verified"] == 6 and job["mismatched"] == 0
-	assert "every file checked byte for byte (6 files" in job["message"] and os.path.isdir(folder)
+	assert job["state"] == "done" and job["verified"] == 9 and job["mismatched"] == 0 # 6 files + 2 metadata.csv + launcher.json
+	assert "every file checked byte for byte (9 files" in job["message"] and os.path.isdir(folder)
 	dest = os.path.join(str(share), "2026-11-10_10-00-00")
 	# Post's logs, written after the check, copied again: the copy's are the same as here, the result in them
 	for name in ("post.json", "post.log"):
 		assert open(os.path.join(dest, "logs", name), "rb").read() == open(os.path.join(folder, "logs", name), "rb").read()
-	assert post.Load(dest)["steps"]["copy"]["verified"] == 6
+	assert post.Load(dest)["steps"]["copy"]["verified"] == 9
 
 
 def test_post_by_hand_deletes_after_the_check(tmp_path):

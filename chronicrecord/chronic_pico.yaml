@@ -36,8 +36,8 @@ cameraTrigger: "Line3"
 # 240 x long bouts + 10 x the rest. 4 days, TOTAL_DURATION=345600: 1152 bouts, 192 long,
 # 55,680 s.)
 # Disk: the 6-day plan needs about 2.9 TB on this PC (videos ~140-200 GB, SpikeGLX ~2.7 TB
-# on the same drive while the gate is high, plus 1 s before and after each bout), far more than its ~500 GB free: add a data disk
-# first (docs/hardware.md, "Recording many days").
+# on the same drive while the gate is high, plus 1 s before and after each bout): more than the 1 TB system disk
+# holds, so the rig records to its 4 TB data disk, D: (chronic_session.yaml; docs/hardware.md, "Recording many days").
 # If the Pico's session is stopped early, campy keeps waiting for frames: stop it with Ctrl-C in its
 # window, or by creating the stop file below.
 recTimeInSec: 83520
@@ -67,11 +67,10 @@ alertTriggerPauseSec: 30
 # campy refuses this line (delete it there, and the 10-minute warning comes back).
 alertExternalWaitSec: 3600
 
-# SpikeGLX writes to the same disk as campy (C:) while the gate is high, about 475 GB a day
+# SpikeGLX writes to the same disk as campy (D: on the rig) while the gate is high, about 475 GB a day
 # on the 6-day plan, and campy's disk check doesn't count it. So warn with about a day's
-# room left, not campy's default 20 GB (about an hour here). With today's single disk (~490 GB
-# free) this warns as soon as a session starts: a 6-day session doesn't fit until a data disk
-# is added (docs/hardware.md, "Recording many days").
+# room left, not campy's default 20 GB (about an hour here). On the rig's 4 TB data disk
+# (since 10 November 2026) it warns only once about a day's room is left.
 alertDiskFreeGB: 500
 
 # Denoise each camera's frames before encoding: ffmpeg's atadenoise over 5 frames (the 2 before and

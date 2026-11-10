@@ -598,6 +598,30 @@ def TriggerCheck(params, pico, ports=SerialPorts):
 	return None
 
 
+def CalibrateCheck(config, missing=None):
+	"""
+	The check line for a calibration recording (videoFilename with "calibration" in it), or None for any other: its
+	calibration.toml is made after it by calibrat3 (post: calibrate:), and this computer must have what that needs.
+	Missing pieces stop the start: the recording would be made, and its calibration not. post: calibrate: not set is a
+	warning: the videos are recorded, and the calibration is left for later.
+	"""
+	from campy import calibrate, newfiles
+	names = config.Value("videoFilename", "")
+	if not any(newfiles.CALIBRATION_WORD in os.path.basename(str(n)).lower() for n in
+			(names if isinstance(names, list) else [names])):
+		return None
+	options = (config.post or {}).get("calibrate") or {}
+	if not options:
+		return ("warn", "Calibration: calibrat3 won't make this recording's calibration.toml, as post: calibrate: "
+			"isn't set (in the rig profile, it is on for every calibration recording on this computer: docs/"
+			"calibration.md)")
+	gaps = (missing or calibrate.Missing)(options.get("calibrat3"), options.get("browser", "chrome"))
+	if gaps:
+		return ("block", "Calibration: calibrat3 can't make this recording's calibration.toml on this computer. "
+			"Missing: {}".format("; ".join(gaps)))
+	return ("ok", "Calibration: calibrat3 makes calibration.toml after the recording ({})".format(options["calibrat3"]))
+
+
 def SinceRelease(describe, version):
 	"""
 	git describe's distance from the newest release tag (v2.7.0-96-g7bf012e): ("+96", "96 commits after the v2.7.0
@@ -991,6 +1015,9 @@ class Panel:
 		trigger = TriggerCheck(self.config.acquire, self.devices.pico if self.devices is not None else None)
 		if trigger is not None:
 			checks.append(trigger)
+		calibrate_check = CalibrateCheck(self.config)
+		if calibrate_check is not None:
+			checks.append(calibrate_check)
 		n, names = self.config.Cameras()
 		if self.devices is not None and self.devices.pico is not None:
 			checks.append(("ok", "{} cameras ({})".format(n, ", ".join(names))))
