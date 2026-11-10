@@ -68,9 +68,13 @@ Each computer that records needs, once:
 2. **Playwright's Python package** in campy's recording environment: `pip install playwright`. It drives the installed Chrome, so there is no browser to download.
 3. **Google Chrome**, installed as usual.
 
+**Pin each camera's name to its serial number first** (`cameraSerials` in the rig profile, in the order of `cameraNames`). A calibration holds for the names it was recorded with, and without `cameraSerials` campy names the cameras in the order the camera driver lists them, which can change from one recording to the next. On the Dell Pro Max Slim FCS1250 on 10 November 2026, three recordings that day and the ones of 26 October named the four cameras in three different orders. A live recording whose order differed from its calibration's would have put each camera's 2D poses through another camera's position.
+
 **The panel checks it before Start.** For a calibration recording the checks list has a **Calibration** line:
 - **Green:** calibrat3 will make `calibration.toml` after the recording.
 - **Red:** a piece is missing (the checkout, Playwright or Chrome). The line names it, and the start is stopped: otherwise the recording would be made and its calibration not.
 - **Yellow:** `post: calibrate:` isn't set anywhere. The videos are recorded, and the calibration is left to be made by hand.
+
+**The Dell Pro Max Slim FCS1250, 10 November 2026** (4 FLIR Blackfly S, H.265 on Quick Sync, the Pico's pulses at 10 fps for 60 s): the first calibration made by the panel itself on that computer, headless Chrome decoding the H.265 videos on Windows. It took 47 s: the board in 251–253 of 300 sampled frames on each camera, each camera's reprojection error 0.07–0.08 px at the median and 0.20–0.23 px at p95. Against the calibration of 26 October, once each camera was compared under its own serial number: the lenses agreed (focal lengths within 0.5%, image centres within 2.2 px), and so did the distances between three of the cameras (within 1.4 mm). The fourth camera's distances to the others had changed by 5–15 cm: it had been moved since, and the October calibration no longer held for it.
 
 Problems and their fixes are in [Troubleshooting](troubleshooting.md).
