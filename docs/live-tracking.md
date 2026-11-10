@@ -637,6 +637,12 @@ Notes on the measurements:
   - The spock cluster's campy copy for `campy-infer` followed at 8:05 PM, once the user had logged in there again (a plain fast-forward to `2e3521b`).
   - None of these changes `campy-live`'s tracking (pull request 367 changes the viewer's cage drawing), so the machines didn't run their rig checks again.
 
+- At 8:20–8:26 PM on 9 November, after campy 2.8.0 was released (pull request 372, which only changes the version numbers), all five machines moved to the tag `v2.8.0` (`7089fae`) and reinstalled campy (`--no-deps`) in their environments, so each now reports 2.8.0. The spock cluster's campy copy for `campy-infer` moved to the tag too (a plain fast-forward).
+  - 2.8.0 is the same code as `2e3521b`, which every machine already ran: only this page changed after it (pull request 371).
+  - The EVO-X2, Precision 7875 and Windows 11 VM moved at 8:20 PM, each idle and under its lock (`RIG_CLEAN`). The Pro Max Slim ended `RIG_CONTAMINATED` from 2 sightings of other CPU load, which doesn't matter for an update: nothing was measured.
+  - On the Dell Pro Tower Plus the lock first said not now: tests there were paused until 9 AM, since someone had used the computer during a test at noon, and someone was signed in. With the user's go-ahead the pause was lifted, and once they had signed out, the update went through under the lock on a retry at 8:26 PM, `RIG_CLEAN`, with nothing running.
+  - Every machine already had 2.8.0's `rig.py` (`rig.py install --check`: nothing to install). The code didn't change, so the machines didn't run their rig checks again.
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
