@@ -723,18 +723,89 @@ def test_the_copies_drive_has_room_for_the_recording(tmp_path, home, monkeypatch
 		"62 GB short. Make room there, or copy somewhere else.".format(tmp_path / "C"), text
 	assert p.Start({"length": 28800}) is None # a warning: it starts
 	p.wanted = None
-	# Room enough: ok
+	# Room enough: ok (measured again: a copy destination's drive is kept for up to 10 s)
 	fake_drives(monkeypatch, tmp_path, {"C:": (1022.4, 460.2), "D:": (4000.8, 3998.1)})
+	p.drives.clear()
 	assert [c[0] for c in p.Checks() if c[2:] == ("copy-disk",)] == ["ok"]
 	# On the recordings' own drive: room for both
 	monkeypatch.setattr(panel.Panel, "CopyTo", lambda self: str(tmp_path / "D"))
 	fake_drives(monkeypatch, tmp_path, {"D:": (4000.8, 300.0)})
+	p.drives.clear()
 	[(level, text, _)] = [c for c in p.Checks() if c[2:] == ("copy-disk",)]
 	assert level == "warn" and "on the same drive as the recordings (D:): room for both, about 323 GB of the 300 GB" in text
 	# No destination, or an rsync one: no line
 	for to in ("", "me@server:/data"):
 		monkeypatch.setattr(panel.Panel, "CopyTo", lambda self, to=to: to)
 		assert not [c for c in p.Checks() if c[2:] == ("copy-disk",)]
+
+
+def test_the_copy_room_is_the_folder_typed_in_the_box(tmp_path, home, monkeypatch):
+	# The box starts from the experiment's usual folder, on C: with room. The user types another share instead, one that
+	# is nearly full: Start copies there, so the check and the Disk free tile measure it, not the usual folder.
+	fake_drives(monkeypatch, tmp_path, {"C:": (1022.4, 460.2), "D:": (4000.8, 3998.1), "S:": (8000.0, 50.0)})
+	monkeypatch.setattr(panel.Panel, "CopyTo", lambda self: str(tmp_path / "C"))
+	p = disk_panel(tmp_path, monkeypatch, 3998, video_folder=tmp_path / "D" / "data")
+	room = lambda: [c[:2] for c in p.checks if c[2:] == ("copy-disk",)]
+	copies = lambda: [d["name"] for d in p.Drives(str(tmp_path / "D")) if d["copies"]]
+	assert [level for level, _ in room()] == ["ok"] and copies() == ["C:"] # before the page has said: the usual folder
+	assert p.Status()["fields"]["copy_box"] is None
+	p.Serve()
+	try:
+		def box(to):
+			return raw(p, "POST", "/check?t=" + p.token, {"Content-Type": "application/json"}, json.dumps({"copy_to": to}))
+		share = str(tmp_path / "S" / "lab" / "mouse 12")
+		os.makedirs(share)
+		assert box(share) == (200, {"ok": True})
+		assert room() == [("warn", "Copies: into {} (S:), 50 GB free; this length's recording is about 162 GB: it doesn't "
+			"fit, 112 GB short. Make room there, or copy somewhere else.".format(share))]
+		assert copies() == ["S:"] and p.Status()["fields"]["copy_box"] == share
+		order = [c[2] if len(c) > 2 else None for c in p.checks]
+		assert order.index("copy-disk") == order.index("disk") + 1 # under the recording's own disk line, as before
+		assert p.Start({"length": 28800, "copy_to": share}) is None # only ever a warning
+		p.wanted = None
+		# Emptied: no copies, nothing checked; an rsync address has no drive here, as before
+		for to in ("", "  ", "me@server:/data"):
+			assert box(to) == (200, {"ok": True})
+			assert room() == [] and copies() == []
+		# Back to the usual folder
+		assert box(str(tmp_path / "C")) == (200, {"ok": True}) and [level for level, _ in room()] == ["ok"]
+		# Rechecked later (another length picked, the end of a recording): still the box's folder
+		box(share)
+		p.checks = p.Checks()
+		assert [level for level, _ in room()] == ["warn"]
+		# Without copy_to, /check runs every check again, as before
+		assert raw(p, "POST", "/check?t=" + p.token, {"Content-Type": "application/json"}, "{}") == (200, {"ok": True})
+		assert p.copy_box == share
+	finally:
+		p.server.shutdown()
+
+
+def test_a_typed_share_is_measured_at_most_every_10_s(tmp_path, home, monkeypatch):
+	# The page tells the server of the box's folder; a slow network share is measured no more often for it
+	fake_drives(monkeypatch, tmp_path, {"C:": (1022.4, 460.2), "D:": (4000.8, 3998.1), "S:": (8000.0, 50.0)})
+	monkeypatch.setattr(panel.Panel, "CopyTo", lambda self: str(tmp_path / "C"))
+	p = disk_panel(tmp_path, monkeypatch, 3998, video_folder=tmp_path / "D" / "data")
+	asked = []
+	usage = panel.DiskUsage
+	monkeypatch.setattr(panel, "DiskUsage", lambda where: asked.append(where) or usage(where))
+	now = [1000.0]
+	monkeypatch.setattr(panel.time, "monotonic", lambda: now[0])
+	p.SetCopyBox(str(tmp_path / "S"))
+	for _ in range(5):
+		p.Drives(str(tmp_path / "D"))
+		p.checks = p.Checks()
+	assert asked.count("S:\\") == 1
+	now[0] += panel.DRIVE_FRESH_S + 1
+	p.Drives(str(tmp_path / "D"))
+	assert asked.count("S:\\") == 2
+
+
+def test_the_page_tells_the_server_the_copy_box_folder():
+	# Each time the box holds another folder, and not while it is typed in (half a share's name isn't looked for)
+	from campy import panelpage
+	page = panelpage.PAGE
+	assert 'document.activeElement != $("copyto") && box !== s.fields.copy_box && box !== copyAsked' in page
+	assert 'post("/check", {copy_to: box})' in page
 
 
 # ------------------------------------------------------------------ the LEDs' power, asked for at Start

@@ -299,6 +299,11 @@ function render(s){
   if(L0 && lenKey != copyLen && document.activeElement != $("copyto")){
     if(L0.copyTo) $("copyto").value = L0.copyTo; else if(copyLen) $("copyto").value = s.fields.copy_to||"";
     copyLen = lenKey; }
+  // The server checks the room in the folder the box holds, which Start copies into: told whenever that changes (not
+  // while it is being typed in, so a share half typed isn't looked for)
+  const box = $("copyto").value.trim();
+  if(document.activeElement != $("copyto") && box !== s.fields.copy_box && box !== copyAsked){
+    copyAsked = box; post("/check", {copy_to: box}).finally(() => { copyAsked = null; }); }
   renderCopies(s.copies || {jobs: []}, L.folder, st);
   $("during").hidden = !(st=="recording" || st=="stopping" || st=="starting live");
   $("disk").textContent = s.disk.free_gb!=null ? Math.round(s.disk.free_gb)+" GB" : "-";
@@ -490,6 +495,7 @@ function renderModels(M){
     "To pick from more models, add panel: models: (their folders) to the config or its rig profile.") + (M.notes.length ? " "+M.notes.join("; ")+"." : "");
   $("mrescan").hidden = !M.roots.length;
 }
+let copyAsked = null; // the box's folder, while the server is being told it
 let copyLen = ""; // the experiment and length whose copy folder the box was last given
 let boutSig = "", ledPower = null; // ledPower: the status's led_power, for the bout drawing's LED rows
 // An LED row's last confirmed power (panel.led_power's names matched by colour: "Blue LED (465 nm)" for blue), or null

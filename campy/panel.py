@@ -900,6 +900,7 @@ class Panel:
 		self.disk = collections.deque(maxlen=60) # (time, free bytes), for the rate the disk fills
 		self.drives = {} # a copy destination: (time measured, its Drive), for the disk tile
 		self.copy_to = None # the recording's "Copy each recording to", while it records
+		self.copy_box = None # what the page's "Copy each recording to" box holds now (None: not told yet), CopyBox
 		self.closing = False
 		self.health = None
 		# Opened with a folder: its configs, one of them in use at a time (the page's Experiment list)
@@ -939,6 +940,7 @@ class Panel:
 		self.length = lengths[0]["seconds"] if lengths else None # the page's choice
 		self.health = health
 		self.disk.clear()
+		self.copy_box = None # the page fills its box from this config's, and says so
 		self.checks = self.Checks()
 		if old is not None and old.thread is not None: # the panel is open: this config's cameras from now on
 			old.Stop()
@@ -1089,11 +1091,11 @@ class Panel:
 		room for both. None without a destination, for an rsync address,
 		or when either drive can't be told.
 		"""
-		to = self.CopyDefault().strip()
-		if not getattr(self, "need", None) or not to or Remote(to) or not os.path.isdir(to):
+		to = self.CopyBox()
+		if not getattr(self, "need", None) or not to or Remote(to):
 			return None
 		folder, need_b = self.need
-		there, here = Drive(to), Drive(folder or self.config.Value("videoFolder", "."))
+		there, here = self.CopyDrive(to), Drive(folder or self.config.Value("videoFolder", "."))
 		if there is None or here is None:
 			return None
 		free = there["free_gb"] * 1e9
@@ -1107,6 +1109,37 @@ class Panel:
 			return ("warn", "{}: it doesn't fit, {} short. Make room there, or copy somewhere else.".format(text,
 				GB(need_b - free)), "copy-disk")
 		return ("ok", text, "copy-disk")
+
+	def CopyBox(self):
+		"""
+		The folder in the page's "Copy each recording to" box, which Start
+		copies into: what the page last said it holds (SetCopyBox), else,
+		before it has, what the page fills it with (CopyDefault). "" when
+		it is empty.
+		"""
+		to = self.copy_box if self.copy_box is not None else self.CopyDefault()
+		return str(to or "").strip()
+
+	def SetCopyBox(self, to):
+		# From the page, when its box holds another folder: the copy destination's room checked again, in the checks it
+		# has (not all of them: campy-live's environment takes seconds to check)
+		self.copy_box = str(to or "").strip()
+		if not getattr(self, "need", None):
+			return None
+		copy = self.CopyDiskCheck()
+		checks = [c for c in self.checks if c[2:] != ("copy-disk",)]
+		if copy is not None:
+			at = next((i + 1 for i, c in enumerate(checks) if c[2:] == ("disk",)), len(checks))
+			checks.insert(at, copy)
+		self.checks = checks
+		return None
+
+	def CopyDrive(self, to):
+		# A copy destination's Drive, or None: measured at most every DRIVE_FRESH_S (a network share can be slow)
+		now = time.monotonic()
+		if to not in self.drives or now - self.drives[to][0] > DRIVE_FRESH_S:
+			self.drives[to] = (now, Drive(to) if os.path.isdir(to) else None)
+		return self.drives[to][1]
 
 	def Free(self, folder=None):
 		where = os.path.abspath(str(folder or self.config.Value("videoFolder", ".")))
@@ -1416,7 +1449,7 @@ class Panel:
 			"copies": dict(self.copies.Status(), close_when_copied=self.close_when_copied),
 			"fields": {"experiment": str(self.config.Value("experiment", "") or "").replace("None", ""),
 				"animal_ids": ", ".join(str(a) for a in (self.config.Value("animalIds", []) or [])),
-				"copy_to": self.CopyTo(), "copy_delete": self.CopyDelete()},
+				"copy_to": self.CopyTo(), "copy_delete": self.CopyDelete(), "copy_box": self.copy_box},
 			"led_power": {"leds": self.LedNames(), "last": LedRemembered(LedPowerFile(), self.config.path)}
 				if self.LedNames() else None}
 
@@ -1462,7 +1495,8 @@ class Panel:
 		rest of the plan's estimate), then each drive recordings are copied
 		onto (copies true; the same drive as the recording's only marks it).
 		A copy destination: the recording's own while it records, the ones
-		still being copied, else the page's box; an rsync address has none.
+		still being copied, else the page's box (CopyBox); an rsync address
+		has none.
 		"""
 		out = []
 		here = Drive(where)
@@ -1471,14 +1505,11 @@ class Panel:
 		tos = [self.copy_to] if self.session is not None and self.copy_to else []
 		tos += [j["to"] for j in self.copies.Status()["jobs"] if j["state"] in ("waiting", "copying")]
 		if not tos and self.session is None:
-			tos = [self.CopyDefault()]
-		now = time.monotonic()
+			tos = [self.CopyBox()]
 		for to in dict.fromkeys(str(t or "").strip() for t in tos): # in order, once each
 			if not to or Remote(to):
 				continue
-			if to not in self.drives or now - self.drives[to][0] > DRIVE_FRESH_S:
-				self.drives[to] = (now, Drive(to) if os.path.isdir(to) else None)
-			drive = self.drives[to][1]
+			drive = self.CopyDrive(to)
 			if drive is None:
 				continue
 			same = next((d for d in out if SameDrive(d, drive)), None)
@@ -1628,6 +1659,8 @@ class Panel:
 					error = panel.Rescan()
 				elif url.path == "/copy-folder":
 					error = panel.MakeCopyFolder(body.get("path"))
+				elif url.path == "/check" and "copy_to" in body:
+					error = panel.SetCopyBox(body.get("copy_to")) # the page's copy box holds another folder
 				elif url.path == "/check":
 					panel.checks, error = panel.Checks(), None
 				else:
