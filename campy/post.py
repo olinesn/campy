@@ -675,8 +675,9 @@ def StepCopy(folder, settings, log, stop=None):
 			for f in files:
 				src = os.path.join(root, f)
 				rel = os.path.relpath(src, folder)
-				if rel.replace("\\", "/") == "logs/" + POST_LOG:
-					continue # written to as it copies
+				if rel.replace("\\", "/") in ("logs/" + POST_LOG, "logs/" + POST_JSON, "logs/" + POST_JSON + ".tmp"):
+					continue # post's own log and progress: written to as it copies (its lines after the copy save
+					         # post.json again, once the copy took over half a second, as robocopy does on Windows)
 				there = os.path.join(dest, rel)
 				if not os.path.isfile(there) or os.path.getsize(there) != os.path.getsize(src):
 					missing.append(rel)

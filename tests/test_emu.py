@@ -209,11 +209,11 @@ def test_the_same_frame_comes_at_the_same_time_from_every_camera(clip):
 	# 40 ms apart, the rest within 3 ms. The bug this test was written for put every frame 0.3-0.6 s apart: the
 	# median (10 ms) catches any steady offset, and no single frame may be half the smallest stagger (0.3 s) apart
 	assert np.median(spread) < 0.01 and spread.max() < 0.15, spread
-	# On the shared schedule: frame n at the start plus n / 50 s. Never early. How late depends on the computer's
-	# sleep: under 3 ms on a Mac, but Windows sleeps in steps of up to 15.6 ms, and on a busy CI runner the median
-	# was 10.8 ms (10 November 2026, frames up to 35 ms late). 50 ms is still far below the bug's 0.3-0.6 s.
+	# On the shared schedule: frame n at the start plus n / 50 s, never before. Each camera's earliest frame within
+	# 10 ms of it: a busy computer makes frames late (on the Windows CI runner the median was 10.8 ms, once), not all
+	# of them, while a camera off the schedule (its own clock, a frame or more behind) has every frame late
 	late = got - (start.value + np.arange(10) / 50.0)
-	assert late.min() >= 0 and np.median(late) < 0.05, late
+	assert late.min() >= 0 and late.min(axis=1).max() < 0.01, late
 
 
 # ------------------------------------------------------------------ campy-acquire
