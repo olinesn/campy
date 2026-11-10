@@ -28,7 +28,12 @@ What makes it fast (each measured in docs/offline-inference.md):
 - the networks are compiled: TensorRT on an NVIDIA GPU, torch.compile on
   AMD (as campy-live's --engine auto), else run in PyTorch;
 - fp16 (sleap-nn 0.3.5 keeps the animals whose peak is two equal pixels,
-  which fp16 makes; 0.3.3 lost them), channels-last on NVIDIA.
+  which fp16 makes; 0.3.3 lost them), channels-last on NVIDIA;
+- a quick start on a cluster whose software and videos are on network
+  storage (--read-ahead, campy/prefetch.py): the files the last run started
+  with are read many at a time at the start, and each video is read whole
+  ahead of its decoder (a campy recording's ~1,200 fragment headers, read
+  one by one by ffmpeg, cost 15 s on a cold file server).
 
 --exact runs sleap-nn's own top-down layer instead, fp32 with no TF32, the
 frames copied to the GPU first: about 2x sleap-nn track, for reference runs
@@ -44,7 +49,7 @@ from datetime import datetime
 
 import numpy as np
 
-from campy import videoread
+from campy import prefetch, videoread
 
 
 def Say(text):
@@ -80,6 +85,7 @@ class Model:
 	"""
 
 	def __init__(self, args, predictor=None):
+		t0 = time.perf_counter()
 		import torch, warnings
 		from campy import live
 		self.torch, self.live, self.args = torch, live, args
@@ -113,10 +119,15 @@ class Model:
 			SamePadInPython()
 		if predictor is None: # (the tests give one of random models)
 			from sleap_nn.inference.predictor import Predictor
+			t1 = time.perf_counter()
 			with warnings.catch_warnings():
 				warnings.simplefilter("ignore", UserWarning)
 				predictor = Predictor.from_model_paths([args.centroid, args.instance], device=self.device,
 					batch_size=self.B, max_instances=args.max_instances, peak_threshold=args.peak_threshold)
+		else:
+			t1 = time.perf_counter()
+		# start-up, s: PyTorch, sleap-nn and the GPU; reading the two models
+		self.timing = {"imports": t1 - t0, "models": time.perf_counter() - t1}
 		self.predictor = predictor
 		layer = self.layer = self.predictor.layer
 		self.backends = (layer.centroid_layer.backend, layer.centered_instance_layer.backend)
@@ -405,16 +416,18 @@ def Hms(seconds):
 
 def RunVideo(model, video, out, args):
 	"""One video to its .slp; returns a dict of what happened."""
+	t0 = time.perf_counter()
 	info = videoread.VideoInfo(video)
 	reader, note = videoread.Open(video, args.batch, args.decoder, args.hwaccel, args.frames, info)
+	opened = time.perf_counter() - t0
 	if note:
 		Say(note)
 	t0 = time.perf_counter()
 	model.Prepare(info.height, info.width)
 	ready = time.perf_counter() - t0
 	total = min(info.frames, args.frames) if args.frames else info.frames
-	Say("{}: {}, {}, read with {}".format(video, info, "all frames" if not args.frames else
-		"the first {} frames".format(args.frames), reader.Describe()))
+	Say("{}: {}, {}, read with {} (opened in {:.1f} s)".format(video, info, "all frames" if not args.frames else
+		"the first {} frames".format(args.frames), reader.Describe(), opened))
 	started = datetime.now()
 	t0 = time.perf_counter()
 	outputs, found, last = [], 0, t0
@@ -449,7 +462,8 @@ def RunVideo(model, video, out, args):
 		except Exception:
 			pass
 	result = {"video": video, "slp": out, "frames": n, "animals": found, "seconds": t3 - t0, "fps": n / (t3 - t0),
-		"predict_s": t1 - t0, "labels_s": t2 - t1, "save_s": t3 - t2, "ready_s": ready, "decoder": reader.kind}
+		"predict_s": t1 - t0, "labels_s": t2 - t1, "save_s": t3 - t2, "ready_s": ready, "open_s": opened,
+		"decoder": reader.kind}
 	short = ""
 	if not args.frames and info.exact and n != info.frames:
 		short = "; the video says {:,} frames".format(info.frames)
@@ -493,11 +507,30 @@ def Parser():
 		"EVO-X2, whose GPU also runs the models)")
 	p.add_argument("--frames", type=int, default=0, help="only each video's first N frames (to try settings)")
 	p.add_argument("--progress", type=float, default=30, help="seconds between progress lines (0: none)")
+	p.add_argument("--read-ahead", default="on", choices=["on", "off"], help="on (default): read the files the last "
+		"run started with (Python's modules, PyTorch's, cuDNN's and TensorRT's libraries, the TensorRT plans) and the "
+		"models' checkpoints with many threads at the start, so that a cluster node that hasn't read them lately "
+		"doesn't wait on network storage for each one in turn. The list is kept in --engine-cache's prefetch folder")
 	return p
 
 
+def EngineCache(args):
+	# --engine-cache's folder, as campy.live's FixedEngine.CacheDir has it (not imported yet: it brings numpy)
+	return os.path.expanduser(args.engine_cache or os.path.join("~", ".cache", "campy", "engines"))
+
+
+def ReadAheadNote(reading):
+	n, size, seconds = reading.Done()
+	return "read ahead {:,} of {:,} files, {:.1f} GB, {}".format(n, len(reading.files), size / 1e9,
+		"in {:.1f} s".format(seconds) if seconds is not None else "still reading")
+
+
 def Main(argv=None):
+	started = time.perf_counter()
 	args = Parser().parse_args(argv)
+	# First of all, before the big imports: those files read many at a time
+	reading = prefetch.Start(EngineCache(args), prefetch.ModelFiles([args.centroid, args.instance])) \
+		if args.read_ahead == "on" else None
 	if args.strict_peaks:
 		raise SystemExit("--strict-peaks is gone: it was the old way sleap-nn found centroids, which lost a centroid "
 			"whose top is two equal pixels (fp16). sleap-nn 0.3.5, which campy-infer needs, keeps those itself")
@@ -536,15 +569,31 @@ def Main(argv=None):
 			if other else ""))
 		return 1 if other else 0
 	Say("{} video{} to run".format(len(todo), "" if len(todo) == 1 else "s"))
+	videoAhead = prefetch.Video(todo[0][0]) if args.read_ahead == "on" else None
 	t0 = time.perf_counter()
 	model = Model(args)
-	Say("models loaded in {:.1f} s".format(time.perf_counter() - t0))
+	Say("models loaded in {:.1f} s{}".format(time.perf_counter() - t0, "; " + ReadAheadNote(reading) if reading else
+		""))
 	for note in model.notes:
 		Say(note)
 	results, failed = [], []
-	for v, out in todo:
+	for k, (v, out) in enumerate(todo):
+		if args.read_ahead == "on" and k + 1 < len(todo):
+			videoAhead = prefetch.Video(todo[k + 1][0]) # the next one, while this one runs
 		try:
 			results.append(RunVideo(model, v, out, args))
+			if len(results) == 1:
+				r = results[0]
+				Say("start-up: {:.1f} s to the first frame (PyTorch, sleap-nn and the GPU {:.1f} s, reading the models "
+					"{:.1f} s, the engines {:.1f} s, opening the video {:.1f} s){}".format(time.perf_counter() - started -
+					r["seconds"], model.timing["imports"], model.timing["models"], r["ready_s"], r["open_s"],
+					"; " + ReadAheadNote(reading) if reading else ""))
+			if len(results) == 1 and args.read_ahead == "on":
+				# what this run read to get here, for the next run to read ahead
+				from campy import live
+				listed = prefetch.Record(EngineCache(args), list(live.FixedEngine.PLANS) + [videoread.FfmpegExe()])
+				if listed is None:
+					Say("could not write the list of files to read ahead in {}".format(EngineCache(args)))
 		except KeyboardInterrupt:
 			raise
 		except Exception as e:

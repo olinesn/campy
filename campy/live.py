@@ -1781,6 +1781,7 @@ class FixedEngine:
 		return os.path.expanduser(cache or os.path.join("~", ".cache", "campy", "engines"))
 
 	PLAN_FORMAT = 2 # FixedEngine's ONNX export, as the plan names count it: a change here makes new plans
+	PLANS = [] # the plans this process read or built (campy-infer lists them for its next job to read ahead)
 
 	@staticmethod
 	def PlanName(name, state, shape, fp16, trtVersion, gpu):
@@ -1855,6 +1856,7 @@ class FixedEngine:
 			os.makedirs(cache, exist_ok=True)
 			stem = os.path.join(cache, self.PlanName(self.name, net.state_dict(), self.shape, fp16, trt.__version__,
 				torch.cuda.get_device_name(device)))
+			FixedEngine.PLANS.append(stem + ".plan")
 			logger = trt.Logger(trt.Logger.WARNING)
 			runtime = trt.Runtime(logger)
 			if os.path.exists(stem + ".plan"):
