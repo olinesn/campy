@@ -234,11 +234,13 @@ def presize(src, dst):
 		f.truncate(os.path.getsize(src))
 
 
-def copying(queue, monkeypatch, pid=None):
-	"""A StepCopy that pre-sizes the big file and waits: (began, release)."""
+def copying(queue, monkeypatch, name, pid=None):
+	"""A StepCopy that pre-sizes the big file of recording name and waits: (began, release)."""
 	began, release = threading.Event(), threading.Event()
 
 	def step(folder, settings, log, stop=None, started=None, **kwargs):
+		if os.path.basename(folder) != name: # an earlier test's queue, still copying: not this test's
+			return "done", "copied"
 		if pid is not None and started is not None:
 			started(types.SimpleNamespace(pid=pid))
 		dest = os.path.join(settings["copy"]["to"], os.path.basename(folder))
@@ -260,7 +262,7 @@ def test_a_big_file_sized_in_full_as_it_starts_counts_only_once_copied(tmp_path,
 	# a 5.9 GB SpikeGLX file counted as copied as soon as robocopy started on it, and the page sat at 6.4 of 7.6 GB
 	# ("under a minute left") for minutes
 	queue = quiet()
-	began, release = copying(queue, monkeypatch)
+	began, release = copying(queue, monkeypatch, "2026-11-10_11-40-00")
 	folder = recording(tmp_path, "2026-11-10_11-40-00", BIG)
 	old(folder)
 	to = tmp_path / "share"
@@ -304,7 +306,7 @@ def test_the_copy_programs_write_count_drives_the_progress(tmp_path, monkeypatch
 	fake = FakeIo(counts)
 	monkeypatch.setattr(copyqueue.psutil, "Process", fake)
 	queue = quiet()
-	began, release = copying(queue, monkeypatch, pid=4321)
+	began, release = copying(queue, monkeypatch, "2026-11-10_11-41-00", pid=4321)
 	folder = recording(tmp_path, "2026-11-10_11-41-00", BIG)
 	old(folder)
 	to = tmp_path / "share"
