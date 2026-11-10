@@ -107,13 +107,33 @@ Scored on the validation frames at the end of each run:
 | Frames with at least one error | 21% | 22% |
 | Distance to the anchor when found, p50 / p95 | 7.2 / 27.8 px | 7.2 / 27.4 px |
 
-- **It misses as many animals on the frames it trained on as on new ones,** and its training and validation losses ended about equal (0.00039 and 0.00043). So it isn't memorising its training frames, and more labelled frames of the same kind are unlikely to help much by themselves. Two things are left to try, and this run doesn't tell them apart:
+- **It misses as many animals on the frames it trained on as on new ones,** and its training and validation losses ended about equal (0.00039 and 0.00043). So it isn't memorising its training frames, and more labelled frames of the same kind are unlikely to help much by themselves. That left two things to try:
   - **The model's size.** This one sees each frame at a quarter of its size (scale 0.25), with 16 filters and a maximum stride of 16.
-  - **How long it trained.** At 200 steps of 4 frames per epoch, its 197 epochs showed it each training frame only about 6 times. Training stopped once the validation loss had stopped improving by the early-stopping rule. By then the plateau rule had cut the learning rate from 1e-4 to 4e-7, and the check run during training was still creeping up (F1 0.933 at epoch 150, 0.942 at epoch 196).
+  - **How long it trained.** At 200 steps of 4 frames per epoch, its 197 epochs showed it each training frame only about 6 times. Training stopped once the validation loss had stopped improving by the early-stopping rule. By then the plateau rule had cut the learning rate from 1e-4 to 4e-7, and the check run during training was still creeping up (F1 0.933 at epoch 150, 0.942 at epoch 196). Training longer turned out to be most of it ([below](#training-the-centroid-model-longer)).
 - **Misses come with extra detections in about half the cases.** Half of the missed animals had a detection 50–150 px away, and more than half of the extras landed on an animal already found. Of the 492 misses on validation frames, 148 had another animal within 100 px.
 - **The cutoffs don't change the picture.** Counting any detection within 100 px as found leaves 7.0% missed. Raising the peak threshold trades misses for extras: at 0.3, 9.9% missed and 245 extras; at 0.5, 16.2% missed and 82 extras. In every case at least 20% of frames keep an error.
-- **In 10 recordings it found nothing.** The model detected no animal in 410 of their 413 training frames. These include every frame of two of the three recordings with frames larger than 1024x1280: 1472x1936 (188 frames) and 1536x2048 (90 frames). Both are shrunk to fit 1024x1280 before the model sees them. In the third, at 1464x1936, it found nothing in only 1 of 48 frames. These 10 recordings account for 9% of the misses on training frames. Outside them, 7.7% of animals were missed. These frames haven't been looked at yet.
+- **In 10 recordings it found nothing.** The model detected no animal in 410 of their 413 training frames. These include every frame of two of the three recordings with frames larger than 1024x1280: 1472x1936 (188 frames) and 1536x2048 (90 frames). Both are shrunk to fit 1024x1280 before the model sees them. In the third, at 1464x1936, it found nothing in only 1 of 48 frames. These 10 recordings account for 9% of the misses on training frames. Outside them, 7.7% of animals were missed. Looking at them: two are different arenas (a maze and a large open field), filmed at those larger sizes, where the animal is small once the frame is shrunk. Four are a white round arena, brighter than every one of the other 912 recordings, with a dark animal on a white floor. The other four are the usual bedding cage, but with the animal hard to make out. So these are scenes the model saw very few frames of, not frames it handles badly in general.
 - **On the 318 frames neither model trained on, the chained misses and extras are the centroid model's.** The chained run missed 54 animals and made 52 extra detections there, the same counts as the centroid model alone. The centered instance model, given crops centred on the labelled animals, placed every animal's Trunk within 3 px (642 of 642). As a rough check, scoring the 8.4% missed animals as 0 takes the centered instance model's 0.836 (all 3,086 frames) to about 0.77. The chained run scored 0.780 there, so the misses account for about the whole cost of chaining.
+
+#### Training the centroid model longer
+
+**Retraining it with bigger epochs.** Same split, settings and sleap-nn version (0.3.5), on one A100 GPU of a Slurm cluster, 10 November. The only change was `train_steps_per_epoch`, from 200 to 2,000. Each epoch now shows the model 8,000 frames instead of 800, and the same 200-epoch limit allows 10 times as much training.
+
+That matters because sleap-nn's early-stopping and learning-rate rules count epochs, not frames. "No improvement for 20 epochs" meant only 16,000 frames with 800-frame epochs, so the original run stopped after about 158,000 frames shown in all. It also spent about 45% of each epoch on validation (about 10 s of every 22 s).
+
+Validation F1 from the check run during training (same validation frames), at the same number of frames shown:
+
+| Frames shown | Original, 800 per epoch | Retrained, 8,000 per epoch |
+|---|---|---|
+| 80,800–88,000 | 0.916 | 0.916 |
+| 157,600–160,000 | 0.942 (where it stopped) | 0.940 |
+| 408,000 | — | 0.969 |
+| 480,000 | — | 0.971 (run still going) |
+
+- **At equal training the two runs score about the same.** The original wasn't learning worse; it stopped too soon. Its learning-rate cuts, from 56,000 frames on, didn't visibly hurt.
+- **Everything past 0.94 comes from training beyond where the original stopped.** The retrained run passed 0.942 at epoch 17 (144,000 frames), after 14 minutes of training and validation.
+- **For a centroid config reused from a small project, check `train_steps_per_epoch`.** Set it so an epoch covers thousands of frames, here 2,000 steps of 4. `campy-train-check` flags the original setting, because validation (772 steps) took more steps than training (200).
+- **Still to come.** These are partial results from a run still in progress. Its final score, the miss count above redone on the retrained model, and the comparison with a larger model (scale 0.5, 32 filters) and with training on two GPUs will be added when the runs end.
 
 ### Checking a config before a long run
 
