@@ -46,7 +46,7 @@ label{font-size:.9375rem;color:var(--muted)}h2{font-size:1.25rem;font-weight:500
 .bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden}.bar div{height:6px;background:var(--ok)}
 .copybar{max-width:28rem;margin:4px 0 2px}.copybar div{background:var(--accent)}
 .bgcopy{border-left:4px solid var(--accent)}.copyeta{text-align:right;line-height:1.1;flex:none;min-width:9rem}
-.copyeta .big{font-size:3rem;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text)}.copyeta .big.wait{font-size:1.5rem;font-weight:500}
+.copyeta .big{font-size:3rem;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text)}.copyeta .big.wait{font-size:1.5rem;font-weight:500}.copyeta .gap{margin-left:1.25rem}
 .copyeta .lab{font-size:1.125rem;color:var(--muted)}#clock b{font-variant-numeric:tabular-nums}.bgcopy .copybar{max-width:none;height:10px}.bgcopy .copybar div{height:10px}
 .err{color:var(--bad);font-size:1rem}ul{margin:.25rem 0 0;padding-left:1.25rem}li{margin:.25rem 0}
 select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
@@ -87,7 +87,7 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
 <div id="bgcopy" class="card bgcopy" hidden><div class="row" style="align-items:flex-start"><div class="grow"><b id="bgcopytitle">Copying in the background</b>
   <div id="bgcopyok" style="font-weight:500"></div>
   <div class="muted">Leave the computer on, and the panel's black window open, until it is done.</div></div>
-  <div id="bgeta" class="copyeta" hidden><div><span id="bgetanum" class="big"></span> <span id="bgetalab" class="lab"></span></div><div id="bgetaend" class="muted"></div></div></div>
+  <div id="bgeta" class="copyeta" hidden><div><span id="bgetapct" class="big"></span> <span id="bgetapctlab" class="lab"></span><span id="bgetanum" class="big gap"></span> <span id="bgetalab" class="lab"></span></div><div id="bgetaend" class="muted"></div></div></div>
   <div id="bgcopytext" style="margin-top:6px"></div></div>
 
 <div id="typebox" class="card" hidden>
@@ -290,14 +290,16 @@ function followEta(j){
 }
 function paintEta(){
   const E = bgEta; $("bgeta").hidden = !E; if(!E) return;
-  let num, lab = "", end = "", wait = false;
+  // As big as the time left, in front of it: how much is done (65% copied), then the time left (2:07 left)
+  let pct = "", pctLab = "", num, lab = "", end = "", wait = false;
   if(E.phase!="copying" && E.phase!="checking"){ num = "finishing…"; wait = true; }
-  else { const p = E.pct!=null ? Math.floor(E.pct)+"% "+(E.phase=="checking" ? "checked" : "copied") : "";
-    if(E.end==null){ num = "estimating…"; wait = true; end = p || (E.phase=="checking" ? "the time left to check" : "the time left to copy"); }
+  else { if(E.pct!=null){ pct = Math.floor(E.pct)+"%"; pctLab = E.phase=="checking" ? "checked" : "copied"; }
+    if(E.end==null){ num = "estimating…"; wait = true; if(!pct) end = E.phase=="checking" ? "the time left to check" : "the time left to copy"; }
     else { num = mss(Math.max(0, (E.end - Date.now())/1000)); lab = "left";
-      end = (p ? p+", " : "")+"done around "+clockAt(E.end)+(E.phase=="checking" ? "" : ", then checked"); } }
-  const html = [num, lab, end, wait].join("|"); if(html == etaHtml) return; etaHtml = html;
-  $("bgetanum").textContent = num; $("bgetanum").className = "big"+(wait ? " wait" : ""); $("bgetalab").textContent = lab; $("bgetaend").textContent = end;
+      end = "done around "+clockAt(E.end)+(E.phase=="checking" ? "" : ", then checked"); } }
+  const html = [pct, pctLab, num, lab, end, wait].join("|"); if(html == etaHtml) return; etaHtml = html;
+  $("bgetapct").textContent = pct; $("bgetapctlab").textContent = pctLab;
+  $("bgetanum").textContent = num; $("bgetanum").className = "big"+(pct ? " gap" : "")+(wait ? " wait" : ""); $("bgetalab").textContent = lab; $("bgetaend").textContent = end;
 }
 function paint(){ paintClock(); paintEta(); }
 function render(s){
