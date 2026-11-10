@@ -143,6 +143,67 @@ def Drive(path):
 		"used_gb": round((usage.total - usage.free) / 1e9, 1), "free_gb": round(usage.free / 1e9, 1)}
 
 
+LED_REMEMBER = "panel-led-power.json" # the page's last LED powers, for each config
+
+
+def LedPowerFile():
+	return os.path.join(session.StatusDir(), LED_REMEMBER)
+
+
+def LedRemembered(path, config):
+	"""The LED powers last confirmed at a Start with this config: {leds: [{led, driver_mA, fiber_tip_uW}], at}, or None."""
+	try:
+		with open(path) as f:
+			got = strictjson.load(f).get(pico.ConfigKey(config))
+		return got if isinstance(got, dict) and isinstance(got.get("leds"), list) else None
+	except (OSError, ValueError, AttributeError):
+		return None
+
+
+def LedRemember(path, config, power):
+	try:
+		with open(path) as f:
+			everything = strictjson.load(f)
+		if not isinstance(everything, dict):
+			everything = {}
+	except (OSError, ValueError):
+		everything = {}
+	everything[pico.ConfigKey(config)] = power
+	try:
+		os.makedirs(os.path.dirname(path), exist_ok=True)
+		session.WriteJson(path, everything)
+	except OSError:
+		pass
+
+
+def LedPower(names, given):
+	"""
+	The LED powers the page sends at Start, checked against the config's
+	panel.led_power names: ({leds: [{led, driver_mA, fiber_tip_uW}],
+	at, measured}, None), or (None, why not). Every LED needs both
+	numbers, 0 or more (0: that LED is off).
+	"""
+	by = {str(g.get("led")): g for g in given if isinstance(g, dict)} if isinstance(given, list) else {}
+	leds = []
+	for name in names:
+		g = by.get(name)
+		if g is None:
+			return None, "LED power: the page asks for each LED's driver current and its power at the fiber tip at " \
+				"Start; {} has none.".format(name)
+		values = []
+		for key, what in (("driver_mA", "driver current (mA)"), ("fiber_tip_uW", "power at the fiber tip (µW)")):
+			try:
+				v = float(str(g.get(key)).strip())
+			except (TypeError, ValueError):
+				return None, "LED power: {}'s {} is not a number.".format(name, what)
+			if not v >= 0 or v == float("inf"):
+				return None, "LED power: {}'s {} must be 0 or more.".format(name, what)
+			values.append(int(v) if v == int(v) else v)
+		leds.append({"led": name, "driver_mA": values[0], "fiber_tip_uW": values[1]})
+	return {"leds": leds, "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+		"measured": "at the fiber tip, before the animal was connected (confirmed on the panel's page at Start)"}, None
+
+
 def SameDrive(a, b):
 	return os.path.normcase(a["mount"]) == os.path.normcase(b["mount"])
 
@@ -1009,12 +1070,24 @@ class Panel:
 			if fields.get("disk_override") and any(c[0] == "block" for c in self.checks):
 				Say("Started though the disk check says it doesn't fit (confirmed on the page): {}".format(next(
 					c[1] for c in self.checks if c[0] == "block")))
+			# The LED powers (panel.led_power), asked for by the page at Start: checked, kept for the next Start and saved
+			# with the recording
+			names = self.LedNames()
+			if names:
+				power, why = LedPower(names, fields.get("led_power"))
+				if why:
+					return why
+				fields = dict(fields, led_power=power)
 			# The page's "Copy each recording to": a folder this computer reaches, kept for the next panel too
 			to = str(fields.get("copy_to") or "").strip()
 			problem = copyqueue.Problem(to, self.config.Value("videoFolder", "."))
 			if problem:
 				return problem
 			copyqueue.Remember(copyqueue.RememberFile(), self.config.path, to)
+			if names:
+				LedRemember(LedPowerFile(), self.config.path, fields["led_power"])
+				Say("LED power, confirmed for this recording: {}".format("; ".join("{} {:g} mA, {:g} µW at the fiber tip".format(
+					l["led"], l["driver_mA"], l["fiber_tip_uW"]) for l in fields["led_power"]["leds"])))
 			self.close_when_copied = False # recording again: the page's earlier Close no longer stands
 			self.wanted = fields
 			self.error = None
@@ -1035,7 +1108,17 @@ class Panel:
 		notes = " ".join(str(fields.get("notes") or "").split())
 		if notes:
 			args += ["--notes", notes]
+		if isinstance(fields.get("led_power"), dict):
+			# Into session.json's fields, with the config's own (sessionFields)
+			own = self.config.Value("sessionFields", {})
+			args += ["--sessionFields", strictjson.dumps(dict(own if isinstance(own, dict) else {},
+				ledPower=fields["led_power"]))]
 		return args
+
+	def LedNames(self):
+		# panel.led_power: the LEDs whose power the page asks for at Start
+		names = self.config.panel.get("led_power") or []
+		return [str(n) for n in names] if isinstance(names, list) else []
 
 	# ---------------------------------------------------------- while it records
 
@@ -1233,7 +1316,9 @@ class Panel:
 			"copies": dict(self.copies.Status(), close_when_copied=self.close_when_copied),
 			"fields": {"experiment": str(self.config.Value("experiment", "") or "").replace("None", ""),
 				"animal_ids": ", ".join(str(a) for a in (self.config.Value("animalIds", []) or [])),
-				"copy_to": self.CopyTo()}}
+				"copy_to": self.CopyTo()},
+			"led_power": {"leds": self.LedNames(), "last": LedRemembered(LedPowerFile(), self.config.path)}
+				if self.LedNames() else None}
 
 	def BoutStatus(self):
 		# The page's bout settings box, with a Pico's bouts (none for a camera-only session)

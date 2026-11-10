@@ -52,6 +52,8 @@ On the ChronicRecord rig, under **Start recording**, a drawing shows **one bout 
 
 *(The ChronicRecord config's bout, with its fiber photometry pattern: yellow 50 ms, 150 ms dark, then blue 50 ms, lighting frames 300-302 and 312-314. Dark theme.)*
 
+**LED power (ChronicRecord, fiber photometry).** When you press **Start recording**, the page first asks, for each LED, for its current on the Doric LED driver (mA) and its power at the tip of the fiber (µW), measured with the power meter **before the fiber is connected to the animal**. The boxes are filled in with the last values confirmed with that experiment, and say when that was (in yellow if it was an earlier day). Change them or check them, then press **Confirm and start**. The recording doesn't start without them. They are saved in the recording's `session.json` (under `fields`, `ledPower`), with the time they were confirmed. Under **Start recording** the page shows the last ones. A config turns this on with `panel.led_power`, the list of its LEDs' names.
+
 The recording's length is fixed by the rig's settings, and the page shows it (for example `2:00:00 each`).
 
 ## 3. Start

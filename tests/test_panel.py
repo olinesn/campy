@@ -737,6 +737,71 @@ def test_the_copies_drive_has_room_for_the_recording(tmp_path, home, monkeypatch
 		assert not [c for c in p.Checks() if c[2:] == ("copy-disk",)]
 
 
+# ------------------------------------------------------------------ the LEDs' power, asked for at Start
+
+LEDS = ["Blue LED (465 nm)", "Yellow LED (560 nm)"]
+
+
+def led_panel(tmp_path, leds=LEDS, **acquire):
+	from test_session import write_config
+	config = write_config(tmp_path / "c.yaml", dict({"numCams": 1, "frameRate": 60, "videoFolder": str(tmp_path / "data"),
+		"recTimeInSec": 60}, **acquire), panel={"led_power": leds})
+	return panel.Panel(str(config), browser=False)
+
+
+def test_the_led_powers_are_checked():
+	got, why = panel.LedPower(LEDS, [{"led": LEDS[1], "driver_mA": "90", "fiber_tip_uW": 21},
+		{"led": LEDS[0], "driver_mA": 17, "fiber_tip_uW": "215.5"}])
+	assert why is None and got["leds"] == [{"led": LEDS[0], "driver_mA": 17, "fiber_tip_uW": 215.5},
+		{"led": LEDS[1], "driver_mA": 90, "fiber_tip_uW": 21}] # in the config's order
+	assert "before the animal was connected" in got["measured"] and got["at"][:4].isdigit()
+	assert panel.LedPower(LEDS, [{"led": LEDS[0], "driver_mA": 0, "fiber_tip_uW": 0},
+		{"led": LEDS[1], "driver_mA": 90, "fiber_tip_uW": 21}])[1] is None # an LED that is off: 0
+	for given, why in (
+			(None, "Blue LED (465 nm) has none"),
+			([{"led": LEDS[0], "driver_mA": 17, "fiber_tip_uW": 215}], "Yellow LED (560 nm) has none"),
+			([{"led": LEDS[0], "driver_mA": "", "fiber_tip_uW": 215}], "driver current (mA) is not a number"),
+			([{"led": LEDS[0], "driver_mA": 17, "fiber_tip_uW": -1}], "power at the fiber tip (µW) must be 0 or more"),
+			([{"led": LEDS[0], "driver_mA": "nan", "fiber_tip_uW": 1}], "must be 0 or more")):
+		assert why in panel.LedPower(LEDS, given)[1]
+
+
+def test_a_start_asks_for_the_led_powers_and_keeps_them_with_the_recording(tmp_path, home):
+	p = led_panel(tmp_path)
+	status = p.Status()["led_power"]
+	assert status == {"leds": LEDS, "last": None}
+	assert p.Start({}).startswith("LED power: the page asks for each LED's driver current") and p.wanted is None
+	leds = [{"led": LEDS[0], "driver_mA": 17, "fiber_tip_uW": 215}, {"led": LEDS[1], "driver_mA": 90, "fiber_tip_uW": 21}]
+	assert p.Start({"notes": "cage 2", "led_power": leds}) is None
+	power = p.wanted["led_power"]
+	assert power["leds"] == leds
+	# Into session.json's fields (sessionFields.ledPower), as campy-acquire's option
+	args = p.Args(p.wanted)
+	i = args.index("--sessionFields")
+	assert json.loads(args[i + 1]) == {"ledPower": power}
+	# Kept for the next Start (the page fills them in) and the next panel with this config
+	p.wanted = None
+	assert p.Status()["led_power"]["last"] == power
+	assert led_panel(tmp_path).Status()["led_power"]["last"] == power
+	# The config's own fields are kept beside them
+	q = led_panel(tmp_path, sessionFields={"cage": "B3"})
+	assert q.Start({"led_power": leds}) is None
+	args = q.Args(q.wanted)
+	assert json.loads(args[args.index("--sessionFields") + 1]) == {"cage": "B3", "ledPower": q.wanted["led_power"]}
+
+
+def test_without_led_power_nothing_is_asked(tmp_path, home):
+	p = led_panel(tmp_path, leds=[])
+	assert p.Status()["led_power"] is None and p.Start({}) is None and "--sessionFields" not in p.Args(p.wanted)
+
+
+def test_the_page_asks_for_the_led_powers_at_start():
+	from campy import panelpage
+	page = panelpage.PAGE
+	assert 'id="leddlg"' in page and "LED power, before connecting the animal" in page and "Doric LED driver" in page
+	assert "if((last||{}).led_power) return askLeds(start);" in page and 'id="ledlast"' in page
+
+
 def test_the_pages_text_is_in_rem_and_can_be_made_larger():
 	# Sizes in rem, so the browser's own font size and the page's Text size buttons scale every text; none in px, and
 	# nothing below 15 px at the browser's default (0.9375rem)

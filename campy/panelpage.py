@@ -57,6 +57,8 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
 .drives .drive{margin-top:.5rem;font-size:1rem;line-height:1.35}.drives .drive svg{width:2.25rem;height:2.25rem}
 .legend{font-size:.9375rem;margin-top:.125rem}.legend i{display:inline-block;width:.7em;height:.7em;border-radius:2px;margin:0 .25em 0 .5em}.legend i:first-child{margin-left:0}
 .bgrid>div{display:flex;flex-direction:column;justify-content:flex-end}.bgrid input.changed{border-color:var(--accent);border-width:2px}details summary{cursor:pointer;font-size:1rem;margin-top:.375rem}
+.ledrows{display:grid;grid-template-columns:auto minmax(6rem,1fr) minmax(6rem,1fr);gap:.375rem .75rem;align-items:end;margin:.5rem 0}
+.ledrows b{font-weight:500;align-self:center}
 .boutpic{display:grid;align-items:center;margin:.375rem 0;row-gap:.25rem}.boutpic .lab{padding-right:.625rem;line-height:1.2;font-size:.9375rem}
 .boutpic .lab b{font-weight:500;color:var(--text)}.boutpic svg{display:block;width:100%;height:2.25rem;grid-column:2/-1}
 .boutpic .dur{font-size:.9375rem;line-height:1.25;text-align:center;padding:0 2px;min-width:0;color:var(--muted)}
@@ -120,6 +122,7 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
       <h3 style="margin-top:4px">Checks</h3>
       <div class="muted note">Green: fine. Yellow: you can record, but read it. Red: it stops the start until it is fixed.</div>
       <ul id="checks"></ul><button id="start" class="go">Start recording</button>
+      <div id="ledlast" class="muted note" style="margin-top:.375rem" hidden></div>
       <div id="starterr" class="err"></div>
       <div id="boutpicbox" hidden><h3 style="margin-top:1rem">One bout, as the Pico runs it</h3>
         <div id="boutpic" class="boutpic" role="img"></div><div id="boutpicnote" class="muted note"></div></div></div>
@@ -172,6 +175,11 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
 <div id="stopdlg" class="modal" hidden><div class="card"><h2>End the recording?</h2>
   <p class="muted" id="stoptext"></p>
   <div class="row"><button id="keep">Keep recording</button><button id="stopbout" class="stop">Stop after this bout</button><button id="stopnow" class="stop">Stop now</button></div></div></div>
+<div id="leddlg" class="modal" hidden><div class="card" role="dialog" aria-labelledby="ledtitle"><h2 id="ledtitle">LED power, before connecting the animal</h2>
+  <p class="muted note">Set each LED's current on the Doric LED driver, then measure its power at the tip of the fiber with the power meter, before
+    the fiber is connected to the animal. Enter both, or check that the last ones still hold. They are saved with the recording (its session.json).</p>
+  <div id="ledrows" class="ledrows"></div><div id="ledwhen" class="muted note"></div><div id="lederr" class="err"></div>
+  <div class="row" style="margin-top:.5rem"><button id="ledno">Cancel</button><button id="ledyes" class="go">Confirm and start</button></div></div></div>
 <div id="picodlg" class="modal" hidden><div class="card"><h2>Start the Pico?</h2>
   <p class="muted" id="picotext"></p>
   <div class="row"><button id="picono">Not yet</button><button id="picoyes" class="go">Start the Pico</button></div></div></div>
@@ -267,6 +275,9 @@ function render(s){
   $("checks").innerHTML = s.checks.map(c => "<li>"+tag(c.level=="block"?"stops the start":c.level=="warn"?"warning":"ok",
     c.level=="block"?"bad":c.level=="warn"?"warn":"ok")+" "+esc(c.text)+(c.action=="pause-updates"?' <button onclick="pauseUpdates(this)">Pause Windows Update</button>':"")+"</li>").join("");
   renderModels(s.models);
+  const LP = s.led_power; $("ledlast").hidden = !LP;
+  if(LP) $("ledlast").innerHTML = "At Start, the page asks for each LED's power at the fiber tip"+(LP.last && LP.last.leds ? ". Last confirmed "+
+    esc(when(LP.last.at))+": "+LP.last.leds.map(ledText).join("; ") : "")+".";
   const LM = L.live_models; $("usedmodels").textContent = LM && LM.centroid ? base(LM.centroid)+" + "+base(LM.instance) : "";
   const lengths = s.lengths || []; $("lengthbox").hidden = !lengths.length;
   if(lengths.length && $("length").options.length != lengths.length){ $("length").innerHTML = lengths.map(l => '<option value="'+l.seconds+'">'+esc(l.name)+'</option>').join(""); }
@@ -608,9 +619,36 @@ $("start").onclick = async () => { $("starterr").textContent = "";
   const override = !!disk && blocks.length == 1;
   if(override && !confirm("This session doesn't fit on the disk.\n\n" + disk.text + "\n\nStart anyway? Only if data will be moved off "+
     "this disk during the session. Otherwise the disk fills up: campy stops cleanly near the end of the space, but SpikeGLX doesn't.")) return;
-  const j = await postFull("/start", {experiment:$("experiment").value, animal_ids:$("ids").value, notes:$("notes").value, copy_to:$("copyto").value.trim(),
-    length: $("length").value || null, pico_at: $("picoat").value.trim() || null, disk_override: override});
-  $("starterr").textContent = j.error || ""; if(j.create) offerCreate(j.create); tick(); };
+  const start = {experiment:$("experiment").value, animal_ids:$("ids").value, notes:$("notes").value, copy_to:$("copyto").value.trim(),
+    length: $("length").value || null, pico_at: $("picoat").value.trim() || null, disk_override: override};
+  // With panel.led_power: each LED's driver current and power at the fiber tip, entered or confirmed first
+  if((last||{}).led_power) return askLeds(start);
+  startWith(start); };
+async function startWith(start){
+  const j = await postFull("/start", start);
+  $("starterr").textContent = j.error || ""; if(j.create) offerCreate(j.create); tick(); }
+let ledStart = null;
+function ledText(l){ return esc(l.led)+" "+(+l.driver_mA)+"\u00a0mA, "+(+l.fiber_tip_uW)+"\u00a0\u00b5W"; }
+function when(iso){ const d = new Date(iso); if(isNaN(d)) return ""; const today = d.toDateString() == new Date().toDateString();
+  return (today ? "today" : d.toLocaleDateString([], {weekday:"short", month:"short", day:"numeric"}))+" at "+d.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}); }
+function askLeds(start){
+  const P = last.led_power, had = {}; ((P.last||{}).leds||[]).forEach(l => had[l.led] = l);
+  $("ledrows").innerHTML = '<span></span><label>Driver current (mA)</label><label>At the fiber tip (\u00b5W)</label>' + P.leds.map((n, i) =>
+    '<b>'+esc(n)+'</b><input id="lma'+i+'" type="number" min="0" step="any" inputmode="decimal" aria-label="'+esc(n)+' driver current in mA" value="'+
+    esc(had[n] ? had[n].driver_mA : "")+'"><input id="luw'+i+'" type="number" min="0" step="any" inputmode="decimal" aria-label="'+esc(n)+
+    ' power at the fiber tip in microwatts" value="'+esc(had[n] ? had[n].fiber_tip_uW : "")+'">').join("");
+  const old = P.last && P.last.at && new Date(P.last.at).toDateString() != new Date().toDateString();
+  $("ledwhen").innerHTML = P.last && P.last.at ? "The values shown were confirmed "+esc(when(P.last.at))+"."+
+    (old ? ' <span style="color:var(--warn)">From an earlier day: measure them again.</span>' : "") : "No values confirmed yet with this experiment.";
+  $("lederr").textContent = ""; ledStart = start; $("leddlg").hidden = false; const f = $("lma0"); if(f) f.focus(); }
+$("ledno").onclick = () => { $("leddlg").hidden = true; ledStart = null; };
+$("ledyes").onclick = () => {
+  const P = last.led_power, leds = [];
+  for(let i = 0; i < P.leds.length; i++){ const ma = $("lma"+i).value.trim(), uw = $("luw"+i).value.trim();
+    if(ma === "" || uw === "" || !(Number(ma) >= 0) || !(Number(uw) >= 0)){
+      $("lederr").textContent = "Enter both numbers for "+P.leds[i]+" (0 or more; 0 for an LED that is off)."; return; }
+    leds.push({led: P.leds[i], driver_mA: Number(ma), fiber_tip_uW: Number(uw)}); }
+  $("leddlg").hidden = true; const start = Object.assign({}, ledStart, {led_power: leds}); ledStart = null; startWith(start); };
 $("mset").onchange = () => { if($("mset").value) pickModels({set: $("mset").value}); };
 $("mcen").onchange = () => pickModels({centroid: $("mcen").value});
 $("mins").onchange = () => pickModels({centroid: $("mcen").value, instance: $("mins").value});
