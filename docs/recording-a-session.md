@@ -111,7 +111,7 @@ On the ChronicRecord rig the same page also runs the Pico (which makes the camer
 
 **The bouts.** Under the length, **Bout settings** shows what each bout does, and each setting can be changed there:
 
-| On the page | The Pico's setting | The config's (chronic_control.py's default) |
+| On the page | The Pico's setting | The config's (in brackets, chronic_control.py's own where it differs) |
 |---|---|---|
 | A bout every (s) | `INTERVAL` | 300 |
 | Baseline: gate open to the LEDs, and camera off to gate closed (s) | `TOTAL_BASELINE` | 10 |
@@ -119,10 +119,12 @@ On the ChronicRecord rig the same page also runs the Pico (which makes the camer
 | Camera time, normal bout (s) | `STANDARD_STIM_DURATION` | 10 |
 | Camera time, long bout (s) | `EXTENDED_STIM_DURATION` | 240 |
 | A long bout every (bouts; the first is long) | `EXTENDED_EVERY` | 6 |
-| Blue LED on (ms) | `PULSE_WIDTH_C` | 30 |
-| Yellow LED on, as blue ends (ms) | `PULSE_WIDTH_D` | 30 |
+| Blue LED on (ms) | `PULSE_WIDTH_C` | 50 (30) |
+| Yellow LED on (ms) | `PULSE_WIDTH_D` | 50 (30) |
+| Yellow LED first (1), or blue first (0) | `YELLOW_FIRST` | 1 (0) |
+| Dark between the two LEDs (ms) | `LED_GAP` | 150 (0) |
 
-Below them a line says what one bout does from the gate's opening, for example *camera on at 5 s; blue LED at 9.999 s for 30 ms (frames 300-301), then yellow for 30 ms (frames 302-303); camera off at 245 s and gate closed at 255 s in a long bout, at 15 s and 25 s in a normal one*, with a warning if an LED would switch during a frame's exposure. Each LED lights once a bout. The length's plan (number of bouts, camera time), the disk check and campy's recording time follow at once.
+Below them a line says what one bout does from the gate's opening, for example *camera on at 5 s; yellow LED at 9.999 s for 50 ms (frames 300-302), then 150 ms dark, then blue for 50 ms (frames 312-314); camera off at 245 s and gate closed at 255 s in a long bout, at 15 s and 25 s in a normal one*, with a warning if an LED would switch during a frame's exposure. Each LED lights once a bout. The config's LED settings are the fiber photometry's "snapshot" pattern for the neuro-seeER reporter: see [Fiber photometry](../chronicrecord/README.md#fiber-photometry-snapshots) for the light path and the photoreceivers' settings. The length's plan (number of bouts, camera time), the disk check and campy's recording time follow at once.
 
 - **The config file isn't changed.** The page's settings are for the recordings started from it. A changed setting is outlined, with the config's value under it. **Back to the config's** undoes every change; an emptied field undoes its own.
 - **The page remembers them.** The next panel opened with the same config starts from the last settings its page had, and says so (`2 changed, as the last panel left them (Mon 9 Nov, 3:12 PM)`). They're kept in `~/.campy/status/panel-bouts.json`, one entry for each config; **Back to the config's** removes that config's.

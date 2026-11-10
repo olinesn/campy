@@ -89,6 +89,14 @@ def test_the_pages_bout_settings():
 			({"INTERVAL": 0}, "more than 0"), ({"PULSE_WIDTH_C": -30}, "more than 0"),
 			({"EXTENDED_EVERY": 2.5}, "whole number"), ({"PULSE_WIDTH_C": 0.0001}, "a microsecond")):
 		assert why in p.Choose(dict(values, PULSE_WIDTH_D=99)) and p.page == {"PULSE_WIDTH_C": 0.05}
+	# The LEDs' order and the dark between them: 0 is a setting for these two
+	assert p.Choose({"YELLOW_FIRST": 1, "LED_GAP": 150, "PULSE_WIDTH_D": 50}) is None
+	assert p.page == {"PULSE_WIDTH_C": 0.05, "PULSE_WIDTH_D": 0.05, "YELLOW_FIRST": 1, "LED_GAP": 0.15}
+	assert "yellow LED at 9.999 s for 50 ms (frames 300-302), then 150 ms dark, then blue for 50 ms (frames 312-314)" \
+		in p.PageStatus()["bout"]["text"]
+	assert p.Choose({"YELLOW_FIRST": 0, "LED_GAP": 0, "PULSE_WIDTH_D": ""}) is None and p.page == {"PULSE_WIDTH_C": 0.05}
+	for values, why in (({"YELLOW_FIRST": 2}, "1 or 0"), ({"YELLOW_FIRST": 0.5}, "1 or 0"), ({"LED_GAP": -1}, "more than 0")):
+		assert why in p.Choose(values) and p.page == {"PULSE_WIDTH_C": 0.05}
 	# Settings a bout can't have: each plan says why (and stops the start), as does the bout's description
 	assert p.Choose({"CAMERA_LEAD_IN": 20}) is None
 	assert "before the gate opens" in p.PageStatus()["bout"]["error"]
@@ -130,8 +138,11 @@ def test_the_last_bout_settings_are_remembered(tmp_path):
 	assert p.PageStatus()["remembered"] is None and p.page == {"PULSE_WIDTH_C": 0.05, "PULSE_WIDTH_D": 0.04}
 	# What a bout setting can't be is left out: another setting, not a number, 0 or less, a part of a bout
 	p.Restore({"page": {"LED_LEAD_US": 5, "INTERVAL": "soon", "PULSE_WIDTH_D": 0, "EXTENDED_EVERY": 2.5,
-		"CAMERA_FPS": 30, "PULSE_WIDTH_C": 0.07}, "at": "2026-11-09T15:12:00-05:00"})
+		"CAMERA_FPS": 30, "PULSE_WIDTH_C": 0.07, "YELLOW_FIRST": 2, "LED_GAP": -0.1}, "at": "2026-11-09T15:12:00-05:00"})
 	assert p.page == {"PULSE_WIDTH_C": 0.07} and p.PageStatus()["remembered"] == "Mon 9 Nov, 3:12 PM"
+	# The order and the dark between the LEDs are remembered, 0 included where the config says otherwise
+	p.Restore({"page": {"YELLOW_FIRST": 1, "LED_GAP": 0.15}, "at": "2026-11-09T15:12:00-05:00"})
+	assert p.page == {"YELLOW_FIRST": 1, "LED_GAP": 0.15}
 	for nothing in (None, {}, {"page": None}, {"page": [1]}):
 		p.Restore(nothing)
 		assert p.page == {} and p.remembered is None

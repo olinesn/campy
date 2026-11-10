@@ -36,8 +36,13 @@ PAGE = [
 	("EXTENDED_STIM_DURATION", "Camera time, long bout", "s", 1),
 	("EXTENDED_EVERY", "A long bout every (bouts; the first is long)", "", 1),
 	("PULSE_WIDTH_C", "Blue LED on", "ms", 1000),
-	("PULSE_WIDTH_D", "Yellow LED on, as blue ends", "ms", 1000),
+	("PULSE_WIDTH_D", "Yellow LED on", "ms", 1000),
+	("YELLOW_FIRST", "Yellow LED first (1), or blue first (0)", "", 1),
+	("LED_GAP", "Dark between the two LEDs", "ms", 1000),
 	]
+# The page's settings that can be 0 (the others must be more than 0), and those that are whole numbers
+ZERO_OK = {"YELLOW_FIRST", "LED_GAP"}
+WHOLE = {"EXTENDED_EVERY", "YELLOW_FIRST"}
 # The Pico's room for a session (chronicrecord/chronic_timer/chronic_timer.ino: MAX_TRAINS, one camera train a bout, and
 # MAX_EDGES, 6 a bout): a session with more bouts is refused at its start, so the plan refuses it first
 MAX_BOUTS = 2048
@@ -245,15 +250,17 @@ class Pico:
 				number = float(value)
 			except (TypeError, ValueError):
 				return "{}: {!r} is not a number.".format(label, value)
-			if not math.isfinite(number) or number <= 0:
+			if not math.isfinite(number) or number < 0 or (number == 0 and key not in ZERO_OK):
 				return "{}: it must be more than 0.".format(label)
-			if key == "EXTENDED_EVERY":
+			if key == "YELLOW_FIRST" and number not in (0, 1):
+				return "{}: 1 or 0.".format(label)
+			if key in WHOLE:
 				if number != int(number):
 					return "{}: a whole number of bouts.".format(label)
 				number = int(number)
 			else:
 				number = round(number / scale, 6) # to the microsecond
-				if number <= 0:
+				if number <= 0 and key not in ZERO_OK:
 					return "{}: it must be at least a microsecond.".format(label)
 			if number == base[key]:
 				page.pop(key, None)
@@ -277,9 +284,10 @@ class Pico:
 		given = (last or {}).get("page")
 		for key, value in (given.items() if isinstance(given, dict) else ()):
 			if key not in keys or isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) \
-					or value <= 0 or key == "EXTENDED_EVERY" and value != int(value):
+					or value < 0 or value == 0 and key not in ZERO_OK or key in WHOLE and value != int(value) \
+					or key == "YELLOW_FIRST" and value not in (0, 1):
 				continue
-			value = int(value) if key == "EXTENDED_EVERY" else round(float(value), 6)
+			value = int(value) if key in WHOLE else round(float(value), 6)
 			if value != base[key]:
 				page[key] = value
 		self.page, self.spans = page, {}
@@ -317,11 +325,15 @@ class Pico:
 		blue, blue_part = lit(first, "blue")
 		yellow, yellow_part = lit(first, "yellow")
 		ends = lambda b: (at(b, b["camera_start"] + b["pulses"] / fps * 1e6), at(b, b["gate_off"]))
-		text = ("From the gate's opening: camera on at {}; blue LED at {} for {:g} ms (frames {}), then yellow for {:g} ms "
+		# The LEDs in the order they light: (name, its on and off, its lit frames)
+		one, two = sorted((("blue", first["blue"], blue), ("yellow", first["yellow"], yellow)), key=lambda led: led[1][0])
+		ms = lambda led: round((led[1][1] - led[1][0]) / 1000, 3)
+		gap = round((two[1][0] - one[1][1]) / 1000, 3)
+		text = ("From the gate's opening: camera on at {}; {} LED at {} for {:g} ms (frames {}), then {}{} for {:g} ms "
 			"(frames {}); camera off at {} and gate closed at {} in a long bout{}. The next bout starts {:g} s after the "
-			"gate opened.".format(at(first, first["camera_start"]), at(first, first["blue"][0]),
-			round(s["PULSE_WIDTH_C"] * 1000, 3), self.module.Frames(blue), round(s["PULSE_WIDTH_D"] * 1000, 3),
-			self.module.Frames(yellow), *ends(first), ", at {} and {} in a normal one".format(*ends(bouts[1]))
+			"gate opened.".format(at(first, first["camera_start"]), one[0], at(first, one[1][0]), ms(one),
+			self.module.Frames(one[2]), "{:g} ms dark, then ".format(gap) if gap else "", two[0], ms(two),
+			self.module.Frames(two[2]), *ends(first), ", at {} and {} in a normal one".format(*ends(bouts[1]))
 			if len(bouts) > 1 else " (every bout is long)", s["INTERVAL"]))
 		warnings = ["the {} LED switches during the exposure of frame(s) {}".format(name, self.module.Frames(part))
 			for name, part in (("blue", blue_part), ("yellow", yellow_part)) if part]

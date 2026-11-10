@@ -67,6 +67,33 @@ def test_each_led_lights_two_whole_frames():
 		assert cc.LitFrames(b, *b["yellow"], s) == ([302, 303], [])
 
 
+def test_the_snapshot_photometry_pattern():
+	# neuro-seeER's snapshot: 50 ms of yellow (560 nm), 150 ms dark, 50 ms of blue (470 nm), once a bout.
+	# 50 ms is exactly 3 frames at 60 Hz and 150 ms exactly 9, so every edge stays 1 ms before a camera pulse
+	s = cc.Settings(["YELLOW_FIRST=1", "PULSE_WIDTH_C=0.05", "PULSE_WIDTH_D=0.05", "LED_GAP=0.15"])
+	bouts, trains, edges = cc.Plan(s)
+	for i, b in enumerate(bouts):
+		b0 = i * 300 * 10**6
+		assert b["yellow"] == (b0 + 10 * 10**6 - 1000, b0 + 10 * 10**6 - 1000 + 50000)
+		assert b["blue"] == (b["yellow"][1] + 150000, b["yellow"][1] + 150000 + 50000)
+		assert cc.LitFrames(b, *b["yellow"], s) == ([300, 301, 302], [])
+		assert cc.LitFrames(b, *b["blue"], s) == ([312, 313, 314], [])
+	assert len(edges) == 12 * 6 and [t for t, _, _ in edges] == sorted(t for t, _, _ in edges)
+	lines = cc.Describe(s, bouts)
+	assert "yellow 9.999000-10.049000 s (frames 300-302), blue 10.199000-10.249000 s (frames 312-314)" in lines[0]
+	assert not any("Warning" in line for line in lines)
+	# A gap with blue first, as before otherwise
+	s = cc.Settings(["LED_GAP=0.1"])
+	b = cc.Plan(s)[0][0]
+	assert b["yellow"] == (b["blue"][1] + 100000, b["blue"][1] + 100000 + 30000)
+	with pytest.raises(SystemExit, match="overlap"):
+		cc.Plan(cc.Settings(["LED_GAP=-0.01"]))
+	with pytest.raises(SystemExit, match="YELLOW_FIRST"):
+		cc.Plan(cc.Settings(["YELLOW_FIRST=2"]))
+	with pytest.raises(SystemExit, match="outside its camera time"):
+		cc.Plan(cc.Settings(["STANDARD_STIM_DURATION=5.1", "LED_GAP=0.15"])) # the second LED past the camera's end
+
+
 def test_the_plan_warns_of_a_half_lit_frame():
 	# No lead: the LED switches as pulse 300's exposure starts
 	s = cc.Settings(["LED_LEAD_US=-100"])
