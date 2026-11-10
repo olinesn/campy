@@ -120,3 +120,38 @@ def test_calibrat3_headless_on_a_real_calibration_recording(tmp_path):
 	assert all(c["median_px"] < 1 for c in summary["cameras"].values()), summary["cameras"]
 	with pytest.raises(calibrate.CalibrateError, match="is there already"):
 		calibrate.Calibrate(str(folder), os.environ["CAMPY_CALIBRAT3"], say=lambda text: None)
+
+
+# ------------------------------------------------------------------ before a calibration recording starts
+
+def test_what_this_computer_lacks_for_calibrat3(tmp_path):
+	checkout = tmp_path / "calibrat3"
+	checkout.mkdir()
+	(checkout / "index.html").write_text("<html></html>")
+	assert calibrate.Missing(str(checkout), playwright=True, chrome=lambda: "chrome.exe") == []
+	missing = calibrate.Missing(str(tmp_path / "nowhere"), playwright=False, chrome=lambda: None)
+	assert len(missing) == 3 and missing[0].startswith("calibrat3: no checkout at ")
+	assert "pip install playwright" in missing[1] and missing[2].startswith("Google Chrome")
+	# Playwright's own Chromium (browser: chromium) needs no installed Chrome
+	assert calibrate.Missing(str(checkout), browser="chromium", playwright=True, chrome=lambda: None) == []
+
+
+def a_config(tmp_path, video="calibration.mp4", calibrate_=None):
+	text = "numCams: 2\ncameraMake: emu\nvideoFilename: {}\n".format(video)
+	if calibrate_ is not None:
+		text += "post:\n  calibrate: {}\n".format(json.dumps(calibrate_))
+	(tmp_path / "c.yaml").write_text(text)
+	return session.Config(str(tmp_path / "c.yaml"))
+
+
+def test_the_panel_checks_a_calibration_recording_can_be_calibrated(tmp_path):
+	# Before 10 Nov 2026 a rig without calibrat3 or Playwright recorded the calibration, and its calibration.toml
+	# failed only after it (the ChronicRecord rig had neither)
+	assert panel.CalibrateCheck(a_config(tmp_path, video="0.mp4")) is None # not a calibration recording
+	level, text = panel.CalibrateCheck(a_config(tmp_path))
+	assert level == "warn" and "post: calibrate: isn't set" in text
+	on = a_config(tmp_path, calibrate_={"calibrat3": "C:/campy_data/live/calibrat3"})
+	level, text = panel.CalibrateCheck(on, missing=lambda checkout, browser: ["Playwright's Python package"])
+	assert level == "block" and text.endswith("Missing: Playwright's Python package")
+	assert panel.CalibrateCheck(on, missing=lambda checkout, browser: []) == ("ok", "Calibration: calibrat3 makes "
+		"calibration.toml after the recording (C:/campy_data/live/calibrat3)")

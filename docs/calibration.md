@@ -52,4 +52,25 @@ The first one on that box (9 November, 8 cameras, AV1) took 68 s: the board in 2
 
 It needs Playwright's Python package in campy's environment (`pip install playwright`; it drives the installed Chrome, so no browser download) and a calibrat3 checkout. Chrome, not Playwright's own Chromium, because it decodes the recordings' H.265 and AV1. On the Mac, on the 4-camera calibration recording of 26 October (60 s at 10 fps, H.265), it took 37 s and gave the same calibration as calibrat3 run by hand: the board in 281/277/277/277 of 300 frames, each camera's error 0.07–0.09 px, and the same focal lengths and distances between cameras, to 0.1 mm.
 
+### On every rig: once, in the rig profile
+
+Put the `calibrate` step in the rig profile (`~/.campy/configs/<rig>.yaml`), not in each calibration config. The step runs only for calibration recordings (a `videoFilename` with "calibration" in it) and skips every other recording, so every calibration experiment on that computer then makes its `calibration.toml` by itself:
+
+```yaml
+# ~/.campy/configs/<rig>.yaml
+post:
+  calibrate:
+    calibrat3: 'C:\campy_data\live\calibrat3'
+```
+
+Each computer that records needs, once:
+1. **A calibrat3 checkout**, `git clone https://github.com/talmolab/calibrat3` (or from a git bundle, on a computer without GitHub access), in the folder the profile names.
+2. **Playwright's Python package** in campy's recording environment: `pip install playwright`. It drives the installed Chrome, so there is no browser to download.
+3. **Google Chrome**, installed as usual.
+
+**The panel checks it before Start.** For a calibration recording the checks list has a **Calibration** line:
+- **Green:** calibrat3 will make `calibration.toml` after the recording.
+- **Red:** a piece is missing (the checkout, Playwright or Chrome). The line names it, and the start is stopped: otherwise the recording would be made and its calibration not.
+- **Yellow:** `post: calibrate:` isn't set anywhere. The videos are recorded, and the calibration is left to be made by hand.
+
 Problems and their fixes are in [Troubleshooting](troubleshooting.md).

@@ -76,6 +76,42 @@ def CalibrationVideos(folder):
 	return found
 
 
+# Where Playwright's "chrome" channel finds Google Chrome, as Playwright itself looks for it
+CHROME = {
+	"win32": [os.path.join(os.environ.get(v, ""), "Google", "Chrome", "Application", "chrome.exe")
+		for v in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")],
+	"darwin": ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"],
+	"linux": ["/opt/google/chrome/chrome"],
+	}
+
+
+def ChromeFound():
+	"""Google Chrome's path, as Playwright's chrome channel finds it, or None."""
+	for path in CHROME.get(sys.platform if sys.platform in CHROME else "linux", []):
+		if path and os.path.isfile(path):
+			return path
+	return None
+
+
+def Missing(calibrat3, browser="chrome", playwright=None, chrome=ChromeFound):
+	"""
+	What this computer lacks to make a calibration (Calibrate): [text], empty when nothing; before a recording
+	starts, so that a calibration recording isn't made only to find out afterwards (the panel's checks).
+	"""
+	missing = []
+	if not calibrat3 or not os.path.isfile(os.path.join(str(calibrat3), "index.html")):
+		missing.append("calibrat3: no checkout at {} (git clone https://github.com/talmolab/calibrat3, and give its "
+			"folder as post: calibrate: calibrat3:)".format(calibrat3 or "(none given)"))
+	if playwright is None:
+		playwright = importlib.util.find_spec("playwright") is not None
+	if not playwright:
+		missing.append("Playwright's Python package, in this environment ({}): pip install playwright".format(
+			sys.executable))
+	if browser == "chrome" and chrome() is None:
+		missing.append("Google Chrome (Playwright drives the installed Chrome: it decodes the recordings' H.265 and AV1)")
+	return missing
+
+
 def BoardToml(board):
 	b = dict(DEFAULT_BOARD, **(board or {}))
 	return "".join("{} = {}\n".format(k, b[k]) for k in ("board_x", "board_y", "square_length", "marker_length",
