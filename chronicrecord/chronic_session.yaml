@@ -29,6 +29,10 @@ pico:
   # The bouts: chronic_control.py's settings (INTERVAL 300 s, LEDs 30 ms, ...), unless set: changes them for every
   # session here, e.g. set: {INTERVAL: 600, PULSE_WIDTH_C: 0.05}. The page's "Bout settings" change them without changing
   # this file (the next panel starts from the page's last values), and each recording's session-config.yaml says which.
+  # The LEDs as the neuro-seeER paper's "snapshot" photometry, once a bout: 50 ms of yellow (560 nm), 150 ms dark, 50 ms
+  # of blue (465 nm); yellow lights frames 300-302 and blue 312-314 (chronicrecord/README.md, "Fiber photometry").
+  # chronic_control.py's own (and the PowerShell launcher's): blue 30 ms, then yellow 30 ms at once.
+  set: {YELLOW_FIRST: 1, PULSE_WIDTH_D: 0.05, LED_GAP: 0.15, PULSE_WIDTH_C: 0.05}
   gate_check: true # the gate blinks once before campy starts; SpikeGLX must open a file for it
   last_gate_s: 120 # campy ends after the last bout's last frame; the Pico's gate falls 10 s later
 

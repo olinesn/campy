@@ -58,13 +58,17 @@ SETTINGS = dict(
 	EXTENDED_STIM_DURATION=240,   # camera time of an extended bout (seconds)
 	EXTENDED_EVERY=6,             # bouts 1, 7, 13, ... are extended
 	PULSE_WIDTH_C=0.030,          # Blue LED (Output C) on time (seconds)
-	PULSE_WIDTH_D=0.030,          # Yellow LED (Output D) on time (seconds); starts as C ends
+	PULSE_WIDTH_D=0.030,          # Yellow LED (Output D) on time (seconds)
+	# Which LED goes first: 0 blue then yellow (chronicControlv13.py), 1 yellow then blue (the
+	# neuro-seeER "snapshot" photometry: 50 ms of 560 nm, 150 ms dark, 50 ms of 470 nm)
+	YELLOW_FIRST=0,
+	LED_GAP=0,                    # dark between the first LED's end and the second's start (seconds)
 	TOTAL_DURATION=3600,          # session time (seconds)
 	INTERVAL=300,                 # from the start of one bout to the next (seconds)
 	CAMERA_FPS=60,
 	CAMERA_PULSE_US=3000,         # camera trigger high time: 18% of 60 Hz, as before
-	# The blue LED's first lit frame: this many camera pulses after the camera
-	# starts (CAMERA_LEAD_IN at CAMERA_FPS: pulse 300, 5 s in)
+	# The first LED's first lit frame (blue's, or yellow's with YELLOW_FIRST): this many
+	# camera pulses after the camera starts (CAMERA_LEAD_IN at CAMERA_FPS: pulse 300, 5 s in)
 	BLUE_FRAME=None,
 	# The LEDs switch this long before a camera pulse, in the dark between
 	# exposures, so that every frame is either wholly lit or wholly dark
@@ -188,6 +192,10 @@ def Plan(s):
 			blue=None, yellow=None, gate_off=end))
 		trains.append((CAMERA, 0, count, rate, s["CAMERA_PULSE_US"]))
 		return bouts, trains, edges
+	if s["YELLOW_FIRST"] not in (0, 1):
+		raise SystemExit("YELLOW_FIRST is 0 (blue first) or 1 (yellow first), not {!r}.".format(s["YELLOW_FIRST"]))
+	if s["LED_GAP"] < 0:
+		raise SystemExit("LED_GAP ({:g} s) is less than 0: the two LEDs would overlap.".format(s["LED_GAP"]))
 	if s["CAMERA_LEAD_IN"] > s["TOTAL_BASELINE"]:
 		raise SystemExit("CAMERA_LEAD_IN ({:g} s) is longer than TOTAL_BASELINE ({:g} s): the camera would start before "
 			"the gate opens.".format(s["CAMERA_LEAD_IN"], s["TOTAL_BASELINE"]))
@@ -196,17 +204,21 @@ def Plan(s):
 		b0 = Us(i * s["INTERVAL"])
 		cam = b0 + Us(s["TOTAL_BASELINE"] - s["CAMERA_LEAD_IN"])
 		count = int(round((s["EXTENDED_STIM_DURATION"] if extended else s["STANDARD_STIM_DURATION"]) * s["CAMERA_FPS"]))
-		blue_on = Rise(cam, s["BLUE_FRAME"], rate) - s["LED_LEAD_US"]
-		blue_off = blue_on + Us(s["PULSE_WIDTH_C"])
-		yellow_on = blue_off
-		yellow_off = yellow_on + Us(s["PULSE_WIDTH_D"])
+		# The first LED from 1 ms before its frame's pulse; the second LED_GAP after it ends
+		first_on = Rise(cam, s["BLUE_FRAME"], rate) - s["LED_LEAD_US"]
+		widths = (Us(s["PULSE_WIDTH_D"]), Us(s["PULSE_WIDTH_C"])) if s["YELLOW_FIRST"] else \
+			(Us(s["PULSE_WIDTH_C"]), Us(s["PULSE_WIDTH_D"]))
+		first = (first_on, first_on + widths[0])
+		second_on = first[1] + Us(s["LED_GAP"])
+		second = (second_on, second_on + widths[1])
+		(yellow_on, yellow_off), (blue_on, blue_off) = (first, second) if s["YELLOW_FIRST"] else (second, first)
 		gate_off = Rise(cam, count, rate) + Us(s["TOTAL_BASELINE"])
 		bout = dict(number=i + 1, extended=extended, gate_on=b0, camera_start=cam, pulses=count,
 			camera_end=Rise(cam, count - 1, rate) + s["CAMERA_PULSE_US"], blue=(blue_on, blue_off),
 			yellow=(yellow_on, yellow_off), gate_off=gate_off)
 		if bouts and b0 <= bouts[-1]["gate_off"]:
 			raise SystemExit("Bout {} would start before bout {}'s gate goes low: make INTERVAL longer.".format(i + 1, i))
-		if not (cam < blue_on and yellow_off < bout["camera_end"]):
+		if not (cam < first[0] and second[1] < bout["camera_end"]):
 			raise SystemExit("Bout {}'s LEDs would be on outside its camera time.".format(i + 1))
 		bouts.append(bout)
 		trains.append((CAMERA, cam, count, rate, s["CAMERA_PULSE_US"]))
@@ -214,7 +226,7 @@ def Plan(s):
 			(yellow_off, YELLOW, 0), (gate_off, GATE, 0)]
 	if not bouts:
 		raise SystemExit("TOTAL_DURATION is shorter than INTERVAL: no bouts.")
-	# Blue off and yellow on at the same microsecond: the board writes them together
+	# With no LED_GAP, the first LED's off and the second's on are the same microsecond: the board writes them together
 	edges.sort(key=lambda e: e[0])
 	return bouts, trains, edges
 
@@ -245,11 +257,13 @@ def Describe(s, bouts):
 		blue, blue_part = LitFrames(b, *b["blue"], s)
 		yellow, yellow_part = LitFrames(b, *b["yellow"], s)
 		frames[b["number"]] = (blue, yellow)
-		lines.append("Bout {}{}: gate high {:.6f} s, camera {:.6f} s for {} pulses (to {:.6f} s), blue {:.6f}-{:.6f} s "
-			"(frames {}), yellow {:.6f}-{:.6f} s (frames {}), gate low {:.6f} s".format(
+		# The LEDs in the order they light
+		leds = sorted((("blue", b["blue"], blue), ("yellow", b["yellow"], yellow)), key=lambda led: led[1][0])
+		lines.append("Bout {}{}: gate high {:.6f} s, camera {:.6f} s for {} pulses (to {:.6f} s), {} {:.6f}-{:.6f} s "
+			"(frames {}), {} {:.6f}-{:.6f} s (frames {}), gate low {:.6f} s".format(
 			b["number"], " (extended)" if b["extended"] else "", b["gate_on"] / 1e6, b["camera_start"] / 1e6, b["pulses"],
-			b["camera_end"] / 1e6, b["blue"][0] / 1e6, b["blue"][1] / 1e6, Frames(blue), b["yellow"][0] / 1e6,
-			b["yellow"][1] / 1e6, Frames(yellow), b["gate_off"] / 1e6))
+			b["camera_end"] / 1e6, *(v for name, (on, off), lit in leds for v in (name, on / 1e6, off / 1e6, Frames(lit))),
+			b["gate_off"] / 1e6))
 		for name, part in (("blue", blue_part), ("yellow", yellow_part)):
 			if part:
 				lines.append("  Warning: the {} LED switches during the exposure of frame(s) {}".format(name, Frames(part)))
