@@ -805,6 +805,8 @@ def test_the_page_asks_for_the_led_powers_at_start():
 	assert "ledPowerOf(i == 2 ? \"blue\" : \"yellow\")" in page and "Under each LED: its driver current and power" in page
 	assert 'id="leddlg"' in page and "LED power, before connecting the animal" in page and "Doric LED driver" in page
 	assert "if((last||{}).led_power) return askLeds(start);" in page and 'id="ledlast"' in page
+	# Each LED's colour from the wavelength in its name, beside it in the dialog
+	assert "function nmColour(name)" in page and "'<b>'+swatch(n)+esc(n)+'</b>" in page
 
 
 def test_the_pages_text_is_in_rem_and_can_be_made_larger():

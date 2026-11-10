@@ -58,7 +58,8 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
 .legend{font-size:.9375rem;margin-top:.125rem}.legend i{display:inline-block;width:.7em;height:.7em;border-radius:2px;margin:0 .25em 0 .5em}.legend i:first-child{margin-left:0}
 .bgrid>div{display:flex;flex-direction:column;justify-content:flex-end}.bgrid input.changed{border-color:var(--accent);border-width:2px}details summary{cursor:pointer;font-size:1rem;margin-top:.375rem}
 .ledrows{display:grid;grid-template-columns:auto minmax(6rem,1fr) minmax(6rem,1fr);gap:.375rem .75rem;align-items:end;margin:.5rem 0}
-.ledrows b{font-weight:500;align-self:center}
+.ledrows b{font-weight:500;align-self:center;white-space:nowrap}
+.sw{display:inline-block;width:.9em;height:.9em;border-radius:3px;margin-right:.4em;vertical-align:-.1em;border:1px solid var(--line)}
 .boutpic{display:grid;align-items:center;margin:.375rem 0;row-gap:.25rem}.boutpic .lab{padding-right:.625rem;line-height:1.2;font-size:.9375rem}
 .boutpic .lab b{font-weight:500;color:var(--text)}.boutpic svg{display:block;width:100%;height:2.25rem;grid-column:2/-1}
 .boutpic .dur{font-size:.9375rem;line-height:1.25;text-align:center;padding:0 2px;min-width:0;color:var(--muted)}
@@ -646,13 +647,21 @@ async function startWith(start){
   const j = await postFull("/start", start);
   $("starterr").textContent = j.error || ""; if(j.create) offerCreate(j.create); tick(); }
 let ledStart = null;
-function ledText(l){ return esc(l.led)+" "+(+l.driver_mA)+"\u00a0mA, "+(+l.fiber_tip_uW)+"\u00a0\u00b5W"; }
+// An LED's colour from the wavelength in its name ("Blue LED (465 nm)"): the visible spectrum as a screen shows it (465 nm
+// about rgb(0, 146, 255), 560 nm rgb(195, 255, 0), as the bout drawing's LED rows); none without one
+function nmColour(name){
+  const m = /(\d{3})\s*nm/i.exec(String(name)); if(!m) return null; const w = Number(m[1]); if(w < 380 || w > 780) return null;
+  const [r, g, b] = w < 440 ? [(440-w)/60, 0, 1] : w < 490 ? [0, (w-440)/50, 1] : w < 510 ? [0, 1, (510-w)/20] :
+    w < 580 ? [(w-510)/70, 1, 0] : w < 645 ? [1, (645-w)/65, 0] : [1, 0, 0];
+  return "rgb("+[r, g, b].map(v => Math.round(255 * Math.pow(v, 0.8))).join(", ")+")"; }
+function swatch(name){ const c = nmColour(name); return c ? '<i class="sw" style="background:'+c+'"></i>' : ""; }
+function ledText(l){ return swatch(l.led)+esc(l.led)+" "+(+l.driver_mA)+"\u00a0mA, "+(+l.fiber_tip_uW)+"\u00a0\u00b5W"; }
 function confirmedWhen(iso){ const d = new Date(iso); if(isNaN(d)) return ""; const today = d.toDateString() == new Date().toDateString();
   return (today ? "today" : d.toLocaleDateString([], {weekday:"short", month:"short", day:"numeric"}))+" at "+d.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}); }
 function askLeds(start){
   const P = last.led_power, had = {}; ((P.last||{}).leds||[]).forEach(l => had[l.led] = l);
   $("ledrows").innerHTML = '<span></span><label>Driver current (mA)</label><label>At the fiber tip (\u00b5W)</label>' + P.leds.map((n, i) =>
-    '<b>'+esc(n)+'</b><input id="lma'+i+'" type="number" min="0" step="any" inputmode="decimal" aria-label="'+esc(n)+' driver current in mA" value="'+
+    '<b>'+swatch(n)+esc(n)+'</b><input id="lma'+i+'" type="number" min="0" step="any" inputmode="decimal" aria-label="'+esc(n)+' driver current in mA" value="'+
     esc(had[n] ? had[n].driver_mA : "")+'"><input id="luw'+i+'" type="number" min="0" step="any" inputmode="decimal" aria-label="'+esc(n)+
     ' power at the fiber tip in microwatts" value="'+esc(had[n] ? had[n].fiber_tip_uW : "")+'">').join("");
   const old = P.last && P.last.at && new Date(P.last.at).toDateString() != new Date().toDateString();
