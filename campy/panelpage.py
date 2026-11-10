@@ -44,6 +44,8 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
 .bgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:4px 10px;margin:4px 0}
 .types li{list-style:none;margin-left:-18px;display:flex;gap:8px;align-items:baseline;padding:3px 0;border-top:1px solid var(--line)}
 .types li span{flex:1}.star{padding:0 8px;font-size:16px;line-height:1.4;border:none;background:none;color:var(--accent)}
+.drive{display:flex;gap:10px;align-items:center}.drive svg{flex:none;display:block}.drives .drive{margin-top:6px;font-size:13px;line-height:1.3}
+.legend{font-size:11px;margin-top:2px}.legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin:0 3px 0 6px}.legend i:first-child{margin-left:0}
 .bgrid>div{display:flex;flex-direction:column;justify-content:flex-end}.bgrid input.changed{border-color:var(--accent);border-width:2px}details summary{cursor:pointer;font-size:13px;margin-top:6px}
 </style></head><body><main>
 <div id="version" class="mono muted version"></div>
@@ -118,7 +120,9 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
 
 <div id="during" hidden>
   <div class="tiles" style="margin-bottom:12px">
-    <div class="tile"><label>Disk free</label><div class="big" id="disk">-</div><div class="muted" id="diskleft"></div></div>
+    <div class="tile"><label>Disk free</label>
+      <div class="drive"><span id="diskpie"></span><div><div class="big" id="disk">-</div><div class="muted" id="diskname"></div></div></div>
+      <div class="muted" id="diskleft"></div><div id="disklegend" class="legend muted"></div><div id="drives"></div></div>
     <div class="tile"><label>Tracked in 3D</label><div class="big" id="good3d">-</div><div class="muted">animals, last second</div><div class="muted mono" id="usedmodels"></div></div>
     <div class="tile"><label>Programs</label><div id="programs"></div></div>
     <div class="tile"><label>Bookmarks</label><div class="big" id="nmarks">0</div><div class="muted" id="lastmark"></div></div>
@@ -175,6 +179,32 @@ function esc(t){ return String(t==null?"":t).replace(/[&<>"]/g, c => ({"&":"&amp
 function dur(s){ s = Math.max(0, Math.floor(s)); return Math.floor(s/60)+":"+String(s%60).padStart(2,"0"); }
 let camsWereReady = false; const baseTitle = document.title;
 function chime(){ try { const a = new (window.AudioContext||window.webkitAudioContext)(); [0, 0.18].forEach((t, i) => { const o = a.createOscillator(), g = a.createGain(); o.frequency.value = i ? 1100 : 880; g.gain.setValueAtTime(0.15, a.currentTime+t); g.gain.exponentialRampToValueAtTime(0.001, a.currentTime+t+0.16); o.connect(g); g.connect(a.destination); o.start(a.currentTime+t); o.stop(a.currentTime+t+0.17); }); } catch(e) {} }
+// The disk tile's drives: a size as the page says it, and a donut of a drive (used, the rest of the plan's estimate, free)
+function size(gb){ return gb >= 999.5 ? (gb/1000).toFixed(1)+" TB" : Math.round(gb).toLocaleString()+" GB"; }
+const PIE = {used: "var(--muted)", plan: "var(--warn)", short: "var(--bad)", free: "var(--ok)"};
+function pie(d, px){
+  const t = d.total_gb, plan = Math.min(d.plan_gb || 0, d.free_gb), short = (d.plan_gb || 0) > d.free_gb;
+  if(!(t > 0)) return "";
+  const parts = [[d.used_gb, PIE.used, "used"], [plan, short ? PIE.short : PIE.plan, "the rest of the plan (an estimate)"],
+    [d.free_gb - plan, PIE.free, short ? "free" : "free after it"]];
+  let at = 0, out = '<svg width="'+px+'" height="'+px+'" viewBox="0 0 42 42" role="img" aria-label="'+esc(d.name)+": "+
+    size(d.free_gb)+' free of '+size(t)+'"><circle cx="21" cy="21" r="15.915" fill="none" stroke="var(--line)" stroke-width="7"/>';
+  parts.forEach(([gb, color, name], i) => { // a slice of 100 around (r 15.915), from the top, clockwise; the plan's at least 1
+    let p = Math.max(0, gb) / t * 100; if(i == 1 && gb > 0) p = Math.max(p, 1); p = Math.min(p, 100 - at); if(p <= 0) return;
+    out += '<circle cx="21" cy="21" r="15.915" fill="none" stroke="'+color+'" stroke-width="7" stroke-dasharray="'+p.toFixed(2)+' '+
+      (100-p).toFixed(2)+'" stroke-dashoffset="'+(25-at).toFixed(2)+'"><title>'+esc(name)+": "+size(gb)+'</title></circle>'; at += p; });
+  return out + '</svg>';
+}
+function renderDrives(D){
+  const ds = D.drives || [], rec = ds.find(d => d.recording);
+  $("diskpie").innerHTML = rec ? pie(rec, 54) : "";
+  $("diskname").textContent = rec ? "of "+size(rec.total_gb)+" on "+rec.name+(rec.copies ? ", with the copies" : "") : "";
+  $("disklegend").innerHTML = rec ? '<i style="background:'+PIE.used+'"></i>used'+(rec.plan_gb != null ?
+    '<i style="background:'+(rec.plan_gb > rec.free_gb ? PIE.short : PIE.plan)+'"></i>the plan' : "")+'<i style="background:'+PIE.free+'"></i>free' : "";
+  $("drives").className = "drives";
+  $("drives").innerHTML = ds.filter(d => !d.recording).map(d => '<div class="drive">'+pie(d, 30)+'<div><b>'+esc(d.name)+'</b> '+
+    size(d.free_gb)+' free of '+size(d.total_gb)+'<br><span class="muted">'+(d.copies ? "the copies go here" : "")+'</span></div></div>').join("");
+}
 function tag(text, kind){ return '<span class="tag '+kind+'">'+esc(text)+'</span>'; }
 function render(s){
   last = s;
@@ -234,6 +264,7 @@ function render(s){
   $("diskleft").innerHTML = D_.plan_left_gb!=null ? "the rest of the plan needs about "+Math.round(D_.plan_left_gb).toLocaleString()+" GB (an estimate)"+
     (short > 0 ? '<br><span class="err">'+Math.round(short).toLocaleString()+" GB short</span>" : "") :
     D_.hours_left!=null ? "about "+D_.hours_left+" h at this rate" : "";
+  renderDrives(D_);
   const T = H.tracking; $("good3d").textContent = T && T.good3d!=null ? T.good3d+" of "+T.animals : "-";
   const parts = Object.assign({}, L.parts||{}); if((L.live||[]).length) parts["campy-live"] = L.live[L.live.length-1];
   $("programs").innerHTML = Object.entries(parts).map(([n,p]) => tag(p.state, p.state=="running"?"ok":p.exit_code?"bad":"warn")+" "+esc(PROGRAMS[n] || n)).join("<br>") || "-";

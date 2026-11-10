@@ -93,6 +93,63 @@ THUMB_S = 1.0 # and a frame of each camera, for its thumbnail
 STATUS_FRESH_S = 20 # recording.json older than this is not the recording's now
 WARN_FRACTION = 0.8 # the disk check warns when a length needs more than this share of the free space (as the launch
 # check's, campy/preflight.py)
+DRIVE_FRESH_S = 10 # a copy destination's drive is measured at most this often (a network share can be slow to answer)
+DiskUsage = shutil.disk_usage # (tests replace it: drives of made-up sizes)
+
+
+def Mount(path):
+	"""
+	The drive path is on: its nearest existing folder, walked up to its
+	mount point ("D:\\" on Windows, a UNC share's root, "/" or "/mnt/data"
+	elsewhere). None when no part of it exists.
+	"""
+	where = os.path.abspath(os.path.expanduser(str(path)))
+	while not os.path.isdir(where):
+		parent = os.path.dirname(where)
+		if parent == where:
+			return None
+		where = parent
+	while not os.path.ismount(where):
+		parent = os.path.dirname(where)
+		if parent == where:
+			break
+		where = parent
+	return where
+
+
+def DriveName(mount, path=os.path):
+	# What the page calls a drive: "C:", "\\\\server\\share", "/mnt/data" (path: ntpath, in a test on another system)
+	drive, rest = path.splitdrive(mount)
+	if drive and not rest.strip("\\/"):
+		return drive
+	return mount.rstrip("\\/") or mount
+
+
+def Drive(path):
+	"""
+	The drive path is on, for the page's disk tile: {name, mount, total_gb,
+	used_gb, free_gb}, or None (not there, or not answering). Used is all
+	but the free space (on Linux the root's reserve too), so the pie's
+	slices add up to the drive.
+	"""
+	mount = Mount(path)
+	if mount is None:
+		return None
+	try:
+		usage = DiskUsage(mount)
+	except OSError:
+		return None
+	return {"name": DriveName(mount), "mount": mount, "total_gb": round(usage.total / 1e9, 1),
+		"used_gb": round((usage.total - usage.free) / 1e9, 1), "free_gb": round(usage.free / 1e9, 1)}
+
+
+def SameDrive(a, b):
+	return os.path.normcase(a["mount"]) == os.path.normcase(b["mount"])
+
+
+def Remote(to):
+	# user@host:/path, for rsync: no drive of this computer's to measure
+	return ":" in to and "@" in to.split(":", 1)[0]
 
 
 LOCAL_NAMES = ("127.0.0.1", "localhost", "[::1]")
@@ -710,6 +767,8 @@ class Panel:
 		self.lock = threading.Lock()
 		self.marks = None
 		self.disk = collections.deque(maxlen=60) # (time, free bytes), for the rate the disk fills
+		self.drives = {} # a copy destination: (time measured, its Drive), for the disk tile
+		self.copy_to = None # the recording's "Copy each recording to", while it records
 		self.closing = False
 		self.health = None
 		# Opened with a folder: its configs, one of them in use at a time (the page's Experiment list)
@@ -833,6 +892,9 @@ class Panel:
 		need = self.DiskCheck()
 		if need is not None:
 			checks.append(need)
+			copy = self.CopyDiskCheck()
+			if copy is not None:
+				checks.append(copy)
 			return checks
 		free = self.Free()
 		if free is not None:
@@ -853,6 +915,7 @@ class Panel:
 		above 80% of the free space. None without a Pico, or when the plan or
 		the free space can't be told (then the free space alone, as before).
 		"""
+		self.need = None
 		if self.devices is None or self.devices.pico is None:
 			return None
 		try:
@@ -865,6 +928,7 @@ class Panel:
 			return None
 		keep = Seconds(self.config.Value("stopAtFreeGB", 2)) or 0.0
 		wanted = need["total_b"] + keep * 1e9
+		self.need = (folder, need["total_b"]) # for the copy destination's check
 		parts = []
 		if self.devices.sglx is not None:
 			parts.append("SpikeGLX {}: {:,.0f} s of open gate with its trigger margin, at {:g} MB/s".format(
@@ -877,6 +941,35 @@ class Panel:
 			return ("block", "{}: {} short, {}. Pick a shorter length, or add a data disk.".format(text, GB(wanted - free),
 				how), "disk")
 		return ("warn" if wanted > WARN_FRACTION * free else "ok", "{}, {}".format(text, how), "disk")
+
+	def CopyDiskCheck(self):
+		"""
+		With a Pico, after DiskCheck: whether the copy destination (the
+		page's "Copy each recording to") has room for this length's
+		recording, (level, text, "copy-disk"): "warn" when it hasn't (a
+		copy that runs out of space fails, the recording stays where it
+		was made), "ok" otherwise. On the recording's own drive, it needs
+		room for both. None without a destination, for an rsync address,
+		or when either drive can't be told.
+		"""
+		to = self.CopyTo().strip()
+		if not getattr(self, "need", None) or not to or Remote(to) or not os.path.isdir(to):
+			return None
+		folder, need_b = self.need
+		there, here = Drive(to), Drive(folder or self.config.Value("videoFolder", "."))
+		if there is None or here is None:
+			return None
+		free = there["free_gb"] * 1e9
+		if SameDrive(there, here):
+			text = "Copies: into {}, on the same drive as the recordings ({}): room for both, about {} of the {} " \
+				"free".format(to, there["name"], GB(2 * need_b), GB(free))
+			return ("warn" if 2 * need_b > free else "ok", text, "copy-disk")
+		text = "Copies: into {} ({}), {} free; this length's recording is about {}".format(to, there["name"], GB(free),
+			GB(need_b))
+		if need_b > free:
+			return ("warn", "{}: it doesn't fit, {} short. Make room there, or copy somewhere else.".format(text,
+				GB(need_b - free)), "copy-disk")
+		return ("ok", text, "copy-disk")
 
 	def Free(self, folder=None):
 		where = os.path.abspath(str(folder or self.config.Value("videoFolder", ".")))
@@ -1135,7 +1228,7 @@ class Panel:
 			"bouts": self.BoutStatus(),
 			"launcher": launcher, "health": self.health.snapshot, "recording": recording,
 			"models": self.picker.Status() if getattr(self, "picker", None) is not None else None,
-			"disk": self.Disk(free, rate, s),
+			"disk": self.Disk(free, rate, s, folder or self.RecordsInto()),
 			"alerts": {"open": open_, "resolved": resolved}, "problems": problems, "bookmarks": marks, "summary": summary,
 			"copies": dict(self.copies.Status(), close_when_copied=self.close_when_copied),
 			"fields": {"experiment": str(self.config.Value("experiment", "") or "").replace("None", ""),
@@ -1151,15 +1244,20 @@ class Panel:
 		except pico.PicoError as e:
 			return {"error": str(e), "fields": [], "changed": [], "bout": None}
 
-	def Disk(self, free, rate, s):
+	def Disk(self, free, rate, s, where=None):
 		"""
 		The page's disk tile: the free space, and how long it lasts at the
 		rate it fills (hours_left). With a Pico's session, what the rest of
 		its plan still needs (plan_left_gb, devices.Need) in place of the
 		hours: the rate before the Pico starts is the cameras' none at all,
-		and SpikeGLX writes only while the gate is open.
+		and SpikeGLX writes only while the gate is open. And each drive it
+		involves (drives, for the page's pies): the one where (the
+		recording's folder) is on, which the plan's estimate is counted
+		against (SpikeGLX writes into the recording's folder too), then the
+		copy destinations' drives.
 		"""
-		disk = {"free_gb": round(free / 1e9, 1) if free is not None else None, "hours_left": None, "plan_left_gb": None}
+		disk = {"free_gb": round(free / 1e9, 1) if free is not None else None, "hours_left": None, "plan_left_gb": None,
+			"drives": []}
 		try:
 			left = self.devices.NeedLeft(self.config.Cameras()[0]) if self.devices is not None and s is not None and \
 				s.folder else None
@@ -1169,7 +1267,51 @@ class Panel:
 			disk["plan_left_gb"] = round(left["total_b"] / 1e9, 1)
 		elif free is not None and rate and rate > 1e5 and not (self.devices is not None and self.devices.pico is not None):
 			disk["hours_left"] = round(free / rate / 3600, 1)
+		disk["drives"] = self.Drives(where, disk["plan_left_gb"]) if where else []
 		return disk
+
+	def Drives(self, where, plan_gb=None):
+		"""
+		[{name, mount, total_gb, used_gb, free_gb, recording, copies,
+		plan_gb}]: the drive where is on (recording true, with plan_gb, the
+		rest of the plan's estimate), then each drive recordings are copied
+		onto (copies true; the same drive as the recording's only marks it).
+		A copy destination: the recording's own while it records, the ones
+		still being copied, else the page's box; an rsync address has none.
+		"""
+		out = []
+		here = Drive(where)
+		if here is not None:
+			out.append(dict(here, recording=True, copies=False, plan_gb=plan_gb))
+		tos = [self.copy_to] if self.session is not None and self.copy_to else []
+		tos += [j["to"] for j in self.copies.Status()["jobs"] if j["state"] in ("waiting", "copying")]
+		if not tos and self.session is None:
+			tos = [self.CopyTo()]
+		now = time.monotonic()
+		for to in dict.fromkeys(str(t or "").strip() for t in tos): # in order, once each
+			if not to or Remote(to):
+				continue
+			if to not in self.drives or now - self.drives[to][0] > DRIVE_FRESH_S:
+				self.drives[to] = (now, Drive(to) if os.path.isdir(to) else None)
+			drive = self.drives[to][1]
+			if drive is None:
+				continue
+			same = next((d for d in out if SameDrive(d, drive)), None)
+			if same is not None:
+				same["copies"] = True
+			else:
+				out.append(dict(drive, recording=False, copies=True, plan_gb=None))
+		return out
+
+	def RecordsInto(self):
+		# Where the next recording goes: the chosen length's videoFolder (with a Pico), else the config's
+		folder = None
+		if self.devices is not None and self.devices.pico is not None:
+			try:
+				folder = self.devices.Length(self.length)[1]
+			except (session.SessionError, pico.PicoError):
+				pass
+		return str(folder or self.config.Value("videoFolder", "."))
 
 	@staticmethod
 	def FreeAt(folder):
@@ -1374,6 +1516,7 @@ class Panel:
 		# One recording, in this (the main) thread: campy-session's Ctrl-C and its tied children need it
 		fields, args = self.wanted, self.Args(self.wanted)
 		copy_to = str(fields.get("copy_to") or "").strip()
+		self.copy_to = copy_to
 		try:
 			pick = self.picker.Pick() if self.picker is not None else None
 			page = dict(self.devices.pico.page) if self.devices is not None and self.devices.pico is not None else None
@@ -1403,6 +1546,7 @@ class Panel:
 				if copy_to:
 					self.copies.Add(self.session.folder, copy_to)
 			self.session = None
+			self.copy_to = None
 			self.checks = self.Checks()
 
 

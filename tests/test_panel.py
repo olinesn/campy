@@ -527,14 +527,14 @@ def test_a_recording_outlives_its_panel_and_the_next_panel_finds_it(tmp_path, ho
 FAKE_SDK = os.path.join(REPO, "tests", "fake_sglx")
 
 
-def disk_panel(tmp_path, monkeypatch, free_gb, devices=True):
+def disk_panel(tmp_path, monkeypatch, free_gb, devices=True, video_folder=None):
 	# A panel for 4 cameras at 60 fps: with a Pico (8 h and 6 days, its board and SpikeGLX answering) and SpikeGLX, or
 	# with neither; its disk holding free_gb. Nothing records: Start only hands the main thread its fields.
 	from campy import pico, spikeglx
 	from test_session import write_config
 	sections = {"pico": {"port": "E665485457699D30", "lengths": [{"name": "8 h", "seconds": 28800},
 		{"name": "6 days", "seconds": 518400}]}, "spikeglx": {"sdk": FAKE_SDK}} if devices else {}
-	config = write_config(tmp_path / "c.yaml", {"numCams": 4, "frameRate": 60, "videoFolder": str(tmp_path / "data"),
+	config = write_config(tmp_path / "c.yaml", {"numCams": 4, "frameRate": 60, "videoFolder": str(video_folder or tmp_path / "data"),
 		"recTimeInSec": 3600}, **sections)
 	monkeypatch.setattr(pico.Pico, "Check", lambda self: "COM3: idle")
 	def answers(self):
@@ -596,7 +596,7 @@ def test_without_a_pico_the_disk_check_is_as_before(tmp_path, home, monkeypatch)
 	assert p.checks[-1] == ("warn", "15 GB free where it records") # below alertDiskFreeGB (20)
 	assert p.Start({}) is None
 	# The tile: hours at the rate it fills
-	assert p.Disk(15e9, 1e6, None) == {"free_gb": 15.0, "hours_left": 4.2, "plan_left_gb": None}
+	assert p.Disk(15e9, 1e6, None) == {"free_gb": 15.0, "hours_left": 4.2, "plan_left_gb": None, "drives": []}
 
 
 def test_the_disk_tile_counts_the_rest_of_a_picos_plan(tmp_path, home, monkeypatch):
@@ -604,12 +604,145 @@ def test_the_disk_tile_counts_the_rest_of_a_picos_plan(tmp_path, home, monkeypat
 	p = disk_panel(tmp_path, monkeypatch, 378)
 	s = types.SimpleNamespace(folder=str(tmp_path / "rec"))
 	p.devices.Plan(28800)
-	assert p.Disk(378e9, 1.0e6, s) == {"free_gb": 378.0, "hours_left": None, "plan_left_gb": 161.7}
+	assert p.Disk(378e9, 1.0e6, s) == {"free_gb": 378.0, "hours_left": None, "plan_left_gb": 161.7, "drives": []}
 	p.devices.pico_started = time.time()
 	p.devices.cached = {"pico": {"alive": True, "session_s": 14400}} # half way: 48 of 96 bouts left
 	assert p.Disk(378e9, 1.0e6, s)["plan_left_gb"] == round(p.devices.Need(28800, 4, 14400)["total_b"] / 1e9, 1) == 80.8
 	p.devices.cached = {"pico": {"alive": False}} # its session has ended
-	assert p.Disk(378e9, 1.0e6, s) == {"free_gb": 378.0, "hours_left": None, "plan_left_gb": None}
+	assert p.Disk(378e9, 1.0e6, s) == {"free_gb": 378.0, "hours_left": None, "plan_left_gb": None, "drives": []}
+
+
+# ------------------------------------------------------------------ the disk tile's drives (its pies)
+
+def fake_drives(monkeypatch, tmp_path, sizes):
+	# Drives of made-up sizes: sizes {"C:": (total GB, free GB), ...}, each the folder tmp_path/<letter> and what's in it
+	mounts = {}
+	for name, (total, free) in sizes.items():
+		folder = tmp_path / name[0]
+		folder.mkdir(exist_ok=True)
+		mounts[str(folder)] = (name + "\\", total, free)
+	def mount(path):
+		path = os.path.abspath(str(path))
+		return next((m for f, (m, _, _) in mounts.items() if path == f or path.startswith(f + os.sep)), None)
+	def usage(where):
+		_, total, free = next(v for v in mounts.values() if v[0] == where)
+		return types.SimpleNamespace(total=total * 1e9, used=(total - free) * 1e9, free=free * 1e9)
+	monkeypatch.setattr(panel, "Mount", mount)
+	monkeypatch.setattr(panel, "DiskUsage", usage)
+
+
+def test_a_drives_name_on_windows_and_elsewhere():
+	import ntpath
+	import posixpath
+	assert panel.DriveName("D:\\", ntpath) == "D:"
+	assert panel.DriveName("\\\\server\\share\\", ntpath) == "\\\\server\\share"
+	assert panel.DriveName("C:\\mounts\\big\\", ntpath) == "C:\\mounts\\big" # a drive mounted in a folder
+	assert panel.DriveName("/", posixpath) == "/" and panel.DriveName("/mnt/data/", posixpath) == "/mnt/data"
+
+
+def test_a_drive_is_measured_where_a_folder_is(tmp_path, monkeypatch):
+	# The 4 TB data drive: a folder on it not made yet still counts as on it (its nearest existing folder)
+	fake_drives(monkeypatch, tmp_path, {"D:": (4000.8, 3998.1)})
+	assert panel.Drive(tmp_path / "D" / "recordings" / "2026-11-10") == {"name": "D:", "mount": "D:\\",
+		"total_gb": 4000.8, "used_gb": 2.7, "free_gb": 3998.1}
+	assert panel.Drive(tmp_path / "elsewhere") is None # no drive answers for it
+
+
+def test_the_real_mount_of_a_folder(tmp_path):
+	# Walked up from a folder not made yet to the mount point it is on; the real drive measured there
+	mount = panel.Mount(tmp_path / "not" / "made")
+	assert os.path.ismount(mount) and os.path.normcase(str(tmp_path)).startswith(os.path.normcase(mount))
+	drive = panel.Drive(tmp_path / "not" / "made")
+	assert drive["mount"] == mount and 0 < drive["free_gb"] <= drive["total_gb"]
+	assert drive["used_gb"] == pytest.approx(drive["total_gb"] - drive["free_gb"], abs=0.11)
+
+
+def test_the_tile_shows_the_recordings_drive_with_the_plan_and_the_copies_drive(tmp_path, home, monkeypatch):
+	# Recording onto the new 4 TB D:, copies onto C:. The plan's estimate is D:'s (SpikeGLX writes into the
+	# recording's folder too); C: shows only its own space.
+	p = disk_panel(tmp_path, monkeypatch, 3998)
+	fake_drives(monkeypatch, tmp_path, {"C:": (1022.4, 460.2), "D:": (4000.8, 3998.1)})
+	p.devices.Plan(28800)
+	s = types.SimpleNamespace(folder=str(tmp_path / "D" / "rec"), state="recording")
+	p.session, p.copy_to = s, str(tmp_path / "C")
+	disk = p.Disk(3998.1e9, 1.0e6, s, s.folder)
+	assert disk["plan_left_gb"] == 161.7
+	assert disk["drives"] == [
+		{"name": "D:", "mount": "D:\\", "total_gb": 4000.8, "used_gb": 2.7, "free_gb": 3998.1, "recording": True,
+			"copies": False, "plan_gb": 161.7},
+		{"name": "C:", "mount": "C:\\", "total_gb": 1022.4, "used_gb": 562.2, "free_gb": 460.2, "recording": False,
+			"copies": True, "plan_gb": None}]
+	# Copies onto the same drive: one pie, marked as the copies' too
+	p.copy_to = str(tmp_path / "D" / "copies")
+	os.makedirs(p.copy_to)
+	assert [(d["name"], d["recording"], d["copies"]) for d in p.Drives(s.folder, 161.7)] == [("D:", True, True)]
+	# An rsync address has no drive here; a destination that isn't there, none either
+	for to in ("me@server:/data", str(tmp_path / "C" / "gone")):
+		p.copy_to = to
+		assert [d["name"] for d in p.Drives(s.folder)] == ["D:"]
+	# After it: the copies still going are shown, not the page's box
+	p.session, p.copy_to = None, None
+	monkeypatch.setattr(p.copies, "Status", lambda: {"jobs": [{"to": str(tmp_path / "C"), "state": "copying"}]})
+	monkeypatch.setattr(panel.Panel, "CopyTo", lambda self: str(tmp_path / "D" / "copies"))
+	assert [(d["name"], d["copies"]) for d in p.Drives(s.folder)] == [("D:", False), ("C:", True)]
+	# ... and with none going, the box's
+	monkeypatch.setattr(p.copies, "Status", lambda: {"jobs": [{"to": str(tmp_path / "C"), "state": "done"}]})
+	assert [(d["name"], d["copies"]) for d in p.Drives(s.folder)] == [("D:", True)]
+	# Without a drive to measure (the folder's drive gone): no pies, the free space as before
+	assert p.Disk(None, None, None, str(tmp_path / "E" / "rec"))["drives"] == [
+		dict(panel.Drive(tmp_path / "D"), recording=False, copies=True, plan_gb=None)]
+
+
+def test_a_copies_drive_measured_at_most_every_10_s(tmp_path, home, monkeypatch):
+	# A network share can be slow to answer: the page asks every second, its drive is measured every 10 s
+	p = disk_panel(tmp_path, monkeypatch, 3998, devices=False)
+	fake_drives(monkeypatch, tmp_path, {"C:": (1022.4, 460.2), "D:": (4000.8, 3998.1)})
+	asked = []
+	usage = panel.DiskUsage
+	monkeypatch.setattr(panel, "DiskUsage", lambda where: asked.append(where) or usage(where))
+	p.session, p.copy_to = types.SimpleNamespace(folder=str(tmp_path / "D")), str(tmp_path / "C")
+	now = [1000.0]
+	monkeypatch.setattr(panel.time, "monotonic", lambda: now[0])
+	for _ in range(5):
+		p.Drives(str(tmp_path / "D"))
+	assert asked.count("C:\\") == 1 and asked.count("D:\\") == 5
+	now[0] += panel.DRIVE_FRESH_S + 1
+	p.Drives(str(tmp_path / "D"))
+	assert asked.count("C:\\") == 2
+
+
+def test_the_copies_drive_has_room_for_the_recording(tmp_path, home, monkeypatch):
+	# Before the start, with a Pico's plan: a warning when the copy destination can't hold this length's recording
+	# (162 GB for 8 hours), never a block
+	fake_drives(monkeypatch, tmp_path, {"C:": (1022.4, 100.0), "D:": (4000.8, 3998.1)})
+	monkeypatch.setattr(panel.Panel, "CopyTo", lambda self: str(tmp_path / "C"))
+	p = disk_panel(tmp_path, monkeypatch, 3998, video_folder=tmp_path / "D" / "data")
+	[(level, text, action)] = [c for c in p.checks if c[2:] == ("copy-disk",)]
+	assert (level, action) == ("warn", "copy-disk")
+	assert text == "Copies: into {} (C:), 100 GB free; this length's recording is about 162 GB: it doesn't fit, " \
+		"62 GB short. Make room there, or copy somewhere else.".format(tmp_path / "C"), text
+	assert p.Start({"length": 28800}) is None # a warning: it starts
+	p.wanted = None
+	# Room enough: ok
+	fake_drives(monkeypatch, tmp_path, {"C:": (1022.4, 460.2), "D:": (4000.8, 3998.1)})
+	assert [c[0] for c in p.Checks() if c[2:] == ("copy-disk",)] == ["ok"]
+	# On the recordings' own drive: room for both
+	monkeypatch.setattr(panel.Panel, "CopyTo", lambda self: str(tmp_path / "D"))
+	fake_drives(monkeypatch, tmp_path, {"D:": (4000.8, 300.0)})
+	[(level, text, _)] = [c for c in p.Checks() if c[2:] == ("copy-disk",)]
+	assert level == "warn" and "on the same drive as the recordings (D:): room for both, about 323 GB of the 300 GB" in text
+	# No destination, or an rsync one: no line
+	for to in ("", "me@server:/data"):
+		monkeypatch.setattr(panel.Panel, "CopyTo", lambda self, to=to: to)
+		assert not [c for c in p.Checks() if c[2:] == ("copy-disk",)]
+
+
+def test_the_page_draws_each_drive_as_a_pie():
+	from campy import panelpage
+	page = panelpage.PAGE
+	assert 'id="diskpie"' in page and 'id="drives"' in page and "renderDrives(D_)" in page
+	assert "<svg" not in page.split("<script>")[0] # drawn from the status, not fixed in the page
+	assert "stroke-dasharray" in page and "the rest of the plan (an estimate)" in page
 
 
 # ------------------------------------------------------------------ one panel for a folder of configs

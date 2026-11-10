@@ -51,7 +51,11 @@ The recording's length is fixed by the rig's settings, and the page shows it (fo
 Press **Start recording**. Within about a minute, depending on the rig, the page shows **Recording** at the top, and:
 
 - **Each camera's picture**, refreshed every second. Check that every camera shows the cage. Before a camera's first frame it says "No picture yet" instead (on the ChronicRecord rig, until you start the Pico, since the cameras wait for its pulses). Under each one, a green **OK**, or a yellow label saying what's wrong (see below), and its frames per second, which should be steady.
-- **Disk free**, and about how long it lasts. On the ChronicRecord rig, what the rest of the session's plan still needs instead (an estimate), with how many GB it is short in red if it doesn't fit.
+- **Disk free**, and about how long it lasts. On the ChronicRecord rig, what the rest of the session's plan still needs instead (an estimate), with how many GB it is short in red if it doesn't fit. A ring next to the number shows the drive the recording goes to (for example `of 4.0 TB on D:`): grey for what is already used, yellow for what the rest of the plan needs (red if it doesn't fit), green for what stays free. If the recordings are copied onto another drive of this computer (**Copy each recording to**), a small ring below shows that drive too, for example `C: 460 GB free of 1.0 TB`.
+
+  ![The Disk free tile: a ring for the 4 TB recording drive, mostly the plan's estimate, and a small one for the drive the copies go to](images/panel-disk-free.png)
+
+  *(An example, with made-up numbers.)*
 - **Tracked in 3D**: how many animals the live tracking sees, for example `5 of 5`.
 - **Programs**: each should say **running**.
 - The time recorded so far, out of the recording's length.
