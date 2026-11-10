@@ -13,10 +13,10 @@ PAGE = r"""<!doctype html>
 <title>campy session</title><link rel="icon" type="image/png" href="@ICON@">
 <style>
 :root{--bg:#f7f6f2;--card:#fff;--soft:#f0eee8;--text:#1f1e1c;--muted:#6b6a65;--line:#e2e0d9;--ok:#2f6d12;--okbg:#e6f1dc;
---warn:#80500b;--warnbg:#fbefd8;--bad:#a32d2d;--badbg:#fbe9e9;--accent:#185fa5;--blueled:#1f6fd6;--yellowled:#b88a00;--gate:#6b4fbb}
+--warn:#80500b;--warnbg:#fbefd8;--bad:#a32d2d;--badbg:#fbe9e9;--accent:#185fa5;--blueled:#0078d4;--yellowled:#6f8f00;--gate:#6b4fbb}
 @media (prefers-color-scheme:dark){:root{--bg:#1b1b1a;--card:#252524;--soft:#2e2e2c;--text:#ecebe6;--muted:#a3a29c;
 --line:#3a3a37;--ok:#9fd27a;--okbg:#22351a;--warn:#f2c46f;--warnbg:#3a2c10;--bad:#f2a0a0;--badbg:#3d1d1d;--accent:#85b7eb;
---blueled:#6aa8ff;--yellowled:#f5d04a;--gate:#c0a8ff}}
+--blueled:#0092ff;--yellowled:#c3ff00;--gate:#c0a8ff}}
 /* Sizes in rem: the browser's own font size (Settings > Appearance > Font size) and the page's Text size buttons scale
    all of it, and the layout reflows rather than overflowing. Nothing smaller than 15 px at the browser's default. */
 html{font-size:100%}
@@ -476,7 +476,9 @@ function ledPowerOf(colour){
 // to gate closed, to the next bout). Each stretch has its width whatever it lasts (a cartoon), with the time axis
 // under it in seconds from the gate's opening (0 s); the LEDs' stretch is to scale in ms, with the camera's real
 // pulses in it.
-const LED_COLOUR = {blue: "var(--blueled)", yellow: "var(--yellowled)"}; // the theme's: brighter in dark mode
+// The LEDs' own colours: 465 nm is about rgb(0, 146, 255) and 560 nm rgb(195, 255, 0), a yellow-green (as a spectrum
+// is shown on a screen); in the light theme the same hues darker, to stand out on white
+const LED_COLOUR = {blue: "var(--blueled)", yellow: "var(--yellowled)"};
 // A stretch's length, rounded as the drawing says it: "235 s", "4.5 s", "30 ms"
 function secs(t){ return t >= 9.95 ? Math.round(t).toLocaleString()+"\u00a0s" : t >= 0.9995 ? (+t.toFixed(1))+"\u00a0s" : (+(t*1000).toFixed(1))+"\u00a0ms"; }
 function boutPicture(D){
