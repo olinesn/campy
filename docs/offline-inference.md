@@ -10,6 +10,7 @@
 - **campy-live's fixed-shape crops with TensorRT run 11–15× faster** (1,135 frames/s on the A100, 1,524 on the L40S). The whole 10-minute video takes 25 s on the A100, including loading the models and writing the `.slp`.
 - **On a benchtop PC the same approach gives 6–7×** (about 450 frames/s, a 10-minute camera video in 40 s), on both the GMKtec EVO-X2 (AMD, `torch.compile`) and the Dell Pro Max Slim FCS1250 (NVIDIA RTX 2000 Ada, TensorRT). **It runs just as fast while the PC records 3 cameras at 60 fps, and the recording dropped no frames.**
 - **`campy-infer` runs it for real batch jobs** ([How to run it](#how-to-run-it)): a 10-minute camera video, from decoding it to its saved `.slp`, in 25 s on the A100 (723–730 frames/s), and 43–45 s on the benchtop PCs (404–417 frames/s). With the bench's settings it gives the bench's predictions to the bit, and it is about as close to an exact fp32 reference as `sleap-nn track`: closer on two cameras of a session, a little further on the third.
+- **On a cluster, a job's start no longer costs minutes** ([Starting a job on a cluster](#starting-a-job-on-a-cluster)). With its software and videos on network storage that hadn't been read for a while, a job spent 147 s before its first frame, and 13–17 s opening each video. `campy-infer` now reads ahead, many files at a time, what the last job started with, and each video before its turn: 46 s to the first frame and no wait between videos. Two 3-camera sessions in one job took 3 min 12 s instead of 6 min 10 s, with the same predictions.
 - **On a Mac (Apple M2 Pro), running the two networks with CoreML is 1.9–3.1× faster** than sleap-nn's PyTorch on the Mac's GPU: 53.5 → 104 frames/s with no change in results, up to 165 frames/s on the Neural Engine. Every setting was as accurate against human labels as today ([On a Mac](#on-a-mac-apple-silicon)). Neither campy nor sleap-nn has this yet; it is proposed upstream.
 - Accuracy stays within the differences sleap-nn already has. sleap-nn's own output moves 2% of keypoints by more than a pixel because of its crop-size rounding bug, and fp16 with the tied-peaks fix moves 1.5–3.4%; those keypoints move about 3 px (median), and the median keypoint moves under 0.02 px. fp16 *without* that fix loses 0.8% of the animals.
 
@@ -248,6 +249,7 @@ campy-infer <session folder> --centroid ... --instance ... --max-instances 5 --o
 - **Reference runs:** `--exact` runs sleap-nn's own top-down layer instead: fp32 without TF32, sleap-nn's own peak finding, the frames copied to the GPU first, and every crop cut at its true size. It is about twice as fast as `sleap-nn track`, not ten times. Compare a fast run with it using `python bench/offline_infer_bench.py compare --base <exact .slp> <fast .slp>`.
 - **Trying settings:** `--frames N` runs only each video's first N frames. Without `--name`, such a trial is written as `<video name>.firstN.predictions.slp`, so a later full run never mistakes it for its own result.
 - **Engines:** the first run with a new model, GPU or batch size builds the TensorRT engines (about a minute) or compiles the networks, before any video's clock starts. They are kept in `--engine-cache` (`~/.cache/campy/engines`) and later runs read them in a few seconds.
+- **Read-ahead** (`--read-ahead on`, the default): after its first video, `campy-infer` writes the list of files it started with (Python's modules, the libraries it used, the engines, ffmpeg) into `--engine-cache`'s `prefetch` folder. The next run reads them, 32 at a time, while it starts, so its imports find them already read. It also reads each video whole before its decoder opens it: the first at the start, each next one while the current one runs. Where the software and the videos are on a local disk this changes little; on a cluster's network storage it halves a job ([Starting a job on a cluster](#starting-a-job-on-a-cluster)). It only reads files: the predictions are the same. `--read-ahead off` turns it off. The list leaves out big libraries a run used little of (TensorRT's 2 GB builder, which a run with ready engines doesn't need), and says which in its comments. It is rewritten when a run uses other files, after an update for example.
 
 Each video's line in the output gives its frames, its time, frames per second, and how much of it went to the models, to making the labels and to saving. The `.slp` records how it was made: its provenance has sleap-nn's usual fields and a `campy_infer` entry with campy's version, the engine, the precision and the peak finding.
 
@@ -263,7 +265,7 @@ python -m campy.infer $SESSION --centroid $CENTROID --instance $INSTANCE --max-i
   --out $SESSION/predictions --name "${TAG}_{stem}.slp" --engine-cache $SHARED/engines
 ```
 
-Keep `--engine-cache` on shared storage, so the engines are built once per model and GPU type rather than once per job.
+Keep `--engine-cache` on shared storage, so the engines are built once per model and GPU type rather than once per job, and every job reads ahead from the same list. Several sessions can share one job, run one after another (a loop over `campy-infer`, one call per session): each session after the first starts in about 6 s, where a job of its own may land on a node that hasn't read the software yet.
 
 ### How fast it is, and how close to the bench
 
@@ -292,7 +294,34 @@ Against an `--exact` run (the first 6,000 frames, 29,320 mice): `campy-infer`'s 
 
 On the session's other two cameras, against `--exact` runs of the whole video, `campy-infer` was closer to the reference than `sleap-nn track` (run by the lab's job script on an L40S): on the camera that sees fewer mice (3.1 a frame), 0.5% of mice in one run only and 2.6% of keypoints moved by more than a pixel, against 5.3% and 3.1% for `sleap-nn track`; on the other (4.6 mice a frame), 1.5% and 2.7%, against 2.3% and 4.4%. `sleap-nn track`'s crop-size bug cuts a whole batch's crops a pixel short, which `campy-infer` doesn't.
 
-A whole session in one job, through a Slurm script like the one above (3 cameras, 54,000 frames, an A100): 3 min 46 s from start to the last `.slp`. That included 60 s to load sleap-nn and PyTorch from network storage and 53 s to build the TensorRT engines the first time; each video then took 24–32 s. The first video took 32 s rather than 24 because of its labels' provenance. To write it, sleap-nn looks up the details of 8 packages and keeps none of them. It imports each package to find its folder, about 750 modules (Weights & Biases, PyTorch Lightning) read from network storage. That took 11–18 s on a node that hadn't read them yet, and 3.5 s on one that had. `campy-infer` now writes the same provenance, with the same system fields, without that step: on the same node, the first video's labels took 3.4 s instead of 7.0 s (both timed with Python's profiler), and later videos were unchanged.
+A whole session in one job, through a Slurm script like the one above (3 cameras, 54,000 frames, an A100): 3 min 46 s from start to the last `.slp`. That included 60 s to load sleap-nn and PyTorch from network storage and 53 s to build the TensorRT engines the first time; each video then took 24–32 s. The first video took 32 s rather than 24 because of its labels' provenance. To write it, sleap-nn looks up the details of 8 packages and keeps none of them. It imports each package to find its folder, about 750 modules (Weights & Biases, PyTorch Lightning) read from network storage. That took 11–18 s on a node that hadn't read them yet, and 3.5 s on one that had. `campy-infer` now writes the same provenance, with the same system fields, without that step: on the same node, the first video's labels took 3.4 s instead of 7.0 s (both timed with Python's profiler), and later videos were unchanged. The next section says where the rest of a job's start went, and what read-ahead does to it.
+
+### Starting a job on a cluster
+
+Before its first frame, a job imports Python's libraries (PyTorch, sleap-nn, TensorRT: about 10,000 files), reads the two models and the engines, and opens the first video. On a cluster these are read from network storage, and how long that takes depends less on the GPU node than on whether the file server still has the files in its memory. A node that had never read them, started a few minutes after another node had, was ready in 10–13 s. After an hour or more with no job, the file server had to fetch each file again from its disks, about 11–14 ms per file, one after another: that is most of a cold start. The engines were already built (45 s once per model pair and GPU type, then read from the shared `--engine-cache`).
+
+A second cost comes with each video. campy records fragmented MP4s (a recording that stops abruptly still plays), and a 10-minute video has about 1,200 fragments, each with a small header. To open it, ffmpeg and the GPU's decoder read every header, one at a time: 13–17 s per video from network storage that hadn't read it, against about 1 s to read the whole 126 MB file in one go. That was the 15–21 s gap between videos in earlier jobs' logs. A plain MP4 opened in 0.5 s.
+
+The test (10 November 2026): two identical copies of the software, the models with their engines and two 3-camera sessions (10 minutes, 18,000 frames per camera) were made on the cluster's network storage and left unread for two hours. Then two jobs started at the same time on two nodes with an NVIDIA A100 40 GB that had never read them, one with `--read-ahead off` and one with read-ahead on, its list made by an earlier run. Each first read 300 untouched files as a check: 13.7–13.8 ms per file on both, so both were cold. Each then ran the two sessions, one `campy-infer` per session. The pieces are the ones `campy-infer`'s own `start-up:` line gives:
+
+| | `--read-ahead off` | read-ahead on |
+|---|---:|---:|
+| PyTorch, sleap-nn and the GPU (imports) | 93.4 s | 33.2 s |
+| reading the models | 13.7 s | 1.7 s |
+| the engines (already built) | 22.3 s | 9.8 s |
+| opening the first video | 17.3 s | 0.9 s |
+| **to the first frame** | **146.9 s** | **46.0 s** |
+| opening each later video | 12.8–14.7 s | 0.0 s |
+| the first session (3 videos, 54,000 frames) | 4 min 17 s | 2 min 0 s |
+| the second session, in the same job | 1 min 53 s (19.8 s to the first frame) | 1 min 12 s (6.3 s) |
+| **the job** | **6 min 10 s** | **3 min 12 s** |
+
+- **The read-ahead read 10,000 files, 1.6 GB, in 33 s,** 32 at a time, while the imports ran; the imports needed nearly all of them, so they ended when it did. The engines' 9.8 s are mostly TensorRT's big libraries, which the list leaves out because a run uses little of them. The second session's list was read in 0.9 s.
+- **Each video took 21–22 s to run in both jobs** (762–869 frames/s; the two nodes differ a little). Read-ahead only removed the waiting before and between them.
+- **The predictions were the same.** Every keypoint and score in the six `.slp` files of one job was the same as in the other's.
+- **When the file server already has the files,** read-ahead saves less: 9.1–10.4 s to the first frame against 9.9–13.2 s, on nodes that hadn't read them. On a node that had, both took 6.1–6.6 s, and reading the list (1.0–1.5 s, alongside the imports) cost nothing measurable.
+- **Copying the software to the node's own disk first doesn't help:** copying Python itself (5,358 files) took 61 s, and the whole environment over 10 minutes.
+- `python bench/infer_startup_bench.py` times each step alone, in the order `campy-infer` does them (`--read-ahead on|off`).
 
 ## Running the bench
 

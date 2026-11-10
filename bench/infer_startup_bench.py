@@ -3,7 +3,7 @@ How long campy-infer takes to get ready, step by step, before its first
 frame: Python itself, the imports (numpy, PyTorch, sleap-nn, TensorRT,
 PyNvVideoCodec), the GPU's CUDA context, loading the two models, making the
 networks' engines (built, or read from --engine-cache) and opening the
-video's decoder with its first batch. docs/offline-inference.md, "Start-up".
+video's decoder with its first batch. docs/offline-inference.md, "Starting a job on a cluster".
 
 	CAMPY_T0=$(date +%s.%N) python bench/infer_startup_bench.py --video <video> \\
 		--centroid <model folder> --instance <model folder> --max-instances 5 \\
