@@ -492,7 +492,14 @@ def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, ou
 	events = [json.loads(l) for l in open(out + ".events.jsonl")]
 	commands = [e for e in events if e["kind"] == "command"]
 	assert len(commands) == 10, commands
-	for e in commands:
+	# A pulse the board gets too late it refuses (err late), on purpose: a pulse fired late is wrong in a closed loop,
+	# and a pulse isn't sent again. On a busy CI runner (other test workers beside this one) campy-rules can be held
+	# up that long, once: 'err late 3 30 74668' on GitHub's Linux runner. So at most 2 of the 10 may be refused late,
+	# and the board made exactly the others
+	late = [e for e in commands if e["answer"].startswith("err late 3 ")]
+	made = [e for e in commands if e not in late]
+	assert len(late) <= 2, commands
+	for e in made:
 		assert e["answer"].startswith("ok pulse 3"), e
 		assert e["command"] == "pulse 3 2000 {}".format(e["frame"]) # the frame it was decided on
 		# The pin rose after the frame's trigger, by the trigger's report, the
@@ -505,11 +512,11 @@ def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, ou
 	# process can wake much later. On GitHub's Linux runner, 120 runs: at most 2.1 ms alone, at most 5 ms beside 3
 	# busy loops, and once 6.6 and 54 ms beside other campy tests; every run's median at most 2.12 ms
 	widths = [p["fall_us"] - p["rise_us"] for p in pulses]
-	assert len(pulses) == 10 and min(widths) >= 1900 and np.median(widths) <= 3000, widths
+	assert len(pulses) == len(made) and min(widths) >= 1900 and np.median(widths) <= 3000, widths
 	assert all(a["fall_us"] < b["rise_us"] for a, b in zip(pulses, pulses[1:])), pulses
 	summary = json.load(open(out + ".json"))
 	assert summary["frame_offset"] == 0 and summary["frame_offset_changes"] == 0
-	assert summary["latency_ms"]["trigger_to_pin"]["n"] == 10
+	assert summary["latency_ms"]["trigger_to_pin"]["n"] == len(made) and summary["counts"]["late_board"] == len(late)
 	t2h = summary["trigger_to_host_all_ms"]
 	assert 0 < t2h["p50"] < 16.7 and t2h["n"] >= 55, t2h
 	board = open(out + ".board.txt").read()
@@ -517,7 +524,7 @@ def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, ou
 	# The board's own pin: pulses on pin 5, 2 ms each (the live simulation's clock reads take 50 us)
 	pin5 = [line.split() for line in sim_log.read_text().splitlines() if line.split()[1:2] == ["5"]]
 	highs = [int(t) for t, pin, level in pin5 if level == "1"]
-	assert len(highs) == 10
+	assert len(highs) == len(made)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal for the simulated board")
