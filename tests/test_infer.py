@@ -200,3 +200,44 @@ print(sorted(n for n in new if n.split(".")[0] in ("wandb", "pytorch_lightning",
 	r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
 	assert r.returncode == 0, r.stderr[-2000:]
 	assert r.stdout.strip().splitlines()[-1] == "[]"
+
+
+@pytest.mark.parametrize("error", [UnicodeEncodeError("utf-8", "\udcff", 0, 1, "surrogates not allowed"),
+	RuntimeError("anything else")])
+def test_the_read_ahead_list_failing_is_a_note_not_a_failed_video(tmp_path, capsys, monkeypatch, error):
+	# prefetch.Record runs after the first video's .slp is written: whatever it raises is only a note, never that
+	# video's FAILED or exit status 1
+	from campy import prefetch
+	videos = []
+	for name in ("a.mp4", "b.mp4"):
+		(tmp_path / name).write_bytes(b"")
+		videos.append(str(tmp_path / name))
+
+	class Fake:
+		notes, timing = [], {"imports": 0.0, "models": 0.0}
+
+		def __init__(self, args):
+			pass
+
+		def Describe(self):
+			return "fake"
+	ran = []
+
+	def RunVideo(model, video, out, args):
+		ran.append(video)
+		open(out, "wb").close()
+		return {"frames": 10, "seconds": 0.1, "ready_s": 0.0, "open_s": 0.0}
+
+	def Record(*args, **kwargs):
+		raise error
+	monkeypatch.setattr(infer, "Model", Fake)
+	monkeypatch.setattr(infer, "RunVideo", RunVideo)
+	monkeypatch.setattr(prefetch, "Record", Record)
+	assert infer.Main(videos + ["--centroid", "c", "--instance", "i", "--max-instances", "5", "--engine-cache",
+		str(tmp_path / "engines")]) == 0
+	said = capsys.readouterr().out
+	assert ran == videos
+	assert "FAILED" not in said
+	assert "could not write the list of files to read ahead in {}: {}".format(str(tmp_path / "engines"),
+		type(error).__name__) in said
+	assert "done: 2 videos" in said

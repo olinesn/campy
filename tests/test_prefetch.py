@@ -116,3 +116,19 @@ def test_a_video_is_read_from_start_to_end_up_to_the_cap(tmp_path, monkeypatch):
 	monkeypatch.setattr(prefetch, "VIDEO_BYTES", 9 << 20)
 	n, size = Wait(prefetch.Video(str(video)))
 	assert n == 1 and 9 << 20 <= size < (9 << 20) + (8 << 20) # whole 8 MB reads, stopping once past the cap
+
+
+def test_a_path_that_raises_other_than_oserror_is_passed_over_and_reading_ends(tmp_path):
+	# open refuses a name with a NUL byte with ValueError, not OSError: the file is passed over, the others are read,
+	# and every thread still counts itself out, so Done says how long it took (not "still reading" forever)
+	good = []
+	for i in range(3):
+		f = tmp_path / "g{}.py".format(i)
+		f.write_bytes(b"#" * (100 + i))
+		good.append(str(f))
+	bad = [str(tmp_path / "nul\0name.py"), str(tmp_path / "also\0bad") + os.sep, None] # None: not even a str
+	reading = prefetch.Reading([good[0]] + bad + good[1:], threads=1)
+	assert Wait(reading) == (3, 300 + 1 + 2)
+	reading = prefetch.Reading(bad, threads=4) # every thread meets only bad ones
+	assert Wait(reading) == (0, 0)
+	assert reading.left == 0
