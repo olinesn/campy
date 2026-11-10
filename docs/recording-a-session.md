@@ -70,7 +70,7 @@ Press **Start recording**. Within about a minute, depending on the rig, the page
 | `1 FRAME AHEAD` or `BEHIND` | That camera is out of step with the others | Stop, and start a new recording |
 | `40.0 FPS` (lower than the others) | The camera is falling behind | Tell the person in charge of the rig |
 
-**You can close the page** at any time: the recording goes on. Open it again from the black window's address, or by double-clicking the icon, which opens the same page again. **Don't close the black window** while recording if you can help it. If you do by mistake, the recording still goes on to its end. When you open the panel again, it shows that recording as still running, with a button to stop it.
+**You can close the page** at any time: the recording goes on. Open it again from the black window's address, or by double-clicking the icon, which opens the same page again. A tab left open, or one the browser brings back when it starts again, keeps working with the next panel too: the page's address stays the same from one panel to the next. While the panel is closed, the page says so at the top (**The panel is closed**) and comes back by itself once the panel is open again. A tab from before this (its address has an older key) says **This tab belongs to a panel that was closed**: close it, and use the other tab. **Don't close the black window** while recording if you can help it. If you do by mistake, the recording still goes on to its end. When you open the panel again, it shows that recording as still running, with a button to stop it.
 
 ## 5. Stop
 

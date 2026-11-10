@@ -121,6 +121,38 @@ def PanelFile():
 	return os.path.join(session.CampyFolder(), "status", "panel.json")
 
 
+def KeyFile():
+	# The page's key, kept from one panel to the next (PanelKey)
+	return os.path.join(session.CampyFolder(), "status", "panel-key.json")
+
+
+def PanelKey(new=False):
+	"""
+	The key every request of the page carries (?t=...). Kept in KeyFile, readable by its owner only, and used again by
+	the next panel: a tab the browser restores, or kept open across a panel's restart, is the page again instead of
+	a dead one. It still keeps out other users of the computer and other sites (Refused). A new key: new=True
+	(campy-session panel --new-key), no file or a damaged one, or, on Linux and macOS, a file others can read.
+	"""
+	path = KeyFile()
+	if not new:
+		try:
+			private = sys.platform == "win32" or (os.stat(path).st_mode & 0o077) == 0 # Windows: the user's own folder
+			with open(path) as f:
+				key = strictjson.load(f).get("key")
+			if private and isinstance(key, str) and key.isascii() and len(key) >= 20:
+				return key
+		except (OSError, ValueError, AttributeError):
+			pass
+	key = secrets.token_urlsafe(18)
+	try:
+		os.makedirs(os.path.dirname(path), exist_ok=True)
+		session.WriteJson(path, {"key": key, "made": datetime.now().astimezone().isoformat(timespec="seconds")},
+			private=True)
+	except OSError as e:
+		Say("Could not keep the page's key in {} ({}): a tab left open won't work with the next panel.".format(path, e))
+	return key
+
+
 def Running():
 	"""
 	The panel already open on this computer (panel.json), when its page
@@ -639,14 +671,14 @@ class Types:
 # ------------------------------------------------------------------ the panel
 
 class Panel:
-	def __init__(self, config_path, args=(), port=PORT, browser=True):
+	def __init__(self, config_path, args=(), port=PORT, browser=True, new_key=False):
 		# The copies of finished recordings (the page's "Copy each recording to"): the panel's for as long as it is
 		# open, whichever config it records with
 		self.copies = copyqueue.CopyQueue(say=Say)
 		self.close_when_copied = False # the page's Close while copies were running: close once they are done
 		self.opened, self.args = os.path.abspath(config_path), list(args)
 		self.port, self.browser = port, browser
-		self.token = secrets.token_urlsafe(18)
+		self.token = PanelKey(new=new_key) # the same as the last panel's: a tab left open still works
 		self.session = None
 		self.last = None # the last recording's launcher status, after it
 		self.summaries = endsummary.Cache() # what went wrong in it, for the page's After the recording
@@ -1175,6 +1207,9 @@ class Panel:
 				url = urlparse(self.path)
 				query = parse_qs(url.query)
 				why = self.Refused(query)
+				if why == "key" and url.path == "/":
+					# A tab from a panel with another key (an old tab the browser restored): a page that says so, not JSON
+					return self.Send(403, panelpage.OLD_KEY.encode(), "text/html; charset=utf-8")
 				if why:
 					return self.Send(403, {"error": "this page's address has the wrong key: open the one campy-session "
 						"printed" if why == "key" else why})
@@ -1427,6 +1462,8 @@ def Main(argv=None):
 		"them, with an Experiment list on its page")
 	p.add_argument("--port", type=int, default=PORT, help="the page's port on 127.0.0.1 (the next free one if taken)")
 	p.add_argument("--no-browser", action="store_true", help="only print the page's address")
+	p.add_argument("--new-key", action="store_true", help="a new key for the page's address (by default the last "
+		"panel's is used again, so a tab left open keeps working): tabs with the old one stop working")
 	argv = sys.argv[1:] if argv is None else list(argv)
 	args, rest = p.parse_known_args(argv)
 	running = Running()
@@ -1453,7 +1490,7 @@ def Main(argv=None):
 		code = UnderRig(rig_lock, owner, name, argv)
 		if code is not None:
 			return code
-		return Panel(args.config, rest, port=args.port, browser=not args.no_browser).Run()
+		return Panel(args.config, rest, port=args.port, browser=not args.no_browser, new_key=args.new_key).Run()
 	except session.SessionError as e:
 		print("campy-session panel: {}".format(e), file=sys.stderr)
 		return 1
