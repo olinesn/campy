@@ -17,6 +17,9 @@ import chronic_control as cc
 # A short session: 2 bouts, 3.5 s apart; the first extended (1.5 s of camera), the second 1 s
 SHORT = ["TOTAL_BASELINE=1", "CAMERA_LEAD_IN=0.5", "STANDARD_STIM_DURATION=1", "EXTENDED_STIM_DURATION=1.5",
 	"INTERVAL=3.5", "TOTAL_DURATION=7"]
+# The same bouts' camera pulses (90 and 60), with 2.5 s of baseline either side: bout 1 is 6 s long, not 3
+LONGER = ["TOTAL_BASELINE=2.5", "CAMERA_LEAD_IN=0.5", "STANDARD_STIM_DURATION=1", "EXTENDED_STIM_DURATION=1.5",
+	"INTERVAL=6.5", "TOTAL_DURATION=13"]
 
 
 def test_status_json_is_strict_json_and_reads_back_as_numbers(tmp_path):
@@ -79,6 +82,8 @@ def test_settings_on_the_command_line():
 		cc.Settings(["NO_SUCH=1"])
 	with pytest.raises(SystemExit, match="INTERVAL"):
 		cc.Plan(cc.Settings(["INTERVAL=200"])) # the 255 s extended bout runs into the next
+	with pytest.raises(SystemExit, match="before the gate opens"):
+		cc.Plan(cc.Settings(["CAMERA_LEAD_IN=12"])) # the camera 12 s before the LEDs, the gate only 10 s
 
 
 def test_plan_command_touches_no_board():
@@ -116,9 +121,9 @@ def board(tmp_path, timer_sim):
 		os.close(master)
 
 
-def control(tmp_path, port, *args):
+def control(tmp_path, port, *args, settings=SHORT):
 	command = [sys.executable, CONTROL] + list(args) + ["--port", port, "--state-dir", str(tmp_path / "state"),
-		"--log-dir", str(tmp_path / "logs")] + sum((["--set", s] for s in SHORT), [])
+		"--log-dir", str(tmp_path / "logs")] + sum((["--set", s] for s in settings), [])
 	return subprocess.run(command, capture_output=True, text=True, timeout=60)
 
 
@@ -495,7 +500,10 @@ def kill_session(tmp_path):
 
 
 def attach_after_restart(tmp_path, port):
-	assert control(tmp_path, port, "start").returncode == 0
+	# Attach has to reach the board in bout 1 ("bout 1 of 2"), after a second's wait, the kill, and two Pythons
+	# starting (status, attach). In SHORT's 3 s bout 1 it now and then didn't, on a busy CI runner (Linux, Python
+	# 3.9): the board had run the whole session, and attach found it idle. LONGER's bout 1 is 6 s
+	assert control(tmp_path, port, "start", settings=LONGER).returncode == 0
 	time.sleep(1.0) # in bout 1
 	kill_session(tmp_path)
 	assert "gone" in control(tmp_path, port, "status").stdout

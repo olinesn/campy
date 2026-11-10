@@ -18,7 +18,7 @@
 #   - unlocking the screen, a Remote Desktop connect (which takes the session over), or a logon;
 # and, by rig.py itself, by anything starting to use a camera, the GPU, the encoder or the trigger (campy,
 # SpinView) or by quser showing the session in use. Each stop also writes PAUSE: no new test starts until
-# 8 AM the next morning (experiment.json's pause_until). After a stop the banner says "Stopped. The machine
+# 9 AM the next morning (experiment.json's pause_until). After a stop the banner says "Stopped. The machine
 # is yours." and offers 2 hours or "until resumed" instead. Nothing here needs admin rights, and the
 # banner never ends a process itself: the STOP file is the only thing it touches.
 #
@@ -45,7 +45,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $Root) { $Root = if ($env:RIG_ROOT) { $env:RIG_ROOT } else { 'C:\campy_data\live' } }
 $LockPath = Join-Path $Root 'gpu.lock'
 $LogPath = Join-Path $Root 'rig_banner.log'
-$PauseUntil = '08:00'
+$PauseUntil = '09:00'
 try {
 	$cfg = Get-Content -Raw -LiteralPath (Join-Path $Root 'experiment.json') | ConvertFrom-Json
 	if ($cfg.pause_until) { $PauseUntil = [string]$cfg.pause_until }

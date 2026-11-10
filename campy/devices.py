@@ -70,6 +70,8 @@ class Devices:
 		# Before each recording
 		self.length = None # the session's seconds (the Pico's TOTAL_DURATION)
 		self.plan = None
+		self.sets = None # chronic_control.py's --set for this recording, as planned (the page's bout settings in them)
+		self.settings = None # {settings, from_page}: what the Pico runs, for launcher.json
 		self.steps = []
 		self.folder = None
 		self.wanted = [] # the page's asks, for the main thread: ("start-pico", at or None), ("stop", "bout" or "now")
@@ -141,6 +143,9 @@ class Devices:
 				planned = plan["ends_s"]
 				checks.append(("ok", "The Pico's plan: {}; campy records {} s of it (recTimeInSec), into {}".format(
 					plan["text"], plan["camera_s"], folder or self.config.Value("videoFolder")), None))
+				if self.pico.page:
+					checks.append(("ok", "Bout settings changed on this page (the config file is unchanged): {}".format(
+						self.PageText()), None))
 			except sessionmod.SessionError as e:
 				checks.append(("block", str(e), None))
 			try:
@@ -168,6 +173,12 @@ class Devices:
 					planned = 0
 			checks += winsetup.Checks(self.windows, planned)
 		return checks
+
+	def PageText(self):
+		# The page's bout settings, against the config's: "Blue LED on 50 ms (the config's 30 ms)"
+		shown = {f["key"]: f for f in (self.pico.PageStatus() or {}).get("fields") or []}
+		return "; ".join("{} {:g}{} (the config's {:g})".format(f["label"], f["value"], " " + f["unit"] if f["unit"] else "",
+			f["config"]) for key, f in shown.items() if f["changed"])
 
 	def Need(self, seconds, cameras, after_s=0.0):
 		"""
@@ -222,6 +233,10 @@ class Devices:
 		# The recording's length, chosen on the page (before the session starts)
 		self.Reset()
 		self.length, _, self.plan = self.Length(seconds)
+		if self.pico is not None:
+			# The bout settings as planned: the Pico starts with these, whatever the page says later
+			self.sets = self.pico.Sets(self.length)
+			self.settings = {"settings": self.pico.Settings(self.length), "from_page": sorted(self.pico.page)}
 		start = self.pico.section["start"] if self.pico is not None else "ask"
 		if start_at is None and start not in ("ask", ""):
 			start_at = start
@@ -335,7 +350,7 @@ class Devices:
 			return
 		self.start_at = None
 		self.Step("Pico", "running", "starting its session: {}".format(self.plan["text"]))
-		ok, said = self.pico.Start(self.length, self.PicoFolder())
+		ok, said = self.pico.Start(self.length, self.PicoFolder(), self.sets)
 		self.pico_said = said
 		if not ok:
 			self.Step("Pico", "failed", "its session didn't start: {}".format(said))
@@ -474,7 +489,7 @@ class Devices:
 		with self.lock:
 			steps = [dict(step) for step in self.steps]
 		return {"pico": pico, "spikeglx": self.cached.get("spikeglx") if self.sglx is not None else None,
-			"steps": steps, "length": self.length, "plan": self.plan,
+			"steps": steps, "length": self.length, "plan": self.plan, "settings": self.settings,
 			"start_at": Clock(self.start_at) if self.start_at else None,
 			"pico_started": sessionmod.Stamp(self.pico_started) if self.pico_started else None,
 			"can_start_pico": self.CanStartPico() if self.pico is not None and self.folder else "Not recording.",

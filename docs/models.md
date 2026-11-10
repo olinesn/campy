@@ -46,16 +46,16 @@ Measured on 30 October on the Dell Precision 7875 (RTX 6000 Ada, SLEAP 1.6.6, sl
 
 What this size changes:
 
-- **The Run Training dialog freezes for minutes.** Before it appears, it counts the frames for "Random sample" by scanning every labeled frame once per video (`_sample_frames_from_pool` in `sleap/gui/learning/dialog.py`). With this package that is about 52 million checks. Each one runs an `import` inside `LabeledFrame.is_user_labeled`, which is about 6 times as slow once PySide6 is loaded (0.03 s against 0.19 s per scan, on a Mac; its copy of the Run Training path stalled at the same call). Reopening the dialog may repeat it; that wasn't tried.
-- **The Data Pipeline dropdown has no effect in SLEAP 1.6.6.** The dialog returns `stream`, `cache_memory` or `cache_disk`, while `sleap/gui/config_utils.py` looks up the display names, so every choice becomes "Cache in Memory". We chose "Stream (no caching)" and the run's config said `torch_dataset_cache_img_memory`. Set `data_pipeline_fw` in the YAML to choose for real.
-- **"Cache in Memory" becomes a JPEG cache here, with only a line in the log.** On Windows each worker holds its own copy of the cache, so 12 workers would need about 596 GB (38 GB raw) against 113 GB free. sleap-nn then writes `.jpg` files instead, 1.6 GB here, saved with the imaging library's default quality, so the models train on compressed copies of the images. `data_pipeline_fw: torch_dataset` reads the original images instead; the retrain below compares the two.
+- **The Run Training dialog freezes for minutes.** Before it appears, it counts the frames for "Random sample" by scanning every labeled frame once per video (`_sample_frames_from_pool` in `sleap/gui/learning/dialog.py`). With this package that is about 52 million checks. Each one runs an `import` inside `LabeledFrame.is_user_labeled`, which is about 6 times as slow once PySide6 is loaded (0.03 s against 0.19 s per scan, on a Mac; its copy of the Run Training path stalled at the same call). Reopening the dialog may repeat it; that wasn't tried. Reported upstream as [sleap#2909](https://github.com/talmolab/sleap/issues/2909).
+- **The Data Pipeline dropdown has no effect in SLEAP 1.6.6.** The dialog returns `stream`, `cache_memory` or `cache_disk`, while `sleap/gui/config_utils.py` looks up the display names, so every choice becomes "Cache in Memory". We chose "Stream (no caching)" and the run's `initial_config.yaml` said `torch_dataset_cache_img_memory`. Its `training_config.yaml` said `torch_dataset_cache_img_disk`, because of the fallback in the next item. Set `data_pipeline_fw` in the YAML to choose for real. Reported upstream as [sleap#2910](https://github.com/talmolab/sleap/issues/2910).
+- **"Cache in Memory" becomes a JPEG cache here, with only a line in the log.** On Windows each worker holds its own copy of the cache, so 12 workers would need about 596 GB (38 GB raw) against 113 GB free. sleap-nn then writes `.jpg` files instead, 1.6 GB here, saved with the imaging library's default quality, so the models train on compressed copies of the images. `data_pipeline_fw: torch_dataset` reads the original images instead; the retrain below compares the two. Reported upstream as [sleap-nn#840](https://github.com/talmolab/sleap-nn/issues/840).
 - **Check `train_steps_per_epoch` when reusing a config.** It came along with the reused centroid config at 200, so an epoch saw 800 of 27,782 frames. In the centered instance config it was empty, which means every frame: 13,802 steps. At 16 minutes per epoch, 200 epochs would take about 54 hours unless training stops early. The dialog doesn't show this setting.
 - **Check `max_height` and `max_width` too.** Left empty, they come from the largest frame. A few larger frames (22 of the 3,087 validation frames, up to 1536x2048) set them to 1536x2048, so the 1024x1280 frames were enlarged 1.5 times on every call. This costs CPU, because augmentation runs on the whole enlarged frame, and it makes a crop smaller in real terms: a 450 px crop covers only 300 px of the original image. That is why the dialog warned that 20,524 of 61,371 instances would be clipped. Counting by hand gives 20,562 at 1.5 times, and 2,142 (3.5%, mostly tail tips) with no enlargement. The reused centroid config had these set to 1024 and 1280, so the two models saw frames at different sizes.
 - **Validation can dominate short epochs.** 10% of this package is 3,087 frames, about 772 steps, while the centroid model trained for 200, so about 70% of each epoch was validation. A smaller validation fraction would shorten it but make the validation loss noisier, and the learning-rate schedule and early stopping follow that loss; that trade-off wasn't measured.
 - **How many validation workers depends on the pipeline.** With the JPEG cache and 12 of each, the validation workers used 0.05 of a core each during centered instance training, and each one costs several seconds to start and 2.7 GB of committed memory. Reading the original images, 4 validation workers were too few (below). The worker count for validation alone needs the YAML (`val_data_loader.num_workers`), because the dialog has one box for both.
 - **The centroid model's epochs can slow down partway, and the GPU clock is the likely cause.** In the retrain below, epochs went from 12.1 to 16.3 s at epoch 84 and stayed there. At that moment the GPU clock fell from about 2110 to about 1550 MHz, 36% less, and validation took 36% longer. The GPU was about 35% busy and cooling down, so this looks like the lower clock a part-time load can settle at, not overheating. In the JPEG run, epochs went from 10.3 to 11.4 s at epoch 70 and stayed there; the clock wasn't checked for that one.
 
-**Retraining on the original images.** Same package, split (seed 0) and machine, started with a script rather than the GUI, on 30 and 31 October. The config set `data_pipeline_fw: torch_dataset`, 12 training and 4 validation workers. The centered instance model also set `max_height: 1024` and `max_width: 1280`, so frames aren't enlarged, and `train_steps_per_epoch: 2000`. The larger frames (0.7%) are affected by that size limit, which wasn't looked at separately. Starting took about 2.5 min per model, against about 5.
+**Retraining on the original images.** Same package, split (seed 0) and machine, started with a script rather than the GUI, on 30 and 31 October. The config set `data_pipeline_fw: torch_dataset`, 12 training and 4 validation workers. The centered instance model also set `max_height: 1024` and `max_width: 1280`, so frames aren't enlarged, and `train_steps_per_epoch: 2000`. The larger frames (348 of the 30,869, 1.1%) are shrunk to that size, which wasn't looked at separately. Starting took about 2.5 min per model, against about 5.
 
 | Model | Speed | Time |
 |---|---|---|
@@ -79,9 +79,56 @@ Scored on the validation frames at the end of each run:
 
 - **The centroid difference is small.** It is one run of each, so it may be no more than run-to-run variation. Position error didn't change.
 - **The centered instance table doesn't measure JPEG against original images.** The two runs differ in image format, in enlargement (which clips far more body parts) and in training length: the JPEG run was stopped after two full passes through the data and part of a third. At about 28,000 steps the two were close by the check run during training: mOKS 0.617 for the new run against 0.613, and 70.4% against 67.7% within 10 px. So most of the gain above comes from training longer, and those two numbers still mix format and enlargement.
-- **Each model was scored alone,** not with the two chained as they run on new frames.
-- **The last third of the centered instance run added almost nothing.** By the check run during training, mOKS was 0.778 at epoch 50 (4 h), 0.835 at epoch 100 (7.9 h), 0.840 at epoch 125 (9.9 h) and 0.841 at epoch 192 (15.2 h). Its largest late gain came between epochs 75 and 100, when the learning rate first dropped. A stricter early stopping setting would have saved about 5 hours; none was tried.
-- **With original images, validation is the slow part.** 4 workers managed about 35 crops/s, while the GPU sat at 11–32%, so 175 of each 285 s went to validation. During training it was 75–80% busy. More validation workers should shorten this: 12 might bring validation to about 60 s, which is an estimate, not a measurement.
+- **Each model was scored alone** in the table above, not with the two chained as they run on new frames. The chained scores are below.
+- **The last third of the centered instance run added almost nothing.** By the check run during training, mOKS was 0.778 at epoch 50 (4 h), 0.835 at epoch 100 (7.9 h), 0.840 at epoch 125 (9.9 h) and 0.841 at epoch 192 (15.2 h). Its largest late gain came between epochs 75 and 100, when the learning rate first dropped. A stricter early stopping setting would have saved about 5 hours (replayed on this log below, under [Checking a config before a long run](#checking-a-config-before-a-long-run)).
+- **With original images, validation is the slow part.** 4 workers managed about 35 crops/s, while the GPU sat at 11–32%, so 175 of each 285 s went to validation. During training it was 75–80% busy. 12 validation workers brought it to 50 s (measured below).
+
+**The two models chained, as they run on new frames.** The centroid model finds each animal, and the centered instance model then places its body parts in a crop around that point. Scored alone, the centered instance model is handed crops centred on the labelled animals instead. Both retrained models were run together with `sleap-nn track` (sleap-nn 0.3.5, default settings, fp32 on the RTX 6000 Ada, 9 November) on the centered instance model's 3,086 validation frames, and scored with sleap-nn's own evaluation:
+
+| | Centered instance alone | Chained, all 3,086 frames | Chained, 318 frames neither model trained on |
+|---|---|---|---|
+| mOKS / mAP (OKS) | 0.836 / 0.667 | 0.790 / 0.592 | 0.780 / 0.574 |
+| Error p50 / p95 / p99 | 1.76 / 11.3 / 30.7 px | 2.14 / 16.9 / 97.6 px | 2.21 / 19.3 / 160.7 px |
+| Within 5 px / 10 px | 80.2% / 89.7% | 74.3% / 86.0% | 73.3% / 84.8% |
+| Body parts found, of those labeled visible | 95.7% | 95.3% | 94.9% |
+
+- **Chaining costs about 0.05 mOKS, mostly in the worst cases.** The median error grows by 0.4 px, but the 99th percentile triples. That's what a centroid that lands off the animal, or on the wrong one, does to a crop. The chained run gave 6,065 skeletons for 6,163 labelled animals. To improve the pair on new frames, the centroid model is the place to look first.
+- **2,768 of these 3,086 frames (90%) were training frames for the centroid model.** sleap-nn 0.3.5 holds out a different random set of frames for each model type, even with the same seed and fraction. That is fixed in the next sleap-nn release (sleap-nn pull request 835). Only 318 frames were held out from both models; on those, the pair scored 0.780. With only 318 frames the 99th percentile there rests on a handful of animals.
+- **Read the third column as the pair's accuracy on frames it has never seen,** with the caveat that 318 frames is a small sample.
+
+### Checking a config before a long run
+
+`campy-train-check` reads sleap-nn training configs and says which settings will cost hours or change what the model sees, before anything starts:
+
+```
+campy-train-check centroid.yaml centered_instance.yaml --labels project.pkg.slp
+```
+
+It reads the labelled frames' sizes and points, not the images, which took 5 s for the 30,000-frame package above. Each check prints `ok`, `WARN` or `FAIL`:
+
+- **Workers:** no training or validation workers fails. Fewer validation workers than training ones warns, if the images are read as they are (`torch_dataset`).
+- **Data pipeline:** "Cache in Memory" warns when the images won't fit, counting one copy per worker on Windows, because sleap-nn would then switch to the JPEG disk cache. A disk cache warns because it's JPEG.
+- **Frame size:** empty `max_height` / `max_width` warn when the most common frames would be enlarged. The check gives the size to set.
+- **Steps per epoch:** an empty `train_steps_per_epoch` gives the steps a full pass takes, and warns above 5,000. It also warns when validation takes more steps than training.
+- **Early stopping:** off, or a `min_delta` under 1e-7, warns. `--like <an earlier run's folder>` suggests 0.5% of that run's best validation loss.
+- **Crop:** for a centered instance model, it counts the labelled animals that reach outside the crop, as the GUI's "clipped" warning does. On the package above it found the same 20,524 of 61,371 with the frames enlarged as the GUI did, and 2,142 (3.5%) at their own size.
+- **Run folder:** one that already exists fails.
+
+It exits 0 when everything is ok, 1 on a warning and 2 on a failure. On Windows, `tools/windows/train_sleap.ps1 -Config a.yaml, b.yaml` runs the check, asks before starting if it warned, then trains the configs one after another with SLEAP's own Python, without the Run Training dialog.
+
+**Early stopping, replayed.** sleap-nn stops when the validation loss hasn't improved by `min_delta` for `patience` epochs. The configs above had `min_delta: 1e-8`, so any change counted. Replaying other settings on the centered instance retrain's log, the epoch-by-epoch check during training gives:
+
+| `min_delta` / `patience` | Stops after epoch | Training time | mOKS of the model kept |
+|---|---|---|---|
+| 1e-8 / 20 (as run) | 192 | 15.2 h | 0.841 |
+| 1e-7 / 10 | 148 | 11.7 h | 0.841 |
+| 3e-7 / 10 | 132 | 10.4 h | 0.840 |
+| 1e-6 / 20 | 131 | 10.3 h | 0.838 |
+| 3e-6 / 10 | 63 | 4.9 h | 0.790 |
+
+3e-7 is about 0.5% of that model's best validation loss (6.45e-5). The centroid model's loss is about 7 times as large (4.3e-4), so the same number does far less there. Replayed on its log, 0.5% of its loss with patience 10 stopped at epoch 154 instead of 196, with F1 0.939 instead of 0.941. That run took 48 minutes, so there is little to save. These replays come from one run of each model: a different package or model can level off differently.
+
+**12 validation workers instead of 4, measured.** The same centered instance config with `val_data_loader.num_workers: 12` (9 November, 2 short epochs of 2,000 steps on the same machine) validated in 45 and 50 s, against 167 and 175 s with 4 workers. An epoch took 141 s instead of 274–283 s, and its training part 92 s instead of 100–109 s. Validation workers only read and prepare the validation images, so the model and its numbers don't change; the validation loss after each epoch came out within about 1% of the 4-worker run's (0.3% and 1.0%), as GPU training differs slightly from run to run. Together with `min_delta: 3e-7` and patience 10, the retrain above would have taken about 132 epochs of 141 s, about 5.2 hours instead of 15.2. That combination is an estimate from the replay; it wasn't run in full. The test didn't run under the rig lock, though no other job used the machine meanwhile.
 
 ## Settings that worked
 
@@ -118,6 +165,86 @@ Accuracy on the same 293 validation mice (11 body parts, median / 90th / 99th pe
 3. **Check it live**: the summary's skipped sets should be zero ([Live tracking](live-tracking.md)).
 
 With compiled models, as `campy-live` runs them by default, the trained 5-mouse pair (the 160 px model below) took 5.3–5.5 ms per set on 3 cameras (p99 5.4–5.7) on both the EVO-X2 and the Pro Max Slim's RTX 2000 Ada, and 14.1–15.8 ms on 8 cameras, just under the 16.7 ms of 60 fps; on the Precision 7875's RTX 6000 Ada, 1.6 and 3.2 ms (28 October; [hardware guide](hardware.md)). Before compiled models, timing sleap-nn's own layer in plain PyTorch: on the EVO-X2 with 5 mice and 3 cameras, the benchmark p99s were 14.0 ms for the 160 px model, 15.3 ms for the 24-filter 192 px model and 10.6 ms for the 16-filter one. In the full live pipeline the 160 px model skipped nothing. The 24-filter 192 px model, with less room, still skipped a set now and then, and the 16-filter one kept up easily but was less accurate. On the Pro Max Slim (RTX 2000 Ada) the 160 px model took 16.5 ms per set with 5 mice, which is too close to the 16.7 ms between frames: it skipped 4–6% of the sets. Use the 16-filter 192 px model there, or 30 fps. The [hardware guide](hardware.md) has the live measurements.
+
+## Lighter models for 8 cameras on an RTX A2000 (2 mice, 7–9 November 2026)
+
+**In short:** the Dell Pro Tower Plus films one box with 8 cameras at 60 fps, 2 mice at a time. With the pair it had (160 px centered-instance model), its RTX A2000 took 14.7 ms at p99 from a frame to its 2D poses: too slow to track every set. Keeping that pair's settings, the centroid model was fine-tuned on pseudo-labels from a larger teacher model, and the centered-instance model was shrunk to a 128 px input and fine-tuned the same way. That pair takes 12.3 ms at p99 on the A2000 and tracks every set. On a session none of the models trained on, it misses one mouse fewer, puts fewer skeletons on the wrong mouse, and places body parts a little closer than the round-1 pair of the same size. Making a model smaller costs less accuracy than training it on a session it hasn't seen.
+
+**The budget.** At 60 fps a set of 8 frames comes every 16.7 ms. The aim was 2D poses within 13.3 ms (80% of that) at p99, measured live with `campy-live`'s defaults (fixed crops, CUDA graphs, TensorRT fp16, the GPU clock held).
+
+**How every model was trained and scored:**
+- **Data.** Every model trained on the same frames:
+  - the 30,869-frame top-view package above;
+  - 4 of the box's 5 labelled sessions: 720 frames to train on and 80 to check training against.
+  
+  All runs used the same split, seed and augmentation. The settings are 12 body parts, centroid anchored on the trunk, as in [Settings that worked](#settings-that-worked) unless a table says otherwise.
+- **Held-out session.** The fifth session was held out to score the models: 2 mice filmed by all 8 cameras, 200 labelled frames (25 per camera), 400 mice.
+- **Scoring.** The scores below run each pair through `campy-live`'s own code (fixed crops, TensorRT fp16) on a cluster GPU, with 2 animals per frame:
+  - *Missed*: a labelled mouse with no skeleton.
+  - *Extra*: a skeleton with no mouse under it.
+  - *Wrong mouse*: a skeleton on the other mouse.
+  - *Error*: the distance between each predicted body part and its label, in full-size pixels.
+- **The previous pair can't be scored here.** The pair the Tower Plus had was trained on all 5 sessions, including the held-out one. On those frames it scores 2.0 px at the median, from memory, not skill. Round 1's 320 → 160 px pair has its settings and was trained without that session; it is the baseline.
+
+**Round 1: smaller sizes (7 November).** The sizes were timed untrained on the A2000 (`bench/sleap_infer_bench.py`, 8 frames, 2 mice, p99 of a set), then trained and scored on the held-out session:
+
+| Centroid | Centered instance | Benchmark p99 | Missed / extra / wrong mouse of 400 | Error p50 / p99 |
+|---|---|---|---|---|
+| scale 0.25, 16 filters, output stride 2 | 320 → 160 px, 24 filters | 11.1 ms | 7 / 2 / 29 | 6.12 / 82.6 px |
+| same | 320 → 128 px, 24 filters | 8.7 ms | 7 / 2 / 26 | 6.37 / 79.9 px |
+| same | 320 → 160 px, 16 filters | 8.2 ms | 7 / 2 / 27 | 6.68 / 80.4 px |
+| same | 320 → 128 px, 16 filters | 6.9 ms | 7 / 2 / 29 | 6.95 / 84.2 px |
+| scale 0.1875 | 320 → 160 px, 24 filters | 9.4 ms | 12 / 6 / 23 | 6.17 / 76.0 px |
+| output stride 4 | 320 → 160 px, 24 filters | 9.7 ms | 18 / 3 / 18 | 6.13 / 71.5 px |
+| scale 0.1875, output stride 4 | 320 → 128 px, 16 filters | 4.7 ms | 26 / 3 / 23 | 7.19 / 75.6 px |
+
+- **A smaller centered-instance model costs little.** Going from 160 to 128 px moved the median error by 0.25 px.
+- **A smaller centroid model loses mice.** Each smaller centroid missed 12 to 26 mice instead of 7. A missed centroid is a whole missing skeleton, so the centroid stayed at scale 0.25, output stride 2.
+- **New sessions are the larger gap.** On frames from the training sessions the same 320 → 160 px pair is within 3.5 px at the median. On the held-out session it is 6.1 px.
+
+**Round 2: fine-tuning on the box's labels alone did nothing.** Each round-1 model was trained further (learning rate 2e-5, 40 epochs of 500 steps):
+- on the box's 720 frames alone;
+- or on those frames mixed with 2,160 top-view frames.
+
+Every score stayed within 0.15 px of round 1. 720 frames from 4 sessions are too few to teach more.
+
+**Round 3: bigger crops didn't help either.** In the training labels the nose reaches up to 182 px from the trunk, past the 160 px half-width of a 320 px crop. So 384 and 448 px crops were tried, shrunk to 128–224 px, with 24 and 16 filters (12 models, each with the round-1 centroid). None was more accurate than 320 → 160 px at the same speed:
+- At the same model input size, a bigger crop is shrunk more, so the model sees less detail. For example, 384 → 128 scored 6.55 px against 6.37 for 320 → 128.
+- Body parts that far out are rare: 0.05% of training labels are 150 px or more from the trunk.
+- The larger inputs were too slow. 384 → 192 and 448 → 224 with 24 filters skipped sets live.
+
+**Crops shrunk by an uneven factor lose nothing for it.** 320 → 128 is a 2.5 times shrink, not a whole number. Both sleap-nn's training and `campy-live` shrink crops with torchvision's bilinear resize with antialiasing on, which smooths before it samples, so an uneven factor doesn't alias fine detail. The error grew steadily with the shrink factor. For example, 384 px crops shrunk to 192, 160 and 128 px (2, 2.4 and 3 times) scored 5.93, 6.32 and 6.55 px.
+
+**Round 4: pseudo-labels from a larger model (9 November).** A larger top-down pair served as the teacher. Its backbone is DINOv2, and it was fine-tuned on the box's labels. On the held-out session it was within 3.9 px at the median, against 6.1, but too slow to run live. Pseudo-labels were made like this:
+1. The teacher ran on 4 unlabelled recordings of the box. Three had 2 mice and one had 4.
+2. Only frames where the 8 cameras' poses agreed in 3D were kept.
+3. From each camera of each session, 100 frames were picked: half where the round-1 pair disagreed with the teacher, half spread through the session.
+
+That gave 3,100 pseudo-labelled frames. Two ways of using them were tried:
+- **Fine-tuned:** each round-1 model was trained further on the box's labels, 2,160 top-view frames and the pseudo-labels (learning rate 2e-5, 40 epochs of 500 steps).
+- **From scratch:** the round-1 recipe was rerun with the pseudo-labels added to its training data.
+
+| Pair (each fine-tuned unless marked) | Missed / extra / wrong mouse of 400 | Error p50 / p90 / p99 | Within 5 px |
+|---|---|---|---|
+| Round 1, 320 → 128 px, 24 filters (baseline) | 7 / 2 / 26 | 6.37 / 28.6 / 79.9 px | 40.8% |
+| **Centroid without the 4-mouse session + 320 → 128 px, 24 filters** | **6 / 2 / 22** | **6.00 / 27.1 / 77.9 px** | 43.1% |
+| Centroid without the 4-mouse session + 320 → 128 px, 16 filters | 6 / 2 / 22 | 6.42 / 29.1 / 80.5 px | 41.1% |
+| Centroid without the 4-mouse session + 320 → 160 px, 24 filters (too slow) | 6 / 2 / 16 | 5.58 / 25.6 / 71.2 px | 46.2% |
+| Centroid with all 4 sessions + 320 → 128 px, 24 filters | 9 / 6 / 18 | 5.89 / 26.1 / 75.1 px | 44.0% |
+| From scratch, both models, 320 → 128 px, 24 filters | 8 / 6 / 27 | 5.90 / 28.0 / 84.2 px | 43.4% |
+| From scratch without the 4-mouse session, both models, 320 → 128 px, 24 filters | 12 / 5 / 18 | 5.80 / 26.5 / 72.9 px | 44.1% |
+| Round 1, 320 → 128 px, 16 filters (for the 16-filter row) | 7 / 2 / 29 | 6.95 / 32.0 / 84.2 px | 37.2% |
+
+- **Pseudo-labels help where more of the same labels didn't.** The fine-tuned pairs place body parts closer and put fewer skeletons on the wrong mouse. Most of the wrong-mouse gain comes from the centroid model: a better centre gives a better crop.
+- **Leave out the 4-mouse session when the box holds 2.** With it, the fine-tuned centroid model missed 9 mice and added 6 extra skeletons. Without it, it missed 6 and added 2 (round 1: 7 and 2). The centered-instance models above were fine-tuned with all 4 sessions; only the centroid model leaves it out.
+- **Fine-tune; don't retrain from scratch.** Retrained from scratch with the pseudo-labels, the centroid model missed 8–12 mice.
+- **What runs on the Tower Plus now:**
+  - The centroid fine-tuned without the 4-mouse session, with the fine-tuned 320 → 128 px, 24-filter model.
+  - The 16-filter model as the faster spare. It is about as accurate as round 1's 160 px pair and leaves 2.6 ms of headroom.
+
+  Live timings for both are in [Live tracking](live-tracking.md#lighter-models-for-2-mice-november-2026).
+
+**Precision.** The scores ran TensorRT fp16 on a cluster GPU, and live runs TensorRT fp16 on the A2000. Two GPUs in fp16 don't give bit-identical keypoints. Live against offline was checked on the earlier pair (7 November, 8 cameras, 57,600 camera frames): body parts within 0.03 px at the median and 94.5% within 0.5 px. In 2.4% of mice the two GPUs picked a different centroid peak, and those skeletons differed more. That check wasn't repeated for the new pairs. Each model was trained once, so a difference of one or two mice, or under about 0.2 px, may be run-to-run noise.
 
 ## Where a set's time goes
 

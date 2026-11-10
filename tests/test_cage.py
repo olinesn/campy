@@ -421,6 +421,38 @@ def test_corners_clicked_out_of_order_are_not_saved_and_esc_only_stops_drawing(t
 	assert not viewer.Key(27) # and again: quits
 
 
+@pytest.mark.parametrize("how", ["esc", "k", "recording ends", "view closes"])
+def test_a_ready_cage_is_saved_when_drawing_stops_without_enter(tmp_path, how):
+	# Drawn once for its calibration: stopping, the recording's end or the view closing keep a cage that is ready
+	viewer, frames, row, cams = drawn_view(tmp_path)
+	viewer.Key(ord("k"))
+	for c in range(3):
+		for X in BOX:
+			click(viewer, c, X)
+	assert viewer.CageStatus()[0][0].startswith("Ready: Enter saves the cage")
+	if how == "esc":
+		assert viewer.Key(27)
+	elif how == "k":
+		assert viewer.Key(ord("k"))
+	elif how == "recording ends":
+		viewer.FinishCage("the recording ended")
+	else:
+		viewer.Close()
+	assert viewer.drawing is None and os.path.exists(viewer.cagePath)
+	assert np.allclose(pose3d.Cage.Load(viewer.cagePath).corners, BOX, atol=8)
+
+
+def test_a_cage_not_ready_is_not_saved_when_drawing_stops(tmp_path):
+	viewer, frames, row, cams = drawn_view(tmp_path)
+	viewer.Key(ord("k"))
+	click(viewer, 0, BOX[0])
+	viewer.FinishCage("the recording ended")
+	assert viewer.drawing is None and not os.path.exists(viewer.cagePath)
+	viewer.Key(ord("k"))
+	viewer.Key(ord("k")) # nothing clicked: nothing to save
+	assert viewer.drawing is None and not os.path.exists(viewer.cagePath)
+
+
 def test_x_removes_the_cage(tmp_path):
 	viewer, frames, row, cams = drawn_view(tmp_path)
 	pose3d.Cage.FromClicks(clicks_of(cams, BOX), cams)[0].Save(viewer.cagePath)
@@ -558,4 +590,5 @@ def test_while_drawing_the_view_says_what_is_missing_and_marks_the_camera_that_i
 	assert not any(text.startswith("Not saved") for text, _ in viewer.CageStatus())
 	viewer.drawing[2] = viewer.drawing[2][:0] # camera 2's clicks all gone: the others agree
 	viewer.Draft()
-	assert status() == ("Ready: Enter saves the cage (4 corners, 200 mm high)", liveview.FINE)
+	assert status() == ("Ready: Enter saves the cage (4 corners, 200 mm high); stopping (k, Esc), the recording's end "
+		"or closing the view saves it too", liveview.FINE)

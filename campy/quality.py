@@ -215,6 +215,8 @@ def ParseArgs(argv=None):
 	# The config's names only: anything else (e.g. "hevc") would reach ffmpeg as a CPU encoder.
 	parser.add_argument("--codec", choices=configschema.BY_NAME["codec"].choices)
 	parser.add_argument("--keyframeInterval", type=float)
+	parser.add_argument("--denoise", choices=configschema.BY_NAME["denoise"].choices,
+		help="filter before the encoder, as the config's denoise (default: the config's, else None)")
 	parser.add_argument("--ffmpegPath")
 	parser.add_argument("--vaapiDevice")
 	parser.add_argument("--noise", type=float, default=3.0, help="synthetic sensor noise, gray levels (default: 3)")

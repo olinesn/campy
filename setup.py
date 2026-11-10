@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
 	name='campy',
-	version='2.6.0',
+	version='2.8.0',
 	packages=find_packages(),
 	python_requires='>=3.9',
 	install_requires=[
@@ -31,6 +31,7 @@ setup(
 			"campy-encode-sweep = campy.sweep:Main",
 			"campy-encode-quality = campy.quality:Main",
 			"campy-align = campy.align:Main",
+			"campy-calibrate = campy.calibrate:Main",
 			"campy-synctest = campy.synctest:Main",
 			"campy-flir-reset = campy.flirreset:Main",
 			"campy-live = campy.live:Main",
@@ -46,6 +47,7 @@ setup(
 			"campy-notify = campy.notify:Main",
 			"campy-watch = campy.livewatch:Main",
 			"campy-infer = campy.infer:Main",
+			"campy-train-check = campy.traincheck:Main",
 		]
 	}
 )

@@ -89,6 +89,7 @@ post:
   remux: true          # true (the default), keep, or false
   join: true           # a camera's video files after an ffmpeg restart, joined into one (the default)
   align: true          # campy-align: every camera on the trigger's timeline, and where the trigger paused (the default)
+  calibrate: {}        # for a calibration recording: {calibrat3: <checkout>} makes calibration.toml (off by default)
   export: true         # campy-live-export, when campy-live ran (the default)
   copy: "\\\\nas\\share\\recordings"   # optional: copies the recording's folder into this one
   run: ["python C:\\tools\\notify.py {folder}"]   # optional: your own commands
@@ -105,8 +106,9 @@ post:
   - A file that holds no frame (its ffmpeg stopped before it wrote its first fragment) is left out. A recording without a restart has nothing to join.
   - After a crash (with `--force`), the join counts which frames each file holds, the cut last file too, and leaves out the rows of frames that never reached them ([Recordings](recordings.md#what-is-in-the-folder)).
 - **align** runs `campy-align` ([Aligning cameras after recording](sync.md#aligning-cameras-after-recording)): `aligned.csv` in each camera's folder and `alignment.json` in the recording's, with each frame's trigger and its time. The log says where the trigger paused (pulses no camera has a frame for: no frame is lost, but every frame after is later than its number says) and which camera missed pulses the others got. It is skipped when no camera is triggered and none is a RatCam: there is no timeline to put them on.
+- **calibrate**, for a calibration recording only (its videos in `<camera>/calibration_images/`) and only when `calibrate:` names a calibrat3 checkout: calibrat3, headless in the computer's Chrome, makes the recording's `calibration.toml` and `calibration_summary.json` ([A calibration every day](calibration.md#a-calibration-every-day-made-by-itself-calibrat3)).
 - **export** runs `campy-live-export` in the inference environment, so the recording opens in LUC3D with the tracking on it (below). If `campy-live` was started again during the recording, its logs are joined first, in order.
-- **copy** copies the whole recording folder into `copy.to`: with robocopy on Windows, with rsync on Linux and macOS (rsync also takes `user@host:/path`). Then it checks every file's size. **Nothing is deleted**, on either side.
+- **copy** copies the whole recording folder into `copy.to`: with robocopy on Windows, with rsync on Linux and macOS (rsync also takes `user@host:/path`). Then it checks every file's size. **Nothing is deleted**, on either side. In the panel, the page's **Copy each recording to** box takes the place of this step (below): it starts from `copy.to`, and copies in the background instead, so the next recording doesn't wait.
 - **run** runs your own commands in a shell, with `{folder}` replaced by the recording's folder. One that fails is logged, and the next one still runs.
 
 After a crash, or when a camera didn't record to the end, none of them run, and `campy-session` says why. The recording's fragmented videos stay readable up to their last second. To run the steps again by hand, or after looking at a crashed recording:
@@ -116,6 +118,7 @@ campy-session post <recording folder>                 # the steps not done yet
 campy-session post <recording folder> --only remux    # one step
 campy-session post <recording folder> --only join     # after an ffmpeg restart, before campy-live-export by hand
 campy-session post <recording folder> --force         # after a crash, or again
+campy-session post <recording folder> --only copy --to "\\nas\share\recordings"   # a copy into this folder
 ```
 
 `campy-session post` also works on a recording made with `campy-acquire` alone. There, every camera's `metadata.csv` must have its totals and no `cameraError`, `videoError` or `frameTimesError`, unless you give `--force`. What each step did is kept in `<folder>/logs/post.json`, so running `post` again repeats nothing that is done. A Ctrl-C during the steps stops them after the current one.
@@ -126,11 +129,16 @@ The same recording can be run from a page in the browser. On the rigs this is ho
 
 ```
 campy-session panel <config>.yaml
+campy-session panel <folder of configs>
 ```
 
-It opens the page in this computer's browser, and prints its address. A recording starts only when someone presses **Start recording** on the page, never on its own. Its length is the config's `recTimeInSec`. After each recording the page is ready for the next one, into a new folder. **Close the panel** at the top of the page closes it when nothing is recording, and so does Ctrl-C in its console, unless the panel holds the rig's lock (below).
+It opens the page in this computer's browser, and prints its address. Given a folder, it is one panel for every experiment on the rig: the page's **Experiment** list picks the config it records with, among the ones starred on the page (before any star, those with a `panel.title`), and **Show all configs** lists the rest of the folder with why any can't be used. Changing it, only while nothing records, loads that config as if the panel had been opened with it. The stars and the last pick are kept for each folder in `~/.campy/status/panel-types.json` ([Recording a session from the desktop](recording-a-session.md#pick-the-experiment)). A recording starts only when someone presses **Start recording** on the page, never on its own. Its length is the config's `recTimeInSec`. After each recording the page is ready for the next one, into a new folder. **Close the panel** at the top of the page closes it when nothing is recording, and so does Ctrl-C in its console, unless the panel holds the rig's lock (below).
 
-**On a rig shared with tests,** `panel: {rig_lock: auto}` in the config makes the panel wait for the rig to be free and hold it (`rig.py`, `bench/rig.py` as installed on the rig: `C:\campy_data\live\rig.py` on Windows, `~/sleap-bench/rig.py` on Linux; or give its path) for as long as the panel is open. Ctrl-C in its window then does nothing: it would reach `rig.py` too, which ends every program of its job at once, before anything is stopped in order. Use **Close the panel**. `panel.owner` is the name `rig.py status` shows (default `panel`).
+**Copies to another folder.** The page's **Copy each recording to** box (optional) names a folder, a network share for example. Once a recording and its other steps have ended, the panel copies its folder there, as the `copy` step does (robocopy or rsync, every file's size checked, nothing deleted), but in the background, one recording at a time, while the next one records. The page lists each copy (waiting; copying, with the GB so far, a progress bar and an estimate of the time left at its average rate so far; done; failed), and shows the last recording's as its copy step. While any copy is running or waiting, a **Copying in the background** strip under the page's header shows it in every state, during the next recording too, and the result goes into the recording's `logs/post.json` as the copy step's. The panel checks at Start that the folder can be reached, and refuses the recordings' own folder. When the folder isn't there but the one it goes in is, the refusal comes with a **Create this folder** button, which makes that one folder (never more than the last level), and Start can be pressed again. It remembers the folder for each config (`~/.campy/status/panel_copy.json`); the box starts from the config's `post: copy:` otherwise, and an empty box copies nothing. The config's own copy step doesn't run in the panel. **Close the panel** with copies still running waits for them, then closes by itself; **Close now, without the copies** leaves them, and each such recording's `post.log` gives the `campy-session post <folder> --only copy --to <folder>` that copies it by hand.
+
+On the Dell Pro Tower Plus (8 cameras at 60 fps, AV1 on Quick Sync, 9 November 2026), a 2.1 GB recording copied to a network share at 21 MB/s, during another recording. That recording's frames reached the computer as punctually during the copy as outside it: 99% within 0.24 ms of their time and the latest 0.8 ms, with no frame dropped and no warning. Copying while campy-live tracks, on the same computer the same day (3 emulated cameras at 60 fps recorded with Quick Sync, the 5-mouse models on its RTX A2000, 120 s each, under the rig lock): every one of 7,200 sets was tracked, none skipped, with or without a copy. Alone, before and after, a set took 6.9/7.2 and 7.1/7.4 ms (p50/p99) and reached 3D in 9.3/10.5 and 9.5/10.6 ms; with a 2.1 GB copy running, 7.0/7.4 and 9.4/10.9 ms. In the 10-second windows the copy overlapped, the p99 to 3D was 11.1-11.3 ms instead of 10.5-10.9: about 0.5 ms, and the p50 didn't move. That copy went from disk to disk on the computer at 67 MB/s, three times the network share's rate, so a copy to a share loads it less.
+
+**On a rig shared with tests,** `panel: {rig_lock: auto}` in the config (with a folder, in any of its configs) makes the panel wait for the rig to be free and hold it (`rig.py`, `bench/rig.py` as installed on the rig: `C:\campy_data\live\rig.py` on Windows, `~/sleap-bench/rig.py` on Linux; or give its path) for as long as the panel is open. Ctrl-C in its window then does nothing: it would reach `rig.py` too, which ends every program of its job at once, before anything is stopped in order. Use **Close the panel**. Closing the panel's window instead ends the panel, and whatever it runs, within seconds, but no longer leaves the rig's lock behind: `rig.py` frees it as the window closes ([development.md](development.md)). `panel.owner` is the name `rig.py status` shows (default `panel`).
 
 **The view** (`campy-live-view`) runs with `view.python` when given, else with `campy-live`'s environment (`live.python`, or the one `campy-session register-live` registered), which has the view's OpenCV, even for a recording without a `live:` section; else with the recording's own python.
 
@@ -148,7 +156,10 @@ What the page shows, refreshed every second:
   - **warnings:** from the alerts' logs in the recording's folder, and anything `campy-session` reported;
   - **bookmarks:** a note box and an Add button. They write the same `bookmarks.csv` in the recording's folder as `campy-live-view`'s `m` key, and the two never give two bookmarks the same number;
   - **programs:** each one's state, and a button that opens `campy-live-view` again if it was closed.
-- **After it:** each step of `post:`, as it runs.
+- **Everywhere:** the LUC3D logo in the page's header and as its browser-tab icon (inline in the page: nothing is fetched); in the top right corner, which campy the panel runs, as LUC3D shows its own: version, git branch and commit, for example `v2.7.0 +96 · dev · 7bf012ec` (`+96`: 96 commits after the v2.7.0 release, from `git describe`, so a checkout newer than the release doesn't read as the release; and `modified` when the checkout's files differ from that commit; the full commit in its tooltip). It is read as the panel starts, so after an update it changes once the panel is opened again; under the title, what the folder or file shown is (the folder being recorded into, the previous recording's, or the settings file).
+- **After it:**
+  - **what went wrong while it recorded**, in a few lines: the cameras that dropped frames (`framesDropped` of `totalFrames`, with `writeQueueMaxSec`), lost frames in a stopped ffmpeg (`framesLostInEncoder`) or before they reached campy (`flirFramesLost`), a camera's `cameraError`, `videoError` or `frameTimesError`, a camera with no totals (it didn't close), each critical alert (when it turned critical, and whether it was resolved or still open at the end) and the warnings still open at the end. One line when there was nothing: `All 8 cameras: every frame saved (3,285 frames each)`. It is read from the recording's folder: each camera's `metadata.csv` (for a camera whose `metadata.csv` has no totals, its end line in `logs/campy-acquire.log`), `alerts.log` and `alerts-live.log`. It stays until the next recording starts. A panel opened again after a recording has ended shows that recording as the previous one (from `~/.campy/status/launcher.json`), with its steps and this summary;
+  - each step of `post:`, as it runs: which one is running ("Step 4 of 7", with a progress bar in the header), for how long, and its latest line, from `logs/post.json`, which `campy-session post` rewrites as each step starts and as it goes (`plan`, `running`, each step's `state`, `message` and, for `calibrate`, `fraction`).
 
 #### Picking the live models on the panel
 
@@ -172,6 +183,8 @@ live:
 ```
 
 The two lists are `panel:` keys rather than `live:` ones so that a rig profile can hold them. A `live:` section in a profile would turn on live tracking for every experiment built on it; a `panel:` section turns on nothing, and the box shows only for a config with a `live:` section and `model: sleap`. An experiment's own `panel: models:` replaces the profile's. A relative folder in `panel.models` is taken from the folder of the config file that names it: the profile's folder, for a profile's. A config without `panel.models` or `panel.model_sets` works as before, and the box shows the config's pair alone. A config with either can leave out `live.centroid` and `live.instance`. The panel then opens on the first set, or asks for a pick. `campy-session run` still needs the two folders.
+
+Since 8 November 2026 the rig profiles of the EVO-X2, the Pro Max Slim, the Precision 7875 and the Pro Tower Plus each set `panel: models:` to the rig's own model folder (`C:\campy_data\live\models`, or `~/sleap-bench/live/models` on the EVO-X2). The Precision 7875's also names the folder where its SLEAP training jobs are saved. The Windows 11 VM's has none, because it keeps no models.
 
 Each model is described from its own files, without loading it:
 
@@ -200,7 +213,7 @@ The `campy-live` environment's sleap-nn version is checked as before.
 **A pick changes only the panel's recordings, never the config.** At Start, it goes into that recording's `live:` section. So the recording's `session-config.yaml` and `campy-acquire.yaml` (and through it `session.json`) say which models it used, each picked line marked `# panel (picked on campy-session panel's page)`. `campy-live-session.json` records the two folders and their `best.ckpt` hashes, as always, and `launcher.json` has `live_models`. The last pair started from each config is kept in `~/.campy/status/panel-models.json`. The next panel opened with that config starts on it, as long as both folders are still there. **Look again** looks through `panel.models` again, for a model trained while the panel was open. While a recording runs, the pick can't change; it applies from the next recording.
 - **With a Pico and SpikeGLX** (the config's `pico:` and `spikeglx:` sections, the ChronicRecord rig's): the session's length to choose, their own checks, each step (SpikeGLX's run, the gate check, the Pico), the Pico's bout and pulses, SpikeGLX's run and files, a **Start the Pico** button once every camera is ready, and a Stop that asks whether to stop after the Pico's bout or now ([Recording a session from the desktop](recording-a-session.md#on-the-chronicrecord-rig-the-pico-and-spikeglx), [chronicrecord/README.md](../chronicrecord/README.md#from-the-panel)).
 
-**Stop** stops the recording exactly as Ctrl-C does: each camera closes its video. If a camera hangs while closing, the button turns into **Stop now, without closing**, for a few seconds. Closing the page stops nothing, and the page can be opened again at any time: from the printed address, or by running `campy-session panel` again (or double-clicking the icon). A panel that is already open writes its address into `~/.campy/status/panel.json`, readable by your user only, and a second launch that finds it answering opens that page in the browser and ends, instead of refusing with "Another campy-session is running".
+**Stop** stops the recording exactly as Ctrl-C does: each camera closes its video. If a camera hangs while closing, the button turns into **Stop now, without closing**, for a few seconds. Closing the page stops nothing, and the page can be opened again at any time: from the printed address, or by running `campy-session panel` again (or double-clicking the icon). The key in the page's address (`?t=...`) is kept in `~/.campy/status/panel-key.json`, readable by your user only, and the next panel uses it again, so a tab left open or restored by the browser keeps working; `campy-session panel --new-key` makes a new one (tabs with the old key then get a page saying they belong to a closed panel). On Linux and macOS a key file that others can read is replaced by a new key. While the panel is closed, the page says so and reconnects by itself. A panel that is already open writes its address into `~/.campy/status/panel.json`, readable by your user only, and a second launch that finds it answering opens that page in the browser and ends, instead of refusing with "Another campy-session is running".
 
 The page is served only to this computer (`127.0.0.1`):
 
@@ -211,7 +224,7 @@ Every request needs the random key in that address, so no other program on the c
 
 **Closing the panel's window never ends a recording.** The panel starts `campy-acquire` and `campy-live` apart from its own console: on Windows in a hidden console of their own, on Linux in a session of their own. So closing the window, or the terminal, or the panel crashing, leaves the recording going to its end, with `campy-live` tracking it. Stop and Ctrl-C in the panel's window reach `campy-acquire` through its stop file. A panel opened again while such a recording is still running says so, refuses to start another (two recordings can't share the cameras), and offers **Stop that recording**. `campy-session run` in a terminal keeps its own behaviour: there, Ctrl-C reaches `campy-acquire` directly.
 
-**A desktop icon** for labmates: `campy-session shortcut <config>.yaml --name "Record: 3 cameras"` makes one. It's a shortcut on Windows, a `.desktop` file on Linux and a `.command` file on macOS. Double-clicking it opens the panel with that config. [Recording a session from the desktop](recording-a-session.md) is the page to give them.
+**A desktop icon** for labmates: `campy-session shortcut <folder of configs>` makes the rig's one icon, **campy recording**, whose panel picks the experiment on its page; `campy-session shortcut <config>.yaml --name "Record: 3 cameras"` makes one for a single config. It's a shortcut on Windows, a `.desktop` file on Linux and a `.command` file on macOS. [Recording a session from the desktop](recording-a-session.md) is the page to give them.
 
 ### By hand
 
@@ -571,6 +584,59 @@ Notes on the measurements:
   |---|---|---|---|
   | Pro Tower Plus (RTX A2000) | 1,200 / 2.7 / 2.9 | 3,600 / 6.9 / 7.2 / 9.3 / 10.6 | 1,799 / 6.9 / 7.2 / 11.4 / 12.9 |
 
+- Late on 7 November, after pull request 324 (picking the live models on the panel) was merged, all five machines moved to dev `78d146b` at 11:43–11:44 PM, each idle at the time. The move also brings pull request 326 (`campy-live` on Intel GPUs), which changed `campy-live`'s code for running a set as one GPU graph. Neither brought new requirements, so each checkout was fast-forwarded and nothing was reinstalled. Each rig's profile then got its `panel: models:` folder ([Picking the live models on the panel](#picking-the-live-models-on-the-panel)). Every config built on each profile loaded as before, and on the Pro Max Slim and the EVO-X2 the live panel configs listed the rig's 4 models.
+
+  At 12:04–12:08 AM on 8 November each machine ran its rig check under its lock, the same scripts as before; the Pro Tower Plus ran under the experiment-machine rules, inside its test hours. Nothing was skipped or misaligned, every camera kept all its frames, and every set was tracked from frame 1, but for the replay on the Windows rigs (frame 2, as before). On the Precision 7875 the 1- and 3-camera checks each saw one burst of other CPU use the first time (same times), so they ran again at 12:08–12:14 AM, `RIG_CLEAN`, which the table uses; every other run was `RIG_CLEAN` the first time. Times in ms. They match `0466082`'s to within 0.2 ms, but for the Pro Max Slim's frame to 3D p99, which was 0.3–0.4 ms lower:
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | EVO-X2 | 1,800 / 3.1 / 3.2 | 3,600 / 5.7 / 6.0 / 7.8 / 8.7 | 3,600 / 5.6 / 5.8 / 7.3 / 8.2 |
+  | Pro Max Slim | 1,200 / 2.3 / 2.5 | 3,600 / 5.6 / 5.8 / 7.9 / 8.7 | 1,799 / 5.6 / 5.7 / 8.8 / 9.6 |
+  | Precision 7875 | 1,200 / 0.9 / 1.1 | 3,600 / 1.7 / 1.8 / 4.2 / 5.4 | 1,799 / 1.7 / 1.8 / 4.6 / 5.6 |
+  | Pro Tower Plus (RTX A2000) | 1,200 / 2.7 / 2.9 | 3,600 / 6.9 / 7.1 / 9.3 / 10.7 | 1,799 / 6.9 / 7.2 / 11.3 / 12.7 |
+
+  The EVO-X2's replay agreed with the offline tracking as before: a median of 3.8 px in 2D and 4.2 mm in 3D, and 2 identity switches. The slowest replay set on the Precision 7875 took 22.6 ms frame to 3D (one set, in the first 10 s). The VM's recording checks kept every frame (1,200, then 3 × 3,600), both `RIG_CLEAN`.
+
+- On 9 November, after pull requests 331 and 333 (the ChronicRecord rig's bout settings on the recording page) were merged, all five machines moved to dev `d03d158` at 7:33–7:34 AM, each idle and each under its lock (`RIG_CLEAN`). The move also brings pull requests 330 and 332, whose `rig.py` the machines already had (`rig.py install --check`: nothing to install). None of the four brought new requirements, so each checkout was fast-forwarded and nothing was reinstalled. None of them changes `campy-live`, so the machines didn't run their rig checks again: the 8 November numbers above still stand. On the Pro Max Slim, the bout session's panel config loaded with this campy and planned every length on its page as before (6 days: 1,728 bouts and 5,011,200 camera pulses), with the bout settings at the config's values.
+- Later on 9 November, after campy 2.7.0 was released (pull request 335, which only changes the version numbers), all five machines moved to the tag `v2.7.0` (`d014b7a`) and reinstalled campy in their environments, so each now reports 2.7.0. The EVO-X2, Pro Max Slim, Precision 7875 and Windows 11 VM moved at 9:22 AM, each idle and under its lock (`RIG_CLEAN`). On the Pro Tower Plus the lock first said not now, because someone was signed in and using the computer; the update went through on a retry at 9:33 AM, once it had been idle for 15 minutes. That run ended `RIG_CONTAMINATED` with 2 CPU-load sightings, which doesn't matter for an update: nothing was measured. 2.7.0 is the same code as `d03d158` (only this page changed after it), and every machine already had 2.7.0's `rig.py` (`rig.py install --check`: nothing to install), so the machines didn't run their rig checks again: the 8 November numbers above still stand.
+- At 11:49 AM on 9 November, after pull request 341 (one panel and one desktop icon for every experiment on a rig) was merged, four machines moved to dev `9146c18`: the EVO-X2, Pro Max Slim, Precision 7875 and Windows 11 VM. Each was idle and under its lock (`RIG_CLEAN`). The move also brings pull requests 338 (`cameraSerials`), 339 (`campy-train-check`) and 342 (copying each recording to another folder from the panel). Pull request 339 adds a command, so campy was reinstalled in every environment, which still reports 2.7.0. Every machine already had this `rig.py` (nothing to install). None of the four changes `campy-live`'s tracking, so the machines didn't run their rig checks again: the 8 November numbers above still stand. The Dell Pro Tower Plus stays on `v2.7.0` for now, while its daily recordings move to the panel.
+
+  The two rigs with panels then got the one icon, **campy recording**, made with `campy-session shortcut` on the rig's configs folder ([Recording a session from the desktop](recording-a-session.md#pick-the-experiment)):
+  - Each panel config got a `panel.title`, the name its old icon had. On the Pro Max Slim these are *ChronicRecord session (Pico + SpikeGLX)*, *Live tracking, 3 mice*, *Live tracking, 5 mice*, *Look at the cameras (5 min)* and *Calibration recording*. On the EVO-X2 they are *Record, 3 cameras* and *Live tracking, 3 cameras*.
+  - With this campy, every config in each folder loaded. The exception is the Pro Max Slim's PowerShell-launcher config for the Pico, which campy-session never could use (it sets its own stop file); it shows only under **Show all configs**, with that reason.
+  - The panel holds each rig's lock, as the old icons' panels did.
+  - The old icons, 5 on the Pro Max Slim and 2 on the EVO-X2, moved into a folder of old icons, where each still works.
+- At 12:17 PM the same day the Dell Pro Tower Plus moved to `9146c18` too, with campy reinstalled in both of its campy environments (the older environments of its earlier campy versions untouched).
+  - It didn't go under its lock. The experiment-machine rules had paused tests for the day, because someone was using the computer. With the user's go-ahead, the update ran at once instead. It touched no camera or trigger, and nothing was recording.
+  - Its daily config got the title *DoublePoke recording*, and its desktop the one **campy recording** icon. The old icon moved to the folder of old icons.
+  - Its 2-minute trial config, built on the daily one with `extends:`, inherited that title, so it showed on the list twice. It was taken off the list by unstarring it. Pull request 348 makes a title count only in the file that sets it.
+  - Its rig profile then got `cameraSerials` (pull request 338), all 8 cameras' serial numbers in the order of their names, checked against that day's recordings. Every config built on it passed `campy-config check`, but every recording started from the panel then stopped at once, before recording anything: three starts in a row at 12:19-12:20 PM. campy-session writes out every setting for campy-acquire, the default `cameraSelection` included, and campy-acquire refused the two together. `campy-config check` reads the config as written, so it didn't catch this. The serials were taken back out of the profile within minutes (kept beside it as `doublepoke.yaml.with-serials-2026-11-09`), and the panel records again. Pull request 351 fixes the refusal: the default `cameraSelection` no longer counts as given. Minutes later the Pro Tower Plus moved to dev `808b6af`, which has it (a fast-forward; nothing to reinstall), and the serials went back into its profile. A check recording at 12:40 PM, started from the **campy recording** icon, picked every camera by its serial: each name's `metadata.csv` gave the serial the profile lists for it, the same name-to-camera mapping as that morning's and 7 November's recordings. All 8 cameras saved 2,983 frames (49.7 s) with none dropped, lost or incomplete, and each was on the trigger's timeline from its first pulse, with no pause. The panel's copy to the network share took 7 s, every file's size the same but the two post-step logs, written after the copy.
+
+- At 1:00 PM on 9 November all five machines moved to dev `80db1e8`. That brings pull requests 348 (a config's panel title only from its own file), 351 (camera serials with campy-session), 345 (the panel's copies listed in order), and test and docs changes.
+  - None of them changes `setup.py`, `rig.py` or campy's defaults, so each checkout was fast-forwarded and nothing was reinstalled; every machine already had this `rig.py`.
+  - The EVO-X2, Precision 7875 and Windows 11 VM ran the update under their locks, `RIG_CLEAN`. On the Pro Max Slim it ended `RIG_CONTAMINATED` from one burst of other CPU use, which doesn't matter for an update: nothing was measured.
+  - The Dell Pro Tower Plus was already on `8d5265e` (pull request 345). Its tests were paused for the day, so with the user's go-ahead its fast-forward ran at once, after its panel was closed, with nothing running.
+  - None of these changes `campy-live`'s tracking, so the machines didn't run their rig checks again: the 8 November numbers above still stand.
+
+- At 5:14–5:27 PM on 9 November, after pull requests 358 (the panel's after-recording summary and copy progress), 340 (the denoise study) and 361 (the `denoise` setting) were merged, four machines moved to dev `4ff6d52`: the Pro Max Slim, Precision 7875, EVO-X2 and Windows 11 VM. The spock cluster's campy copy for `campy-infer` moved with them.
+  - Each was idle and ran the fast-forward under its lock. None of the three pull requests changes `setup.py`, `rig.py` or campy's defaults, so nothing was reinstalled.
+  - The Dell Pro Tower Plus was already running 358 and 361 together, on a branch made for it, since about 4:15 PM.
+  - Denoising (`denoise: "atadenoise"`, [Denoising before encoding](encoding.md#denoising-before-encoding-denoise)) was then turned on, at the user's request, on four rigs:
+    - the Pro Tower Plus: its daily config;
+    - the Pro Max Slim: the Pico bout sessions' profile, `chronicrecord/chronic_pico.yaml` (pull request 364), not its calibration, look or live-tracking configs;
+    - the Precision 7875 and the EVO-X2: their rig profiles, so every recording on them.
+  - `campy-config check` passed for every config on those rigs, and each camera's ffmpeg command has `-filter_threads 1` and the filter at the start of its one `-vf` chain. On the EVO-X2 (VA-API, Ubuntu's ffmpeg 6.1), 3 s of noisy frames went through that chain into `h264_vaapi` with every frame written.
+  - The rig checks write their own configs, which don't use the rig profiles, so they still record without the filter and their numbers stay comparable. None of these changes touch `campy-live`'s tracking, so the rig checks weren't run again.
+  - No recording of animals with the filter on had been checked on these rigs yet.
+
+- At 7:48–7:50 PM on 9 November, after pull requests 363 (a daily calibration made by calibrat3, and the panel's progress while the steps after a recording run), 367 (a cage saved when drawing stops), 369 (the version label's distance from the release) and 370 (the panel's key kept from one panel to the next) were merged, four machines moved to dev `2e3521b`: the Windows 11 VM, the Precision 7875, the Pro Max Slim and the EVO-X2.
+  - `setup.py` adds the `campy-calibrate` command, so after the fast-forward campy was reinstalled (`--no-deps`) in each environment that runs this checkout: both on the Precision 7875, the Pro Max Slim and the EVO-X2, and the VM's one. Each now has `campy-calibrate`, and every machine already had this `rig.py`.
+  - Each was idle and ran the update under its lock. The VM, the Precision 7875 and the EVO-X2 ended `RIG_CLEAN`. The Pro Max Slim ended `RIG_CONTAMINATED` from one burst of other CPU use during the reinstall, which doesn't matter for an update: nothing was measured.
+  - The `calibrate` step is off unless a config asks for it, and it needs Playwright and a calibrat3 checkout ([A calibration every day](calibration.md#a-calibration-every-day-made-by-itself-calibrat3)). Only the Dell Pro Tower Plus has them, so the other machines have the step but don't use it.
+  - The Dell Pro Tower Plus was already on `2e3521b` since 7:42 PM, after running these pull requests one by one as they were made. At 7:52 PM, with its panels closed and nothing running, campy was reinstalled in its two environments too (`campy_vPython3.12` and the `campy-live` one; its older campy environments untouched), so it has `campy-calibrate` as well. Its lock refuses jobs while someone uses the computer, so this ran directly, after checking nothing recorded and no lock was held.
+  - The spock cluster's campy copy for `campy-infer` followed at 8:05 PM, once the user had logged in there again (a plain fast-forward to `2e3521b`).
+  - None of these changes `campy-live`'s tracking (pull request 367 changes the viewer's cage drawing), so the machines didn't run their rig checks again.
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
@@ -614,7 +680,7 @@ The six good runs above were copied off the Pro Max Slim and looked at set by se
 
 What changes with a camera more:
 
-- **campy's config**: `numCams: 4`, and per-camera lists such as `cameraGain` need a fourth value. campy picks cameras by their place in the FLIR driver's list (`cameraSelection`), not by serial, so check with `campy-config show <config> --cameras`, or with campy-acquire's "Camera0 ready to trigger: flir ... serial ..." lines, that the older cameras kept their names. Their calibration is matched by name.
+- **campy's config**: `numCams: 4`, and per-camera lists such as `cameraGain` need a fourth value. By default campy picks cameras by their place in the FLIR driver's list (`cameraSelection`), not by serial: give `cameraSerials` to tie each name to its camera ([Configs](configs.md#names-that-follow-the-cameras-serial-numbers)), or check with `campy-config show <config> --cameras`, or with campy-acquire's "Camera0 ready to trigger: flir ... serial ..." lines, that the older cameras kept their names. Their calibration is matched by name.
 - **A new calibration** with all four cameras: `campy-live` matches the calibration's cameras to the feed's by name, and stops if one is missing.
 - **`--cameras 4`** for `campy-live`, `campy-live-view` and `campy-watch` run by hand (3 by default). `campy-session` passes `numCams` itself.
 - **New TensorRT plans**, built once at the first start (below).
@@ -639,7 +705,52 @@ A Dell Pro Tower Plus (Intel Core Ultra 9 285, NVIDIA RTX A2000 12 GB, a 70 W ca
 - **Other programs.** Both runs ended `RIG_CONTAMINATED`, by other programs' CPU use only. At 30 fps the antivirus and Windows Search used 2–2.5 cores while the models loaded and as the cameras started; after the first 10 s, each 10 s report's p99 inference was 22.2–23.3 ms. At 60 fps Windows' app and device-enrollment services used 4–5 cores at times. Each run was measured once.
 - **Played at half speed.** The clips were recorded at 60 fps, so at 30 fps the mice moved half as fast as in life; that does not change the work per set.
 
-To track 8 cameras at 60 fps here, the A2000 would need a lighter model or a faster card: the guide's model-size sweep has what each GPU does with 8 cameras ([Hardware guide](hardware.md)).
+To track 8 cameras at 60 fps here, the A2000 needs a lighter model or a faster card. The guide's model-size sweep has what each GPU does with 8 cameras ([Hardware guide](hardware.md)). With 2 mice, lighter models do it (below).
+
+### Lighter models for 2 mice (November 2026)
+
+The box this computer films holds 2 mice. Pairs trained for it were replayed on the Tower Plus, with the setup above:
+- 8 emulated cameras played all 8 views of a 2-mouse session from that box, at 60 fps for 120 s, recording AV1 on Quick Sync.
+- `campy-live` tracked in 3D on the A2000 with its defaults.
+
+Every run tracked all 7,200 sets, skipped none and misaligned none. Times are in ms, median / p99 / max. The centroid model is the same size in every row (scale 0.25, 16 filters, output stride 2). How each pair was trained and how accurate it is: [Pose models](models.md#lighter-models-for-8-cameras-on-an-rtx-a2000-2-mice-79-november-2026).
+
+| Centered-instance model | Inference | Frame to 2D | Frame to 3D | GPU clock (median) |
+|---|---|---|---|---|
+| 320 → 160 px, 24 filters (the earlier pair's size; 7 Nov) | 10.6 / 11.4 | 13.0 / 14.7 / 19.9 | 15.4 / 20.2 / 24.0 | 1,537 MHz |
+| 320 → 128 px, 24 filters, round 1 (7 Nov) | 8.5 / 8.9 | 10.7 / 12.4 / 14.4 | 13.4 / 17.0 / 19.9 | 1,605 MHz |
+| 320 → 128 px, 16 filters, round 1 (7 Nov) | 6.9 / 7.3 | 9.2 / 10.8 / 13.8 | 12.1 / 15.9 / 21.1 | 1,695 MHz |
+| 320 → 160 px, 24 filters, fine-tuned with pseudo-labels (9 Nov) | 10.5 / 11.3 | 13.3 / 14.8 / 17.6 | 15.4 / 19.0 / 26.2 | 1,552 MHz |
+| **320 → 128 px, 24 filters, fine-tuned with pseudo-labels (9 Nov; now on the Tower Plus)** | 8.5 / 8.9 | **11.1 / 12.3** / 16.8 | 13.4 / 16.6 / 23.2 | 1,605 MHz |
+| 320 → 128 px, 16 filters, fine-tuned with pseudo-labels (9 Nov; the faster spare) | 6.9 / 7.4 | 9.5 / 10.7 / 13.7 | 12.2 / 16.1 / 20.0 | 1,687 MHz |
+
+- **The 128 px pairs fit; 160 px doesn't.** The aim was 2D poses within 13.3 ms at p99 (80% of the 16.7 ms between sets). The 160 px model never skipped a set, but at 14.7–14.8 ms it leaves too little margin. The 128 px models have 1.0 ms (24 filters) and 2.6 ms (16 filters) to spare.
+- **Speed depends on the model's size, not its training.** Fine-tuned and round-1 models of the same size ran within 0.4 ms of each other, at the median and at p99.
+- **Each 9 November run ran twice; neither was `RIG_CLEAN`.** Each run was marked `RIG_CONTAMINATED` both times, by the endpoint security software using 1.3–1.8 CPU cores, and only that. The two runs of each pair agreed within 0.05 ms at p99, so the table gives the second. The 7 November runs were `RIG_CLEAN`.
+- **The A2000's power limit sets its clock.** Its median clock was 1,550–1,700 MHz, lower for the heavier models, and in the 7 November runs it was at its 70 W limit about 87% of the time. `campy-live` ran on the performance cores except CPU 1, which handles the card's interrupts.
+- **Live accuracy wasn't measured here.** Only on the earlier pair (7 November) was live compared with offline SLEAP on the same frames: within 0.03 px at the median ([Pose models](models.md#lighter-models-for-8-cameras-on-an-rtx-a2000-2-mice-79-november-2026)).
+
+### Two real mice at 60 fps, with a lighter pair (9 November 2026)
+
+The runs above replayed recorded video. On 9 November the same computer recorded its 8 real FLIR cameras at 60 fps, on the trigger, for 5 minutes, with 2 mice in the box, while `campy-live` tracked them in 3D on the A2000. The recording was started from the panel (`campy-session panel`), as the box's daily recordings are, and encoded AV1 with Quick Sync on the integrated GPU, so the A2000 only ran the models. campy was dev `2b72a38` with the panel changes of pull request 358, which don't touch tracking.
+
+- **The models**, trained for this box with two-mouse pseudo-labels: the centroid model at 0.25 scale with 16 filters, max stride 16 and output stride 2; the instance model on 320 px crops at 0.5 scale (160 px), with 24 filters, max stride 32 and output stride 2; 12 body points. That is the fine-tuned 160 px pair of the table above, not the 128 px pair now recommended there. TensorRT fp16, fixed crops, one CUDA graph a set (the defaults).
+- **The calibration**: the box's newest, from July. The box's older recordings and calibrations name some cameras differently, so before the run each camera's view was compared with the same-named camera's calibration video: all 8 matched.
+
+| 8 real cameras, 2 mice, 60 fps, 300 s | Result |
+|---|---|
+| Sets tracked | 18,000 of 18,000: none skipped, none misaligned |
+| Inference, median / p99 | 11.4 / 13.4 ms |
+| Last frame to keypoints, median / p99 / max | 14.3 / 16.7 / 21.6 ms |
+| Last frame to 3D pose, median / p99 / max | 19.1 / 25.3 / 31.0 ms |
+| 3D step alone, median / p99 | 4.5 / 10.1 ms |
+| Frames recorded | 18,000 of 18,000 per camera, none dropped; all 8 on the trigger's timeline, no pulse without a frame |
+| Both mice with a 3D pose | every set, with all 12 points |
+
+- **Every set, but little margin.** Frame to 2D poses reached 16.7 ms at p99, against 14.8 ms for the same pair in the replays above and the 13.3 ms aimed for: with real cameras the sets came about 2 ms later. So it fits, as the replays said, but too closely for comfort; the 128 px pair above, about 2 ms faster in the replays, is the one to use. The A2000's clock started at 1,882 MHz and settled at 1,440–1,575 MHz within the first minute, at its 70 W power limit (64 °C). Inference went from 10.5 to 11.6 ms at the median as it did, still inside the 16.7 ms between frames (13.4 ms at p99).
+- **Task Manager shows the GPU about 97% busy.** That is not the models alone: `campy-live`'s clock hold keeps one small block running on the GPU at all times ("1 block spinning" in its log; [On Windows](#on-windows-nvidia-cuda), "The GPU's clock"), and Task Manager counts it as busy. The models took about two thirds of each frame's time.
+- **Not checked:** whether each mouse kept its identity through the 5 minutes, and how close the points are to where a person would put them. Both need the recording looked at in LUC3D. This was one run, a real recording, not under the rig lock.
+
 
 ## Fixed crops (`--fixed-crops`, on by default with a GPU)
 

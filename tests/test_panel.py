@@ -67,6 +67,42 @@ def test_a_thumbnail_is_grey_and_about_192_px_wide():
 
 # ------------------------------------------------------------------ bookmarks from two programs
 
+def test_the_page_has_the_luc3d_logo_inline_and_fetches_nothing_from_elsewhere():
+	import base64
+	from campy import panellogo, panelpage
+	page = panelpage.PAGE
+	assert '<img class="logo" src="' + panellogo.LOGO in page and 'rel="icon" type="image/png" href="' + panellogo.ICON in page
+	for uri in (panellogo.LOGO, panellogo.ICON):
+		assert base64.b64decode(uri.split(",", 1)[1])[:8] == b"\x89PNG\r\n\x1a\n"
+	assert not re.search(r"""(src|href)=["']?(https?:)?//""", page) # a rig may have no internet
+	assert "Previous recording: " in page and "@LOGO@" not in page
+
+
+def test_the_page_says_which_campy_it_runs(monkeypatch):
+	# Version, branch and commit in the page's top right corner, as LUC3D shows its own
+	from campy import manifest, panelpage
+	assert 'id="version"' in panelpage.PAGE and "s.version" in panelpage.PAGE
+	monkeypatch.setattr(manifest, "CampyInfo", lambda: {"version": "2.7.0", "commit": "874060ba82e8b4e27c120330934dc802e5780aa6",
+		"branch": "pr358", "dirty": False, "describe": "v2.7.0-57-g874060b", "path": "/campy"})
+	label = panel.VersionLabel()
+	assert label["text"] == "v2.7.0 +57 \u00b7 pr358 \u00b7 874060ba" # 57 commits past the release: not the release
+	assert "874060ba82e8b4e27c120330934dc802e5780aa6" in label["title"] and "pr358" in label["title"]
+	assert "57 commits after the v2.7.0 release" in label["title"]
+	assert panel.SinceRelease("v2.7.0-1-g874060b", "2.7.0") == ("+1", "1 commit after the v2.7.0 release")
+	assert panel.SinceRelease("v2.6.0-12-g874060b", "2.7.0")[0] == "(v2.6.0 +12)" # the tag isn't setup.py's version
+	assert panel.SinceRelease("v2.7.0-0-g874060b", "2.7.0") is None and panel.SinceRelease("v2.7.0", "2.7.0") is None
+	assert panel.SinceRelease(None, "2.7.0") is None and panel.SinceRelease("874060b", "2.7.0") is None
+	monkeypatch.setattr(manifest, "CampyInfo", lambda: {"version": "2.7.0", "commit": "874060ba82e8", "branch": "HEAD",
+		"dirty": True, "path": "/campy"})
+	assert panel.VersionLabel()["text"] == "v2.7.0 \u00b7 874060ba \u00b7 modified" # a detached checkout: no branch
+	monkeypatch.setattr(manifest, "CampyInfo", lambda: {"version": "2.7.0", "installedFrom": "package", "path": "/campy"})
+	assert panel.VersionLabel()["text"] == "v2.7.0"
+	def broken():
+		raise OSError("no git")
+	monkeypatch.setattr(manifest, "CampyInfo", broken)
+	assert panel.VersionLabel()["text"] == "version unknown"
+
+
 def mark(note, cameras=2):
 	return {"time": "2026-10-23 10:00:00.000", "host_ns": 1, "event": "mark", "note": note, "frame": 5,
 		"cameras": [(5, 1)] * cameras, "recording": ""}
@@ -127,12 +163,38 @@ def stub_panel():
 	return p, calls
 
 
+def test_a_start_refused_for_a_copy_folder_not_there_yet_offers_to_make_it(tmp_path):
+	from campy import copyqueue
+	p, calls = stub_panel()
+	try:
+		key = "?t=" + p.token
+		new = tmp_path / "luc3d-live"
+		p.Start = lambda body: copyqueue.Problem(body.get("copy_to"))
+		p.MakeCopyFolder = lambda path: copyqueue.Create(path)
+		code, said = raw(p, "POST", "/start" + key, {"Content-Type": "application/json"}, json.dumps({"copy_to": str(new)}))
+		assert code == 409 and said["create"] == str(new) and "doesn't exist yet" in said["error"]
+		code, said = raw(p, "POST", "/start" + key, {"Content-Type": "application/json"},
+			json.dumps({"copy_to": str(tmp_path / "no" / "where")}))
+		assert code == 409 and "create" not in said # nothing to offer: the folder it goes in isn't there
+		assert raw(p, "POST", "/copy-folder" + key, {"Content-Type": "application/json"}, json.dumps({"path": str(new)})) == \
+			(200, {"ok": True})
+		assert new.is_dir()
+		assert raw(p, "POST", "/start" + key, {"Content-Type": "application/json"}, json.dumps({"copy_to": str(new)})) == \
+			(200, {"ok": True})
+	finally:
+		p.server.shutdown()
+		p.server.server_close()
+
+
 def raw(p, method, path, headers=None, body=None):
 	c = http.client.HTTPConnection("127.0.0.1", p.port, timeout=10)
 	try:
 		c.request(method, path, body=body, headers=headers or {})
 		r = c.getresponse()
-		return r.status, json.loads(r.read() or b"{}")
+		data = r.read()
+		if r.getheader("Content-Type", "").startswith("text/html"):
+			return r.status, data.decode("utf-8") # a page (the old tab's), not JSON
+		return r.status, json.loads(data or b"{}")
 	finally:
 		c.close()
 
@@ -163,6 +225,41 @@ def test_the_page_answers_only_its_key_from_this_computer():
 	finally:
 		p.server.shutdown()
 		p.server.server_close()
+
+
+def test_the_pages_key_is_kept_for_the_next_panel(home):
+	# A tab left open, or restored by the browser, works with the next panel; --new-key, or a file others can read, not
+	key = panel.PanelKey()
+	assert panel.PanelKey() == key and len(key) >= 20
+	if sys.platform != "win32":
+		assert os.stat(panel.KeyFile()).st_mode & 0o077 == 0 # its owner's only
+		os.chmod(panel.KeyFile(), 0o644)
+		other = panel.PanelKey()
+		assert other != key and os.stat(panel.KeyFile()).st_mode & 0o077 == 0
+		key = other
+	assert panel.PanelKey(new=True) != key
+	with open(panel.KeyFile(), "w") as f:
+		f.write("not json")
+	assert len(panel.PanelKey()) >= 20
+
+
+def test_an_old_tab_gets_a_page_that_says_so(tmp_path):
+	p, calls = stub_panel()
+	try:
+		code, page = raw(p, "GET", "/?t=OldKeyOldKeyOldKeyOldKey")
+		assert code == 403 and "This tab belongs to a panel that was closed" in page
+		code, said = raw(p, "GET", "/status.json?t=OldKeyOldKeyOldKeyOldKey")
+		assert code == 403 and "wrong key" in said["error"] # the page's own polls: JSON, which the page shows as a banner
+		assert calls == []
+	finally:
+		p.server.shutdown()
+		p.server.server_close()
+
+
+def test_the_page_says_when_its_panel_is_closed_or_its_key_is_old():
+	from campy import panelpage
+	assert 'id="gone"' in panelpage.PAGE and "The panel is closed" in panelpage.PAGE
+	assert "This page reconnects by itself" in panelpage.PAGE and "This tab belongs to a panel that was closed" in panelpage.PAGE
 
 
 def campy_standin():
@@ -293,6 +390,8 @@ def test_a_recording_from_the_page(tmp_path, home):
 		status = wait(url, lambda s: s["state"] == "ready" and s["launcher"] and s["launcher"]["state"] == "done")
 		assert status["launcher"]["parts"]["acquire"]["exit_code"] == 0
 		assert status["launcher"]["post"]["remux"]["state"] == "done"
+		# What went wrong in it (campy/endsummary.py): with the emulated cameras, nothing
+		assert status["summary"]["lines"][0]["text"].startswith("All {} cameras: every frame saved".format(len(NAMES)))
 		counts = recorded(the_folder(clips))
 		assert min(counts) > 20 and max(counts) < 60 * 20, counts
 		manifest = json.load(open(os.path.join(folder, "session.json")))
@@ -307,6 +406,55 @@ def test_a_recording_from_the_page(tmp_path, home):
 	assert proc.returncode == 0, "".join(lines)
 	assert "[panel] Closed." in "".join(lines)
 	assert not (home / ".campy" / "status" / "launcher.lock").exists()
+
+	# A panel opened again shows that recording as the last one, with its steps and its summary, at the same address:
+	# a tab left open from the first panel works with it
+	first_url = url
+	proc, lines, url = start_panel(tmp_path, home, config)
+	try:
+		assert url == first_url
+		status = call(url, "/status.json")[1]
+		assert status["state"] == "ready" and status["launcher"]["folder"] == folder
+		assert status["launcher"]["post"]["remux"]["state"] == "done" and status["launcher"]["clean"]["clean"]
+		assert status["summary"]["lines"][0]["text"].startswith("All {} cameras".format(len(NAMES)))
+	finally:
+		os.killpg(proc.pid, signal.SIGINT)
+		proc.wait(timeout=30)
+
+
+@POSIX
+def test_each_recording_is_copied_into_the_pages_folder(tmp_path, home):
+	# The page's "Copy each recording to": checked at Start, remembered for the next panel, and each recording copied
+	# in the background once it has ended (not by the post copy step, which would keep the next recording waiting)
+	config, clips = emu_session(tmp_path, home, 3, post={"remux": True, "export": False})
+	share = tmp_path / "share"
+	share.mkdir()
+	proc, lines, url = start_panel(tmp_path, home, config)
+	try:
+		assert call(url, "/status.json")[1]["fields"]["copy_to"] == ""
+		code, said = call(url, "/start", {"copy_to": str(tmp_path / "no" / "where")})
+		assert code == 409 and said["error"].startswith("Can't reach ") and "create" not in said
+		# A folder not there yet, in one that is: refused, with the offer to make it (the page's Create this folder)
+		code, said = call(url, "/start", {"copy_to": str(share / "new")})
+		assert code == 409 and said["create"] == str(share / "new") and "doesn't exist yet" in said["error"]
+		assert call(url, "/copy-folder", {"path": str(share / "new")}) == (200, {"ok": True}) and (share / "new").is_dir()
+		(share / "new").rmdir()
+		assert call(url, "/start", {"experiment": "Copy test", "copy_to": str(share)}) == (200, {"ok": True})
+		status = wait(url, lambda s: s["state"] == "ready" and s["launcher"] and s["launcher"]["state"] == "done" and
+			s["copies"]["jobs"] and s["copies"]["jobs"][0]["state"] == "done")
+		folder = status["launcher"]["folder"]
+		assert status["launcher"]["post"]["copy"]["state"] == "skipped" # the panel's copy, not post's
+		name = os.path.basename(folder)
+		for cam in NAMES:
+			assert os.path.getsize(str(share / name / cam / "emuclip.mp4")) == os.path.getsize(
+				os.path.join(folder, cam, "emuclip.mp4"))
+		assert json.load(open(os.path.join(folder, "logs", "post.json")))["steps"]["copy"]["to"] == str(share)
+		assert status["fields"]["copy_to"] == str(share) # remembered for this config
+	finally:
+		if proc.poll() is None:
+			os.killpg(proc.pid, signal.SIGINT)
+		proc.wait(timeout=30)
+	assert proc.returncode == 0, "".join(lines)
 
 
 @POSIX
@@ -462,3 +610,192 @@ def test_the_disk_tile_counts_the_rest_of_a_picos_plan(tmp_path, home, monkeypat
 	assert p.Disk(378e9, 1.0e6, s)["plan_left_gb"] == round(p.devices.Need(28800, 4, 14400)["total_b"] / 1e9, 1) == 80.8
 	p.devices.cached = {"pico": {"alive": False}} # its session has ended
 	assert p.Disk(378e9, 1.0e6, s) == {"free_gb": 378.0, "hours_left": None, "plan_left_gb": None}
+
+
+# ------------------------------------------------------------------ one panel for a folder of configs
+
+def configs_folder(tmp_path):
+	# A rig's folder of configs: two experiments with a title, one without, one campy-session can't use, a note
+	from test_session import write_config
+	folder = tmp_path / "configs"
+	folder.mkdir()
+	data = str(tmp_path / "data")
+	write_config(folder / "look.yaml", {"numCams": 2, "videoFolder": data, "recTimeInSec": 300},
+		panel={"title": "Look at the cameras", "rig_lock": "auto", "owner": "panel-look"})
+	write_config(folder / "live.yaml", {"numCams": 3, "videoFolder": data, "recTimeInSec": 3600},
+		panel={"title": "  Live tracking,\n 3 mice "})
+	write_config(folder / "old_v02.yml", {"numCams": 4, "videoFolder": data, "recTimeInSec": 60})
+	(folder / "broken.yaml").write_text("numCams: 2\npanel: {nonsense: 1}\n")
+	(folder / "notes.txt").write_text("not a config")
+	return folder
+
+
+def test_a_folders_configs_titles_and_favourites(tmp_path, home):
+	folder = configs_folder(tmp_path)
+	t = panel.Types(str(folder))
+	assert [c["file"] for c in t.configs] == ["broken.yaml", "live.yaml", "look.yaml", "old_v02.yml"]
+	broken, live, look, old = t.configs
+	assert broken["error"] and "nonsense" in broken["error"]
+	assert (live["title"], live["titled"]) == ("Live tracking, 3 mice", True) # its spaces and line break: one line
+	assert (old["title"], old["titled"], old["error"]) == ("old_v02", False, None) # untitled: its file's name
+	# Before any star, the configs with a title; the panel opens on the first that can be used
+	assert [c["file"] for c in t.Favorites()] == ["live.yaml", "look.yaml"]
+	assert t.First() == live["path"]
+	assert t.RigLock() == ("auto", "panel-look")
+	# Stars, kept for the next panel (a new Types reads them back), in the order they were given
+	assert t.Star(old["path"], True) is None and t.Star(live["path"], False) is None
+	t2 = panel.Types(str(folder))
+	assert [c["file"] for c in t2.Favorites()] == ["look.yaml", "old_v02.yml"]
+	assert t2.First() == look["path"]
+	t2.Save(last=old["path"])
+	assert panel.Types(str(folder)).First() == old["path"]
+	# A favourite, or the last pick, that has gone from the folder is passed over
+	os.rename(folder / "old_v02.yml", tmp_path / "old_v02.yml")
+	t3 = panel.Types(str(folder))
+	assert [c["file"] for c in t3.Favorites()] == ["look.yaml"] and t3.First() == look["path"]
+	assert t3.Star(str(tmp_path / "old_v02.yml"), True).startswith("No config")
+	status = t3.Status(look["path"])
+	assert status["chosen"] == look["path"] and [x["favorite"] for x in status["all"]] == [False, False, True]
+
+
+def test_a_folder_with_nothing_usable(tmp_path, home):
+	empty = tmp_path / "empty"
+	empty.mkdir()
+	with pytest.raises(panel.session.SessionError, match="No config in"):
+		panel.Types(str(empty)).First()
+	(empty / "bad.yaml").write_text("panel: {nonsense: 1}\n")
+	with pytest.raises(panel.session.SessionError, match="can be used: bad.yaml"):
+		panel.Types(str(empty)).First()
+
+
+def test_one_panel_picks_among_a_folders_experiments(tmp_path, home):
+	folder = configs_folder(tmp_path)
+	p = panel.Panel(str(folder), browser=False)
+	assert p.opened == str(folder) and p.config.path == str(folder / "live.yaml")
+	assert len(p.health.names) == 3
+	status = p.Status()
+	assert status["types"]["chosen"] == str(folder / "live.yaml")
+	assert [x["title"] for x in status["types"]["favorites"]] == ["Live tracking, 3 mice", "Look at the cameras"]
+	# Another experiment: its cameras, its checks; remembered as the folder's last
+	assert p.Choose(str(folder / "look.yaml")) is None
+	assert p.config.path == str(folder / "look.yaml") and len(p.health.names) == 2
+	assert any("2 cameras" in c[1] for c in p.checks)
+	assert panel.Types(str(folder)).First() == str(folder / "look.yaml")
+	# One that isn't in the folder, or can't be used: refused, and the panel stays as it was
+	assert p.Choose(str(tmp_path / "elsewhere.yaml")).startswith("No config")
+	assert "can't be used" in p.Choose(str(folder / "broken.yaml"))
+	assert p.config.path == str(folder / "look.yaml")
+	# Not while a recording starts or runs
+	assert p.Start({}) is None
+	assert "A recording is running" in p.Choose(str(folder / "old_v02.yml"))
+	p.wanted = None
+	assert p.Choose(str(folder / "old_v02.yml")) is None and len(p.health.names) == 4
+	# A panel opened with one config has no list
+	one = panel.Panel(str(folder / "look.yaml"), browser=False)
+	assert one.Status()["types"] is None and one.Choose(str(folder / "live.yaml")).startswith("This panel was opened")
+
+
+def test_a_switch_while_the_panel_is_open_follows_the_new_cameras(tmp_path, home):
+	# The health thread of the old config stops; the new config's starts
+	folder = configs_folder(tmp_path)
+	p = panel.Panel(str(folder), browser=False)
+	p.health.Start()
+	old = p.health
+	try:
+		assert p.Choose(str(folder / "look.yaml")) is None
+		assert old.done.is_set() and p.health is not old and p.health.thread.is_alive()
+	finally:
+		p.health.Stop()
+
+
+def test_the_page_picks_and_stars_over_http(tmp_path, home):
+	folder = configs_folder(tmp_path)
+	p = panel.Panel(str(folder), browser=False)
+	p.Serve()
+	try:
+		url = p.url
+		assert call(url, "/type", {"path": str(folder / "look.yaml")}) == (200, {"ok": True})
+		assert call(url, "/favorite", {"path": str(folder / "old_v02.yml"), "on": True}) == (200, {"ok": True})
+		(folder / "new.yaml").write_text("numCams: 1\nvideoFolder: x\npanel: {title: New}\n")
+		assert call(url, "/types-scan", {}) == (200, {"ok": True})
+		T = call(url, "/status.json")[1]["types"]
+		assert T["chosen"] == str(folder / "look.yaml")
+		assert [x["file"] for x in T["favorites"]] == ["live.yaml", "look.yaml", "old_v02.yml"] # stars saved: new's
+		# title doesn't star it
+		assert "new.yaml" in [x["file"] for x in T["all"]]
+		code, said = call(url, "/type", {"path": str(folder / "broken.yaml")})
+		assert code == 409 and "can't be used" in said["error"]
+	finally:
+		p.server.shutdown()
+		p.server.server_close()
+
+
+def test_a_folder_panel_takes_the_rig_lock_when_a_config_asks(tmp_path, home, monkeypatch):
+	folder = configs_folder(tmp_path)
+	ran = []
+	monkeypatch.setattr(panel, "UnderRig", lambda *a: ran.append(a[:3]) or 0)
+	monkeypatch.setattr(panel, "Running", lambda: None)
+	assert panel.Main([str(folder), "--no-browser"]) == 0
+	assert ran == [("auto", "panel-look", "configs")]
+
+
+@POSIX
+def test_a_folder_panel_records_with_the_experiment_picked_on_its_page(tmp_path, home):
+	# Opened on one experiment (3 cameras that never take a frame), switched on the page to the emulated cameras'
+	# config: its cameras' health and its recording, with no stale reader of the first
+	config, clips = emu_session(tmp_path, home, 60, live={"model": "none"}, feed="campy-test-folder")
+	folder = tmp_path / "configs"
+	folder.mkdir()
+	os.rename(config, folder / "emu.yaml")
+	from test_session import write_config
+	write_config(folder / "first.yaml", {"numCams": 3, "videoFolder": str(tmp_path / "x"), "recTimeInSec": 60},
+		panel={"title": "First"})
+	proc, lines, url = start_panel(tmp_path, home, folder)
+	try:
+		status = call(url, "/status.json")[1]
+		assert status["types"]["chosen"] == str(folder / "first.yaml") # the only title: the favourite
+		assert call(url, "/type", {"path": str(folder / "emu.yaml")}) == (200, {"ok": True})
+		assert call(url, "/start", {"experiment": "Folder test"}) == (200, {"ok": True})
+		assert call(url, "/type", {"path": str(folder / "first.yaml")})[0] == 409 # not while it records
+		status = wait(url, lambda s: s["state"] == "recording" and s["health"].get("feed") and
+			all(c["frame"] > 10 for c in s["health"]["cameras"]))
+		assert [c["name"] for c in status["health"]["cameras"]] == NAMES
+		assert call(url, "/stop", {}) == (200, {"ok": True})
+		# A clean stop, on a CI runner busy with 3 other workers, can take more than a minute (the ARM runner's did)
+		try:
+			status = wait(url, lambda s: s["state"] == "ready" and s["launcher"] and s["launcher"]["state"] == "done",
+				timeout=180)
+		except AssertionError as e:
+			raise AssertionError("{}\nThe panel's output:\n{}".format(e, "".join(lines)[-6000:]))
+		assert status["launcher"]["parts"]["acquire"]["exit_code"] == 0
+		assert min(recorded(the_folder(clips))) > 10
+		# Back to the first, once it has ended; the next panel opens on it
+		assert call(url, "/type", {"path": str(folder / "first.yaml")}) == (200, {"ok": True})
+		assert panel.Types(str(folder)).First() == str(folder / "first.yaml")
+	finally:
+		if proc.poll() is None:
+			os.killpg(proc.pid, signal.SIGINT)
+		try:
+			proc.wait(timeout=30)
+		except subprocess.TimeoutExpired:
+			os.killpg(proc.pid, signal.SIGKILL)
+	assert proc.returncode == 0, "".join(lines)
+
+
+def test_a_title_is_only_the_file_that_gives_it(tmp_path, home):
+	# A trial built on the daily config with extends: is not a second "Daily" on the list
+	from test_session import write_config
+	folder = tmp_path / "configs"
+	folder.mkdir()
+	write_config(folder / "daily.yaml", {"numCams": 2, "videoFolder": str(tmp_path / "d"), "recTimeInSec": 60},
+		panel={"title": "Daily"})
+	(folder / "trial.yaml").write_text("extends: daily.yaml\nrecTimeInSec: 120\n")
+	t = panel.Types(str(folder))
+	daily, trial = t.Find(str(folder / "daily.yaml")), t.Find(str(folder / "trial.yaml"))
+	assert (daily["title"], daily["titled"]) == ("Daily", True)
+	assert (trial["title"], trial["titled"], trial["error"]) == ("trial", False, None)
+	assert [c["file"] for c in t.Favorites()] == ["daily.yaml"]
+	# Its own title makes it one
+	(folder / "trial.yaml").write_text("extends: daily.yaml\nrecTimeInSec: 120\npanel: {title: Trial}\n")
+	t.Scan()
+	assert [c["title"] for c in t.Favorites()] == ["Daily", "Trial"]

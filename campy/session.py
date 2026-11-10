@@ -93,7 +93,8 @@ LIVE = {
 	"centroid": ((str,), "", "the trained centroid model's folder (--centroid)"),
 	"instance": ((str,), "", "the trained centered-instance model's folder (--instance)"),
 	"animals": ((int,), 0, "how many animals (--animals, and --max-instances unless args give it); 0: campy-live's default"),
-	"calibration": ((str,), "", "calibration.toml, for 3D (--calibration)"),
+	"calibration": ((str,), "", "calibration.toml, for 3D (--calibration); or a folder of calibration recordings: "
+		"the newest one's calibration.toml that campy-calibrate made whole (campy/calibrate.py's Newest)"),
 	"frame_shape": ((str,), "", "--frame-shape, if not the cameras' frameHeight x frameWidth"),
 	"args": ((list,), [], "more campy-live options, as a list: [\"--engine\", \"off\"]"),
 	"env": ((dict,), {}, "environment variables for campy-live: {CUDA_VISIBLE_DEVICES: \"0\"}"),
@@ -117,6 +118,10 @@ POST = {
 	"align": ((bool,), True, "campy-align: every camera on the trigger's timeline (aligned.csv, alignment.json), and "
 		"where the trigger paused"),
 	"export": ((bool,), True, "campy-live-export, when campy-live ran"),
+	"calibrate": ((dict,), {}, "for a calibration recording: calibrat3 (headless, in this computer's Chrome) makes its "
+		"calibration.toml: {calibrat3: <its checkout>, board: {board_x: 14, board_y: 9, square_length: 20, "
+		"marker_length: 15, marker_bits: 5, dict_size: 1000}, target: 300 (frames sampled), browser: chrome} "
+		"(campy/calibrate.py); {} (the default): off"),
 	"copy": ((dict, str), {}, "copy the recording to copy.to/<its folder's name> (robocopy or rsync); nothing deleted"),
 	"run": ((list,), [], "your own commands, {folder} replaced by the recording's folder"),
 	"ffmpeg": ((str,), "", "the ffmpeg to remux with (default: imageio-ffmpeg's)"),
@@ -125,6 +130,9 @@ PANEL = {
 	"rig_lock": ((str,), "", "rig.py (bench/rig.py, installed on the rig): the panel holds the rig's lock while it is "
 		"open, and Ctrl-C in its window does nothing (the page's Close ends it); \"auto\": the rig's installed one"),
 	"owner": ((str,), "panel", "who holds the rig lock, as rig.py status shows it"),
+	"title": ((str,), "", "the experiment's name on a panel opened with a folder of configs (its Experiment list; "
+		"default: the file's name); before any star on that page, the configs with a title are its favourites. Only "
+		"the file that says it: a config that extends it isn't given its title"),
 	"models": ((list, str), [], "folders the panel's model picker looks through for trained models, for live: model: "
 		"sleap (campy/livemodels.py); a rig profile's place, as it turns on nothing"),
 	"model_sets": ((dict,), {}, "named model pairs for the panel's model picker: {name: {centroid: folder, instance: "
@@ -228,11 +236,13 @@ class Config:
 	checked (live, view, post; live None when there is none).
 	"""
 
-	def __init__(self, path, overrides=(), live=None):
+	def __init__(self, path, overrides=(), live=None, pico_set=None):
 		from campy import configurator
 		self.path = os.path.abspath(path)
 		# live: keys the panel's model picker set for this recording ({centroid, instance}), over the config's
 		self.picked = dict(live or {})
+		# pico.set's settings the panel's page set for this recording ({setting: value}), over the config's
+		self.pico_page = dict(pico_set or {})
 		try:
 			with open(self.path, encoding="utf-8", errors="replace") as f:
 				self.text = f.read()
@@ -312,6 +322,12 @@ class Config:
 				resolved.sections["live"][key] = value
 				resolved.section_sources.setdefault("live", {})[key] = configurator.Source("panel",
 					note="picked on campy-session panel's page")
+		if self.pico_page and isinstance(resolved.sections.get("pico"), dict):
+			# The page's bout settings, in pico.set over the config's, the line saying which came from the page
+			given = resolved.sections["pico"].get("set")
+			resolved.sections["pico"]["set"] = dict(given if isinstance(given, dict) else {}, **self.pico_page)
+			resolved.section_sources.setdefault("pico", {})["set"] = configurator.Source("panel",
+				note="bout settings set on campy-session panel's page: {}".format(", ".join(sorted(self.pico_page))))
 		return resolved
 
 	def Value(self, key, default=None):
@@ -350,6 +366,22 @@ class Config:
 
 
 # ------------------------------------------------------------------ campy-live's environment
+
+def LiveCalibration(where):
+	"""
+	live: calibration: as campy-live takes it: a calibration.toml as it is; a folder of calibration recordings, the
+	newest one campy-calibrate made whole (campy/calibrate.py). SessionError when that folder has none.
+	"""
+	if not os.path.isdir(str(where)):
+		return str(where)
+	from campy import calibrate
+	path, summary = calibrate.Newest(where)
+	if path is None:
+		raise SessionError("live: calibration: {} holds no calibration campy-calibrate made whole (a recording folder "
+			"with calibration.toml and calibration_summary.json saying ok). Record one (videoFilename with "
+			"\"calibration\" in it, post: calibrate: on), or name a calibration.toml.".format(where))
+	return path
+
 
 def CampyFolder():
 	return os.path.expanduser(os.path.join("~", ".campy"))
@@ -780,6 +812,7 @@ class Session:
 		self.status_at = 0
 		self.stop_written = 0 # what campy-session asked of campy-acquire's stop file: 1 stop, 2 now
 		self.post_results = {}
+		self.post_plan = None # the steps after the recording, in order, once they have started
 
 	# ---------------------------------------------------------- setup
 
@@ -831,7 +864,7 @@ class Session:
 			if "--max-instances" not in live["args"]:
 				command += ["--max-instances", str(live["animals"])]
 		if live["calibration"]:
-			command += ["--calibration", live["calibration"]]
+			command += ["--calibration", LiveCalibration(live["calibration"])]
 		shape = live["frame_shape"] or self.FrameShape()
 		if shape and "--frame-shape" not in live["args"]:
 			command += ["--frame-shape", shape]
@@ -1255,6 +1288,18 @@ class Session:
 
 	# ---------------------------------------------------------- status
 
+	def PostStatus(self):
+		# The steps after the recording: while they run, as post.Run writes them (logs/post.json: the running step, its
+		# latest line and progress), so the panel follows them; after, their results
+		if self.state == "post" and self.folder:
+			from campy import post
+			state = post.Load(self.folder)
+			steps = state.get("steps") or {}
+			self.post_plan = state.get("plan") or self.post_plan
+			return {step: {k: v for k, v in entry.items() if k in ("state", "message", "fraction", "time", "seconds")}
+				for step, entry in steps.items()}
+		return {step: {"state": state, "message": message} for step, (state, message) in self.post_results.items()}
+
 	def StatusDict(self):
 		acquire = self.parts.get("acquire")
 		started = acquire.started if acquire is not None else None
@@ -1272,7 +1317,8 @@ class Session:
 			"live_models": {"centroid": self.config.live["centroid"], "instance": self.config.live["instance"],
 				"picked": bool(self.config.picked)} if self.config.live is not None else None,
 			"problems": [{"time": t, "text": text} for t, text in self.problems],
-			"post": {step: {"state": state, "message": message} for step, (state, message) in self.post_results.items()},
+			"post": self.PostStatus(),
+			"post_plan": self.post_plan,
 			"devices": self.devices.Status() if self.devices is not None else None,
 			"recording": {"started": Stamp(started), "elapsed_s": round((ended or time.time()) - started, 1) if started else
 				None, "planned_s": planned, "stop_asked": self.stop_written}}
@@ -1320,8 +1366,9 @@ def Main(argv=None):
 		print("usage: campy-session run <config>.yaml [--key value ...]\n"
 			"       campy-session post <recording folder> [--only remux,export] [--force]\n"
 			"       campy-session note <recording folder> \"text\"   (a dated note in its session.json)\n"
-			"       campy-session panel <config>.yaml [--port 8765] [--no-browser]\n"
-			"       campy-session shortcut <config>.yaml [--name ...]   (a desktop shortcut that opens the panel)\n"
+			"       campy-session panel <config>.yaml|<folder of configs> [--port 8765] [--no-browser]\n"
+			"       campy-session shortcut <config>.yaml|<folder of configs> [--name ...]   (a desktop shortcut that "
+			"opens the panel)\n"
 			"       campy-session register-live   (once, in campy-live's environment)", file=sys.stderr)
 		sys.exit(2)
 	sys.exit(commands[argv[0]](argv[1:]))

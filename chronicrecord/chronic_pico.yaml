@@ -74,6 +74,16 @@ alertExternalWaitSec: 3600
 # is added (docs/hardware.md, "Recording many days").
 alertDiskFreeGB: 500
 
+# Denoise each camera's frames before encoding: ffmpeg's atadenoise over 5 frames (the 2 before and
+# the 2 after), on one CPU thread per camera. No pixel changes by more than 4 gray levels, so a moving
+# mouse's edges are left as they are; a still cage's sensor noise is smoothed, which is what makes
+# the files smaller. Measured on 9 November 2026 (docs/encoding.md, "Denoising before encoding"):
+# H.265 on Quick Sync at quality 26 wrote files 6-22% smaller (a fan, more for a quieter scene), AV1
+# recordings of mice 20-28% smaller, and SLEAP tracking didn't change measurably. Turned on
+# 2026-11-09 at the user's request. Needs campy with pull request 361 or later: an older campy
+# refuses this line. Delete it (or set "None") to turn it off.
+denoise: "atadenoise"
+
 # Stop the recording cleanly from anywhere (an SSH shell, a script) by creating this file;
 # the launcher removes an old one before it starts.
 stopFile: "C:\\campy_data\\launchers\\chronic6day.stop"

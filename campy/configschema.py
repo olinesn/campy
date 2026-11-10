@@ -104,6 +104,11 @@ SETTINGS = [
 	Setting("cameraSelection", FILLED, int, section=REC, per_camera=EVERY_CAMERA, low=0,
 		help="Selects and orders camera indices to include in the recording. List length must be equal to \
 			numCams. Default: 0, 1, ..."),
+	Setting("cameraSerials", "None", ID, section=REC, per_camera=EVERY_CAMERA,
+		help="Each camera's serial number, in the order of cameraNames: each name then goes to the camera with \
+			that serial, wherever the camera driver lists it, instead of to cameraSelection's place in the \
+			list. A serial that isn't connected stops campy before anything records, naming the camera and the \
+			serials found. Default: none (cameras are picked by cameraSelection)."),
 	Setting("videoFolder", "./test", TEXT, section=REC,
 		help="Folder in which to save videos. Each run records into a new folder inside it, named by the \
 			date and time it started (sessionFolder)."),
@@ -209,6 +214,12 @@ SETTINGS = [
 		help="Seconds between keyframes (I-frames), e.g. 0.5. Shorter makes seeking and sparse frame \
 			sampling cheaper (LUCID's image ID-switch check needs 0.5) but files larger. Default: the \
 			encoder's own (NVENC: every 250 frames)."),
+	Setting("denoise", "None", str, section=ENC, choices=("None", "atadenoise"),
+		help="Temporal denoising before encoding (default: None). 'atadenoise' runs ffmpeg's atadenoise \
+			(s=5) on each frame first, on one CPU thread per camera: each pixel is averaged with the \
+			same pixel in the 2 frames before and after while they differ by at most 4 gray levels, so \
+			no pixel changes by more than 4. Measured on mice: AV1 on Quick Sync files 20-28% smaller, \
+			no measurable change in tracking (docs/encoding.md)."),
 	Setting("fragmentedVideo", True, bool, section=ENC,
 		help="Write .mp4 and .mov videos in fragments of at most a second (default: True), so that a \
 			video whose ffmpeg is stopped before it closes the file (a power cut, an OS crash, ffmpeg \
