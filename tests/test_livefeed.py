@@ -645,15 +645,35 @@ def test_campy_live_reads_a_recording_to_its_end(tmp_path, capsys):
 	assert "Waiting for the live feed" in text and "Done, the recording ended" in text
 
 
-def test_campy_live_waiting_tracks_from_the_first_frames(tmp_path):
+def test_campy_live_looks_for_the_feed_every_20_ms(monkeypatch):
 	# Started first, it looks for the feed every 20 ms: a camera without a
 	# trigger sends its first frame as its ring is made, at 60 fps one every
-	# 17 ms; it looked every 0.2 s, and missed up to 12
+	# 17 ms; it looked every 0.2 s, and missed up to 12. Checked here by the
+	# waits themselves, which no busy computer changes
+	slept = []
+
+	class Clock:
+		def __getattr__(self, name):
+			return getattr(time, name)
+
+		def sleep(self, seconds):
+			slept.append(seconds)
+	monkeypatch.setattr(live, "time", Clock())
+	cameras = live.Cameras(["campy-test-none-{}-{}".format(os.getpid(), c) for c in range(3)], say=lambda text: None)
+	assert cameras.Attach(stop=lambda: len(slept) >= 5) is False
+	assert len(slept) == 5 and max(slept) <= 0.02, slept
+
+
+def test_campy_live_waiting_tracks_from_the_first_frames(tmp_path):
+	# Started first, it reads the recording from its start. The first frame it
+	# reads is the newest when its setup after attaching is done: frame 1 on a
+	# Mac (setup 3-19 ms), 7 and 10 on a CI runner so busy it skipped 24 of 54
+	# sets with no model. How often it looks is checked above, without timing
 	out = str(tmp_path / "live")
 	assert run_live(name(), out, ["--model", "none", "--report-sec", "0", "--wait-sec", "30"], frames=60, rate=60,
 		delay=0.5, triggered=False) == 0
 	rows = np.load(out + ".npy")
-	assert rows["frame"][0] <= 6 and rows["frame"][-1] == 60
+	assert rows["frame"][0] <= 30 and rows["frame"][-1] == 60
 
 
 def log_sets(log, first, count):
