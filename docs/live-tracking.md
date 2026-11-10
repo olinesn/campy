@@ -629,6 +629,14 @@ Notes on the measurements:
   - The rig checks write their own configs, which don't use the rig profiles, so they still record without the filter and their numbers stay comparable. None of these changes touch `campy-live`'s tracking, so the rig checks weren't run again.
   - No recording of animals with the filter on had been checked on these rigs yet.
 
+- At 7:48–7:50 PM on 9 November, after pull requests 363 (a daily calibration made by calibrat3, and the panel's progress while the steps after a recording run), 367 (a cage saved when drawing stops), 369 (the version label's distance from the release) and 370 (the panel's key kept from one panel to the next) were merged, four machines moved to dev `2e3521b`: the Windows 11 VM, the Precision 7875, the Pro Max Slim and the EVO-X2.
+  - `setup.py` adds the `campy-calibrate` command, so after the fast-forward campy was reinstalled (`--no-deps`) in each environment that runs this checkout: both on the Precision 7875, the Pro Max Slim and the EVO-X2, and the VM's one. Each now has `campy-calibrate`, and every machine already had this `rig.py`.
+  - Each was idle and ran the update under its lock. The VM, the Precision 7875 and the EVO-X2 ended `RIG_CLEAN`. The Pro Max Slim ended `RIG_CONTAMINATED` from one burst of other CPU use during the reinstall, which doesn't matter for an update: nothing was measured.
+  - The `calibrate` step is off unless a config asks for it, and it needs Playwright and a calibrat3 checkout ([A calibration every day](calibration.md#a-calibration-every-day-made-by-itself-calibrat3)). Only the Dell Pro Tower Plus has them, so the other machines have the step but don't use it.
+  - The Dell Pro Tower Plus was already on `2e3521b` since 7:42 PM, after running these pull requests one by one as they were made. It hasn't been reinstalled yet, so it has no `campy-calibrate` command; its panel's calibrate step doesn't need one.
+  - The spock cluster's campy copy for `campy-infer` wasn't moved this time: the login there was refused at the time. It stays on `4ff6d52`, which has the same `campy-infer`.
+  - None of these changes `campy-live`'s tracking (pull request 367 changes the viewer's cage drawing), so the machines didn't run their rig checks again.
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
