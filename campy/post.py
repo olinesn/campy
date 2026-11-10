@@ -655,6 +655,42 @@ def CopyDest(folder, to):
 	return ("{}/{}".format(str(to).rstrip("/"), name) if remote else os.path.join(str(to), name)), remote
 
 
+def Within(path, folder):
+	"""
+	Whether path is folder or inside it, both as they really are: links and junctions followed (os.path.realpath),
+	case ignored where the system does, and the same folder reached another way (a network share of this computer's own
+	disk, which realpath can't see through) found by os.path.samefile on path and each of its folders that exists.
+	"""
+	a = os.path.normcase(os.path.realpath(str(path)))
+	b = os.path.normcase(os.path.realpath(str(folder)))
+	if a == b or a.startswith(b.rstrip("\\/") + os.sep):
+		return True
+	if not os.path.isdir(folder):
+		return False
+	where = os.path.abspath(str(path))
+	while True:
+		try:
+			if os.path.exists(where) and os.path.samefile(where, folder):
+				return True
+		except OSError:
+			pass
+		parent = os.path.dirname(where)
+		if parent == where:
+			return False
+		where = parent
+
+
+def SelfCopy(folder, dest):
+	"""Why folder can't be copied into dest, or None: dest is folder itself or inside it, or holds it (the same
+	folder reached another way too: a link, a network share of this disk). Its files would be "checked" against
+	themselves, and a recording deleted once its copy checks out would be deleted with its only copy."""
+	if Within(dest, folder):
+		return "{} is the recording's own folder, or inside it".format(dest)
+	if Within(folder, dest):
+		return "{} holds the recording's own folder".format(dest)
+	return None
+
+
 def RunCopier(command, started=None):
 	"""
 	subprocess.run(command, capture_output=True, text=True), with started(the process) called once it runs: the
@@ -688,6 +724,11 @@ def StepCopy(folder, settings, log, stop=None, details=None, progress=None, star
 	if not to:
 		return "skipped", "no copy.to"
 	dest, remote = CopyDest(folder, to)
+	# Never onto itself (copy.to the recordings' own folder: dest is then the recording, or the same disk through a
+	# share): every file would be compared with itself and pass. Nothing copied, nothing deleted
+	same = None if remote else SelfCopy(folder, dest)
+	if same:
+		return "failed", "not copied: {}. Copy it somewhere else (nothing was copied, and nothing deleted)".format(same)
 	t0 = time.monotonic()
 	if not remote:
 		os.makedirs(dest, exist_ok=True) # rsync makes only the last folder of a path (GNU rsync, on Linux)
@@ -996,7 +1037,13 @@ def Main(argv=None):
 		delete=delete)
 	local = results.pop("local", None)
 	if delete and local is None and results.get("copy", ("",))[0] == "done":
-		print("campy-session post: nothing deleted: the copy was done already (add --force to copy and check it "
-			"again, then delete)", file=sys.stderr)
+		to = settings["copy"].get("to") if isinstance(settings.get("copy"), dict) else settings.get("copy")
+		if to and CopyDest(folder, to)[1]:
+			print("campy-session post: nothing deleted: the copy wasn't checked (an rsync address isn't read back), "
+				"so the folder is kept; copy into a folder this computer reaches to have it checked and deleted",
+				file=sys.stderr)
+		else:
+			print("campy-session post: nothing deleted: the copy was done already (add --force to copy and check it "
+				"again, then delete)", file=sys.stderr)
 	return 1 if any(state == "failed" for state, _ in results.values()) or (delete and local and local[0] == "kept") or \
 		all(state == "skipped" and "clean stop" in message for state, message in results.values()) else 0

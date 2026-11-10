@@ -527,13 +527,14 @@ def test_a_recording_outlives_its_panel_and_the_next_panel_finds_it(tmp_path, ho
 FAKE_SDK = os.path.join(REPO, "tests", "fake_sglx")
 
 
-def disk_panel(tmp_path, monkeypatch, free_gb, devices=True, video_folder=None):
+def disk_panel(tmp_path, monkeypatch, free_gb, devices=True, video_folder=None, six_days_into=None):
 	# A panel for 4 cameras at 60 fps: with a Pico (8 h and 6 days, its board and SpikeGLX answering) and SpikeGLX, or
 	# with neither; its disk holding free_gb. Nothing records: Start only hands the main thread its fields.
 	from campy import pico, spikeglx
 	from test_session import write_config
 	sections = {"pico": {"port": "E665485457699D30", "lengths": [{"name": "8 h", "seconds": 28800},
-		{"name": "6 days", "seconds": 518400}]}, "spikeglx": {"sdk": FAKE_SDK}} if devices else {}
+		dict({"name": "6 days", "seconds": 518400}, **({"videoFolder": str(six_days_into)} if six_days_into else {}))]},
+		"spikeglx": {"sdk": FAKE_SDK}} if devices else {}
 	config = write_config(tmp_path / "c.yaml", {"numCams": 4, "frameRate": 60, "videoFolder": str(video_folder or tmp_path / "data"),
 		"recTimeInSec": 3600}, **sections)
 	monkeypatch.setattr(pico.Pico, "Check", lambda self: "COM3: idle")
@@ -588,6 +589,19 @@ def test_a_length_that_does_not_fit_is_refused(tmp_path, home, monkeypatch):
 	# Near the edge (more than 80% of the free space): a warning
 	monkeypatch.setattr(panel.Panel, "Free", lambda self, folder=None: 190e9)
 	assert p.Checks()[-1][0] == "warn"
+
+
+def test_the_copy_folder_cant_be_where_the_chosen_length_records(tmp_path, home, monkeypatch):
+	# A Pico length with a videoFolder of its own (the 6-day session's): the copy box can't name that folder, though
+	# the config's videoFolder is elsewhere; the config's own folder is fine for a length that records elsewhere
+	chronic, data = tmp_path / "chronic", tmp_path / "data"
+	chronic.mkdir()
+	data.mkdir()
+	p = disk_panel(tmp_path, monkeypatch, 100000, six_days_into=chronic)
+	assert p.RecordsInto() == str(data) # 8 h, the first length
+	said = p.Start({"length": 518400, "copy_to": str(chronic)})
+	assert said and "where the recordings are made" in said and p.wanted is None
+	assert p.Start({"length": 518400, "copy_to": str(data)}) is None and p.wanted["length"] == 518400
 
 
 def test_without_a_pico_the_disk_check_is_as_before(tmp_path, home, monkeypatch):

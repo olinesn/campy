@@ -1189,7 +1189,7 @@ class Panel:
 				fields = dict(fields, led_power=power)
 			# The page's "Copy each recording to": a folder this computer reaches, kept for the next panel too
 			to = str(fields.get("copy_to") or "").strip()
-			problem = copyqueue.Problem(to, self.config.Value("videoFolder", "."))
+			problem = copyqueue.Problem(to, self.RecordsInto()) # the chosen length's own videoFolder, with a Pico
 			if problem:
 				return problem
 			copyqueue.Remember(copyqueue.RememberFile(), self.config.path, to, delete=bool(fields.get("copy_delete")))
@@ -1340,12 +1340,16 @@ class Panel:
 			return None
 		for job in self.copies.Leave():
 			Say("Not copied: {} ({}).".format(job.folder, job.message))
+		if self.copies.Pending(): # a copy already checked, finishing (post's logs, the delete): closes once it ends
+			Say("Closing once the copy being finished ends.")
+			self.close_when_copied = True
+			return None
 		self.closing = True
 		return None
 
 	def MakeCopyFolder(self, path):
 		# The page's Create this folder, for a "Copy each recording to" folder that isn't there yet
-		error = copyqueue.Create(path, self.config.Value("videoFolder", "."))
+		error = copyqueue.Create(path, self.RecordsInto())
 		if not error:
 			Say("Made the copy folder {} (Create this folder, on the page).".format(str(path).strip()))
 		return error
@@ -1712,6 +1716,14 @@ class Panel:
 				except KeyboardInterrupt:
 					for job in self.copies.Leave():
 						Say("Not copied: {} ({}).".format(job.folder, job.message))
+					try:
+						if self.copies.Pending():
+							# A copy checked already, its folder being deleted: let it end (Ctrl-C again: now)
+							Say("Closing once the copy being finished ends (Ctrl-C again closes now).")
+						while self.copies.Pending():
+							time.sleep(0.2)
+					except KeyboardInterrupt:
+						pass
 					Say("Closed.")
 					return 0
 				if self.closing:

@@ -105,7 +105,8 @@ def Remember(path, config, to, delete=None):
 
 def Problem(to, video_folder=None):
 	"""Why recordings can't be copied into to, or None: it must be a folder this computer reaches now, and not the
-	recordings' own folder or inside it (a copy would land in the next recording's place)."""
+	folder the recordings go into (video_folder) or inside it (a copy would land in the recording's own place, or the
+	next one's). post.StepCopy refuses a copy onto its own recording too, whatever the page said."""
 	to = str(to or "").strip()
 	if not to:
 		return None
@@ -118,11 +119,11 @@ def Problem(to, video_folder=None):
 			return "{} doesn't exist yet. Press Create this folder, or check the address.".format(to)
 		return "Can't reach {} from this computer. Check the address; a network share may need opening once in " \
 			"File Explorer (or signing in) first.".format(to)
-	if video_folder:
-		a = os.path.normcase(os.path.abspath(to))
-		b = os.path.normcase(os.path.abspath(str(video_folder)))
-		if a == b or a.startswith(b.rstrip("\\/") + os.sep):
-			return "{} is where the recordings are made: copy them somewhere else.".format(to)
+	# The folder the recording goes into (the panel's RecordsInto: a Pico length's own videoFolder), as it really is:
+	# links followed, and the same folder through a network share of this disk too (post.Within)
+	from campy import post
+	if video_folder and post.Within(to, str(video_folder)):
+		return "{} is where the recordings are made: copy them somewhere else.".format(to)
 	return None
 
 
@@ -326,11 +327,14 @@ class CopyQueue:
 			# closing, a test) then finds the result there. Under the lock, so Leave can't mark it left meanwhile.
 			job.ended = time.time()
 			self.Record(job, state, message, details)
+			finish = state == "done" and details.get("files") is not None and not details.get("mismatched")
+			if finish: # under the lock too: from here on Leave lets it end
+				job.phase = "deleting" if job.delete else "finishing"
 		local = None
-		if state == "done" and details.get("files") is not None and not details.get("mismatched"):
+		unchecked = state == "done" and details.get("files") is None # an rsync address: never read back
+		if finish:
 			# Every file the same in the copy: post's logs copied again (the result is in them now), then, ticked,
 			# the folder deleted here
-			job.phase = "deleting" if job.delete else "finishing"
 			try:
 				local, text = post.FinishCopy(job.folder, details, log, delete=job.delete, busy=self.Busy(job))
 			except Exception as e:
@@ -340,6 +344,9 @@ class CopyQueue:
 				message += "; deleted from this computer"
 			elif job.delete:
 				message += "; " + text
+		elif job.delete and unchecked:
+			job.local = "kept here: the copy wasn't checked (an rsync address isn't read back), so nothing was deleted"
+			message += "; " + job.local
 		elif job.delete:
 			job.local = "kept here: the copy isn't the same" if state == "failed" else "kept here"
 		with self.lock:
@@ -358,6 +365,12 @@ class CopyQueue:
 			self.Alert("copy/" + job.name, "{} didn't stop cleanly, so it was copied into {} and checked, but kept on "
 				"this computer though the box to delete it is ticked ({}). Look at its logs, then delete it by "
 				"hand.".format(job.folder, job.to, job.local))
+		elif job.delete and unchecked:
+			# Not checked, so not deleted: the box can't free the disk with an rsync address
+			self.Alert("copy/" + job.name, "{} was copied into {}, but the copy wasn't checked (an rsync address "
+				"isn't read back), so it was kept on this computer though the box to delete it is ticked. To have "
+				"recordings deleted once their copy is checked, copy into a folder this computer reaches (a network "
+				"share).".format(job.folder, job.to))
 		elif job.delete and local != "deleted":
 			self.Alert("copy/" + job.name, "{} was copied into {} and checked, but not deleted from this computer: {}. "
 				"Delete it by hand once nothing uses it.".format(job.folder, job.to, job.local))
@@ -409,6 +422,8 @@ class CopyQueue:
 	def Record(job, state, message, details=None):
 		# Into the recording's logs/post.json, as campy-session post's copy step
 		from campy import post
+		if not os.path.isdir(job.folder):
+			return # deleted (its copy checked) or gone: never made again just to hold a post.json
 		try:
 			os.makedirs(os.path.join(job.folder, "logs"), exist_ok=True)
 			saved = post.Load(job.folder)
@@ -422,10 +437,16 @@ class CopyQueue:
 			pass
 
 	def Leave(self):
-		"""The panel closes before every copy is done: the folders not copied, with how to copy them by hand."""
+		"""The panel closes before every copy is done: the folders not copied, with how to copy them by hand. A copy
+		already checked and finishing (post's logs, the delete) is not left: it stays in Pending() until it ends."""
 		left = []
 		with self.lock:
 			for job in self.jobs:
+				if job.state == "copying" and job.phase in ("finishing", "deleting"):
+					# Copied and checked, its result in post.json: post's logs copied again and, ticked, the folder
+					# being deleted. Left to end (Pending() keeps it): marking it left would make a folder deleted
+					# meanwhile again (Record) and keep its alert from going out
+					continue
 				if job.state in ("waiting", "copying"):
 					copying = job.state == "copying"
 					job.state, job.ended = "left", time.time()
