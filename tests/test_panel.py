@@ -9,6 +9,7 @@ import http.client
 import json
 import os
 import re
+import shutil
 import signal
 import struct
 import subprocess
@@ -928,6 +929,88 @@ def test_the_page_fills_the_copy_box_from_the_length():
 	from campy import panelpage
 	page = panelpage.PAGE
 	assert "if(L0.copyTo) $(\"copyto\").value = L0.copyTo; else if(copyLen) $(\"copyto\").value = s.fields.copy_to||\"\";" in page
+
+
+def test_the_status_has_the_computers_clock(tmp_path, home, monkeypatch):
+	# now: what the page counts its clocks on from between two statuses (the Pico's time from its start)
+	p = disk_panel(tmp_path, monkeypatch, 500)
+	before = time.time()
+	now = p.Status()["now"]
+	assert before - 0.01 <= now <= time.time() + 0.01
+
+
+def page_functions(*names):
+	# The page's own functions, by name (each from "function name(" to the line where its braces close), to run in node
+	from campy import panelpage
+	script = panelpage.PAGE.split("<script>")[1].split("</script>")[0]
+	found = []
+	for name in names:
+		m = re.search(r"^function " + name + r"\(", script, re.M)
+		assert m, name
+		lines, depth = [], 0
+		for line in script[m.start():].splitlines():
+			lines.append(line)
+			depth += line.count("{") - line.count("}")
+			if depth <= 0:
+				break
+		found.append("\n".join(lines))
+	return script, "\n".join(found)
+
+
+def run_node(code):
+	node = shutil.which("node")
+	if node is None:
+		pytest.skip("no node to run the page's script")
+	r = subprocess.run([node, "-e", code], capture_output=True, text=True, timeout=60)
+	assert r.returncode == 0, r.stderr
+	return json.loads(r.stdout)
+
+
+def test_the_pages_clocks_tick_every_second_between_statuses():
+	# The Pico's time is read only every 2 s (devices.STATUS_EVERY_S), and its program writes it once a second: the
+	# page counts it from the Pico's start on the computer's clock, so it moves on every second, not by 2 s every 2 s
+	script, fns = page_functions("serverNow", "picoTime", "steady", "hms", "mss")
+	assert "setInterval(paint, 200)" in script
+	out = run_node("""
+let T = 1e12; Date.now = () => T;
+let clockShown = {key: null, t: -1}, serverOffset = 0;
+""" + fns + """
+const P = {started: T/1000 - 29.6, alive: true, ends_s: 625, session_s: 28.1}, seen = [];
+for(let i = 0; i < 6; i++){ seen.push(hms(Math.floor(steady("pico", picoTime(P))))); T += 1000; }
+const ended = picoTime({started: 1, alive: false, session_s: 600, ends_s: 625});
+const capped = picoTime({started: T/1000 - 700, alive: true, ends_s: 625});
+// Re-synced to a status a little behind: held, not a second back; a real correction (2 s+) is taken
+clockShown = {key: "rec", t: 10.4}; const held = steady("rec", 10.2), corrected = steady("rec", 7);
+console.log(JSON.stringify({seen, ended, capped, held, corrected, mss: [mss(192), mss(59.9), mss(3725)]}));
+""")
+	assert out["seen"] == ["0:00:29", "0:00:30", "0:00:31", "0:00:32", "0:00:33", "0:00:34"]
+	assert out["ended"] == 600 and out["capped"] == 625
+	assert out["held"] == 10.4 and out["corrected"] == 7
+	assert out["mss"] == ["3:12", "0:59", "1:02:05"]
+
+
+def test_the_copys_big_time_left_eases_to_each_new_estimate():
+	# The card's corner counts down every second from the copy's eta_s, and moves a third of the way to each new
+	# estimate: never back by more than the estimate changed; a new copy or phase starts from its own
+	from campy import panelpage
+	assert 'id="bgetanum"' in panelpage.PAGE and "followEta(now[0])" in panelpage.PAGE
+	_, fns = page_functions("followEta", "etaLeft")
+	out = run_node("""
+let T = 1e12; Date.now = () => T; let bgEta = null;
+""" + fns + """
+const j = {folder: "a", phase: "copying", eta_s: 200, done_bytes: 3.4e9, bytes: 7.5e9};
+followEta(j); const first = etaLeft(j), pct = bgEta.pct;
+T += 1000; followEta(Object.assign({}, j, {eta_s: 199})); const steady1 = etaLeft(j);
+T += 1000; followEta(Object.assign({}, j, {eta_s: 228})); const eased = etaLeft(j);
+followEta({folder: "a", phase: "checking", eta_s: 400}); const check = etaLeft({folder: "a", phase: "checking"});
+followEta({folder: "b", phase: "copying", eta_s: null}); const none = bgEta.end;
+followEta(undefined); const gone = bgEta;
+console.log(JSON.stringify({first, pct, steady1, eased, check, none, gone}));
+""")
+	assert out["first"] == 200 and round(out["pct"]) == 45
+	assert out["steady1"] == 199 # the same end time: a second less
+	assert out["eased"] == pytest.approx(198 + 30 / 3) # the estimate went 30 s up: a third of it now
+	assert out["check"] == 400 and out["none"] is None and out["gone"] is None
 
 
 def test_the_pages_text_is_in_rem_and_can_be_made_larger():

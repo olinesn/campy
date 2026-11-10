@@ -51,6 +51,7 @@ import psutil
 REMEMBER = "panel_copy.json"
 KEEP = 30 # finished copies the page lists
 LOOK_S = 3.0 # how often a copy's progress is looked at (a network share is slow to list)
+ETA_AFTER_S = 5.0 # a phase's time left is only estimated once it has run this long (its rate means something then)
 SAME_TIME_S = 2.0 # a copied file's modification time is its original's to within this (FAT keeps it to 2 s)
 
 
@@ -239,6 +240,9 @@ class Job:
 		# While it copies: copying, then checking (checked_bytes of check_bytes read again on both sides), then
 		# finishing (post's logs copied again; deleting here, when it is to be)
 		self.phase, self.checked_bytes, self.check_bytes = None, 0, None
+		# When the phase began, and when its count (done_bytes, checked_bytes) was last measured: what eta_s is
+		# estimated from (Eta)
+		self.phase_at, self.measured_at = None, None
 		self.verified, self.mismatched = None, None # files the same in the copy, and not, once checked
 		self.local = None # what became of the folder here: deleted, kept (why) or here
 		self.copier = None # the copy program (robocopy, rsync), a psutil.Process, while it runs (Progress)
@@ -254,7 +258,38 @@ class Job:
 			"verified": self.verified, "mismatched": self.mismatched, "local": self.local}
 		if self.started:
 			d["seconds"] = round((self.ended or now) - self.started, 1)
+		d["eta_s"] = self.Eta(now)
 		return d
+
+	def Phase(self, phase, now=None):
+		if phase != self.phase:
+			self.phase_at = time.time() if now is None else now
+			self.measured_at = None
+		self.phase = phase
+
+	def Eta(self, now):
+		"""
+		Seconds left (from now) in what the copy does now: copying, at the
+		phase's average rate so far, or the byte-for-byte check, at its own.
+		The rate is the one when the count was last measured (every LOOK_S
+		for the copy), counted down from that moment, so it doesn't creep up
+		between measurements. None while it can't be estimated yet (under
+		ETA_AFTER_S into the phase, nothing done) or the phase has none
+		(finishing, deleting).
+		"""
+		if self.state != "copying" or self.phase_at is None or self.measured_at is None:
+			return None
+		if self.phase == "copying":
+			done, total = self.done_bytes, self.bytes
+		elif self.phase == "checking":
+			done, total = self.checked_bytes, self.check_bytes
+		else:
+			return None
+		ran = self.measured_at - self.phase_at
+		if not total or not done or ran < ETA_AFTER_S:
+			return None
+		left = (total - done) / (done / ran) - (now - self.measured_at)
+		return round(max(0.0, left), 1)
 
 
 class CopyQueue:
@@ -306,12 +341,13 @@ class CopyQueue:
 	def Copy(self, job):
 		from campy import post
 		job.bytes = Size(job.folder)
-		job.phase = "copying"
+		job.Phase("copying")
 		self.say("Copying {} ({:.1f} GB) into {}.".format(job.name, job.bytes / 1e9, job.to))
 		details = {}
 
 		def checked(done, total):
-			job.phase, job.checked_bytes, job.check_bytes = "checking", done, total
+			job.Phase("checking")
+			job.checked_bytes, job.check_bytes, job.measured_at = done, total, time.time()
 		try:
 			log = post.Log(job.folder, self.out)
 			state, message = post.StepCopy(job.folder, {"copy": {"to": job.to}}, log, details=details, progress=checked,
@@ -329,7 +365,7 @@ class CopyQueue:
 			self.Record(job, state, message, details)
 			finish = state == "done" and details.get("files") is not None and not details.get("mismatched")
 			if finish: # under the lock too: from here on Leave lets it end
-				job.phase = "deleting" if job.delete else "finishing"
+				job.Phase("deleting" if job.delete else "finishing")
 		local = None
 		unchecked = state == "done" and details.get("files") is None # an rsync address: never read back
 		if finish:
@@ -467,6 +503,8 @@ class CopyQueue:
 			if job.state == "copying" and now - job.looked > LOOK_S:
 				job.looked = now
 				job.done_bytes = self.Progress(job)
+				if job.phase == "copying":
+					job.measured_at = now
 		shown = [j for j in jobs if j.state in ("waiting", "copying")] + \
 			[j for j in jobs if j.state not in ("waiting", "copying")][-KEEP:]
 		return {"pending": sum(j.state in ("waiting", "copying") for j in jobs),

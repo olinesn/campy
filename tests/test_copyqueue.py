@@ -366,3 +366,55 @@ def test_the_copys_folder_counts_what_is_really_there(tmp_path):
 		s = os.stat(src / name)
 		os.utime(dst / name, (s.st_atime, s.st_mtime))
 	assert copyqueue.Copied(str(src), str(dst)) == 1010
+
+
+def test_a_copys_time_left_is_estimated_from_its_rate_and_counted_down_from_its_measurement():
+	# eta_s: the page's big time left. From the phase's average rate when its count was last measured (every 3 s for
+	# the copy), counted down from that moment: it doesn't creep up between two measurements
+	job = copyqueue.Job("/rec/2026-11-10_17-52-06", "/share")
+	job.state, job.bytes = "copying", 7_500_000_000
+	assert job.Dict(1000.0)["eta_s"] is None # no phase yet (still sizing it)
+	job.Phase("copying", now=1000.0)
+	assert job.Eta(1001.0) is None # nothing measured yet: the page says estimating…
+	job.done_bytes, job.measured_at = 100_000_000, 1003.0
+	assert job.Eta(1003.0) is None # under ETA_AFTER_S into the copy: no rate to go by yet
+	job.done_bytes, job.measured_at = 3_400_000_000, 1183.0 # 3.4 GB in 183 s
+	left = (7.5e9 - 3.4e9) / (3.4e9 / 183)
+	assert job.Eta(1183.0) == round(left, 1)
+	assert job.Eta(1185.0) == round(left - 2, 1) # two seconds on, no new measurement: two seconds less
+	assert job.Dict(1185.0)["eta_s"] == round(left - 2, 1)
+	assert job.Eta(1183.0 + left + 50) == 0.0 # never below none
+	# The byte-for-byte check: its own rate, from its own start
+	job.Phase("checking", now=1400.0)
+	assert job.Eta(1400.0) is None
+	job.checked_bytes, job.check_bytes, job.measured_at = 1_000_000_000, 7_500_000_000, 1410.0
+	assert job.Eta(1410.0) == round(6.5e9 / (1e9 / 10), 1)
+	# Logs copied again, the folder deleted here: no time left to say
+	job.Phase("deleting")
+	assert job.Eta(time.time()) is None
+	job.state = "done"
+	assert job.Dict(time.time())["eta_s"] is None
+
+
+def test_the_status_measures_the_copy_and_gives_its_time_left(tmp_path, monkeypatch):
+	counts = [0]
+	monkeypatch.setattr(copyqueue.psutil, "Process", FakeIo(counts))
+	queue = quiet()
+	began, release = copying(queue, monkeypatch, "2026-11-10_18-01-00", pid=4321)
+	folder = recording(tmp_path, "2026-11-10_18-01-00", BIG)
+	old(folder)
+	to = tmp_path / "share"
+	to.mkdir()
+	queue.Add(folder, str(to))
+	assert began.wait(10)
+	assert queue.Status()["jobs"][0]["eta_s"] is None # just begun
+	job = queue.jobs[0]
+	job.phase_at -= 20 # as if it had copied for 20 s
+	job.looked = 0
+	counts[0] = 40_000
+	status = queue.Status()["jobs"][0]
+	assert status["done_bytes"] == 40_000 and job.measured_at is not None
+	ran = job.measured_at - job.phase_at
+	assert status["eta_s"] == pytest.approx((status["bytes"] - 40_000) / (40_000 / ran), abs=0.2)
+	release.set()
+	assert finished(queue)["jobs"][0]["eta_s"] is None

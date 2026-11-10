@@ -1436,8 +1436,10 @@ class Panel:
 		state = "starting" if self.wanted is not None else (s.state if s is not None else "ready")
 		if s is not None and state in ("done", "failed", "stopped"):
 			state = "finishing" # the recording has ended, and the panel is letting go of it: Start can't take one yet
-		return {"state": state, "rig": platform.node(), "config": self.config.path, "error": self.error,
-			"version": getattr(self, "version", None),
+		# now: this computer's clock as the status was made, which the page counts its clocks on from between two
+		# statuses (the Pico's time from its started, a copy's time left), so they tick every second
+		return {"state": state, "now": round(now, 3), "rig": platform.node(), "config": self.config.path,
+			"error": self.error, "version": getattr(self, "version", None),
 			"types": self.types.Status(self.config.path) if getattr(self, "types", None) is not None else None,
 			"orphan": Orphan() if s is None else None,
 			"checks": [{"level": c[0], "text": c[1], "action": c[2] if len(c) > 2 else None} for c in self.checks],
