@@ -336,17 +336,28 @@ def test_copy_puts_the_whole_folder_under_copy_to(tmp_path):
 	assert (folder / "Camera0" / "0.mp4").exists() # nothing deleted
 
 
+@pytest.mark.skipif(sys.platform != "win32" and not shutil.which("rsync"), reason="no copy program: shutil copies")
+def test_copy_says_which_process_copies(tmp_path):
+	# The panel follows how much it has written (copyqueue.Written)
+	folder = recording(tmp_path / "rec")
+	seen = []
+	state, message = post.StepCopy(str(folder), {"copy": {"to": str(tmp_path / "nas")}}, post.Log(str(folder)),
+		started=seen.append)
+	assert state == "done", message
+	proc, = seen
+	assert proc.pid > 0 and proc.returncode is not None # ended by the time the step returns
+
+
 def test_a_copy_that_takes_a_while_is_done_though_post_json_changed_after_it(tmp_path, monkeypatch):
 	# As on Windows, where robocopy takes over the half second between post.json's saves: the copy step's own lines
 	# after the copy save post.json again, so the copied one is older; only post's own files may differ like that
 	folder = recording(tmp_path / "rec")
-	real = subprocess.run
+	real = post.RunCopier
 
 	def slow(command, *args, **kwargs):
-		if command and command[0] in ("robocopy", "rsync"):
-			time.sleep(0.7)
+		time.sleep(0.7)
 		return real(command, *args, **kwargs)
-	monkeypatch.setattr(post.subprocess, "run", slow)
+	monkeypatch.setattr(post, "RunCopier", slow)
 	dest = tmp_path / "nas"
 	results = post.Run(str(folder), {"copy": {"to": str(dest)}}, only=["copy"], out=open(os.devnull, "w"))
 	assert results["copy"][0] == "done", results
