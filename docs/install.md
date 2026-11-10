@@ -60,7 +60,7 @@ They include OpenCV (`opencv-python-headless`), which draws the one window that 
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\exclude_from_search_index.ps1 -AlsoSoftware
 ```
-It excludes `C:\campy_data` and `C:\data` (where the ChronicRecord rig's launcher puts each session's folder) and your `miniconda3`, `anaconda3`, `venvs` and `sleap-bench` folders, where they exist, and changes nothing else; `-Undo` takes the exclusions back. If you record somewhere else, name that folder instead: `-Folder D:\videos`. Do it while nothing is recording: Windows then spends several minutes removing those folders from its index.
+It excludes `C:\campy_data`, `C:\data` and `D:\data` (where the ChronicRecord rig puts each session's folder: `D:\data` since 10 November 2026, `C:\data` before) and your `miniconda3`, `anaconda3`, `venvs` and `sleap-bench` folders, where they exist, and changes nothing else; `-Undo` takes the exclusions back. If you record somewhere else, name that folder instead: `-Folder D:\videos`. Do it while nothing is recording: Windows then spends several minutes removing those folders from its index.
 9. On Windows, turn off USB selective suspend, so that Windows never power-manages a camera or a trigger board it thinks is idle. In the same administrator PowerShell window:
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\disable_usb_selective_suspend.ps1
