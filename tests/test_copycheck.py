@@ -105,7 +105,7 @@ def test_a_clean_copy_is_checked_then_deleted_here(tmp_path):
 
 def test_a_recording_that_didnt_stop_cleanly_is_copied_and_checked_but_kept_here(tmp_path):
 	# campy-acquire failed two seconds in: its folder is copied and checked as any, but stays here, box ticked or not,
-	# with no alert (the page says why)
+	# with an alert (the disk isn't freed), as well as the page saying why
 	share = tmp_path / "share"
 	share.mkdir()
 	folder = recording(tmp_path, "2026-11-10_13-01-57", exit_code=1)
@@ -121,7 +121,9 @@ def test_a_recording_that_didnt_stop_cleanly_is_copied_and_checked_but_kept_here
 	assert contents(dest) == before
 	assert "didn't stop cleanly" in post.Load(folder)["steps"]["copy"]["local"]
 	assert "didn't stop cleanly" in post.Load(dest)["steps"]["copy"]["local"] # the copy's logs say it too
-	assert sent == []
+	assert len(sent) == 1 and sent[0][0] == "copy/2026-11-10_13-01-57" and sent[0][2] == "warning", sent
+	assert "didn't stop cleanly" in sent[0][1] and "campy-acquire ended with exit code 1" in sent[0][1]
+	assert "kept on this computer" in sent[0][1] and sent[0][1].count("delete it by hand") == 1
 
 
 def test_post_by_hand_never_deletes_a_recording_that_didnt_stop_cleanly(tmp_path):
@@ -135,7 +137,7 @@ def test_post_by_hand_never_deletes_a_recording_that_didnt_stop_cleanly(tmp_path
 
 
 def test_an_unclean_recording_whose_logs_dont_copy_still_says_why_it_is_kept(tmp_path, monkeypatch):
-	# The second copy of post's logs failing doesn't hide the reason: still kept for the unclean stop, no alert
+	# The second copy of post's logs failing doesn't hide the reason: still kept for the unclean stop, the alert says so
 	share = tmp_path / "share"
 	share.mkdir()
 	folder = recording(tmp_path, "2026-11-10_13-10-00", exit_code=1)
@@ -149,7 +151,7 @@ def test_an_unclean_recording_whose_logs_dont_copy_still_says_why_it_is_kept(tmp
 	assert job["state"] == "done" and os.path.isdir(folder), job
 	assert "didn't stop cleanly" in job["message"] and "the share went away" in job["message"]
 	assert "didn't stop cleanly" in post.Load(folder)["steps"]["copy"]["local"]
-	assert sent == []
+	assert len(sent) == 1 and "didn't stop cleanly" in sent[0][1] and "the share went away" in sent[0][1]
 
 
 def test_a_flipped_bit_is_caught_and_nothing_is_deleted(tmp_path, monkeypatch):

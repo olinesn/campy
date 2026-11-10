@@ -21,8 +21,8 @@ deleted here: never a recording that didn't stop cleanly (post.CleanStop:
 campy-acquire failed, a camera's error), and not while a program has a file in it open, while it is still
 wanted (a recording into it, a copy of it waiting), or when anything in it
 changed since the check (copycheck.Delete). Nothing is ever deleted in the
-copy. A copy that fails, or a folder kept though it was to be deleted, is
-also sent as an alert (session.Alert: ~/.campy/alerts.yaml's channels).
+copy. A copy that fails, or a folder kept though it was to be deleted (one
+that didn't stop cleanly too), is also sent as an alert (session.Alert: ~/.campy/alerts.yaml's channels).
 
 Measured on the Dell Pro Tower Plus (8 cameras, 60 fps, AV1 on Quick Sync),
 2026-11-09: a copy to a network share at 21 MB/s during a recording changed
@@ -353,8 +353,12 @@ class CopyQueue:
 		if state != "done":
 			self.Alert("copy/" + job.name, "The copy of {} into {} failed: {}. Its folder is kept on this "
 				"computer.".format(job.folder, job.to, message))
-		elif job.delete and local != "deleted" and not (job.local or "").startswith(post.UNCLEAN_KEPT):
-			# (a recording that didn't stop cleanly is kept on purpose: the page says why, no alert)
+		elif job.delete and local != "deleted" and (job.local or "").startswith(post.UNCLEAN_KEPT):
+			# Kept on purpose, but the disk isn't freed and the recording failed: said where it is seen away from the page
+			self.Alert("copy/" + job.name, "{} didn't stop cleanly, so it was copied into {} and checked, but kept on "
+				"this computer though the box to delete it is ticked ({}). Look at its logs, then delete it by "
+				"hand.".format(job.folder, job.to, job.local))
+		elif job.delete and local != "deleted":
 			self.Alert("copy/" + job.name, "{} was copied into {} and checked, but not deleted from this computer: {}. "
 				"Delete it by hand once nothing uses it.".format(job.folder, job.to, job.local))
 
