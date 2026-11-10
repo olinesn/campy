@@ -62,7 +62,7 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
 .boutpic{display:grid;align-items:center;margin:.375rem 0;row-gap:.25rem}.boutpic .lab{padding-right:.625rem;line-height:1.2;font-size:.9375rem}
 .boutpic .lab b{font-weight:500;color:var(--text)}.boutpic svg{display:block;width:100%;height:2.25rem;grid-column:2/-1}
 .boutpic .dur{font-size:.9375rem;line-height:1.25;text-align:center;padding:0 2px;min-width:0;color:var(--muted)}
-.boutpic .zoom{color:var(--accent)}
+.boutpic .zoom{color:var(--accent)}.boutpic .ledpw{color:var(--text);white-space:nowrap}
 .boutpic .axis{grid-column:2/-1;position:relative;height:1.9em;font-size:.9375rem;color:var(--muted);border-top:1px solid var(--muted)}
 .boutpic .axis i{position:absolute;top:0;width:1px;height:.4em;background:var(--muted);transform:translateX(-50%)}
 .boutpic .axis i:first-child{transform:none}.boutpic .axis i:nth-last-of-type(1){transform:translateX(-100%)}
@@ -275,9 +275,9 @@ function render(s){
   $("checks").innerHTML = s.checks.map(c => "<li>"+tag(c.level=="block"?"stops the start":c.level=="warn"?"warning":"ok",
     c.level=="block"?"bad":c.level=="warn"?"warn":"ok")+" "+esc(c.text)+(c.action=="pause-updates"?' <button onclick="pauseUpdates(this)">Pause Windows Update</button>':"")+"</li>").join("");
   renderModels(s.models);
-  const LP = s.led_power; $("ledlast").hidden = !LP;
+  const LP = s.led_power; ledPower = LP; $("ledlast").hidden = !LP;
   if(LP) $("ledlast").innerHTML = "At Start, the page asks for each LED's power at the fiber tip"+(LP.last && LP.last.leds ? ". Last confirmed "+
-    esc(when(LP.last.at))+": "+LP.last.leds.map(ledText).join("; ") : "")+".";
+    esc(confirmedWhen(LP.last.at))+": "+LP.last.leds.map(ledText).join("; ") : "")+".";
   const LM = L.live_models; $("usedmodels").textContent = LM && LM.centroid ? base(LM.centroid)+" + "+base(LM.instance) : "";
   const lengths = s.lengths || []; $("lengthbox").hidden = !lengths.length;
   if(lengths.length && $("length").options.length != lengths.length){ $("length").innerHTML = lengths.map(l => '<option value="'+l.seconds+'">'+esc(l.name)+'</option>').join(""); }
@@ -466,7 +466,11 @@ function renderModels(M){
     "To pick from more models, add panel: models: (their folders) to the config or its rig profile.") + (M.notes.length ? " "+M.notes.join("; ")+"." : "");
   $("mrescan").hidden = !M.roots.length;
 }
-let boutSig = "";
+let boutSig = "", ledPower = null; // ledPower: the status's led_power, for the bout drawing's LED rows
+// An LED row's last confirmed power (panel.led_power's names matched by colour: "Blue LED (465 nm)" for blue), or null
+function ledPowerOf(colour){
+  const leds = ((ledPower||{}).last||{}).leds || [];
+  return leds.find(l => String(l.led).toLowerCase().includes(colour)) || null; }
 // The drawing of a bout: a row for each of the Pico's outputs, its time cut into stretches (5 s before the gate
 // opens, with every output low; gate open to camera on, camera to the LEDs, the LEDs, LEDs to camera off, camera off
 // to gate closed, to the next bout). Each stretch has its width whatever it lasts (a cartoon), with the time axis
@@ -506,7 +510,9 @@ function boutPicture(D){
   const signals = [[[b.gate], "var(--gate)"], [pulseSpans, "var(--text)"], [led("blue"), LED_COLOUR.blue], [led("yellow"), LED_COLOUR.yellow]];
   let html = "";
   rows.forEach((r, i) => { const [spans, colour] = signals[i];
-    html += '<div class="lab"><b>'+esc(r.name)+'</b>'+(r.pin ? '<br><span class="muted">'+esc(r.pin)+'</span>' : '')+'</div>' +
+    const pw = i >= 2 ? ledPowerOf(i == 2 ? "blue" : "yellow") : null;
+    html += '<div class="lab"><b>'+esc(r.name)+'</b>'+(r.pin ? '<br><span class="muted">'+esc(r.pin)+'</span>' : '')+
+      (pw ? '<br><span class="ledpw">'+(+pw.driver_mA)+'\u00a0mA \u00b7 '+(+pw.fiber_tip_uW)+'\u00a0\u00b5W</span>' : '')+'</div>' +
       svg((i >= 2 ? fill(spans, colour) : "") + line(wave(spans), colour)); });
   const ledText = L.map((l, i) => (i && l.on - L[i-1].off > 1e-6 ? secs(l.on - L[i-1].off)+" dark, " : "")+l.name+" "+secs(l.off - l.on)).join(", ");
   // The time axis, in seconds from the gate's opening: each stretch's edge (the LEDs' once, at their middle); labels
@@ -529,7 +535,14 @@ function boutPicture(D){
   $("boutpicnote").textContent = "Time from the gate opening (0 s), from 5 s before it to the next bout at "+secs(D.interval_s)+". The stretches aren't "+
     "to scale, except the LEDs' (blue text, in ms), which shows the camera's real pulses at "+(+D.fps.toFixed(3))+" a second."+
     (n ? " Drawn: a long bout. A normal bout's camera stops "+secs(n.camera[1] - n.leds[n.leds.length-1].off)+" after the LEDs, and its gate closes "+
-      secs(n.gate[1])+" after it opened." : " Every bout is long.");
+      secs(n.gate[1])+" after it opened." : " Every bout is long.") + ledNote();
+}
+function ledNote(){
+  // The LED rows' power: the driver current and the power at the fiber tip, as last confirmed at a Start
+  const P = (ledPower||{}).last; if(!ledPower) return "";
+  if(!P || !P.at) return " The LEDs' power is asked for at Start.";
+  const old = new Date(P.at).toDateString() != new Date().toDateString();
+  return " Under each LED: its driver current and power at the fiber tip, as confirmed "+confirmedWhen(P.at)+(old ? " (an earlier day: measure again before connecting the animal)" : "")+".";
 }
 function renderBouts(B){
   $("boutbox").hidden = !B; if(!B){ $("boutpicbox").hidden = true; return; }
@@ -629,7 +642,7 @@ async function startWith(start){
   $("starterr").textContent = j.error || ""; if(j.create) offerCreate(j.create); tick(); }
 let ledStart = null;
 function ledText(l){ return esc(l.led)+" "+(+l.driver_mA)+"\u00a0mA, "+(+l.fiber_tip_uW)+"\u00a0\u00b5W"; }
-function when(iso){ const d = new Date(iso); if(isNaN(d)) return ""; const today = d.toDateString() == new Date().toDateString();
+function confirmedWhen(iso){ const d = new Date(iso); if(isNaN(d)) return ""; const today = d.toDateString() == new Date().toDateString();
   return (today ? "today" : d.toLocaleDateString([], {weekday:"short", month:"short", day:"numeric"}))+" at "+d.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}); }
 function askLeds(start){
   const P = last.led_power, had = {}; ((P.last||{}).leds||[]).forEach(l => had[l.led] = l);
@@ -638,7 +651,7 @@ function askLeds(start){
     esc(had[n] ? had[n].driver_mA : "")+'"><input id="luw'+i+'" type="number" min="0" step="any" inputmode="decimal" aria-label="'+esc(n)+
     ' power at the fiber tip in microwatts" value="'+esc(had[n] ? had[n].fiber_tip_uW : "")+'">').join("");
   const old = P.last && P.last.at && new Date(P.last.at).toDateString() != new Date().toDateString();
-  $("ledwhen").innerHTML = P.last && P.last.at ? "The values shown were confirmed "+esc(when(P.last.at))+"."+
+  $("ledwhen").innerHTML = P.last && P.last.at ? "The values shown were confirmed "+esc(confirmedWhen(P.last.at))+"."+
     (old ? ' <span style="color:var(--warn)">From an earlier day: measure them again.</span>' : "") : "No values confirmed yet with this experiment.";
   $("lederr").textContent = ""; ledStart = start; $("leddlg").hidden = false; const f = $("lma0"); if(f) f.focus(); }
 $("ledno").onclick = () => { $("leddlg").hidden = true; ledStart = null; };

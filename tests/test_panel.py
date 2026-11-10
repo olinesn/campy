@@ -798,6 +798,11 @@ def test_without_led_power_nothing_is_asked(tmp_path, home):
 def test_the_page_asks_for_the_led_powers_at_start():
 	from campy import panelpage
 	page = panelpage.PAGE
+	# Each function once: a second "function when" would replace the first for every caller ("Ended at ...")
+	names = re.findall(r"^function (\w+)\(", page, re.M)
+	assert len(names) == len(set(names)), sorted(n for n in names if names.count(n) > 1)
+	# The bout drawing's LED rows show the last confirmed power
+	assert "ledPowerOf(i == 2 ? \"blue\" : \"yellow\")" in page and "Under each LED: its driver current and power" in page
 	assert 'id="leddlg"' in page and "LED power, before connecting the animal" in page and "Doric LED driver" in page
 	assert "if((last||{}).led_power) return askLeds(start);" in page and 'id="ledlast"' in page
 
