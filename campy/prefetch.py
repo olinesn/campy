@@ -49,32 +49,37 @@ class Reading:
 			t.start()
 
 	def Worker(self):
-		buf = bytearray(8 << 20)
-		view = memoryview(buf)
-		while True:
+		# Best-effort: a file that can't be read, for any reason (gone, a folder, a name open refuses such as one with
+		# a NUL byte), is passed over, and the thread always counts itself out, so Done ends however it stops
+		try:
+			buf = bytearray(8 << 20)
+			view = memoryview(buf)
+			while True:
+				with self.lock:
+					if not self.queue:
+						return
+					path = self.queue.pop()
+				n = 0
+				try:
+					if path.endswith(os.sep):
+						os.listdir(path) # a folder Python's import will list
+					else:
+						with open(path, "rb", buffering=0) as f:
+							while self.limit is None or n < self.limit:
+								k = f.readinto(view)
+								if not k:
+									break
+								n += k
+				except Exception:
+					continue
+				with self.lock:
+					self.bytes += n
+					self.read += 1
+		finally:
 			with self.lock:
-				if not self.queue:
-					self.left -= 1
-					if self.left == 0:
-						self.seconds = time.perf_counter() - self.t0
-					return
-				path = self.queue.pop()
-			n = 0
-			try:
-				if path.endswith(os.sep):
-					os.listdir(path) # a folder Python's import will list
-				else:
-					with open(path, "rb", buffering=0) as f:
-						while self.limit is None or n < self.limit:
-							k = f.readinto(view)
-							if not k:
-								break
-							n += k
-			except OSError:
-				continue
-			with self.lock:
-				self.bytes += n
-				self.read += 1
+				self.left -= 1
+				if self.left == 0:
+					self.seconds = time.perf_counter() - self.t0
 
 	def Done(self):
 		# (files read, bytes, seconds the threads took or None while still reading)
