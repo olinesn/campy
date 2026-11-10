@@ -47,7 +47,7 @@ label{font-size:.9375rem;color:var(--muted)}h2{font-size:1.25rem;font-weight:500
 .copybar{max-width:28rem;margin:4px 0 2px}.copybar div{background:var(--accent)}
 .bgcopy{border-left:4px solid var(--accent)}.copyeta{text-align:right;line-height:1.1;flex:none;min-width:9rem}
 .copyeta .big{font-size:3rem;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text)}.copyeta .big.wait{font-size:1.5rem;font-weight:500}.copyeta .gap{margin-left:1.25rem}
-.copyeta .lab{font-size:1.125rem;color:var(--muted)}#clock b{font-variant-numeric:tabular-nums}.bgcopy .copybar{max-width:none;height:10px}.bgcopy .copybar div{height:10px}
+.copyeta .lab{font-size:1.625rem;color:var(--muted)}#clock b{font-variant-numeric:tabular-nums}.bgcopy .copybar{max-width:none;height:10px}.bgcopy .copybar div{height:10px}
 .err{color:var(--bad);font-size:1rem}ul{margin:.25rem 0 0;padding-left:1.25rem}li{margin:.25rem 0}
 select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
 .steps li{list-style:none;margin-left:-1.25rem}.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:1rem}
