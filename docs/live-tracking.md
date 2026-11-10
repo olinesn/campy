@@ -116,7 +116,18 @@ post:
     - on Windows, background mode (lowest CPU, disk and memory priority) and idle CPU priority, so it gets only the time `campy-live`, `campy-acquire` and the encoders leave over;
     - on Linux, nice 19 and the idle disk class. The idle disk class only counts with the BFQ or CFQ disk schedulers; NVMe disks' default scheduler ignores it.
 
-    On Linux, each piece of the recording is dropped from the file cache once read, so reading a day back doesn't push out what else is cached there. On Windows, background mode gives those pages the lowest memory priority. On an M-series Mac (macOS, where nothing is lowered), checking a 2.15 GB file took 0.7 CPU seconds per GB when not held back (1.6 GB/s, a little more than one core), and 15% of one core on average at the 100 MB/s cap. Its effect on tracking hasn't been measured on a rig yet.
+    On Linux, each piece of the recording is dropped from the file cache once read, so reading a day back doesn't push out what else is cached there. On Windows, background mode gives those pages the lowest memory priority. On an M-series Mac (macOS, where nothing is lowered), checking a 2.15 GB file took 0.7 CPU seconds per GB when not held back (1.6 GB/s, a little more than one core), and 15% of one core on average at the 100 MB/s cap.
+
+    **Measured on the Dell Pro Max Slim FCS1250** (Core Ultra 9 285, RTX 2000 Ada, one 1 TB NVMe), on 10 November 2026, with campy dev `c146b51`:
+    - **How it was run:** 3 emulated cameras at 60 fps recorded with Quick Sync H.265, with `campy-live` tracking them in 3D (the 5-mouse models), for 120 s (7,200 sets) each time. There were five runs: alone, with a check at its cap, with a check not held back, at the cap again, and alone again. All five ran under the rig lock.
+    - **What was checked:** 10.7 GB of files against an identical copy on the same disk. That is harder on the disk than a check against a network share, because both sides are read from the computer's own disk.
+    - **At the cap, nothing changed beyond the run-to-run spread.** A set reached 3D in 7.9/8.9 and 7.9/8.8 ms (p50/p99), against 7.8/8.8 and 7.9/8.7 ms alone. Inference stayed at 5.6/5.8 ms. Every set was tracked, none skipped, and every camera recorded all its frames. The check read 100 MB/s and used 12 CPU seconds in 141 s, about 9% of one core (0.85 CPU seconds per GB).
+    - **Not held back** (only for comparison), it read 1.07 GB/s and used about one core. A set then reached 3D in 8.3/9.4 ms and inference took 5.7/6.0 ms: 0.4-0.6 ms later, still with nothing skipped. This is what the cap avoids.
+    - **The rig lock marked the job as disturbed** (`RIG_CONTAMINATED`), with 7 sightings of load outside it:
+      - the job's own disk traffic: writing the test data, and each check starting and ending;
+      - the security software reading the test files (107 MB/s at one point);
+      - Dell SupportAssist using 2.7 cores early in the last run without a check. It caused that run's one slow set (frame to 3D 18.9 ms).
+    - No sighting involved the GPU, the encoders or the cameras.
   - The step writes its own `logs/post.log` and `logs/post.json` while it copies, so those two are left out of the big check. Once the step's result is in them, they are copied again and checked too, so the copy has the complete logs.
   - To a `user@host:/path` rsync address, the copy isn't read back, and the step says so.
   - **Deleting the recording here, once its copy is checked**: off by default. `campy-session post <folder> --only copy --to <folder> --delete-after-verify`, the config's `copy: {to: ..., delete_after_verify: true}`, or the panel's tick box (below) turns it on. Once every file is the same in the copy, the recording's folder is deleted from this computer, after every other step. It is kept, and the log and `post.json` say why, when:
