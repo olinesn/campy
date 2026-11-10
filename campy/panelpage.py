@@ -33,7 +33,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;display:flex;flex-direction:col
 button{font:inherit;padding:6px 14px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer}
 button:hover{background:var(--soft)}button.stop{color:var(--bad);border-color:var(--bad)}button.go{color:var(--ok);border-color:var(--ok)}
 input{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
-label{font-size:12px;color:var(--muted)}h2{font-size:15px;font-weight:500;margin:0 0 6px}h3{font-size:13px;font-weight:600;margin:0 0 4px}.logo{width:44px;height:44px;flex:none;display:block}.okmsg{color:var(--ok);margin-left:8px}.version{text-align:right;font-size:12px;margin:-8px 2px -6px}
+label{font-size:12px;color:var(--muted)}h2{font-size:15px;font-weight:500;margin:0 0 6px}h3{font-size:13px;font-weight:600;margin:0 0 4px}.logo{width:44px;height:44px;flex:none;display:block}.okmsg{color:var(--ok);margin-left:8px}.gone{border-left:4px solid var(--bad)}.version{text-align:right;font-size:12px;margin:-8px 2px -6px}
 .bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden}.bar div{height:6px;background:var(--ok)}
 .copybar{max-width:420px;margin:4px 0 2px}.copybar div{background:var(--accent)}
 .bgcopy{border-left:4px solid var(--accent)}.bgcopy .copybar{max-width:none;height:10px}.bgcopy .copybar div{height:10px}
@@ -57,6 +57,7 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
   <button id="close" hidden title="Close the panel (nothing is recording)">Close the panel</button>
 </div>
 <div id="error" class="err" hidden></div>
+<div id="gone" class="card gone" hidden><h2 id="gonetitle"></h2><p id="gonetext" class="muted"></p></div>
 <div id="bgcopy" class="card bgcopy" hidden><div class="row"><b class="grow" id="bgcopytitle">Copying in the background</b></div>
   <div id="bgcopyok" style="font-weight:500"></div>
   <div class="muted">Leave the computer on, and the panel's black window open, until it is done.</div>
@@ -464,10 +465,19 @@ function renderDevices(s, st){
   $("stoppico").hidden = !picoLeft; $("stopsglx").hidden = !sglxLeft || picoLeft;
 }
 async function pauseUpdates(b){ b.disabled = true; b.textContent = "Windows asks for administrator rights…"; const e = await post("/pause-updates"); if(e) alert(e); tick(); }
+function gone(title, text){ // the page can't reach its panel: say so plainly, above everything, until it can again
+  $("gone").hidden = !title; if(!title) return;
+  $("gonetitle").textContent = title; $("gonetext").textContent = text;
+}
 async function tick(){
   if(closed) return;
-  try { const r = await fetch(q("/status.json")); if(r.status==403){ $("state").textContent="Wrong key"; $("error").hidden=false; $("error").textContent=(await r.json()).error; return; }
-    render(await r.json()); } catch(e){ $("state").textContent = "Panel not running"; $("state").className = "tag bad"; }
+  try { const r = await fetch(q("/status.json"));
+    if(r.status==403){ $("state").textContent = "Old tab"; $("state").className = "tag bad";
+      gone("This tab belongs to a panel that was closed", "Close this tab: the panel that is open now has its own page, in another tab. "+
+        "To open it again, use the campy recording icon."); return; }
+    gone(null); render(await r.json());
+  } catch(e){ $("state").textContent = "Panel not running"; $("state").className = "tag bad";
+    gone("The panel is closed", "Open it from the campy recording icon. This page reconnects by itself as soon as the panel is open again."); }
 }
 function images(){ for(let i=0;i<thumbs;i++){ const im = $("th"+i); if(im && !im.hidden) im.src = q("/thumb/"+i+".png?k="+Date.now()); } }
 $("start").onclick = async () => { $("starterr").textContent = "";
@@ -531,3 +541,12 @@ tick(); setInterval(tick, 1000); setInterval(images, 1000);
 
 # The LUC3D logo in the header, and as the tab's icon (campy/panellogo.py: inline, nothing fetched)
 PAGE = PAGE.replace("@LOGO@", panellogo.LOGO).replace("@ICON@", panellogo.ICON)
+
+# Served at / for an address with a key the panel doesn't know: a tab of an earlier panel, which the browser restored
+OLD_KEY = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>campy session: an old tab</title><style>body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+background:#f7f6f2;color:#1f1e1c}@media (prefers-color-scheme:dark){body{background:#1b1b1a;color:#ecebe6}}
+main{max-width:640px;margin:15vh auto;padding:0 16px}h1{font-size:20px;font-weight:600}</style></head><body><main>
+<h1>This tab belongs to a panel that was closed</h1>
+<p>Close this tab. The panel that is open now has its own page, in another tab. To open it again, use the
+<b>campy recording</b> icon.</p></main></body></html>"""

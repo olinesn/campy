@@ -186,7 +186,10 @@ def raw(p, method, path, headers=None, body=None):
 	try:
 		c.request(method, path, body=body, headers=headers or {})
 		r = c.getresponse()
-		return r.status, json.loads(r.read() or b"{}")
+		data = r.read()
+		if r.getheader("Content-Type", "").startswith("text/html"):
+			return r.status, data.decode("utf-8") # a page (the old tab's), not JSON
+		return r.status, json.loads(data or b"{}")
 	finally:
 		c.close()
 
@@ -217,6 +220,41 @@ def test_the_page_answers_only_its_key_from_this_computer():
 	finally:
 		p.server.shutdown()
 		p.server.server_close()
+
+
+def test_the_pages_key_is_kept_for_the_next_panel(home):
+	# A tab left open, or restored by the browser, works with the next panel; --new-key, or a file others can read, not
+	key = panel.PanelKey()
+	assert panel.PanelKey() == key and len(key) >= 20
+	if sys.platform != "win32":
+		assert os.stat(panel.KeyFile()).st_mode & 0o077 == 0 # its owner's only
+		os.chmod(panel.KeyFile(), 0o644)
+		other = panel.PanelKey()
+		assert other != key and os.stat(panel.KeyFile()).st_mode & 0o077 == 0
+		key = other
+	assert panel.PanelKey(new=True) != key
+	with open(panel.KeyFile(), "w") as f:
+		f.write("not json")
+	assert len(panel.PanelKey()) >= 20
+
+
+def test_an_old_tab_gets_a_page_that_says_so(tmp_path):
+	p, calls = stub_panel()
+	try:
+		code, page = raw(p, "GET", "/?t=OldKeyOldKeyOldKeyOldKey")
+		assert code == 403 and "This tab belongs to a panel that was closed" in page
+		code, said = raw(p, "GET", "/status.json?t=OldKeyOldKeyOldKeyOldKey")
+		assert code == 403 and "wrong key" in said["error"] # the page's own polls: JSON, which the page shows as a banner
+		assert calls == []
+	finally:
+		p.server.shutdown()
+		p.server.server_close()
+
+
+def test_the_page_says_when_its_panel_is_closed_or_its_key_is_old():
+	from campy import panelpage
+	assert 'id="gone"' in panelpage.PAGE and "The panel is closed" in panelpage.PAGE
+	assert "This page reconnects by itself" in panelpage.PAGE and "This tab belongs to a panel that was closed" in panelpage.PAGE
 
 
 def campy_standin():
@@ -364,9 +402,12 @@ def test_a_recording_from_the_page(tmp_path, home):
 	assert "[panel] Closed." in "".join(lines)
 	assert not (home / ".campy" / "status" / "launcher.lock").exists()
 
-	# A panel opened again shows that recording as the last one, with its steps and its summary
+	# A panel opened again shows that recording as the last one, with its steps and its summary, at the same address:
+	# a tab left open from the first panel works with it
+	first_url = url
 	proc, lines, url = start_panel(tmp_path, home, config)
 	try:
+		assert url == first_url
 		status = call(url, "/status.json")[1]
 		assert status["state"] == "ready" and status["launcher"]["folder"] == folder
 		assert status["launcher"]["post"]["remux"]["state"] == "done" and status["launcher"]["clean"]["clean"]
