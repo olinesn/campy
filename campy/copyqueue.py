@@ -75,6 +75,13 @@ def Remembered(path, config):
 	return str(got["to"]) if "to" in got else None
 
 
+def RememberedLengths(path, config):
+	"""What the page's box last held, for this config, for each session length with a copyTo of its own (pico.lengths)
+	where it was changed from that copyTo: {length name: text}."""
+	got = _Remembered(path, config).get("lengths")
+	return {str(k): str(v) for k, v in got.items()} if isinstance(got, dict) else {}
+
+
 def RememberedDelete(path, config):
 	"""Whether the page last had this config's "Delete each recording ... once its copy is checked" ticked: True,
 	False, or None (never set)."""
@@ -82,8 +89,15 @@ def RememberedDelete(path, config):
 	return got["delete"] if isinstance(got.get("delete"), bool) else None
 
 
-def Remember(path, config, to, delete=None):
-	"""The page's folder for this config, for the next panel opened with it ("" too: copying turned off)."""
+def Remember(path, config, to, delete=None, length=None):
+	"""
+	The page's folder for this config, for the next panel opened with it
+	("" too: copying turned off). With length (the name of a session
+	length that has a copyTo of its own), the folder is that length's
+	alone: kept for that length (None: it was the length's own copyTo,
+	nothing to keep), and the config's folder, which the other lengths
+	start from, stays as it was.
+	"""
 	from campy import pico, session, strictjson
 	try:
 		with open(path) as f:
@@ -92,7 +106,21 @@ def Remember(path, config, to, delete=None):
 			everything = {}
 	except (OSError, ValueError):
 		everything = {}
-	entry = {"to": str(to), "at": datetime.now().astimezone().isoformat(timespec="seconds")}
+	before = everything.get(pico.ConfigKey(config))
+	before = before if isinstance(before, dict) else {}
+	lengths = dict(before["lengths"]) if isinstance(before.get("lengths"), dict) else {}
+	entry = {"at": datetime.now().astimezone().isoformat(timespec="seconds")}
+	if length is None:
+		entry["to"] = str(to)
+	else:
+		if "to" in before:
+			entry["to"] = before["to"]
+		if to is None:
+			lengths.pop(str(length), None)
+		else:
+			lengths[str(length)] = str(to)
+	if lengths:
+		entry["lengths"] = lengths
 	if delete is not None:
 		entry["delete"] = bool(delete)
 	everything[pico.ConfigKey(config)] = entry

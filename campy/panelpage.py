@@ -288,16 +288,20 @@ function render(s){
   if(lengths.length && document.activeElement != $("length")) $("length").value = String(s.length);
   renderBouts(s.bouts);
   const L0 = lengths.find(l => l.seconds == s.length); $("plantext").textContent = L0 ? L0.text + (L0.videoFolder ? ", into "+L0.videoFolder : "") : "";
+  // Another length (or experiment) picked: what was typed into the copy box stays with the one left, for when it is
+  // picked again. A length with a copy folder of its own (pico.lengths' copyTo) has a box of its own; the others share one
+  const lenKey = s.config + "|" + (L0 ? L0.seconds : ""), lenMoved = lenKey != copyLen && document.activeElement != $("copyto");
+  if(lenMoved && copySlot && $("copyto").value != copyGiven) copyTyped[copySlot] = $("copyto").value;
   if(refill){ refill = false; // another experiment picked: its config's fields, where it has them (what was typed stays otherwise)
     if(s.fields.experiment) $("experiment").value = s.fields.experiment; if(s.fields.animal_ids) $("ids").value = s.fields.animal_ids;
-    $("copyto").value = s.fields.copy_to||""; $("copydelete").checked = !!s.fields.copy_delete; } // the copy destination is each config's own
-  if(!$("experiment").dataset.set){ $("experiment").value = s.fields.experiment||""; $("ids").value = s.fields.animal_ids||""; $("copyto").value = s.fields.copy_to||""; $("copydelete").checked = !!s.fields.copy_delete; $("experiment").dataset.set=1; }
+    $("copyto").value = copyGiven = s.fields.copy_to||""; $("copydelete").checked = !!s.fields.copy_delete; } // the copy destination is each config's own
+  if(!$("experiment").dataset.set){ $("experiment").value = s.fields.experiment||""; $("ids").value = s.fields.animal_ids||""; $("copyto").value = copyGiven = s.fields.copy_to||""; $("copydelete").checked = !!s.fields.copy_delete; $("experiment").dataset.set=1; }
   $("copydeletenote").style.color = $("copydelete").checked ? "var(--bad)" : "";
-  // A length with a copy folder of its own (pico.lengths' copyTo) fills the box when it is picked, or when the page opens
-  // on it; picking one without gives the box back the config's
-  const lenKey = L0 ? s.config + "|" + L0.seconds : "";
-  if(L0 && lenKey != copyLen && document.activeElement != $("copyto")){
-    if(L0.copyTo) $("copyto").value = L0.copyTo; else if(copyLen) $("copyto").value = s.fields.copy_to||"";
+  // The length picked (or the page opened on it) fills the box: what was typed for it on this page, else for a length
+  // with its own copyTo what the last Start had for it (copyBox, that copyTo unless changed there), else the config's
+  if(lenMoved){ copySlot = L0 ? s.config + "|" + (L0.copyTo ? L0.seconds : "*") : ""; // no lengths: the config's, as refill
+    if(L0) $("copyto").value = copyGiven = copySlot in copyTyped ? copyTyped[copySlot] :
+      L0.copyTo ? (L0.copyBox != null ? L0.copyBox : L0.copyTo) : s.fields.copy_to||"";
     copyLen = lenKey; }
   renderCopies(s.copies || {jobs: []}, L.folder, st);
   $("during").hidden = !(st=="recording" || st=="stopping" || st=="starting live");
@@ -491,6 +495,9 @@ function renderModels(M){
   $("mrescan").hidden = !M.roots.length;
 }
 let copyLen = ""; // the experiment and length whose copy folder the box was last given
+// The copy box: its slot (the experiment and a length with a copyTo of its own, or "*" for the others), what the page
+// last put in it, and what was typed for each slot left
+let copySlot = "", copyGiven = "", copyTyped = {};
 let boutSig = "", ledPower = null; // ledPower: the status's led_power, for the bout drawing's LED rows
 // An LED row's last confirmed power (panel.led_power's names matched by colour: "Blue LED (465 nm)" for blue), or null
 function ledPowerOf(colour){
