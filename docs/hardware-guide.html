@@ -512,6 +512,13 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     <li><b>campy now reports a trigger pause.</b> Since pull request 224, the recording watch counts, from each camera's own timestamps, the trigger pulses it got no frame for, and warns when every camera missed the same ones ("The trigger paused: all 4 cameras got no frame for the same 68 pulses (2.27 s) ..."), or when one camera missed pulses the others got. <code>campy-session</code> also runs <code>campy-align</code> after each recording, which lists the pauses in <code>alignment.json</code> and gives every frame its real time.</li>
     <li><b>How "grouped" is scored.</b> In each set, every way of matching the cameras' detections into mice is tried, and the best-fitting one is the reference. Where it fits well in all four cameras (90–93% of the mice), <code>campy-live</code>'s own matching was the same 99.4% of the time (<code>bench/pose3d_live_log.py</code>).</li>
   </ul>
+  <h3>A calibration from the recording page (10 November 2026)</h3>
+  <p class="col">Since 5 November a Raspberry Pi Pico, not the Arduino, makes the Pro Max Slim's camera pulses (Line3). The recording page now starts it for every experiment, calibrations included, and the computer's campy settings name it as the rig's one trigger board, so a config that would start the Arduino is refused before any camera opens (pull request 385). After a calibration recording (the four cameras' H.265 videos, 60 s at 10 fps), the page's calibration step (pull request 386) ran calibrat3 headless in this computer's Chrome: 47 s, the board in 251–253 of 300 sampled frames per camera, each camera's reprojection error 0.07–0.08 px at the median and 0.20–0.23 px at p95, as on 26 October.</p>
+  <ul class="plain col">
+    <li><b>Name each camera by its serial number.</b> Without that, campy named the four cameras in the order the camera driver listed them, and the order changed: the recordings of 26 October and three of 10 November used three different orders. A calibration holds only for the names it was recorded with, so a live run in another order would have put each camera's poses through another camera's position. The computer's campy settings now pin each name to its camera's serial number (<code>cameraSerials</code>).</li>
+    <li><b>One camera had moved.</b> Compared camera by camera (by serial number) with the calibration of 26 October, the lenses agreed (focal lengths within 0.5%, image centres within 2.2 px), and so did the distances between three of the cameras (within 1.4 mm). The fourth camera's distances to the others had changed by 5–15 cm: it had been moved since, and the October calibration no longer held for it.</li>
+    <li><b>On Linux, Chrome decodes no H.265.</b> On the EVO-X2 (Ubuntu 24.04, Chrome 157), headless Chrome decodes H.264 and AV1 but not H.265, so a Linux rig has to record its calibrations in H.264 or AV1 for this step; the EVO-X2 records H.264. On Windows, Chrome decoded the Pro Max Slim's H.265 from Quick Sync.</li>
+  </ul>
 </section>
 
 <section>
@@ -727,8 +734,8 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 </section>
 
 <footer>
-  <p>Measured 18–29 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250, a Dell Precision 7875 and a Dell Pro Tower Plus, on 7 November 2026 on an Intel Arc Pro B50 in a Windows 11 virtual machine and (the Dell agent's pauses) on the Dell Precision 7875, on 7–9 November 2026 (lighter models for 2 mice) on the Dell Pro Tower Plus, and on 9 November 2026 with its 8 real cameras and 2 mice.</p>
-  <p class="meta">Version 70 · updated 10 November 2026 · reflects campy changes through pull request 388 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p>Measured 18–29 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250, a Dell Precision 7875 and a Dell Pro Tower Plus, on 7 November 2026 on an Intel Arc Pro B50 in a Windows 11 virtual machine and (the Dell agent's pauses) on the Dell Precision 7875, on 7–9 November 2026 (lighter models for 2 mice) on the Dell Pro Tower Plus, on 9 November 2026 with its 8 real cameras and 2 mice, and on 10 November 2026 (a calibration made from the recording page) on the Dell Pro Max Slim FCS1250 and the GMKtec EVO-X2.</p>
+  <p class="meta">Version 71 · updated 10 November 2026 · reflects campy changes through pull request 390 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 
