@@ -57,8 +57,13 @@ What the page shows, once a second:
   recording is copied into it once it and its post-steps have ended, in the
   background, one at a time, while the next records (campy/copyqueue.py; the
   config's own post copy step is off in the panel, the box takes its place and
-  starts from its copy.to). Closing the panel waits for copies still running,
-  unless the page leaves them.
+  starts from its copy.to). Each copy is read back and checked byte for byte;
+  with the page's "Delete each recording from this computer once its copy is
+  checked" ticked (off by default, or the config's copy.delete_after_verify),
+  a recording whose every file is the same in the copy is then deleted here,
+  unless a program has a file in it open or it changed after the check.
+  Closing the panel waits for copies still running, unless the page leaves
+  them.
 
 The page is served from this computer only (127.0.0.1): over Remote
 Desktop, open it in the rig's browser; from another computer, through an SSH
@@ -696,7 +701,7 @@ class Panel:
 	def __init__(self, config_path, args=(), port=PORT, browser=True, new_key=False):
 		# The copies of finished recordings (the page's "Copy each recording to"): the panel's for as long as it is
 		# open, whichever config it records with
-		self.copies = copyqueue.CopyQueue(say=Say)
+		self.copies = copyqueue.CopyQueue(say=Say, busy=self.CopyBusy)
 		self.close_when_copied = False # the page's Close while copies were running: close once they are done
 		self.opened, self.args = os.path.abspath(config_path), list(args)
 		self.port, self.browser = port, browser
@@ -921,7 +926,7 @@ class Panel:
 			problem = copyqueue.Problem(to, self.config.Value("videoFolder", "."))
 			if problem:
 				return problem
-			copyqueue.Remember(copyqueue.RememberFile(), self.config.path, to)
+			copyqueue.Remember(copyqueue.RememberFile(), self.config.path, to, delete=bool(fields.get("copy_delete")))
 			self.close_when_copied = False # recording again: the page's earlier Close no longer stands
 			self.wanted = fields
 			self.error = None
@@ -1065,6 +1070,22 @@ class Panel:
 			Say("Made the copy folder {} (Create this folder, on the page).".format(str(path).strip()))
 		return error
 
+	def CopyBusy(self, folder):
+		# For the copies: why a recording's folder can't be deleted now (the panel records into it)
+		s = self.session
+		if s is not None and s.folder and os.path.normcase(os.path.abspath(s.folder)) == os.path.normcase(folder):
+			return "a recording is being made into it"
+		return ""
+
+	def CopyDelete(self):
+		# What the page's "Delete each recording from this computer once its copy is checked" starts from: as a page
+		# last left it for this config, or the config's own post copy.delete_after_verify (off by default)
+		remembered = copyqueue.RememberedDelete(copyqueue.RememberFile(), self.config.path)
+		if remembered is not None:
+			return remembered
+		copy = (self.config.post or {}).get("copy") or {}
+		return bool(copy.get("delete_after_verify")) if isinstance(copy, dict) else False
+
 	def CopyTo(self):
 		# What the page's box starts from: the folder this config's recordings were last copied into from a page, or
 		# the config's own post copy.to
@@ -1140,7 +1161,7 @@ class Panel:
 			"copies": dict(self.copies.Status(), close_when_copied=self.close_when_copied),
 			"fields": {"experiment": str(self.config.Value("experiment", "") or "").replace("None", ""),
 				"animal_ids": ", ".join(str(a) for a in (self.config.Value("animalIds", []) or [])),
-				"copy_to": self.CopyTo()}}
+				"copy_to": self.CopyTo(), "copy_delete": self.CopyDelete()}}
 
 	def BoutStatus(self):
 		# The page's bout settings box, with a Pico's bouts (none for a camera-only session)
@@ -1401,7 +1422,7 @@ class Panel:
 			if self.session is not None and self.session.folder:
 				self.last = Ended(self.session.StatusDict())
 				if copy_to:
-					self.copies.Add(self.session.folder, copy_to)
+					self.copies.Add(self.session.folder, copy_to, delete=bool(fields.get("copy_delete")))
 			self.session = None
 			self.checks = self.Checks()
 

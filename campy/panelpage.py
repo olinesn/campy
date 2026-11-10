@@ -93,7 +93,10 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
       <label for="ids">Animal IDs, comma-separated</label><input id="ids" placeholder="M12, M14, M15">
       <label for="notes">Notes</label><input id="notes" placeholder="Cage 2, new bedding">
       <label for="copyto">Copy each recording to (optional)</label><input id="copyto" placeholder="\\server\share\my folder">
-      <div class="muted" style="font-size:12px">After each recording, its folder is copied into this one in the background, while the next records. Nothing is deleted. Empty: no copy.</div>
+      <div class="muted" style="font-size:12px">After each recording, its folder is copied into this one in the background, while the next records, and every file is read back and checked byte for byte. Empty: no copy.</div>
+      <label class="tick" style="display:flex;gap:8px;align-items:flex-start;margin-top:6px;font-weight:500"><input type="checkbox" id="copydelete" style="width:auto;margin-top:3px">
+        <span>Delete each recording from this computer once its copy is checked</span></label>
+      <div class="muted" style="font-size:12px" id="copydeletenote">Off: every recording stays here too. On: once every file is the same in the copy, the recording's folder is deleted here. It is kept if any file differs, if a program still has a file in it open, or if anything in it changed after the check. This can't be undone.</div>
     </div>
     <div><div id="orphan" class="err" hidden></div><button id="stoporphan" class="stop" hidden>Stop that recording</button>
       <h3 style="margin-top:4px">Checks</h3>
@@ -224,8 +227,9 @@ function render(s){
   const L0 = lengths.find(l => l.seconds == s.length); $("plantext").textContent = L0 ? L0.text + (L0.videoFolder ? ", into "+L0.videoFolder : "") : "";
   if(refill){ refill = false; // another experiment picked: its config's fields, where it has them (what was typed stays otherwise)
     if(s.fields.experiment) $("experiment").value = s.fields.experiment; if(s.fields.animal_ids) $("ids").value = s.fields.animal_ids;
-    $("copyto").value = s.fields.copy_to||""; } // the copy destination is each config's own
-  if(!$("experiment").dataset.set){ $("experiment").value = s.fields.experiment||""; $("ids").value = s.fields.animal_ids||""; $("copyto").value = s.fields.copy_to||""; $("experiment").dataset.set=1; }
+    $("copyto").value = s.fields.copy_to||""; $("copydelete").checked = !!s.fields.copy_delete; } // the copy destination is each config's own
+  if(!$("experiment").dataset.set){ $("experiment").value = s.fields.experiment||""; $("ids").value = s.fields.animal_ids||""; $("copyto").value = s.fields.copy_to||""; $("copydelete").checked = !!s.fields.copy_delete; $("experiment").dataset.set=1; }
+  $("copydeletenote").style.color = $("copydelete").checked ? "var(--bad)" : "";
   renderCopies(s.copies || {jobs: []}, L.folder, st);
   $("during").hidden = !(st=="recording" || st=="stopping" || st=="starting live");
   $("disk").textContent = s.disk.free_gb!=null ? Math.round(s.disk.free_gb)+" GB" : "-";
@@ -349,9 +353,20 @@ async function chooseType(path){
 function base(p){ return String(p||"").split(/[\\/]/).filter(x => x).pop() || ""; }
 function gb(b){ return b==null ? "?" : (b/1e9).toFixed(1); }
 function copyText(j){
+  if(j.state=="copying" && j.phase=="checking") return "checking the copy byte for byte: "+gb(j.checked_bytes)+" of "+gb(j.check_bytes)+" GB read back, "+dur(j.seconds||0);
+  if(j.state=="copying" && j.phase=="deleting") return "every file the same in the copy: deleting it from this computer";
+  if(j.state=="copying" && j.phase=="finishing") return "every file the same in the copy: copying its logs";
   if(j.state=="copying") return "copying into "+j.to+": "+gb(j.done_bytes)+" of "+gb(j.bytes)+" GB, "+dur(j.seconds||0)+copyEta(j);
-  if(j.state=="waiting") return "waits for the copies before it, into "+j.to;
+  if(j.state=="waiting") return "waits for the copies before it, into "+j.to+(j.delete ? ", then deleted here once checked" : "");
   return j.message || j.state;
+}
+function copyCheck(j){
+  // What the byte-for-byte check found, and what became of the folder here: tags beside the copy's state
+  let t = "";
+  if(j.mismatched) t += " "+tag(j.mismatched+" not the same", "bad");
+  else if(j.verified!=null && j.state=="done") t += " "+tag("verified", "ok");
+  if(j.state=="done" && j.delete) t += " "+(/deleted from this computer/.test(j.message||"") ? tag("deleted here", "ok") : tag("kept here", "warn"));
+  return t;
 }
 function copyEta(j){
   // How long the rest takes at the copy's average rate so far, and the clock time it should end: once there is a rate
@@ -361,7 +376,9 @@ function copyEta(j){
   return ", " + (left < 60 ? "under a minute" : m < 60 ? "about "+m+" min" : "about "+Math.floor(m/60)+" h "+(m%60)+" min") + " left (done around "+end+")";
 }
 function copyBar(j){
-  // A copy under way: a bar of the bytes copied so far (none until its size is known)
+  // A copy under way: a bar of the bytes copied so far (none until its size is known), then of the bytes checked
+  if(j.state=="copying" && j.phase=="checking" && j.check_bytes)
+    return '<div class="bar copybar"><div style="width:'+Math.min(100, 100*(j.checked_bytes||0)/j.check_bytes).toFixed(1)+'%"></div></div>';
   if(j.state!="copying" || !j.bytes) return "";
   return '<div class="bar copybar"><div style="width:'+Math.min(100, 100*(j.done_bytes||0)/j.bytes).toFixed(1)+'%"></div></div>';
 }
@@ -379,7 +396,7 @@ function renderCopies(C, folder, st){
     (queued.length ? '<div class="muted">'+(now.length ? "Then " : "")+queued.map(j => esc(j.name)).join(", ")+(queued.length==1 ? " waits" : " wait")+" to be copied.</div>" : ""); $("copies").hidden = !jobs.length && !C.close_when_copied;
   $("copywait").hidden = $("closenow").hidden = !C.close_when_copied;
   if(C.close_when_copied) $("copywait").textContent = C.pending ? "The panel closes by itself once these copies are done ("+C.pending+" left)." : "Closing…";
-  $("copylist").innerHTML = jobs.map(j => "<li>"+tag(j.state, j.state=="done"?"ok":j.state=="failed"||j.state=="left"?"bad":"warn")+" <b>"+esc(j.name)+"</b> "+esc(copyText(j))+copyBar(j)+"</li>").join("");
+  $("copylist").innerHTML = jobs.map(j => "<li>"+tag(j.state, j.state=="done"?"ok":j.state=="failed"||j.state=="left"?"bad":"warn")+copyCheck(j)+" <b>"+esc(j.name)+"</b> "+esc(copyText(j))+copyBar(j)+"</li>").join("");
 }
 let modelSig = "";
 function renderModels(M){
@@ -488,8 +505,9 @@ $("start").onclick = async () => { $("starterr").textContent = "";
   if(override && !confirm("This session doesn't fit on the disk.\n\n" + disk.text + "\n\nStart anyway? Only if data will be moved off "+
     "this disk during the session. Otherwise the disk fills up: campy stops cleanly near the end of the space, but SpikeGLX doesn't.")) return;
   const j = await postFull("/start", {experiment:$("experiment").value, animal_ids:$("ids").value, notes:$("notes").value, copy_to:$("copyto").value.trim(),
-    length: $("length").value || null, pico_at: $("picoat").value.trim() || null, disk_override: override});
+    copy_delete: !!$("copyto").value.trim() && $("copydelete").checked, length: $("length").value || null, pico_at: $("picoat").value.trim() || null, disk_override: override});
   $("starterr").textContent = j.error || ""; if(j.create) offerCreate(j.create); tick(); };
+$("copydelete").onchange = () => { $("copydeletenote").style.color = $("copydelete").checked ? "var(--bad)" : ""; };
 $("mset").onchange = () => { if($("mset").value) pickModels({set: $("mset").value}); };
 $("mcen").onchange = () => pickModels({centroid: $("mcen").value});
 $("mins").onchange = () => pickModels({centroid: $("mcen").value, instance: $("mins").value});

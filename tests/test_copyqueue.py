@@ -88,7 +88,7 @@ def test_a_copy_that_fails_says_so_in_post_json(tmp_path):
 def test_closing_leaves_the_copies_not_done_and_says_how_to_make_them(tmp_path, monkeypatch):
 	release = threading.Event()
 
-	def slow(folder, settings, log, stop=None):
+	def slow(folder, settings, log, stop=None, **kw):
 		release.wait(10)
 		return "done", "copied"
 	monkeypatch.setattr(post, "StepCopy", slow)
@@ -164,7 +164,7 @@ def bare_panel(queue):
 def test_the_page_lists_the_newest_first_even_within_one_clock_tick(tmp_path, monkeypatch):
 	# Windows' time.time() moves in steps of about 16 ms: recordings queued within one step keep their order
 	release = threading.Event()
-	monkeypatch.setattr(post, "StepCopy", lambda folder, settings, log, stop=None: (release.wait(10), ("done", "ok"))[1])
+	monkeypatch.setattr(post, "StepCopy", lambda folder, settings, log, stop=None, **kw: (release.wait(10), ("done", "ok"))[1])
 	monkeypatch.setattr(copyqueue.time, "time", lambda: 1000.0)
 	queue = quiet()
 	names = ["2026-11-09_15-00-0{}".format(n) for n in range(4)]
@@ -176,7 +176,7 @@ def test_the_page_lists_the_newest_first_even_within_one_clock_tick(tmp_path, mo
 
 def test_close_waits_for_the_copies_or_leaves_them(tmp_path, monkeypatch):
 	release = threading.Event()
-	monkeypatch.setattr(post, "StepCopy", lambda folder, settings, log, stop=None: (release.wait(10), ("done", "ok"))[1])
+	monkeypatch.setattr(post, "StepCopy", lambda folder, settings, log, stop=None, **kw: (release.wait(10), ("done", "ok"))[1])
 	queue = quiet()
 	queue.Add(recording(tmp_path, "2026-11-09_13-00-00"), str(tmp_path))
 	p = bare_panel(queue)

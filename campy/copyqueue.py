@@ -5,12 +5,23 @@ recording and its other post-steps have ended, in the background, one
 recording at a time, while the next recording records.
 
 The copy is campy-session post's copy step (post.StepCopy): robocopy on
-Windows, rsync elsewhere, then every file's size checked; nothing is ever
-deleted, here or there. Its result goes into the recording's logs/post.json
-as the copy step's, so campy-session post <folder> sees it done, and a copy
-that failed or was left can be made again by hand:
+Windows, rsync elsewhere, then every file read again on both sides and
+compared byte for byte (campy/copycheck.py). Its result, each file's with it,
+goes into the recording's logs/post.json as the copy step's, so
+campy-session post <folder> sees it done; post's own logs are then copied
+again and checked too (post.FinishCopy). A copy that failed or was left can be
+made again by hand:
 
   campy-session post <folder> --only copy --to <folder to copy into>
+
+With the page's "Delete each recording from this computer once its copy is
+checked" ticked (off by default; the config's post copy.delete_after_verify
+ticks it), a recording whose every file is the same in the copy is then
+deleted here: not while a program has a file in it open, while it is still
+wanted (a recording into it, a copy of it waiting), or when anything in it
+changed since the check (copycheck.Delete). Nothing is ever deleted in the
+copy. A copy that fails, or a folder kept though it was to be deleted, is
+also sent as an alert (session.Alert: ~/.campy/alerts.yaml's channels).
 
 Measured on the Dell Pro Tower Plus (8 cameras, 60 fps, AV1 on Quick Sync),
 2026-11-09: a copy to a network share at 21 MB/s during a recording changed
@@ -33,18 +44,30 @@ def RememberFile():
 	return os.path.join(session.StatusDir(), REMEMBER)
 
 
-def Remembered(path, config):
-	"""The folder the page last copied this config's recordings into: text, "" (the box emptied) or None (never set)."""
+def _Remembered(path, config):
 	from campy import pico, strictjson
 	try:
 		with open(path) as f:
 			got = strictjson.load(f).get(pico.ConfigKey(config))
-		return str(got["to"]) if isinstance(got, dict) and "to" in got else None
+		return got if isinstance(got, dict) else {}
 	except (OSError, ValueError, AttributeError):
-		return None
+		return {}
 
 
-def Remember(path, config, to):
+def Remembered(path, config):
+	"""The folder the page last copied this config's recordings into: text, "" (the box emptied) or None (never set)."""
+	got = _Remembered(path, config)
+	return str(got["to"]) if "to" in got else None
+
+
+def RememberedDelete(path, config):
+	"""Whether the page last had this config's "Delete each recording ... once its copy is checked" ticked: True,
+	False, or None (never set)."""
+	got = _Remembered(path, config)
+	return got["delete"] if isinstance(got.get("delete"), bool) else None
+
+
+def Remember(path, config, to, delete=None):
 	"""The page's folder for this config, for the next panel opened with it ("" too: copying turned off)."""
 	from campy import pico, session, strictjson
 	try:
@@ -54,7 +77,10 @@ def Remember(path, config, to):
 			everything = {}
 	except (OSError, ValueError):
 		everything = {}
-	everything[pico.ConfigKey(config)] = {"to": str(to), "at": datetime.now().astimezone().isoformat(timespec="seconds")}
+	entry = {"to": str(to), "at": datetime.now().astimezone().isoformat(timespec="seconds")}
+	if delete is not None:
+		entry["delete"] = bool(delete)
+	everything[pico.ConfigKey(config)] = entry
 	try:
 		os.makedirs(os.path.dirname(path), exist_ok=True)
 		session.WriteJson(path, everything)
@@ -129,13 +155,18 @@ _ORDER = itertools.count() # the order recordings were queued in: two queued wit
 
 
 class Job:
-	def __init__(self, folder, to):
+	def __init__(self, folder, to, delete=False):
 		self.order = next(_ORDER)
-		self.folder, self.to = os.path.abspath(folder), str(to)
+		self.folder, self.to, self.delete = os.path.abspath(folder), str(to), bool(delete)
 		self.name = os.path.basename(os.path.normpath(self.folder))
 		self.state, self.message = "waiting", ""
 		self.added, self.started, self.ended = time.time(), None, None
 		self.bytes, self.done_bytes, self.looked = None, 0, 0.0
+		# While it copies: copying, then checking (checked_bytes of check_bytes read again on both sides), then
+		# finishing (post's logs copied again; deleting here, when it is to be)
+		self.phase, self.checked_bytes, self.check_bytes = None, 0, None
+		self.verified, self.mismatched = None, None # files the same in the copy, and not, once checked
+		self.local = None # what became of the folder here: deleted, kept (why) or here
 
 	def Dest(self):
 		remote = ":" in self.to and "@" in self.to.split(":", 1)[0]
@@ -143,7 +174,9 @@ class Job:
 
 	def Dict(self, now):
 		d = {"folder": self.folder, "name": self.name, "to": self.to, "state": self.state, "message": self.message,
-			"bytes": self.bytes, "done_bytes": self.done_bytes, "seconds": None}
+			"bytes": self.bytes, "done_bytes": self.done_bytes, "seconds": None, "delete": self.delete,
+			"phase": self.phase, "checked_bytes": self.checked_bytes, "check_bytes": self.check_bytes,
+			"verified": self.verified, "mismatched": self.mismatched, "local": self.local}
 		if self.started:
 			d["seconds"] = round((self.ended or now) - self.started, 1)
 		return d
@@ -152,23 +185,26 @@ class Job:
 class CopyQueue:
 	"""Copies recordings' folders one after another in a thread of its own (Add); Status for the page."""
 
-	def __init__(self, say=None, out=None):
+	def __init__(self, say=None, out=None, busy=None, alert=None):
 		self.say = say or (lambda text: print(text, flush=True))
 		self.out = out # where post's log lines are shown (default: stdout, as [post])
+		self.busy = busy # busy(folder): why the panel still wants that folder (recording into it), or ""
+		self.alert = alert # alert(key, text, severity): session.Alert by default
 		self.jobs = []
 		self.lock = threading.Lock()
 		self.wake = threading.Event()
 		self.thread = None
 
-	def Add(self, folder, to):
-		job = Job(folder, to)
+	def Add(self, folder, to, delete=False):
+		job = Job(folder, to, delete)
 		with self.lock:
 			self.jobs.append(job)
 			if self.thread is None or not self.thread.is_alive():
 				self.thread = threading.Thread(target=self.Run, name="campy panel copies", daemon=True)
 				self.thread.start()
 		self.wake.set()
-		self.say("{} is copied into {} once the copies before it are done.".format(job.name, job.to))
+		self.say("{} is copied into {} once the copies before it are done{}.".format(job.name, job.to,
+			", checked byte for byte, then deleted from this computer" if job.delete else ""))
 		return job
 
 	def Pending(self):
@@ -195,26 +231,80 @@ class CopyQueue:
 	def Copy(self, job):
 		from campy import post
 		job.bytes = Size(job.folder)
+		job.phase = "copying"
 		self.say("Copying {} ({:.1f} GB) into {}.".format(job.name, job.bytes / 1e9, job.to))
+		details = {}
+
+		def checked(done, total):
+			job.phase, job.checked_bytes, job.check_bytes = "checking", done, total
 		try:
 			log = post.Log(job.folder, self.out)
-			state, message = post.StepCopy(job.folder, {"copy": {"to": job.to}}, log)
+			state, message = post.StepCopy(job.folder, {"copy": {"to": job.to}}, log, details=details, progress=checked)
 		except Exception as e:
 			state, message = "failed", "{}: {}".format(type(e).__name__, e)
+		job.verified, job.mismatched = details.get("verified"), details.get("mismatched")
 		with self.lock:
 			if job.state == "left": # the panel closed while it copied: say so, not done
 				return
 			# Into post.json before the job counts as finished: whatever waits for Pending() to empty (the panel
 			# closing, a test) then finds the result there. Under the lock, so Leave can't mark it left meanwhile.
 			job.ended = time.time()
-			self.Record(job, state, message)
-			job.state, job.message = state, message
+			self.Record(job, state, message, details)
+		local = None
+		if state == "done" and details.get("files") is not None and not details.get("mismatched"):
+			# Every file the same in the copy: post's logs copied again (the result is in them now), then, ticked,
+			# the folder deleted here
+			job.phase = "deleting" if job.delete else "finishing"
+			try:
+				local, text = post.FinishCopy(job.folder, details, log, delete=job.delete, busy=self.Busy(job))
+			except Exception as e:
+				local, text = ("kept" if job.delete else "here"), "{}: {}".format(type(e).__name__, e)
+			job.local = text
+			if local == "deleted":
+				message += "; deleted from this computer"
+			elif job.delete:
+				message += "; " + text
+		elif job.delete:
+			job.local = "kept here: the copy isn't the same" if state == "failed" else "kept here"
+		with self.lock:
+			if job.state == "left":
+				return
+			job.ended = time.time()
+			job.state, job.message, job.phase = state, message, None
 			if state == "done":
 				job.done_bytes = job.bytes
 		self.say("Copy of {}: {}, {}.".format(job.name, state, message))
+		if state != "done":
+			self.Alert("copy/" + job.name, "The copy of {} into {} failed: {}. Its folder is kept on this "
+				"computer.".format(job.folder, job.to, message))
+		elif job.delete and local != "deleted":
+			self.Alert("copy/" + job.name, "{} was copied into {} and checked, but not deleted from this computer: {}. "
+				"Delete it by hand once nothing uses it.".format(job.folder, job.to, job.local))
+
+	def Busy(self, job):
+		# Why the folder can't be deleted now though its copy is checked: the panel records into it, or another copy
+		# of it is waiting
+		why = self.busy(job.folder) if self.busy is not None else ""
+		if why:
+			return why
+		with self.lock:
+			if any(j is not job and j.state in ("waiting", "copying") and os.path.normcase(j.folder) ==
+					os.path.normcase(job.folder) for j in self.jobs):
+				return "another copy of it is waiting"
+		return ""
+
+	def Alert(self, key, text):
+		try:
+			if self.alert is not None:
+				self.alert(key, text, "warning")
+			else:
+				from campy import session
+				session.Alert(key, text, "warning")
+		except Exception as e:
+			self.say("Could not send the alert: {}".format(e))
 
 	@staticmethod
-	def Record(job, state, message):
+	def Record(job, state, message, details=None):
 		# Into the recording's logs/post.json, as campy-session post's copy step
 		from campy import post
 		try:
@@ -222,6 +312,9 @@ class CopyQueue:
 			saved = post.Load(job.folder)
 			saved["steps"]["copy"] = {"state": state, "message": message, "time": post.Stamp(), "to": job.to,
 				"seconds": round((job.ended or time.time()) - (job.started or time.time()), 1)}
+			if details and details.get("files") is not None:
+				saved["steps"]["copy"].update({k: details[k] for k in ("dest", "verified", "mismatched", "read_back",
+					"files")})
 			post.Save(job.folder, saved)
 		except (OSError, ValueError, KeyError):
 			pass

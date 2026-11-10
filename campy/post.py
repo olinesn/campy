@@ -58,7 +58,19 @@ export   campy-live-export, in campy-live's environment, when campy-live ran
          logs/, and that copy removed once exported.
 copy     the whole folder to copy.to/<folder's name>: robocopy on Windows,
          rsync elsewhere (or a plain copy when there is no rsync), then every
-         file's size checked. Nothing is ever deleted here.
+         file checked byte for byte: read again on both sides and compared
+         (campy/copycheck.py), each file's result and SHA-256 in post.json
+         and post.log. One file that differs or is missing fails the step.
+         Then post's own logs, written after the check, are copied again
+         and checked too. To an rsync address (user@host:/path) the copy
+         isn't read back. Nothing is deleted here, unless campy-session post
+         is given --delete-after-verify (or the config's
+         copy.delete_after_verify): then, once every file is the same in the
+         copy, the recording's folder is deleted from this computer, if no
+         program has a file in it open and nothing in it changed since the
+         check (copycheck.Delete). The panel's copies do the same with the
+         page's box ticked. campy-session's own post-steps (campy-session
+         run) never delete.
 run      the config's own commands, each with {folder} replaced by the
          recording's folder, in a shell; one that fails is said, and the
          next runs.
@@ -75,9 +87,10 @@ their last second.
 import argparse, csv, glob, json, os, re, shlex, shutil, struct, subprocess, sys, time
 from datetime import datetime
 
-from campy import align, segments, strictjson
+from campy import align, copycheck, segments, strictjson
 
 POST_LOG, POST_JSON = "post.log", "post.json"
+POST_OWN = ("logs/" + POST_LOG, "logs/" + POST_JSON, "logs/" + POST_JSON + ".tmp") # written to as the copy runs
 STEPS = ("remux", "join", "align", "calibrate", "export", "copy", "run")
 VIDEO_EXTENSIONS = (".mp4", ".m4v", ".mov")
 SPARE_BYTES = 200 * 1024 ** 2 # left free on the disk besides the remuxed copy
@@ -632,16 +645,25 @@ def StepExport(folder, settings, log, live_python=None, force=False, stop=None):
 
 # ------------------------------------------------------------------ copy
 
-def StepCopy(folder, settings, log, stop=None):
+def CopyDest(folder, to):
+	"""(where the copy of folder goes in to, whether to is an rsync address user@host:/path)."""
+	name = os.path.basename(os.path.normpath(folder))
+	remote = re.match(r"^[^/\\:]+@[^:]+:", str(to)) is not None
+	return ("{}/{}".format(str(to).rstrip("/"), name) if remote else os.path.join(str(to), name)), remote
+
+
+def StepCopy(folder, settings, log, stop=None, details=None, progress=None):
+	"""
+	The copy, then every file checked byte for byte (copycheck.Check). details (a dict): filled with the check's
+	dest, files (each one's result), snapshot and read_back, for FinishCopy. progress(bytes checked, in all).
+	"""
 	copy = settings.get("copy")
 	if not copy:
 		return "skipped", "no copy.to"
 	to = copy.get("to") if isinstance(copy, dict) else copy
 	if not to:
 		return "skipped", "no copy.to"
-	name = os.path.basename(os.path.normpath(folder))
-	remote = re.match(r"^[^/\\:]+@[^:]+:", str(to)) is not None # user@host:/path, for rsync
-	dest = "{}/{}".format(str(to).rstrip("/"), name) if remote else os.path.join(str(to), name)
+	dest, remote = CopyDest(folder, to)
 	t0 = time.monotonic()
 	if not remote:
 		os.makedirs(dest, exist_ok=True) # rsync makes only the last folder of a path (GNU rsync, on Linux)
@@ -669,22 +691,90 @@ def StepCopy(folder, settings, log, stop=None):
 			log.Say("  " + line)
 	if not ok:
 		return "failed", "the copy to {} failed (exit code {})".format(dest, out.returncode if out else "-")
-	if not remote:
-		missing = []
-		for root, dirs, files in os.walk(folder):
-			for f in files:
-				src = os.path.join(root, f)
-				rel = os.path.relpath(src, folder)
-				if rel.replace("\\", "/") in ("logs/" + POST_LOG, "logs/" + POST_JSON, "logs/" + POST_JSON + ".tmp"):
-					continue # post's own log and progress: written to as it copies (its lines after the copy save
-					         # post.json again, once the copy took over half a second, as robocopy does on Windows)
-				there = os.path.join(dest, rel)
-				if not os.path.isfile(there) or os.path.getsize(there) != os.path.getsize(src):
-					missing.append(rel)
-		if missing:
-			return "failed", "{} files not the same size in {}: {}".format(len(missing), dest, ", ".join(missing[:5]))
-	return "done", "copied to {} in {:.0f} s{}".format(dest, time.monotonic() - t0, "" if remote else
-		", every file's size checked")
+	copied = time.monotonic() - t0
+	if remote:
+		return "done", "copied to {} in {:.0f} s; not checked byte for byte (an rsync address: only a folder this " \
+			"computer reaches is read back)".format(dest, copied)
+	# Every file read again on both sides and compared, byte for byte (post's own logs aside: written to as it copies;
+	# FinishCopy copies and checks them once the step's result is in them)
+	log.Say("Checking the copy: every file read again here and in {}, and compared byte for byte.".format(dest))
+	said = [time.monotonic()]
+
+	def checked(done, total):
+		if progress is not None:
+			progress(done, total)
+		if time.monotonic() - said[0] > 10: # post.json for the panel, and a line in post.log, every 10 s
+			said[0] = time.monotonic()
+			log.Progress("checking the copy: {:.1f} of {:.1f} GB".format(done / 1e9, total / 1e9),
+				done / total if total else None)
+	t1 = time.monotonic()
+	files, snapshot, total = copycheck.Check(folder, dest, skip=POST_OWN, progress=checked, stop=stop)
+	for f in files:
+		log.Say("  {:9s} {} ({:,} bytes){}".format(f["result"], f["file"], f["bytes"] or 0,
+			", sha256 " + f["sha256"] if f["sha256"] else ": " + f["why"]))
+	bad = [f for f in files if f["result"] != "verified"]
+	how = copycheck.ReadBackText(files)
+	if details is not None:
+		details.update(dest=dest, snapshot=snapshot, read_back=how, verified=len(files) - len(bad), mismatched=len(bad),
+			files=[{k: f[k] for k in ("file", "bytes", "sha256", "result", "why")} for f in files])
+	if bad:
+		return "failed", "{} of {} files not the same in the copy ({}): {}".format(len(bad), len(files), dest,
+			", ".join("{} {}".format(f["file"], f["why"] or f["result"]) for f in bad[:5]))
+	return "done", "copied to {} in {:.0f} s; every file checked byte for byte ({} files, {:.1f} GB, in {:.0f} s; " \
+		"the copy's side read {})".format(dest, copied, len(files), total / 1e9, time.monotonic() - t1, how)
+
+
+def RecordLocal(folder, text, dest=False):
+	"""What became of the recording's folder here (deleted, kept and why) into its post.json's copy step: the
+	folder's own (dest False), or, once deleted, the copy's (dest: the copy's folder), with a line in its post.log."""
+	where = dest or folder
+	try:
+		saved = Load(where)
+		saved["steps"].setdefault("copy", {})["local"] = text
+		saved["steps"]["copy"]["local_time"] = Stamp()
+		Save(where, saved)
+		if dest:
+			with open(os.path.join(dest, "logs", POST_LOG), "a", encoding="utf-8") as f:
+				f.write("{} {}\n".format(Stamp(), text))
+	except (OSError, ValueError, KeyError):
+		pass
+
+
+def FinishCopy(folder, details, log, delete=False, busy=None):
+	"""
+	After a copy that every file of passed (StepCopy's details) and whose result is in post.json: post's own logs
+	copied again and checked (copycheck.CopyFiles); then, with delete, the folder deleted from this computer
+	(copycheck.Delete; busy: why something still wants it, or ""). Returns (local: "deleted", "kept" or "here", what
+	happened). Nothing is deleted when anything isn't so.
+	"""
+	dest = details["dest"]
+	logs = [f for f in POST_OWN if not f.endswith(".tmp")]
+	if delete:
+		text = "every file the same in the copy: deleting {} from this computer once post's logs are copied and " \
+			"checked too".format(folder)
+		log.Say(text)
+		RecordLocal(folder, text)
+	ok, why, snap = copycheck.CopyFiles(folder, dest, logs)
+	if not ok:
+		text = "kept here: post's logs didn't copy: {}".format(why) if delete else \
+			"post's logs didn't copy: {}".format(why)
+		log.Say(text)
+		RecordLocal(folder, text)
+		return ("kept" if delete else "here"), text
+	if not delete:
+		return "here", "kept here (deleting after the copy is off)"
+	snapshot = dict(details["snapshot"], **snap)
+	deleted, text = copycheck.Delete(folder, snapshot, busy=busy)
+	if deleted:
+		text = "{} deleted from this computer, its copy in {} checked byte for byte".format(folder, dest)
+		RecordLocal(folder, text, dest=dest)
+		log.out.write("[post] {}\n".format(text))
+		log.out.flush()
+		return "deleted", text
+	log.Say(text)
+	RecordLocal(folder, text)
+	copycheck.CopyFiles(folder, dest, logs) # the copy's logs say it too (not needed: nothing was deleted)
+	return "kept", text
 
 
 # ------------------------------------------------------------------ run
@@ -728,16 +818,20 @@ def Save(folder, state):
 	os.replace(tmp, path)
 
 
-def Run(folder, settings, live_python=None, only=None, force=False, ffmpeg=None, stop=None, out=None):
+def Run(folder, settings, live_python=None, only=None, force=False, ffmpeg=None, stop=None, out=None, delete=False):
 	"""
 	Runs the post-steps on folder: those of only (all by default), each
 	unless done already (force: again, and after an unclean stop too).
 	settings: the post: section. Returns {step: (state, message)}.
+	delete: once the copy step has copied and checked every file, and every
+	other step has run, the folder is deleted from this computer
+	(FinishCopy); results then has "local": (deleted or kept, why).
 	"""
 	folder = os.path.abspath(folder)
 	log = Log(folder, out)
 	state = Load(folder)
 	results = {}
+	copied = {} # the copy step's check (StepCopy's details)
 	steps = [s for s in STEPS if only is None or s in only]
 	# For the panel while they run: the steps in order (plan), the one running, and its latest line and progress
 	state.update(plan=steps, running=None, started=Stamp())
@@ -794,7 +888,8 @@ def Run(folder, settings, live_python=None, only=None, force=False, ffmpeg=None,
 			elif step == "export":
 				result = StepExport(folder, settings, log, live_python=live_python, force=force or bool(before), stop=stop)
 			elif step == "copy":
-				result = StepCopy(folder, settings, log, stop=stop)
+				copied.clear()
+				result = StepCopy(folder, settings, log, stop=stop, details=copied)
 			else:
 				result = StepRun(folder, settings, log, stop=stop)
 		except Exception as e:
@@ -803,8 +898,17 @@ def Run(folder, settings, live_python=None, only=None, force=False, ffmpeg=None,
 		state["running"] = None
 		state["steps"][step] = {"state": result[0], "message": result[1], "time": Stamp(),
 			"seconds": round(time.monotonic() - t0, 1)}
+		if step == "copy" and copied.get("files") is not None:
+			state["steps"][step].update({k: copied[k] for k in ("dest", "verified", "mismatched", "read_back", "files")})
 		Save(folder, state)
 		log.Say("{}: {}, {}.".format(step, result[0], result[1]))
+	# Post's logs copied again and checked, now that the copy's result is in them; then, with delete, the folder
+	# deleted here: last, once nothing more is written into it
+	if results.get("copy", ("",))[0] == "done" and copied.get("files") is not None and not copied.get("mismatched"):
+		log.on_line = None
+		local = FinishCopy(folder, copied, log, delete=delete)
+		if delete:
+			results["local"] = local
 	return results
 
 
@@ -821,6 +925,10 @@ def Main(argv=None):
 	p.add_argument("--ffmpeg", default="", help="the ffmpeg to remux with (default: imageio-ffmpeg's)")
 	p.add_argument("--to", default="", help="the copy step copies into this folder (as copy.to: it makes "
 		"<folder>/<the recording's name>), in place of the config's; the panel's \"Copy each recording to\" box says it")
+	p.add_argument("--delete-after-verify", action="store_true", help="once the copy step has copied the folder and "
+		"found every file the same in the copy, byte for byte, delete the folder from this computer (not when a "
+		"program has a file in it open, or something in it changed since the check); also the config's "
+		"copy.delete_after_verify. With a copy done already, add --force to copy and check it again")
 	args = p.parse_args(argv)
 	folder = os.path.abspath(args.folder)
 	if not os.path.isdir(folder):
@@ -839,12 +947,19 @@ def Main(argv=None):
 			print("campy-session post: {}".format(e), file=sys.stderr)
 			return 1
 		settings, live = config.post, config.live or {}
+	copy = settings.get("copy") if isinstance(settings.get("copy"), dict) else {}
+	delete = args.delete_after_verify or bool(copy.get("delete_after_verify"))
 	if args.to:
 		settings = dict(settings, copy={"to": args.to})
 	try:
 		live_python = session.LivePython(live)[0]
 	except session.SessionError:
 		live_python = None
-	results = Run(folder, settings, live_python=live_python, only=only, force=args.force, ffmpeg=args.ffmpeg or None)
-	return 1 if any(state == "failed" for state, _ in results.values()) or \
+	results = Run(folder, settings, live_python=live_python, only=only, force=args.force, ffmpeg=args.ffmpeg or None,
+		delete=delete)
+	local = results.pop("local", None)
+	if delete and local is None and results.get("copy", ("",))[0] == "done":
+		print("campy-session post: nothing deleted: the copy was done already (add --force to copy and check it "
+			"again, then delete)", file=sys.stderr)
+	return 1 if any(state == "failed" for state, _ in results.values()) or (delete and local and local[0] == "kept") or \
 		all(state == "skipped" and "clean stop" in message for state, message in results.values()) else 0
