@@ -46,11 +46,11 @@ Next to them, under **Checks**, is a list of checks:
 - On the ChronicRecord rig the disk line is what the chosen length needs instead, and a length that doesn't fit stops the start ([below](#on-the-chronicrecord-rig-the-pico-and-spikeglx)).
 - **stops the start** (red): the recording can't start until it is fixed. Ask the person who set up the rig.
 
-On the ChronicRecord rig, under **Start recording**, a drawing shows **one bout as the Pico runs it**: a row for each of its outputs (the record gate to SpikeGLX on GP2, the camera trigger on GP3, the blue LED on GP4 and the yellow LED on GP5), from just before the gate opens on the left to the next bout on the right. The stretches aren't drawn to scale, and how long each lasts is written under it. The LEDs' stretch is the exception: it is zoomed in to milliseconds and shows the camera's real pulses, so you can see which frames each LED lights, which LED comes first, and any dark gap between them. It follows the **Bout settings** as you change them: the page sends a setting when you leave its box or press Enter, and also after a short pause in typing.
+On the ChronicRecord rig, under **Start recording**, a drawing shows **one bout as the Pico runs it**: a row for each of its outputs (the record gate to SpikeGLX on GP2, the camera trigger on GP3, the blue LED on GP4 and the yellow LED on GP5), from 5 s before the gate opens to the next bout, with a time axis under it in seconds from the gate opening (0 s). The stretches between the axis marks aren't drawn to scale. The LEDs' stretch is the exception: it is zoomed in to milliseconds and shows the camera's real pulses, so you can see which frames each LED lights, which LED comes first, and any dark gap between them. It follows the **Bout settings** as you change them: the page sends a setting when you leave its box or press Enter, and also after a short pause in typing.
 
 ![One bout as the Pico runs it: the record gate, the camera's pulses, the blue LED and the yellow LED, with the LEDs' stretch zoomed in to milliseconds](images/panel-bout.png)
 
-*(The ChronicRecord config's bout before the fiber photometry settings: blue 30 ms, then yellow 30 ms. Dark theme.)*
+*(The ChronicRecord config's bout, with its fiber photometry pattern: yellow 50 ms, 150 ms dark, then blue 50 ms, lighting frames 300-302 and 312-314. Dark theme.)*
 
 The recording's length is fixed by the rig's settings, and the page shows it (for example `2:00:00 each`).
 

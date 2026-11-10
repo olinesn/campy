@@ -61,6 +61,11 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
 .boutpic .lab b{font-weight:500;color:var(--text)}.boutpic svg{display:block;width:100%;height:2.25rem;grid-column:2/-1}
 .boutpic .dur{font-size:.9375rem;line-height:1.25;text-align:center;padding:0 2px;min-width:0;color:var(--muted)}
 .boutpic .zoom{color:var(--accent)}
+.boutpic .axis{grid-column:2/-1;position:relative;height:1.9em;font-size:.9375rem;color:var(--muted);border-top:1px solid var(--muted)}
+.boutpic .axis i{position:absolute;top:0;width:1px;height:.4em;background:var(--muted);transform:translateX(-50%)}
+.boutpic .axis i:first-child{transform:none}.boutpic .axis i:nth-last-of-type(1){transform:translateX(-100%)}
+.boutpic .axis span{position:absolute;top:.45em;transform:translateX(-50%);white-space:nowrap}.boutpic .axis span.first{transform:none}
+.boutpic .axis span.last{transform:translateX(-100%)}.boutpic .axis span.zero{color:var(--text);font-weight:600}
 </style></head><body><main>
 <div class="topline"><div class="textsize" role="group" aria-label="Text size">Text size <button id="smaller" title="Smaller text" aria-label="Smaller text">A&minus;</button><button id="larger" title="Larger text" aria-label="Larger text">A+</button><span id="textpct"></span></div><div id="version" class="mono muted version"></div></div>
 
@@ -451,11 +456,11 @@ function renderModels(M){
   $("mrescan").hidden = !M.roots.length;
 }
 let boutSig = "";
-// The drawing of a bout: a row for each of the Pico's outputs, its time cut into stretches (a short one with every
-// output low, before the gate opens; gate open to camera on,
-// camera to the LEDs, the LEDs, LEDs to camera off, camera off to gate closed, to the next bout). Each stretch has
-// its width whatever it lasts (a cartoon: its length is written under it), but the LEDs' stretch is to scale in ms,
-// with the camera's real pulses in it.
+// The drawing of a bout: a row for each of the Pico's outputs, its time cut into stretches (5 s before the gate
+// opens, with every output low; gate open to camera on, camera to the LEDs, the LEDs, LEDs to camera off, camera off
+// to gate closed, to the next bout). Each stretch has its width whatever it lasts (a cartoon), with the time axis
+// under it in seconds from the gate's opening (0 s); the LEDs' stretch is to scale in ms, with the camera's real
+// pulses in it.
 const LED_COLOUR = {blue: "var(--blueled)", yellow: "var(--yellowled)"}; // the theme's: brighter in dark mode
 // A stretch's length, rounded as the drawing says it: "235 s", "4.5 s", "30 ms"
 function secs(t){ return t >= 9.95 ? Math.round(t).toLocaleString()+"\u00a0s" : t >= 0.9995 ? (+t.toFixed(1))+"\u00a0s" : (+(t*1000).toFixed(1))+"\u00a0ms"; }
@@ -465,8 +470,8 @@ function boutPicture(D){
   const n = D.bouts[1], frame = 1 / D.fps, L = b.leds;
   // The LEDs' stretch: from a frame and a half before the first LED to a frame and a half after the last (within the camera)
   const z0 = Math.max(b.camera[0], L[0].on - 1.5*frame), z1 = Math.min(b.camera[1], L[L.length-1].off + 1.5*frame);
-  const cuts = [-1, 0, b.camera[0], z0, z1, b.camera[1], b.gate[1], D.interval_s]; // -1: the stretch before the gate opens
-  const weights = [0.5, 1, 1, 2.6, 1.8, 1, 1.3].map((w, i) => cuts[i+1] - cuts[i] > 1e-9 ? w : 0.12);
+  const cuts = [-5, 0, b.camera[0], z0, z1, b.camera[1], b.gate[1], D.interval_s]; // from 5 s before the gate opens
+  const weights = [1.6, 1, 1, 2.2, 1.6, 1, 1.4].map((w, i) => cuts[i+1] - cuts[i] > 1e-9 ? w : 0.12);
   const W = weights.reduce((a, w) => a + w, 0) * 100, H = 30, hi = 5, lo = 25;
   const starts = weights.reduce((a, w, i) => (a.push(a[i] + w*100), a), [0]);
   const x = t => { let i = cuts.findIndex((c, k) => k > 0 && t <= c + 1e-9); if(i < 1) i = t <= 0 ? 1 : cuts.length - 1;
@@ -490,18 +495,28 @@ function boutPicture(D){
   const signals = [[[b.gate], "var(--gate)"], [pulseSpans, "var(--text)"], [led("blue"), LED_COLOUR.blue], [led("yellow"), LED_COLOUR.yellow]];
   let html = "";
   rows.forEach((r, i) => { const [spans, colour] = signals[i];
-    html += '<div class="lab"><b>'+esc(r.name)+'</b>'+(r.pin ? ' <span class="muted">'+esc(r.pin)+'</span>' : '')+'</div>' +
+    html += '<div class="lab"><b>'+esc(r.name)+'</b>'+(r.pin ? '<br><span class="muted">'+esc(r.pin)+'</span>' : '')+'</div>' +
       svg((i >= 2 ? fill(spans, colour) : "") + line(wave(spans), colour)); });
-  // Under each stretch, how long it lasts (the normal bout's too, where it differs)
   const ledText = L.map((l, i) => (i && l.on - L[i-1].off > 1e-6 ? secs(l.on - L[i-1].off)+" dark, " : "")+l.name+" "+secs(l.off - l.on)).join(", ");
-  const durs = ["", secs(b.camera[0]), secs(L[0].on - b.camera[0]), ledText, secs(b.camera[1] - L[L.length-1].off),
-    secs(b.gate[1] - b.camera[1]), secs(D.interval_s - b.gate[1])];
-  html += '<div></div>' + durs.map((t, i) => '<div class="dur'+(i == 3 ? ' zoom' : '')+'">'+esc(t)+'</div>').join("");
+  // The time axis, in seconds from the gate's opening: each stretch's edge (the LEDs' once, at their middle); labels
+  // that would overlap are hidden once drawn (0 s and the two ends kept first)
+  const ticks = [[-5, 0], [0, starts[1]], [b.camera[0], starts[2]], [L[0].on, starts[3] + weights[3]*50], [b.camera[1], starts[5]],
+    [b.gate[1], starts[6]], [D.interval_s, W]];
+  const axis = ticks.map(([t, at]) => '<i style="left:'+(at/W*100).toFixed(2)+'%"></i>').join("") + ticks.map(([t, at], i, all) =>
+    '<span class="'+(i == 0 ? "first" : i == all.length-1 ? "last" : "")+(t == 0 ? " zero" : "")+'" style="left:'+(at/W*100).toFixed(2)+'%">'+
+    (t < 0 ? "\u2212"+secs(-t) : t == 0 ? "0\u00a0s" : secs(t))+'</span>').join("");
+  html += '<div class="lab muted">time</div><div class="axis">'+axis+'</div>' +
+    '<div class="dur zoom" style="grid-column:4 / 7">'+esc(ledText)+'</div>';
   const box = $("boutpic"); box.style.gridTemplateColumns = "auto " + weights.map(w => w+"fr").join(" "); box.innerHTML = html;
+  const kept = [], marks = [...box.querySelectorAll(".axis span")];
+  [...marks.filter(m => m.classList.contains("zero")), marks[0], marks[marks.length-1], ...marks].forEach(m => {
+    if(kept.includes(m)) return; const r = m.getBoundingClientRect();
+    if(kept.some(k => { const q = k.getBoundingClientRect(); return r.left < q.right + 6 && q.left < r.right + 6; })) m.style.visibility = "hidden";
+    else kept.push(m); });
   box.setAttribute("aria-label", "One bout: gate open "+secs(b.gate[1])+", camera from "+secs(b.camera[0])+" to "+secs(b.camera[1])+", "+ledText+
     ", next bout at "+secs(D.interval_s));
-  $("boutpicnote").textContent = "From just before the gate opens (left) to the next bout (right edge, "+secs(D.interval_s)+" after the gate opened). The stretches aren't to scale "+
-    "(how long each lasts is under it), except the LEDs' (blue text, in ms), which shows the camera's real pulses at "+(+D.fps.toFixed(3))+" a second."+
+  $("boutpicnote").textContent = "Time from the gate opening (0 s), from 5 s before it to the next bout at "+secs(D.interval_s)+". The stretches aren't "+
+    "to scale, except the LEDs' (blue text, in ms), which shows the camera's real pulses at "+(+D.fps.toFixed(3))+" a second."+
     (n ? " Drawn: a long bout. A normal bout's camera stops "+secs(n.camera[1] - n.leds[n.leds.length-1].off)+" after the LEDs, and its gate closes "+
       secs(n.gate[1])+" after it opened." : " Every bout is long.");
 }
