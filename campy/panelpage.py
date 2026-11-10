@@ -13,46 +13,70 @@ PAGE = r"""<!doctype html>
 <title>campy session</title><link rel="icon" type="image/png" href="@ICON@">
 <style>
 :root{--bg:#f7f6f2;--card:#fff;--soft:#f0eee8;--text:#1f1e1c;--muted:#6b6a65;--line:#e2e0d9;--ok:#2f6d12;--okbg:#e6f1dc;
---warn:#80500b;--warnbg:#fbefd8;--bad:#a32d2d;--badbg:#fbe9e9;--accent:#185fa5}
+--warn:#80500b;--warnbg:#fbefd8;--bad:#a32d2d;--badbg:#fbe9e9;--accent:#185fa5;--blueled:#0078d4;--yellowled:#6f8f00;--gate:#6b4fbb}
 @media (prefers-color-scheme:dark){:root{--bg:#1b1b1a;--card:#252524;--soft:#2e2e2c;--text:#ecebe6;--muted:#a3a29c;
---line:#3a3a37;--ok:#9fd27a;--okbg:#22351a;--warn:#f2c46f;--warnbg:#3a2c10;--bad:#f2a0a0;--badbg:#3d1d1d;--accent:#85b7eb}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:1100px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:12px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
-.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:200px}
-.muted{color:var(--muted)}.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
-.tag{display:inline-block;padding:1px 8px;border-radius:6px;font-size:12px}.ok{background:var(--okbg);color:var(--ok)}
+--line:#3a3a37;--ok:#9fd27a;--okbg:#22351a;--warn:#f2c46f;--warnbg:#3a2c10;--bad:#f2a0a0;--badbg:#3d1d1d;--accent:#85b7eb;
+--blueled:#0092ff;--yellowled:#c3ff00;--gate:#c0a8ff}}
+/* Sizes in rem: the browser's own font size (Settings > Appearance > Font size) and the page's Text size buttons scale
+   all of it, and the layout reflows rather than overflowing. Nothing smaller than 15 px at the browser's default. */
+html{font-size:100%}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:1.0625rem/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:76rem;margin:0 auto;padding:1rem;display:flex;flex-direction:column;gap:.875rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:.875rem 1rem}
+.row{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:12rem}
+.muted{color:var(--muted)}.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.9375rem}
+.note,.hint{font-size:.9375rem}.hint{min-height:1.4em}
+.tag{display:inline-block;padding:1px .5em;border-radius:6px;font-size:.9375rem}.ok{background:var(--okbg);color:var(--ok)}
 .warn{background:var(--warnbg);color:var(--warn)}.bad{background:var(--badbg);color:var(--bad)}
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
-.tile{background:var(--soft);border-radius:8px;padding:10px 12px}.big{font-size:20px;font-weight:500}
-.cams{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:.625rem}
+.tile{background:var(--soft);border-radius:8px;padding:.625rem .75rem}.big{font-size:1.75rem;font-weight:500;line-height:1.25}
+.cams{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:.625rem}
 .cam img,.cam .ph{width:100%;aspect-ratio:5/4;object-fit:contain;background:var(--soft);border-radius:6px;display:block}
-.cam .ph{display:flex;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:12px;padding:8px;box-sizing:border-box}
+.cam .ph{display:flex;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:.9375rem;padding:.5rem;box-sizing:border-box}
 .cam [hidden]{display:none}
-.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
-button{font:inherit;padding:6px 14px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer}
-button:hover{background:var(--soft)}button.stop{color:var(--bad);border-color:var(--bad)}button.go{color:var(--ok);border-color:var(--ok)}
-input{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
-label{font-size:12px;color:var(--muted)}h2{font-size:15px;font-weight:500;margin:0 0 6px}h3{font-size:13px;font-weight:600;margin:0 0 4px}.logo{width:44px;height:44px;flex:none;display:block}.okmsg{color:var(--ok);margin-left:8px}.gone{border-left:4px solid var(--bad)}.version{text-align:right;font-size:12px;margin:-8px 2px -6px}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(22rem,100%),1fr));gap:.75rem}
+button{font:inherit;padding:.375em .875em;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer}
+button:hover{background:var(--soft)}button:disabled{opacity:.45;cursor:default;background:var(--card)}button.stop{color:var(--bad);border-color:var(--bad)}button.go{color:var(--ok);border-color:var(--ok)}
+input{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
+label{font-size:.9375rem;color:var(--muted)}h2{font-size:1.25rem;font-weight:500;margin:0 0 .375rem}h3{font-size:1.0625rem;font-weight:600;margin:0 0 .25rem}
+.logo{width:3rem;height:3rem;flex:none;display:block}.okmsg{color:var(--ok);margin-left:.5rem}.gone{border-left:4px solid var(--bad)}
+.topline{display:flex;gap:.75rem;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:-.5rem 2px -.375rem}
+.version{text-align:right;font-size:.9375rem}.textsize{display:flex;gap:.375rem;align-items:center;color:var(--muted);font-size:.9375rem}
+.textsize button{padding:.125em .625em;min-width:2.75em}
 .bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden}.bar div{height:6px;background:var(--ok)}
-.copybar{max-width:420px;margin:4px 0 2px}.copybar div{background:var(--accent)}
+.copybar{max-width:28rem;margin:4px 0 2px}.copybar div{background:var(--accent)}
 .bgcopy{border-left:4px solid var(--accent)}.bgcopy .copybar{max-width:none;height:10px}.bgcopy .copybar div{height:10px}
-.err{color:var(--bad);font-size:13px}ul{margin:4px 0 0;padding-left:18px}li{margin:2px 0}
-select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
-.steps li{list-style:none;margin-left:-18px}.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px}
-.modal .card{max-width:520px}[hidden]{display:none!important}
-.bgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:4px 10px;margin:4px 0}
-.types li{list-style:none;margin-left:-18px;display:flex;gap:8px;align-items:baseline;padding:3px 0;border-top:1px solid var(--line)}
-.types li span{flex:1}.star{padding:0 8px;font-size:16px;line-height:1.4;border:none;background:none;color:var(--accent)}
-.bgrid>div{display:flex;flex-direction:column;justify-content:flex-end}.bgrid input.changed{border-color:var(--accent);border-width:2px}details summary{cursor:pointer;font-size:13px;margin-top:6px}
+.err{color:var(--bad);font-size:1rem}ul{margin:.25rem 0 0;padding-left:1.25rem}li{margin:.25rem 0}
+select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
+.steps li{list-style:none;margin-left:-1.25rem}.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:1rem}
+.modal .card{max-width:36rem}[hidden]{display:none!important}
+.bgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:.25rem .75rem;margin:.25rem 0}
+.types li{list-style:none;margin-left:-1.25rem;display:flex;gap:.5rem;align-items:baseline;padding:.25rem 0;border-top:1px solid var(--line)}
+.types li span{flex:1}.star{padding:0 .5rem;font-size:1.25rem;line-height:1.4;border:none;background:none;color:var(--accent)}
+.drive{display:flex;gap:.625rem;align-items:center}.drive svg{flex:none;display:block;width:3.75rem;height:3.75rem}
+.drives .drive{margin-top:.5rem;font-size:1rem;line-height:1.35}.drives .drive svg{width:2.25rem;height:2.25rem}
+.legend{font-size:.9375rem;margin-top:.125rem}.legend i{display:inline-block;width:.7em;height:.7em;border-radius:2px;margin:0 .25em 0 .5em}.legend i:first-child{margin-left:0}
+.bgrid>div{display:flex;flex-direction:column;justify-content:flex-end}.bgrid input.changed{border-color:var(--accent);border-width:2px}details summary{cursor:pointer;font-size:1rem;margin-top:.375rem}
+.ledrows{display:grid;grid-template-columns:auto minmax(6rem,1fr) minmax(6rem,1fr);gap:.375rem .75rem;align-items:end;margin:.5rem 0}
+.ledrows b{font-weight:500;align-self:center;white-space:nowrap}
+.sw{display:inline-block;width:.9em;height:.9em;border-radius:3px;margin-right:.4em;vertical-align:-.1em;border:1px solid var(--line)}
+.boutpic{display:grid;align-items:center;margin:.375rem 0;row-gap:.25rem}.boutpic .lab{padding-right:.625rem;line-height:1.2;font-size:.9375rem}
+.boutpic .lab b{font-weight:500;color:var(--text)}.boutpic svg{display:block;width:100%;height:2.25rem;grid-column:2/-1}
+.boutpic .dur{font-size:.9375rem;line-height:1.25;text-align:center;padding:0 2px;min-width:0;color:var(--muted)}
+.boutpic .zoom{color:var(--accent)}.nw{white-space:nowrap}.boutpic .ledpw{color:var(--text);white-space:nowrap}
+.boutpic .axis{grid-column:2/-1;position:relative;height:1.9em;font-size:.9375rem;color:var(--muted);border-top:1px solid var(--muted)}
+.boutpic .axis i{position:absolute;top:0;width:1px;height:.4em;background:var(--muted);transform:translateX(-50%)}
+.boutpic .axis i:first-child{transform:none}.boutpic .axis i:nth-last-of-type(1){transform:translateX(-100%)}
+.boutpic .axis span{position:absolute;top:.45em;transform:translateX(-50%);white-space:nowrap}.boutpic .axis span.first{transform:none}
+.boutpic .axis span.last{transform:translateX(-100%)}.boutpic .axis span.zero{color:var(--text);font-weight:600}
 </style></head><body><main>
-<div id="version" class="mono muted version"></div>
+<div class="topline"><div class="textsize" role="group" aria-label="Text size">Text size <button id="smaller" title="Smaller text" aria-label="Smaller text">A&minus;</button><button id="larger" title="Larger text" aria-label="Larger text">A+</button><span id="textpct"></span></div><div id="version" class="mono muted version"></div></div>
 
 <div class="card row">
-  <img class="logo" src="@LOGO@" alt="LUC3D" width="44" height="44">
+  <img class="logo" src="@LOGO@" alt="LUC3D" width="48" height="48">
   <div class="grow"><div id="rig" style="font-weight:500">campy session</div><div id="where" class="mono muted"></div></div>
   <span id="state" class="tag">connecting</span>
-  <div id="clockbox" style="min-width:180px"><div id="clock"></div><div class="bar"><div id="progress" style="width:0"></div></div></div>
+  <div id="clockbox" style="min-width:12rem"><div id="clock"></div><div class="bar"><div id="progress" style="width:0"></div></div></div>
   <button id="stop" class="stop" hidden>Stop</button>
   <button id="close" hidden title="Close the panel (nothing is recording)">Close the panel</button>
 </div>
@@ -80,29 +104,32 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
         <label for="mset">Pair</label><select id="mset"></select>
         <label for="mcen">Centroid model</label><select id="mcen"></select><div class="muted" id="mcentext"></div>
         <label for="mins">Instance model</label><select id="mins"></select><div class="muted" id="minstext"></div>
-        <div class="row" style="margin-top:4px"><span id="mscan" class="muted grow" style="font-size:12px"></span><button id="mrescan" title="Look through panel.models' folders again">Look again</button></div></div>
+        <div class="row" style="margin-top:4px"><span id="mscan" class="muted grow note"></span><button id="mrescan" title="Look through panel.models' folders again">Look again</button></div></div>
       <div id="lengthbox" hidden><label for="length">Session length</label><select id="length"></select>
         <div class="muted" id="plantext"></div>
         <details id="boutbox" open hidden><summary>Bout settings <span id="boutsum" class="muted"></span></summary>
           <div id="boutfields" class="bgrid"></div>
-          <div class="muted" id="boutshape" style="font-size:12px"></div>
-          <div class="row" style="margin-top:4px"><span class="muted grow" style="font-size:12px">The config file isn't changed: these are for the recordings started here, and the next panel opened with this config starts from them. Each recording's session-config.yaml says which came from here.</span><button id="boutreset" hidden>Back to the config's</button></div></details>
+          <div class="muted note" id="boutshape"></div>
+          <div class="row" style="margin-top:4px"><span class="muted grow note">The config file isn't changed: these are for the recordings started here, and the next panel opened with this config starts from them. Each recording's session-config.yaml says which came from here.</span><button id="boutreset" hidden>Back to the config's</button></div></details>
         <label for="picoat">Start the Pico at (optional: otherwise a button, once every camera is ready)</label><input id="picoat" placeholder="7:20 PM"></div>
       <h3 style="margin-top:4px">Saved with the recording</h3>
       <label for="experiment">Experiment name</label><input id="experiment" placeholder="Social hierarchy, week 3">
       <label for="ids">Animal IDs, comma-separated</label><input id="ids" placeholder="M12, M14, M15">
       <label for="notes">Notes</label><input id="notes" placeholder="Cage 2, new bedding">
       <label for="copyto">Copy each recording to (optional)</label><input id="copyto" placeholder="\\server\share\my folder">
-      <div class="muted" style="font-size:12px">After each recording, its folder is copied into this one in the background, while the next records, and every file is read back and checked byte for byte. Empty: no copy.</div>
+      <div class="muted note">After each recording, its folder is copied into this one in the background, while the next records, and every file is read back and checked byte for byte. Empty: no copy.</div>
       <label class="tick" style="display:flex;gap:8px;align-items:flex-start;margin-top:6px;font-weight:500"><input type="checkbox" id="copydelete" style="width:auto;margin-top:3px">
         <span>Delete each recording from this computer once its copy is checked</span></label>
-      <div class="muted" style="font-size:12px" id="copydeletenote">Off: every recording stays here too. On: once every file is the same in the copy, the recording's folder is deleted here. It is kept if any file differs, if a program still has a file in it open, or if anything in it changed after the check. This can't be undone.</div>
+      <div class="muted note" id="copydeletenote">Off: every recording stays here too. On: once every file is the same in the copy, the recording's folder is deleted here. It is kept if any file differs, if a program still has a file in it open, or if anything in it changed after the check. This can't be undone.</div>
     </div>
     <div><div id="orphan" class="err" hidden></div><button id="stoporphan" class="stop" hidden>Stop that recording</button>
       <h3 style="margin-top:4px">Checks</h3>
-      <div class="muted" style="font-size:12px">Green: fine. Yellow: you can record, but read it. Red: it stops the start until it is fixed.</div>
+      <div class="muted note">Green: fine. Yellow: you can record, but read it. Red: it stops the start until it is fixed.</div>
       <ul id="checks"></ul><button id="start" class="go">Start recording</button>
-      <div id="starterr" class="err"></div></div>
+      <div id="ledlast" class="muted note" style="margin-top:.375rem" hidden></div>
+      <div id="starterr" class="err"></div>
+      <div id="boutpicbox" hidden><h3 style="margin-top:1rem">One bout, as the Pico runs it</h3>
+        <div id="boutpic" class="boutpic" role="img"></div><div id="boutpicnote" class="muted note"></div></div></div>
   </div>
 </div>
 
@@ -114,31 +141,33 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
   <div class="card"><h2 id="picotitle">Pico</h2><div id="picostate" class="muted">-</div>
     <div id="camready" style="margin-top:8px" hidden></div>
     <div id="picostart" class="row" style="margin-top:8px" hidden><button id="startpico" class="go">Start the Pico</button>
-      <input id="picoat2" style="width:110px" placeholder="7:20 PM"><button id="picoatbtn">At this time</button></div>
+      <input id="picoat2" style="width:8em" placeholder="7:20 PM"><button id="picoatbtn">At this time</button></div>
     <div id="picoerr" class="err"></div>
     <h2 style="margin-top:10px">SpikeGLX</h2><div id="sglxstate" class="muted">-</div></div>
 </div>
 
 <div id="during" hidden>
   <div class="tiles" style="margin-bottom:12px">
-    <div class="tile"><label>Disk free</label><div class="big" id="disk">-</div><div class="muted" id="diskleft"></div></div>
+    <div class="tile"><label>Disk free</label>
+      <div class="drive"><span id="diskpie"></span><div><div class="big" id="disk">-</div><div class="muted" id="diskname"></div></div></div>
+      <div class="muted" id="diskleft"></div><div id="disklegend" class="legend muted"></div><div id="drives"></div></div>
     <div class="tile"><label>Tracked in 3D</label><div class="big" id="good3d">-</div><div class="muted">animals, last second</div><div class="muted mono" id="usedmodels"></div></div>
     <div class="tile"><label>Programs</label><div id="programs"></div></div>
     <div class="tile"><label>Bookmarks</label><div class="big" id="nmarks">0</div><div class="muted" id="lastmark"></div></div>
   </div>
   <div class="cams" id="cams" style="margin-bottom:12px"></div>
   <div class="two">
-    <div class="card"><h2>Warnings</h2><div class="muted" style="font-size:12px">Problems now, and the ones that went away (in grey). They stay in the recording's alerts.log.</div>
+    <div class="card"><h2>Warnings</h2><div class="muted note">Problems now, and the ones that went away (in grey). They stay in the recording's alerts.log.</div>
       <ul id="warnings"><li class="muted">None</li></ul></div>
     <div class="card"><h2>Bookmark</h2>
-      <div class="muted" style="font-size:12px">A moment to find later: type what happened and press Add. It is saved with its exact time and frame in the recording's bookmarks.csv.</div>
+      <div class="muted note">A moment to find later: type what happened and press Add. It is saved with its exact time and frame in the recording's bookmarks.csv.</div>
       <div class="row"><input id="note" class="grow" placeholder="Mouse 3 rears at the feeder"><button id="mark">Add</button></div>
       <ul id="marks"></ul><div id="markerr" class="err"></div>
       <div style="margin-top:8px"><button id="viewer" title="The window with every camera's picture. Closing it never affects the recording.">Open the viewer again</button></div></div>
   </div>
 </div>
 
-<div id="copies" class="card" hidden><h2>Copies</h2><div class="muted" style="font-size:12px">Each recording's folder, copied into the folder in "Copy each recording to", one at a time.</div><div id="copywait" class="muted" hidden></div>
+<div id="copies" class="card" hidden><h2>Copies</h2><div class="muted note">Each recording's folder, copied into the folder in "Copy each recording to", one at a time.</div><div id="copywait" class="muted" hidden></div>
   <ul id="copylist"></ul><button id="closenow" class="stop" hidden>Close now, without the copies</button></div>
 
 <div id="after" class="card" hidden><h2 id="aftertitle">After the recording</h2><div id="afterwhen" class="muted"></div>
@@ -150,6 +179,11 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
 <div id="stopdlg" class="modal" hidden><div class="card"><h2>End the recording?</h2>
   <p class="muted" id="stoptext"></p>
   <div class="row"><button id="keep">Keep recording</button><button id="stopbout" class="stop">Stop after this bout</button><button id="stopnow" class="stop">Stop now</button></div></div></div>
+<div id="leddlg" class="modal" hidden><div class="card" role="dialog" aria-labelledby="ledtitle"><h2 id="ledtitle">LED power, before connecting the animal</h2>
+  <p class="muted note">Set each LED's current on the Doric LED driver, then measure its power at the tip of the fiber with the power meter, before
+    the fiber is connected to the animal. Enter both, or check that the last ones still hold. They are saved with the recording (its session.json).</p>
+  <div id="ledrows" class="ledrows"></div><div id="ledwhen" class="muted note"></div><div id="lederr" class="err"></div>
+  <div class="row" style="margin-top:.5rem"><button id="ledno">Cancel</button><button id="ledyes" class="go">Confirm and start</button></div></div></div>
 <div id="picodlg" class="modal" hidden><div class="card"><h2>Start the Pico?</h2>
   <p class="muted" id="picotext"></p>
   <div class="row"><button id="picono">Not yet</button><button id="picoyes" class="go">Start the Pico</button></div></div></div>
@@ -178,6 +212,32 @@ function esc(t){ return String(t==null?"":t).replace(/[&<>"]/g, c => ({"&":"&amp
 function dur(s){ s = Math.max(0, Math.floor(s)); return Math.floor(s/60)+":"+String(s%60).padStart(2,"0"); }
 let camsWereReady = false; const baseTitle = document.title;
 function chime(){ try { const a = new (window.AudioContext||window.webkitAudioContext)(); [0, 0.18].forEach((t, i) => { const o = a.createOscillator(), g = a.createGain(); o.frequency.value = i ? 1100 : 880; g.gain.setValueAtTime(0.15, a.currentTime+t); g.gain.exponentialRampToValueAtTime(0.001, a.currentTime+t+0.16); o.connect(g); g.connect(a.destination); o.start(a.currentTime+t); o.stop(a.currentTime+t+0.17); }); } catch(e) {} }
+// The disk tile's drives: a size as the page says it, and a donut of a drive (used, the rest of the plan's estimate, free)
+function size(gb){ return gb >= 999.5 ? (gb/1000).toFixed(1)+"\u00a0TB" : Math.round(gb).toLocaleString()+"\u00a0GB"; } // never "1.0" and "TB" on two lines
+const PIE = {used: "var(--muted)", plan: "var(--warn)", short: "var(--bad)", free: "var(--ok)"};
+function pie(d, px){
+  const t = d.total_gb, plan = Math.min(d.plan_gb || 0, d.free_gb), short = (d.plan_gb || 0) > d.free_gb;
+  if(!(t > 0)) return "";
+  const parts = [[d.used_gb, PIE.used, "used"], [plan, short ? PIE.short : PIE.plan, "the rest of the plan (an estimate)"],
+    [d.free_gb - plan, PIE.free, short ? "free" : "free after it"]];
+  let at = 0, out = '<svg width="'+px+'" height="'+px+'" viewBox="0 0 42 42" role="img" aria-label="'+esc(d.name)+": "+
+    size(d.free_gb)+' free of '+size(t)+'"><circle cx="21" cy="21" r="15.915" fill="none" stroke="var(--line)" stroke-width="7"/>';
+  parts.forEach(([gb, color, name], i) => { // a slice of 100 around (r 15.915), from the top, clockwise; the plan's at least 1
+    let p = Math.max(0, gb) / t * 100; if(i == 1 && gb > 0) p = Math.max(p, 1); p = Math.min(p, 100 - at); if(p <= 0) return;
+    out += '<circle cx="21" cy="21" r="15.915" fill="none" stroke="'+color+'" stroke-width="7" stroke-dasharray="'+p.toFixed(2)+' '+
+      (100-p).toFixed(2)+'" stroke-dashoffset="'+(25-at).toFixed(2)+'"><title>'+esc(name)+": "+size(gb)+'</title></circle>'; at += p; });
+  return out + '</svg>';
+}
+function renderDrives(D){
+  const ds = D.drives || [], rec = ds.find(d => d.recording);
+  $("diskpie").innerHTML = rec ? pie(rec, 54) : "";
+  $("diskname").textContent = rec ? "of "+size(rec.total_gb)+" on "+rec.name+(rec.copies ? ", with the copies" : "") : "";
+  $("disklegend").innerHTML = rec ? '<i style="background:'+PIE.used+'"></i>used'+(rec.plan_gb != null ?
+    '<i style="background:'+(rec.plan_gb > rec.free_gb ? PIE.short : PIE.plan)+'"></i>the plan' : "")+'<i style="background:'+PIE.free+'"></i>free' : "";
+  $("drives").className = "drives";
+  $("drives").innerHTML = ds.filter(d => !d.recording).map(d => '<div class="drive">'+pie(d, 30)+'<div><b>'+esc(d.name)+'</b> '+
+    size(d.free_gb)+' free of '+size(d.total_gb)+'<br><span class="muted">'+(d.copies ? "the copies go here" : "")+'</span></div></div>').join("");
+}
 function tag(text, kind){ return '<span class="tag '+kind+'">'+esc(text)+'</span>'; }
 function render(s){
   last = s;
@@ -219,6 +279,9 @@ function render(s){
   $("checks").innerHTML = s.checks.map(c => "<li>"+tag(c.level=="block"?"stops the start":c.level=="warn"?"warning":"ok",
     c.level=="block"?"bad":c.level=="warn"?"warn":"ok")+" "+esc(c.text)+(c.action=="pause-updates"?' <button onclick="pauseUpdates(this)">Pause Windows Update</button>':"")+"</li>").join("");
   renderModels(s.models);
+  const LP = s.led_power; ledPower = LP; $("ledlast").hidden = !LP;
+  if(LP) $("ledlast").innerHTML = "At Start, the page asks for each LED's power at the fiber tip"+(LP.last && LP.last.leds ? ". Last confirmed "+
+    esc(confirmedWhen(LP.last.at))+": "+LP.last.leds.map(ledText).join("; ") : "")+".";
   const LM = L.live_models; $("usedmodels").textContent = LM && LM.centroid ? base(LM.centroid)+" + "+base(LM.instance) : "";
   const lengths = s.lengths || []; $("lengthbox").hidden = !lengths.length;
   if(lengths.length && $("length").options.length != lengths.length){ $("length").innerHTML = lengths.map(l => '<option value="'+l.seconds+'">'+esc(l.name)+'</option>').join(""); }
@@ -230,6 +293,12 @@ function render(s){
     $("copyto").value = s.fields.copy_to||""; $("copydelete").checked = !!s.fields.copy_delete; } // the copy destination is each config's own
   if(!$("experiment").dataset.set){ $("experiment").value = s.fields.experiment||""; $("ids").value = s.fields.animal_ids||""; $("copyto").value = s.fields.copy_to||""; $("copydelete").checked = !!s.fields.copy_delete; $("experiment").dataset.set=1; }
   $("copydeletenote").style.color = $("copydelete").checked ? "var(--bad)" : "";
+  // A length with a copy folder of its own (pico.lengths' copyTo) fills the box when it is picked, or when the page opens
+  // on it; picking one without gives the box back the config's
+  const lenKey = L0 ? s.config + "|" + L0.seconds : "";
+  if(L0 && lenKey != copyLen && document.activeElement != $("copyto")){
+    if(L0.copyTo) $("copyto").value = L0.copyTo; else if(copyLen) $("copyto").value = s.fields.copy_to||"";
+    copyLen = lenKey; }
   renderCopies(s.copies || {jobs: []}, L.folder, st);
   $("during").hidden = !(st=="recording" || st=="stopping" || st=="starting live");
   $("disk").textContent = s.disk.free_gb!=null ? Math.round(s.disk.free_gb)+" GB" : "-";
@@ -238,6 +307,7 @@ function render(s){
   $("diskleft").innerHTML = D_.plan_left_gb!=null ? "the rest of the plan needs about "+Math.round(D_.plan_left_gb).toLocaleString()+" GB (an estimate)"+
     (short > 0 ? '<br><span class="err">'+Math.round(short).toLocaleString()+" GB short</span>" : "") :
     D_.hours_left!=null ? "about "+D_.hours_left+" h at this rate" : "";
+  renderDrives(D_);
   const T = H.tracking; $("good3d").textContent = T && T.good3d!=null ? T.good3d+" of "+T.animals : "-";
   const parts = Object.assign({}, L.parts||{}); if((L.live||[]).length) parts["campy-live"] = L.live[L.live.length-1];
   $("programs").innerHTML = Object.entries(parts).map(([n,p]) => tag(p.state, p.state=="running"?"ok":p.exit_code?"bad":"warn")+" "+esc(PROGRAMS[n] || n)).join("<br>") || "-";
@@ -420,17 +490,108 @@ function renderModels(M){
     "To pick from more models, add panel: models: (their folders) to the config or its rig profile.") + (M.notes.length ? " "+M.notes.join("; ")+"." : "");
   $("mrescan").hidden = !M.roots.length;
 }
-let boutSig = "";
+let copyLen = ""; // the experiment and length whose copy folder the box was last given
+let boutSig = "", ledPower = null; // ledPower: the status's led_power, for the bout drawing's LED rows
+// An LED row's last confirmed power (panel.led_power's names matched by colour: "Blue LED (465 nm)" for blue), or null
+function ledPowerOf(colour){
+  const leds = ((ledPower||{}).last||{}).leds || [];
+  return leds.find(l => String(l.led).toLowerCase().includes(colour)) || null; }
+// An LED row's name in panel.led_power ("Blue LED (465 nm)" for blue), for its wavelength, or null
+function ledNameOf(colour){ return ((ledPower||{}).leds || []).find(n => String(n).toLowerCase().includes(colour)) || null; }
+// The drawing of a bout: a row for each of the Pico's outputs, its time cut into stretches (5 s before the gate
+// opens, with every output low; gate open to camera on, camera to the LEDs, the LEDs, LEDs to camera off, camera off
+// to gate closed, to the next bout). Each stretch has its width whatever it lasts (a cartoon), with the time axis
+// under it in seconds from the gate's opening (0 s); the LEDs' stretch is to scale in ms, with the camera's real
+// pulses in it.
+// The LEDs' own colours: 465 nm is about rgb(0, 146, 255) and 560 nm rgb(195, 255, 0), a yellow-green (as a spectrum
+// is shown on a screen); in the light theme the same hues darker, to stand out on white
+const LED_COLOUR = {blue: "var(--blueled)", yellow: "var(--yellowled)"};
+// A stretch's length, rounded as the drawing says it: "235 s", "4.5 s", "30 ms"
+function secs(t){ return t >= 9.95 ? Math.round(t).toLocaleString()+"\u00a0s" : t >= 0.9995 ? (+t.toFixed(1))+"\u00a0s" : (+(t*1000).toFixed(1))+"\u00a0ms"; }
+function boutPicture(D){
+  const b = D && D.bouts && D.bouts[0];
+  $("boutpicbox").hidden = !b || !b.leds.length; if($("boutpicbox").hidden) return;
+  const n = D.bouts[1], frame = 1 / D.fps, L = b.leds;
+  // The LEDs' stretch: from a frame and a half before the first LED to a frame and a half after the last (within the camera)
+  const z0 = Math.max(b.camera[0], L[0].on - 1.5*frame), z1 = Math.min(b.camera[1], L[L.length-1].off + 1.5*frame);
+  const cuts = [-5, 0, b.camera[0], z0, z1, b.camera[1], b.gate[1], D.interval_s]; // from 5 s before the gate opens
+  const weights = [1.6, 1, 1, 2.2, 1.6, 1, 1.4].map((w, i) => cuts[i+1] - cuts[i] > 1e-9 ? w : 0.12);
+  const W = weights.reduce((a, w) => a + w, 0) * 100, H = 30, hi = 5, lo = 25;
+  const starts = weights.reduce((a, w, i) => (a.push(a[i] + w*100), a), [0]);
+  const x = t => { let i = cuts.findIndex((c, k) => k > 0 && t <= c + 1e-9); if(i < 1) i = t <= 0 ? 1 : cuts.length - 1;
+    const a = cuts[i-1], c = cuts[i]; return starts[i-1] + (c > a ? (t - a) / (c - a) : 0) * weights[i-1]*100; };
+  const wave = spans => { let d = "M0,"+lo; spans.forEach(([on, off]) => { const a = x(on).toFixed(1), c = Math.max(x(off), x(on)+1.2).toFixed(1);
+    d += " L"+a+","+lo+" L"+a+","+hi+" L"+c+","+hi+" L"+c+","+lo; }); return d + " L"+W+","+lo; };
+  const fill = (spans, colour) => spans.map(([on, off]) => '<rect x="'+x(on).toFixed(1)+'" y="'+hi+'" width="'+Math.max(x(off)-x(on), 1.2).toFixed(1)+
+    '" height="'+(lo-hi)+'" fill="'+colour+'" opacity=".3"/>').join("");
+  // The camera's pulses: real ones in the LEDs' stretch, a comb (as many as fit) elsewhere
+  const pulses = [];
+  for(let k = Math.ceil((z0 - b.camera[0]) / frame - 1e-6); b.camera[0] + k*frame < z1 - 1e-9; k++) pulses.push(b.camera[0] + k*frame);
+  [[b.camera[0], z0, 2], [z1, b.camera[1], 4]].forEach(([a, c, i]) => { if(c - a <= 1e-9) return;
+    const m = Math.max(2, Math.round(weights[i] * 6)); for(let j = 0; j < m; j++) pulses.push(a + (c - a) * (j + 0.3) / m); });
+  const pulseSpans = pulses.map(t => [t, t + Math.min(D.pulse_s, frame/2)]);
+  const guide = '<rect x="'+starts[3]+'" y="0" width="'+(weights[3]*100)+'" height="'+H+'" fill="var(--soft)"/>' +
+    starts.slice(1, -1).map(v => '<line x1="'+v+'" x2="'+v+'" y1="0" y2="'+H+'" stroke="var(--line)" stroke-dasharray="2 2" vector-effect="non-scaling-stroke"/>').join("");
+  const svg = (inner, title) => '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" aria-hidden="true">'+guide+inner+'</svg>';
+  const line = (d, colour) => '<path d="'+d+'" fill="none" stroke="'+colour+'" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>';
+  const rows = D.rows.length == 4 ? D.rows : [{pin:"", name:"Record gate"}, {pin:"", name:"Camera"}, {pin:"", name:"Blue LED"}, {pin:"", name:"Yellow LED"}];
+  const led = name => L.filter(l => l.name == name).map(l => [l.on, l.off]);
+  const signals = [[[b.gate], "var(--gate)"], [pulseSpans, "var(--text)"], [led("blue"), LED_COLOUR.blue], [led("yellow"), LED_COLOUR.yellow]];
+  let html = "";
+  rows.forEach((r, i) => { const [spans, colour] = signals[i];
+    const led = i >= 2 ? (i == 2 ? "blue" : "yellow") : null, pw = led ? ledPowerOf(led) : null, full = led ? ledNameOf(led) : null;
+    const nm = full && /(\d{3})\s*nm/i.exec(full); // the wavelength, and its colour (the line's, without one)
+    const mark = !led ? "" : full && nmColour(full) ? swatch(full) : '<i class="sw" style="background:'+colour+'"></i>';
+    html += '<div class="lab"><b>'+mark+esc(r.name)+'</b>'+(r.pin || nm ? '<br><span class="muted">'+esc([r.pin, nm ? nm[1]+"\u00a0nm" : ""].filter(x => x).join(" \u00b7 "))+'</span>' : '')+
+      (pw ? '<br><span class="ledpw">'+(+pw.driver_mA)+'\u00a0mA \u00b7 '+(+pw.fiber_tip_uW)+'\u00a0\u00b5W</span>' : '')+'</div>' +
+      svg((i >= 2 ? fill(spans, colour) : "") + line(wave(spans), colour)); });
+  // The LEDs' stretch in words: "yellow 50 ms", "150 ms dark", "blue 50 ms", each kept on one line
+  const ledParts = []; L.forEach((l, i) => { if(i && l.on - L[i-1].off > 1e-6) ledParts.push(secs(l.on - L[i-1].off)+" dark");
+    ledParts.push(l.name+" "+secs(l.off - l.on)); });
+  const ledText = ledParts.join(", ");
+  // The time axis, in seconds from the gate's opening: each stretch's edge (the LEDs' once, at their middle); labels
+  // that would overlap are hidden once drawn (0 s and the two ends kept first)
+  const ticks = [[-5, 0], [0, starts[1]], [b.camera[0], starts[2]], [L[0].on, starts[3] + weights[3]*50], [b.camera[1], starts[5]],
+    [b.gate[1], starts[6]], [D.interval_s, W]];
+  const axis = ticks.map(([t, at]) => '<i style="left:'+(at/W*100).toFixed(2)+'%"></i>').join("") + ticks.map(([t, at], i, all) =>
+    '<span class="'+(i == 0 ? "first" : i == all.length-1 ? "last" : "")+(t == 0 ? " zero" : "")+'" style="left:'+(at/W*100).toFixed(2)+'%">'+
+    (t < 0 ? "\u2212"+secs(-t) : t == 0 ? "0\u00a0s" : secs(t))+'</span>').join("");
+  html += '<div class="lab muted">time</div><div class="axis">'+axis+'</div>' +
+    '<div class="dur zoom" style="grid-column:4 / 7">'+ledParts.map(t => '<span class="nw">'+esc(t)+'</span>').join(", ")+'</div>';
+  const box = $("boutpic"); box.style.gridTemplateColumns = "auto " + weights.map(w => w+"fr").join(" "); box.innerHTML = html;
+  const kept = [], marks = [...box.querySelectorAll(".axis span")];
+  [...marks.filter(m => m.classList.contains("zero")), marks[0], marks[marks.length-1], ...marks].forEach(m => {
+    if(kept.includes(m)) return; const r = m.getBoundingClientRect();
+    if(kept.some(k => { const q = k.getBoundingClientRect(); return r.left < q.right + 6 && q.left < r.right + 6; })) m.style.visibility = "hidden";
+    else kept.push(m); });
+  box.setAttribute("aria-label", "One bout: gate open "+secs(b.gate[1])+", camera from "+secs(b.camera[0])+" to "+secs(b.camera[1])+", "+ledText+
+    ", next bout at "+secs(D.interval_s));
+  $("boutpicnote").textContent = "Time from the gate opening (0 s), from 5 s before it to the next bout at "+secs(D.interval_s)+". The stretches aren't "+
+    "to scale, except the LEDs' (blue text, in ms), which shows the camera's real pulses at "+(+D.fps.toFixed(3))+" a second."+
+    (n ? " Drawn: a long bout. A normal bout's camera stops "+secs(n.camera[1] - n.leds[n.leds.length-1].off)+" after the LEDs, and its gate closes "+
+      secs(n.gate[1])+" after it opened." : " Every bout is long.") + ledNote();
+}
+function ledNote(){
+  // The LED rows' power: the driver current and the power at the fiber tip, as last confirmed at a Start
+  const P = (ledPower||{}).last; if(!ledPower) return "";
+  if(!P || !P.at) return " The LEDs' power is asked for at Start.";
+  const old = new Date(P.at).toDateString() != new Date().toDateString();
+  return " Under each LED: its driver current and power at the fiber tip, as confirmed "+confirmedWhen(P.at)+(old ? " (an earlier day: measure again before connecting the animal)" : "")+".";
+}
 function renderBouts(B){
-  $("boutbox").hidden = !B; if(!B) return;
+  $("boutbox").hidden = !B; if(!B){ $("boutpicbox").hidden = true; return; }
   const fields = B.fields || [];
   // The fields only when the settings change, so a field being typed in isn't redrawn under the cursor
   const sig = JSON.stringify(fields.map(f => f.key));
   if(sig != boutSig){
     boutSig = sig;
     $("boutfields").innerHTML = fields.map(f => '<div><label for="b_'+f.key+'" title="'+f.key+'">'+esc(f.label)+(f.unit ? " ("+esc(f.unit)+")" : "")+
-      '</label><input id="b_'+f.key+'" type="number" min="0" step="any" data-key="'+f.key+'"><div class="muted" id="bc_'+f.key+'" style="font-size:11px;min-height:16px"></div></div>').join("");
-    fields.forEach(f => { $("b_"+f.key).onchange = e => setBout(f.key, e.target.value); });
+      '</label><input id="b_'+f.key+'" type="number" min="0" step="any" data-key="'+f.key+'"><div class="muted hint" id="bc_'+f.key+'"></div></div>').join("");
+    // Sent once a field is left or Enter pressed, and also after a pause in typing, so the plan and the drawing follow it
+    fields.forEach(f => { const el = $("b_"+f.key); let wait = null;
+      el.onchange = e => { clearTimeout(wait); setBout(f.key, e.target.value); };
+      el.oninput = e => { clearTimeout(wait); const v = e.target.value.trim();
+        if(v !== "" && isFinite(Number(v))) wait = setTimeout(() => setBout(f.key, v), 700); }; });
   }
   fields.forEach(f => { const el = $("b_"+f.key); if(!el) return;
     if(document.activeElement != el) el.value = f.value;
@@ -439,6 +600,7 @@ function renderBouts(B){
   const n = (B.changed || []).length;
   $("boutsum").textContent = n ? "· "+n+" changed"+(B.remembered ? ", as the last panel left them ("+B.remembered+")" : " on this page") : "· as the config says";
   $("boutreset").hidden = !n;
+  boutPicture(B.error ? null : B.diagram);
   const b = B.bout;
   $("boutshape").innerHTML = B.error ? '<span class="err">'+esc(B.error)+'</span>' : !b ? "" : b.error ? '<span class="err">'+esc(b.error)+'</span>' :
     esc(b.text) + (b.warnings.length ? '<br><span class="err">Warning: '+esc(b.warnings.join("; "))+'</span>' : "");
@@ -504,9 +666,45 @@ $("start").onclick = async () => { $("starterr").textContent = "";
   const override = !!disk && blocks.length == 1;
   if(override && !confirm("This session doesn't fit on the disk.\n\n" + disk.text + "\n\nStart anyway? Only if data will be moved off "+
     "this disk during the session. Otherwise the disk fills up: campy stops cleanly near the end of the space, but SpikeGLX doesn't.")) return;
-  const j = await postFull("/start", {experiment:$("experiment").value, animal_ids:$("ids").value, notes:$("notes").value, copy_to:$("copyto").value.trim(),
-    copy_delete: !!$("copyto").value.trim() && $("copydelete").checked, length: $("length").value || null, pico_at: $("picoat").value.trim() || null, disk_override: override});
-  $("starterr").textContent = j.error || ""; if(j.create) offerCreate(j.create); tick(); };
+  const start = {experiment:$("experiment").value, animal_ids:$("ids").value, notes:$("notes").value, copy_to:$("copyto").value.trim(),
+    copy_delete: !!$("copyto").value.trim() && $("copydelete").checked,
+    length: $("length").value || null, pico_at: $("picoat").value.trim() || null, disk_override: override};
+  // With panel.led_power: each LED's driver current and power at the fiber tip, entered or confirmed first
+  if((last||{}).led_power) return askLeds(start);
+  startWith(start); };
+async function startWith(start){
+  const j = await postFull("/start", start);
+  $("starterr").textContent = j.error || ""; if(j.create) offerCreate(j.create); tick(); }
+let ledStart = null;
+// An LED's colour from the wavelength in its name ("Blue LED (465 nm)"): the visible spectrum as a screen shows it (465 nm
+// about rgb(0, 146, 255), 560 nm rgb(195, 255, 0), as the bout drawing's LED rows); none without one
+function nmColour(name){
+  const m = /(\d{3})\s*nm/i.exec(String(name)); if(!m) return null; const w = Number(m[1]); if(w < 380 || w > 780) return null;
+  const [r, g, b] = w < 440 ? [(440-w)/60, 0, 1] : w < 490 ? [0, (w-440)/50, 1] : w < 510 ? [0, 1, (510-w)/20] :
+    w < 580 ? [(w-510)/70, 1, 0] : w < 645 ? [1, (645-w)/65, 0] : [1, 0, 0];
+  return "rgb("+[r, g, b].map(v => Math.round(255 * Math.pow(v, 0.8))).join(", ")+")"; }
+function swatch(name){ const c = nmColour(name); return c ? '<i class="sw" style="background:'+c+'"></i>' : ""; }
+function ledText(l){ return swatch(l.led)+esc(l.led)+' <span class="nw">'+(+l.driver_mA)+"\u00a0mA, "+(+l.fiber_tip_uW)+"\u00a0\u00b5W</span>"; }
+function confirmedWhen(iso){ const d = new Date(iso); if(isNaN(d)) return ""; const today = d.toDateString() == new Date().toDateString();
+  return (today ? "today" : d.toLocaleDateString([], {weekday:"short", month:"short", day:"numeric"}))+" at "+d.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}); }
+function askLeds(start){
+  const P = last.led_power, had = {}; ((P.last||{}).leds||[]).forEach(l => had[l.led] = l);
+  $("ledrows").innerHTML = '<span></span><label>Driver current (mA)</label><label>At the fiber tip (\u00b5W)</label>' + P.leds.map((n, i) =>
+    '<b>'+swatch(n)+esc(n)+'</b><input id="lma'+i+'" type="number" min="0" step="any" inputmode="decimal" aria-label="'+esc(n)+' driver current in mA" value="'+
+    esc(had[n] ? had[n].driver_mA : "")+'"><input id="luw'+i+'" type="number" min="0" step="any" inputmode="decimal" aria-label="'+esc(n)+
+    ' power at the fiber tip in microwatts" value="'+esc(had[n] ? had[n].fiber_tip_uW : "")+'">').join("");
+  const old = P.last && P.last.at && new Date(P.last.at).toDateString() != new Date().toDateString();
+  $("ledwhen").innerHTML = P.last && P.last.at ? "The values shown were confirmed "+esc(confirmedWhen(P.last.at))+"."+
+    (old ? ' <span style="color:var(--warn)">From an earlier day: measure them again.</span>' : "") : "No values confirmed yet with this experiment.";
+  $("lederr").textContent = ""; ledStart = start; $("leddlg").hidden = false; const f = $("lma0"); if(f) f.focus(); }
+$("ledno").onclick = () => { $("leddlg").hidden = true; ledStart = null; };
+$("ledyes").onclick = () => {
+  const P = last.led_power, leds = [];
+  for(let i = 0; i < P.leds.length; i++){ const ma = $("lma"+i).value.trim(), uw = $("luw"+i).value.trim();
+    if(ma === "" || uw === "" || !(Number(ma) >= 0) || !(Number(uw) >= 0)){
+      $("lederr").textContent = "Enter both numbers for "+P.leds[i]+" (0 or more; 0 for an LED that is off)."; return; }
+    leds.push({led: P.leds[i], driver_mA: Number(ma), fiber_tip_uW: Number(uw)}); }
+  $("leddlg").hidden = true; const start = Object.assign({}, ledStart, {led_power: leds}); ledStart = null; startWith(start); };
 $("copydelete").onchange = () => { $("copydeletenote").style.color = $("copydelete").checked ? "var(--bad)" : ""; };
 $("mset").onchange = () => { if($("mset").value) pickModels({set: $("mset").value}); };
 $("mcen").onchange = () => pickModels({centroid: $("mcen").value});
@@ -553,6 +751,19 @@ let orphanArmed = 0;
 $("stoporphan").onclick = async () => { const e = await post("/stop-orphan", {now: !!orphanArmed});
   if(e) alert(e); else if(!orphanArmed){ orphanArmed = 1; $("stoporphan").textContent = "Stop now, without closing"; setTimeout(() => { orphanArmed = 0; $("stoporphan").textContent = "Stop that recording"; }, 5000); } tick(); };
 $("viewer").onclick = async () => { const e = await post("/viewer"); if(e) alert(e); };
+// Text size: a share of the browser's own font size (which scales the page too), kept by this browser for the next visit
+const TEXT_SIZES = [100, 115, 130, 150, 175, 200], TEXT_KEY = "campy-panel-text-size";
+function textSize(pct){
+  pct = TEXT_SIZES.includes(pct) ? pct : 100;
+  document.documentElement.style.fontSize = pct + "%"; $("textpct").textContent = pct == 100 ? "" : pct + "%";
+  $("smaller").disabled = pct == TEXT_SIZES[0]; $("larger").disabled = pct == TEXT_SIZES[TEXT_SIZES.length-1];
+  try { localStorage.setItem(TEXT_KEY, String(pct)); } catch(e) {}
+  return pct;
+}
+let textPct = 100; try { textPct = Number(localStorage.getItem(TEXT_KEY)) || 100; } catch(e) {}
+textPct = textSize(textPct);
+$("smaller").onclick = () => { textPct = textSize(TEXT_SIZES[Math.max(0, TEXT_SIZES.indexOf(textPct)-1)]); };
+$("larger").onclick = () => { textPct = textSize(TEXT_SIZES[Math.min(TEXT_SIZES.length-1, TEXT_SIZES.indexOf(textPct)+1)]); };
 tick(); setInterval(tick, 1000); setInterval(images, 1000);
 </script></body></html>
 """
@@ -562,9 +773,9 @@ PAGE = PAGE.replace("@LOGO@", panellogo.LOGO).replace("@ICON@", panellogo.ICON)
 
 # Served at / for an address with a key the panel doesn't know: a tab of an earlier panel, which the browser restored
 OLD_KEY = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>campy session: an old tab</title><style>body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+<title>campy session: an old tab</title><style>body{margin:0;font:1.0625rem/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
 background:#f7f6f2;color:#1f1e1c}@media (prefers-color-scheme:dark){body{background:#1b1b1a;color:#ecebe6}}
-main{max-width:640px;margin:15vh auto;padding:0 16px}h1{font-size:20px;font-weight:600}</style></head><body><main>
+main{max-width:640px;margin:15vh auto;padding:0 16px}h1{font-size:1.5rem;font-weight:600}</style></head><body><main>
 <h1>This tab belongs to a panel that was closed</h1>
 <p>Close this tab. The panel that is open now has its own page, in another tab. To open it again, use the
 <b>campy recording</b> icon.</p></main></body></html>"""

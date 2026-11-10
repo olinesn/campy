@@ -89,6 +89,14 @@ def test_the_pages_bout_settings():
 			({"INTERVAL": 0}, "more than 0"), ({"PULSE_WIDTH_C": -30}, "more than 0"),
 			({"EXTENDED_EVERY": 2.5}, "whole number"), ({"PULSE_WIDTH_C": 0.0001}, "a microsecond")):
 		assert why in p.Choose(dict(values, PULSE_WIDTH_D=99)) and p.page == {"PULSE_WIDTH_C": 0.05}
+	# The LEDs' order and the dark between them: 0 is a setting for these two
+	assert p.Choose({"YELLOW_FIRST": 1, "LED_GAP": 150, "PULSE_WIDTH_D": 50}) is None
+	assert p.page == {"PULSE_WIDTH_C": 0.05, "PULSE_WIDTH_D": 0.05, "YELLOW_FIRST": 1, "LED_GAP": 0.15}
+	assert "yellow LED at 9.999 s for 50 ms (frames 300-302), then 150 ms dark, then blue for 50 ms (frames 312-314)" \
+		in p.PageStatus()["bout"]["text"]
+	assert p.Choose({"YELLOW_FIRST": 0, "LED_GAP": 0, "PULSE_WIDTH_D": ""}) is None and p.page == {"PULSE_WIDTH_C": 0.05}
+	for values, why in (({"YELLOW_FIRST": 2}, "1 or 0"), ({"YELLOW_FIRST": 0.5}, "1 or 0"), ({"LED_GAP": -1}, "more than 0")):
+		assert why in p.Choose(values) and p.page == {"PULSE_WIDTH_C": 0.05}
 	# Settings a bout can't have: each plan says why (and stops the start), as does the bout's description
 	assert p.Choose({"CAMERA_LEAD_IN": 20}) is None
 	assert "before the gate opens" in p.PageStatus()["bout"]["error"]
@@ -130,8 +138,11 @@ def test_the_last_bout_settings_are_remembered(tmp_path):
 	assert p.PageStatus()["remembered"] is None and p.page == {"PULSE_WIDTH_C": 0.05, "PULSE_WIDTH_D": 0.04}
 	# What a bout setting can't be is left out: another setting, not a number, 0 or less, a part of a bout
 	p.Restore({"page": {"LED_LEAD_US": 5, "INTERVAL": "soon", "PULSE_WIDTH_D": 0, "EXTENDED_EVERY": 2.5,
-		"CAMERA_FPS": 30, "PULSE_WIDTH_C": 0.07}, "at": "2026-11-09T15:12:00-05:00"})
+		"CAMERA_FPS": 30, "PULSE_WIDTH_C": 0.07, "YELLOW_FIRST": 2, "LED_GAP": -0.1}, "at": "2026-11-09T15:12:00-05:00"})
 	assert p.page == {"PULSE_WIDTH_C": 0.07} and p.PageStatus()["remembered"] == "Mon 9 Nov, 3:12 PM"
+	# The order and the dark between the LEDs are remembered, 0 included where the config says otherwise
+	p.Restore({"page": {"YELLOW_FIRST": 1, "LED_GAP": 0.15}, "at": "2026-11-09T15:12:00-05:00"})
+	assert p.page == {"YELLOW_FIRST": 1, "LED_GAP": 0.15}
 	for nothing in (None, {}, {"page": None}, {"page": [1]}):
 		p.Restore(nothing)
 		assert p.page == {} and p.remembered is None
@@ -384,7 +395,7 @@ def test_a_bout_session_from_the_page(tmp_path, home, rig, sglx_state):
 	try:
 		status = call(url, "/status.json")[1]
 		assert status["state"] == "ready" and status["length"] == 12
-		assert status["lengths"] == [{"name": "Short", "seconds": 12, "videoFolder": None,
+		assert status["lengths"] == [{"name": "Short", "seconds": 12, "videoFolder": None, "copyTo": None,
 			"text": "2 bouts over 12 s, 80 camera pulses (4 s of camera)"}]
 		texts = [c["text"] for c in status["checks"]]
 		assert all(c["level"] == "ok" for c in status["checks"]), texts
@@ -589,3 +600,25 @@ def test_the_rest_of_a_session_from_where_the_pico_is():
 	assert d.NeedLeft(4) is None
 	# A camera-only session: the gate never opens
 	assert a_pico(set={"CAMERA_ONLY": 60}).Spans(3600) == ([], [(0.0, 60.0)])
+
+
+def test_the_pages_drawing_of_a_bout():
+	# One long bout and one normal one, in seconds from the gate's opening, from the Pico's own plan: the page draws
+	# them (and redraws them as the bout settings change)
+	p = a_pico(set={"INTERVAL": 300})
+	d = p.PageStatus()["diagram"]
+	assert [(r["pin"], r["name"]) for r in d["rows"]] == [("GP2", "Record Gate"), ("GP3", "Camera"), ("GP4", "Blue LED"),
+		("GP5", "Yellow LED")]
+	assert (d["fps"], d["interval_s"], d["pulse_s"]) == (60.0, 300.0, 0.003)
+	long, normal = d["bouts"]
+	assert (long["long"], long["gate"], long["camera"][0], long["pulses"]) == (True, [0.0, 255.0], 5.0, 14400)
+	assert (normal["long"], normal["gate"], normal["pulses"]) == (False, [0.0, 25.0], 600)
+	# The LEDs in the order they light: blue 30 ms, then yellow at once, 1 ms before pulse 300
+	assert [(l["name"], l["on"], l["off"]) for l in long["leds"]] == [("blue", 9.999, 10.029), ("yellow", 10.029, 10.059)]
+	# The page's settings change it
+	assert p.Choose({"PULSE_WIDTH_C": 50, "STANDARD_STIM_DURATION": 20}) is None
+	d = p.PageStatus()["diagram"]
+	assert d["bouts"][0]["leds"][0]["off"] == 10.049 and d["bouts"][1]["gate"] == [0.0, 35.0]
+	# Every bout long: one bout drawn; settings that can't run: none
+	assert p.Choose({"EXTENDED_EVERY": 1}) is None and len(p.PageStatus()["diagram"]["bouts"]) == 1
+	assert p.Choose({"CAMERA_LEAD_IN": 20}) is None and p.PageStatus()["diagram"] is None

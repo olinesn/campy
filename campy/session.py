@@ -140,6 +140,9 @@ PANEL = {
 		"sleap (campy/livemodels.py); a rig profile's place, as it turns on nothing"),
 	"model_sets": ((dict,), {}, "named model pairs for the panel's model picker: {name: {centroid: folder, instance: "
 		"folder}}"),
+	"led_power": ((list,), [], "the LEDs whose power the page asks for at each Start, e.g. [\"Blue LED (465 nm)\", "
+		"\"Yellow LED (560 nm)\"]: each one's driver current (mA) and the power measured at the fiber tip (µW), before "
+		"the animal is connected; kept in the recording's session.json (sessionFields.ledPower). Empty: not asked"),
 	"video_mb_s": ((int, float), 0.6, "each camera's video while it takes frames, in MB/s, for the panel's disk check "
 		"before a Pico's session: an estimate on the high side (0.6: 60 fps H.265 of mice in a lit cage; a still, "
 		"empty cage writes far less)"),

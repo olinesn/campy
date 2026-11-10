@@ -14,6 +14,8 @@ Double-click **campy recording** on the desktop. It is the rig's one icon, for e
 - A black window opens and fills with lines of text. Leave it open: it is the panel itself. You don't need to read it.
 - Your web browser opens the panel's page. If it doesn't, the black window's first lines show its address (`http://127.0.0.1:8765/?t=...`): copy the whole address, key included, into the browser.
 
+**Text too small?** The top left corner has **Text size** buttons: **A+** makes all the page's text larger (up to twice the size), **A−** smaller. The browser remembers the choice for the next time the page opens. The page also follows the browser's own text size (Settings > Appearance > Font size) and its zoom (Ctrl and +).
+
 The page's top right corner says which version of the software it runs, for example `v2.7.0 +96 · dev · 7bf012ec` (96 changes after the 2.7.0 release): give it when you report a problem. The page is only for this computer. Working over Remote Desktop, open it in the rig's own browser, inside the Remote Desktop window.
 
 On a rig that other tests share (most of them), the panel first waits for the rig to be free, then holds it for as long as it is open, so that no test runs while you record. While it holds the rig, Ctrl-C in the black window does nothing: close the panel with **Close the panel** at the top of the page once nothing is recording.
@@ -33,7 +35,7 @@ At the top of the page, under **Next recording** and **Saved with the recording*
 - **Experiment name**: for example `Social hierarchy, week 3`.
 - **Animal IDs**: the animals in the cage, separated by commas: `M12, M14, M15`.
 - **Notes**: anything worth knowing later: `cage 2, new bedding`.
-- **Copy each recording to** (optional): a folder for the copies, for example the lab's network share, `\\server\share\your folder`. After each recording ends, the computer copies its folder there, in the background, while the next recording goes on. Then it reads every file back from both places and checks that they are the same, byte for byte. The page remembers the folder for next time; empty the box for no copies.
+- **Copy each recording to** (optional): a folder for the copies, for example the lab's network share, `\\server\share\your folder`. After each recording ends, the computer copies its folder there, in the background, while the next recording goes on. Then it reads every file back from both places and checks that they are the same, byte for byte. The page remembers the folder for next time; empty the box for no copies. On the ChronicRecord rig, some lengths fill this box in with a folder of their own when you pick them (the 6-day session and the gate test go to the lab's server): change it if this recording should go somewhere else. Picking a length without one puts back the experiment's usual folder.
 - **Delete each recording from this computer once its copy is checked** (off unless you tick it): once every file of a recording is the same in the copy, its folder is deleted from this computer, to free the disk for the next one. If any file differs, if a program (SpikeGLX, the viewer) still has a file in it open, or if anything in it changed after the check, the recording is kept here, and the page says why. This can't be undone, so tick it only when the copy folder is where the recordings are kept for good. Nothing is ever deleted in the copy. The page remembers it for next time, with the folder.
 
 These are saved with the recording, so you can find it again. If the page can't reach the copy folder when you press Start, it says so and doesn't start: check the address, or open the share once in File Explorer. If only the last folder is missing (for example a new `\\server\share\your folder\new-project` in a folder that is there), it says the folder doesn't exist yet and shows **Create this folder**: press it, then **Start recording** again. It makes only that last folder, so a mistyped share or parent folder makes nothing.
@@ -45,6 +47,14 @@ Next to them, under **Checks**, is a list of checks:
 - On the ChronicRecord rig the disk line is what the chosen length needs instead, and a length that doesn't fit stops the start ([below](#on-the-chronicrecord-rig-the-pico-and-spikeglx)).
 - **stops the start** (red): the recording can't start until it is fixed. Ask the person who set up the rig.
 
+On the ChronicRecord rig, under **Start recording**, a drawing shows **one bout as the Pico runs it**: a row for each of its outputs (the record gate to SpikeGLX on GP2, the camera trigger on GP3, the blue LED on GP4 and the yellow LED on GP5), from 5 s before the gate opens to the next bout, with a time axis under it in seconds from the gate opening (0 s). The stretches between the axis marks aren't drawn to scale. The LEDs' stretch is the exception: it is zoomed in to milliseconds and shows the camera's real pulses, so you can see which frames each LED lights, which LED comes first, and any dark gap between them. It follows the **Bout settings** as you change them: the page sends a setting when you leave its box or press Enter, and also after a short pause in typing.
+
+![One bout as the Pico runs it: the record gate, the camera's pulses, the blue LED and the yellow LED, with the LEDs' stretch zoomed in to milliseconds](images/panel-bout.png)
+
+*(The ChronicRecord config's bout, with its fiber photometry pattern: yellow 50 ms, 150 ms dark, then blue 50 ms, lighting frames 300-302 and 312-314. Each LED row has its wavelength's colour and, with LED power on, the driver current and power at the fiber tip last confirmed at a Start. Dark theme.)*
+
+**LED power (ChronicRecord, fiber photometry).** When you press **Start recording**, the page first asks, for each LED, for its current on the Doric LED driver (mA) and its power at the tip of the fiber (µW), measured with the power meter **before the fiber is connected to the animal**. The boxes are filled in with the last values confirmed with that experiment, and say when that was (in yellow if it was an earlier day). Change them or check them, then press **Confirm and start**. The recording doesn't start without them. They are saved in the recording's `session.json` (under `fields`, `ledPower`), with the time they were confirmed. Under **Start recording** the page shows the last ones. A config turns this on with `panel.led_power`, the list of its LEDs' names.
+
 The recording's length is fixed by the rig's settings, and the page shows it (for example `2:00:00 each`).
 
 ## 3. Start
@@ -52,7 +62,11 @@ The recording's length is fixed by the rig's settings, and the page shows it (fo
 Press **Start recording**. Within about a minute, depending on the rig, the page shows **Recording** at the top, and:
 
 - **Each camera's picture**, refreshed every second. Check that every camera shows the cage. Before a camera's first frame it says "No picture yet" instead (on the ChronicRecord rig, until you start the Pico, since the cameras wait for its pulses). Under each one, a green **OK**, or a yellow label saying what's wrong (see below), and its frames per second, which should be steady.
-- **Disk free**, and about how long it lasts. On the ChronicRecord rig, what the rest of the session's plan still needs instead (an estimate), with how many GB it is short in red if it doesn't fit.
+- **Disk free**, and about how long it lasts. On the ChronicRecord rig, what the rest of the session's plan still needs instead (an estimate), with how many GB it is short in red if it doesn't fit. A ring next to the number shows the drive the recording goes to (for example `of 4.0 TB on D:`): grey for what is already used, yellow for what the rest of the plan needs (red if it doesn't fit), green for what stays free. If the recordings are copied onto another drive of this computer (**Copy each recording to**), a small ring below shows that drive too, for example `C: 460 GB free of 1.0 TB`.
+
+  ![The Disk free tile: a ring for the 4 TB recording drive, mostly the plan's estimate, and a small one for the drive the copies go to](images/panel-disk-free.png)
+
+  *(An example, with made-up numbers.)*
 - **Tracked in 3D**: how many animals the live tracking sees, for example `5 of 5`.
 - **Programs**: each should say **running**.
 - The time recorded so far, out of the recording's length.
@@ -94,7 +108,7 @@ Below them, under **Steps after the recording**, the computer:
 
 Each step turns green when done (grey **skipped** when it has nothing to do). The top of the page then says **Ready to record**: you can start the next recording.
 
-**Copies.** With a folder in **Copy each recording to**, the page then lists the recording under **Copies**, and as the **Copy** step under **Steps after the recording**: waiting, copying (how many GB so far, with a progress bar and about how long is left, at the rate so far, with the time it should be done), checking (how many GB read back so far), done, or failed with the reason. Beside it, **verified** means every file is the same in the copy, byte for byte; **1 not the same** (or more) means a file differs or is missing there, and the copy failed: the recording stays on this computer, and an alert is sent. With the delete box ticked, **deleted here** or **kept here** says what became of the recording on this computer; kept says why. Copies go one at a time, so a recording waits while the one before it copies. You can start the next recording right away: copying doesn't disturb it. While a copy is running or waiting, a **Copying in the background** strip at the top of the page shows it, with its progress bar and time left, and says you can start a new recording; it stays during the next recording, until the last copy is done. Leave the computer on and the panel's black window open until then. On the 8-camera rig, a 2.1 GB recording (about 15 minutes) took under 2 minutes to copy to the network share. Checking reads it all back, so expect it to take about as long again.
+**Copies.** With a folder in **Copy each recording to**, the page then lists the recording under **Copies**, and as the **Copy** step under **Steps after the recording**: waiting, copying (how many GB so far, with a progress bar and about how long is left, at the rate so far, with the time it should be done), checking (how many GB read back so far), done, or failed with the reason. The GB so far are what the copy program has really written, so a big file (a SpikeGLX `.ap.bin`, for example) counts little by little as it copies, not all at once as it starts; a copy whose number keeps rising is still going. Beside it, **verified** means every file is the same in the copy, byte for byte; **1 not the same** (or more) means a file differs or is missing there, and the copy failed: the recording stays on this computer, and an alert is sent. With the delete box ticked, **deleted here** or **kept here** says what became of the recording on this computer; kept says why. Copies go one at a time, so a recording waits while the one before it copies. You can start the next recording right away: copying doesn't disturb it. While a copy is running or waiting, a **Copying in the background** strip at the top of the page shows it, with its progress bar and time left, and says you can start a new recording; it stays during the next recording, until the last copy is done. Leave the computer on and the panel's black window open until then. On the 8-camera rig, a 2.1 GB recording (about 15 minutes) took under 2 minutes to copy to the network share. On the ChronicRecord rig, a 7.6 GB recording (most of it one 5.5 GB SpikeGLX file) took about 7 minutes to copy to a network share (about 17 MB/s), the page's bar and time left following it the whole way. Checking reads it all back, so expect it to take about as long again.
 
 When you are done for the day, press **Close the panel** at the top of the page (or, on a rig that doesn't hold the rig's lock, Ctrl-C in the black window), then close the browser tab. If recordings are still being copied, the panel stays open until the copies are done, then closes by itself; leave the computer on until then. **Close now, without the copies** closes it at once: the recordings not copied stay on this computer, and each one's `logs/post.log` gives the command that copies it by hand.
 
@@ -112,7 +126,7 @@ On the ChronicRecord rig the same page also runs the Pico (which makes the camer
 
 **The bouts.** Under the length, **Bout settings** shows what each bout does, and each setting can be changed there:
 
-| On the page | The Pico's setting | The config's (chronic_control.py's default) |
+| On the page | The Pico's setting | The config's (in brackets, chronic_control.py's own where it differs) |
 |---|---|---|
 | A bout every (s) | `INTERVAL` | 300 |
 | Baseline: gate open to the LEDs, and camera off to gate closed (s) | `TOTAL_BASELINE` | 10 |
@@ -120,10 +134,12 @@ On the ChronicRecord rig the same page also runs the Pico (which makes the camer
 | Camera time, normal bout (s) | `STANDARD_STIM_DURATION` | 10 |
 | Camera time, long bout (s) | `EXTENDED_STIM_DURATION` | 240 |
 | A long bout every (bouts; the first is long) | `EXTENDED_EVERY` | 6 |
-| Blue LED on (ms) | `PULSE_WIDTH_C` | 30 |
-| Yellow LED on, as blue ends (ms) | `PULSE_WIDTH_D` | 30 |
+| Blue LED on (ms) | `PULSE_WIDTH_C` | 50 (30) |
+| Yellow LED on (ms) | `PULSE_WIDTH_D` | 50 (30) |
+| Yellow LED first (1), or blue first (0) | `YELLOW_FIRST` | 1 (0) |
+| Dark between the two LEDs (ms) | `LED_GAP` | 150 (0) |
 
-Below them a line says what one bout does from the gate's opening, for example *camera on at 5 s; blue LED at 9.999 s for 30 ms (frames 300-301), then yellow for 30 ms (frames 302-303); camera off at 245 s and gate closed at 255 s in a long bout, at 15 s and 25 s in a normal one*, with a warning if an LED would switch during a frame's exposure. Each LED lights once a bout. The length's plan (number of bouts, camera time), the disk check and campy's recording time follow at once.
+Below them a line says what one bout does from the gate's opening, for example *camera on at 5 s; yellow LED at 9.999 s for 50 ms (frames 300-302), then 150 ms dark, then blue for 50 ms (frames 312-314); camera off at 245 s and gate closed at 255 s in a long bout, at 15 s and 25 s in a normal one*, with a warning if an LED would switch during a frame's exposure. Each LED lights once a bout. The config's LED settings are the fiber photometry's "snapshot" pattern for the neuro-seeER reporter: see [Fiber photometry](../chronicrecord/README.md#fiber-photometry-snapshots) for the light path and the photoreceivers' settings. The length's plan (number of bouts, camera time), the disk check and campy's recording time follow at once.
 
 - **The config file isn't changed.** The page's settings are for the recordings started from it. A changed setting is outlined, with the config's value under it. **Back to the config's** undoes every change; an emptied field undoes its own.
 - **The page remembers them.** The next panel opened with the same config starts from the last settings its page had, and says so (`2 changed, as the last panel left them (Mon 9 Nov, 3:12 PM)`). They're kept in `~/.campy/status/panel-bouts.json`, one entry for each config; **Back to the config's** removes that config's.

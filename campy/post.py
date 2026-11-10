@@ -652,10 +652,31 @@ def CopyDest(folder, to):
 	return ("{}/{}".format(str(to).rstrip("/"), name) if remote else os.path.join(str(to), name)), remote
 
 
-def StepCopy(folder, settings, log, stop=None, details=None, progress=None):
+def RunCopier(command, started=None):
 	"""
-	The copy, then every file checked byte for byte (copycheck.Check). details (a dict): filled with the check's
-	dest, files (each one's result), snapshot and read_back, for FinishCopy. progress(bytes checked, in all).
+	subprocess.run(command, capture_output=True, text=True), with started(the process) called once it runs: the
+	panel follows how much it has written so far (copyqueue.Written).
+	"""
+	with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as proc:
+		if started is not None:
+			try:
+				started(proc)
+			except Exception:
+				pass
+		try:
+			stdout, stderr = proc.communicate()
+		except BaseException:
+			proc.kill()
+			raise
+	return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+
+
+def StepCopy(folder, settings, log, stop=None, details=None, progress=None, started=None):
+	"""
+	The copy (robocopy on Windows, rsync elsewhere), then every file checked byte for byte (copycheck.Check).
+	started(the copy program's process), once it runs: the panel's copies follow how much it has written (copyqueue).
+	details (a dict): filled with the check's dest, files (each one's result), snapshot and read_back, for FinishCopy.
+	progress(bytes checked, in all).
 	"""
 	copy = settings.get("copy")
 	if not copy:
@@ -669,11 +690,11 @@ def StepCopy(folder, settings, log, stop=None, details=None, progress=None):
 		os.makedirs(dest, exist_ok=True) # rsync makes only the last folder of a path (GNU rsync, on Linux)
 	if sys.platform == "win32" and not remote:
 		command = ["robocopy", folder, dest, "/E", "/Z", "/R:3", "/W:10", "/NP", "/NFL", "/NDL"]
-		out = subprocess.run(command, capture_output=True, text=True)
+		out = RunCopier(command, started)
 		ok = out.returncode < 8 # robocopy: 0-7 copied (or nothing to copy), 8 and up failed
 	elif shutil.which("rsync"):
 		command = ["rsync", "-a", "--partial", folder.rstrip("/\\") + "/", dest + "/"]
-		out = subprocess.run(command, capture_output=True, text=True)
+		out = RunCopier(command, started)
 		ok = out.returncode == 0
 	elif not remote:
 		command = ["copy", folder, dest]

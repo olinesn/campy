@@ -28,6 +28,16 @@ Measured on the Dell Pro Tower Plus (8 cameras, 60 fps, AV1 on Quick Sync),
 none of its frames' arrival times (p99 0.24 ms either way), and nothing was
 dropped.
 
+How far a copy has got (the page's bar, GB so far and time left) is what the
+copy program has written: robocopy's or rsync's own count of bytes written
+(Written), looked at every 3 s. Not the copy's folder's file sizes: robocopy
+(Windows' CopyFileEx) makes each file its full size as it starts on it, so a
+5.9 GB SpikeGLX file counted as copied at once, and the page then sat at the
+same GB for minutes (seen 2026-11-10, copying 7.6 GB to a network share at
+21 MB/s). Where that count isn't kept (macOS), or once the program has ended,
+the copy's folder is looked at, a file counting only once its size and time
+are its original's (Copied).
+
 The folder a page last copied into is remembered for each config, as the
 bout settings are (campy/pico.py): RememberFile(), keyed by the config's path.
 """
@@ -35,8 +45,12 @@ bout settings are (campy/pico.py): RememberFile(), keyed by the config's path.
 import itertools, os, sys, threading, time
 from datetime import datetime
 
+import psutil
+
 REMEMBER = "panel_copy.json"
 KEEP = 30 # finished copies the page lists
+LOOK_S = 3.0 # how often a copy's progress is looked at (a network share is slow to list)
+SAME_TIME_S = 2.0 # a copied file's modification time is its original's to within this (FAT keeps it to 2 s)
 
 
 def RememberFile():
@@ -150,6 +164,64 @@ def Size(folder):
 	return total
 
 
+def Copied(folder, dest):
+	"""
+	The bytes in dest (folder's copy, being made) that are really there: a file that has its original in folder
+	counts by its size while it is smaller, and in full only once its size and modification time are the original's
+	(robocopy makes a file its full size as it starts on it and gives it its time at the end); any other file (rsync's
+	temporary .name.XXXXXX, which grows as it writes) by its size.
+	"""
+	source = {}
+	for root, _, files in os.walk(folder):
+		for name in files:
+			path = os.path.join(root, name)
+			try:
+				st = os.stat(path)
+			except OSError:
+				continue
+			source[os.path.normcase(os.path.relpath(path, folder))] = (st.st_size, st.st_mtime)
+	total = 0
+	for root, _, files in os.walk(dest):
+		for name in files:
+			path = os.path.join(root, name)
+			try:
+				st = os.stat(path)
+			except OSError:
+				continue
+			original = source.get(os.path.normcase(os.path.relpath(path, dest)))
+			if original is None or st.st_size < original[0]:
+				total += st.st_size
+			elif st.st_size == original[0] and abs(st.st_mtime - original[1]) <= SAME_TIME_S:
+				total += st.st_size
+			# else: its full size, but not its original's time yet: still being written
+	return total
+
+
+def Written(process):
+	"""
+	How many bytes the copy program (a psutil.Process) and the programs it started have written so far, the most any
+	of them has (rsync's sender writes what its receiver writes again), or None where that isn't known (macOS keeps no
+	count; the program has ended). Windows: its WriteTransferCount, every write it made, to a network share too;
+	Linux: write_chars, every write (write_bytes there is only what reached a local disk).
+	"""
+	if process is None:
+		return None
+	try:
+		processes = [process] + process.children(recursive=True)
+	except (psutil.Error, OSError):
+		return None
+	most = None
+	for p in processes:
+		try:
+			io = p.io_counters()
+		except (psutil.Error, OSError, AttributeError, NotImplementedError):
+			continue
+		n = getattr(io, "write_chars", None)
+		n = io.write_bytes if n is None else n
+		most = n if most is None else max(most, n)
+	return most
+
+
 _ORDER = itertools.count() # the order recordings were queued in: two queued within one tick of Windows' clock
                             # (about 16 ms) have the same time.time()
 
@@ -167,6 +239,7 @@ class Job:
 		self.phase, self.checked_bytes, self.check_bytes = None, 0, None
 		self.verified, self.mismatched = None, None # files the same in the copy, and not, once checked
 		self.local = None # what became of the folder here: deleted, kept (why) or here
+		self.copier = None # the copy program (robocopy, rsync), a psutil.Process, while it runs (Progress)
 
 	def Dest(self):
 		remote = ":" in self.to and "@" in self.to.split(":", 1)[0]
@@ -239,9 +312,11 @@ class CopyQueue:
 			job.phase, job.checked_bytes, job.check_bytes = "checking", done, total
 		try:
 			log = post.Log(job.folder, self.out)
-			state, message = post.StepCopy(job.folder, {"copy": {"to": job.to}}, log, details=details, progress=checked)
+			state, message = post.StepCopy(job.folder, {"copy": {"to": job.to}}, log, details=details, progress=checked,
+				started=self.Started(job))
 		except Exception as e:
 			state, message = "failed", "{}: {}".format(type(e).__name__, e)
+		job.copier = None
 		job.verified, job.mismatched = details.get("verified"), details.get("mismatched")
 		with self.lock:
 			if job.state == "left": # the panel closed while it copied: say so, not done
@@ -304,6 +379,27 @@ class CopyQueue:
 			self.say("Could not send the alert: {}".format(e))
 
 	@staticmethod
+	def Started(job):
+		def started(proc):
+			try:
+				job.copier = psutil.Process(proc.pid) # psutil's, not the pid: a pid used again later isn't mistaken for it
+			except (psutil.Error, OSError):
+				job.copier = None
+		return started
+
+	@staticmethod
+	def Progress(job):
+		"""How many of the job's bytes are copied so far: what the copy program has written, or, where that isn't known,
+		what is really in the copy's folder (Copied); never more than the job's, never fewer than said before."""
+		written = Written(job.copier)
+		try:
+			there = Copied(job.folder, job.Dest()) if os.path.isdir(job.Dest()) else 0
+		except OSError:
+			there = 0
+		done = max(written or 0, there) # files skipped as already there (a copy made again) aren't written
+		return max(job.done_bytes, min(done, job.bytes or 0))
+
+	@staticmethod
 	def Record(job, state, message, details=None):
 		# Into the recording's logs/post.json, as campy-session post's copy step
 		from campy import post
@@ -340,14 +436,10 @@ class CopyQueue:
 		with self.lock:
 			jobs = list(self.jobs)
 		for job in jobs:
-			# How far a copy has got: what is in its destination so far, looked at every 3 s (a network share is slow
-			# to list)
-			if job.state == "copying" and now - job.looked > 3:
+			# How far a copy has got (Progress), looked at every 3 s
+			if job.state == "copying" and now - job.looked > LOOK_S:
 				job.looked = now
-				try:
-					job.done_bytes = Size(job.Dest()) if os.path.isdir(job.Dest()) else 0
-				except OSError:
-					pass
+				job.done_bytes = self.Progress(job)
 		shown = [j for j in jobs if j.state in ("waiting", "copying")] + \
 			[j for j in jobs if j.state not in ("waiting", "copying")][-KEEP:]
 		return {"pending": sum(j.state in ("waiting", "copying") for j in jobs),

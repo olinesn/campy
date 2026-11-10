@@ -527,14 +527,14 @@ def test_a_recording_outlives_its_panel_and_the_next_panel_finds_it(tmp_path, ho
 FAKE_SDK = os.path.join(REPO, "tests", "fake_sglx")
 
 
-def disk_panel(tmp_path, monkeypatch, free_gb, devices=True):
+def disk_panel(tmp_path, monkeypatch, free_gb, devices=True, video_folder=None):
 	# A panel for 4 cameras at 60 fps: with a Pico (8 h and 6 days, its board and SpikeGLX answering) and SpikeGLX, or
 	# with neither; its disk holding free_gb. Nothing records: Start only hands the main thread its fields.
 	from campy import pico, spikeglx
 	from test_session import write_config
 	sections = {"pico": {"port": "E665485457699D30", "lengths": [{"name": "8 h", "seconds": 28800},
 		{"name": "6 days", "seconds": 518400}]}, "spikeglx": {"sdk": FAKE_SDK}} if devices else {}
-	config = write_config(tmp_path / "c.yaml", {"numCams": 4, "frameRate": 60, "videoFolder": str(tmp_path / "data"),
+	config = write_config(tmp_path / "c.yaml", {"numCams": 4, "frameRate": 60, "videoFolder": str(video_folder or tmp_path / "data"),
 		"recTimeInSec": 3600}, **sections)
 	monkeypatch.setattr(pico.Pico, "Check", lambda self: "COM3: idle")
 	def answers(self):
@@ -596,7 +596,7 @@ def test_without_a_pico_the_disk_check_is_as_before(tmp_path, home, monkeypatch)
 	assert p.checks[-1] == ("warn", "15 GB free where it records") # below alertDiskFreeGB (20)
 	assert p.Start({}) is None
 	# The tile: hours at the rate it fills
-	assert p.Disk(15e9, 1e6, None) == {"free_gb": 15.0, "hours_left": 4.2, "plan_left_gb": None}
+	assert p.Disk(15e9, 1e6, None) == {"free_gb": 15.0, "hours_left": 4.2, "plan_left_gb": None, "drives": []}
 
 
 def test_the_disk_tile_counts_the_rest_of_a_picos_plan(tmp_path, home, monkeypatch):
@@ -604,12 +604,274 @@ def test_the_disk_tile_counts_the_rest_of_a_picos_plan(tmp_path, home, monkeypat
 	p = disk_panel(tmp_path, monkeypatch, 378)
 	s = types.SimpleNamespace(folder=str(tmp_path / "rec"))
 	p.devices.Plan(28800)
-	assert p.Disk(378e9, 1.0e6, s) == {"free_gb": 378.0, "hours_left": None, "plan_left_gb": 161.7}
+	assert p.Disk(378e9, 1.0e6, s) == {"free_gb": 378.0, "hours_left": None, "plan_left_gb": 161.7, "drives": []}
 	p.devices.pico_started = time.time()
 	p.devices.cached = {"pico": {"alive": True, "session_s": 14400}} # half way: 48 of 96 bouts left
 	assert p.Disk(378e9, 1.0e6, s)["plan_left_gb"] == round(p.devices.Need(28800, 4, 14400)["total_b"] / 1e9, 1) == 80.8
 	p.devices.cached = {"pico": {"alive": False}} # its session has ended
-	assert p.Disk(378e9, 1.0e6, s) == {"free_gb": 378.0, "hours_left": None, "plan_left_gb": None}
+	assert p.Disk(378e9, 1.0e6, s) == {"free_gb": 378.0, "hours_left": None, "plan_left_gb": None, "drives": []}
+
+
+# ------------------------------------------------------------------ the disk tile's drives (its pies)
+
+def fake_drives(monkeypatch, tmp_path, sizes):
+	# Drives of made-up sizes: sizes {"C:": (total GB, free GB), ...}, each the folder tmp_path/<letter> and what's in it
+	mounts = {}
+	for name, (total, free) in sizes.items():
+		folder = tmp_path / name[0]
+		folder.mkdir(exist_ok=True)
+		mounts[str(folder)] = (name + "\\", total, free)
+	def mount(path):
+		path = os.path.abspath(str(path))
+		return next((m for f, (m, _, _) in mounts.items() if path == f or path.startswith(f + os.sep)), None)
+	def usage(where):
+		_, total, free = next(v for v in mounts.values() if v[0] == where)
+		return types.SimpleNamespace(total=total * 1e9, used=(total - free) * 1e9, free=free * 1e9)
+	monkeypatch.setattr(panel, "Mount", mount)
+	monkeypatch.setattr(panel, "DiskUsage", usage)
+
+
+def test_a_drives_name_on_windows_and_elsewhere():
+	import ntpath
+	import posixpath
+	assert panel.DriveName("D:\\", ntpath) == "D:"
+	assert panel.DriveName("\\\\server\\share\\", ntpath) == "\\\\server\\share"
+	assert panel.DriveName("C:\\mounts\\big\\", ntpath) == "C:\\mounts\\big" # a drive mounted in a folder
+	assert panel.DriveName("/", posixpath) == "/" and panel.DriveName("/mnt/data/", posixpath) == "/mnt/data"
+
+
+def test_a_drive_is_measured_where_a_folder_is(tmp_path, monkeypatch):
+	# The 4 TB data drive: a folder on it not made yet still counts as on it (its nearest existing folder)
+	fake_drives(monkeypatch, tmp_path, {"D:": (4000.8, 3998.1)})
+	assert panel.Drive(tmp_path / "D" / "recordings" / "2026-11-10") == {"name": "D:", "mount": "D:\\",
+		"total_gb": 4000.8, "used_gb": 2.7, "free_gb": 3998.1}
+	assert panel.Drive(tmp_path / "elsewhere") is None # no drive answers for it
+
+
+def test_the_real_mount_of_a_folder(tmp_path):
+	# Walked up from a folder not made yet to the mount point it is on; the real drive measured there
+	mount = panel.Mount(tmp_path / "not" / "made")
+	assert os.path.ismount(mount) and os.path.normcase(str(tmp_path)).startswith(os.path.normcase(mount))
+	drive = panel.Drive(tmp_path / "not" / "made")
+	assert drive["mount"] == mount and 0 < drive["free_gb"] <= drive["total_gb"]
+	assert drive["used_gb"] == pytest.approx(drive["total_gb"] - drive["free_gb"], abs=0.11)
+
+
+def test_the_tile_shows_the_recordings_drive_with_the_plan_and_the_copies_drive(tmp_path, home, monkeypatch):
+	# Recording onto the new 4 TB D:, copies onto C:. The plan's estimate is D:'s (SpikeGLX writes into the
+	# recording's folder too); C: shows only its own space.
+	p = disk_panel(tmp_path, monkeypatch, 3998)
+	fake_drives(monkeypatch, tmp_path, {"C:": (1022.4, 460.2), "D:": (4000.8, 3998.1)})
+	p.devices.Plan(28800)
+	s = types.SimpleNamespace(folder=str(tmp_path / "D" / "rec"), state="recording")
+	p.session, p.copy_to = s, str(tmp_path / "C")
+	disk = p.Disk(3998.1e9, 1.0e6, s, s.folder)
+	assert disk["plan_left_gb"] == 161.7
+	assert disk["drives"] == [
+		{"name": "D:", "mount": "D:\\", "total_gb": 4000.8, "used_gb": 2.7, "free_gb": 3998.1, "recording": True,
+			"copies": False, "plan_gb": 161.7},
+		{"name": "C:", "mount": "C:\\", "total_gb": 1022.4, "used_gb": 562.2, "free_gb": 460.2, "recording": False,
+			"copies": True, "plan_gb": None}]
+	# Copies onto the same drive: one pie, marked as the copies' too
+	p.copy_to = str(tmp_path / "D" / "copies")
+	os.makedirs(p.copy_to)
+	assert [(d["name"], d["recording"], d["copies"]) for d in p.Drives(s.folder, 161.7)] == [("D:", True, True)]
+	# An rsync address has no drive here; a destination that isn't there, none either
+	for to in ("me@server:/data", str(tmp_path / "C" / "gone")):
+		p.copy_to = to
+		assert [d["name"] for d in p.Drives(s.folder)] == ["D:"]
+	# After it: the copies still going are shown, not the page's box
+	p.session, p.copy_to = None, None
+	monkeypatch.setattr(p.copies, "Status", lambda: {"jobs": [{"to": str(tmp_path / "C"), "state": "copying"}]})
+	monkeypatch.setattr(panel.Panel, "CopyTo", lambda self: str(tmp_path / "D" / "copies"))
+	assert [(d["name"], d["copies"]) for d in p.Drives(s.folder)] == [("D:", False), ("C:", True)]
+	# ... and with none going, the box's
+	monkeypatch.setattr(p.copies, "Status", lambda: {"jobs": [{"to": str(tmp_path / "C"), "state": "done"}]})
+	assert [(d["name"], d["copies"]) for d in p.Drives(s.folder)] == [("D:", True)]
+	# Without a drive to measure (the folder's drive gone): no pies, the free space as before
+	assert p.Disk(None, None, None, str(tmp_path / "E" / "rec"))["drives"] == [
+		dict(panel.Drive(tmp_path / "D"), recording=False, copies=True, plan_gb=None)]
+
+
+def test_a_copies_drive_measured_at_most_every_10_s(tmp_path, home, monkeypatch):
+	# A network share can be slow to answer: the page asks every second, its drive is measured every 10 s
+	p = disk_panel(tmp_path, monkeypatch, 3998, devices=False)
+	fake_drives(monkeypatch, tmp_path, {"C:": (1022.4, 460.2), "D:": (4000.8, 3998.1)})
+	asked = []
+	usage = panel.DiskUsage
+	monkeypatch.setattr(panel, "DiskUsage", lambda where: asked.append(where) or usage(where))
+	p.session, p.copy_to = types.SimpleNamespace(folder=str(tmp_path / "D")), str(tmp_path / "C")
+	now = [1000.0]
+	monkeypatch.setattr(panel.time, "monotonic", lambda: now[0])
+	for _ in range(5):
+		p.Drives(str(tmp_path / "D"))
+	assert asked.count("C:\\") == 1 and asked.count("D:\\") == 5
+	now[0] += panel.DRIVE_FRESH_S + 1
+	p.Drives(str(tmp_path / "D"))
+	assert asked.count("C:\\") == 2
+
+
+def test_the_copies_drive_has_room_for_the_recording(tmp_path, home, monkeypatch):
+	# Before the start, with a Pico's plan: a warning when the copy destination can't hold this length's recording
+	# (162 GB for 8 hours), never a block
+	fake_drives(monkeypatch, tmp_path, {"C:": (1022.4, 100.0), "D:": (4000.8, 3998.1)})
+	monkeypatch.setattr(panel.Panel, "CopyTo", lambda self: str(tmp_path / "C"))
+	p = disk_panel(tmp_path, monkeypatch, 3998, video_folder=tmp_path / "D" / "data")
+	[(level, text, action)] = [c for c in p.checks if c[2:] == ("copy-disk",)]
+	assert (level, action) == ("warn", "copy-disk")
+	assert text == "Copies: into {} (C:), 100 GB free; this length's recording is about 162 GB: it doesn't fit, " \
+		"62 GB short. Make room there, or copy somewhere else.".format(tmp_path / "C"), text
+	assert p.Start({"length": 28800}) is None # a warning: it starts
+	p.wanted = None
+	# Room enough: ok
+	fake_drives(monkeypatch, tmp_path, {"C:": (1022.4, 460.2), "D:": (4000.8, 3998.1)})
+	assert [c[0] for c in p.Checks() if c[2:] == ("copy-disk",)] == ["ok"]
+	# On the recordings' own drive: room for both
+	monkeypatch.setattr(panel.Panel, "CopyTo", lambda self: str(tmp_path / "D"))
+	fake_drives(monkeypatch, tmp_path, {"D:": (4000.8, 300.0)})
+	[(level, text, _)] = [c for c in p.Checks() if c[2:] == ("copy-disk",)]
+	assert level == "warn" and "on the same drive as the recordings (D:): room for both, about 323 GB of the 300 GB" in text
+	# No destination, or an rsync one: no line
+	for to in ("", "me@server:/data"):
+		monkeypatch.setattr(panel.Panel, "CopyTo", lambda self, to=to: to)
+		assert not [c for c in p.Checks() if c[2:] == ("copy-disk",)]
+
+
+# ------------------------------------------------------------------ the LEDs' power, asked for at Start
+
+LEDS = ["Blue LED (465 nm)", "Yellow LED (560 nm)"]
+
+
+def led_panel(tmp_path, leds=LEDS, **acquire):
+	from test_session import write_config
+	config = write_config(tmp_path / "c.yaml", dict({"numCams": 1, "frameRate": 60, "videoFolder": str(tmp_path / "data"),
+		"recTimeInSec": 60}, **acquire), panel={"led_power": leds})
+	return panel.Panel(str(config), browser=False)
+
+
+def test_the_led_powers_are_checked():
+	got, why = panel.LedPower(LEDS, [{"led": LEDS[1], "driver_mA": "90", "fiber_tip_uW": 21},
+		{"led": LEDS[0], "driver_mA": 17, "fiber_tip_uW": "215.5"}])
+	assert why is None and got["leds"] == [{"led": LEDS[0], "driver_mA": 17, "fiber_tip_uW": 215.5},
+		{"led": LEDS[1], "driver_mA": 90, "fiber_tip_uW": 21}] # in the config's order
+	assert "before the animal was connected" in got["measured"] and got["at"][:4].isdigit()
+	assert panel.LedPower(LEDS, [{"led": LEDS[0], "driver_mA": 0, "fiber_tip_uW": 0},
+		{"led": LEDS[1], "driver_mA": 90, "fiber_tip_uW": 21}])[1] is None # an LED that is off: 0
+	for given, why in (
+			(None, "Blue LED (465 nm) has none"),
+			([{"led": LEDS[0], "driver_mA": 17, "fiber_tip_uW": 215}], "Yellow LED (560 nm) has none"),
+			([{"led": LEDS[0], "driver_mA": "", "fiber_tip_uW": 215}], "driver current (mA) is not a number"),
+			([{"led": LEDS[0], "driver_mA": 17, "fiber_tip_uW": -1}], "power at the fiber tip (µW) must be 0 or more"),
+			([{"led": LEDS[0], "driver_mA": "nan", "fiber_tip_uW": 1}], "must be 0 or more")):
+		assert why in panel.LedPower(LEDS, given)[1]
+
+
+def test_a_start_asks_for_the_led_powers_and_keeps_them_with_the_recording(tmp_path, home):
+	p = led_panel(tmp_path)
+	status = p.Status()["led_power"]
+	assert status == {"leds": LEDS, "last": None}
+	assert p.Start({}).startswith("LED power: the page asks for each LED's driver current") and p.wanted is None
+	leds = [{"led": LEDS[0], "driver_mA": 17, "fiber_tip_uW": 215}, {"led": LEDS[1], "driver_mA": 90, "fiber_tip_uW": 21}]
+	assert p.Start({"notes": "cage 2", "led_power": leds}) is None
+	power = p.wanted["led_power"]
+	assert power["leds"] == leds
+	# Into session.json's fields (sessionFields.ledPower), as campy-acquire's option
+	args = p.Args(p.wanted)
+	i = args.index("--sessionFields")
+	assert json.loads(args[i + 1]) == {"ledPower": power}
+	# Kept for the next Start (the page fills them in) and the next panel with this config
+	p.wanted = None
+	assert p.Status()["led_power"]["last"] == power
+	assert led_panel(tmp_path).Status()["led_power"]["last"] == power
+	# The config's own fields are kept beside them
+	q = led_panel(tmp_path, sessionFields={"cage": "B3"})
+	assert q.Start({"led_power": leds}) is None
+	args = q.Args(q.wanted)
+	assert json.loads(args[args.index("--sessionFields") + 1]) == {"cage": "B3", "ledPower": q.wanted["led_power"]}
+
+
+def test_without_led_power_nothing_is_asked(tmp_path, home):
+	p = led_panel(tmp_path, leds=[])
+	assert p.Status()["led_power"] is None and p.Start({}) is None and "--sessionFields" not in p.Args(p.wanted)
+
+
+def test_the_page_asks_for_the_led_powers_at_start():
+	from campy import panelpage
+	page = panelpage.PAGE
+	# Each function once: a second "function when" would replace the first for every caller ("Ended at ...")
+	names = re.findall(r"^function (\w+)\(", page, re.M)
+	assert len(names) == len(set(names)), sorted(n for n in names if names.count(n) > 1)
+	# The bout drawing's LED rows show the last confirmed power
+	assert "pw = led ? ledPowerOf(led) : null" in page and "Under each LED: its driver current and power" in page
+	assert 'id="leddlg"' in page and "LED power, before connecting the animal" in page and "Doric LED driver" in page
+	assert "if((last||{}).led_power) return askLeds(start);" in page and 'id="ledlast"' in page
+	# Each LED's colour from the wavelength in its name, beside it in the dialog
+	assert "function nmColour(name)" in page and "'<b>'+swatch(n)+esc(n)+'</b>" in page
+	# ... and in the bout drawing's LED rows, with the wavelength by the pin
+	assert "full && nmColour(full) ? swatch(full)" in page and "ledNameOf(led)" in page
+
+
+def test_a_length_can_have_its_own_copy_folder(tmp_path, home, monkeypatch):
+	# pico.lengths' copyTo: the page's "Copy each recording to" box filled in when that length is picked; the copy check
+	# and the drive rings follow it
+	from campy import pico, spikeglx
+	from test_session import write_config
+	share = tmp_path / "share"
+	share.mkdir()
+	config = write_config(tmp_path / "c.yaml", {"numCams": 4, "frameRate": 60, "videoFolder": str(tmp_path / "data"),
+		"recTimeInSec": 3600}, pico={"port": "E665485457699D30", "lengths": [
+			{"name": "6 days", "seconds": 518400, "copyTo": str(share)},
+			{"name": "1 hour", "seconds": 3600}]}, spikeglx={"sdk": FAKE_SDK})
+	monkeypatch.setattr(pico.Pico, "Check", lambda self: "COM3: idle")
+	monkeypatch.setattr(spikeglx.SpikeGLX, "Check", lambda self: "SpikeGLX: idle")
+	monkeypatch.setattr(panel.Panel, "Free", lambda self, folder=None: 4000e9)
+	p = panel.Panel(str(config), browser=False)
+	lengths = p.Status()["lengths"]
+	assert [(l["name"], l["copyTo"]) for l in lengths] == [("6 days", str(share)), ("1 hour", None)]
+	assert p.length == 518400 and p.CopyDefault() == str(share)
+	assert p.Status()["fields"]["copy_to"] == "" # the config's own (none): what a length without one gives back
+	p.length = 3600
+	assert p.CopyDefault() == ""
+	# A copyTo of the wrong kind of entry is refused, naming the keys
+	bad = write_config(tmp_path / "bad.yaml", {"numCams": 1, "videoFolder": str(tmp_path / "data")},
+		pico={"port": "X", "lengths": [{"name": "x", "seconds": 60, "copy": "y"}]})
+	with pytest.raises(Exception, match="copyTo: <optional>"):
+		panel.Panel(str(bad), browser=False)
+
+
+def test_the_page_fills_the_copy_box_from_the_length():
+	from campy import panelpage
+	page = panelpage.PAGE
+	assert "if(L0.copyTo) $(\"copyto\").value = L0.copyTo; else if(copyLen) $(\"copyto\").value = s.fields.copy_to||\"\";" in page
+
+
+def test_the_pages_text_is_in_rem_and_can_be_made_larger():
+	# Sizes in rem, so the browser's own font size and the page's Text size buttons scale every text; none in px, and
+	# nothing below 15 px at the browser's default (0.9375rem)
+	from campy import panelpage
+	page = panelpage.PAGE
+	assert not re.search(r"font-size:\s*\d+(\.\d+)?px", page) and not re.search(r"font:\s*\d+px", page)
+	sizes = [float(v) for v in re.findall(r"font-size:\s*([\d.]+)rem", page)]
+	assert sizes and min(sizes) >= 0.9375
+	assert 'id="larger"' in page and 'id="smaller"' in page and "campy-panel-text-size" in page
+	assert "font:1.0625rem" in panelpage.OLD_KEY # the page an old tab gets
+
+
+def test_the_page_draws_a_bout_and_follows_its_settings():
+	# Under Start recording: a row for each of the Pico's outputs, drawn from the bout box's diagram; the settings sent
+	# after a pause in typing too, so the drawing follows them
+	from campy import panelpage
+	page = panelpage.PAGE
+	assert 'id="boutpicbox"' in page and "boutPicture(B.error ? null : B.diagram)" in page
+	assert "el.oninput" in page and "setTimeout(() => setBout(f.key, v), 700)" in page
+
+
+def test_the_page_draws_each_drive_as_a_pie():
+	from campy import panelpage
+	page = panelpage.PAGE
+	assert 'id="diskpie"' in page and 'id="drives"' in page and "renderDrives(D_)" in page
+	assert "<svg" not in page.split("<script>")[0] # drawn from the status, not fixed in the page
+	assert "stroke-dasharray" in page and "the rest of the plan (an estimate)" in page
 
 
 # ------------------------------------------------------------------ one panel for a folder of configs

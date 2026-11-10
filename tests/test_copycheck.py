@@ -53,14 +53,13 @@ def finished(queue, timeout=60):
 def spoil_after_copy(monkeypatch, spoil):
 	# The copy made as usual (robocopy, rsync), then spoiled before it is checked: what a bad share or a cut-off
 	# copy would leave
-	real = subprocess.run
+	real = post.RunCopier
 
 	def run(command, *args, **kwargs):
 		out = real(command, *args, **kwargs)
-		if command and command[0] in ("robocopy", "rsync"):
-			spoil(command[2].rstrip("/") if command[0] == "robocopy" else command[-1].rstrip("/"))
+		spoil(command[2].rstrip("/") if command[0] == "robocopy" else command[-1].rstrip("/"))
 		return out
-	monkeypatch.setattr(post.subprocess, "run", run)
+	monkeypatch.setattr(post, "RunCopier", run)
 
 
 def flip_a_bit(dest, rel="Camera0/0.mp4", at=123457):

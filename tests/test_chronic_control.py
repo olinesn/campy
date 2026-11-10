@@ -67,6 +67,33 @@ def test_each_led_lights_two_whole_frames():
 		assert cc.LitFrames(b, *b["yellow"], s) == ([302, 303], [])
 
 
+def test_the_snapshot_photometry_pattern():
+	# neuro-seeER's snapshot: 50 ms of yellow (560 nm), 150 ms dark, 50 ms of blue (470 nm), once a bout.
+	# 50 ms is exactly 3 frames at 60 Hz and 150 ms exactly 9, so every edge stays 1 ms before a camera pulse
+	s = cc.Settings(["YELLOW_FIRST=1", "PULSE_WIDTH_C=0.05", "PULSE_WIDTH_D=0.05", "LED_GAP=0.15"])
+	bouts, trains, edges = cc.Plan(s)
+	for i, b in enumerate(bouts):
+		b0 = i * 300 * 10**6
+		assert b["yellow"] == (b0 + 10 * 10**6 - 1000, b0 + 10 * 10**6 - 1000 + 50000)
+		assert b["blue"] == (b["yellow"][1] + 150000, b["yellow"][1] + 150000 + 50000)
+		assert cc.LitFrames(b, *b["yellow"], s) == ([300, 301, 302], [])
+		assert cc.LitFrames(b, *b["blue"], s) == ([312, 313, 314], [])
+	assert len(edges) == 12 * 6 and [t for t, _, _ in edges] == sorted(t for t, _, _ in edges)
+	lines = cc.Describe(s, bouts)
+	assert "yellow 9.999000-10.049000 s (frames 300-302), blue 10.199000-10.249000 s (frames 312-314)" in lines[0]
+	assert not any("Warning" in line for line in lines)
+	# A gap with blue first, as before otherwise
+	s = cc.Settings(["LED_GAP=0.1"])
+	b = cc.Plan(s)[0][0]
+	assert b["yellow"] == (b["blue"][1] + 100000, b["blue"][1] + 100000 + 30000)
+	with pytest.raises(SystemExit, match="overlap"):
+		cc.Plan(cc.Settings(["LED_GAP=-0.01"]))
+	with pytest.raises(SystemExit, match="YELLOW_FIRST"):
+		cc.Plan(cc.Settings(["YELLOW_FIRST=2"]))
+	with pytest.raises(SystemExit, match="outside its camera time"):
+		cc.Plan(cc.Settings(["STANDARD_STIM_DURATION=5.1", "LED_GAP=0.15"])) # the second LED past the camera's end
+
+
 def test_the_plan_warns_of_a_half_lit_frame():
 	# No lead: the LED switches as pulse 300's exposure starts
 	s = cc.Settings(["LED_LEAD_US=-100"])
@@ -463,16 +490,19 @@ def fake_board():
 
 def test_start_status_and_stop_after_the_bout_on_any_computer(tmp_path, fake_board):
 	# Start returns at once with the session running on (on Windows: a detached
-	# process); stop asks it through the stop file
-	start = control(tmp_path, fake_board, "start")
+	# process); stop asks it through the stop file. Stop has to come in bout 1,
+	# after a second's wait and two Pythons starting (status, stop): in SHORT's
+	# 3 s bout 1 it now and then didn't, on a busy Windows CI runner (the session
+	# was over when stop looked). LONGER's bout 1 is 6 s, with the same pulses
+	start = control(tmp_path, fake_board, "start", settings=LONGER)
 	assert start.returncode == 0 and "Session started" in start.stdout, start.stdout + start.stderr
-	assert "Session: running" in control(tmp_path, fake_board, "status").stdout
+	assert "Session: running" in control(tmp_path, fake_board, "status", settings=LONGER).stdout
 	time.sleep(1.0) # in bout 1
-	stop = control(tmp_path, fake_board, "stop")
+	stop = control(tmp_path, fake_board, "stop", settings=LONGER)
 	assert stop.returncode == 0 and "ends after its current bout" in stop.stdout, stop.stdout
 	assert wait_done(tmp_path)["state"] == "done"
 	text = timestamps(tmp_path)
-	assert "the session ends after bout 1, when its gate goes low at board t=3.000000 s" in text
+	assert "the session ends after bout 1, when its gate goes low at board t=6.000000 s" in text
 	assert "Session over: 90 camera pulses\n" in text # bout 1's, by the board's count
 	assert not (tmp_path / "state" / cc.STOP_FILE).exists()
 
