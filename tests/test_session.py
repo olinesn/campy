@@ -547,7 +547,7 @@ def test_the_post_section_is_checked(tmp_path):
 	with pytest.raises(session.SessionError, match="post.remux: 'yes please' is not true, false or keep"):
 		session.Config(str(config))
 	config = write_config(tmp_path / "c.yaml", {"numCams": 1}, post={"copy": {"to": "x", "delete": True}})
-	with pytest.raises(session.SessionError, match="post.copy: it takes to: only"):
+	with pytest.raises(session.SessionError, match="post.copy: it takes to: .* and delete_after_verify: .* only"):
 		session.Config(str(config))
 	c = session.Config(str(write_config(tmp_path / "c.yaml", {"numCams": 1})))
 	assert c.post == {"remux": True, "join": True, "align": True, "calibrate": {}, "export": True, "copy": {}, "run": [],

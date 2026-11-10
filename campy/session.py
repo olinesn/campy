@@ -122,7 +122,10 @@ POST = {
 		"calibration.toml: {calibrat3: <its checkout>, board: {board_x: 14, board_y: 9, square_length: 20, "
 		"marker_length: 15, marker_bits: 5, dict_size: 1000}, target: 300 (frames sampled), browser: chrome} "
 		"(campy/calibrate.py); {} (the default): off"),
-	"copy": ((dict, str), {}, "copy the recording to copy.to/<its folder's name> (robocopy or rsync); nothing deleted"),
+	"copy": ((dict, str), {}, "copy the recording to copy.to/<its folder's name> (robocopy or rsync), then every file "
+		"checked byte for byte; copy.delete_after_verify: true ticks the panel's 'Delete each recording from this "
+		"computer once its copy is checked' box by default, and makes campy-session post delete it (default: false; "
+		"campy-session run never deletes)"),
 	"run": ((list,), [], "your own commands, {folder} replaced by the recording's folder"),
 	"ffmpeg": ((str,), "", "the ffmpeg to remux with (default: imageio-ffmpeg's)"),
 	}
@@ -280,8 +283,12 @@ class Config:
 			raise SessionError("post.remux: {!r} is not true, false or keep.".format(self.post["remux"]))
 		if isinstance(self.post["copy"], str):
 			self.post["copy"] = {"to": self.post["copy"]}
-		if set(self.post["copy"]) - {"to"}:
-			raise SessionError("post.copy: it takes to: only (the folder the recording is copied into).")
+		if set(self.post["copy"]) - {"to", "delete_after_verify"}:
+			raise SessionError("post.copy: it takes to: (the folder the recording is copied into) and "
+				"delete_after_verify: (true or false) only.")
+		if not isinstance(self.post["copy"].get("delete_after_verify", False), bool):
+			raise SessionError("post.copy.delete_after_verify: {!r} is not true or false.".format(
+				self.post["copy"]["delete_after_verify"]))
 		for name, keys in DeviceSections().items():
 			setattr(self, name, Section(name, sections[name], keys) if name in sections else None)
 		self.CheckPicker()
