@@ -120,6 +120,7 @@ post:
   - The step writes its own `logs/post.log` and `logs/post.json` while it copies, so those two are left out of the big check. Once the step's result is in them, they are copied again and checked too, so the copy has the complete logs.
   - To a `user@host:/path` rsync address, the copy isn't read back, and the step says so.
   - **Deleting the recording here, once its copy is checked**: off by default. `campy-session post <folder> --only copy --to <folder> --delete-after-verify`, the config's `copy: {to: ..., delete_after_verify: true}`, or the panel's tick box (below) turns it on. Once every file is the same in the copy, the recording's folder is deleted from this computer, after every other step. It is kept, and the log and `post.json` say why, when:
+    - the recording didn't stop cleanly (`campy-acquire` failed, or a camera's `metadata.csv` has no totals or an error): it is copied and checked as any other, but always stays here, to be looked at where it was made, even with `--force`. The panel sends no alert for it;
     - any file differs or is missing (the step fails);
     - a program still has a file in it open: SpikeGLX, ffmpeg, `campy-acquire`, a viewer. On Windows, each file must open for campy alone; on Linux, no process may have a file or its working folder in it; on macOS, `lsof` must find none;
     - anything in it changed after the check: a new file, a file gone, or a different size or change time;

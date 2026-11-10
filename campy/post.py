@@ -68,9 +68,10 @@ copy     the whole folder to copy.to/<folder's name>: robocopy on Windows,
          copy.delete_after_verify): then, once every file is the same in the
          copy, the recording's folder is deleted from this computer, if no
          program has a file in it open and nothing in it changed since the
-         check (copycheck.Delete). The panel's copies do the same with the
-         page's box ticked. campy-session's own post-steps (campy-session
-         run) never delete.
+         check (copycheck.Delete). A recording that didn't stop cleanly
+         is never deleted, even with --force. The panel's copies do the
+         same with the page's box ticked. campy-session's own post-steps
+         (campy-session run) never delete.
 run      the config's own commands, each with {folder} replaced by the
          recording's folder, in a shell; one that fails is said, and the
          next runs.
@@ -133,6 +134,8 @@ class Log:
 
 
 # ------------------------------------------------------------------ clean stop
+
+UNCLEAN_KEPT = "kept here: the recording didn't stop cleanly:" # FinishCopy's why, for a recording never deleted
 
 def CleanStop(folder):
 	"""(clean, why not): whether the recording in folder stopped cleanly."""
@@ -766,10 +769,18 @@ def FinishCopy(folder, details, log, delete=False, busy=None):
 	After a copy that every file of passed (StepCopy's details) and whose result is in post.json: post's own logs
 	copied again and checked (copycheck.CopyFiles); then, with delete, the folder deleted from this computer
 	(copycheck.Delete; busy: why something still wants it, or ""). Returns (local: "deleted", "kept" or "here", what
-	happened). Nothing is deleted when anything isn't so.
+	happened). Nothing is deleted when anything isn't so, nor when the recording didn't stop cleanly (CleanStop).
 	"""
 	dest = details["dest"]
 	logs = [f for f in POST_OWN if not f.endswith(".tmp")]
+	unclean = None
+	if delete:
+		# A recording that didn't stop cleanly (campy-acquire failed, a camera's error) stays here, its copy checked or
+		# not: it is looked at where it was made, and a failed start's folder is small
+		clean, why = CleanStop(folder)
+		if not clean:
+			unclean = "{} {}".format(UNCLEAN_KEPT, why)
+			delete = False
 	if delete:
 		text = "every file the same in the copy: deleting {} from this computer once post's logs are copied and " \
 			"checked too".format(folder)
@@ -782,6 +793,11 @@ def FinishCopy(folder, details, log, delete=False, busy=None):
 		log.Say(text)
 		RecordLocal(folder, text)
 		return ("kept" if delete else "here"), text
+	if unclean:
+		log.Say(unclean)
+		RecordLocal(folder, unclean)
+		copycheck.CopyFiles(folder, dest, logs) # the copy's logs say it too
+		return "kept", unclean
 	if not delete:
 		return "here", "kept here (deleting after the copy is off)"
 	snapshot = dict(details["snapshot"], **snap)

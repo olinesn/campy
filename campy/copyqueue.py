@@ -17,7 +17,8 @@ made again by hand:
 With the page's "Delete each recording from this computer once its copy is
 checked" ticked (off by default; the config's post copy.delete_after_verify
 ticks it), a recording whose every file is the same in the copy is then
-deleted here: not while a program has a file in it open, while it is still
+deleted here: never a recording that didn't stop cleanly (post.CleanStop:
+campy-acquire failed, a camera's error), and not while a program has a file in it open, while it is still
 wanted (a recording into it, a copy of it waiting), or when anything in it
 changed since the check (copycheck.Delete). Nothing is ever deleted in the
 copy. A copy that fails, or a folder kept though it was to be deleted, is
@@ -352,7 +353,8 @@ class CopyQueue:
 		if state != "done":
 			self.Alert("copy/" + job.name, "The copy of {} into {} failed: {}. Its folder is kept on this "
 				"computer.".format(job.folder, job.to, message))
-		elif job.delete and local != "deleted":
+		elif job.delete and local != "deleted" and not (job.local or "").startswith(post.UNCLEAN_KEPT):
+			# (a recording that didn't stop cleanly is kept on purpose: the page says why, no alert)
 			self.Alert("copy/" + job.name, "{} was copied into {} and checked, but not deleted from this computer: {}. "
 				"Delete it by hand once nothing uses it.".format(job.folder, job.to, job.local))
 
