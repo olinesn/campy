@@ -21,6 +21,8 @@ pico:
   state_dir: "C:\\campy_data\\pico\\state"
   # The lengths the page offers, the first by default. campy's recTimeInSec is worked out from the Pico's plan for
   # the length chosen (the plan's camera pulses / 60), so they can't disagree.
+  # A length's copyTo (optional) is the folder the page's "Copy each recording to" box fills in when it is picked,
+  # e.g. copyTo: "\\\\server\\share\\folder"; the rig's own file names the lab's server there.
   lengths:
     - {name: "6 days", seconds: 518400}
     - {name: "Gate test (15 min, 3 bouts)", seconds: 900, videoFolder: "C:\\data\\gatetest"}

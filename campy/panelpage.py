@@ -63,7 +63,7 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
 .boutpic{display:grid;align-items:center;margin:.375rem 0;row-gap:.25rem}.boutpic .lab{padding-right:.625rem;line-height:1.2;font-size:.9375rem}
 .boutpic .lab b{font-weight:500;color:var(--text)}.boutpic svg{display:block;width:100%;height:2.25rem;grid-column:2/-1}
 .boutpic .dur{font-size:.9375rem;line-height:1.25;text-align:center;padding:0 2px;min-width:0;color:var(--muted)}
-.boutpic .zoom{color:var(--accent)}.boutpic .nw{white-space:nowrap}.boutpic .ledpw{color:var(--text);white-space:nowrap}
+.boutpic .zoom{color:var(--accent)}.nw{white-space:nowrap}.boutpic .ledpw{color:var(--text);white-space:nowrap}
 .boutpic .axis{grid-column:2/-1;position:relative;height:1.9em;font-size:.9375rem;color:var(--muted);border-top:1px solid var(--muted)}
 .boutpic .axis i{position:absolute;top:0;width:1px;height:.4em;background:var(--muted);transform:translateX(-50%)}
 .boutpic .axis i:first-child{transform:none}.boutpic .axis i:nth-last-of-type(1){transform:translateX(-100%)}
@@ -289,6 +289,12 @@ function render(s){
     if(s.fields.experiment) $("experiment").value = s.fields.experiment; if(s.fields.animal_ids) $("ids").value = s.fields.animal_ids;
     $("copyto").value = s.fields.copy_to||""; } // the copy destination is each config's own
   if(!$("experiment").dataset.set){ $("experiment").value = s.fields.experiment||""; $("ids").value = s.fields.animal_ids||""; $("copyto").value = s.fields.copy_to||""; $("experiment").dataset.set=1; }
+  // A length with a copy folder of its own (pico.lengths' copyTo) fills the box when it is picked, or when the page opens
+  // on it; picking one without gives the box back the config's
+  const lenKey = L0 ? s.config + "|" + L0.seconds : "";
+  if(L0 && lenKey != copyLen && document.activeElement != $("copyto")){
+    if(L0.copyTo) $("copyto").value = L0.copyTo; else if(copyLen) $("copyto").value = s.fields.copy_to||"";
+    copyLen = lenKey; }
   renderCopies(s.copies || {jobs: []}, L.folder, st);
   $("during").hidden = !(st=="recording" || st=="stopping" || st=="starting live");
   $("disk").textContent = s.disk.free_gb!=null ? Math.round(s.disk.free_gb)+" GB" : "-";
@@ -467,6 +473,7 @@ function renderModels(M){
     "To pick from more models, add panel: models: (their folders) to the config or its rig profile.") + (M.notes.length ? " "+M.notes.join("; ")+"." : "");
   $("mrescan").hidden = !M.roots.length;
 }
+let copyLen = ""; // the experiment and length whose copy folder the box was last given
 let boutSig = "", ledPower = null; // ledPower: the status's led_power, for the bout drawing's LED rows
 // An LED row's last confirmed power (panel.led_power's names matched by colour: "Blue LED (465 nm)" for blue), or null
 function ledPowerOf(colour){
@@ -659,7 +666,7 @@ function nmColour(name){
     w < 580 ? [(w-510)/70, 1, 0] : w < 645 ? [1, (645-w)/65, 0] : [1, 0, 0];
   return "rgb("+[r, g, b].map(v => Math.round(255 * Math.pow(v, 0.8))).join(", ")+")"; }
 function swatch(name){ const c = nmColour(name); return c ? '<i class="sw" style="background:'+c+'"></i>' : ""; }
-function ledText(l){ return swatch(l.led)+esc(l.led)+" "+(+l.driver_mA)+"\u00a0mA, "+(+l.fiber_tip_uW)+"\u00a0\u00b5W"; }
+function ledText(l){ return swatch(l.led)+esc(l.led)+' <span class="nw">'+(+l.driver_mA)+"\u00a0mA, "+(+l.fiber_tip_uW)+"\u00a0\u00b5W</span>"; }
 function confirmedWhen(iso){ const d = new Date(iso); if(isNaN(d)) return ""; const today = d.toDateString() == new Date().toDateString();
   return (today ? "today" : d.toLocaleDateString([], {weekday:"short", month:"short", day:"numeric"}))+" at "+d.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}); }
 function askLeds(start){

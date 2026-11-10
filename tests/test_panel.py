@@ -811,6 +811,40 @@ def test_the_page_asks_for_the_led_powers_at_start():
 	assert "full && nmColour(full) ? swatch(full)" in page and "ledNameOf(led)" in page
 
 
+def test_a_length_can_have_its_own_copy_folder(tmp_path, home, monkeypatch):
+	# pico.lengths' copyTo: the page's "Copy each recording to" box filled in when that length is picked; the copy check
+	# and the drive rings follow it
+	from campy import pico, spikeglx
+	from test_session import write_config
+	share = tmp_path / "share"
+	share.mkdir()
+	config = write_config(tmp_path / "c.yaml", {"numCams": 4, "frameRate": 60, "videoFolder": str(tmp_path / "data"),
+		"recTimeInSec": 3600}, pico={"port": "E665485457699D30", "lengths": [
+			{"name": "6 days", "seconds": 518400, "copyTo": str(share)},
+			{"name": "1 hour", "seconds": 3600}]}, spikeglx={"sdk": FAKE_SDK})
+	monkeypatch.setattr(pico.Pico, "Check", lambda self: "COM3: idle")
+	monkeypatch.setattr(spikeglx.SpikeGLX, "Check", lambda self: "SpikeGLX: idle")
+	monkeypatch.setattr(panel.Panel, "Free", lambda self, folder=None: 4000e9)
+	p = panel.Panel(str(config), browser=False)
+	lengths = p.Status()["lengths"]
+	assert [(l["name"], l["copyTo"]) for l in lengths] == [("6 days", str(share)), ("1 hour", None)]
+	assert p.length == 518400 and p.CopyDefault() == str(share)
+	assert p.Status()["fields"]["copy_to"] == "" # the config's own (none): what a length without one gives back
+	p.length = 3600
+	assert p.CopyDefault() == ""
+	# A copyTo of the wrong kind of entry is refused, naming the keys
+	bad = write_config(tmp_path / "bad.yaml", {"numCams": 1, "videoFolder": str(tmp_path / "data")},
+		pico={"port": "X", "lengths": [{"name": "x", "seconds": 60, "copy": "y"}]})
+	with pytest.raises(Exception, match="copyTo: <optional>"):
+		panel.Panel(str(bad), browser=False)
+
+
+def test_the_page_fills_the_copy_box_from_the_length():
+	from campy import panelpage
+	page = panelpage.PAGE
+	assert "if(L0.copyTo) $(\"copyto\").value = L0.copyTo; else if(copyLen) $(\"copyto\").value = s.fields.copy_to||\"\";" in page
+
+
 def test_the_pages_text_is_in_rem_and_can_be_made_larger():
 	# Sizes in rem, so the browser's own font size and the page's Text size buttons scale every text; none in px, and
 	# nothing below 15 px at the browser's default (0.9375rem)

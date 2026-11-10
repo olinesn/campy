@@ -1013,7 +1013,7 @@ class Panel:
 		room for both. None without a destination, for an rsync address,
 		or when either drive can't be told.
 		"""
-		to = self.CopyTo().strip()
+		to = self.CopyDefault().strip()
 		if not getattr(self, "need", None) or not to or Remote(to) or not os.path.isdir(to):
 			return None
 		folder, need_b = self.need
@@ -1250,6 +1250,14 @@ class Panel:
 		copy = (self.config.post or {}).get("copy") or {}
 		return str(copy.get("to") or "") if isinstance(copy, dict) else str(copy or "")
 
+	def CopyDefault(self):
+		# What the page's box holds for the chosen length: its own copyTo (pico.lengths), else CopyTo's
+		if self.devices is not None and self.devices.pico is not None:
+			chosen = next((l for l in self.lengths if l["seconds"] == self.length), None)
+			if chosen and chosen.get("copyTo"):
+				return chosen["copyTo"]
+		return self.CopyTo()
+
 	def Viewer(self):
 		s = self.session
 		if s is None or s.state != "recording":
@@ -1307,7 +1315,7 @@ class Panel:
 			"devices": (launcher or {}).get("devices") if s is not None and s.folder else
 				self.devices.Status() if self.devices is not None else None,
 			"lengths": [{"name": l["name"], "seconds": l["seconds"], "text": l["plan"].get("text") or l["plan"].get("error"),
-				"videoFolder": l["videoFolder"]} for l in self.lengths], "length": self.length,
+				"videoFolder": l["videoFolder"], "copyTo": l.get("copyTo")} for l in self.lengths], "length": self.length,
 			"bouts": self.BoutStatus(),
 			"launcher": launcher, "health": self.health.snapshot, "recording": recording,
 			"models": self.picker.Status() if getattr(self, "picker", None) is not None else None,
@@ -1371,7 +1379,7 @@ class Panel:
 		tos = [self.copy_to] if self.session is not None and self.copy_to else []
 		tos += [j["to"] for j in self.copies.Status()["jobs"] if j["state"] in ("waiting", "copying")]
 		if not tos and self.session is None:
-			tos = [self.CopyTo()]
+			tos = [self.CopyDefault()]
 		now = time.monotonic()
 		for to in dict.fromkeys(str(t or "").strip() for t in tos): # in order, once each
 			if not to or Remote(to):

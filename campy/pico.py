@@ -51,7 +51,8 @@ KEYS = {
 	"state_dir": ((str,), "", "chronic_control.py --state-dir: its status.json and session.out (default: its own, "
 		"~/.chronic_control)"),
 	"lengths": ((list,), [], "the session lengths the panel offers: [{name: \"6 days\", seconds: 518400}, {name: "
-		"\"Gate test\", seconds: 900, videoFolder: \"C:\\\\data\\\\gatetest\"}]; the first is the default"),
+		"\"Gate test\", seconds: 900, videoFolder: \"C:\\\\data\\\\gatetest\"}]; the first is the default. copyTo "
+		"(optional): the folder the panel's \"Copy each recording to\" box fills in when that length is picked"),
 	"set": ((dict,), {}, "chronic_control.py's other settings for every session: {INTERVAL: 300}"),
 	"gate_check": ((bool,), True, "blink the gate once before campy starts, and refuse to start if SpikeGLX opens no "
 		"file for it (needs a spikeglx: section)"),
@@ -188,11 +189,13 @@ class Pico:
 		self.lengths = []
 		for n, length in enumerate(section["lengths"]):
 			if not isinstance(length, dict) or not isinstance(length.get("seconds"), int) or length["seconds"] <= 0 or \
-					set(length) - {"name", "seconds", "videoFolder"}:
-				raise PicoError("pico.lengths: each is {{name: ..., seconds: <a whole number>, videoFolder: <optional>}}; "
+					set(length) - {"name", "seconds", "videoFolder", "copyTo"}:
+				raise PicoError("pico.lengths: each is {{name: ..., seconds: <a whole number>, videoFolder: <optional>, "
+					"copyTo: <optional>}}; "
 					"number {} is {!r}.".format(n + 1, length))
 			self.lengths.append({"name": str(length.get("name") or Clock(length["seconds"])),
-				"seconds": length["seconds"], "videoFolder": length.get("videoFolder")})
+				"seconds": length["seconds"], "videoFolder": length.get("videoFolder"),
+				"copyTo": str(length["copyTo"]).strip() if length.get("copyTo") else None})
 		for key, value in section["set"].items():
 			if key not in self.module.SETTINGS or key == "TOTAL_DURATION":
 				raise PicoError("pico.set: {} is not one of chronic_control.py's settings{} ({}).".format(key,
