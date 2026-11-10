@@ -62,7 +62,7 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
 .boutpic{display:grid;align-items:center;margin:.375rem 0;row-gap:.25rem}.boutpic .lab{padding-right:.625rem;line-height:1.2;font-size:.9375rem}
 .boutpic .lab b{font-weight:500;color:var(--text)}.boutpic svg{display:block;width:100%;height:2.25rem;grid-column:2/-1}
 .boutpic .dur{font-size:.9375rem;line-height:1.25;text-align:center;padding:0 2px;min-width:0;color:var(--muted)}
-.boutpic .zoom{color:var(--accent)}.boutpic .ledpw{color:var(--text);white-space:nowrap}
+.boutpic .zoom{color:var(--accent)}.boutpic .nw{white-space:nowrap}.boutpic .ledpw{color:var(--text);white-space:nowrap}
 .boutpic .axis{grid-column:2/-1;position:relative;height:1.9em;font-size:.9375rem;color:var(--muted);border-top:1px solid var(--muted)}
 .boutpic .axis i{position:absolute;top:0;width:1px;height:.4em;background:var(--muted);transform:translateX(-50%)}
 .boutpic .axis i:first-child{transform:none}.boutpic .axis i:nth-last-of-type(1){transform:translateX(-100%)}
@@ -516,7 +516,10 @@ function boutPicture(D){
     html += '<div class="lab"><b>'+esc(r.name)+'</b>'+(r.pin ? '<br><span class="muted">'+esc(r.pin)+'</span>' : '')+
       (pw ? '<br><span class="ledpw">'+(+pw.driver_mA)+'\u00a0mA \u00b7 '+(+pw.fiber_tip_uW)+'\u00a0\u00b5W</span>' : '')+'</div>' +
       svg((i >= 2 ? fill(spans, colour) : "") + line(wave(spans), colour)); });
-  const ledText = L.map((l, i) => (i && l.on - L[i-1].off > 1e-6 ? secs(l.on - L[i-1].off)+" dark, " : "")+l.name+" "+secs(l.off - l.on)).join(", ");
+  // The LEDs' stretch in words: "yellow 50 ms", "150 ms dark", "blue 50 ms", each kept on one line
+  const ledParts = []; L.forEach((l, i) => { if(i && l.on - L[i-1].off > 1e-6) ledParts.push(secs(l.on - L[i-1].off)+" dark");
+    ledParts.push(l.name+" "+secs(l.off - l.on)); });
+  const ledText = ledParts.join(", ");
   // The time axis, in seconds from the gate's opening: each stretch's edge (the LEDs' once, at their middle); labels
   // that would overlap are hidden once drawn (0 s and the two ends kept first)
   const ticks = [[-5, 0], [0, starts[1]], [b.camera[0], starts[2]], [L[0].on, starts[3] + weights[3]*50], [b.camera[1], starts[5]],
@@ -525,7 +528,7 @@ function boutPicture(D){
     '<span class="'+(i == 0 ? "first" : i == all.length-1 ? "last" : "")+(t == 0 ? " zero" : "")+'" style="left:'+(at/W*100).toFixed(2)+'%">'+
     (t < 0 ? "\u2212"+secs(-t) : t == 0 ? "0\u00a0s" : secs(t))+'</span>').join("");
   html += '<div class="lab muted">time</div><div class="axis">'+axis+'</div>' +
-    '<div class="dur zoom" style="grid-column:4 / 7">'+esc(ledText)+'</div>';
+    '<div class="dur zoom" style="grid-column:4 / 7">'+ledParts.map(t => '<span class="nw">'+esc(t)+'</span>').join(", ")+'</div>';
   const box = $("boutpic"); box.style.gridTemplateColumns = "auto " + weights.map(w => w+"fr").join(" "); box.innerHTML = html;
   const kept = [], marks = [...box.querySelectorAll(".axis span")];
   [...marks.filter(m => m.classList.contains("zero")), marks[0], marks[marks.length-1], ...marks].forEach(m => {
