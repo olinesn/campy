@@ -48,18 +48,30 @@ if ($Install) {
 
 $svc = Get-CimInstance Win32_Service -Filter "Name='DellTechHub'"
 if (-not $svc) { if ($Install) { 'DellTechHub is not installed on this PC: nothing to do.' }; return }
+$noHold = ''
 if (Test-Path $Hold) {
 	$until = [datetime]::MinValue
-	if ([datetime]::TryParse((Get-Content $Hold -Raw).Trim(), [ref]$until) -and (Get-Date) -lt $until) {
-		Say "$(Get-Date -Format s) held until $($until.ToString('s')) ($Hold): left DellTechHub $($svc.State), start $($svc.StartMode)"
-		return
+	$text = "$(Get-Content $Hold -Raw)".Trim()   # an empty file reads as $null: "$(...)" makes it '' (no hold), not an error
+	if ([datetime]::TryParse($text, [ref]$until)) {
+		if ((Get-Date) -lt $until) {
+			Say "$(Get-Date -Format s) held until $($until.ToString('s')) ($Hold): left DellTechHub $($svc.State), start $($svc.StartMode)"
+			return
+		}
+	} else {
+		$noHold = "; $Hold is empty or not a date ('$text'): no hold"   # said with what this run did, if anything
 	}
 }
 $all = Get-CimInstance Win32_Process
+# A child only if it started after its parent: a process id is used again once its process ends, so a process whose
+# parent ended (Explorer's, userinit.exe) can name the id DellTechHub has now, and isn't DellTechHub's
+$born = @{}
+foreach ($p in $all) { $born[[int]$p.ProcessId] = $p.CreationDate }
 $tree = @($svc.ProcessId | Where-Object { $_ })
 $more = [bool]$tree
 while ($more) {
-	$kids = @($all | Where-Object { $tree -contains $_.ParentProcessId -and $tree -notcontains $_.ProcessId } | ForEach-Object { $_.ProcessId })
+	$kids = @($all | Where-Object { $tree -contains $_.ParentProcessId -and $tree -notcontains $_.ProcessId -and
+		$_.CreationDate -and $born[[int]$_.ParentProcessId] -and $_.CreationDate -gt $born[[int]$_.ParentProcessId] } |
+		ForEach-Object { $_.ProcessId })
 	$more = $kids.Count -gt 0; $tree += $kids
 }
 $names = @($all | Where-Object { $_.Name -like 'Dell.TechHub*' } | ForEach-Object { $_.ProcessId })
@@ -72,4 +84,4 @@ foreach ($id in $kill) { Stop-Process -Id $id -Force -ErrorAction SilentlyContin
 Start-Sleep -Seconds 3
 $now = Get-Service DellTechHub
 $left = (Get-Process Dell.TechHub* -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) -join ' '
-Say "$(Get-Date -Format s) found DellTechHub $($svc.State), start $($svc.StartMode); now $($now.Status), start $($now.StartType); ended: $what$(if ($left) { "; still running: $left" })"
+Say "$(Get-Date -Format s) found DellTechHub $($svc.State), start $($svc.StartMode); now $($now.Status), start $($now.StartType); ended: $what$(if ($left) { "; still running: $left" })$noHold"

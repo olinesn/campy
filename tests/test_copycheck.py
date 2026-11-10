@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -390,3 +391,128 @@ def test_a_check_thread_is_lowered_as_far_as_the_system_lets_it(tmp_path):
 		assert got["nice"] == 19
 	if "priority" in got:
 		assert got["priority"] < 0 # below normal: idle (-15), or background mode's own
+
+
+# ------------------------------------------------------------------ review fixes (10 November)
+
+def test_a_copy_onto_the_recording_itself_is_refused_and_nothing_deleted(tmp_path):
+	# A recording D:\data\rec1 copied --to D:\data: the copy's folder is the recording itself, and every file would be
+	# compared with itself and pass. Refused, before anything is copied or deleted
+	folder = recording(tmp_path, "2026-11-10_14-00-00")
+	before = contents(folder)
+	parent = os.path.dirname(folder)
+	code = post.Main([folder, "--only", "copy", "--to", parent, "--delete-after-verify"])
+	assert code == 1 and contents(folder) == before
+	step = post.Load(folder)["steps"]["copy"]
+	assert step["state"] == "failed" and "is the recording's own folder" in step["message"], step
+	assert "nothing was copied, and nothing deleted" in step["message"] and "files" not in step
+	# Into the recording itself (a copy inside it): refused too, nothing made in it
+	code = post.Main([folder, "--only", "copy", "--to", folder, "--delete-after-verify", "--force"])
+	assert code == 1 and contents(folder) == before
+	assert not os.path.exists(os.path.join(folder, "2026-11-10_14-00-00"))
+	assert "is the recording's own folder, or inside it" in post.Load(folder)["steps"]["copy"]["message"]
+
+
+def test_a_copy_onto_the_recording_through_another_path_is_refused(tmp_path, monkeypatch):
+	# The same folder by another name: a link (realpath sees through it), or a network share of this disk (it can't:
+	# os.path.samefile compares the folders themselves)
+	folder = recording(tmp_path, "2026-11-10_14-10-00")
+	alias = tmp_path / "alias"
+	try:
+		os.symlink(os.path.dirname(folder), str(alias), target_is_directory=True)
+	except (OSError, NotImplementedError):
+		pytest.skip("this system can't make a link here")
+	assert post.SelfCopy(folder, str(alias / "2026-11-10_14-10-00"))
+	monkeypatch.setattr(post.os.path, "realpath", lambda p: os.path.abspath(p)) # as a share would look
+	assert post.Within(str(alias / "2026-11-10_14-10-00"), folder)
+	assert post.Within(str(alias / "2026-11-10_14-10-00" / "logs" / "deeper"), folder) # inside it, not made yet
+	assert "holds the recording's own folder" in post.SelfCopy(folder, str(tmp_path / "rec"))
+	assert post.SelfCopy(folder, str(tmp_path / "share" / "2026-11-10_14-10-00")) is None
+	assert not post.Within(str(tmp_path / "rec2"), str(tmp_path / "rec")) # a name that only starts the same
+	sent = []
+	queue = queue_with(sent)
+	queue.Add(folder, str(alias), delete=True) # the panel's copies get it too
+	job = finished(queue)
+	assert job["state"] == "failed" and "recording's own folder" in job["message"], job
+	assert os.path.isdir(folder) and len(sent) == 1 and "Its folder is kept" in sent[0][1]
+
+
+def test_the_panel_refuses_the_folder_the_chosen_length_records_into(tmp_path):
+	# A Pico length's own videoFolder (the panel's RecordsInto), followed through a link too
+	into = tmp_path / "chronic"
+	into.mkdir()
+	assert "where the recordings are made" in copyqueue.Problem(str(into), str(into))
+	try:
+		os.symlink(str(into), str(tmp_path / "link"), target_is_directory=True)
+	except (OSError, NotImplementedError):
+		return
+	assert "where the recordings are made" in copyqueue.Problem(str(tmp_path / "link"), str(into))
+
+
+def fake_rsync(monkeypatch):
+	# An rsync address: rsync "runs" and succeeds; nothing reads the copy back
+	import subprocess
+	monkeypatch.setattr(post.shutil, "which", lambda name: "/usr/bin/rsync" if name == "rsync" else None)
+	monkeypatch.setattr(post, "RunCopier", lambda command, started=None: subprocess.CompletedProcess(command, 0, "", ""))
+
+
+def test_an_rsync_copy_with_the_box_ticked_says_it_wasnt_checked(tmp_path, monkeypatch):
+	fake_rsync(monkeypatch)
+	folder = recording(tmp_path, "2026-11-10_14-20-00")
+	before = contents(folder)
+	sent = []
+	queue = queue_with(sent)
+	queue.Add(folder, "me@server:/data", delete=True)
+	job = finished(queue)
+	assert job["state"] == "done" and contents(folder) == before, job
+	assert "the copy wasn't checked (an rsync address isn't read back), so nothing was deleted" in job["local"]
+	assert len(sent) == 1, sent
+	assert "wasn't checked" in sent[0][1] and "kept on this computer" in sent[0][1]
+	assert "and checked" not in sent[0][1] and "by hand" not in sent[0][1]
+
+
+def test_post_by_hand_to_an_rsync_address_says_the_copy_wasnt_checked(tmp_path, monkeypatch, capsys):
+	fake_rsync(monkeypatch)
+	folder = recording(tmp_path, "2026-11-10_14-30-00")
+	post.Main([folder, "--only", "copy", "--to", "me@server:/data", "--delete-after-verify"])
+	err = capsys.readouterr().err
+	assert os.path.isdir(folder)
+	assert "nothing deleted: the copy wasn't checked (an rsync address isn't read back)" in err
+	assert "done already" not in err
+
+
+def test_closing_while_a_checked_copy_deletes_lets_it_end(tmp_path, monkeypatch):
+	# The panel closes (Close now, Ctrl-C) while a copy already checked deletes its folder: not marked left (that
+	# made the deleted folder again, with a post.json saying it wasn't copied, and kept its alert from going out)
+	share = tmp_path / "share"
+	share.mkdir()
+	folder = recording(tmp_path, "2026-11-10_14-40-00")
+	entered, release = threading.Event(), threading.Event()
+	real = post.FinishCopy
+
+	def slow(*args, **kwargs):
+		entered.set()
+		release.wait(20)
+		return real(*args, **kwargs)
+	monkeypatch.setattr(post, "FinishCopy", slow)
+	sent = []
+	queue = queue_with(sent)
+	queue.Add(folder, str(share), delete=True)
+	assert entered.wait(30)
+	assert queue.Leave() == [] and len(queue.Pending()) == 1
+	from test_copyqueue import bare_panel
+	p = bare_panel(queue)
+	assert p.Close(leave=True) is None and p.close_when_copied and not p.closing # closes once it has ended
+	release.set()
+	job = finished(queue)
+	assert job["state"] == "done" and "deleted from this computer" in job["message"], job
+	assert not os.path.exists(folder) # not made again
+	assert contents(str(share / "2026-11-10_14-40-00"))
+	assert sent == []
+
+
+def test_a_result_is_never_written_into_a_folder_that_is_gone(tmp_path):
+	gone = tmp_path / "rec" / "2026-11-10_14-50-00"
+	job = copyqueue.Job(str(gone), str(tmp_path / "share"))
+	copyqueue.CopyQueue.Record(job, "skipped", "the panel closed")
+	assert not gone.exists()
