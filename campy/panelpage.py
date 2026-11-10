@@ -472,6 +472,8 @@ let boutSig = "", ledPower = null; // ledPower: the status's led_power, for the 
 function ledPowerOf(colour){
   const leds = ((ledPower||{}).last||{}).leds || [];
   return leds.find(l => String(l.led).toLowerCase().includes(colour)) || null; }
+// An LED row's name in panel.led_power ("Blue LED (465 nm)" for blue), for its wavelength, or null
+function ledNameOf(colour){ return ((ledPower||{}).leds || []).find(n => String(n).toLowerCase().includes(colour)) || null; }
 // The drawing of a bout: a row for each of the Pico's outputs, its time cut into stretches (5 s before the gate
 // opens, with every output low; gate open to camera on, camera to the LEDs, the LEDs, LEDs to camera off, camera off
 // to gate closed, to the next bout). Each stretch has its width whatever it lasts (a cartoon), with the time axis
@@ -513,8 +515,10 @@ function boutPicture(D){
   const signals = [[[b.gate], "var(--gate)"], [pulseSpans, "var(--text)"], [led("blue"), LED_COLOUR.blue], [led("yellow"), LED_COLOUR.yellow]];
   let html = "";
   rows.forEach((r, i) => { const [spans, colour] = signals[i];
-    const pw = i >= 2 ? ledPowerOf(i == 2 ? "blue" : "yellow") : null;
-    html += '<div class="lab"><b>'+esc(r.name)+'</b>'+(r.pin ? '<br><span class="muted">'+esc(r.pin)+'</span>' : '')+
+    const led = i >= 2 ? (i == 2 ? "blue" : "yellow") : null, pw = led ? ledPowerOf(led) : null, full = led ? ledNameOf(led) : null;
+    const nm = full && /(\d{3})\s*nm/i.exec(full); // the wavelength, and its colour (the line's, without one)
+    const mark = !led ? "" : full && nmColour(full) ? swatch(full) : '<i class="sw" style="background:'+colour+'"></i>';
+    html += '<div class="lab"><b>'+mark+esc(r.name)+'</b>'+(r.pin || nm ? '<br><span class="muted">'+esc([r.pin, nm ? nm[1]+"\u00a0nm" : ""].filter(x => x).join(" \u00b7 "))+'</span>' : '')+
       (pw ? '<br><span class="ledpw">'+(+pw.driver_mA)+'\u00a0mA \u00b7 '+(+pw.fiber_tip_uW)+'\u00a0\u00b5W</span>' : '')+'</div>' +
       svg((i >= 2 ? fill(spans, colour) : "") + line(wave(spans), colour)); });
   // The LEDs' stretch in words: "yellow 50 ms", "150 ms dark", "blue 50 ms", each kept on one line

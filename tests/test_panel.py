@@ -807,6 +807,8 @@ def test_the_page_asks_for_the_led_powers_at_start():
 	assert "if((last||{}).led_power) return askLeds(start);" in page and 'id="ledlast"' in page
 	# Each LED's colour from the wavelength in its name, beside it in the dialog
 	assert "function nmColour(name)" in page and "'<b>'+swatch(n)+esc(n)+'</b>" in page
+	# ... and in the bout drawing's LED rows, with the wavelength by the pin
+	assert "full && nmColour(full) ? swatch(full)" in page and "ledNameOf(led)" in page
 
 
 def test_the_pages_text_is_in_rem_and_can_be_made_larger():
