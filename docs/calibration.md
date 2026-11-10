@@ -52,4 +52,29 @@ The first one on that box (9 November, 8 cameras, AV1) took 68 s: the board in 2
 
 It needs Playwright's Python package in campy's environment (`pip install playwright`; it drives the installed Chrome, so no browser download) and a calibrat3 checkout. Chrome, not Playwright's own Chromium, because it decodes the recordings' H.265 and AV1. On the Mac, on the 4-camera calibration recording of 26 October (60 s at 10 fps, H.265), it took 37 s and gave the same calibration as calibrat3 run by hand: the board in 281/277/277/277 of 300 frames, each camera's error 0.07–0.09 px, and the same focal lengths and distances between cameras, to 0.1 mm.
 
+### On every rig: once, in the rig profile
+
+Put the `calibrate` step in the rig profile (`~/.campy/configs/<rig>.yaml`), not in each calibration config. The step runs only for calibration recordings (a `videoFilename` with "calibration" in it) and skips every other recording, so every calibration experiment on that computer then makes its `calibration.toml` by itself:
+
+```yaml
+# ~/.campy/configs/<rig>.yaml
+post:
+  calibrate:
+    calibrat3: 'C:\campy_data\live\calibrat3'
+```
+
+Each computer that records needs, once:
+1. **A calibrat3 checkout**, `git clone https://github.com/talmolab/calibrat3` (or from a git bundle, on a computer without GitHub access), in the folder the profile names.
+2. **Playwright's Python package** in campy's recording environment: `pip install playwright`. It drives the installed Chrome, so there is no browser to download.
+3. **Google Chrome**, installed as usual.
+
+**Pin each camera's name to its serial number first** (`cameraSerials` in the rig profile, in the order of `cameraNames`). A calibration holds for the names it was recorded with, and without `cameraSerials` campy names the cameras in the order the camera driver lists them, which can change from one recording to the next. On the Dell Pro Max Slim FCS1250 on 10 November 2026, three recordings that day and the ones of 26 October named the four cameras in three different orders. A live recording whose order differed from its calibration's would have put each camera's 2D poses through another camera's position.
+
+**The panel checks it before Start.** For a calibration recording the checks list has a **Calibration** line:
+- **Green:** calibrat3 will make `calibration.toml` after the recording.
+- **Red:** a piece is missing (the checkout, Playwright or Chrome). The line names it, and the start is stopped: otherwise the recording would be made and its calibration not.
+- **Yellow:** `post: calibrate:` isn't set anywhere. The videos are recorded, and the calibration is left to be made by hand.
+
+**The Dell Pro Max Slim FCS1250, 10 November 2026** (4 FLIR Blackfly S, H.265 on Quick Sync, the Pico's pulses at 10 fps for 60 s): the first calibration made by the panel itself on that computer, headless Chrome decoding the H.265 videos on Windows. It took 47 s: the board in 251–253 of 300 sampled frames on each camera, each camera's reprojection error 0.07–0.08 px at the median and 0.20–0.23 px at p95. Against the calibration of 26 October, once each camera was compared under its own serial number: the lenses agreed (focal lengths within 0.5%, image centres within 2.2 px), and so did the distances between three of the cameras (within 1.4 mm). The fourth camera's distances to the others had changed by 5–15 cm: it had been moved since, and the October calibration no longer held for it.
+
 Problems and their fixes are in [Troubleshooting](troubleshooting.md).
