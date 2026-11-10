@@ -13,48 +13,62 @@ PAGE = r"""<!doctype html>
 <title>campy session</title><link rel="icon" type="image/png" href="@ICON@">
 <style>
 :root{--bg:#f7f6f2;--card:#fff;--soft:#f0eee8;--text:#1f1e1c;--muted:#6b6a65;--line:#e2e0d9;--ok:#2f6d12;--okbg:#e6f1dc;
---warn:#80500b;--warnbg:#fbefd8;--bad:#a32d2d;--badbg:#fbe9e9;--accent:#185fa5}
+--warn:#80500b;--warnbg:#fbefd8;--bad:#a32d2d;--badbg:#fbe9e9;--accent:#185fa5;--blueled:#1f6fd6;--yellowled:#b88a00;--gate:#6b4fbb}
 @media (prefers-color-scheme:dark){:root{--bg:#1b1b1a;--card:#252524;--soft:#2e2e2c;--text:#ecebe6;--muted:#a3a29c;
---line:#3a3a37;--ok:#9fd27a;--okbg:#22351a;--warn:#f2c46f;--warnbg:#3a2c10;--bad:#f2a0a0;--badbg:#3d1d1d;--accent:#85b7eb}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:1100px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:12px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
-.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:200px}
-.muted{color:var(--muted)}.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
-.tag{display:inline-block;padding:1px 8px;border-radius:6px;font-size:12px}.ok{background:var(--okbg);color:var(--ok)}
+--line:#3a3a37;--ok:#9fd27a;--okbg:#22351a;--warn:#f2c46f;--warnbg:#3a2c10;--bad:#f2a0a0;--badbg:#3d1d1d;--accent:#85b7eb;
+--blueled:#6aa8ff;--yellowled:#f5d04a;--gate:#c0a8ff}}
+/* Sizes in rem: the browser's own font size (Settings > Appearance > Font size) and the page's Text size buttons scale
+   all of it, and the layout reflows rather than overflowing. Nothing smaller than 15 px at the browser's default. */
+html{font-size:100%}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:1.0625rem/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:76rem;margin:0 auto;padding:1rem;display:flex;flex-direction:column;gap:.875rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:.875rem 1rem}
+.row{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:12rem}
+.muted{color:var(--muted)}.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.9375rem}
+.note,.hint{font-size:.9375rem}.hint{min-height:1.4em}
+.tag{display:inline-block;padding:1px .5em;border-radius:6px;font-size:.9375rem}.ok{background:var(--okbg);color:var(--ok)}
 .warn{background:var(--warnbg);color:var(--warn)}.bad{background:var(--badbg);color:var(--bad)}
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
-.tile{background:var(--soft);border-radius:8px;padding:10px 12px}.big{font-size:20px;font-weight:500}
-.cams{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:.625rem}
+.tile{background:var(--soft);border-radius:8px;padding:.625rem .75rem}.big{font-size:1.75rem;font-weight:500;line-height:1.25}
+.cams{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:.625rem}
 .cam img,.cam .ph{width:100%;aspect-ratio:5/4;object-fit:contain;background:var(--soft);border-radius:6px;display:block}
-.cam .ph{display:flex;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:12px;padding:8px;box-sizing:border-box}
+.cam .ph{display:flex;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:.9375rem;padding:.5rem;box-sizing:border-box}
 .cam [hidden]{display:none}
-.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
-button{font:inherit;padding:6px 14px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer}
-button:hover{background:var(--soft)}button.stop{color:var(--bad);border-color:var(--bad)}button.go{color:var(--ok);border-color:var(--ok)}
-input{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
-label{font-size:12px;color:var(--muted)}h2{font-size:15px;font-weight:500;margin:0 0 6px}h3{font-size:13px;font-weight:600;margin:0 0 4px}.logo{width:44px;height:44px;flex:none;display:block}.okmsg{color:var(--ok);margin-left:8px}.gone{border-left:4px solid var(--bad)}.version{text-align:right;font-size:12px;margin:-8px 2px -6px}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(22rem,100%),1fr));gap:.75rem}
+button{font:inherit;padding:.375em .875em;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer}
+button:hover{background:var(--soft)}button:disabled{opacity:.45;cursor:default;background:var(--card)}button.stop{color:var(--bad);border-color:var(--bad)}button.go{color:var(--ok);border-color:var(--ok)}
+input{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
+label{font-size:.9375rem;color:var(--muted)}h2{font-size:1.25rem;font-weight:500;margin:0 0 .375rem}h3{font-size:1.0625rem;font-weight:600;margin:0 0 .25rem}
+.logo{width:3rem;height:3rem;flex:none;display:block}.okmsg{color:var(--ok);margin-left:.5rem}.gone{border-left:4px solid var(--bad)}
+.topline{display:flex;gap:.75rem;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:-.5rem 2px -.375rem}
+.version{text-align:right;font-size:.9375rem}.textsize{display:flex;gap:.375rem;align-items:center;color:var(--muted);font-size:.9375rem}
+.textsize button{padding:.125em .625em;min-width:2.75em}
 .bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden}.bar div{height:6px;background:var(--ok)}
-.copybar{max-width:420px;margin:4px 0 2px}.copybar div{background:var(--accent)}
+.copybar{max-width:28rem;margin:4px 0 2px}.copybar div{background:var(--accent)}
 .bgcopy{border-left:4px solid var(--accent)}.bgcopy .copybar{max-width:none;height:10px}.bgcopy .copybar div{height:10px}
-.err{color:var(--bad);font-size:13px}ul{margin:4px 0 0;padding-left:18px}li{margin:2px 0}
-select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
-.steps li{list-style:none;margin-left:-18px}.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px}
-.modal .card{max-width:520px}[hidden]{display:none!important}
-.bgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:4px 10px;margin:4px 0}
-.types li{list-style:none;margin-left:-18px;display:flex;gap:8px;align-items:baseline;padding:3px 0;border-top:1px solid var(--line)}
-.types li span{flex:1}.star{padding:0 8px;font-size:16px;line-height:1.4;border:none;background:none;color:var(--accent)}
-.drive{display:flex;gap:10px;align-items:center}.drive svg{flex:none;display:block}.drives .drive{margin-top:6px;font-size:13px;line-height:1.3}
-.legend{font-size:11px;margin-top:2px}.legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin:0 3px 0 6px}.legend i:first-child{margin-left:0}
-.bgrid>div{display:flex;flex-direction:column;justify-content:flex-end}.bgrid input.changed{border-color:var(--accent);border-width:2px}details summary{cursor:pointer;font-size:13px;margin-top:6px}
+.err{color:var(--bad);font-size:1rem}ul{margin:.25rem 0 0;padding-left:1.25rem}li{margin:.25rem 0}
+select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
+.steps li{list-style:none;margin-left:-1.25rem}.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:1rem}
+.modal .card{max-width:36rem}[hidden]{display:none!important}
+.bgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:.25rem .75rem;margin:.25rem 0}
+.types li{list-style:none;margin-left:-1.25rem;display:flex;gap:.5rem;align-items:baseline;padding:.25rem 0;border-top:1px solid var(--line)}
+.types li span{flex:1}.star{padding:0 .5rem;font-size:1.25rem;line-height:1.4;border:none;background:none;color:var(--accent)}
+.drive{display:flex;gap:.625rem;align-items:center}.drive svg{flex:none;display:block;width:3.75rem;height:3.75rem}
+.drives .drive{margin-top:.5rem;font-size:1rem;line-height:1.35}.drives .drive svg{width:2.25rem;height:2.25rem}
+.legend{font-size:.9375rem;margin-top:.125rem}.legend i{display:inline-block;width:.7em;height:.7em;border-radius:2px;margin:0 .25em 0 .5em}.legend i:first-child{margin-left:0}
+.bgrid>div{display:flex;flex-direction:column;justify-content:flex-end}.bgrid input.changed{border-color:var(--accent);border-width:2px}details summary{cursor:pointer;font-size:1rem;margin-top:.375rem}
+.boutpic{display:grid;align-items:center;margin:.375rem 0;row-gap:.25rem}.boutpic .lab{padding-right:.625rem;line-height:1.2;font-size:.9375rem}
+.boutpic .lab b{font-weight:500;color:var(--text)}.boutpic svg{display:block;width:100%;height:2.25rem;grid-column:2/-1}
+.boutpic .dur{font-size:.9375rem;line-height:1.25;text-align:center;padding:0 2px;min-width:0;color:var(--muted)}
+.boutpic .zoom{color:var(--accent)}
 </style></head><body><main>
-<div id="version" class="mono muted version"></div>
+<div class="topline"><div class="textsize" role="group" aria-label="Text size">Text size <button id="smaller" title="Smaller text" aria-label="Smaller text">A&minus;</button><button id="larger" title="Larger text" aria-label="Larger text">A+</button><span id="textpct"></span></div><div id="version" class="mono muted version"></div></div>
 
 <div class="card row">
-  <img class="logo" src="@LOGO@" alt="LUC3D" width="44" height="44">
+  <img class="logo" src="@LOGO@" alt="LUC3D" width="48" height="48">
   <div class="grow"><div id="rig" style="font-weight:500">campy session</div><div id="where" class="mono muted"></div></div>
   <span id="state" class="tag">connecting</span>
-  <div id="clockbox" style="min-width:180px"><div id="clock"></div><div class="bar"><div id="progress" style="width:0"></div></div></div>
+  <div id="clockbox" style="min-width:12rem"><div id="clock"></div><div class="bar"><div id="progress" style="width:0"></div></div></div>
   <button id="stop" class="stop" hidden>Stop</button>
   <button id="close" hidden title="Close the panel (nothing is recording)">Close the panel</button>
 </div>
@@ -82,26 +96,28 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
         <label for="mset">Pair</label><select id="mset"></select>
         <label for="mcen">Centroid model</label><select id="mcen"></select><div class="muted" id="mcentext"></div>
         <label for="mins">Instance model</label><select id="mins"></select><div class="muted" id="minstext"></div>
-        <div class="row" style="margin-top:4px"><span id="mscan" class="muted grow" style="font-size:12px"></span><button id="mrescan" title="Look through panel.models' folders again">Look again</button></div></div>
+        <div class="row" style="margin-top:4px"><span id="mscan" class="muted grow note"></span><button id="mrescan" title="Look through panel.models' folders again">Look again</button></div></div>
       <div id="lengthbox" hidden><label for="length">Session length</label><select id="length"></select>
         <div class="muted" id="plantext"></div>
         <details id="boutbox" open hidden><summary>Bout settings <span id="boutsum" class="muted"></span></summary>
           <div id="boutfields" class="bgrid"></div>
-          <div class="muted" id="boutshape" style="font-size:12px"></div>
-          <div class="row" style="margin-top:4px"><span class="muted grow" style="font-size:12px">The config file isn't changed: these are for the recordings started here, and the next panel opened with this config starts from them. Each recording's session-config.yaml says which came from here.</span><button id="boutreset" hidden>Back to the config's</button></div></details>
+          <div class="muted note" id="boutshape"></div>
+          <div class="row" style="margin-top:4px"><span class="muted grow note">The config file isn't changed: these are for the recordings started here, and the next panel opened with this config starts from them. Each recording's session-config.yaml says which came from here.</span><button id="boutreset" hidden>Back to the config's</button></div></details>
         <label for="picoat">Start the Pico at (optional: otherwise a button, once every camera is ready)</label><input id="picoat" placeholder="7:20 PM"></div>
       <h3 style="margin-top:4px">Saved with the recording</h3>
       <label for="experiment">Experiment name</label><input id="experiment" placeholder="Social hierarchy, week 3">
       <label for="ids">Animal IDs, comma-separated</label><input id="ids" placeholder="M12, M14, M15">
       <label for="notes">Notes</label><input id="notes" placeholder="Cage 2, new bedding">
       <label for="copyto">Copy each recording to (optional)</label><input id="copyto" placeholder="\\server\share\my folder">
-      <div class="muted" style="font-size:12px">After each recording, its folder is copied into this one in the background, while the next records. Nothing is deleted. Empty: no copy.</div>
+      <div class="muted note">After each recording, its folder is copied into this one in the background, while the next records. Nothing is deleted. Empty: no copy.</div>
     </div>
     <div><div id="orphan" class="err" hidden></div><button id="stoporphan" class="stop" hidden>Stop that recording</button>
       <h3 style="margin-top:4px">Checks</h3>
-      <div class="muted" style="font-size:12px">Green: fine. Yellow: you can record, but read it. Red: it stops the start until it is fixed.</div>
+      <div class="muted note">Green: fine. Yellow: you can record, but read it. Red: it stops the start until it is fixed.</div>
       <ul id="checks"></ul><button id="start" class="go">Start recording</button>
-      <div id="starterr" class="err"></div></div>
+      <div id="starterr" class="err"></div>
+      <div id="boutpicbox" hidden><h3 style="margin-top:1rem">One bout, as the Pico runs it</h3>
+        <div id="boutpic" class="boutpic" role="img"></div><div id="boutpicnote" class="muted note"></div></div></div>
   </div>
 </div>
 
@@ -113,7 +129,7 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
   <div class="card"><h2 id="picotitle">Pico</h2><div id="picostate" class="muted">-</div>
     <div id="camready" style="margin-top:8px" hidden></div>
     <div id="picostart" class="row" style="margin-top:8px" hidden><button id="startpico" class="go">Start the Pico</button>
-      <input id="picoat2" style="width:110px" placeholder="7:20 PM"><button id="picoatbtn">At this time</button></div>
+      <input id="picoat2" style="width:8em" placeholder="7:20 PM"><button id="picoatbtn">At this time</button></div>
     <div id="picoerr" class="err"></div>
     <h2 style="margin-top:10px">SpikeGLX</h2><div id="sglxstate" class="muted">-</div></div>
 </div>
@@ -129,17 +145,17 @@ select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--lin
   </div>
   <div class="cams" id="cams" style="margin-bottom:12px"></div>
   <div class="two">
-    <div class="card"><h2>Warnings</h2><div class="muted" style="font-size:12px">Problems now, and the ones that went away (in grey). They stay in the recording's alerts.log.</div>
+    <div class="card"><h2>Warnings</h2><div class="muted note">Problems now, and the ones that went away (in grey). They stay in the recording's alerts.log.</div>
       <ul id="warnings"><li class="muted">None</li></ul></div>
     <div class="card"><h2>Bookmark</h2>
-      <div class="muted" style="font-size:12px">A moment to find later: type what happened and press Add. It is saved with its exact time and frame in the recording's bookmarks.csv.</div>
+      <div class="muted note">A moment to find later: type what happened and press Add. It is saved with its exact time and frame in the recording's bookmarks.csv.</div>
       <div class="row"><input id="note" class="grow" placeholder="Mouse 3 rears at the feeder"><button id="mark">Add</button></div>
       <ul id="marks"></ul><div id="markerr" class="err"></div>
       <div style="margin-top:8px"><button id="viewer" title="The window with every camera's picture. Closing it never affects the recording.">Open the viewer again</button></div></div>
   </div>
 </div>
 
-<div id="copies" class="card" hidden><h2>Copies</h2><div class="muted" style="font-size:12px">Each recording's folder, copied into the folder in "Copy each recording to", one at a time.</div><div id="copywait" class="muted" hidden></div>
+<div id="copies" class="card" hidden><h2>Copies</h2><div class="muted note">Each recording's folder, copied into the folder in "Copy each recording to", one at a time.</div><div id="copywait" class="muted" hidden></div>
   <ul id="copylist"></ul><button id="closenow" class="stop" hidden>Close now, without the copies</button></div>
 
 <div id="after" class="card" hidden><h2 id="aftertitle">After the recording</h2><div id="afterwhen" class="muted"></div>
@@ -180,7 +196,7 @@ function dur(s){ s = Math.max(0, Math.floor(s)); return Math.floor(s/60)+":"+Str
 let camsWereReady = false; const baseTitle = document.title;
 function chime(){ try { const a = new (window.AudioContext||window.webkitAudioContext)(); [0, 0.18].forEach((t, i) => { const o = a.createOscillator(), g = a.createGain(); o.frequency.value = i ? 1100 : 880; g.gain.setValueAtTime(0.15, a.currentTime+t); g.gain.exponentialRampToValueAtTime(0.001, a.currentTime+t+0.16); o.connect(g); g.connect(a.destination); o.start(a.currentTime+t); o.stop(a.currentTime+t+0.17); }); } catch(e) {} }
 // The disk tile's drives: a size as the page says it, and a donut of a drive (used, the rest of the plan's estimate, free)
-function size(gb){ return gb >= 999.5 ? (gb/1000).toFixed(1)+" TB" : Math.round(gb).toLocaleString()+" GB"; }
+function size(gb){ return gb >= 999.5 ? (gb/1000).toFixed(1)+"\u00a0TB" : Math.round(gb).toLocaleString()+"\u00a0GB"; } // never "1.0" and "TB" on two lines
 const PIE = {used: "var(--muted)", plan: "var(--warn)", short: "var(--bad)", free: "var(--ok)"};
 function pie(d, px){
   const t = d.total_gb, plan = Math.min(d.plan_gb || 0, d.free_gb), short = (d.plan_gb || 0) > d.free_gb;
@@ -435,16 +451,74 @@ function renderModels(M){
   $("mrescan").hidden = !M.roots.length;
 }
 let boutSig = "";
+// The drawing of a bout: a row for each of the Pico's outputs, its time cut into stretches (a short one with every
+// output low, before the gate opens; gate open to camera on,
+// camera to the LEDs, the LEDs, LEDs to camera off, camera off to gate closed, to the next bout). Each stretch has
+// its width whatever it lasts (a cartoon: its length is written under it), but the LEDs' stretch is to scale in ms,
+// with the camera's real pulses in it.
+const LED_COLOUR = {blue: "var(--blueled)", yellow: "var(--yellowled)"}; // the theme's: brighter in dark mode
+// A stretch's length, rounded as the drawing says it: "235 s", "4.5 s", "30 ms"
+function secs(t){ return t >= 9.95 ? Math.round(t).toLocaleString()+"\u00a0s" : t >= 0.9995 ? (+t.toFixed(1))+"\u00a0s" : (+(t*1000).toFixed(1))+"\u00a0ms"; }
+function boutPicture(D){
+  const b = D && D.bouts && D.bouts[0];
+  $("boutpicbox").hidden = !b || !b.leds.length; if($("boutpicbox").hidden) return;
+  const n = D.bouts[1], frame = 1 / D.fps, L = b.leds;
+  // The LEDs' stretch: from a frame and a half before the first LED to a frame and a half after the last (within the camera)
+  const z0 = Math.max(b.camera[0], L[0].on - 1.5*frame), z1 = Math.min(b.camera[1], L[L.length-1].off + 1.5*frame);
+  const cuts = [-1, 0, b.camera[0], z0, z1, b.camera[1], b.gate[1], D.interval_s]; // -1: the stretch before the gate opens
+  const weights = [0.5, 1, 1, 2.6, 1.8, 1, 1.3].map((w, i) => cuts[i+1] - cuts[i] > 1e-9 ? w : 0.12);
+  const W = weights.reduce((a, w) => a + w, 0) * 100, H = 30, hi = 5, lo = 25;
+  const starts = weights.reduce((a, w, i) => (a.push(a[i] + w*100), a), [0]);
+  const x = t => { let i = cuts.findIndex((c, k) => k > 0 && t <= c + 1e-9); if(i < 1) i = t <= 0 ? 1 : cuts.length - 1;
+    const a = cuts[i-1], c = cuts[i]; return starts[i-1] + (c > a ? (t - a) / (c - a) : 0) * weights[i-1]*100; };
+  const wave = spans => { let d = "M0,"+lo; spans.forEach(([on, off]) => { const a = x(on).toFixed(1), c = Math.max(x(off), x(on)+1.2).toFixed(1);
+    d += " L"+a+","+lo+" L"+a+","+hi+" L"+c+","+hi+" L"+c+","+lo; }); return d + " L"+W+","+lo; };
+  const fill = (spans, colour) => spans.map(([on, off]) => '<rect x="'+x(on).toFixed(1)+'" y="'+hi+'" width="'+Math.max(x(off)-x(on), 1.2).toFixed(1)+
+    '" height="'+(lo-hi)+'" fill="'+colour+'" opacity=".3"/>').join("");
+  // The camera's pulses: real ones in the LEDs' stretch, a comb (as many as fit) elsewhere
+  const pulses = [];
+  for(let k = Math.ceil((z0 - b.camera[0]) / frame - 1e-6); b.camera[0] + k*frame < z1 - 1e-9; k++) pulses.push(b.camera[0] + k*frame);
+  [[b.camera[0], z0, 2], [z1, b.camera[1], 4]].forEach(([a, c, i]) => { if(c - a <= 1e-9) return;
+    const m = Math.max(2, Math.round(weights[i] * 6)); for(let j = 0; j < m; j++) pulses.push(a + (c - a) * (j + 0.3) / m); });
+  const pulseSpans = pulses.map(t => [t, t + Math.min(D.pulse_s, frame/2)]);
+  const guide = '<rect x="'+starts[3]+'" y="0" width="'+(weights[3]*100)+'" height="'+H+'" fill="var(--soft)"/>' +
+    starts.slice(1, -1).map(v => '<line x1="'+v+'" x2="'+v+'" y1="0" y2="'+H+'" stroke="var(--line)" stroke-dasharray="2 2" vector-effect="non-scaling-stroke"/>').join("");
+  const svg = (inner, title) => '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" aria-hidden="true">'+guide+inner+'</svg>';
+  const line = (d, colour) => '<path d="'+d+'" fill="none" stroke="'+colour+'" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>';
+  const rows = D.rows.length == 4 ? D.rows : [{pin:"", name:"Record gate"}, {pin:"", name:"Camera"}, {pin:"", name:"Blue LED"}, {pin:"", name:"Yellow LED"}];
+  const led = name => L.filter(l => l.name == name).map(l => [l.on, l.off]);
+  const signals = [[[b.gate], "var(--gate)"], [pulseSpans, "var(--text)"], [led("blue"), LED_COLOUR.blue], [led("yellow"), LED_COLOUR.yellow]];
+  let html = "";
+  rows.forEach((r, i) => { const [spans, colour] = signals[i];
+    html += '<div class="lab"><b>'+esc(r.name)+'</b>'+(r.pin ? ' <span class="muted">'+esc(r.pin)+'</span>' : '')+'</div>' +
+      svg((i >= 2 ? fill(spans, colour) : "") + line(wave(spans), colour)); });
+  // Under each stretch, how long it lasts (the normal bout's too, where it differs)
+  const ledText = L.map((l, i) => (i && l.on - L[i-1].off > 1e-6 ? secs(l.on - L[i-1].off)+" dark, " : "")+l.name+" "+secs(l.off - l.on)).join(", ");
+  const durs = ["", secs(b.camera[0]), secs(L[0].on - b.camera[0]), ledText, secs(b.camera[1] - L[L.length-1].off),
+    secs(b.gate[1] - b.camera[1]), secs(D.interval_s - b.gate[1])];
+  html += '<div></div>' + durs.map((t, i) => '<div class="dur'+(i == 3 ? ' zoom' : '')+'">'+esc(t)+'</div>').join("");
+  const box = $("boutpic"); box.style.gridTemplateColumns = "auto " + weights.map(w => w+"fr").join(" "); box.innerHTML = html;
+  box.setAttribute("aria-label", "One bout: gate open "+secs(b.gate[1])+", camera from "+secs(b.camera[0])+" to "+secs(b.camera[1])+", "+ledText+
+    ", next bout at "+secs(D.interval_s));
+  $("boutpicnote").textContent = "From just before the gate opens (left) to the next bout (right edge, "+secs(D.interval_s)+" after the gate opened). The stretches aren't to scale "+
+    "(how long each lasts is under it), except the LEDs' (blue text, in ms), which shows the camera's real pulses at "+(+D.fps.toFixed(3))+" a second."+
+    (n ? " Drawn: a long bout. A normal bout's camera stops "+secs(n.camera[1] - n.leds[n.leds.length-1].off)+" after the LEDs, and its gate closes "+
+      secs(n.gate[1])+" after it opened." : " Every bout is long.");
+}
 function renderBouts(B){
-  $("boutbox").hidden = !B; if(!B) return;
+  $("boutbox").hidden = !B; if(!B){ $("boutpicbox").hidden = true; return; }
   const fields = B.fields || [];
   // The fields only when the settings change, so a field being typed in isn't redrawn under the cursor
   const sig = JSON.stringify(fields.map(f => f.key));
   if(sig != boutSig){
     boutSig = sig;
     $("boutfields").innerHTML = fields.map(f => '<div><label for="b_'+f.key+'" title="'+f.key+'">'+esc(f.label)+(f.unit ? " ("+esc(f.unit)+")" : "")+
-      '</label><input id="b_'+f.key+'" type="number" min="0" step="any" data-key="'+f.key+'"><div class="muted" id="bc_'+f.key+'" style="font-size:11px;min-height:16px"></div></div>').join("");
-    fields.forEach(f => { $("b_"+f.key).onchange = e => setBout(f.key, e.target.value); });
+      '</label><input id="b_'+f.key+'" type="number" min="0" step="any" data-key="'+f.key+'"><div class="muted hint" id="bc_'+f.key+'"></div></div>').join("");
+    // Sent once a field is left or Enter pressed, and also after a pause in typing, so the plan and the drawing follow it
+    fields.forEach(f => { const el = $("b_"+f.key); let wait = null;
+      el.onchange = e => { clearTimeout(wait); setBout(f.key, e.target.value); };
+      el.oninput = e => { clearTimeout(wait); const v = e.target.value.trim();
+        if(v !== "" && isFinite(Number(v))) wait = setTimeout(() => setBout(f.key, v), 700); }; });
   }
   fields.forEach(f => { const el = $("b_"+f.key); if(!el) return;
     if(document.activeElement != el) el.value = f.value;
@@ -453,6 +527,7 @@ function renderBouts(B){
   const n = (B.changed || []).length;
   $("boutsum").textContent = n ? "· "+n+" changed"+(B.remembered ? ", as the last panel left them ("+B.remembered+")" : " on this page") : "· as the config says";
   $("boutreset").hidden = !n;
+  boutPicture(B.error ? null : B.diagram);
   const b = B.bout;
   $("boutshape").innerHTML = B.error ? '<span class="err">'+esc(B.error)+'</span>' : !b ? "" : b.error ? '<span class="err">'+esc(b.error)+'</span>' :
     esc(b.text) + (b.warnings.length ? '<br><span class="err">Warning: '+esc(b.warnings.join("; "))+'</span>' : "");
@@ -566,6 +641,19 @@ let orphanArmed = 0;
 $("stoporphan").onclick = async () => { const e = await post("/stop-orphan", {now: !!orphanArmed});
   if(e) alert(e); else if(!orphanArmed){ orphanArmed = 1; $("stoporphan").textContent = "Stop now, without closing"; setTimeout(() => { orphanArmed = 0; $("stoporphan").textContent = "Stop that recording"; }, 5000); } tick(); };
 $("viewer").onclick = async () => { const e = await post("/viewer"); if(e) alert(e); };
+// Text size: a share of the browser's own font size (which scales the page too), kept by this browser for the next visit
+const TEXT_SIZES = [100, 115, 130, 150, 175, 200], TEXT_KEY = "campy-panel-text-size";
+function textSize(pct){
+  pct = TEXT_SIZES.includes(pct) ? pct : 100;
+  document.documentElement.style.fontSize = pct + "%"; $("textpct").textContent = pct == 100 ? "" : pct + "%";
+  $("smaller").disabled = pct == TEXT_SIZES[0]; $("larger").disabled = pct == TEXT_SIZES[TEXT_SIZES.length-1];
+  try { localStorage.setItem(TEXT_KEY, String(pct)); } catch(e) {}
+  return pct;
+}
+let textPct = 100; try { textPct = Number(localStorage.getItem(TEXT_KEY)) || 100; } catch(e) {}
+textPct = textSize(textPct);
+$("smaller").onclick = () => { textPct = textSize(TEXT_SIZES[Math.max(0, TEXT_SIZES.indexOf(textPct)-1)]); };
+$("larger").onclick = () => { textPct = textSize(TEXT_SIZES[Math.min(TEXT_SIZES.length-1, TEXT_SIZES.indexOf(textPct)+1)]); };
 tick(); setInterval(tick, 1000); setInterval(images, 1000);
 </script></body></html>
 """
@@ -575,9 +663,9 @@ PAGE = PAGE.replace("@LOGO@", panellogo.LOGO).replace("@ICON@", panellogo.ICON)
 
 # Served at / for an address with a key the panel doesn't know: a tab of an earlier panel, which the browser restored
 OLD_KEY = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>campy session: an old tab</title><style>body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+<title>campy session: an old tab</title><style>body{margin:0;font:1.0625rem/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
 background:#f7f6f2;color:#1f1e1c}@media (prefers-color-scheme:dark){body{background:#1b1b1a;color:#ecebe6}}
-main{max-width:640px;margin:15vh auto;padding:0 16px}h1{font-size:20px;font-weight:600}</style></head><body><main>
+main{max-width:640px;margin:15vh auto;padding:0 16px}h1{font-size:1.5rem;font-weight:600}</style></head><body><main>
 <h1>This tab belongs to a panel that was closed</h1>
 <p>Close this tab. The panel that is open now has its own page, in another tab. To open it again, use the
 <b>campy recording</b> icon.</p></main></body></html>"""

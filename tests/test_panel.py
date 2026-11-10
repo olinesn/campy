@@ -737,6 +737,27 @@ def test_the_copies_drive_has_room_for_the_recording(tmp_path, home, monkeypatch
 		assert not [c for c in p.Checks() if c[2:] == ("copy-disk",)]
 
 
+def test_the_pages_text_is_in_rem_and_can_be_made_larger():
+	# Sizes in rem, so the browser's own font size and the page's Text size buttons scale every text; none in px, and
+	# nothing below 15 px at the browser's default (0.9375rem)
+	from campy import panelpage
+	page = panelpage.PAGE
+	assert not re.search(r"font-size:\s*\d+(\.\d+)?px", page) and not re.search(r"font:\s*\d+px", page)
+	sizes = [float(v) for v in re.findall(r"font-size:\s*([\d.]+)rem", page)]
+	assert sizes and min(sizes) >= 0.9375
+	assert 'id="larger"' in page and 'id="smaller"' in page and "campy-panel-text-size" in page
+	assert "font:1.0625rem" in panelpage.OLD_KEY # the page an old tab gets
+
+
+def test_the_page_draws_a_bout_and_follows_its_settings():
+	# Under Start recording: a row for each of the Pico's outputs, drawn from the bout box's diagram; the settings sent
+	# after a pause in typing too, so the drawing follows them
+	from campy import panelpage
+	page = panelpage.PAGE
+	assert 'id="boutpicbox"' in page and "boutPicture(B.error ? null : B.diagram)" in page
+	assert "el.oninput" in page and "setTimeout(() => setBout(f.key, v), 700)" in page
+
+
 def test_the_page_draws_each_drive_as_a_pie():
 	from campy import panelpage
 	page = panelpage.PAGE

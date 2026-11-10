@@ -14,6 +14,8 @@ Double-click **campy recording** on the desktop. It is the rig's one icon, for e
 - A black window opens and fills with lines of text. Leave it open: it is the panel itself. You don't need to read it.
 - Your web browser opens the panel's page. If it doesn't, the black window's first lines show its address (`http://127.0.0.1:8765/?t=...`): copy the whole address, key included, into the browser.
 
+**Text too small?** The top left corner has **Text size** buttons: **A+** makes all the page's text larger (up to twice the size), **A−** smaller. The browser remembers the choice for the next time the page opens. The page also follows the browser's own text size (Settings > Appearance > Font size) and its zoom (Ctrl and +).
+
 The page's top right corner says which version of the software it runs, for example `v2.7.0 +96 · dev · 7bf012ec` (96 changes after the 2.7.0 release): give it when you report a problem. The page is only for this computer. Working over Remote Desktop, open it in the rig's own browser, inside the Remote Desktop window.
 
 On a rig that other tests share (most of them), the panel first waits for the rig to be free, then holds it for as long as it is open, so that no test runs while you record. While it holds the rig, Ctrl-C in the black window does nothing: close the panel with **Close the panel** at the top of the page once nothing is recording.
@@ -43,6 +45,12 @@ Next to them, under **Checks**, is a list of checks:
 - **warning** (yellow): you can still record, but read it. The usual one: less free disk space than usual.
 - On the ChronicRecord rig the disk line is what the chosen length needs instead, and a length that doesn't fit stops the start ([below](#on-the-chronicrecord-rig-the-pico-and-spikeglx)).
 - **stops the start** (red): the recording can't start until it is fixed. Ask the person who set up the rig.
+
+On the ChronicRecord rig, under **Start recording**, a drawing shows **one bout as the Pico runs it**: a row for each of its outputs (the record gate to SpikeGLX on GP2, the camera trigger on GP3, the blue LED on GP4 and the yellow LED on GP5), from just before the gate opens on the left to the next bout on the right. The stretches aren't drawn to scale, and how long each lasts is written under it. The LEDs' stretch is the exception: it is zoomed in to milliseconds and shows the camera's real pulses, so you can see which frames each LED lights, which LED comes first, and any dark gap between them. It follows the **Bout settings** as you change them: the page sends a setting when you leave its box or press Enter, and also after a short pause in typing.
+
+![One bout as the Pico runs it: the record gate, the camera's pulses, the blue LED and the yellow LED, with the LEDs' stretch zoomed in to milliseconds](images/panel-bout.png)
+
+*(The ChronicRecord config's bout before the fiber photometry settings: blue 30 ms, then yellow 30 ms. Dark theme.)*
 
 The recording's length is fixed by the rig's settings, and the page shows it (for example `2:00:00 each`).
 

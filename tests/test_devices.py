@@ -589,3 +589,25 @@ def test_the_rest_of_a_session_from_where_the_pico_is():
 	assert d.NeedLeft(4) is None
 	# A camera-only session: the gate never opens
 	assert a_pico(set={"CAMERA_ONLY": 60}).Spans(3600) == ([], [(0.0, 60.0)])
+
+
+def test_the_pages_drawing_of_a_bout():
+	# One long bout and one normal one, in seconds from the gate's opening, from the Pico's own plan: the page draws
+	# them (and redraws them as the bout settings change)
+	p = a_pico(set={"INTERVAL": 300})
+	d = p.PageStatus()["diagram"]
+	assert [(r["pin"], r["name"]) for r in d["rows"]] == [("GP2", "Record Gate"), ("GP3", "Camera"), ("GP4", "Blue LED"),
+		("GP5", "Yellow LED")]
+	assert (d["fps"], d["interval_s"], d["pulse_s"]) == (60.0, 300.0, 0.003)
+	long, normal = d["bouts"]
+	assert (long["long"], long["gate"], long["camera"][0], long["pulses"]) == (True, [0.0, 255.0], 5.0, 14400)
+	assert (normal["long"], normal["gate"], normal["pulses"]) == (False, [0.0, 25.0], 600)
+	# The LEDs in the order they light: blue 30 ms, then yellow at once, 1 ms before pulse 300
+	assert [(l["name"], l["on"], l["off"]) for l in long["leds"]] == [("blue", 9.999, 10.029), ("yellow", 10.029, 10.059)]
+	# The page's settings change it
+	assert p.Choose({"PULSE_WIDTH_C": 50, "STANDARD_STIM_DURATION": 20}) is None
+	d = p.PageStatus()["diagram"]
+	assert d["bouts"][0]["leds"][0]["off"] == 10.049 and d["bouts"][1]["gate"] == [0.0, 35.0]
+	# Every bout long: one bout drawn; settings that can't run: none
+	assert p.Choose({"EXTENDED_EVERY": 1}) is None and len(p.PageStatus()["diagram"]["bouts"]) == 1
+	assert p.Choose({"CAMERA_LEAD_IN": 20}) is None and p.PageStatus()["diagram"] is None
