@@ -57,7 +57,8 @@ KEYS = {
 		"~/.chronic_control)"),
 	"lengths": ((list,), [], "the session lengths the panel offers: [{name: \"6 days\", seconds: 518400}, {name: "
 		"\"Gate test\", seconds: 900, videoFolder: \"C:\\\\data\\\\gatetest\"}]; the first is the default. copyTo "
-		"(optional): the folder the panel's \"Copy each recording to\" box fills in when that length is picked"),
+		"(optional): the folder the panel's \"Copy each recording to\" box fills in when that length is picked (a folder "
+		"typed there instead is remembered for that length only)"),
 	"set": ((dict,), {}, "chronic_control.py's other settings for every session: {INTERVAL: 300}"),
 	"gate_check": ((bool,), True, "blink the gate once before campy starts, and refuse to start if SpikeGLX opens no "
 		"file for it (needs a spikeglx: section)"),
