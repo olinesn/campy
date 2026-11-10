@@ -204,10 +204,13 @@ class CopyQueue:
 		with self.lock:
 			if job.state == "left": # the panel closed while it copied: say so, not done
 				return
-			job.state, job.message, job.ended = state, message, time.time()
+			# Into post.json before the job counts as finished: whatever waits for Pending() to empty (the panel
+			# closing, a test) then finds the result there. Under the lock, so Leave can't mark it left meanwhile.
+			job.ended = time.time()
+			self.Record(job, state, message)
+			job.state, job.message = state, message
 			if state == "done":
 				job.done_bytes = job.bytes
-		self.Record(job, state, message)
 		self.say("Copy of {}: {}, {}.".format(job.name, state, message))
 
 	@staticmethod
