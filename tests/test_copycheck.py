@@ -134,6 +134,24 @@ def test_post_by_hand_never_deletes_a_recording_that_didnt_stop_cleanly(tmp_path
 	assert post.Load(folder)["steps"]["copy"]["state"] == "done"
 
 
+def test_an_unclean_recording_whose_logs_dont_copy_still_says_why_it_is_kept(tmp_path, monkeypatch):
+	# The second copy of post's logs failing doesn't hide the reason: still kept for the unclean stop, no alert
+	share = tmp_path / "share"
+	share.mkdir()
+	folder = recording(tmp_path, "2026-11-10_13-10-00", exit_code=1)
+	real = copycheck.CopyFiles
+	monkeypatch.setattr(copycheck, "CopyFiles", lambda folder, dest, names: (False, "the share went away", {})
+		if any(n.endswith("post.log") for n in names) else real(folder, dest, names))
+	sent = []
+	queue = queue_with(sent)
+	queue.Add(folder, str(share), delete=True)
+	job = finished(queue)
+	assert job["state"] == "done" and os.path.isdir(folder), job
+	assert "didn't stop cleanly" in job["message"] and "the share went away" in job["message"]
+	assert "didn't stop cleanly" in post.Load(folder)["steps"]["copy"]["local"]
+	assert sent == []
+
+
 def test_a_flipped_bit_is_caught_and_nothing_is_deleted(tmp_path, monkeypatch):
 	share = tmp_path / "share"
 	share.mkdir()

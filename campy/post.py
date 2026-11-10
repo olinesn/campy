@@ -788,11 +788,11 @@ def FinishCopy(folder, details, log, delete=False, busy=None):
 		RecordLocal(folder, text)
 	ok, why, snap = copycheck.CopyFiles(folder, dest, logs)
 	if not ok:
-		text = "kept here: post's logs didn't copy: {}".format(why) if delete else \
-			"post's logs didn't copy: {}".format(why)
+		text = "{}; post's logs didn't copy: {}".format(unclean, why) if unclean else \
+			"kept here: post's logs didn't copy: {}".format(why) if delete else "post's logs didn't copy: {}".format(why)
 		log.Say(text)
 		RecordLocal(folder, text)
-		return ("kept" if delete else "here"), text
+		return ("kept" if delete or unclean else "here"), text
 	if unclean:
 		log.Say(unclean)
 		RecordLocal(folder, unclean)
