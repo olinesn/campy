@@ -722,6 +722,28 @@ Every run tracked all 7,200 sets, skipped none and misaligned none. Times are in
 - **The A2000's power limit sets its clock.** Its median clock was 1,550–1,700 MHz, lower for the heavier models, and in the 7 November runs it was at its 70 W limit about 87% of the time. `campy-live` ran on the performance cores except CPU 1, which handles the card's interrupts.
 - **Live accuracy wasn't measured here.** Only on the earlier pair (7 November) was live compared with offline SLEAP on the same frames: within 0.03 px at the median ([Pose models](models.md#lighter-models-for-8-cameras-on-an-rtx-a2000-2-mice-79-november-2026)).
 
+### Two real mice at 60 fps, with a lighter pair (9 November 2026)
+
+The runs above replayed recorded video. On 9 November the same computer recorded its 8 real FLIR cameras at 60 fps, on the trigger, for 5 minutes, with 2 mice in the box, while `campy-live` tracked them in 3D on the A2000. The recording was started from the panel (`campy-session panel`), as the box's daily recordings are, and encoded AV1 with Quick Sync on the integrated GPU, so the A2000 only ran the models. campy was dev `2b72a38` with the panel changes of pull request 358, which don't touch tracking.
+
+- **The models**, trained for this box with two-mouse pseudo-labels: the centroid model at 0.25 scale with 16 filters, max stride 16 and output stride 2; the instance model on 320 px crops at 0.5 scale (160 px), with 24 filters, max stride 32 and output stride 2; 12 body points. That is the fine-tuned 160 px pair of the table above, not the 128 px pair now recommended there. TensorRT fp16, fixed crops, one CUDA graph a set (the defaults).
+- **The calibration**: the box's newest, from July. The box's older recordings and calibrations name some cameras differently, so before the run each camera's view was compared with the same-named camera's calibration video: all 8 matched.
+
+| 8 real cameras, 2 mice, 60 fps, 300 s | Result |
+|---|---|
+| Sets tracked | 18,000 of 18,000: none skipped, none misaligned |
+| Inference, median / p99 | 11.4 / 13.4 ms |
+| Last frame to keypoints, median / p99 / max | 14.3 / 16.7 / 21.6 ms |
+| Last frame to 3D pose, median / p99 / max | 19.1 / 25.3 / 31.0 ms |
+| 3D step alone, median / p99 | 4.5 / 10.1 ms |
+| Frames recorded | 18,000 of 18,000 per camera, none dropped; all 8 on the trigger's timeline, no pulse without a frame |
+| Both mice with a 3D pose | every set, with all 12 points |
+
+- **Every set, but little margin.** Frame to 2D poses reached 16.7 ms at p99, against 14.8 ms for the same pair in the replays above and the 13.3 ms aimed for: with real cameras the sets came about 2 ms later. So it fits, as the replays said, but too closely for comfort; the 128 px pair above, about 2 ms faster in the replays, is the one to use. The A2000's clock started at 1,882 MHz and settled at 1,440–1,575 MHz within the first minute, at its 70 W power limit (64 °C). Inference went from 10.5 to 11.6 ms at the median as it did, still inside the 16.7 ms between frames (13.4 ms at p99).
+- **Task Manager shows the GPU about 97% busy.** That is not the models alone: `campy-live`'s clock hold keeps one small block running on the GPU at all times ("1 block spinning" in its log; [On Windows](#on-windows-nvidia-cuda), "The GPU's clock"), and Task Manager counts it as busy. The models took about two thirds of each frame's time.
+- **Not checked:** whether each mouse kept its identity through the 5 minutes, and how close the points are to where a person would put them. Both need the recording looked at in LUC3D. This was one run, a real recording, not under the rig lock.
+
+
 ## Fixed crops (`--fixed-crops`, on by default with a GPU)
 
 Normally `campy-live` runs the centroid model, waits for the GPU to say how many animals it found, and only then cuts that many crops for the instance model. That wait in the middle of every set costs time, and it is why `--cuda-graphs` needs a separate graph for every number of animals. With `--fixed-crops`, every frame always gets `--max-instances` crops. When fewer animals are there, the missing ones get a padding crop whose keypoints are thrown away. Nothing in a set then depends on how many animals were found, so:
