@@ -118,7 +118,7 @@ Every key a campy config file can have, and its command-line option (`--key valu
 
 | Key | Default | Takes | Per camera | What it does |
 |---|---|---|---|---|
-| `triggerController` | `"arduino"` | "arduino", "Arduino", "None" or "none" | one for the rig | Microcontroller make for camera triggering. Currently supported: 'arduino'. 'None' (or 'none'): campy starts no trigger, even with startArduino True. |
+| `triggerController` | `"arduino"` | "arduino", "Arduino", "pico", "Pico", "None" or "none" | one for the rig | The board that makes the cameras' trigger pulses. 'arduino': campy's Arduino, which campy starts itself with startArduino True. 'pico': the ChronicRecord Pico (campy-session's pico: section, or chronic_control.py), never started by campy-acquire: startArduino must be False. 'None' (or 'none'): campy starts no trigger, even with startArduino True. One board per rig: set it in the rig profile, and a config that extends the profile can't name the other board (only None), nor start the Arduino or have a pico: section when the profile names the other one. |
 | `startArduino` | `False` | True or False | one for the rig | If True, start Arduino after initializing cameras. |
 | `serialPort` | `"COM3"` | text | one for the rig | Serial port for communicating with Arduino. |
 | `digitalPins` | `[0, 1, 2, 3, 4, 5, 6]` | a whole number, 0 or more | a list | Digital pins on microcontroller board for sending TTL camera triggers. |

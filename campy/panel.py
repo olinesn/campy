@@ -557,6 +557,47 @@ def CalibrationCheck(where, now=None):
 	return ("ok", text)
 
 
+def SerialPorts():
+	"""The serial ports on this computer (COM9, /dev/ttyACM0), or None when they can't be listed."""
+	try:
+		from serial.tools import list_ports
+		return [p.device for p in list_ports.comports()]
+	except Exception:
+		return None
+
+
+def TriggerCheck(params, pico, ports=SerialPorts):
+	"""
+	The check line for the cameras' trigger board, or None (no trigger): the Arduino campy starts must be on its
+	serialPort, and a config whose rig the Pico pulses (triggerController: pico) needs a pico: section to start it.
+	Either missing stops the start: campy-acquire would stop 2 s in (no Arduino), or wait for pulses nobody makes.
+	"""
+	from campy import configurator
+	triggers = params.get("cameraTrigger", "None")
+	triggered = any(str(t) != "None" for t in (triggers if isinstance(triggers, list) else [triggers]))
+	board = configurator.Board(params.get("triggerController", "arduino"))
+	if configurator.DrivesTrigger(params):
+		port = str(params.get("serialPort"))
+		found = ports()
+		if found is None:
+			return None
+		here = port.upper() in [p.upper() for p in found] if sys.platform == "win32" else \
+			port in found or (port.startswith("/dev/") and os.path.exists(port))
+		if not here:
+			return ("block", "Trigger: the Arduino campy starts (startArduino) is on {} (serialPort), and there is no {} "
+				"on this computer (its serial ports: {}). Plug it in; or, if another board pulses this rig's cameras now, "
+				"say so in the rig profile (triggerController) and use a config made for that board".format(port, port,
+				", ".join(found) or "none"))
+		return ("ok", "Trigger: the Arduino on {}".format(port))
+	if board == "pico" and triggered:
+		if pico is None:
+			return ("block", "Trigger: the Pico pulses this rig's cameras (triggerController: pico), but this config has "
+				"no pico: section to start it: the cameras would wait for pulses nobody makes. Add one (a camera-only "
+				"session: pico: {set: {CAMERA_ONLY: <seconds>, CAMERA_FPS: <frameRate>}})")
+		return ("ok", "Trigger: the Pico")
+	return None
+
+
 def CalibrateCheck(config, missing=None):
 	"""
 	The check line for a calibration recording (videoFilename with "calibration" in it), or None for any other: its
@@ -971,6 +1012,9 @@ class Panel:
 			checks += self.picker.Checks()
 		if live is not None and live.get("calibration"):
 			checks.append(CalibrationCheck(live["calibration"]))
+		trigger = TriggerCheck(self.config.acquire, self.devices.pico if self.devices is not None else None)
+		if trigger is not None:
+			checks.append(trigger)
 		calibrate_check = CalibrateCheck(self.config)
 		if calibrate_check is not None:
 			checks.append(calibrate_check)

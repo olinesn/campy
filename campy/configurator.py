@@ -288,7 +288,8 @@ def ResolveClargs(clargs):
 	problems += EveryCamera(params, sources)
 
 	for check in (lambda p: ValidateCameraLists(p, sources, notes), lambda p: ValidateSerials(p, sources),
-			ValidateColorRange, ValidateGamma, ValidateExperiment):
+			ValidateColorRange, ValidateGamma, ValidateExperiment,
+			lambda p: ValidateTriggerBoard(p, sources, chain, sections, section_sources)):
 		try:
 			check(params)
 		except ValueError as e:
@@ -840,6 +841,55 @@ def YamlValue(text):
 		return yaml.safe_load(text)
 	except yaml.YAMLError as e:
 		raise ArgumentTypeError("{!r} is not a value campy can read ({})".format(text, getattr(e, "problem", e)))
+
+
+def Board(value):
+	# triggerController as a board: "arduino", "pico", or None (no trigger), whatever its case
+	board = str(value).lower()
+	return None if board == "none" else board
+
+
+def ValidateTriggerBoard(params, sources, chain, sections=None, section_sources=None):
+	"""
+	One board makes a rig's camera pulses. The rig profile (the file the
+	config's extends: chain ends with) names it with triggerController; a
+	config that extends it may say None (no trigger), but not the other board,
+	and can't start the Arduino (startArduino) or run the Pico (a pico:
+	section) when the profile names the other one. Two boards on the cameras'
+	trigger line would each pulse them; one missing (the Arduino unplugged
+	since the Pico took over) stops every recording 2 s in.
+	"""
+	sections = sections or {}
+	section_sources = section_sources or {}
+	board = Board(params.get("triggerController", "arduino"))
+	where = lambda key: sources[key].Where() if key in sources else "campy's default"
+	# The rig profile: the file the extends: chain ends with (a config that extends nothing is its own)
+	path, values, lines = chain[-1] if chain else (None, {}, {})
+	rig = Board(values["triggerController"]) if "triggerController" in values else None
+	if rig is not None and board is not None and board != rig:
+		raise ValueError("triggerController: {} ({}), but this rig's profile {} says {}: one board makes a rig's "
+			"camera pulses. Leave triggerController out of this config (or say None for no trigger), or change the "
+			"profile if the rig's board changed.".format(params["triggerController"], where("triggerController"),
+			Shown(path), values["triggerController"]))
+	pico = "pico" in sections
+	pico_where = None
+	if pico:
+		first = next(iter(section_sources.get("pico", {}).values()), None)
+		pico_where = first.Where() if first is not None else "this config"
+	if board == "pico" and params.get("startArduino"):
+		raise ValueError("triggerController: pico ({}): the Pico makes this rig's camera pulses, and campy starts no "
+			"Arduino, but startArduino is True ({}). Set startArduino: False.".format(where("triggerController"),
+			where("startArduino")))
+	if pico and DrivesTrigger(params):
+		raise ValueError("A pico: section ({}) and startArduino: True ({}): the Pico and the Arduino would both pulse "
+			"the cameras. One board makes a rig's camera pulses: set startArduino: False (and triggerController: pico "
+			"in the rig profile).".format(pico_where, where("startArduino")))
+	# Only a profile's own word counts here: campy-session gives campy-acquire the config as one file with every
+	# setting written out, campy's default triggerController (arduino) too, so a file that extends nothing says nothing
+	if pico and rig == "arduino" and len(chain) > 1:
+		raise ValueError("A pico: section ({}), but this rig's profile {} says triggerController: {}: its camera pulses "
+			"come from its Arduino. One board makes a rig's camera pulses: leave the pico: section out, or make the "
+			"profile say triggerController: pico.".format(pico_where, Shown(path), values["triggerController"]))
 
 
 def ValidateExperiment(params):

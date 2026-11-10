@@ -1061,3 +1061,25 @@ def test_a_title_is_only_the_file_that_gives_it(tmp_path, home):
 	(folder / "trial.yaml").write_text("extends: daily.yaml\nrecTimeInSec: 120\npanel: {title: Trial}\n")
 	t.Scan()
 	assert [c["title"] for c in t.Favorites()] == ["Daily", "Trial"]
+
+
+# ------------------------------------------------------------------ the trigger board, before Start
+
+def test_trigger_check(monkeypatch):
+	# The Arduino campy starts must be plugged in: without it campy-acquire stopped 2 s into every recording
+	arduino = {"startArduino": True, "triggerController": "arduino", "serialPort": "COM9", "cameraTrigger": "Line3"}
+	monkeypatch.setattr(panel.sys, "platform", "win32")
+	level, text = panel.TriggerCheck(arduino, None, ports=lambda: ["COM1", "COM3", "COM12"])
+	assert level == "block" and "the Arduino campy starts (startArduino) is on COM9 (serialPort), and there is no COM9 " \
+		"on this computer (its serial ports: COM1, COM3, COM12)" in text
+	assert panel.TriggerCheck(arduino, None, ports=lambda: ["com9"]) == ("ok", "Trigger: the Arduino on COM9")
+	assert panel.TriggerCheck(arduino, None, ports=lambda: None) is None # ports can't be listed: say nothing
+	assert panel.TriggerCheck(dict(arduino, triggerController="None"), None, ports=lambda: []) is None
+	# A Pico rig: the config must start the Pico (its pico: section), unless no camera is triggered
+	pico = {"startArduino": False, "triggerController": "pico", "cameraTrigger": ["Line3", "Line3"]}
+	level, text = panel.TriggerCheck(pico, None, ports=lambda: [])
+	assert level == "block" and "no pico: section to start it" in text
+	assert panel.TriggerCheck(pico, object(), ports=lambda: []) == ("ok", "Trigger: the Pico")
+	assert panel.TriggerCheck(dict(pico, cameraTrigger="None"), None, ports=lambda: []) is None
+	# An external trigger on a rig that names no board (startArduino False): as before, no line
+	assert panel.TriggerCheck({"startArduino": False, "cameraTrigger": "Line3"}, None, ports=lambda: []) is None

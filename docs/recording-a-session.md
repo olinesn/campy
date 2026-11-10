@@ -170,6 +170,12 @@ While it records, the **Pico** card shows the bout (for example `bout 212 of 172
 
 The session's folder, `D:\data\<date_time>\` (on the 4 TB data disk; recordings made in `C:\data` before 10 November 2026 were moved there), also holds `spikeglx\` (SpikeGLX's run, named `chronic_<date_time>`) and `pico\` (the Pico's log, `<date>\timestamps.txt`, and its program's output, `session.out`).
 
+### Calibration and the other camera-only experiments
+
+The rig's other experiments on the panel (*Calibration recording*, *Look at the cameras*, the two *Live tracking* ones) use the Pico too, since 10 November 2026: it is the only board on the cameras' trigger line. Each runs a camera-only Pico session (no gate, no LEDs, no SpikeGLX), as long as the experiment's recording (the calibration: 60 s at 10 frames a second). Press **Start recording**, then **Start the Pico** once every camera is ready, as above. The recording stops by itself at the end, and **Stop** stops both.
+
+Before that day these experiments still started the Arduino that pulsed the cameras before the Pico, which had been unplugged since 2 November. Each stopped 2 s in, with *campy-acquire ended with exit code 1* and, in its `logs\campy-acquire.log`, *Could not open the trigger Arduino's serial port COM9*. Now the checks list says which board pulses the cameras (**Trigger: the Pico**), and stops the start if that board isn't there ([One trigger board per rig](sync.md#one-trigger-board-per-rig)).
+
 ## Where the recording is
 
 At the top of the page, under the rig's name, is the recording's folder, for example `D:\data\2026-10-23_14-02-11`. It holds:

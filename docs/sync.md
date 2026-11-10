@@ -35,6 +35,28 @@ startArduino: False
 cameraTrigger: "Line0" # or "Line3"
 ```
 
+## One trigger board per rig
+
+A rig's cameras get their pulses from one board: campy's Arduino, or the ChronicRecord Pico. The rig profile says which, with `triggerController`, and every config that extends it follows:
+
+```yaml
+# ~/.campy/configs/chronicrecord.yaml
+triggerController: "pico"   # the Pico pulses Line3; campy starts no Arduino
+startArduino: False
+cameraTrigger: "Line3"
+```
+
+campy refuses a config that would use the other board, before any camera opens (campy-acquire, `campy-config check`, and the panel's list of experiments):
+- a config that names the other board in `triggerController` (it may still say `None`, for no trigger: free-running cameras);
+- `startArduino: True` on a rig whose profile says `pico`;
+- a `pico:` section (campy-session's Pico) with `startArduino: True`, or on a rig whose profile says `arduino`: both boards would pulse the cameras.
+
+A profile without `triggerController` works as before: a Pico config only needs `startArduino: False`, and `pico:` with `startArduino: True` is the one thing refused.
+
+**The panel's checks list** has a **Trigger** line before Start. With the Arduino, campy's `serialPort` must be one of the computer's serial ports. Otherwise the line is red, names the ports there are, and the start is stopped, rather than campy-acquire stopping 2 s into the recording. With the Pico (`triggerController: pico`), the config needs a `pico:` section to start the Pico's pulses. Without one the cameras would wait for pulses nobody makes, so the start is stopped. A camera-only session is enough (`pico: {set: {CAMERA_ONLY: 60, CAMERA_FPS: 10}}`, the length and `frameRate` of the recording; [camera-only sessions](../chronicrecord/README.md#camera-only-sessions)).
+
+Why: on 10 November 2026 every calibration from the ChronicRecord rig's panel stopped 2 s in. The Pico had pulsed the rig's cameras since 5 November, and the bout sessions' configs said so. But the rig profile, which the calibration, look and live-tracking configs extend, still started the Arduino on COM9, which had not been plugged in since 2 November.
+
 ## Aligning cameras after recording
 ```
 campy-align ./test/2026-10-18_17-30-05        # the recording's folder (its videoFolder with sessionFolder False)
