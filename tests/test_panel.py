@@ -924,10 +924,123 @@ def test_a_length_can_have_its_own_copy_folder(tmp_path, home, monkeypatch):
 		panel.Panel(str(bad), browser=False)
 
 
-def test_the_page_fills_the_copy_box_from_the_length():
+def test_a_lengths_own_copy_folder_stays_with_that_length(tmp_path, home, monkeypatch):
+	# A Start with a length's own copyTo in the box doesn't make it the folder the other lengths start from (a gate
+	# test after a 6-day session isn't copied into the 6-day share); a folder typed for that length is kept for it alone
+	from campy import copyqueue, pico, spikeglx
+	from test_session import write_config
+	six, mine, gate = tmp_path / "6day", tmp_path / "mine", tmp_path / "gate"
+	for d in (six, mine, gate):
+		d.mkdir()
+	config = write_config(tmp_path / "c.yaml", {"numCams": 4, "frameRate": 60, "videoFolder": str(tmp_path / "data"),
+		"recTimeInSec": 3600}, pico={"port": "E665485457699D30", "lengths": [
+			{"name": "6 days", "seconds": 518400, "copyTo": str(six)},
+			{"name": "Gate test", "seconds": 900}]}, spikeglx={"sdk": FAKE_SDK})
+	monkeypatch.setattr(pico.Pico, "Check", lambda self: "COM3: idle")
+	monkeypatch.setattr(spikeglx.SpikeGLX, "Check", lambda self: "SpikeGLX: idle")
+	monkeypatch.setattr(panel.Panel, "Free", lambda self, folder=None: 4000e9)
+	p = panel.Panel(str(config), browser=False)
+
+	def start(length, to):
+		assert p.Start({"length": length, "copy_to": to}) is None
+		p.wanted = None # nothing records here: the next Start can come
+
+	def box(length):
+		return p.CopyDefault(length), next(l["copyBox"] for l in p.Status()["lengths"] if l["seconds"] == length)
+
+	start(518400, str(six)) # the 6-day session, its own copyTo unchanged
+	assert p.CopyDefault(900) == "" and p.Status()["fields"]["copy_to"] == "" # the gate test: still the config's (none)
+	assert box(518400) == (str(six), str(six))
+	start(900, str(gate)) # typed for the gate test: the other lengths without a copyTo start from it
+	start(518400, str(six))
+	assert p.CopyDefault(900) == str(gate) and copyqueue.Remembered(copyqueue.RememberFile(), p.config.path) == str(gate)
+	# Typed for the 6-day length: kept for it alone, the gate test's stays
+	start(518400, str(mine))
+	assert box(518400) == (str(mine), str(mine)) and p.CopyDefault(900) == str(gate)
+	assert copyqueue.RememberedLengths(copyqueue.RememberFile(), p.config.path) == {"6 days": str(mine)}
+	# ... emptied for it (no copy of 6-day sessions), still for it alone
+	start(518400, "")
+	assert box(518400) == ("", "") and p.CopyDefault(900) == str(gate)
+	# Its own copyTo again: nothing kept for it, the config's copyTo is back in charge
+	start(518400, str(six))
+	assert box(518400) == (str(six), str(six)) and p.CopyDefault(900) == str(gate)
+	assert copyqueue.RememberedLengths(copyqueue.RememberFile(), p.config.path) == {}
+	# A length without a copyTo of its own never gets a copyBox
+	assert next(l for l in p.Status()["lengths"] if l["seconds"] == 900)["copyBox"] is None
+
+
+def test_remembering_a_lengths_folder_keeps_the_configs(tmp_path, home):
+	from campy import copyqueue
+	path, a = copyqueue.RememberFile(), str(tmp_path / "a.yaml")
+	copyqueue.Remember(path, a, None, delete=False, length="6 days") # never set: still never set
+	assert copyqueue.Remembered(path, a) is None and copyqueue.RememberedLengths(path, a) == {}
+	copyqueue.Remember(path, a, r"\\server\gate")
+	copyqueue.Remember(path, a, r"\\server\mine", delete=True, length="6 days")
+	assert copyqueue.Remembered(path, a) == r"\\server\gate" and copyqueue.RememberedDelete(path, a) is True
+	assert copyqueue.RememberedLengths(path, a) == {"6 days": r"\\server\mine"}
+	copyqueue.Remember(path, a, r"\\server\other") # the config's folder again: the length's stays
+	assert copyqueue.RememberedLengths(path, a) == {"6 days": r"\\server\mine"}
+	copyqueue.Remember(path, a, None, length="6 days")
+	assert copyqueue.RememberedLengths(path, a) == {} and copyqueue.Remembered(path, a) == r"\\server\other"
+
+
+def page_copy_box():
+	# The page's copy box code (its variables and render's lines for it), runnable with node: render(s) for a status
 	from campy import panelpage
 	page = panelpage.PAGE
-	assert "if(L0.copyTo) $(\"copyto\").value = L0.copyTo; else if(copyLen) $(\"copyto\").value = s.fields.copy_to||\"\";" in page
+	start = page.index("  // Another length (or experiment) picked: what was typed")
+	end = page.index("copyLen = lenKey; }", start) + len("copyLen = lenKey; }")
+	lets = page[page.index('let copyLen = "";'):page.index("let boutSig")]
+	return """
+const els = {copyto: {value: ""}, copydelete: {checked: false}, copydeletenote: {style: {}},
+	experiment: {value: "", dataset: {}}, ids: {value: ""}};
+const $ = id => els[id]; const document = {activeElement: null}; let refill = false;
+""" + lets + "function render(s){ const lengths = s.lengths, L0 = lengths.find(l => l.seconds == s.length);\n" + \
+		page[start:end] + "\n}\n"
+
+
+@pytest.mark.skipif(not __import__("shutil").which("node"), reason="needs node")
+def test_the_page_keeps_each_lengths_copy_box(tmp_path):
+	# Switching lengths back and forth gives each its folder again: a length's own copyTo, the config's for the others,
+	# and what was typed for either, never thrown away by a switch
+	script = page_copy_box() + r"""
+const lengths = [{seconds: 518400, copyTo: "S6", copyBox: "S6"}, {seconds: 900, copyTo: null, copyBox: null},
+	{seconds: 3600, copyTo: null, copyBox: null}];
+const st = len => ({config: "c.yaml", length: len, lengths, fields: {copy_to: "CFG", copy_delete: false}});
+const out = [];
+const see = () => out.push(els.copyto.value);
+render(st(518400)); see();                     // opens on 6 days: its own
+render(st(900)); see();                        // gate test: the config's
+els.copyto.value = "TYPED"; render(st(900)); see(); // typed, a status tick: kept
+render(st(518400)); see();                     // 6 days: its own
+render(st(900)); see();                        // back: what was typed
+render(st(3600)); see();                       // another length without one: the same box, so the same text
+els.copyto.value = "SIX"; render(st(3600)); render(st(518400)); see(); // typed for 1 hour, then to 6 days
+els.copyto.value = "MINE"; render(st(900)); see(); // typed for 6 days, then to the gate test: the shared one
+render(st(518400)); see();                     // 6 days: what was typed for it
+document.activeElement = els.copyto; els.copyto.value = "BUSY"; render(st(900)); see(); // typing: left alone
+console.log(JSON.stringify(out));
+"""
+	path = tmp_path / "box.js"
+	path.write_text(script)
+	got = json.loads(subprocess.run(["node", str(path)], capture_output=True, text=True, check=True).stdout)
+	assert got == ["S6", "CFG", "TYPED", "S6", "TYPED", "TYPED", "S6", "SIX", "MINE", "BUSY"]
+
+
+@pytest.mark.skipif(not __import__("shutil").which("node"), reason="needs node")
+def test_the_page_starts_a_length_from_what_was_kept_for_it(tmp_path):
+	# A length whose folder was changed at an earlier Start opens with that (copyBox), not its copyTo
+	script = page_copy_box() + r"""
+const lengths = [{seconds: 518400, copyTo: "S6", copyBox: ""}, {seconds: 900, copyTo: null, copyBox: null}];
+const st = len => ({config: "c.yaml", length: len, lengths, fields: {copy_to: "CFG", copy_delete: false}});
+const out = [];
+render(st(518400)); out.push(els.copyto.value); render(st(900)); out.push(els.copyto.value);
+console.log(JSON.stringify(out));
+"""
+	path = tmp_path / "box.js"
+	path.write_text(script)
+	got = json.loads(subprocess.run(["node", str(path)], capture_output=True, text=True, check=True).stdout)
+	assert got == ["", "CFG"]
 
 
 def test_the_pages_text_is_in_rem_and_can_be_made_larger():

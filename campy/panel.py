@@ -1187,12 +1187,19 @@ class Panel:
 				if why:
 					return why
 				fields = dict(fields, led_power=power)
-			# The page's "Copy each recording to": a folder this computer reaches, kept for the next panel too
+			# The page's "Copy each recording to": a folder this computer reaches, kept for the next panel too. For a
+			# length with a copyTo of its own (pico.lengths), kept for that length alone (nothing to keep when the box
+			# still holds that copyTo): the config's folder, which the other lengths start from, stays as it was
 			to = str(fields.get("copy_to") or "").strip()
 			problem = copyqueue.Problem(to, self.RecordsInto()) # the chosen length's own videoFolder, with a Pico
 			if problem:
 				return problem
-			copyqueue.Remember(copyqueue.RememberFile(), self.config.path, to, delete=bool(fields.get("copy_delete")))
+			chosen = self.Chosen()
+			if chosen and chosen.get("copyTo"):
+				copyqueue.Remember(copyqueue.RememberFile(), self.config.path, None if to == chosen["copyTo"] else to,
+					delete=bool(fields.get("copy_delete")), length=chosen["name"])
+			else:
+				copyqueue.Remember(copyqueue.RememberFile(), self.config.path, to, delete=bool(fields.get("copy_delete")))
 			if names:
 				LedRemember(LedPowerFile(), self.config.path, fields["led_power"])
 				Say("LED power, confirmed for this recording: {}".format("; ".join("{} {:g} mA, {:g} µW at the fiber tip".format(
@@ -1379,13 +1386,23 @@ class Panel:
 		copy = (self.config.post or {}).get("copy") or {}
 		return str(copy.get("to") or "") if isinstance(copy, dict) else str(copy or "")
 
-	def CopyDefault(self):
-		# What the page's box holds for the chosen length: its own copyTo (pico.lengths), else CopyTo's
-		if self.devices is not None and self.devices.pico is not None:
-			chosen = next((l for l in self.lengths if l["seconds"] == self.length), None)
-			if chosen and chosen.get("copyTo"):
-				return chosen["copyTo"]
+	def CopyDefault(self, length=None, typed=None):
+		# What the page's box holds for a length (the chosen one by default): for one with a copyTo of its own
+		# (pico.lengths), what a page's Start last had in the box for it, else that copyTo; else CopyTo's, the config's
+		# folder. typed: copyqueue.RememberedLengths, when it has been read already
+		chosen = self.Chosen(length)
+		if chosen and chosen.get("copyTo"):
+			if typed is None:
+				typed = copyqueue.RememberedLengths(copyqueue.RememberFile(), self.config.path)
+			return typed.get(chosen["name"], chosen["copyTo"])
 		return self.CopyTo()
+
+	def Chosen(self, length=None):
+		# The session length (pico.lengths' entry) with these seconds, the chosen one by default; None without a Pico
+		if self.devices is None or self.devices.pico is None:
+			return None
+		seconds = self.length if length is None else length
+		return next((l for l in self.lengths if l["seconds"] == seconds), None)
 
 	def Viewer(self):
 		s = self.session
@@ -1436,6 +1453,8 @@ class Panel:
 		state = "starting" if self.wanted is not None else (s.state if s is not None else "ready")
 		if s is not None and state in ("done", "failed", "stopped"):
 			state = "finishing" # the recording has ended, and the panel is letting go of it: Start can't take one yet
+		typed = copyqueue.RememberedLengths(copyqueue.RememberFile(), self.config.path) if any(l.get("copyTo") for l in
+			self.lengths) else {} # what the box last held for each length with a copy folder of its own
 		return {"state": state, "rig": platform.node(), "config": self.config.path, "error": self.error,
 			"version": getattr(self, "version", None),
 			"types": self.types.Status(self.config.path) if getattr(self, "types", None) is not None else None,
@@ -1444,7 +1463,9 @@ class Panel:
 			"devices": (launcher or {}).get("devices") if s is not None and s.folder else
 				self.devices.Status() if self.devices is not None else None,
 			"lengths": [{"name": l["name"], "seconds": l["seconds"], "text": l["plan"].get("text") or l["plan"].get("error"),
-				"videoFolder": l["videoFolder"], "copyTo": l.get("copyTo")} for l in self.lengths], "length": self.length,
+				"videoFolder": l["videoFolder"], "copyTo": l.get("copyTo"),
+				"copyBox": self.CopyDefault(l["seconds"], typed) if l.get("copyTo") else None} for l in self.lengths],
+			"length": self.length,
 			"bouts": self.BoutStatus(),
 			"launcher": launcher, "health": self.health.snapshot, "recording": recording,
 			"models": self.picker.Status() if getattr(self, "picker", None) is not None else None,

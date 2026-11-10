@@ -395,7 +395,7 @@ def test_a_bout_session_from_the_page(tmp_path, home, rig, sglx_state):
 	try:
 		status = call(url, "/status.json")[1]
 		assert status["state"] == "ready" and status["length"] == 12
-		assert status["lengths"] == [{"name": "Short", "seconds": 12, "videoFolder": None, "copyTo": None,
+		assert status["lengths"] == [{"name": "Short", "seconds": 12, "videoFolder": None, "copyTo": None, "copyBox": None,
 			"text": "2 bouts over 12 s, 80 camera pulses (4 s of camera)"}]
 		texts = [c["text"] for c in status["checks"]]
 		assert all(c["level"] == "ok" for c in status["checks"]), texts
