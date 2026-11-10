@@ -16,9 +16,13 @@ For each bout it gives:
   between the two flashes;
 - the readout: each receiver's mean over the last whole 60 Hz cycle (16.7 ms)
   of each flash, less its dark level, the mean over the 16.7 ms before the
-  first flash. Green is XA5 in the blue flash, red XA6 in the yellow flash; the
-  other two (XA5 in yellow, XA6 in blue) are the bleed between the channels.
-  Averaging over a whole cycle cancels the mains hum the receivers carry;
+  first flash, every window 1 ms clear of the LEDs' edges. Green is XA5 in the
+  blue flash, red XA6 in the yellow flash; the other two (XA5 in yellow, XA6 in
+  blue) are the bleed between the channels. Averaging over a whole cycle
+  cancels the mains hum the receivers carry. A flash shorter than a cycle and
+  two guards (18.7 ms) is read over what it has, with a note that the hum
+  wasn't averaged out; one of about 2 ms or less leaves nothing to read: its
+  values are blank, with a note;
 - how long each receiver took to reach half its step after its LED's edge;
 - clipping (a sample at the OneBox's range) and the dark level's noise;
 - with --campy, each camera's frames in the bout (from frametimes.npy, split
@@ -71,6 +75,27 @@ def Mean(x, start, stop):
 	return float(x[start:stop].mean()) if stop > start else float("nan")
 
 
+def Window(stop, cycle, first, rate, what):
+	"""
+	The readout's window ending at stop: one mains cycle, cut at first (the
+	earliest sample it may use: the LED's on edge plus the guard, or the file's
+	start). Returns (start, stop, note): note says why a cut window can't be
+	trusted as a whole cycle's mean, or that it is empty.
+	"""
+	start = max(stop - cycle, first, 0)
+	if stop <= start:
+		return start, stop, "{}: nothing to read 1 ms clear of the edges;".format(what)
+	if stop - start < cycle:
+		return start, stop, "{}: read over {:.1f} ms, less than one 60 Hz cycle (hum not averaged out);".format(
+			what, (stop - start) / rate * 1000)
+	return start, stop, ""
+
+
+def Note(row, text):
+	if text and text not in row.get("note", ""):
+		row["note"] = (row.get("note", "") + " " + text).strip()
+
+
 def HalfRise(x, on, dark, top, rate):
 	"""Seconds from the LED's edge until x is half way from dark to top (nan if it never is)."""
 	if not np.isfinite(top) or abs(top - dark) < 1e-3:
@@ -119,18 +144,33 @@ def Bout(bin_path, args):
 	first, second = sorted(flashes, key=lambda k: flashes[k][0])
 	row["order"] = first + " first"
 	row["gap_ms"] = round((flashes[second][0] - flashes[first][1]) / rate * 1000, 3)
-	start = flashes[first][0]
+	# The windows: the last cycle of each flash and the cycle before the first,
+	# each 1 ms clear of the LEDs' edges. A short flash's window is cut at its
+	# on edge (plus the guard) rather than reaching back into the dark before
+	# it (or the other flash): read, with a note, if anything is left; blank if not.
+	d0, d1, dark_note = Window(flashes[first][0] - guard, cycle, 0, rate, "dark before the first flash")
+	Note(row, dark_note)
+	windows = {}
+	for name, (on, off) in flashes.items():
+		a, b, note = Window(off - guard, cycle, on + guard, rate, name + " flash")
+		windows[name] = (a, b)
+		Note(row, note)
 	for label, x in (("green", green), ("red", red)):
-		dark = Mean(x, start - guard - cycle, start - guard)
-		row["dark_{}_V".format(label)] = round(dark, 5)
-		row["noise_{}_mV".format(label)] = round(float(x[max(0, start - guard - cycle):start - guard].std()) * 1000, 2)
+		dark = Mean(x, d0, d1)
+		row["dark_{}_V".format(label)] = round(dark, 5) if d1 > d0 else ""
+		row["noise_{}_mV".format(label)] = round(float(x[d0:d1].std()) * 1000, 2) if d1 > d0 else ""
 		for name, (on, off) in flashes.items():
-			level = Mean(x, off - guard - cycle, off - guard)
-			row["{}_in_{}_V".format(label, name)] = round(level - dark, 5)
-			row["{}_in_{}_half_rise_ms".format(label, name)] = round(HalfRise(x, on, dark, level, rate) * 1000, 3)
+			a, b = windows[name]
+			if b > a and d1 > d0:
+				level = Mean(x, a, b)
+				row["{}_in_{}_V".format(label, name)] = round(level - dark, 5)
+				row["{}_in_{}_half_rise_ms".format(label, name)] = round(HalfRise(x, on, dark, level, rate) * 1000, 3)
+			else:
+				row["{}_in_{}_V".format(label, name)] = ""
+				row["{}_in_{}_half_rise_ms".format(label, name)] = ""
 			clipped = int(np.count_nonzero(np.abs(x[on:off]) >= full))
 			if clipped:
-				row["note"] = (row.get("note", "") + " {} clipped in {} flash ({} samples);".format(label, name, clipped)).strip()
+				Note(row, "{} clipped in {} flash ({} samples);".format(label, name, clipped))
 	# The readout: green from the blue flash, red from the yellow
 	row["green_V"] = row["green_in_blue_V"]
 	row["red_V"] = row["red_in_yellow_V"]
@@ -215,9 +255,14 @@ def Main(argv=None):
 		if not r["camera_pulses"]:
 			print("{}: {}".format(r["file"], r.get("note", "")))
 			continue
-		print("bout {bout}: {camera_pulses} pulses, {order}, gap {gap_ms} ms; green {green_V:+.4f} V, red {red_V:+.4f} V "
-			"(dark {dark_green_V:+.4f} / {dark_red_V:+.4f} V){note}".format(**dict(r, note="; " + r["note"] if r.get("note")
-			else "")) if "green_V" in r else "bout {}: {}".format(r["bout"], r.get("note", "")))
+		if "green_V" not in r:
+			print("bout {}: {}".format(r["bout"], r.get("note", "")))
+			continue
+		volts = {k: "{:+.4f}".format(r[k]) if isinstance(r[k], float) else "blank"
+			for k in ("green_V", "red_V", "dark_green_V", "dark_red_V")}
+		print("bout {bout}: {camera_pulses} pulses, {order}, gap {gap_ms} ms; green {green_V} V, red {red_V} V "
+			"(dark {dark_green_V} / {dark_red_V} V){note}".format(**dict(r, **volts, note="; " + r["note"] if r.get("note")
+			else "")))
 	# Across the bouts: what should be the same in every one
 	read = [r for r in bouts if "green_V" in r]
 	for key in ("order", "blue_frames", "yellow_frames"):

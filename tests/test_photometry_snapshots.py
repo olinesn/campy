@@ -23,11 +23,13 @@ typeThis=obx
 """
 
 
-def write_obx(folder, t, seconds, first=0, bout=None, green=(0.02, 1.0, 0.03), red=(-0.01, 0.06, 0.5), hum=0.05):
+def write_obx(folder, t, seconds, first=0, bout=None, green=(0.02, 1.0, 0.03), red=(-0.01, 0.06, 0.5), hum=0.05,
+		width_us=50000, gap_us=150000, yellow_first=True):
 	"""
 	One OneBox file. bout: the camera starting 1 s in at 60 Hz for 600 pulses,
-	yellow 50 ms from 1 ms before pulse 300, 150 ms dark, blue 50 ms. green and
-	red: (dark, in blue, in yellow) in volts, plus 60 Hz hum and a little noise.
+	yellow 50 ms from 1 ms before pulse 300, 150 ms dark, blue 50 ms (width_us,
+	gap_us and yellow_first change that). green and red: (dark, in blue, in
+	yellow) in volts, plus 60 Hz hum and a little noise.
 	"""
 	n = int(seconds * RATE)
 	rng = np.random.default_rng(t)
@@ -41,8 +43,9 @@ def write_obx(folder, t, seconds, first=0, bout=None, green=(0.02, 1.0, 0.03), r
 		for k in range(600):
 			r = cam + k * 10**6 // 60
 			xd[us(r):us(r + 3000)] |= 1 << 2
-		y_on = cam + 300 * 10**6 // 60 - 1000
-		spans = {"yellow": (us(y_on), us(y_on + 50000)), "blue": (us(y_on + 200000), us(y_on + 250000))}
+		on = cam + 300 * 10**6 // 60 - 1000
+		a, b = ("yellow", "blue") if yellow_first else ("blue", "yellow")
+		spans = {a: (us(on), us(on + width_us)), b: (us(on + width_us + gap_us), us(on + 2 * width_us + gap_us))}
 		xd[slice(*spans["blue"])] |= 1 << 3
 		xd[slice(*spans["yellow"])] |= 1 << 4
 		tt = np.arange(n) / RATE
@@ -104,3 +107,89 @@ def test_clipping_and_campys_frames(tmp_path):
 def test_no_files(tmp_path):
 	with pytest.raises(SystemExit, match="No OneBox files"):
 		ps.Main([str(tmp_path)])
+
+
+def one_bout(tmp_path, **kw):
+	write_obx(str(tmp_path), 1, 12.0, bout=True, **kw)
+	return ps.Main([str(tmp_path), "--csv", str(tmp_path / "out.csv")])[0]
+
+
+@pytest.mark.parametrize("width_us, gap_us, yellow_first", [(50000, 150000, True), (30000, 0, False)])
+def test_normal_flashes_read_as_before(tmp_path, width_us, gap_us, yellow_first):
+	"""
+	The panel's 50 ms snapshot pattern and chronic_control's own 30 ms one: a
+	whole cycle ending 1 ms before each flash's end, the dark the cycle ending
+	1 ms before the first flash, no note: the same numbers as before the cut.
+	"""
+	b = one_bout(tmp_path, width_us=width_us, gap_us=gap_us, yellow_first=yellow_first)
+	assert "note" not in b
+	meta, data = ps.ReadObx(str(tmp_path / "chronic_test_g0_t1.obx0.obx.bin"))
+	xd = data[:, 12].astype(np.int32)
+	cycle, guard = int(round(RATE / 60)), int(round(0.001 * RATE))
+	for label, col in (("green", 5), ("red", 6)):
+		x = data[:, col].astype(np.float64) * 5 / 32768
+		flashes = {}
+		for name, bit in (("blue", 3), ("yellow", 4)):
+			on, off = ps.Edges((xd >> bit) & 1)
+			flashes[name] = (int(on[0]), int(off[0]))
+		start = min(on for on, _ in flashes.values())
+		dark = x[start - guard - cycle:start - guard].mean()
+		assert b["dark_{}_V".format(label)] == round(float(dark), 5)
+		for name, (on, off) in flashes.items():
+			level = x[off - guard - cycle:off - guard].mean()
+			assert b["{}_in_{}_V".format(label, name)] == round(float(level) - float(dark), 5)
+	assert b["green_V"] == pytest.approx(0.98, abs=0.002) and b["red_V"] == pytest.approx(0.51, abs=0.002)
+
+
+def test_a_10_ms_flash_is_read_inside_the_flash(tmp_path):
+	"""
+	Blue on for 10 ms: a whole cycle back from its end would take ~7.7 ms of the
+	dark before it (green_V about half the step). The window starts 1 ms after
+	the LED's on edge instead, and the note says it was shorter than a cycle.
+	"""
+	b = one_bout(tmp_path, width_us=10000, hum=0.0)
+	assert b["green_V"] == pytest.approx(0.98, abs=0.002)
+	assert b["red_V"] == pytest.approx(0.51, abs=0.002)
+	assert "blue flash: read over 8.0 ms, less than one 60 Hz cycle" in b["note"]
+	assert "yellow flash: read over 8.0 ms" in b["note"]
+	assert "dark" not in b["note"]
+
+
+def test_a_10_ms_flash_right_after_the_other_takes_nothing_from_it(tmp_path):
+	"""No dark between the LEDs: the second flash's window doesn't reach into the first's light."""
+	b = one_bout(tmp_path, width_us=10000, gap_us=0, hum=0.0, green=(0.02, 1.0, 3.0), red=(-0.01, 2.0, 0.5))
+	assert b["gap_ms"] == pytest.approx(0, abs=0.04)
+	assert b["green_V"] == pytest.approx(0.98, abs=0.002) # blue second: none of green's 3 V in yellow
+	assert b["red_V"] == pytest.approx(0.51, abs=0.002)
+	assert b["red_in_blue_V"] == pytest.approx(2.01, abs=0.002)
+
+
+def test_a_flash_one_cycle_long_is_read_and_flagged(tmp_path):
+	"""
+	16.7 ms, exactly one cycle: less a guard at each end, 14.7 ms are left. The
+	value is given (the hum's leftover is within a few tens of millivolts here,
+	50 mV of hum) and the note says the hum wasn't averaged out.
+	"""
+	b = one_bout(tmp_path, width_us=10**6 // 60)
+	assert b["blue_ms"] == pytest.approx(1000 / 60, abs=0.04)
+	assert b["green_V"] == pytest.approx(0.98, abs=0.03)
+	assert "blue flash: read over 14.7 ms, less than one 60 Hz cycle (hum not averaged out)" in b["note"]
+	# Without the hum it is exact
+	b = one_bout(tmp_path, width_us=10**6 // 60, hum=0.0)
+	assert b["green_V"] == pytest.approx(0.98, abs=0.002)
+
+
+def test_a_flash_a_cycle_and_two_guards_long_is_a_whole_cycle(tmp_path):
+	b = one_bout(tmp_path, width_us=19000)
+	assert "note" not in b
+	assert b["green_V"] == pytest.approx(0.98, abs=0.002)
+
+
+def test_a_flash_too_short_to_read_is_blank(tmp_path, capsys):
+	b = one_bout(tmp_path, width_us=1000)
+	assert b["blue_ms"] == pytest.approx(1, abs=0.04)
+	assert (b["green_V"], b["red_V"], b["green_in_blue_half_rise_ms"]) == ("", "", "")
+	assert "blue flash: nothing to read 1 ms clear of the edges" in b["note"]
+	assert isinstance(b["dark_green_V"], float)
+	assert "green blank V, red blank V" in capsys.readouterr().out
+	assert ",," in (tmp_path / "out.csv").read_text().splitlines()[1]
