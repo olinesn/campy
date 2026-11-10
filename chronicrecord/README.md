@@ -98,6 +98,19 @@ The blue and yellow LEDs are a fiber photometry system's excitation light. On th
 
 **The pattern.** The panel's config ([`chronic_session.yaml`](chronic_session.yaml)) reads the neuro-seeER reporter (EGFP and FusionRed) with the "snapshot" pattern of its paper (Neuron, 2026; [doi:10.1016/j.neuron.2026.07.031](https://doi.org/10.1016/j.neuron.2026.07.031)). Once a bout (every 5 minutes), it gives 50 ms of yellow (560 nm), then 150 ms dark, then 50 ms of blue. These are `pico.set`'s `YELLOW_FIRST: 1`, `PULSE_WIDTH_D: 0.05`, `LED_GAP: 0.15` and `PULSE_WIDTH_C: 0.05`. 50 ms is exactly 3 frames at 60 Hz and 150 ms exactly 9, so every edge still falls 1 ms before a camera pulse: yellow lights frames 300–302 and blue 312–314, each frame wholly lit or wholly dark. The paper's system (a Neurophotometrics FP3002) recorded the emission with a camera chip; here the two receivers are sampled every 33 µs, so each flash gives about 1,500 samples per channel. `chronic_control.py`'s own settings, and the PowerShell launcher's, keep chronicControlv13.py's pattern (blue 30 ms, then yellow 30 ms at once).
 
+**Reading the snapshots.** [`photometry_snapshots.py`](photometry_snapshots.py) reads a session's OneBox files (needs numpy only; run it on a copy of the session, not on the rig while it records) and writes `photometry_snapshots.csv`, one row per bout:
+
+```
+python photometry_snapshots.py C:\data\<date_time> --campy C:\data\<date_time>
+```
+
+- **The flashes:** each LED's time on the OneBox's clock, its width, the camera frames it lit (counted from the bout's first), how long before its first frame's pulse it switched on, and the dark between the two flashes.
+- **The readout:** each receiver's mean over the last 16.7 ms (one 60 Hz cycle) of each flash, less its dark level over the 16.7 ms before the first flash, 1 ms clear of every edge. `green_V` is XA5 in the blue flash and `red_V` XA6 in the yellow one. XA5 in yellow and XA6 in blue are the bleed between the channels.
+- **Checks:** how long each receiver took to reach half its step after its LED's edge, any sample at the OneBox's ±5 V limit (`note`), and the dark level's noise.
+- **With `--campy`:** each camera's frames in each bout (from `frametimes.npy`, a new bout where frames stop for more than 1 s) next to the OneBox's camera pulses, and the flashes' frames in campy's numbering, so each reading can be put next to the video.
+
+It ends with what should be the same in every bout: the order, the frames lit, the widths, the gap and the leads, each as a range.
+
 Not checked yet: the receivers on DC Low, the light levels, and a recording with a fiber-implanted mouse.
 
 ## Running it
