@@ -66,7 +66,9 @@ post:
 Each computer that records needs, once:
 1. **A calibrat3 checkout**, `git clone https://github.com/talmolab/calibrat3` (or from a git bundle, on a computer without GitHub access), in the folder the profile names.
 2. **Playwright's Python package** in campy's recording environment: `pip install playwright`. It drives the installed Chrome, so there is no browser to download.
-3. **Google Chrome**, installed as usual.
+3. **Google Chrome**, installed as usual. On Linux that means Google's own package (`google-chrome-stable`, which needs sudo to install), not a Chromium from the distribution or Playwright's: those lack the H.264 decoder.
+
+**Which videos Chrome can decode headless depends on the computer.** On Windows (the Dell Pro Max Slim FCS1250, 10 November 2026) headless Chrome decoded the rig's H.265 from Quick Sync. On Linux (the EVO-X2, Ubuntu 24.04, Chrome 157, headless, 10 November 2026) it decodes H.264 and AV1 but not H.265, so a Linux rig must record its calibrations in H.264 or AV1 for calibrat3 to read them. The EVO-X2 records H.264.
 
 **Pin each camera's name to its serial number first** (`cameraSerials` in the rig profile, in the order of `cameraNames`). A calibration holds for the names it was recorded with, and without `cameraSerials` campy names the cameras in the order the camera driver lists them, which can change from one recording to the next. On the Dell Pro Max Slim FCS1250 on 10 November 2026, three recordings that day and the ones of 26 October named the four cameras in three different orders. A live recording whose order differed from its calibration's would have put each camera's 2D poses through another camera's position.
 
