@@ -634,7 +634,7 @@ Notes on the measurements:
   - Each was idle and ran the update under its lock. The VM, the Precision 7875 and the EVO-X2 ended `RIG_CLEAN`. The Pro Max Slim ended `RIG_CONTAMINATED` from one burst of other CPU use during the reinstall, which doesn't matter for an update: nothing was measured.
   - The `calibrate` step is off unless a config asks for it, and it needs Playwright and a calibrat3 checkout ([A calibration every day](calibration.md#a-calibration-every-day-made-by-itself-calibrat3)). Only the Dell Pro Tower Plus has them, so the other machines have the step but don't use it.
   - The Dell Pro Tower Plus was already on `2e3521b` since 7:42 PM, after running these pull requests one by one as they were made. At 7:52 PM, with its panels closed and nothing running, campy was reinstalled in its two environments too (`campy_vPython3.12` and the `campy-live` one; its older campy environments untouched), so it has `campy-calibrate` as well. Its lock refuses jobs while someone uses the computer, so this ran directly, after checking nothing recorded and no lock was held.
-  - The spock cluster's campy copy for `campy-infer` wasn't moved this time: the login there was refused at the time. It stays on `4ff6d52`, which has the same `campy-infer`.
+  - The spock cluster's campy copy for `campy-infer` followed at 8:05 PM, once the user had logged in there again (a plain fast-forward to `2e3521b`).
   - None of these changes `campy-live`'s tracking (pull request 367 changes the viewer's cage drawing), so the machines didn't run their rig checks again.
 
 ## Four cameras on the Pro Max Slim (26 October 2026)
