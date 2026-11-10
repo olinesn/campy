@@ -49,7 +49,7 @@ What this size changes:
 - **The Run Training dialog freezes for minutes.** Before it appears, it counts the frames for "Random sample" by scanning every labeled frame once per video (`_sample_frames_from_pool` in `sleap/gui/learning/dialog.py`). With this package that is about 52 million checks. Each one runs an `import` inside `LabeledFrame.is_user_labeled`, which is about 6 times as slow once PySide6 is loaded (0.03 s against 0.19 s per scan, on a Mac; its copy of the Run Training path stalled at the same call). Reopening the dialog may repeat it; that wasn't tried. Reported upstream as [sleap#2909](https://github.com/talmolab/sleap/issues/2909).
 - **The Data Pipeline dropdown has no effect in SLEAP 1.6.6.** The dialog returns `stream`, `cache_memory` or `cache_disk`, while `sleap/gui/config_utils.py` looks up the display names, so every choice becomes "Cache in Memory". We chose "Stream (no caching)" and the run's `initial_config.yaml` said `torch_dataset_cache_img_memory`. Its `training_config.yaml` said `torch_dataset_cache_img_disk`, because of the fallback in the next item. Set `data_pipeline_fw` in the YAML to choose for real. Reported upstream as [sleap#2910](https://github.com/talmolab/sleap/issues/2910).
 - **"Cache in Memory" becomes a JPEG cache here, with only a line in the log.** On Windows each worker holds its own copy of the cache, so 12 workers would need about 596 GB (38 GB raw) against 113 GB free. sleap-nn then writes `.jpg` files instead, 1.6 GB here, saved with the imaging library's default quality, so the models train on compressed copies of the images. `data_pipeline_fw: torch_dataset` reads the original images instead; the retrain below compares the two. Reported upstream as [sleap-nn#840](https://github.com/talmolab/sleap-nn/issues/840).
-- **Check `train_steps_per_epoch` when reusing a config.** It came along with the reused centroid config at 200, so an epoch saw 800 of 27,782 frames. In the centered instance config it was empty, which means every frame: 13,802 steps. At 16 minutes per epoch, 200 epochs would take about 54 hours unless training stops early. The dialog doesn't show this setting.
+- **Check `train_steps_per_epoch` when reusing a config.** It came along with the reused centroid config at 200, so an epoch saw 800 of 27,782 frames. In the centered instance config it was empty, which means every frame: 13,802 steps. At 16 minutes per epoch, 200 epochs would take about 54 hours unless training stops early. The dialog doesn't show this setting. For the centroid model, 200 was the main thing holding it back ([Training the centroid model longer](#training-the-centroid-model-longer)).
 - **Check `max_height` and `max_width` too.** Left empty, they come from the largest frame. A few larger frames (22 of the 3,087 validation frames, up to 1536x2048) set them to 1536x2048, so the 1024x1280 frames were enlarged 1.5 times on every call. This costs CPU, because augmentation runs on the whole enlarged frame, and it makes a crop smaller in real terms: a 450 px crop covers only 300 px of the original image. That is why the dialog warned that 20,524 of 61,371 instances would be clipped. Counting by hand gives 20,562 at 1.5 times, and 2,142 (3.5%, mostly tail tips) with no enlargement. The reused centroid config had these set to 1024 and 1280, so the two models saw frames at different sizes.
 - **Validation can dominate short epochs.** 10% of this package is 3,087 frames, about 772 steps, while the centroid model trained for 200, so about 70% of each epoch was validation. A smaller validation fraction would shorten it but make the validation loss noisier, and the learning-rate schedule and early stopping follow that loss; that trade-off wasn't measured.
 - **How many validation workers depends on the pipeline.** With the JPEG cache and 12 of each, the validation workers used 0.05 of a core each during centered instance training, and each one costs several seconds to start and 2.7 GB of committed memory. Reading the original images, 4 validation workers were too few (below). The worker count for validation alone needs the YAML (`val_data_loader.num_workers`), because the dialog has one box for both.
@@ -117,23 +117,81 @@ Scored on the validation frames at the end of each run:
 
 #### Training the centroid model longer
 
-**Retraining it with bigger epochs.** Same split, settings and sleap-nn version (0.3.5), on one A100 GPU of a Slurm cluster, 10 November. The only change was `train_steps_per_epoch`, from 200 to 2,000. Each epoch now shows the model 8,000 frames instead of 800, and the same 200-epoch limit allows 10 times as much training.
+**Retraining it with bigger epochs.** Same split, settings and sleap-nn version (0.3.5), on A100 GPUs of a Slurm cluster, 10 November. The main change was `train_steps_per_epoch`, from 200 to 2,000. Each epoch now shows the model 8,000 frames instead of 800, and the same 200-epoch limit allows 10 times as much training. Three runs:
+
+- **Longer, 1 GPU:** only that change.
+- **Longer, 2 GPUs:** the same config on two GPUs of one node. sleap-nn splits the steps between them, so an epoch still shows 8,000 frames, 4 on each GPU per step.
+- **Bigger, 2 GPUs:** also a bigger model. It sees frames at half size (scale 0.5) instead of a quarter, with 32 filters and a maximum stride of 32 instead of 16 and 16. Sigma 5 at that scale keeps the same 10 px spread in full-size pixels.
 
 That matters because sleap-nn's early-stopping and learning-rate rules count epochs, not frames. "No improvement for 20 epochs" meant only 16,000 frames with 800-frame epochs, so the original run stopped after about 158,000 frames shown in all. It also spent about 45% of each epoch on validation (about 10 s of every 22 s).
 
 Validation F1 from the check run during training (same validation frames), at the same number of frames shown:
 
-| Frames shown | Original, 800 per epoch | Retrained, 8,000 per epoch |
-|---|---|---|
-| 80,800–88,000 | 0.916 | 0.916 |
-| 157,600–160,000 | 0.942 (where it stopped) | 0.940 |
-| 408,000 | — | 0.969 |
-| 480,000 | — | 0.971 (run still going) |
+| Frames shown | Original, 800 per epoch | Longer, 1 GPU | Longer, 2 GPUs | Bigger, 2 GPUs |
+|---|---|---|---|---|
+| 80,800–88,000 | 0.916 | 0.916 | 0.883 | 0.950 |
+| 157,600–160,000 | 0.942 (where it stopped) | 0.940 | 0.931 | 0.964 |
+| 408,000 | — | 0.969 | 0.963 | 0.985 |
+| 800,000 | — | 0.979 | 0.978 | 0.994 |
+| Best | 0.942 | 0.982 | 0.981 | 0.995 |
+| Stopped after | 197 epochs | 163 epochs | 137 epochs | 156 epochs |
 
-- **At equal training the two runs score about the same.** The original wasn't learning worse; it stopped too soon. Its learning-rate cuts, from 56,000 frames on, didn't visibly hurt.
-- **Everything past 0.94 comes from training beyond where the original stopped.** The retrained run passed 0.942 at epoch 17 (144,000 frames), after 14 minutes of training and validation.
+All three runs stopped by early stopping, before the 200-epoch limit.
+
+**Where they go wrong.** The same count as for the original model above (anchor within 50 px, peak threshold 0.2), on each run's kept model (`best.ckpt`, the epoch with the lowest validation loss), with predictions made by `sleap-nn predict`:
+
+| On the 3,087 validation frames | Original | Longer, 1 GPU | Longer, 2 GPUs | Bigger, 2 GPUs |
+|---|---|---|---|---|
+| Labelled animals missed, of 6,134 | 492 (8.0%) | 111 (1.8%) | 113 (1.8%) | 49 (0.8%) |
+| Extra detections | 430 | 176 | 210 | 54 |
+| Second detection on an animal already found | 246 | 121 | 153 | 48 |
+| Detection far from any animal (over 150 px) | 119 | 36 | 37 | 2 |
+| Frames with at least one error | 21% | 7.1% | 8.0% | 2.6% |
+| Distance to the anchor when found, p50 / p95 | 7.2 / 27.8 px | 5.1 / 18.9 px | 5.5 / 19.5 px | 4.0 / 14.9 px |
+| Training frames: animals missed, of 55,237 | 8.4% | 1.4% | 1.7% | 0.7% |
+| Training frames: frames with an error | 22% | 5.7% | 6.6% | 2.1% |
+
+- **The 10 recordings where the original found nothing: 9 of them are now fine.** On their 413 training frames, one animal each, the original detected nothing in 410. The longer runs detected nothing in 95 (1 GPU) and 63 (2 GPUs), the bigger model in 94. Almost all of those are one recording, the 1536x2048 one (90 frames): the longer 1-GPU and the bigger model still found nothing in 89 and 90 of its frames, the 2-GPU run in 58. Across the other 9 recordings, at most 6 frames per model had no detection. That recording's frames are shrunk to 62.5% to fit 1024x1280 before the model's own scale, so its animal is the smallest in the package. These are training frames, which flatters every model.
+- **Training longer did most of it.** At equal frames shown, the longer 1-GPU run scored about what the original did. The original wasn't learning worse; it stopped too soon. Its learning-rate cuts, from 56,000 frames on, didn't visibly hurt. Misses fell from 8% to under 2% of animals, and frames with any error from about 1 in 5 to about 1 in 14.
+- **Doubles are now the main error of the longer runs.** About 70% of their extra detections are a second detection on an animal already found.
+- **The bigger model is better on every count.** It missed fewer than half as many animals as the longer small models (0.8% against 1.8%), made about a third of the extra detections, and placed the ones it found closer (4.0 px median). At equal frames shown it was ahead from the start. It costs time live: its network takes 0.9 ms per set of 1 camera and 4.7 ms per set of 4 on an RTX 6000 Ada, against 0.15 and 0.48 ms ([Live speed](#live-speed-of-the-two-centroid-models), below).
 - **For a centroid config reused from a small project, check `train_steps_per_epoch`.** Set it so an epoch covers thousands of frames, here 2,000 steps of 4. `campy-train-check` flags the original setting, because validation (772 steps) took more steps than training (200).
-- **Still to come.** These are partial results from a run still in progress. Its final score, the miss count above redone on the retrained model, and the comparison with a larger model (scale 0.5, 32 filters) and with training on two GPUs will be added when the runs end.
+- **These are one run of each.** The small differences between the two longer runs, such as 210 extras against 176, may be no more than run-to-run variation.
+
+**Training on two GPUs.** The longer config on two A100 GPUs reached the same score as on one (best F1 0.981 against 0.982, the same 1.8% missed) in 44 minutes instead of 1 hour 39 minutes: 2.2 times as fast, for about the same GPU time (1.5 against 1.65 GPU-hours). Two things in this setup needed working around:
+
+- **sleap-nn picks its main process from `LOCAL_RANK`, which `srun` doesn't set.** Started with `srun`, both GPU processes took themselves for the main one and both wrote the run's label files at startup; one start crashed on that. Setting it from Slurm's own variable fixes it: `srun bash -c 'export LOCAL_RANK=$SLURM_LOCALID; exec sleap-nn train ...'`. Reported upstream as [sleap-nn#842](https://github.com/talmolab/sleap-nn/issues/842), with a fix in [sleap-nn#843](https://github.com/talmolab/sleap-nn/pull/843).
+- **`srun` can kill the main process after training.** The second GPU's process exits as soon as training ends, while the main one goes on to predict and score the training and validation frames. This cluster's `srun` ends a job step 5 s after its first process exits, so both 2-GPU runs were killed in that last part. The best model was already saved, so nothing was lost but those final predictions, which were made separately. `srun --wait=0` turns that off.
+
+**Cluster resources, measured.** Every 5 s from the job's own resource counters and `nvidia-smi`, average and peak:
+
+| Run | Asked for | CPU cores busy | Memory used by the programs | GPU busy | GPU memory |
+|---|---|---|---|---|---|
+| Longer, 1 GPU (1 h 39 min) | 12 cores, 64 GB | 6.7, peak 11.3 | 4.3 GB, peak 17.9 | 47%, peak 78% | 0.9 GB |
+| Longer, 2 GPUs (44 min) | 24 cores, 128 GB | 12.3, peak 15.3 | 7.6 GB, peak 8.2 | 48–50% each, peaks 96–100% | 2 GB each |
+| Bigger, 2 GPUs (2 h 58 min) | 24 cores, 128 GB | 6.1, peak 6.8 | 12.8 GB, peak 14.0 | 88–91% each | 5 GB each |
+
+- **Memory: 32 GB would have done for every run.** The most any of them used was 18 GB, with the file cache counted too.
+- **CPU: about 12 cores for the small model on 1 GPU, 16 on 2 GPUs, 8 for the bigger model.** The small model's GPUs were busy only about half the time, waiting on the workers that read and augment frames, so more cores might speed it up; that wasn't tried. The bigger model kept its GPUs busy with 6 cores.
+- **GPU memory is far from the limit.** The most any run used was 5.5 of 40 GB per GPU, so these models would also train on smaller GPUs.
+
+#### Live speed of the two centroid models
+
+`campy-live` (dev `2a60321`, its defaults: TensorRT fp16, fixed crops, CUDA graphs) on the Dell Precision 7875's RTX 6000 Ada, 10 November, in 2D (no calibration). Emulated cameras played clips of 600 validation frames each, all with 2 mice, a different set of frames on each camera, 1024x1280 at 60 fps, recorded with NVENC H.265 on the machine's second GPU. One run of 60 s (3,600 sets) each. Both centroid models were paired with the package's own centered instance model (crop 450, 24 filters, max stride 64, 70.8M parameters), which runs on 512x512 crops, 5 per frame (`--max-instances 5`, the default: the fixed crops cost the same however many animals are found).
+
+| | Sets tracked, of 3,600 | Inference p50 / p99 | Last frame to 2D result, p50 / p99 | Centroid network | Centered instance network |
+|---|---|---|---|---|---|
+| Small centroid, 1 camera | 3,600 | 3.2 / 3.3 ms | 4.2 / 4.6 ms | 0.15 ms | 2.6 ms |
+| Bigger centroid, 1 camera | 3,600 | 4.0 / 4.1 ms | 5.1 / 5.3 ms | 0.91 ms | 2.6 ms |
+| Small centroid, 4 cameras | 3,517 | 16.7 / 17.3 ms | 23.3 / 33.8 ms | 0.48 ms | 14.6 ms |
+| Bigger centroid, 4 cameras | 2,760 | 21.4 / 22.3 ms | 30.0 / 38.6 ms | 4.7 ms | 15.1 ms |
+
+- **With 1 camera both keep up easily.** The bigger centroid model adds 0.8 ms per set.
+- **With 4 cameras neither pair keeps up at 60 fps,** where a set has 16.7 ms. The centered instance model is the reason: its 20 crops of 512x512 take 14.6–15.1 ms by themselves. The bigger centroid model's 4.7 ms then takes a set to 21.4 ms, and 23% of the sets were skipped, against 2% with the small one.
+- **To use the bigger centroid model live on several cameras, pair it with a live-sized centered instance model,** such as the 160 px one in [Settings that worked](#settings-that-worked). That pairing wasn't measured. On a slower GPU than the RTX 6000 Ada, every time here grows.
+- The network columns are the median per set from a second run of each with campy's stage timer (`bench/live_stage_timing.py`), which waits for the GPU between steps; those runs' total inference came within 0.4 ms of the plain runs' at the median.
+- **Precision:** the miss counts above come from sleap-nn in fp32. Live, the networks run as TensorRT fp16 engines, whose keypoints come out a little different; the live runs' detections weren't counted against the labels.
+- In the 4-camera runs the GPU spent part of the time at its power limit (its clock was held by the software power cap at 39% of the rig lock's checks over the whole series). The rig lock saw nothing else on the GPUs or the encoder; it marked the series as contaminated only because the machine's security software used 2–3.4 cores of 24 as the test started its processes, as it does on this machine.
 
 ### Checking a config before a long run
 
@@ -172,6 +230,8 @@ It exits 0 when everything is ok, 1 on a warning and 2 on a failure. On Windows,
 ## Settings that worked
 
 **Centroid**: 0.25 input scale, 16 filters, max stride 16, **output stride 2**, a 10 px confidence-map spread (sigma, in full-size pixels), anchored on the trunk. Output stride 2 with sigma 10 found 97.6% of the mice in the validation frames, against 94.8% at output stride 4 with sigma 20. Most of the remaining misses were mice touching each other.
+
+On the 30,000-frame package above, the same centroid size reached F1 0.98 with 2,000 steps per epoch, and a bigger one (scale 0.5, 32 filters, max stride 32) 0.995, at 0.9 ms per set of 1 camera and 4.7 ms per set of 4 on an RTX 6000 Ada ([Training the centroid model longer](#training-the-centroid-model-longer)).
 
 **Centered-instance**: a 320 px crop scaled to half size, so the model sees **160 px**, with **24 filters**, **max stride 32** and sigma 5 px.
 
