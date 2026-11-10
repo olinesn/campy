@@ -169,7 +169,7 @@ def TIndex(path):
 
 def Main(argv=None):
 	parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
-	parser.add_argument("folder", help="the session folder (C:\\data\\<date_time>), or SpikeGLX's run folder")
+	parser.add_argument("folder", help="the session folder (D:\\data\\<date_time>), or SpikeGLX's run folder")
 	parser.add_argument("--campy", help="campy's recording folder (Camera0\\frametimes.npy ...): the session folder")
 	parser.add_argument("--csv", help="write the rows here (default: photometry_snapshots.csv in the folder)")
 	parser.add_argument("--green", default="XA5")

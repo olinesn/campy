@@ -5,9 +5,9 @@
 # (in the recording environment). What the page does, in order: chronicrecord/README.md, "From the panel".
 extends: chronic_pico.yaml
 
-# The session's folder, C:\data\<date_time>\ (gate tests: C:\data\gatetest\<date_time>\, below): campy's videos,
+# The session's folder, D:\data\<date_time>\ (gate tests: D:\data\gatetest\<date_time>\, below): campy's videos,
 # spikeglx\ (SpikeGLX's run), pico\ (the Pico's log) and logs\ (every program's output).
-videoFolder: "C:\\data"
+videoFolder: "D:\\data"
 
 # The cameras in one campy-live-view window (frames only, no tracking), not a preview window per camera.
 liveFeed: True
@@ -25,9 +25,9 @@ pico:
   # e.g. copyTo: "\\\\server\\share\\folder"; the rig's own file names the lab's server there.
   lengths:
     - {name: "6 days", seconds: 518400}
-    - {name: "Gate test (15 min, 3 bouts)", seconds: 900, videoFolder: "C:\\data\\gatetest"}
+    - {name: "Gate test (15 min, 3 bouts)", seconds: 900, videoFolder: "D:\\data\\gatetest"}
     - {name: "1 hour (12 bouts)", seconds: 3600}
-    - {name: "Overnight rehearsal (8 h, 96 bouts)", seconds: 28800, videoFolder: "C:\\data\\rehearsal"} # 152 GB on 6 Nov (SpikeGLX 150, videos 2 with no animal)
+    - {name: "Overnight rehearsal (8 h, 96 bouts)", seconds: 28800, videoFolder: "D:\\data\\rehearsal"} # 152 GB on 6 Nov (SpikeGLX 150, videos 2 with no animal)
   # The bouts: chronic_control.py's settings (INTERVAL 300 s, LEDs 30 ms, ...), unless set: changes them for every
   # session here, e.g. set: {INTERVAL: 600, PULSE_WIDTH_C: 0.05}. The page's "Bout settings" change them without changing
   # this file (the next panel starts from the page's last values), and each recording's session-config.yaml says which.
