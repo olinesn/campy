@@ -271,3 +271,68 @@ def test_the_config_takes_delete_after_verify(tmp_path):
 	path.write_text(yaml.safe_dump({"numCams": 1, "post": {"copy": {"to": "x", "delete_after_verify": "yes"}}}))
 	with pytest.raises(session.SessionError, match="delete_after_verify: 'yes' is not true or false"):
 		session.Config(str(path))
+
+
+# ------------------------------------------------------------------ out of tracking's way
+
+def test_the_check_reads_no_faster_than_its_limit(tmp_path):
+	# However fast the copy's side answers (here: the same disk), the check keeps to its rate: 6 MB at 3 MB/s
+	for side in ("here", "there"):
+		(tmp_path / side).mkdir()
+	data = os.urandom(6 * 1000 * 1000)
+	(tmp_path / "here" / "0.mp4").write_bytes(data)
+	(tmp_path / "there" / "0.mp4").write_bytes(data)
+	t0 = time.monotonic()
+	files, _, total = copycheck.Check(str(tmp_path / "here"), str(tmp_path / "there"), rate=3e6)
+	assert files[0]["result"] == "verified" and total == len(data)
+	assert time.monotonic() - t0 >= 1.8
+	assert copycheck.MAX_BYTES_PER_S == 100e6 # the default
+
+
+def test_the_check_reads_and_compares_only_in_its_own_lowest_priority_threads(tmp_path, monkeypatch):
+	import threading
+	lowered, read_in = set(), set()
+	real_background, real_read = copycheck.Background, copycheck.ReadAll
+
+	def background():
+		lowered.add(threading.get_ident())
+		return real_background()
+
+	def read(f, n):
+		read_in.add(threading.get_ident())
+		return real_read(f, n)
+	monkeypatch.setattr(copycheck, "Background", background)
+	monkeypatch.setattr(copycheck, "ReadAll", read)
+	folder = recording(tmp_path, "2026-11-10_11-00-00")
+	share = tmp_path / "share"
+	(share / "2026-11-10_11-00-00").mkdir(parents=True)
+	import shutil
+	shutil.copytree(folder, str(share / "2026-11-10_11-00-00"), dirs_exist_ok=True)
+	files, _, _ = copycheck.Check(folder, str(share / "2026-11-10_11-00-00"))
+	assert all(f["result"] == "verified" for f in files)
+	assert read_in and read_in <= lowered and threading.get_ident() not in read_in
+
+
+@pytest.mark.skipif(sys.platform == "darwin", reason="macOS: nothing is lowered")
+def test_a_check_thread_is_lowered_as_far_as_the_system_lets_it(tmp_path):
+	import threading
+	got = {}
+
+	def lower():
+		got["lowered"] = copycheck.Background()
+		if sys.platform.startswith("linux"):
+			got["nice"] = os.getpriority(os.PRIO_PROCESS, threading.get_native_id())
+		elif sys.platform == "win32":
+			import ctypes
+			k32 = ctypes.WinDLL("kernel32")
+			k32.GetCurrentThread.restype = ctypes.c_void_p
+			k32.GetThreadPriority.argtypes = [ctypes.c_void_p]
+			got["priority"] = k32.GetThreadPriority(k32.GetCurrentThread())
+	t = threading.Thread(target=lower)
+	t.start()
+	t.join()
+	assert got["lowered"]
+	if "nice" in got:
+		assert got["nice"] == 19
+	if "priority" in got:
+		assert got["priority"] < 0 # below normal: idle (-15), or background mode's own

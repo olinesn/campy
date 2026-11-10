@@ -24,6 +24,22 @@ ReadBack says which it managed: "uncached", "cache dropped" or "maybe cached".
 What the server answers with may still come from its own memory: the check
 says the server holds these bytes, not that its disk does.
 
+Kept out of tracking's way (campy-live runs on the same computer, perhaps a
+recording with it): the check uses no GPU, and
+- reads at most MAX_BYTES_PER_S (100 MB/s) in all, however fast the copy's
+  side answers. Its CPU is SHA-256 and a byte comparison: on an M-series Mac
+  (2026-11-10, a 2.15 GB file) 0.7 CPU s per GB unlimited (1.6 GB/s, 114% of
+  one core), and 15% of one core on average at 100 MB/s;
+- runs in threads of their own at the lowest priority (Background): on
+  Windows background mode (THREAD_MODE_BACKGROUND_BEGIN: the lowest CPU, disk
+  and memory priority) and THREAD_PRIORITY_IDLE; on Linux nice 19 and the idle
+  disk class (ioprio, which only the BFQ and CFQ disk schedulers use; NVMe's
+  default "none" ignores it). On macOS nothing is lowered.
+- on Linux, drops each piece of the recording it has read from the file
+  cache (posix_fadvise), so a day's recording read back doesn't push out
+  what tracking keeps there. Windows' background mode gives the pages it
+  reads the lowest memory priority, so they are dropped first.
+
 Delete: only after a check that found every file the same, and only when
 - nothing else wants the folder (a recording into it, a copy of it waiting),
 - no program has a file in it open (SpikeGLX, ffmpeg, campy, a viewer): on
@@ -37,9 +53,10 @@ and only then removed. A folder of that name left behind is one whose removal
 was cut short; its copy was checked in full.
 """
 
-import hashlib, os, shutil, subprocess, sys, time
+import hashlib, os, platform, shutil, subprocess, sys, threading, time
 
 CHUNK = 8 * 1024 * 1024 # bytes compared at a time (a multiple of every disk's sector size, for unbuffered reads)
+MAX_BYTES_PER_S = 100e6 # the check reads no faster than this (each side), however fast the copy's side answers
 DELETING = ".deleting-campy"
 
 
@@ -122,6 +139,60 @@ def ReadAll(f, n):
 	return b"".join(parts)
 
 
+# ------------------------------------------------------------------ out of tracking's way
+
+def Background():
+	"""
+	The calling thread at the lowest priority this system gives without privileges: CPU, and disk where it can
+	(see above). True when lowered. For threads of the check's own only: on Linux a thread can't raise itself again.
+	"""
+	try:
+		if sys.platform == "win32":
+			import ctypes
+			k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+			k32.GetCurrentThread.restype = ctypes.c_void_p
+			k32.SetThreadPriority.argtypes = [ctypes.c_void_p, ctypes.c_int]
+			me = k32.GetCurrentThread()
+			background = bool(k32.SetThreadPriority(me, 0x00010000)) # THREAD_MODE_BACKGROUND_BEGIN: CPU, I/O, memory
+			idle = bool(k32.SetThreadPriority(me, -15)) # THREAD_PRIORITY_IDLE
+			return background or idle
+		if sys.platform.startswith("linux"):
+			tid = threading.get_native_id()
+			os.setpriority(os.PRIO_PROCESS, tid, 19) # a Linux thread's own nice
+			number = {"x86_64": 251, "aarch64": 30}.get(platform.machine()) # ioprio_set
+			if number is not None:
+				import ctypes
+				ctypes.CDLL(None, use_errno=True).syscall(number, 1, tid, 3 << 13) # IOPRIO_WHO_PROCESS, IOPRIO_CLASS_IDLE
+			return True
+	except (OSError, AttributeError, ValueError):
+		pass
+	return False
+
+
+class Pace:
+	"""No more than rate bytes a second, over the whole check: Wait(n) after each n bytes read."""
+
+	def __init__(self, rate=None):
+		self.rate = MAX_BYTES_PER_S if rate is None else rate
+		self.t0, self.bytes = time.monotonic(), 0
+
+	def Wait(self, n):
+		self.bytes += n
+		if self.rate:
+			ahead = self.bytes / self.rate - (time.monotonic() - self.t0)
+			if ahead > 0:
+				time.sleep(ahead)
+
+
+def Forget(f, at, n):
+	# Linux: the pieces of the recording read so far dropped from the file cache (they're read once only)
+	if hasattr(os, "posix_fadvise") and sys.platform.startswith("linux"):
+		try:
+			os.posix_fadvise(f.fileno(), at, n, os.POSIX_FADV_DONTNEED)
+		except OSError:
+			pass
+
+
 # ------------------------------------------------------------------ checking
 
 def Files(folder, skip=()):
@@ -148,10 +219,11 @@ def Snapshot(folder, skip=()):
 	return snap
 
 
-def CompareFile(src, dst, done=None, stop=None, pool=None):
+def CompareFile(src, dst, done=None, stop=None, pool=None, pace=None):
 	"""
 	One file, here (src) and in the copy (dst), byte for byte: {"bytes", "sha256", "result": verified, mismatch,
-	missing or error, "why", "read_back"}. done(n): bytes compared so far, as it goes.
+	missing or error, "why", "read_back"}. done(n): bytes compared so far, as it goes. pace: a Pace, shared by the
+	files of one check.
 	"""
 	result = {"bytes": None, "sha256": None, "result": "error", "why": "", "read_back": None}
 	try:
@@ -191,9 +263,13 @@ def CompareFile(src, dst, done=None, stop=None, pool=None):
 					if not mine:
 						break
 					h.update(mine)
+					Forget(a, at, len(mine))
+					Forget(b, at, len(mine))
 					at += len(mine)
 					if done is not None:
 						done(len(mine))
+					if pace is not None:
+						pace.Wait(len(mine))
 			finally:
 				b.close()
 	except OSError as e:
@@ -206,10 +282,12 @@ def CompareFile(src, dst, done=None, stop=None, pool=None):
 	return result
 
 
-def Check(folder, dest, skip=(), progress=None, stop=None):
+def Check(folder, dest, skip=(), progress=None, stop=None, rate=None):
 	"""
 	Every file of folder against its copy in dest, byte for byte (CompareFile). Returns (files: [{"file", ...}],
-	snapshot: Snapshot(folder) taken before the check, total bytes). progress(bytes done, bytes in all).
+	snapshot: Snapshot(folder) taken before the check, total bytes). progress(bytes done, bytes in all). The reading
+	and comparing run in two threads of their own at the lowest priority (Background), no faster than rate bytes a
+	second (MAX_BYTES_PER_S; 0: no limit).
 	"""
 	from concurrent.futures import ThreadPoolExecutor
 	snapshot = Snapshot(folder, skip)
@@ -220,15 +298,22 @@ def Check(folder, dest, skip=(), progress=None, stop=None):
 		done[0] += n
 		if progress is not None:
 			progress(done[0], total)
-	files = []
-	with ThreadPoolExecutor(1, thread_name_prefix="campy copy check") as pool:
+
+	def check(pool):
+		pace = Pace(rate)
+		files = []
 		for rel in snapshot:
 			if stop is not None and stop():
 				files.append({"file": rel, "bytes": None, "sha256": None, "result": "error", "why": "stopped",
 					"read_back": None})
 				continue
-			r = CompareFile(os.path.join(folder, *rel.split("/")), os.path.join(dest, *rel.split("/")), step, stop, pool)
+			r = CompareFile(os.path.join(folder, *rel.split("/")), os.path.join(dest, *rel.split("/")), step, stop,
+				pool, pace)
 			files.append(dict(file=rel, **r))
+		return files
+	# One thread reads here, compares and hashes; the other reads the copy's side
+	with ThreadPoolExecutor(2, thread_name_prefix="campy copy check", initializer=Background) as pool:
+		files = pool.submit(check, pool).result()
 	return files, snapshot, total
 
 
