@@ -168,7 +168,7 @@ While it records, the **Pico** card shows the bout (for example `bout 212 of 172
 
 **If campy fails on its own** (a camera lost, say), the Pico and SpikeGLX are left running: the animal's LED schedule goes on, and SpikeGLX keeps recording its bouts. The page says so under **Still running**, with **Stop the Pico**, then **Stop SpikeGLX's run**, for when you decide. The same buttons appear if the panel's window was closed during a session and the panel was opened again.
 
-The session's folder, `D:\data\<date_time>\` (on the 4 TB data disk; `C:\data` before 10 November 2026), also holds `spikeglx\` (SpikeGLX's run, named `chronic_<date_time>`) and `pico\` (the Pico's log, `<date>\timestamps.txt`, and its program's output, `session.out`).
+The session's folder, `D:\data\<date_time>\` (on the 4 TB data disk; recordings made in `C:\data` before 10 November 2026 were moved there), also holds `spikeglx\` (SpikeGLX's run, named `chronic_<date_time>`) and `pico\` (the Pico's log, `<date>\timestamps.txt`, and its program's output, `session.out`).
 
 ## Where the recording is
 
