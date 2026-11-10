@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -333,6 +334,23 @@ def test_copy_puts_the_whole_folder_under_copy_to(tmp_path):
 		assert (copied / name / "0.mp4").read_bytes() == (folder / name / "0.mp4").read_bytes()
 	assert (copied / "logs" / "campy-acquire.log").read_text() == "its log\n"
 	assert (folder / "Camera0" / "0.mp4").exists() # nothing deleted
+
+
+def test_a_copy_that_takes_a_while_is_done_though_post_json_changed_after_it(tmp_path, monkeypatch):
+	# As on Windows, where robocopy takes over the half second between post.json's saves: the copy step's own lines
+	# after the copy save post.json again, so the copied one is older; only post's own files may differ like that
+	folder = recording(tmp_path / "rec")
+	real = subprocess.run
+
+	def slow(command, *args, **kwargs):
+		if command and command[0] in ("robocopy", "rsync"):
+			time.sleep(0.7)
+		return real(command, *args, **kwargs)
+	monkeypatch.setattr(post.subprocess, "run", slow)
+	dest = tmp_path / "nas"
+	results = post.Run(str(folder), {"copy": {"to": str(dest)}}, only=["copy"], out=open(os.devnull, "w"))
+	assert results["copy"][0] == "done", results
+	assert (dest / folder.name / "Camera0" / "0.mp4").read_bytes() == (folder / "Camera0" / "0.mp4").read_bytes()
 
 
 def test_run_replaces_folder_and_goes_on_after_a_failure(tmp_path):

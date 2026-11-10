@@ -57,6 +57,23 @@ def test_recordings_are_copied_one_after_another(tmp_path):
 	assert job["bytes"] == job["done_bytes"] >= 5000
 
 
+def test_a_copy_is_in_post_json_before_it_counts_as_done(tmp_path, monkeypatch):
+	# Whatever waits for the copies (the panel closing) finds each result in post.json, even when writing it is slow
+	real = post.Save
+
+	def slow(folder, state):
+		time.sleep(0.3)
+		real(folder, state)
+	monkeypatch.setattr(post, "Save", slow)
+	to = tmp_path / "share"
+	to.mkdir()
+	queue = quiet()
+	folder = recording(tmp_path, "2026-11-09_10-50-00")
+	queue.Add(folder, str(to))
+	assert finished(queue)["jobs"][0]["state"] == "done"
+	assert post.Load(folder)["steps"]["copy"]["state"] == "done"
+
+
 def test_a_copy_that_fails_says_so_in_post_json(tmp_path):
 	not_a_folder = tmp_path / "a file"
 	not_a_folder.write_text("x")
