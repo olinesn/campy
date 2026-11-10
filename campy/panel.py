@@ -76,7 +76,7 @@ Only the standard library and numpy (campy's recording environment): the
 page is one file of HTML and JavaScript (campy/panelpage.py), no build step.
 """
 
-import argparse, collections, http.server, json, os, platform, secrets, shutil, struct, sys, threading, time, \
+import argparse, collections, http.server, json, os, platform, re, secrets, shutil, struct, sys, threading, time, \
 	webbrowser, zlib
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
@@ -402,11 +402,28 @@ def CalibrationCheck(where, now=None):
 	return ("ok", text)
 
 
+def SinceRelease(describe, version):
+	"""
+	git describe's distance from the newest release tag (v2.7.0-96-g7bf012e): ("+96", "96 commits after the v2.7.0
+	release"), or ("(v2.6.0 +12)", ...) when that tag isn't the version setup.py gives; None on the tag itself, or
+	without git describe.
+	"""
+	m = re.match(r"^(.+)-(\d+)-g[0-9a-f]+$", str(describe or ""))
+	if not m or int(m.group(2)) == 0:
+		return None
+	tag, n = m.group(1), int(m.group(2))
+	text = "{} commit{} after the {} release".format(n, "" if n == 1 else "s", tag)
+	if tag.lstrip("v") == str(version):
+		return "+{}".format(n), text
+	return "({} +{})".format(tag, n), text
+
+
 def VersionLabel():
 	"""
 	Which campy the panel runs, for the page's top right corner (as LUC3D shows its own): {text, title}, e.g.
-	text "v2.7.0 · dev · 874060ba" (version, branch, commit; "modified" when the checkout's files differ from the
-	commit), title the whole of it. Read once as the panel starts: a checkout updated under it shows only once the
+	text "v2.7.0 +96 · dev · 7bf012ec" (version; how many commits the checkout is past that release's tag, from git
+	describe, so a checkout newer than the release doesn't read as the release; branch; commit; "modified" when the
+	checkout's files differ from the commit), title the whole of it. Read once as the panel starts: a checkout updated under it shows only once the
 	panel is opened again, and so does the label.
 	"""
 	try:
@@ -416,6 +433,9 @@ def VersionLabel():
 		return {"text": "version unknown", "title": "Could not tell which campy this is: {}".format(e)}
 	version, commit, branch = info.get("version"), info.get("commit"), info.get("branch")
 	parts = ["v{}".format(version) if version else "version unknown"]
+	after = SinceRelease(info.get("describe"), version)
+	if after:
+		parts[0] += " " + after[0]
 	if branch and branch != "HEAD":
 		parts.append(branch)
 	if commit:
@@ -425,7 +445,9 @@ def VersionLabel():
 	title = "campy {}".format(version or "(version unknown)")
 	if commit:
 		title += ", commit {}{}".format(commit, " on branch " + branch if branch and branch != "HEAD" else "")
-		if info.get("describe"):
+		if after:
+			title += " ({})".format(after[1])
+		elif info.get("describe"):
 			title += " ({})".format(info["describe"])
 	if info.get("dirty"):
 		title += ", with files changed since that commit"

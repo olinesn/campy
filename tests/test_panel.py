@@ -85,8 +85,13 @@ def test_the_page_says_which_campy_it_runs(monkeypatch):
 	monkeypatch.setattr(manifest, "CampyInfo", lambda: {"version": "2.7.0", "commit": "874060ba82e8b4e27c120330934dc802e5780aa6",
 		"branch": "pr358", "dirty": False, "describe": "v2.7.0-57-g874060b", "path": "/campy"})
 	label = panel.VersionLabel()
-	assert label["text"] == "v2.7.0 \u00b7 pr358 \u00b7 874060ba"
+	assert label["text"] == "v2.7.0 +57 \u00b7 pr358 \u00b7 874060ba" # 57 commits past the release: not the release
 	assert "874060ba82e8b4e27c120330934dc802e5780aa6" in label["title"] and "pr358" in label["title"]
+	assert "57 commits after the v2.7.0 release" in label["title"]
+	assert panel.SinceRelease("v2.7.0-1-g874060b", "2.7.0") == ("+1", "1 commit after the v2.7.0 release")
+	assert panel.SinceRelease("v2.6.0-12-g874060b", "2.7.0")[0] == "(v2.6.0 +12)" # the tag isn't setup.py's version
+	assert panel.SinceRelease("v2.7.0-0-g874060b", "2.7.0") is None and panel.SinceRelease("v2.7.0", "2.7.0") is None
+	assert panel.SinceRelease(None, "2.7.0") is None and panel.SinceRelease("874060b", "2.7.0") is None
 	monkeypatch.setattr(manifest, "CampyInfo", lambda: {"version": "2.7.0", "commit": "874060ba82e8", "branch": "HEAD",
 		"dirty": True, "path": "/campy"})
 	assert panel.VersionLabel()["text"] == "v2.7.0 \u00b7 874060ba \u00b7 modified" # a detached checkout: no branch
