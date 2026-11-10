@@ -96,6 +96,25 @@ Scored on the validation frames at the end of each run:
 - **2,768 of these 3,086 frames (90%) were training frames for the centroid model.** sleap-nn 0.3.5 holds out a different random set of frames for each model type, even with the same seed and fraction. That is fixed in the next sleap-nn release (sleap-nn pull request 835). Only 318 frames were held out from both models; on those, the pair scored 0.780. With only 318 frames the 99th percentile there rests on a handful of animals.
 - **Read the third column as the pair's accuracy on frames it has never seen,** with the caveat that 318 frames is a small sample.
 
+**Where the centroid model goes wrong.** The centroid model's own predictions (peak threshold 0.2, the ones sleap-nn saves after training) were matched to each labelled animal's anchor point, the Trunk. A prediction within 50 px of it counts as finding that animal; the median labelled animal is about 230 px long.
+
+| Centroid model | Its 3,087 validation frames | Its 27,782 training frames |
+|---|---|---|
+| Labelled animals missed | 492 of 6,134 (8.0%) | 4,630 of 55,237 (8.4%) |
+| Extra detections | 430 | 3,959 |
+| Second detection on an animal already found | 246 | 2,255 |
+| Detection far from any animal (over 150 px) | 119 | 1,083 |
+| Frames with at least one error | 21% | 22% |
+| Distance to the anchor when found, p50 / p95 | 7.2 / 27.8 px | 7.2 / 27.4 px |
+
+- **It misses as many animals on the frames it trained on as on new ones,** and its training and validation losses ended about equal (0.00039 and 0.00043). So it isn't memorising its training frames, and more labelled frames of the same kind are unlikely to help much by themselves. Two things are left to try, and this run doesn't tell them apart:
+  - **The model's size.** This one sees each frame at a quarter of its size (scale 0.25), with 16 filters and a maximum stride of 16.
+  - **How long it trained.** At 200 steps of 4 frames per epoch, its 197 epochs showed it each training frame only about 6 times. Training stopped once the validation loss had stopped improving by the early-stopping rule. By then the plateau rule had cut the learning rate from 1e-4 to 4e-7, and the check run during training was still creeping up (F1 0.933 at epoch 150, 0.942 at epoch 196).
+- **Misses come with extra detections in about half the cases.** Half of the missed animals had a detection 50–150 px away, and more than half of the extras landed on an animal already found. Of the 492 misses on validation frames, 148 had another animal within 100 px.
+- **The cutoffs don't change the picture.** Counting any detection within 100 px as found leaves 7.0% missed. Raising the peak threshold trades misses for extras: at 0.3, 9.9% missed and 245 extras; at 0.5, 16.2% missed and 82 extras. In every case at least 20% of frames keep an error.
+- **In 10 recordings it found nothing.** The model detected no animal in 410 of their 413 training frames. These include every frame of two of the three recordings with frames larger than 1024x1280: 1472x1936 (188 frames) and 1536x2048 (90 frames). Both are shrunk to fit 1024x1280 before the model sees them. In the third, at 1464x1936, it found nothing in only 1 of 48 frames. These 10 recordings account for 9% of the misses on training frames. Outside them, 7.7% of animals were missed. These frames haven't been looked at yet.
+- **On the 318 frames neither model trained on, the chained misses and extras are the centroid model's.** The chained run missed 54 animals and made 52 extra detections there, the same counts as the centroid model alone. The centered instance model, given crops centred on the labelled animals, placed every animal's Trunk within 3 px (642 of 642). As a rough check, scoring the 8.4% missed animals as 0 takes the centered instance model's 0.836 (all 3,086 frames) to about 0.77. The chained run scored 0.780 there, so the misses account for about the whole cost of chaining.
+
 ### Checking a config before a long run
 
 `campy-train-check` reads sleap-nn training configs and says which settings will cost hours or change what the model sees, before anything starts:
