@@ -14,6 +14,8 @@ Double-click **campy recording** on the desktop. It is the rig's one icon, for e
 - A black window opens and fills with lines of text. Leave it open: it is the panel itself. You don't need to read it.
 - Your web browser opens the panel's page. If it doesn't, the black window's first lines show its address (`http://127.0.0.1:8765/?t=...`): copy the whole address, key included, into the browser.
 
+**Text too small?** The top left corner has **Text size** buttons: **A+** makes all the page's text larger (up to twice the size), **A−** smaller. The browser remembers the choice for the next time the page opens. The page also follows the browser's own text size (Settings > Appearance > Font size) and its zoom (Ctrl and +).
+
 The page's top right corner says which version of the software it runs, for example `v2.7.0 +96 · dev · 7bf012ec` (96 changes after the 2.7.0 release): give it when you report a problem. The page is only for this computer. Working over Remote Desktop, open it in the rig's own browser, inside the Remote Desktop window.
 
 On a rig that other tests share (most of them), the panel first waits for the rig to be free, then holds it for as long as it is open, so that no test runs while you record. While it holds the rig, Ctrl-C in the black window does nothing: close the panel with **Close the panel** at the top of the page once nothing is recording.
@@ -33,7 +35,7 @@ At the top of the page, under **Next recording** and **Saved with the recording*
 - **Experiment name**: for example `Social hierarchy, week 3`.
 - **Animal IDs**: the animals in the cage, separated by commas: `M12, M14, M15`.
 - **Notes**: anything worth knowing later: `cage 2, new bedding`.
-- **Copy each recording to** (optional): a folder for the copies, for example the lab's network share, `\\server\share\your folder`. After each recording ends, the computer copies its folder there, in the background, while the next recording goes on. Nothing is deleted, here or there. The page remembers the folder for next time; empty the box for no copies.
+- **Copy each recording to** (optional): a folder for the copies, for example the lab's network share, `\\server\share\your folder`. After each recording ends, the computer copies its folder there, in the background, while the next recording goes on. Nothing is deleted, here or there. The page remembers the folder for next time; empty the box for no copies. On the ChronicRecord rig, some lengths fill this box in with a folder of their own when you pick them (the 6-day session and the gate test go to the lab's server): change it if this recording should go somewhere else. Picking a length without one puts back the experiment's usual folder.
 
 These are saved with the recording, so you can find it again. If the page can't reach the copy folder when you press Start, it says so and doesn't start: check the address, or open the share once in File Explorer. If only the last folder is missing (for example a new `\\server\share\your folder\new-project` in a folder that is there), it says the folder doesn't exist yet and shows **Create this folder**: press it, then **Start recording** again. It makes only that last folder, so a mistyped share or parent folder makes nothing.
 
@@ -44,6 +46,14 @@ Next to them, under **Checks**, is a list of checks:
 - On the ChronicRecord rig the disk line is what the chosen length needs instead, and a length that doesn't fit stops the start ([below](#on-the-chronicrecord-rig-the-pico-and-spikeglx)).
 - **stops the start** (red): the recording can't start until it is fixed. Ask the person who set up the rig.
 
+On the ChronicRecord rig, under **Start recording**, a drawing shows **one bout as the Pico runs it**: a row for each of its outputs (the record gate to SpikeGLX on GP2, the camera trigger on GP3, the blue LED on GP4 and the yellow LED on GP5), from 5 s before the gate opens to the next bout, with a time axis under it in seconds from the gate opening (0 s). The stretches between the axis marks aren't drawn to scale. The LEDs' stretch is the exception: it is zoomed in to milliseconds and shows the camera's real pulses, so you can see which frames each LED lights, which LED comes first, and any dark gap between them. It follows the **Bout settings** as you change them: the page sends a setting when you leave its box or press Enter, and also after a short pause in typing.
+
+![One bout as the Pico runs it: the record gate, the camera's pulses, the blue LED and the yellow LED, with the LEDs' stretch zoomed in to milliseconds](images/panel-bout.png)
+
+*(The ChronicRecord config's bout, with its fiber photometry pattern: yellow 50 ms, 150 ms dark, then blue 50 ms, lighting frames 300-302 and 312-314. Each LED row has its wavelength's colour and, with LED power on, the driver current and power at the fiber tip last confirmed at a Start. Dark theme.)*
+
+**LED power (ChronicRecord, fiber photometry).** When you press **Start recording**, the page first asks, for each LED, for its current on the Doric LED driver (mA) and its power at the tip of the fiber (µW), measured with the power meter **before the fiber is connected to the animal**. The boxes are filled in with the last values confirmed with that experiment, and say when that was (in yellow if it was an earlier day). Change them or check them, then press **Confirm and start**. The recording doesn't start without them. They are saved in the recording's `session.json` (under `fields`, `ledPower`), with the time they were confirmed. Under **Start recording** the page shows the last ones. A config turns this on with `panel.led_power`, the list of its LEDs' names.
+
 The recording's length is fixed by the rig's settings, and the page shows it (for example `2:00:00 each`).
 
 ## 3. Start
@@ -51,7 +61,11 @@ The recording's length is fixed by the rig's settings, and the page shows it (fo
 Press **Start recording**. Within about a minute, depending on the rig, the page shows **Recording** at the top, and:
 
 - **Each camera's picture**, refreshed every second. Check that every camera shows the cage. Before a camera's first frame it says "No picture yet" instead (on the ChronicRecord rig, until you start the Pico, since the cameras wait for its pulses). Under each one, a green **OK**, or a yellow label saying what's wrong (see below), and its frames per second, which should be steady.
-- **Disk free**, and about how long it lasts. On the ChronicRecord rig, what the rest of the session's plan still needs instead (an estimate), with how many GB it is short in red if it doesn't fit.
+- **Disk free**, and about how long it lasts. On the ChronicRecord rig, what the rest of the session's plan still needs instead (an estimate), with how many GB it is short in red if it doesn't fit. A ring next to the number shows the drive the recording goes to (for example `of 4.0 TB on D:`): grey for what is already used, yellow for what the rest of the plan needs (red if it doesn't fit), green for what stays free. If the recordings are copied onto another drive of this computer (**Copy each recording to**), a small ring below shows that drive too, for example `C: 460 GB free of 1.0 TB`.
+
+  ![The Disk free tile: a ring for the 4 TB recording drive, mostly the plan's estimate, and a small one for the drive the copies go to](images/panel-disk-free.png)
+
+  *(An example, with made-up numbers.)*
 - **Tracked in 3D**: how many animals the live tracking sees, for example `5 of 5`.
 - **Programs**: each should say **running**.
 - The time recorded so far, out of the recording's length.

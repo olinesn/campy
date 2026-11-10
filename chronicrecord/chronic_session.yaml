@@ -21,6 +21,8 @@ pico:
   state_dir: "C:\\campy_data\\pico\\state"
   # The lengths the page offers, the first by default. campy's recTimeInSec is worked out from the Pico's plan for
   # the length chosen (the plan's camera pulses / 60), so they can't disagree.
+  # A length's copyTo (optional) is the folder the page's "Copy each recording to" box fills in when it is picked,
+  # e.g. copyTo: "\\\\server\\share\\folder"; the rig's own file names the lab's server there.
   lengths:
     - {name: "6 days", seconds: 518400}
     - {name: "Gate test (15 min, 3 bouts)", seconds: 900, videoFolder: "C:\\data\\gatetest"}
@@ -56,3 +58,8 @@ panel:
   # The disk check's videos: MB/s per camera while the cameras take frames. On the high side: 60 fps H.265 of mice in a
   # lit cage is about 0.4-0.5 (worked out from 30 fps recordings); the empty cage of 6 Nov wrote about 0.1.
   video_mb_s: 0.6
+  # Fiber photometry: at each Start the page asks for each LED's current on the Doric LED driver and its power measured at
+  # the fiber tip with the power meter, before the animal is connected (filled in with the last values, to confirm or
+  # change); kept in the recording's session.json (sessionFields.ledPower). The Pico's C output drives the blue LED, D
+  # the yellow one.
+  led_power: ["Blue LED (465 nm)", "Yellow LED (560 nm)"]

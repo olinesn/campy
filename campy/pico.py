@@ -56,7 +56,8 @@ KEYS = {
 	"state_dir": ((str,), "", "chronic_control.py --state-dir: its status.json and session.out (default: its own, "
 		"~/.chronic_control)"),
 	"lengths": ((list,), [], "the session lengths the panel offers: [{name: \"6 days\", seconds: 518400}, {name: "
-		"\"Gate test\", seconds: 900, videoFolder: \"C:\\\\data\\\\gatetest\"}]; the first is the default"),
+		"\"Gate test\", seconds: 900, videoFolder: \"C:\\\\data\\\\gatetest\"}]; the first is the default. copyTo "
+		"(optional): the folder the panel's \"Copy each recording to\" box fills in when that length is picked"),
 	"set": ((dict,), {}, "chronic_control.py's other settings for every session: {INTERVAL: 300}"),
 	"gate_check": ((bool,), True, "blink the gate once before campy starts, and refuse to start if SpikeGLX opens no "
 		"file for it (needs a spikeglx: section)"),
@@ -193,11 +194,13 @@ class Pico:
 		self.lengths = []
 		for n, length in enumerate(section["lengths"]):
 			if not isinstance(length, dict) or not isinstance(length.get("seconds"), int) or length["seconds"] <= 0 or \
-					set(length) - {"name", "seconds", "videoFolder"}:
-				raise PicoError("pico.lengths: each is {{name: ..., seconds: <a whole number>, videoFolder: <optional>}}; "
+					set(length) - {"name", "seconds", "videoFolder", "copyTo"}:
+				raise PicoError("pico.lengths: each is {{name: ..., seconds: <a whole number>, videoFolder: <optional>, "
+					"copyTo: <optional>}}; "
 					"number {} is {!r}.".format(n + 1, length))
 			self.lengths.append({"name": str(length.get("name") or Clock(length["seconds"])),
-				"seconds": length["seconds"], "videoFolder": length.get("videoFolder")})
+				"seconds": length["seconds"], "videoFolder": length.get("videoFolder"),
+				"copyTo": str(length["copyTo"]).strip() if length.get("copyTo") else None})
 		for key, value in section["set"].items():
 			if key not in self.module.SETTINGS or key == "TOTAL_DURATION":
 				raise PicoError("pico.set: {} is not one of chronic_control.py's settings{} ({}).".format(key,
@@ -305,7 +308,8 @@ class Pico:
 		shown = lambda v, scale: round(v * scale, 6)
 		return {"fields": [{"key": key, "label": label, "unit": unit, "value": shown(now[key], scale),
 			"config": shown(base[key], scale), "changed": key in self.page} for key, label, unit, scale in PAGE],
-			"changed": sorted(self.page), "bout": self.Bout(), "remembered": Shown(self.remembered)}
+			"changed": sorted(self.page), "bout": self.Bout(), "remembered": Shown(self.remembered),
+			"diagram": self.Diagram()}
 
 	def Bout(self):
 		"""
@@ -360,6 +364,37 @@ class Pico:
 		return {"seconds": seconds, "bouts": len(bouts), "pulses": pulses, "camera_s": camera_s, "ends_s": ends,
 			"text": "{} bouts over {}, {:,} camera pulses ({} of camera)".format(len(bouts), Clock(seconds), pulses,
 				Clock(camera_s))}
+
+	def Diagram(self):
+		"""
+		The page's drawing of a bout, from the settings as they are now (the
+		page's too): {rows: [{pin, name}] (the Pico's outputs, in order: the
+		gate, the camera, the blue and the yellow LED), fps, pulse_s,
+		interval_s, bouts}, bouts a long one and, when the long ones aren't
+		every bout, a normal one: {long, gate: [opens, closes], camera:
+		[first pulse, last pulse's end], pulses, leds: [{name, on, off}] in
+		the order they light}, in seconds from the gate's opening (the
+		Pico's own plan, as Bout's). None when these settings can't run.
+		"""
+		try:
+			s = self.Settings(None)
+			if s["CAMERA_ONLY"]:
+				return None
+			two = 2 if s["EXTENDED_EVERY"] > 1 else 1 # a long bout, then a normal one
+			bouts, _, _ = self.module.Plan(dict(s, TOTAL_DURATION=s["INTERVAL"] * two))
+		except (PicoError, SystemExit):
+			return None
+		sec = lambda b, us: round((us - b["gate_on"]) / 1e6, 6)
+		shown = []
+		for b in bouts[:2]:
+			leds = [{"name": name, "on": sec(b, b[name][0]), "off": sec(b, b[name][1])} for name in ("blue", "yellow")
+				if b.get(name)]
+			shown.append({"long": bool(b["extended"]), "gate": [0.0, sec(b, b["gate_off"])],
+				"camera": [sec(b, b["camera_start"]), sec(b, b["camera_end"])], "pulses": b["pulses"],
+				"leds": sorted(leds, key=lambda l: l["on"])})
+		return {"rows": [{"pin": "GP{}".format(pin), "name": name} for _, pin, name in getattr(self.module, "OUTPUTS", [])],
+			"fps": float(s["CAMERA_FPS"]), "pulse_s": s["CAMERA_PULSE_US"] / 1e6, "interval_s": float(s["INTERVAL"]),
+			"bouts": shown}
 
 	def Spans(self, seconds):
 		"""
