@@ -88,7 +88,7 @@ def test_a_copy_that_fails_says_so_in_post_json(tmp_path):
 def test_closing_leaves_the_copies_not_done_and_says_how_to_make_them(tmp_path, monkeypatch):
 	release = threading.Event()
 
-	def slow(folder, settings, log, stop=None):
+	def slow(folder, settings, log, stop=None, **kwargs):
 		release.wait(10)
 		return "done", "copied"
 	monkeypatch.setattr(post, "StepCopy", slow)
@@ -164,7 +164,7 @@ def bare_panel(queue):
 def test_the_page_lists_the_newest_first_even_within_one_clock_tick(tmp_path, monkeypatch):
 	# Windows' time.time() moves in steps of about 16 ms: recordings queued within one step keep their order
 	release = threading.Event()
-	monkeypatch.setattr(post, "StepCopy", lambda folder, settings, log, stop=None: (release.wait(10), ("done", "ok"))[1])
+	monkeypatch.setattr(post, "StepCopy", lambda folder, settings, log, stop=None, **kwargs: (release.wait(10), ("done", "ok"))[1])
 	monkeypatch.setattr(copyqueue.time, "time", lambda: 1000.0)
 	queue = quiet()
 	names = ["2026-11-09_15-00-0{}".format(n) for n in range(4)]
@@ -176,7 +176,7 @@ def test_the_page_lists_the_newest_first_even_within_one_clock_tick(tmp_path, mo
 
 def test_close_waits_for_the_copies_or_leaves_them(tmp_path, monkeypatch):
 	release = threading.Event()
-	monkeypatch.setattr(post, "StepCopy", lambda folder, settings, log, stop=None: (release.wait(10), ("done", "ok"))[1])
+	monkeypatch.setattr(post, "StepCopy", lambda folder, settings, log, stop=None, **kwargs: (release.wait(10), ("done", "ok"))[1])
 	queue = quiet()
 	queue.Add(recording(tmp_path, "2026-11-09_13-00-00"), str(tmp_path))
 	p = bare_panel(queue)
@@ -211,3 +211,156 @@ def test_post_by_hand_copies_into_the_folder_given(tmp_path):
 	code = post.Main([folder, "--only", "copy", "--to", str(to), "--force"])
 	assert code == 0
 	assert (to / "2026-11-09_14-00-00" / "Camera0" / "0.mp4").exists()
+
+
+# ------------------------------------------------------------------ how far a copy has got
+
+BIG = 100_000
+
+
+def old(folder, seconds=3600):
+	# The recording's files, written an hour before their copy
+	t = time.time() - seconds
+	for root, _, files in os.walk(folder):
+		for name in files:
+			os.utime(os.path.join(root, name), (t, t))
+
+
+def presize(src, dst):
+	# As robocopy (Windows' CopyFileEx) does as it starts on a file: the copy is made its full size at once, its bytes
+	# and its time come later
+	os.makedirs(os.path.dirname(dst), exist_ok=True)
+	with open(dst, "wb") as f:
+		f.truncate(os.path.getsize(src))
+
+
+def copying(queue, monkeypatch, pid=None):
+	"""A StepCopy that pre-sizes the big file and waits: (began, release)."""
+	began, release = threading.Event(), threading.Event()
+
+	def step(folder, settings, log, stop=None, started=None, **kwargs):
+		if pid is not None and started is not None:
+			started(types.SimpleNamespace(pid=pid))
+		dest = os.path.join(settings["copy"]["to"], os.path.basename(folder))
+		presize(os.path.join(folder, "Camera0", "0.mp4"), os.path.join(dest, "Camera0", "0.mp4"))
+		began.set()
+		release.wait(10)
+		return "done", "copied"
+	monkeypatch.setattr(post, "StepCopy", step)
+	monkeypatch.setattr(copyqueue, "LOOK_S", -1) # looked at on every Status
+	return began, release
+
+
+def done_bytes(queue):
+	return queue.Status()["jobs"][0]["done_bytes"]
+
+
+def test_a_big_file_sized_in_full_as_it_starts_counts_only_once_copied(tmp_path, monkeypatch):
+	# Where the copy program's count isn't known (macOS): the copy's folder is looked at. Seen 2026-11-10 on Windows:
+	# a 5.9 GB SpikeGLX file counted as copied as soon as robocopy started on it, and the page sat at 6.4 of 7.6 GB
+	# ("under a minute left") for minutes
+	queue = quiet()
+	began, release = copying(queue, monkeypatch)
+	folder = recording(tmp_path, "2026-11-10_11-40-00", BIG)
+	old(folder)
+	to = tmp_path / "share"
+	to.mkdir()
+	queue.Add(folder, str(to))
+	assert began.wait(10)
+	src = os.path.join(folder, "Camera0", "0.mp4")
+	dst = to / "2026-11-10_11-40-00" / "Camera0" / "0.mp4"
+	assert dst.stat().st_size == BIG
+	assert done_bytes(queue) == 0 # its full size, but not copied yet
+	# Half its bytes written: still its full size, its time now's
+	with open(dst, "r+b") as f:
+		f.write(open(src, "rb").read(BIG // 2))
+	assert done_bytes(queue) == 0
+	# Done with it: its bytes and its original's time
+	dst.write_bytes(open(src, "rb").read())
+	os.utime(dst, (os.path.getatime(src), os.path.getmtime(src)))
+	assert done_bytes(queue) == BIG
+	release.set()
+	job = finished(queue)["jobs"][0]
+	assert job["state"] == "done" and job["done_bytes"] == job["bytes"]
+
+
+class FakeIo:
+	def __init__(self, counts):
+		self.counts = counts # the write count, read each time it is looked at
+
+	def __call__(self, pid):
+		self.pid = pid
+		return self
+
+	def children(self, recursive=False):
+		return []
+
+	def io_counters(self):
+		return types.SimpleNamespace(write_bytes=self.counts[0]) # Windows': no write_chars
+
+
+def test_the_copy_programs_write_count_drives_the_progress(tmp_path, monkeypatch):
+	counts = [0]
+	fake = FakeIo(counts)
+	monkeypatch.setattr(copyqueue.psutil, "Process", fake)
+	queue = quiet()
+	began, release = copying(queue, monkeypatch, pid=4321)
+	folder = recording(tmp_path, "2026-11-10_11-41-00", BIG)
+	old(folder)
+	to = tmp_path / "share"
+	to.mkdir()
+	queue.Add(folder, str(to))
+	assert began.wait(10)
+	total = queue.Status()["jobs"][0]["bytes"]
+	assert fake.pid == 4321
+	assert done_bytes(queue) == 0 # the big file there in full size: not counted
+	counts[0] = 30_000
+	assert done_bytes(queue) == 30_000
+	counts[0] = 90_000
+	assert done_bytes(queue) == 90_000
+	counts[0] = 50_000 # never back
+	assert done_bytes(queue) == 90_000
+	counts[0] = 10 * total # its own output to the log too: never more than the recording
+	assert done_bytes(queue) == total
+	release.set()
+	assert finished(queue)["jobs"][0]["done_bytes"] == total
+
+
+def test_the_copy_programs_count_is_the_most_any_of_its_processes_wrote(monkeypatch):
+	# rsync: a sender writes what its receiver writes again (on Linux, write_chars: every write, a pipe's too)
+	def proc(chars, children=()):
+		return types.SimpleNamespace(io_counters=lambda: types.SimpleNamespace(write_bytes=0, write_chars=chars),
+			children=lambda recursive=False: list(children))
+	assert copyqueue.Written(proc(700, [proc(1000), proc(20)])) == 1000
+	assert copyqueue.Written(None) is None
+
+	def gone(recursive=False):
+		raise copyqueue.psutil.NoSuchProcess(4321)
+	assert copyqueue.Written(types.SimpleNamespace(children=gone)) is None # ended: the copy's folder is looked at
+
+	def mac():
+		raise AttributeError("io_counters") # psutil keeps no count on macOS
+	assert copyqueue.Written(types.SimpleNamespace(io_counters=mac, children=lambda recursive=False: [])) is None
+
+
+def test_the_copys_folder_counts_what_is_really_there(tmp_path):
+	src, dst = tmp_path / "rec", tmp_path / "copy"
+	(src / "a").mkdir(parents=True)
+	(dst / "a").mkdir(parents=True)
+	(src / "a" / "big.bin").write_bytes(b"x" * 1000)
+	(src / "small.txt").write_bytes(b"y" * 10)
+	old(str(src))
+	# rsync's temporary file, which grows as it writes, by its size; a file smaller than its original by its size
+	(dst / "a" / ".big.bin.Xy12Ab").write_bytes(b"x" * 400)
+	(dst / "small.txt").write_bytes(b"y" * 4)
+	assert copyqueue.Copied(str(src), str(dst)) == 404
+	# Its full size but not its original's time (robocopy, still writing): not counted
+	(dst / "a" / ".big.bin.Xy12Ab").unlink()
+	presize(str(src / "a" / "big.bin"), str(dst / "a" / "big.bin"))
+	assert copyqueue.Copied(str(src), str(dst)) == 4
+	# Both done: their original's time
+	(dst / "small.txt").write_bytes(b"y" * 10)
+	for name in ("a/big.bin", "small.txt"):
+		s = os.stat(src / name)
+		os.utime(dst / name, (s.st_atime, s.st_mtime))
+	assert copyqueue.Copied(str(src), str(dst)) == 1010
