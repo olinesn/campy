@@ -863,6 +863,7 @@ def ValidateTriggerBoard(params, sources, chain, sections=None, section_sources=
 	section_sources = section_sources or {}
 	board = Board(params.get("triggerController", "arduino"))
 	where = lambda key: sources[key].Where() if key in sources else "campy's default"
+	# The rig profile: the file the extends: chain ends with (a config that extends nothing is its own)
 	path, values, lines = chain[-1] if chain else (None, {}, {})
 	rig = Board(values["triggerController"]) if "triggerController" in values else None
 	if rig is not None and board is not None and board != rig:
@@ -883,11 +884,12 @@ def ValidateTriggerBoard(params, sources, chain, sections=None, section_sources=
 		raise ValueError("A pico: section ({}) and startArduino: True ({}): the Pico and the Arduino would both pulse "
 			"the cameras. One board makes a rig's camera pulses: set startArduino: False (and triggerController: pico "
 			"in the rig profile).".format(pico_where, where("startArduino")))
-	if pico and board == "arduino" and sources.get("triggerController") is not None and \
-			sources["triggerController"].kind != Source.DEFAULT:
-		raise ValueError("A pico: section ({}), but triggerController: {} ({}): this rig's camera pulses come from its "
-			"Arduino. One board makes a rig's camera pulses: leave the pico: section out, or make the rig's profile say "
-			"triggerController: pico.".format(pico_where, params["triggerController"], where("triggerController")))
+	# Only a profile's own word counts here: campy-session gives campy-acquire the config as one file with every
+	# setting written out, campy's default triggerController (arduino) too, so a file that extends nothing says nothing
+	if pico and rig == "arduino" and len(chain) > 1:
+		raise ValueError("A pico: section ({}), but this rig's profile {} says triggerController: {}: its camera pulses "
+			"come from its Arduino. One board makes a rig's camera pulses: leave the pico: section out, or make the "
+			"profile say triggerController: pico.".format(pico_where, Shown(path), values["triggerController"]))
 
 
 def ValidateExperiment(params):

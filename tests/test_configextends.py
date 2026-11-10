@@ -316,9 +316,13 @@ def test_a_pico_section_on_an_arduino_rig(tmp_path, profiles):
 			r"\(.*rig.yaml:3\): the Pico and the Arduino would both pulse the cameras"):
 		configurator.Resolve(write(tmp_path / "both.yaml", "extends: rig\npico:\n  set: {CAMERA_ONLY: 60}\n"))
 	# The Arduino not started, but the rig's board is still the Arduino
-	with pytest.raises(configurator.ConfigError, match=r"A pico: section .*, but triggerController: arduino "
-			r"\(.*rig.yaml:2\): this rig's camera pulses come from its Arduino"):
+	with pytest.raises(configurator.ConfigError, match=r"A pico: section \(.*pico.yaml:3\), but this rig's profile "
+			r".*rig.yaml says triggerController: arduino: its camera pulses come from its Arduino"):
 		configurator.Resolve(write(tmp_path / "pico.yaml", "extends: rig\nstartArduino: False\npico:\n  set: {}\n"))
+	# The config as campy-session gives it to campy-acquire, one file with every setting written out (campy's default
+	# triggerController too): its pico: section is no second board
+	flat = write(tmp_path / "flat.yaml", "triggerController: arduino\nstartArduino: False\npico:\n  set: {}\n")
+	assert configurator.Resolve(flat).sections["pico"] == {"set": {}}
 
 
 def test_a_rig_that_names_no_board_is_as_before(tmp_path, profiles):
