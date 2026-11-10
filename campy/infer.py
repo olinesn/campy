@@ -589,11 +589,17 @@ def Main(argv=None):
 					r["seconds"], model.timing["imports"], model.timing["models"], r["ready_s"], r["open_s"],
 					"; " + ReadAheadNote(reading) if reading else ""))
 			if len(results) == 1 and args.read_ahead == "on":
-				# what this run read to get here, for the next run to read ahead
-				from campy import live
-				listed = prefetch.Record(EngineCache(args), list(live.FixedEngine.PLANS) + [videoread.FfmpegExe()])
+				# what this run read to get here, for the next run to read ahead. Only bookkeeping: whatever goes
+				# wrong here is a note, never this video's FAILED or the exit status (its .slp is written)
+				why = ""
+				try:
+					from campy import live
+					listed = prefetch.Record(EngineCache(args), list(live.FixedEngine.PLANS) + [videoread.FfmpegExe()])
+				except Exception as e:
+					listed, why = None, ": {}: {}".format(type(e).__name__, e)
 				if listed is None:
-					Say("could not write the list of files to read ahead in {}".format(EngineCache(args)))
+					Say("could not write the list of files to read ahead in {}{} (the next run reads ahead less; this "
+						"run's results are not affected)".format(EngineCache(args), why))
 		except KeyboardInterrupt:
 			raise
 		except Exception as e:
