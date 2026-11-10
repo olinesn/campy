@@ -9,6 +9,7 @@ again, a token it refuses is not, and the caller never waits for either.
 
 import json
 import os
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -487,8 +488,12 @@ def test_campy_notify(service, tmp_path, capsys):
 	assert notify.Main(["--file", str(path), "--state", state, "--problem", "k", "rig check failed"]) == 0
 	assert notify.Main(["--file", str(path), "--state", state, "--problem", "k", "rig check failed"]) == 0
 	assert notify.Main(["--file", str(path), "--state", state, "--resolved", "k", "rig", "check", "passed"]) == 0
-	assert service.Texts()[1:] == [":large_orange_circle: *Precision 7875*: rig check failed",
-		":white_check_mark: *Precision 7875*: resolved, after 0 s: rig check passed"]
+	# These calls run on the real clock, and a slow runner can take over half a second between the first
+	# --problem and --resolved, which Duration rounds to "1 s": any whole number of seconds will do.
+	assert service.Texts()[1] == ":large_orange_circle: *Precision 7875*: rig check failed"
+	assert re.fullmatch(r":white_check_mark: \*Precision 7875\*: resolved, after \d+ s: rig check passed",
+		service.Texts()[2]), service.Texts()
+	assert len(service.Texts()) == 3
 	service.fail = ["invalid_auth"]
 	assert notify.Main(["--file", str(path), "--test"]) == 1
 	assert notify.Main(["--file", str(tmp_path / "none.yaml"), "--test"]) == 1
