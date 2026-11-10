@@ -77,13 +77,28 @@ def test_a_big_library_the_run_used_little_of_is_not_read_ahead(tmp_path, monkey
 		in text
 
 
-def test_an_unchanged_list_is_not_written_again(tmp_path):
+def test_an_unchanged_list_is_not_written_again(tmp_path, monkeypatch):
+	# The files this process has read are fixed here: the real ones can change between two calls (another test's
+	# thread in the same pytest worker importing a module, or on Linux a mapped library's share in memory crossing
+	# USED_SHARE), which rewrote the list on CI's ARM runner once
+	files = []
+	for i in range(3):
+		f = tmp_path / "m{}.py".format(i)
+		f.write_bytes(b"#")
+		files.append(os.path.realpath(str(f)))
+	monkeypatch.setattr(prefetch, "LoadedFiles", lambda: list(files))
+	monkeypatch.setattr(prefetch, "Mapped", lambda: {})
 	cache = str(tmp_path / "cache")
 	out = prefetch.Record(cache)
 	before = os.stat(out).st_mtime_ns
 	os.utime(out, ns=(before - 10 ** 9, before - 10 ** 9))
 	assert prefetch.Record(cache) == out
 	assert os.stat(out).st_mtime_ns == before - 10 ** 9
+	# and a list that did change is written again
+	files.pop()
+	assert prefetch.Record(cache) == out
+	assert os.stat(out).st_mtime_ns != before - 10 ** 9
+	assert [line.rstrip("\n") for line in open(out) if not line.startswith("#")] == files
 
 
 def test_model_files_are_the_checkpoints_and_configs_not_the_labels(tmp_path):
