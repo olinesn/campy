@@ -139,9 +139,9 @@ KINDS = ("gpu", "encoder", "camera", "trigger")
 # GNOME session also has two helpers that keep the GPU's render node open for as long as it runs:
 # gsd-xsettings and mutter-x11-frames (comm "mutter-x11-fram"). At the login screen they run as gdm, whose
 # open files rig.py can not see; logged in, they are the user's and would otherwise look like encoder users
-# that never go away. Ubuntu's GNOME on a Jetson (an X11 session) adds three that draw with the GPU too:
-# xdg-desktop-portal-gnome (comm "xdg-desktop-por"), GNOME Software's background service, and the
-# first-login wizard (comm "gnome-initial-s")
+# that never go away. Ubuntu's GNOME on a Jetson (an X11 session) adds some that draw with the GPU too:
+# the desktop portals (xdg-desktop-portal, -gnome and -gtk all have the comm "xdg-desktop-por"),
+# GNOME Software's background service, and the first-login wizard (comm "gnome-initial-s")
 DESKTOP = {"gnome-shell", "Xwayland", "Xorg", "Xvnc", "mutter", "kwin_wayland", "kwin_x11", "plasmashell",
 	"sway", "weston", "Hyprland", "xfwm4", "TeamViewer", "gsd-xsettings", "mutter-x11-frames"[:15],
 	"xdg-desktop-portal-gnome"[:15], "gnome-software", "gnome-initial-setup"[:15]}
@@ -1639,7 +1639,9 @@ def cmd_status(args):
 			"camera": "FLIR cameras (Spinnaker loaded)", "trigger": "trigger (%s)" % (" ".join(ports) or "no COM port")}
 	else:
 		cams = flir_cameras()
-		names = {"gpu": "GPU compute (/dev/kfd)", "encoder": "video encoder (/dev/dri/renderD*)",
+		jetson = os.path.isdir("/dev/nvgpu")  # a Jetson's integrated GPU (see device_kind)
+		names = {"gpu": "GPU compute (%s)" % ("/dev/nvgpu/*, /dev/nvhost-*gpu" if jetson else "/dev/kfd"),
+			"encoder": "video encoder (%s)" % ("/dev/v4l2-nvenc, /dev/dri/renderD*" if jetson else "/dev/dri/renderD*"),
 			"camera": "FLIR cameras (%d on USB: %s)" % (len(cams), " ".join(sorted(cams.values())) or "none"),
 			"trigger": "trigger (%s)" % (" ".join(sorted(
 				"/dev/" + d for d in os.listdir("/dev") if re.match(r"tty(ACM|USB)\d+$", d))) or "none plugged in")}
