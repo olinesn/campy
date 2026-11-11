@@ -126,14 +126,14 @@ A fiber-implanted mouse, the receivers on DC Low, the snapshot pattern above and
 | | XA5 (green) | XA6 (red) |
 |---|---|---|
 | dark (lights off) | 0.04 V | 0.20 V |
-| blue at 20 mA | **2.90 V** | 4.26 V (blue light reaching the red receiver) |
+| blue at 20 mA (5 µW) | **2.90 V** | 4.26 V (blue light reaching the red receiver) |
 | blue at 18 mA | about 2.8 V | |
-| yellow at 20 mA | 0.05 V | **3.40 V** |
+| yellow at 20 mA (3 µW) | 0.05 V | **3.40 V** |
 | yellow at 17 to 18 mA | | about 3.0 V |
 
-Both LEDs flicker on and off at 17 mA and are off at 16 mA (the driver's lowest steady current). So with this light path and this mouse, both readings fit under 5 V only with the LEDs a few mA above the point where they flicker.
+The powers in brackets were measured at the fiber tip after the mouse was disconnected. Both LEDs flicker on and off at 17 mA and are off at 16 mA (the driver's lowest steady current). So with this light path and this mouse, both readings fit under 5 V only with the LEDs a few mA above the point where they flicker. The LEDs' power isn't in proportion to their current: blue gave 5 µW at 20 mA and 21 µW at 115 mA, yellow 3 µW at 20 mA and 21 µW at 150 mA.
 
-**A snapshot recording at 20 mA on both LEDs.** Nothing clipped, and the readings hardly changed between bouts:
+**A snapshot recording at 20 mA on both LEDs** (blue 5 µW, yellow 3 µW at the tip). Nothing clipped, and the readings hardly changed between bouts:
 
 | bout | `green_V` | `red_V` | XA6 in the blue flash | XA5 in the yellow flash |
 |---|---|---|---|---|
@@ -146,14 +146,14 @@ Both LEDs flicker on and off at 17 mA and are off at 16 mA (the driver's lowest 
 - The dark level fell after the first bout (XA5 from 0.051 to 0.008 V, XA6 from 0.22 to 0.055 V), most likely some remaining room light going off. Each reading has its own bout's dark level taken off, so the readings didn't move.
 - The timing was as planned in every bout: yellow lit frames 300–302 and blue 312–314, each flash 49.995 to 50.028 ms, 149.985 to 150.018 ms of dark between them, each LED on 990 to 1023 µs before its first frame's pulse. All four cameras saved one frame per Pico pulse (15,600), and the Pico reported nothing late or lost.
 
-**What to change for long recordings.** 20 mA leaves 2 to 3 mA between a good reading and a flickering LED, and XA6 in the blue flash at 4.1 V is close to the limit. About ten times less light from each LED would let them run at a steady 80 to 120 mA with the readings around 2 to 3 V: an OD 1.0 absorptive neutral density filter in an in-line fiber filter mount on each LED's patch cord, between the LED and the cube, with connectors that match the cords (FC or SMA). That is an estimate from the levels above, not yet tried. The power at the fiber tip at 20 mA hasn't been measured yet. The 20 mA recording's `session.json` says 21 µW, which was left over from the earlier setting.
+**What to change for long recordings.** 20 mA leaves 2 to 3 mA between a good reading and a flickering LED, and XA6 in the blue flash at 4.1 V is close to the limit. For this mouse the readings want about 4 to 5 µW of blue and 3 µW of yellow at the fiber tip. An absorptive neutral density filter of about OD 0.5 (a third of the light) in an in-line fiber filter mount on each LED's patch cord, between the LED and the cube, with connectors that match the cords (FC or SMA), would put those powers at roughly 65 to 75 mA, well clear of the flicker. OD 1.0 (a tenth) would need 30 to 45 µW out of each LED, more than the highest powers measured here (21 µW), at currents not measured yet. These currents are interpolated between the two measured points of each LED, not yet tried, and another mouse's implant may want different powers. The 20 mA recording's `session.json` says 21 µW for both LEDs, left over from the earlier setting: the real powers were 5 µW (blue) and 3 µW (yellow).
 
 **Two things seen once, in the same evening's recordings:**
 
 - One recording had a camera frame between bouts that the Pico didn't send: all four cameras took a frame at the same moment, 46 s after the second bout's last pulse. campy stops at the planned number of frames, so the third bout lost its last frame. Its frames in campy's numbering are then one later than `photometry_snapshots.py --campy` gives (it counts the Pico's pulses), and `--campy` splits that bout in two. Each camera's `aligned.csv` gives every frame's own Pico pulse and is right. The other recordings that evening had no such frame.
 - After a recording was stopped early, SpikeGLX started the next run without the OneBox: its console showed `385CH` (the probe alone) and repeated `obx stream not enabled`, and the panel stopped the start after 120 s ("SpikeGLX's run didn't start acquiring"). Quitting SpikeGLX and pressing Start again, so that the panel opened it afresh, brought the OneBox back. SpikeGLX's saved settings were the same as for the runs before and after.
 
-Not checked yet: keeping the camera lights out at the mouse's end, the power at the fiber tip at 20 mA, a session longer than 15 minutes with a mouse, and the patch cords other than the one to the mouse.
+Not checked yet: keeping the camera lights out at the mouse's end, the LEDs' currents behind a neutral density filter, a session longer than 15 minutes with a mouse, and the patch cords other than the one to the mouse.
 
 ## Running it
 
