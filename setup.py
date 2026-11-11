@@ -48,6 +48,7 @@ setup(
 			"campy-watch = campy.livewatch:Main",
 			"campy-infer = campy.infer:Main",
 			"campy-train-check = campy.traincheck:Main",
+			"campy-distill-train = campy.distill:Main",
 		]
 	}
 )
