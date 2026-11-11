@@ -1,23 +1,32 @@
 #!/usr/bin/env python3
 """Benchmark B2 for the Jetson AGX Orin: can its hardware encoder keep up with 3 cameras?
 
-Stock ffmpeg can't use the Orin's video encoder (there is no libnvidia-encode
-on Orin, so hevc_nvenc fails). NVIDIA's route is GStreamer's nvv4l2h265enc.
-This script starts one encoder per simulated camera and feeds it synthetic
+ffmpeg's hevc_nvenc can't use the Orin's video encoder. Stock ffmpeg finds
+no NVENC driver on the Orin; on JetPack 7.2.1, NVIDIA's own ffmpeg (8.0.1)
+loads one, but it belongs to the Jetson Thor's driver stack, and opening an
+encoder on the Orin fails with "OpenEncodeSessionEx failed: unsupported
+device". NVIDIA's route on the Orin is GStreamer's nvv4l2h265enc. This
+script starts one encoder per simulated camera and feeds it synthetic
 8-bit mono frames (moving bright blobs on a noisy gradient), paced at --fps
 for --seconds, the way campy's writer feeds ffmpeg: one pipe per camera, one
 frame per write, and a write blocks when the encoder falls behind.
 
-Each stream is (the default, --mux ffmpeg):
+Each stream is (the defaults, --input i420 --mux ffmpeg):
 
-    this script --pipe--> gst-launch-1.0 fdsrc ! rawvideoparse format=gray8 ...
+    this script --pipe--> gst-launch-1.0 fdsrc ! rawvideoparse format=i420 ...
         ! nvvidconv ! video/x-raw(memory:NVMM),format=NV12
         ! nvv4l2h265enc ratecontrol-enable=0 quant-i-frames=QP quant-p-frames=QP
             iframeinterval=N idrinterval=N insert-sps-pps=1 num-B-Frames=0
         ! h265parse ! fdsink --pipe--> ffmpeg -f hevc -i pipe: -c copy
             (campy's fragmented-MP4 flags and hvc1 tag) streamN.mp4
 
-so the file is laid out like one campy writes today. --mux raw writes the
+so the file is laid out like one campy writes today. The frames go in as
+I420: the mono image as the Y plane, with the two color planes at a constant
+128 (neutral) appended by this script, as campy's writer would have to. On
+JetPack 7.2.1 nvvidconv lists GRAY8 but refuses to turn it into NV12 in the
+encoder's memory ("Transform not supported"). --input gray8-convert sends
+GRAY8 and lets GStreamer's videoconvert make I420 on the CPU; --input gray8
+is the direct GRAY8 -> nvvidconv path, for JetPacks where it works. --mux raw writes the
 H.265 stream straight to a .h265 file instead (no ffmpeg), to see what the
 second process costs. --cpu-fallback libx264|libx265 replaces the whole chain
 with one stock ffmpeg encoding on the CPU, for comparison.
@@ -88,9 +97,20 @@ HVC1 = ["-tag:v", "hvc1"]
 #                              older guides, not in r39.2's)
 ENCODER = "nvv4l2h265enc"
 
+# How frames reach the encoder (--input): see the module docstring
+INPUTS = ("i420", "gray8-convert", "gray8")
 
-def frame_bytes(width, height):
+
+def frame_bytes(width, height, input_format="gray8"):
+    """Bytes in one frame as written to the pipe: GRAY8, or I420 (Y + two quarter-size planes)."""
+    if input_format == "i420":
+        return width * height + 2 * ((width + 1) // 2) * ((height + 1) // 2)
     return width * height
+
+
+def to_i420(gray, width, height):
+    """A GRAY8 frame (bytes) as I420: the image as Y, both color planes 128 (no color)."""
+    return gray + b"\x80" * (frame_bytes(width, height, "i420") - width * height)
 
 
 def keyframe_frames(fps, keyframe_interval):
@@ -116,19 +136,24 @@ def gst_encoder_props(qp, iframe_interval, preset_level=None, maxperf=False):
 
 
 def gst_args(width, height, fps, qp, iframe_interval, out, preset_level=None,
-             maxperf=False, gst="gst-launch-1.0"):
-    """gst-launch-1.0 arguments for one stream: raw GRAY8 frames on stdin, H.265 out.
+             maxperf=False, gst="gst-launch-1.0", input_format="i420"):
+    """gst-launch-1.0 arguments for one stream: raw frames on stdin (input_format), H.265 out.
 
     out is a file path (written by filesink, the raw .h265 stream) or an int,
     a file descriptor the H.265 byte-stream is written to (fdsink) for ffmpeg
     to read. Each word is one argument, so nothing is parsed by a shell.
     """
-    size = frame_bytes(width, height)
+    if input_format not in INPUTS:
+        raise ValueError("input_format is one of %s, not %r" % (", ".join(INPUTS), input_format))
+    size = frame_bytes(width, height, input_format)
+    parse = "i420" if input_format == "i420" else "gray8"
     args = [gst, "-q", "-e",
             "fdsrc", "fd=0", "blocksize=%d" % size, "!",
-            "rawvideoparse", "format=gray8", "width=%d" % width, "height=%d" % height,
-            "framerate=%d/1" % fps, "!",
-            "nvvidconv", "!",
+            "rawvideoparse", "format=%s" % parse, "width=%d" % width, "height=%d" % height,
+            "framerate=%d/1" % fps, "!"]
+    if input_format == "gray8-convert":
+        args += ["videoconvert", "!", "video/x-raw,format=I420", "!"]
+    args += ["nvvidconv", "!",
             "video/x-raw(memory:NVMM),format=NV12", "!",
             ENCODER] + gst_encoder_props(qp, iframe_interval, preset_level, maxperf) + [
             "!", "h265parse", "!"]
@@ -181,11 +206,13 @@ def stream_commands(args, index, out_dir, gst_fd=None):
     if args.mux == "raw":
         out = os.path.join(out_dir, "stream%d.h265" % index)
         return (gst_args(args.width, args.height, args.fps, args.qp, kf, out,
-                         args.preset_level, args.maxperf, gst=args.gst_launch), None, out)
+                         args.preset_level, args.maxperf, gst=args.gst_launch,
+                         input_format=args.input), None, out)
     out = os.path.join(out_dir, "stream%d.mp4" % index)
     fd = 3 if gst_fd is None else gst_fd
     return (gst_args(args.width, args.height, args.fps, args.qp, kf, fd,
-                     args.preset_level, args.maxperf, gst=args.gst_launch),
+                     args.preset_level, args.maxperf, gst=args.gst_launch,
+                     input_format=args.input),
             ffmpeg_mux_args(args.fps, out, ffmpeg=args.ffmpeg), out)
 
 
@@ -521,6 +548,10 @@ def parse_args(argv=None):
     p.add_argument("--keyframe-interval", type=float, default=1.0,
                    help="seconds between keyframes (campy's keyframeInterval)")
     g = p.add_argument_group("Jetson encoder (GStreamer)")
+    g.add_argument("--input", choices=INPUTS, default="i420",
+                   help="how frames reach the encoder: i420 (mono image + neutral color planes, "
+                        "made by this script), gray8-convert (GStreamer's videoconvert makes I420 on "
+                        "the CPU), gray8 (straight to nvvidconv; refused on JetPack 7.2.1)")
     g.add_argument("--mux", choices=["ffmpeg", "raw"], default="ffmpeg",
                    help="ffmpeg: pipe the H.265 into stock ffmpeg -c copy, making a fragmented MP4 "
                         "like campy's; raw: write a .h265 file with filesink, no second process")
@@ -618,6 +649,9 @@ def main(argv=None):
 
     print("making %d synthetic %dx%d frames..." % (args.pattern_frames, args.width, args.height), flush=True)
     frames = make_frames(args.width, args.height, args.pattern_frames)
+    # what is written to the pipes; frames (GRAY8) stays the reference for the PSNR
+    sent = frames if args.cpu_fallback or args.input != "i420" else \
+        [to_i420(f, args.width, args.height) for f in frames]
 
     tegra = None
     if not args.no_tegrastats and shutil.which("tegrastats"):
@@ -628,11 +662,11 @@ def main(argv=None):
     self0 = resource.getrusage(resource.RUSAGE_SELF)
     wall0 = time.monotonic()
 
-    streams = [Stream(args, i, out_dir, frames) for i in range(args.streams)]
+    streams = [Stream(args, i, out_dir, sent) for i in range(args.streams)]
     start_at = time.monotonic() + 0.5
     syscpu.start()
     threads = [threading.Thread(target=s.feed, args=(start_at, total), daemon=True) for s in streams]
-    label = args.cpu_fallback or ("%s, mux %s" % (ENCODER, args.mux))
+    label = args.cpu_fallback or ("%s, input %s, mux %s" % (ENCODER, args.input, args.mux))
     print("feeding %d streams x %d fps for %g s (%s) into %s" % (args.streams, args.fps, args.seconds,
                                                                  label, out_dir), flush=True)
     for t in threads:
