@@ -93,7 +93,8 @@ The blue and yellow LEDs are a fiber photometry system's excitation light. On th
 - A Doric FMC5 fluorescence minicube (excitation 465–480 and 555–570 nm, emission 500–540 and 580–680 nm) sends both lights down one patch cord (400 µm core, NA 0.57) to the mouse's implanted fiber. It sends the two emission bands to two New Focus 2151 femtowatt photoreceivers.
 - The receivers' outputs go to the OneBox: **XA5 green** (500–540 nm), **XA6 red** (580–680 nm). SpikeGLX records them while the gate is high, on the same clock as the gate, camera and LED lines, so every reading lines up with the camera frames to a sample (33 µs).
 - **The receivers must be on DC Low** (2×10¹⁰ V/A, DC to 750 Hz). On their AC settings (30 to 750 Hz) a flash's steady level is filtered out. In a test on 5 November (no animal) they were on AC: each flash showed as a jump that sagged back within the flash and swung negative when it ended.
-- **Set the LED currents with a power meter** at the patch cord's tip. In the same test, with 100 mA on each LED and no animal, the blue flash pushed both XA5 and XA6 to +5 V, the top of the OneBox's ±5 V range.
+- **Set the LED currents with a power meter** at the patch cord's tip. In the same test, with 100 mA on each LED and no animal, the blue flash pushed both XA5 and XA6 to +5 V, the top of the OneBox's ±5 V range. With a mouse the receivers see far more light than with the bare patch cord: see [the first recordings with a mouse](#first-recordings-with-a-mouse-10-november-2026) for the levels that fit.
+- **Each receiver runs on a 9 V battery.** A receiver whose battery is flat reads a steady 0.2 V or so and doesn't move when its LED flashes; that was the cause of the first gate test on 10 November.
 - Between flashes the receivers' outputs carried about 70 mV rms of noise, mostly 60 Hz mains hum (same test). Averaging over whole 60 Hz cycles (16.7 ms) removes the hum: averaged over 20 ms it was 4 to 5 mV rms.
 
 **The pattern.** The panel's config ([`chronic_session.yaml`](chronic_session.yaml)) reads the neuro-seeER reporter (EGFP and FusionRed) with the "snapshot" pattern of its paper (Neuron, 2026; [doi:10.1016/j.neuron.2026.07.031](https://doi.org/10.1016/j.neuron.2026.07.031)). Once a bout (every 5 minutes), it gives 50 ms of yellow (560 nm), then 150 ms dark, then 50 ms of blue. These are `pico.set`'s `YELLOW_FIRST: 1`, `PULSE_WIDTH_D: 0.05`, `LED_GAP: 0.15` and `PULSE_WIDTH_C: 0.05`. 50 ms is exactly 3 frames at 60 Hz and 150 ms exactly 9, so every edge still falls 1 ms before a camera pulse: yellow lights frames 300–302 and blue 312–314, each frame wholly lit or wholly dark. The paper's system (a Neurophotometrics FP3002) recorded the emission with a camera chip; here the two receivers are sampled every 33 µs, so each flash gives about 1,500 samples per channel. `chronic_control.py`'s own settings, and the PowerShell launcher's, keep chronicControlv13.py's pattern (blue 30 ms, then yellow 30 ms at once).
@@ -112,7 +113,47 @@ python photometry_snapshots.py D:\data\<date_time> --campy D:\data\<date_time>
 
 It ends with what should be the same in every bout: the order, the frames lit, the widths, the gap and the leads, each as a range.
 
-Not checked yet: the receivers on DC Low, the light levels, and a recording with a fiber-implanted mouse.
+### First recordings with a mouse (10 November 2026)
+
+A fiber-implanted mouse, the receivers on DC Low, the snapshot pattern above and the panel's "Gate test (15 min, 3 bouts)": three bouts, the first with 240 s of camera and the other two with 10 s, each with one yellow and one blue flash. A Neuropixels 2.0 probe was plugged into the OneBox but not implanted.
+
+**The rig's red camera lights reach the red receiver.** With the room's red lights on (they light the cage for the cameras), XA6 sat at the OneBox's +5 V limit for the whole recording, dark included, while XA5 read its usual 0.03 to 0.05 V in the dark. Red light passes through tissue: it reaches the implanted fiber through the head, or past the ferrule's mating sleeve, and the red receiver passes 580–680 nm. With the lights off, XA6 read 0.13 to 0.24 V in the dark. The cameras need those lights, so long recordings need the light kept out at the mouse's end instead: an opaque sleeve (black heat-shrink) over the mating sleeve and a cover over the headcap, or infrared camera lights if the cube's 580–680 nm band rejects them. Neither has been tried yet.
+
+**21 µW is too much with a mouse.** With each LED set to 21 µW at the fiber tip before the mouse was connected (blue 115 mA, yellow 150 mA), both readings were at the +5 V limit for the whole of their flash in every bout: green in the blue flash and red in the yellow one. Both reached the limit within 0.1 ms of the LED coming on, so how far over they were isn't known.
+
+**The levels with the mouse connected**, each LED on in the driver's continuous mode for a few seconds, read live from SpikeGLX:
+
+| | XA5 (green) | XA6 (red) |
+|---|---|---|
+| dark (lights off) | 0.04 V | 0.20 V |
+| blue at 20 mA | **2.90 V** | 4.26 V (blue light reaching the red receiver) |
+| blue at 18 mA | about 2.8 V | |
+| yellow at 20 mA | 0.05 V | **3.40 V** |
+| yellow at 17 to 18 mA | | about 3.0 V |
+
+Both LEDs flicker on and off at 17 mA and are off at 16 mA (the driver's lowest steady current). So with this light path and this mouse, both readings fit under 5 V only with the LEDs a few mA above the point where they flicker.
+
+**A snapshot recording at 20 mA on both LEDs.** Nothing clipped, and the readings hardly changed between bouts:
+
+| bout | `green_V` | `red_V` | XA6 in the blue flash | XA5 in the yellow flash |
+|---|---|---|---|---|
+| 1 | 2.868 V | 3.280 V | 4.063 V | 0.008 V |
+| 2 | 2.873 V | 3.269 V | 4.077 V | 0.008 V |
+| 3 | 2.875 V | 3.266 V | 4.076 V | 0.008 V |
+
+- The three bouts' readings were within 0.25% (green) and 0.4% (red) of each other, so the 50 ms flashes at 20 mA were as steady as the continuous light. The dark level's noise was 8 to 9 mV rms.
+- Each receiver reached half its step 0.33 to 0.36 ms after its LED's edge.
+- The dark level fell after the first bout (XA5 from 0.051 to 0.008 V, XA6 from 0.22 to 0.055 V), most likely some remaining room light going off. Each reading has its own bout's dark level taken off, so the readings didn't move.
+- The timing was as planned in every bout: yellow lit frames 300–302 and blue 312–314, each flash 49.995 to 50.028 ms, 149.985 to 150.018 ms of dark between them, each LED on 990 to 1023 µs before its first frame's pulse. All four cameras saved one frame per Pico pulse (15,600), and the Pico reported nothing late or lost.
+
+**What to change for long recordings.** 20 mA leaves 2 to 3 mA between a good reading and a flickering LED, and XA6 in the blue flash at 4.1 V is close to the limit. About ten times less light from each LED would let them run at a steady 80 to 120 mA with the readings around 2 to 3 V: an OD 1.0 absorptive neutral density filter in an in-line fiber filter mount on each LED's patch cord, between the LED and the cube, with connectors that match the cords (FC or SMA). That is an estimate from the levels above, not yet tried. The power at the fiber tip at 20 mA hasn't been measured yet. The 20 mA recording's `session.json` says 21 µW, which was left over from the earlier setting.
+
+**Two things seen once, in the same evening's recordings:**
+
+- One recording had a camera frame between bouts that the Pico didn't send: all four cameras took a frame at the same moment, 46 s after the second bout's last pulse. campy stops at the planned number of frames, so the third bout lost its last frame. Its frames in campy's numbering are then one later than `photometry_snapshots.py --campy` gives (it counts the Pico's pulses), and `--campy` splits that bout in two. Each camera's `aligned.csv` gives every frame's own Pico pulse and is right. The other recordings that evening had no such frame.
+- After a recording was stopped early, SpikeGLX started the next run without the OneBox: its console showed `385CH` (the probe alone) and repeated `obx stream not enabled`, and the panel stopped the start after 120 s ("SpikeGLX's run didn't start acquiring"). Quitting SpikeGLX and pressing Start again, so that the panel opened it afresh, brought the OneBox back. SpikeGLX's saved settings were the same as for the runs before and after.
+
+Not checked yet: keeping the camera lights out at the mouse's end, the power at the fiber tip at 20 mA, a session longer than 15 minutes with a mouse, and the patch cords other than the one to the mouse.
 
 ## Running it
 
