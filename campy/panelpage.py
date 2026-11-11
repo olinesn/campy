@@ -45,7 +45,9 @@ label{font-size:.9375rem;color:var(--muted)}h2{font-size:1.25rem;font-weight:500
 .textsize button{padding:.125em .625em;min-width:2.75em}
 .bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden}.bar div{height:6px;background:var(--ok)}
 .copybar{max-width:28rem;margin:4px 0 2px}.copybar div{background:var(--accent)}
-.bgcopy{border-left:4px solid var(--accent)}.bgcopy .copybar{max-width:none;height:10px}.bgcopy .copybar div{height:10px}
+.bgcopy{border-left:4px solid var(--accent)}.copyeta{text-align:right;line-height:1.1;flex:none;min-width:9rem}
+.copyeta .big{font-size:3rem;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text)}.copyeta .big.wait{font-size:1.5rem;font-weight:500}.copyeta .gap{margin-left:1.25rem}
+.copyeta .lab{font-size:2.125rem;color:var(--muted)}#clock b{font-variant-numeric:tabular-nums}.bgcopy .copybar{max-width:none;height:10px}.bgcopy .copybar div{height:10px}
 .err{color:var(--bad);font-size:1rem}ul{margin:.25rem 0 0;padding-left:1.25rem}li{margin:.25rem 0}
 select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
 .steps li{list-style:none;margin-left:-1.25rem}.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:1rem}
@@ -82,9 +84,10 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
 </div>
 <div id="error" class="err" hidden></div>
 <div id="gone" class="card gone" hidden><h2 id="gonetitle"></h2><p id="gonetext" class="muted"></p></div>
-<div id="bgcopy" class="card bgcopy" hidden><div class="row"><b class="grow" id="bgcopytitle">Copying in the background</b></div>
+<div id="bgcopy" class="card bgcopy" hidden><div class="row" style="align-items:flex-start"><div class="grow"><b id="bgcopytitle">Copying in the background</b>
   <div id="bgcopyok" style="font-weight:500"></div>
-  <div class="muted">Leave the computer on, and the panel's black window open, until it is done.</div>
+  <div class="muted">Leave the computer on, and the panel's black window open, until it is done.</div></div>
+  <div id="bgeta" class="copyeta" hidden><div><span id="bgetapct" class="big"></span> <span id="bgetapctlab" class="lab"></span><span id="bgetanum" class="big gap"></span> <span id="bgetalab" class="lab"></span></div><div id="bgetaend" class="muted"></div></div></div>
   <div id="bgcopytext" style="margin-top:6px"></div></div>
 
 <div id="typebox" class="card" hidden>
@@ -239,8 +242,71 @@ function renderDrives(D){
     size(d.free_gb)+' free of '+size(d.total_gb)+'<br><span class="muted">'+(d.copies ? "the copies go here" : "")+'</span></div></div>').join("");
 }
 function tag(text, kind){ return '<span class="tag '+kind+'">'+esc(text)+'</span>'; }
+// The page's clocks tick every second on their own (paint, below), counted from the last status: the Pico's time from
+// its start on this computer's clock (the server's now: the Pico's status is read only every 2 s, and it writes it
+// once a second), the recording's from its elapsed_s, a copy's time left counted down from its estimate
+let clock = null, clockShown = {key: null, t: -1}, clockHtml = null, offsets = [], serverOffset = 0, bgEta = null, etaHtml = null;
+function serverNow(){ return (Date.now() + serverOffset) / 1000; }
+function picoTime(P){ // the Pico's session time now: from its start (this computer's clock), up to its end
+  if(P.started==null || !P.alive) return P.session_s;
+  const t = Math.max(0, serverNow() - P.started); return P.ends_s!=null ? Math.min(t, P.ends_s) : t;
+}
+function steady(key, t){
+  // Never a second back from a poll's small delay (the clock re-synced to each status), only a real correction (2 s+)
+  if(t==null) return t;
+  if(clockShown.key == key && t < clockShown.t && t > clockShown.t - 2) t = clockShown.t;
+  clockShown = {key, t}; return t;
+}
+function paintClock(){
+  const C = clock; if(!C) return; let html, pct = 0;
+  if(C.text!=null) html = C.text;
+  else if(C.pico){ const t = steady(C.key, picoTime(C.pico)), E = C.pico.ends_s;
+    pct = E && t!=null ? Math.min(100, 100*t/E) : 0; html = "<b>"+hms(t==null ? null : Math.floor(t))+"</b> <span class=muted>of "+hms(E)+", the Pico's"+percent(E && t!=null, pct)+"</span>"; }
+  else { const t = steady(C.key, C.elapsed + (C.ticking ? Math.max(0, (Date.now()-C.at)/1000) : 0));
+    pct = C.planned ? Math.min(100, 100*t/C.planned) : 0; html = "<b>"+hms(Math.floor(t))+"</b> <span class=muted>recorded, of "+hms(C.planned)+percent(C.planned, pct)+"</span>"; }
+  if(html != clockHtml){ $("clock").innerHTML = clockHtml = html; }
+  $("progress").style.width = pct ? pct.toFixed(2)+"%" : "0";
+}
+function percent(known, pct){ return known ? " · <b>"+Math.floor(pct)+"%</b>" : ""; } // rounded down: 100% only once it is
+function mss(s){ s = Math.max(0, Math.floor(s)); const h = Math.floor(s/3600), m = Math.floor(s%3600/60);
+  return (h ? h+":"+String(m).padStart(2,"0") : m)+":"+String(s%60).padStart(2,"0"); }
+function clockAt(ms){ return new Date(ms).toLocaleTimeString([], {hour:"numeric", minute:"2-digit", hour12:true}); }
+function etaLeft(j){ // seconds left in the copy's phase: the card's smoothed count for the copy it shows, else the status's
+  if(bgEta && bgEta.folder == j.folder && bgEta.phase == j.phase && bgEta.end!=null) return Math.max(0, (bgEta.end - Date.now())/1000);
+  return j.eta_s;
+}
+function followEta(j){
+  // The copy the card shows: its time left as an end time on this page's clock, moved a third of the way to each new
+  // estimate (the copy's progress is measured every 3 s), so it neither jitters nor jumps back further than the
+  // estimate did; a new copy or phase starts from its own
+  if(!j){ bgEta = null; return; }
+  const same = bgEta && bgEta.folder == j.folder && bgEta.phase == j.phase;
+  // How much of it is done (of the bytes to copy, or to read back), as last measured
+  const done = j.phase=="checking" ? j.checked_bytes : j.done_bytes, total = j.phase=="checking" ? j.check_bytes : j.bytes;
+  const pct = total ? Math.min(100, 100*(done||0)/total) : null;
+  if(j.eta_s==null){ bgEta = {folder: j.folder, phase: j.phase, end: null, pct}; return; }
+  const target = Date.now() + j.eta_s*1000;
+  bgEta = {folder: j.folder, phase: j.phase, pct, end: same && bgEta.end!=null ? bgEta.end + (target - bgEta.end)/3 : target};
+}
+function paintEta(){
+  const E = bgEta; $("bgeta").hidden = !E; if(!E) return;
+  // As big as the time left, in front of it: how much is done (65% copied), then the time left (2:07 left)
+  let pct = "", pctLab = "", num, lab = "", end = "", wait = false;
+  if(E.phase!="copying" && E.phase!="checking"){ num = "finishing…"; wait = true; }
+  else { if(E.pct!=null){ pct = Math.floor(E.pct)+"%"; pctLab = E.phase=="checking" ? "checked" : "copied"; }
+    if(E.end==null){ num = "estimating…"; wait = true; if(!pct) end = E.phase=="checking" ? "the time left to check" : "the time left to copy"; }
+    else { num = mss(Math.max(0, (E.end - Date.now())/1000)); lab = "left";
+      end = "done around "+clockAt(E.end)+(E.phase=="checking" ? "" : ", then checked"); } }
+  const html = [pct, pctLab, num, lab, end, wait].join("|"); if(html == etaHtml) return; etaHtml = html;
+  $("bgetapct").textContent = pct; $("bgetapctlab").textContent = pctLab;
+  $("bgetanum").textContent = num; $("bgetanum").className = "big"+(pct ? " gap" : "")+(wait ? " wait" : ""); $("bgetalab").textContent = lab; $("bgetaend").textContent = end;
+}
+function paint(){ paintClock(); paintEta(); }
 function render(s){
   last = s;
+  // The server's clock against this page's: the largest offset of the last few statuses (a slow answer only makes it
+  // look smaller)
+  if(s.now!=null){ offsets.push(s.now*1000 - Date.now()); if(offsets.length > 10) offsets.shift(); serverOffset = Math.max(...offsets); }
   // Which campy the panel runs (version, branch, commit), in the top right corner, as LUC3D shows its own
   const V = s.version || {}; $("version").textContent = V.text || ""; $("version").title = V.title || "";
   const L = s.launcher || {}, rec = L.recording || {}, H = s.health || {};
@@ -262,14 +328,14 @@ function render(s){
   const DP = s.devices && s.devices.plan ? s.devices.pico : null;
   if(DP){ // a Pico's session: its time against its plan (campy's recTimeInSec is camera time, not the clock's)
     const on = DP.alive && s.devices.pico_started && DP.mode != "wiring"; $("clockbox").hidden = !on && !live;
-    $("clock").innerHTML = on ? "<b>"+hms(DP.session_s)+"</b> <span class=muted>of "+hms(DP.ends_s)+", the Pico's</span>" : (live ? "<span class=muted>"+(s.devices.pico_started ? "the Pico's session has ended" : "the Pico hasn't started")+"</span>" : "");
-    $("progress").style.width = on && DP.ends_s ? Math.min(100, 100*DP.session_s/DP.ends_s)+"%" : "0";
+    clock = on ? {key: "pico|"+DP.started, pico: DP} : {text: live ? "<span class=muted>"+(s.devices.pico_started ? "the Pico's session has ended" : "the Pico hasn't started")+"</span>" : ""};
   } else {
   // Only while it records: after it, the previous recording's time against its length meant nothing (1:19 of 1:00)
   const shown = (running && rec.elapsed_s!=null) || st=="post"; $("clockbox").hidden = !shown;
-  $("clock").innerHTML = shown ? "<b>"+hms(rec.elapsed_s)+"</b> <span class=muted>recorded, of "+hms(rec.planned_s)+"</span>" : "";
-  $("progress").style.width = shown && rec.planned_s ? Math.min(100, 100*rec.elapsed_s/rec.planned_s)+"%" : "0";
+  // Counted on from the status's elapsed_s while it records (the page shows it every second, polled or not)
+  clock = shown ? {key: "rec|"+rec.started, elapsed: rec.elapsed_s, at: Date.now(), planned: rec.planned_s, ticking: st=="recording"} : {text: ""};
   }
+  paintClock();
   $("error").hidden = !s.error; $("error").textContent = s.error || "";
   $("before").hidden = !(st=="ready" || st=="done" || st=="failed");
   if(st=="recording") $("starterr").textContent = ""; // a refusal from before this recording no longer applies
@@ -432,7 +498,7 @@ async function chooseType(path){
 function base(p){ return String(p||"").split(/[\\/]/).filter(x => x).pop() || ""; }
 function gb(b){ return b==null ? "?" : (b/1e9).toFixed(1); }
 function copyText(j){
-  if(j.state=="copying" && j.phase=="checking") return "checking the copy byte for byte: "+gb(j.checked_bytes)+" of "+gb(j.check_bytes)+" GB read back, "+dur(j.seconds||0);
+  if(j.state=="copying" && j.phase=="checking") return "checking the copy byte for byte: "+gb(j.checked_bytes)+" of "+gb(j.check_bytes)+" GB read back, "+dur(j.seconds||0)+copyEta(j);
   if(j.state=="copying" && j.phase=="deleting") return "every file the same in the copy: deleting it from this computer";
   if(j.state=="copying" && j.phase=="finishing") return "every file the same in the copy: copying its logs";
   if(j.state=="copying") return "copying into "+j.to+": "+gb(j.done_bytes)+" of "+gb(j.bytes)+" GB, "+dur(j.seconds||0)+copyEta(j);
@@ -448,10 +514,10 @@ function copyCheck(j){
   return t;
 }
 function copyEta(j){
-  // How long the rest takes at the copy's average rate so far, and the clock time it should end: once there is a rate
-  if(!j.bytes || !j.done_bytes || (j.seconds||0) < 5 || j.done_bytes >= j.bytes) return "";
-  const left = (j.bytes - j.done_bytes) / (j.done_bytes / j.seconds), m = Math.round(left/60);
-  const end = new Date(Date.now() + left*1000).toLocaleTimeString([], {hour:"numeric", minute:"2-digit", hour12:true});
+  // How long the rest of the copy (or of its check) takes at its average rate so far (the server's eta_s, once it has
+  // one), and the clock time it should end
+  const left = etaLeft(j); if(left==null) return "";
+  const m = Math.round(left/60), end = clockAt(Date.now() + left*1000);
   return ", " + (left < 60 ? "under a minute" : m < 60 ? "about "+m+" min" : "about "+Math.floor(m/60)+" h "+(m%60)+" min") + " left (done around "+end+")";
 }
 function copyBar(j){
@@ -467,6 +533,8 @@ function renderCopies(C, folder, st){
   // the Copies card, below the cameras while one records
   const now = jobs.filter(j => j.state=="copying"), queued = jobs.filter(j => j.state=="waiting");
   $("bgcopy").hidden = !now.length && !queued.length;
+  // The big time left, top right: the copy under way (one at a time), not the ones waiting behind it
+  followEta(now[0]); paintEta();
   $("bgcopytitle").textContent = now.length ? "Copying in the background" : "Copies waiting to start";
   // Said plainly: the copy is no reason to wait (it keeps going while the next one records)
   $("bgcopyok").textContent = ["ready","done","failed"].includes(st) ? "You can start a new recording now: the copy goes on beside it and doesn't disturb it." :
@@ -629,7 +697,7 @@ function renderDevices(s, st){
   let pt = "-";
   if(P && P.state){
     if(P.alive && P.mode=="wiring") pt = "Blinking (the gate check)";
-    else if(P.alive) pt = "Running: "+(P.bout ? "bout "+P.bout+" of "+P.bouts : "between bouts ("+P.bouts+" in all)")+" · "+(P.pulses||0).toLocaleString()+" camera pulses · ends "+(P.ends_at||"?")+" ("+hms(Math.max(0,(P.ends_s||0)-(P.session_s||0)))+" left)"+(P.end_requested?" · stop asked ("+P.end_requested+")":"");
+    else if(P.alive) pt = "Running: "+(P.bout ? "bout "+P.bout+" of "+P.bouts : "between bouts ("+P.bouts+" in all)")+" · "+(P.pulses||0).toLocaleString()+" camera pulses · ends "+(P.ends_at||"?")+" ("+hms(Math.max(0,(P.ends_s||0)-(picoTime(P)||0)))+" left)"+(P.end_requested?" · stop asked ("+P.end_requested+")":"");
     // The gate check's blink runs as a short wiring check: say so, not "Last session: wiring check stopped after 1 rounds"
     else if(P.mode=="wiring") pt = "Idle. Its last run was a gate blink (the gate check)"+(P.error?" · "+P.error:"");
     else pt = "Idle. Last session: "+P.state+(P.done?" ("+P.done+")":"")+(P.error?" · "+P.error:"");
@@ -777,7 +845,7 @@ let textPct = 100; try { textPct = Number(localStorage.getItem(TEXT_KEY)) || 100
 textPct = textSize(textPct);
 $("smaller").onclick = () => { textPct = textSize(TEXT_SIZES[Math.max(0, TEXT_SIZES.indexOf(textPct)-1)]); };
 $("larger").onclick = () => { textPct = textSize(TEXT_SIZES[Math.min(TEXT_SIZES.length-1, TEXT_SIZES.indexOf(textPct)+1)]); };
-tick(); setInterval(tick, 1000); setInterval(images, 1000);
+tick(); setInterval(tick, 1000); setInterval(images, 1000); setInterval(paint, 200);
 </script></body></html>
 """
 
