@@ -479,3 +479,16 @@ def test_a_camera_back_is_numbered_as_the_other_cameras():
 	# The offset carries its timestamps on from its last frame's: its clock started again at 0
 	resume = unicam.Resume(60, ns(2.0), 2.0, period, 0.0)
 	assert abs(resume.Offset(300, 0.25) - (2.0 + 240 * period - 0.25)) < 1e-12
+
+
+def test_a_camera_back_asks_the_others_again_when_their_counters_were_changing(monkeypatch):
+	# status.Camera.Others leaves out a camera whose counters changed between its two reads; on a busy computer that
+	# can be every other camera at once (seen on GitHub's runner, 2026-11-12: numbered by its own last frame instead).
+	# Resume.Number asks again, rather than taking an empty answer for no other camera
+	period = 1 / 30
+	answers = iter([[], [], [(300, int(10.0 * 1e9))]])
+	resume = unicam.Resume(60, int(2.0 * 1e9), 2.0, period, 0.0)
+	assert resume.Number(int(10.001 * 1e9), lambda: next(answers)) == (300, True)
+	# None grabbing at all: given up after MATCH_WAIT_S, by its own last frame
+	monkeypatch.setattr(unicam, "MATCH_WAIT_S", 0.02)
+	assert resume.Number(int(10.0 * 1e9), lambda: []) == (300, False)

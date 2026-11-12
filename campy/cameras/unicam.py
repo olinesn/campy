@@ -698,11 +698,15 @@ class Resume:
 
 	def Number(self, hostNs, others=None):
 		# others: a function giving the other cameras' newest frames, asked again for up to MATCH_WAIT_S
+		# Asked again until one matches, for up to MATCH_WAIT_S: none may have matched yet because the others' frames
+		# of this pulse are not in, or because a camera's counters changed as they were read (status.Camera.Others
+		# leaves those out; on a busy computer that can be every camera at once). With no other camera grabbing, that
+		# wait is all it costs, once
 		deadline = time.monotonic() + MATCH_WAIT_S
 		while True:
 			found = others() if others is not None else []
 			number, matched = FrameNumberBack(hostNs, self.period, found, self.lastFrame, self.lastHostNs)
-			if matched or not found or time.monotonic() >= deadline:
+			if matched or others is None or time.monotonic() >= deadline:
 				return number, matched
 			time.sleep(0.002)
 
