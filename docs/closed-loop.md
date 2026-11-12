@@ -189,7 +189,7 @@ The steps, with estimates for the EVO-X2 at 60 fps, until they are measured on a
 
 `campy-rules` prints each step's p50, p99 and worst case at the end, and writes them to its summary.
 
-`campy-rules` hears each line from the board as soon as it arrives: a trigger's report, a command's answer, and the round trips that map the board's clock. Before pull request 417, it read in blocks that waited up to 5 ms for more to come. On the simulated board (on a Mac, 10 runs of the real-time test), the median wait from a trigger to its report being heard fell from 1.8 ms to 0.5 ms. The median wait from a command's write to its answer being heard fell from 4.6 ms to 1.8 ms. This changes when `campy-rules` hears of a change, not when the pin changes. *Not yet measured on the board.*
+`campy-rules` hears each line from the board as soon as it arrives: a trigger's report, a command's answer, and the round trips that map the board's clock. Before pull request 417, it read in blocks that waited up to 5 ms for more to come; on Windows that wait is about 15 ms, the system timer's step. Measured on a real Nano ESP32 running `campy_outputs` on a Windows PC (the Dell Pro Tower Plus, 12 November, 3,000 commands each way, alternated): an answer was heard 6.0 ms after its command at the median (p99 10.6 ms) before, and 0.66 ms (p99 1.05 ms) after. The quickest round trip, which sets how well board times map to host times, was 14–15 ms before and 0.34–0.41 ms after. So, before, a pin time given on the host clock could be up to about 7 ms off on Windows; it is now within about 0.2 ms. The board's own latency per event (frame trigger to pin) is timed on the board's clock and was never affected. On the simulated board on a Mac, a trigger's report was heard 0.5 ms after it at the median, not 1.8 ms. This changes when `campy-rules` hears of a change, not when the pin changes.
 
 On a Dell PC, the worst case comes every 15 minutes: Dell Optimizer's TechHub agent makes the BIOS work for about 9 s and then 2 s more, which slows the sets running then. On the Precision 7875 that added up to 2.5 ms to frame-to-3D. On the Pro Tower Plus the cost comes mostly in the first quarter-hour after the agent starts: frame to 3D up to 24.8 ms, against 12.6 ms at the 99th percentile ([Hardware guide](hardware-guide.html), "On a Dell PC, Dell's TechHub agent slows live tracking every 15 minutes").
 
@@ -209,7 +209,7 @@ All host times are on campy's host clock (`hosttimes.npy`'s), so everything line
   Also one line per pulse the board made, with both edges. And `live_gone` / `live_back` when `campy-live` was gone during the recording (pose rules off between them).
 - **`<out>.board.txt`**: every line to and from the board. That includes every camera trigger's rise, `t <frame> <board µs>`.
 - **`<out>.npy`**: per set, its frame, times, each rule's value (−1 unknown) and whether it held.
-- **`<out>.json`**: the summary. Counts, the latency of each step, and the map from the board's clock to the host clock. That map is good to half a USB round trip, about 1 ms.
+- **`<out>.json`**: the summary. Counts, the latency of each step, and the map from the board's clock to the host clock. That map is good to half its quickest round trip: about 0.2 ms on a Windows PC with a Nano ESP32 (up to about 7 ms before pull request 417).
 
 ## Tests
 
