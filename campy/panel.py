@@ -95,6 +95,7 @@ PORT = 8765
 THUMB_WIDTH = 192 # px, each camera's thumbnail
 SAMPLE_S = 0.25 # how often the rings' slots are read (campy-live-view: about 20 times a second)
 THUMB_S = 1.0 # and a frame of each camera, for its thumbnail
+LOST_AFTER_S = 2.0 # one camera's feed ended this long while the others' have not: CAMERA LOST (campy-live-view's)
 STATUS_FRESH_S = 20 # recording.json older than this is not the recording's now
 WARN_FRACTION = 0.8 # the disk check warns when a length needs more than this share of the free space (as the launch
 # check's, campy/preflight.py)
@@ -412,6 +413,7 @@ class Health:
 		self.rig = livehealth.Rig([r.cameraName or n for r, n in zip(readers, self.names)], self.frameRate,
 			readers[0].slots, self.pause_s, self.stop_s)
 		self.thumbs, self.lastRow = {}, 0
+		self.endedAt = {} # camera: when its feed was first seen ended, while the others' had not
 		return True
 
 	def Detach(self):
@@ -429,6 +431,13 @@ class Health:
 			self.Detach() # the next recording's rings
 			return
 		ended = all(r.Ended() for r in self.readers)
+		now = time.monotonic()
+		for c, r in enumerate(self.readers):
+			# A camera whose feed ended while the others record on (unplugged): CAMERA LOST, as campy-live-view says
+			if not ended and r.Ended() and c not in self.rig.gone and \
+					now - self.endedAt.setdefault(c, now) >= LOST_AFTER_S:
+				self.rig.gone[c] = "{}: camera lost, its live feed ended at its frame {:,} while the other cameras " \
+					"record on (unplugged, or its camera stopped)".format(r.cameraName or self.names[c], r.Latest())
 		self.rig.Sample(self.readers)
 		status = self.rig.Status()
 		cameras = []

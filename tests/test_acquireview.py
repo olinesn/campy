@@ -5,7 +5,7 @@ every camera; none with displayFrameRate 0, nor under campy-session, which
 opens its own.
 """
 
-import os, re, subprocess, sys, types
+import json, os, re, subprocess, sys, types
 
 import pytest
 
@@ -190,3 +190,48 @@ def test_campy_acquire_opens_one_view_that_reads_every_cameras_feed(tmp_path):
 	assert re.search(r"Live feed: Camera0 64x48, Camera1 64x48", log), log
 	assert "No Qt here" not in log and "Cannot open a window" not in log, log
 	assert "campy-live-view stopped" not in out
+
+
+def test_a_camera_unplugged_mid_recording_leaves_the_others_in_the_view(tmp_path):
+	# A real recording of 3 emulated cameras, camera 1 unplugged at its 20th frame (1 s in: CAMPY_EMU_FAULTS lost).
+	# campy records on with cameras 0 and 2, and so does the view: it says camera 1 is lost, and goes on drawing
+	# the others' frames (it used to call one camera's feed ending the recording's end, and drew nothing more).
+	# The view stops itself after 5 s (--seconds), and its --summary counts the views it drew
+	pytest.importorskip("cv2")
+	pytest.importorskip("PyQt5")
+	from test_liveviewqt import OFFSCREEN, QtStarts
+	if not QtStarts():
+		pytest.skip("Qt's offscreen platform does not start here")
+	names = ["Camera0", "Camera1", "Camera2"]
+	for camera in names:
+		(tmp_path / camera).mkdir()
+		write_clip(str(tmp_path / camera / "clip.mp4"), frames=7)
+	feed = "cu{}".format(os.getpid() % 100000)
+	config = tmp_path / "config.yaml"
+	config.write_text("\n".join([
+		"numCams: 3", 'cameraMake: "emu"', 'videoFolder: "{}"'.format(tmp_path.as_posix()), 'videoFilename: "emuclip.mp4"',
+		"frameRate: 20", "recTimeInSec: 7", "chunkLengthInSec: 1", "displayFrameRate: 10",
+		'pixelFormatInput: "gray"', 'pixelFormatOutput: "yuv420p"', "gpuID: -1", 'codec: "h264"',
+		'preflight: "off"', 'liveFeedName: "{}"'.format(feed), ""]))
+	summary = tmp_path / "view_summary.json"
+	env = dict(OFFSCREEN, PYTHONPATH=REPO, PYTHONUNBUFFERED="1", CAMPY_EMU_FAULTS="1:lost@20")
+	for key in (manifest.LAUNCHER_ENV, livefeed.FEED_ENV, "IMAGEIO_FFMPEG_EXE"):
+		env.pop(key, None)
+	code = ("import sys; summary = sys.argv[2]; sys.argv = ['campy-acquire', sys.argv[1]]\n"
+		"from campy import acquireview\n"
+		"args = acquireview.Args\n"
+		"acquireview.Args = lambda p: args(p) + ['--gui', 'qt', '--priority', 'normal', '--seconds', '5', "
+		"'--summary', summary]\n"
+		"from campy.campy import Main; Main()")
+	proc = subprocess.run([sys.executable, "-c", code, str(config), str(summary)], cwd=str(tmp_path), env=env,
+		capture_output=True, text=True, timeout=120)
+	out = proc.stdout + proc.stderr
+	session, = [d for d in tmp_path.iterdir() if re.fullmatch(r"\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d", d.name)]
+	assert re.search(r"Camera1: the camera is gone, after frame \d+", out), out
+	log = (session / "campy-live-view.log").read_text()
+	lost = re.search(r"Camera1's feed ended at its frame \d+ while the other cameras record on", log)
+	assert lost, log
+	assert "The recording ended." not in log[:lost.start()], log # not taken for the recording's end
+	views = json.loads(summary.read_text())["frames_alone"]
+	# At 10 views a second, about 3 s of them after the loss (the view starts ~1 s in, the loss is said ~3 s in)
+	assert views >= 25, (views, log)

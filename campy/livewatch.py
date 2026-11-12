@@ -58,6 +58,9 @@ MOVING_S = 3.0 # a camera records: its newest frame changed this recently
 ENDED_HOLD_S = 5.0
 CHECK_S = 1.0 # how often problems are checked (the rings' slots are read more often: Rig.Every)
 ATTACH_S = 1.0
+# One camera's feed ended while the others' have not, this long: that camera is lost (unplugged), and the others are
+# watched on (as campy-live-view does: its LOST_AFTER_S). Every feed ends within it as a recording ends
+LOST_AFTER_S = 2.0
 
 
 def Kind(tag):
@@ -110,8 +113,8 @@ class LiveWatch:
 			for camera in self.rig.Status().cameras:
 				for tag, sentence in camera.problems:
 					kind = Kind(tag)
-					if kind == "noframes":
-						continue # campy-acquire's watch says it
+					if kind in ("noframes", "camera lost"):
+						continue # campy-acquire's watch says it (a camera gone: critical)
 					key = "live/{}/{}".format(camera.name, kind)
 					seen.add(key)
 					if kind == "offset": # campy-live pairs that camera's frames by host time instead
@@ -197,6 +200,7 @@ def Run(args, notifier=None, say=print):
 	readers, results, after = None, None, 0
 	said = False
 	checked = sampled = attached = looked = 0.0
+	endedAt = {} # camera: when its feed was first seen ended, while the others' had not
 	stopping = []
 	stopWatch = stopfile.Watch(os.path.abspath(args.stop_file), stopping.append).Start() \
 		if getattr(args, "stop_file", None) else None
@@ -226,9 +230,20 @@ def Run(args, notifier=None, say=print):
 					said = True
 					say("campy-watch: waiting for the live feed {} (liveFeed: True in campy-acquire's config)...".format(
 						", ".join(names)))
-			if readers is not None and any(r.Ended() or r.Replaced() for r in readers):
-				say("campy-watch: the recording ended.")
-				break
+			if readers is not None:
+				# The recording ended when every camera's feed did (or one was made again: a new recording's). One
+				# camera's ending while the others record on is that camera lost (campy-acquire's watch says so):
+				# the others are watched on, without it
+				ended = [r.Ended() for r in readers]
+				if all(ended) or any(r.Replaced() for r in readers):
+					say("campy-watch: the recording ended.")
+					break
+				for c, gone in enumerate(ended):
+					if gone and c not in w.rig.gone and now - endedAt.setdefault(c, now) >= LOST_AFTER_S:
+						name = readers[c].cameraName or readers[c].name
+						w.rig.gone[c] = "{}: camera lost, its live feed ended".format(name)
+						say("campy-watch: {}'s feed ended while the other cameras record on (camera lost): watching the "
+							"others.".format(name))
 			if results is None and readers is not None and now - looked >= ATTACH_S:
 				looked = now
 				try:
@@ -244,7 +259,7 @@ def Run(args, notifier=None, say=print):
 			if readers is not None and now - sampled >= w.rig.Every():
 				sampled = now
 				w.rig.Sample(readers)
-				w.Frames([r.Latest() for r in readers], now)
+				w.Frames([r.Latest() for c, r in enumerate(readers) if c not in w.rig.gone], now)
 			if results is not None:
 				if results.Ended():
 					w.resultsEnded = True
