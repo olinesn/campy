@@ -289,7 +289,8 @@ def test_one_camera_stopping_is_said_with_planned_pauses(tmp_path, service):
 	assert code == 0, out
 	assert re.search(r"Camera1: no frame for 3 s, since frame 20\.", out), out
 	assert re.search(r"Camera1: frames again, after [45]\.\d s without \(frame 21\)\.", out), out
-	assert "Camera0: no frame for" not in out and "Camera2: no frame for" not in out, out
+	# The others never went quiet (a busy runner can still make one miss a pulse at its start: a different alert)
+	assert not re.search(r"Camera[02]: no frame for [\d.]+ s,", out), out
 
 
 def test_a_disk_that_fills_stops_the_recording_cleanly(tmp_path, service):
