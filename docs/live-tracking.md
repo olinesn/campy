@@ -689,7 +689,7 @@ Notes on the measurements:
 
   ¹ `RIG_CONTAMINATED` on all three tries, by other programs' CPU or disk use, not by anything on the GPU.
 
-  The EVO-X2's replay agreed with the offline tracking as before: a median of 3.8 px in 2D and 4.2 mm in 3D, and 2 identity switches. The Windows 11 VM's recording checks (it has no live-tracking environment) kept every frame at 12:59–1:00 AM: 1,200 from 1 camera, then 3 × 3,600 from 3, none dropped. Both runs were marked `RIG_CONTAMINATED` by other programs' CPU use (the security agent and Windows' compatibility telemetry, up to 3.3 cores), which doesn't change a count of frames; a second try was called off when another program began using the VM's GPU.
+  The EVO-X2's replay agreed with the offline tracking as before: a median of 3.8 px in 2D and 4.2 mm in 3D, and 2 identity switches. The Windows 11 VM's recording checks (it has no live-tracking environment) kept every frame at 12:59–1:00 AM: 1,200 from 1 camera, then 3 × 3,600 from 3, none dropped. Both runs were marked `RIG_CONTAMINATED` by other programs' CPU use (the security agent and Windows' compatibility telemetry, up to 3.3 cores), which doesn't change a count of frames. A second try waited while another program used the VM's GPU and ran at 1:56–1:58 AM, once the GPU had been free for 4 minutes: the same frames kept, none dropped, and again `RIG_CONTAMINATED`, by the security agent alone (up to 2.3 cores and 96 MB/s of disk reads).
 
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
