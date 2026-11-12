@@ -20,6 +20,10 @@ SHORT = ["TOTAL_BASELINE=1", "CAMERA_LEAD_IN=0.5", "STANDARD_STIM_DURATION=1", "
 # The same bouts' camera pulses (90 and 60), with 2.5 s of baseline either side: bout 1 is 6 s long, not 3
 LONGER = ["TOTAL_BASELINE=2.5", "CAMERA_LEAD_IN=0.5", "STANDARD_STIM_DURATION=1", "EXTENDED_STIM_DURATION=1.5",
 	"INTERVAL=6.5", "TOTAL_DURATION=13"]
+# One bout whose camera runs 10 s (600 pulses, from 0.5 s to 10.5 s): a stop that should come mid-bout does, whatever
+# a busy runner does to the Pythons that start and stop it
+ONE_LONG_BOUT = ["TOTAL_BASELINE=1", "CAMERA_LEAD_IN=0.5", "STANDARD_STIM_DURATION=1", "EXTENDED_STIM_DURATION=10",
+	"INTERVAL=12", "TOTAL_DURATION=12"]
 
 
 def test_status_json_is_strict_json_and_reads_back_as_numbers(tmp_path):
@@ -129,6 +133,22 @@ def pty():
 	return master, slave
 
 
+def sim_up(proc, log_path, said, timeout=60):
+	"""
+	Waits until the live simulator has started its sketch: it said said (its
+	first line, in the log). A fixed wait isn't one: the first start of a
+	just-compiled simulator on a busy computer (4 tests at once) can take
+	seconds, and a program that opens the port first gets no answer in time.
+	"""
+	deadline = time.monotonic() + timeout
+	while proc.poll() is None and said not in log_path.read_text() and time.monotonic() < deadline:
+		time.sleep(0.01)
+	if proc.poll() is not None or said not in log_path.read_text():
+		proc.kill()
+		proc.wait()
+		raise AssertionError("the simulated board didn't start: {}".format(log_path.read_text()[-2000:]))
+
+
 @pytest.fixture
 def board(tmp_path, timer_sim):
 	# The Nano: chronic_timer.ino live on a pty's master end; its log has every pin change
@@ -138,7 +158,7 @@ def board(tmp_path, timer_sim):
 	log_path = tmp_path / "board.log"
 	with open(str(log_path), "w") as log:
 		proc = subprocess.Popen([timer_sim, "live"], stdin=master, stdout=master, stderr=log)
-	time.sleep(0.3)
+	sim_up(proc, log_path, "ready chronic_timer")
 	try:
 		yield os.ttyname(slave), log_path
 	finally:
@@ -508,12 +528,15 @@ def test_start_status_and_stop_after_the_bout_on_any_computer(tmp_path, fake_boa
 
 
 def test_stop_now_on_any_computer(tmp_path, fake_board):
-	assert control(tmp_path, fake_board, "start").returncode == 0
+	# Stop --now ends the bout where it is: some of its camera pulses made, not all. In SHORT's bout 1, whose camera
+	# runs 1.5 s (0.5 to 2 s), a stop 1.2 s in plus a Python starting came after it on a busy Windows CI runner (all 90
+	# made). ONE_LONG_BOUT's camera runs 10 s
+	assert control(tmp_path, fake_board, "start", settings=ONE_LONG_BOUT).returncode == 0
 	time.sleep(1.2)
-	stop = control(tmp_path, fake_board, "stop", "--now")
+	stop = control(tmp_path, fake_board, "stop", "--now", settings=ONE_LONG_BOUT)
 	assert stop.returncode == 0 and "Session stopped" in stop.stdout, stop.stdout
 	n = int(re.search(r"Session over: (\d+) camera pulses", timestamps(tmp_path)).group(1))
-	assert 20 < n < 90
+	assert 20 < n < 600, n
 
 
 def kill_session(tmp_path):
