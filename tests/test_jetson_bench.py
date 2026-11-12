@@ -33,42 +33,80 @@ def after(argv, word):
 
 # ------------------------------------------------------------------ commands
 
-def test_gst_pipeline_feeds_i420_to_the_hardware_encoder_at_a_fixed_qp():
+def test_gst_pipeline_feeds_gray_frames_to_the_hardware_encoder_at_a_fixed_qp():
 	argv = enc.gst_args(1280, 1024, 60, 21, 60, 7)
 	assert argv[:3] == ["gst-launch-1.0", "-q", "-e"]
-	# one word per argument, elements joined by "!"; I420 by default (JetPack 7.2.1's nvvidconv refuses GRAY8)
-	assert argv[argv.index("fdsrc"):argv.index("fdsrc") + 4] == ["fdsrc", "fd=0", "blocksize=1966080", "!"]
-	assert "format=i420" in argv and "width=1280" in argv and "height=1024" in argv and "framerate=60/1" in argv
-	assert "videoconvert" not in argv
-	order = [argv.index(e) for e in ("rawvideoparse", "nvvidconv", "video/x-raw(memory:NVMM),format=NV12",
+	# one word per argument, elements joined by "!"; gray frames go straight to nvvidconv, which makes
+	# I420 in the encoder's memory (NV12 clipped the levels to 16-235 on JetPack 7.2.1)
+	assert argv[argv.index("fdsrc"):argv.index("fdsrc") + 4] == ["fdsrc", "fd=0", "blocksize=1310720", "!"]
+	for word in ("format=gray8", "width=1280", "height=1024", "framerate=60/1", "plane-strides=<1280>"):
+		assert word in argv
+	assert "videoconvert" not in argv and not any("NV12" in a for a in argv)
+	order = [argv.index(e) for e in ("rawvideoparse", "nvvidconv", "video/x-raw(memory:NVMM),format=I420",
 		"nvv4l2h265enc", "h265parse", "fdsink")]
 	assert order == sorted(order)
-	for prop in ("ratecontrol-enable=0", "quant-i-frames=21", "quant-p-frames=21", "iframeinterval=60",
-			"idrinterval=60", "insert-sps-pps=1", "num-B-Frames=0"):
+	# constant QP through qp-range, rate control on with a ceiling it never reaches, no peak-bitrate
+	for prop in ("control-rate=variable_bitrate", "bitrate=4000000000", "qp-range=21,21:21,21:21,21",
+			"preset-level=1", "iframeinterval=60", "idrinterval=60", "insert-sps-pps=1"):
 		assert prop in argv
+	# the properties JetPack 7.2.1 ignores are gone
+	assert not any(a.startswith(("ratecontrol-enable", "quant-", "peak-bitrate", "maxperf")) for a in argv)
 	assert "fd=7" in argv
-	assert not any(a.startswith(("preset-level", "maxperf")) for a in argv)
+
+
+def test_gst_pipeline_is_campys_jetson_writer():
+	# what writer.JetsonEncoderArgs gives an H.265 camera at the same settings is what the bench runs,
+	# from fdsrc to the parser, and the muxer reads the stream and marks it as the writer's does
+	params = configurator.DefaultParams()
+	params.update(cameraName="Camera0", frameWidth=1280, frameHeight=1024, frameRate=60, pixelFormatInput="gray",
+		pixelFormatOutput="yuv420p", codec="h265", gpuID=0, gpuMake="jetson", quality=21, preset="ultrafast",
+		keyframeInterval=0.5, denoise="None")
+	w = writer.JetsonEncoderArgs(params)
+	argv = enc.gst_args(1280, 1024, 60, 21, enc.keyframe_frames(60, 0.5), 7)
+	assert argv[1:argv.index("fdsink")] == w["gst"]
+	assert enc.MAX_BITRATE == writer.JETSON_MAX_BITRATE
+	mux = enc.ffmpeg_mux_args(60, "/data/s0.mp4", ffmpeg="ff")
+	assert mux[mux.index("-f"):mux.index("-i")] == w["mux_input"]
+	assert mux[mux.index("-c"):mux.index("-c") + 4] == w["output_params"][:4]
 
 
 def test_gst_inputs():
-	# gray8: the mono frame straight to nvvidconv; gray8-convert: videoconvert makes I420 on the CPU first
-	gray = enc.gst_args(1280, 1024, 60, 21, 60, 7, input_format="gray8")
-	assert "blocksize=1310720" in gray and "format=gray8" in gray and "videoconvert" not in gray
+	# gray8-convert: GStreamer's videoconvert makes I420 on the CPU before nvvidconv
 	conv = enc.gst_args(1280, 1024, 60, 21, 60, 7, input_format="gray8-convert")
 	assert "blocksize=1310720" in conv and "format=gray8" in conv
 	assert conv.index("rawvideoparse") < conv.index("videoconvert") < conv.index("video/x-raw,format=I420") < conv.index("nvvidconv")
-	with pytest.raises(ValueError):
-		enc.gst_args(1280, 1024, 60, 21, 60, 7, input_format="nv12")
-	# I420 = the gray frame as Y, then both quarter-size chroma planes at 128; odd sizes round the chroma up
-	assert enc.frame_bytes(1280, 1024, "i420") == 1280 * 1024 * 3 // 2 and enc.frame_bytes(5, 3, "i420") == 15 + 2 * 3 * 2
-	frame = enc.to_i420(bytes(range(15)), 5, 3)
-	assert frame[:15] == bytes(range(15)) and frame[15:] == b"\x80" * 12
+	assert "video/x-raw(memory:NVMM),format=I420" in conv
+	for gone in ("i420", "nv12"):
+		with pytest.raises(ValueError):
+			enc.gst_args(1280, 1024, 60, 21, 60, 7, input_format=gone)
+	assert enc.parse_args([]).input == "gray8"
+	with pytest.raises(SystemExit):
+		enc.parse_args(["--input", "i420"])
+	with pytest.raises(SystemExit):
+		enc.parse_args(["--qp", "52"])
 
 
 def test_gst_optional_properties_and_raw_file_output():
-	argv = enc.gst_args(640, 480, 30, 30, 15, "/data/x.h265", preset_level=1, maxperf=True)
-	assert "preset-level=1" in argv and "maxperf-enable=1" in argv
+	argv = enc.gst_args(640, 480, 30, 30, 15, "/data/x.h265", preset_level=3, maxperf=True)
+	assert "preset-level=3" in argv and "maxperf-enable=1" in argv and "qp-range=30,30:30,30:30,30" in argv
 	assert argv[-3:] == ["filesink", "location=/data/x.h265", "sync=false"]
+	assert not any(a.startswith("preset-level") for a in enc.gst_args(640, 480, 30, 30, 15, 7, preset_level=None))
+
+
+def test_ramp_frames_and_levels():
+	frames = enc.make_frames(320, 240, 2)
+	assert len(frames[0]) == enc.frame_bytes(320, 240) == 320 * 240
+	top = frames[0][:320]
+	assert top[0] == 0 and top[-1] == 255 and list(top) == sorted(top)
+	assert enc.ramp_levels(frames[0], 320, 240) == (0.0, 255.0)
+	# a frame squeezed to limited range reads about 16 and 235
+	import numpy as np
+	squeezed = (16 + np.frombuffer(frames[0], np.uint8).astype(np.float64) * 219 / 255).round().astype(np.uint8)
+	assert enc.ramp_levels(squeezed.tobytes(), 320, 240) == (16.0, 235.0)
+	assert enc.ramp_levels(b"short", 320, 240) is None
+	argv = enc.first_frame_args("ff", "/d/s0.mp4", 320, 240, 60, raw_luma=True)
+	assert after(argv, "-vf") == "extractplanes=y" and after(argv, "-frames:v") == "1" and argv[-1] == "-"
+	assert after(enc.first_frame_args("ff", "/d/s0.h265", 320, 240, 60, raw_luma=False), "-f") == "hevc"
 
 
 def test_keyframe_interval_is_seconds_turned_into_frames():
@@ -87,7 +125,11 @@ def test_muxer_uses_campys_fragmented_mp4_flags_and_hvc1():
 	assert out[len(enc.FRAGMENTED_MP4):len(enc.FRAGMENTED_MP4) + 2] == enc.HVC1
 	argv = enc.ffmpeg_mux_args(60, "/data/s0.mp4", ffmpeg="ff")
 	assert argv[0] == "ff" and argv[-1] == "/data/s0.mp4"
-	assert after(argv, "-f") == "hevc" and after(argv, "-c") == "copy" and after(argv, "-framerate") == "60"
+	assert after(argv, "-f") == "hevc" and after(argv, "-c") == "copy"
+	# -r on the input: the stream has no frame times, and -framerate alone gave times that stopped advancing
+	assert argv.index("-framerate") < argv.index("-r") < argv.index("-i")
+	assert after(argv, "-framerate") == "60" and after(argv, "-r") == "60"
+	assert after(argv, "-bsf:v") == "hevc_metadata=video_full_range_flag=1"
 	assert enc.FRAGMENTED_MP4[1] in argv and after(argv, "-tag:v") == "hvc1"
 
 
@@ -154,20 +196,27 @@ def test_cpu_fallback_runs(tmp_path):
 		assert r["frames_written"] == 20 and r["frames_in_file"] == 20
 		assert r["encoder_exit"] == 0 and r["bytes"] > 0 and r["encoder_cpu_pct"] is not None
 		assert r["achieved_fps"] == pytest.approx(20, rel=0.2)
-	assert data["results"][0]["psnr_db_stored_luma"] > 30
+	r0 = data["results"][0]
+	assert r0["psnr_db_stored_luma"] > 30
+	# full range on the CPU too: the ramp comes back 0-255
+	for key in ("ramp_levels_stored_luma", "ramp_levels_by_range"):
+		low, high = r0[key]
+		assert low <= 3 and high >= 252, (key, low, high)
 
 
 FAKE_GST = """\
 #!{python}
-# stands in for gst-launch-1.0: reads the same raw frames and writes H.265
-# where the pipeline would (fdsink fd=N or filesink location=...)
+# stands in for gst-launch-1.0: reads the same gray frames and writes H.265
+# where the pipeline would (fdsink fd=N or filesink location=...), keeping the
+# levels 0-255 as nvvidconv's gray to I420 does
 import os, subprocess, sys
 words = dict(a.split("=", 1) for a in sys.argv[1:] if "=" in a)
 w, h, fps = words["width"], words["height"], words["framerate"].split("/")[0]
-pix_fmt = {{"gray8": "gray", "i420": "yuv420p"}}[words["format"]]
-cmd = [{ffmpeg!r}, "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", pix_fmt,
-	"-s", w + "x" + h, "-framerate", fps, "-i", "pipe:0", "-c:v", "libx265", "-preset", "ultrafast",
-	"-x265-params", "log-level=error", "-f", "hevc"]
+assert words["format"] == "gray8" and words["plane-strides"] == "<" + w + ">", words
+cmd = [{ffmpeg!r}, "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "gray",
+	"-s", w + "x" + h, "-framerate", fps, "-i", "pipe:0",
+	"-vf", "scale=out_range=full", "-pix_fmt", "yuv420p", "-color_range", "pc",
+	"-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "log-level=error", "-f", "hevc"]
 if "fd" in words and "fdsink" in sys.argv:
 	sys.exit(subprocess.call(cmd + ["pipe:1"], stdout=int(words["fd"])))
 sys.exit(subprocess.call(cmd + ["-y", words["location"]]))
@@ -176,7 +225,7 @@ sys.exit(subprocess.call(cmd + ["-y", words["location"]]))
 
 @pytest.mark.skipif(not has_encoder("libx265"), reason="this ffmpeg has no libx265")
 @pytest.mark.skipif(sys.platform == "win32", reason="the bench runs on Linux; the stand-in is a #! script")
-@pytest.mark.parametrize("mux,input_format", [("ffmpeg", "i420"), ("raw", "i420"), ("ffmpeg", "gray8")])
+@pytest.mark.parametrize("mux,input_format", [("ffmpeg", "gray8"), ("raw", "gray8"), ("ffmpeg", "gray8-convert")])
 def test_gstreamer_path_with_a_stand_in(tmp_path, mux, input_format):
 	gst = tmp_path / "gst-launch-1.0"
 	gst.write_text(FAKE_GST.format(python=sys.executable, ffmpeg=FFMPEG))
@@ -193,7 +242,12 @@ def test_gstreamer_path_with_a_stand_in(tmp_path, mux, input_format):
 			assert r["output"].endswith(".mp4") and r["muxer_exit"] == 0 and r["muxer_cpu_pct"] is not None
 		else:
 			assert r["output"].endswith(".h265") and r["muxer_exit"] is None
-	assert data["results"][0]["psnr_db_stored_luma"] > 30
+	r0 = data["results"][0]
+	assert r0["psnr_db_stored_luma"] > 30
+	# the ramp comes back 0-255, stored and read by the video's range
+	for key in ("ramp_levels_stored_luma", "ramp_levels_by_range"):
+		low, high = r0[key]
+		assert low <= 3 and high >= 252, (key, low, high)
 
 
 # ------------------------------------------------------------------ setup check
