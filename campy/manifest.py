@@ -616,7 +616,9 @@ TOTAL_KEYS = (("framesGrabbed", "totalFrames"), ("seconds", "totalTime"), ("fram
 	("framesIncomplete", "flirFramesIncomplete"),
 	("cameraError", "cameraError"), ("videoError", "videoError"), ("frameTimesError", "frameTimesError"),
 	# restartFfmpeg: the video in several files (campy/segments.py), and the frames lost in stopped ffmpegs
-	("ffmpegRestarts", "ffmpegRestarts"), ("videoFiles", "videoFiles"), ("framesLostInEncoder", "framesLostInEncoder"))
+	("ffmpegRestarts", "ffmpegRestarts"), ("videoFiles", "videoFiles"), ("framesLostInEncoder", "framesLostInEncoder"),
+	# cameraReconnect: the times the camera was unplugged and came back, and the frame numbers and seconds it was gone
+	("cameraReconnects", "cameraReconnects"), ("framesWhileGone", "framesWhileGone"), ("secondsGone", "secondsGone"))
 
 
 def SdkVersions(systems):

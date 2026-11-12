@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import time
+import types
 from collections import deque
 
 import numpy as np
@@ -310,3 +311,22 @@ def test_the_clips_frames_are_counted_without_decoding(tmp_path):
 	bad = tmp_path / "bad.mp4"
 	bad.write_bytes(b"not a video")
 	assert emu.ClipFrames(str(bad)) is None
+
+
+def test_an_emulated_camera_unplugged_and_plugged_back_in(monkeypatch):
+	# CAMPY_EMU_FAULTS "1:lost@3+0.2": CameraLost from frame 3 on, until Reopen finds it back 0.2 s later; its clock
+	# starts again at 0, and its next frame is the next pulse's
+	import time
+	from campy.cameras import emu, unicam
+	assert emu.Faults(1, "1:lost@3+0.2") == [("lost", 3, 0.2)]
+	camera = emu.EmulatedCamera(types.SimpleNamespace(get_data=lambda n: n), 100.0, None, emu.Faults(1, "1:lost@3+0.2"))
+	assert [camera.get_data(n) for n in range(3)] == [0, 1, 2]
+	with pytest.raises(unicam.CameraLost):
+		camera.get_data(3)
+	params = {"cameraName": "Camera1"}
+	assert emu.Reopen(params, camera) is None # not yet
+	time.sleep(0.25)
+	assert emu.Reopen(params, camera) is camera
+	assert emu.GetTimeStamp(None) < 0.05 # its clock from 0
+	n = camera.get_data(3) # the next pulse's frame, not frame 3's
+	assert n >= 20, n

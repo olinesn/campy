@@ -201,6 +201,7 @@ def Run(args, notifier=None, say=print):
 	said = False
 	checked = sampled = attached = looked = 0.0
 	endedAt = {} # camera: when its feed was first seen ended, while the others' had not
+	lostFrame = {} # camera lost: its newest frame then (one waited for comes back past it: cameraReconnect)
 	stopping = []
 	stopWatch = stopfile.Watch(os.path.abspath(args.stop_file), stopping.append).Start() \
 		if getattr(args, "stop_file", None) else None
@@ -239,11 +240,20 @@ def Run(args, notifier=None, say=print):
 					say("campy-watch: the recording ended.")
 					break
 				for c, gone in enumerate(ended):
-					if gone and c not in w.rig.gone and now - endedAt.setdefault(c, now) >= LOST_AFTER_S:
-						name = readers[c].cameraName or readers[c].name
-						w.rig.gone[c] = "{}: camera lost, its live feed ended".format(name)
-						say("campy-watch: {}'s feed ended while the other cameras record on (camera lost): watching the "
-							"others.".format(name))
+					name = readers[c].cameraName or readers[c].name
+					waited = not gone and readers[c].Lost() # gone, and campy waits for it (cameraReconnect)
+					if not gone and not waited:
+						if c in w.rig.gone and readers[c].Latest() > lostFrame.get(c, 0):
+							w.rig.gone.pop(c)
+							endedAt.pop(c, None)
+							say("campy-watch: {} is back (plugged in again): watching it again.".format(name))
+						continue
+					if c not in w.rig.gone and (waited or now - endedAt.setdefault(c, now) >= LOST_AFTER_S):
+						lostFrame[c] = readers[c].Latest()
+						w.rig.gone[c] = "{}: camera lost, its live feed {}".format(name, "stopped" if waited else "ended")
+						say("campy-watch: {}'s feed {} while the other cameras record on (camera lost{}): watching the "
+							"others.".format(name, "stopped" if waited else "ended", ", campy waits for it" if waited
+							else ""))
 			if results is None and readers is not None and now - looked >= ATTACH_S:
 				looked = now
 				try:

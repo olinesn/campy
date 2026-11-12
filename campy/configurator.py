@@ -321,6 +321,7 @@ def ConfigureCamParams(systems, params, n_cam):
 	cam_idx = cam_params["cameraSelection"]
 
 	cam_params["device"] = systems[cam_make]["deviceList"][cam_idx]
+	cam_params["system"] = systems[cam_make]["system"] # to find the camera again after a replug (cameraReconnect)
 	cam_params = unicam.LoadDevice(systems, params, cam_params)
 
 	cam_params["cameraSerialNo"] = systems[cam_make]["serials"][cam_idx]
