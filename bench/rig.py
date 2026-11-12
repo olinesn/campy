@@ -33,7 +33,10 @@ and why it is held down (its throttle reasons): the same GPU can run a test at
 
 On Linux (every process the user can see; other users' processes show only their CPU use):
   gpu      /dev/kfd                 GPU compute (ROCm: torch, sleap-nn)
-  encoder  /dev/dri/renderD*        VA-API encoding (campy's ffmpegs); ROCm opens it too
+           /dev/nvgpu/*, /dev/nvhost-*gpu   a Jetson's integrated GPU (CUDA on an AGX Orin)
+  encoder  /dev/dri/renderD*        VA-API encoding (campy's ffmpegs); ROCm opens it too, and
+                                    CUDA on a Jetson
+           /dev/v4l2-nvenc          a Jetson's video encoder (GStreamer's nvv4l2h264enc/h265enc)
   camera   /dev/bus/usb/... of a FLIR camera (USB vendor 1e10), or libSpinnaker
            loaded (a process that can open, reset or enumerate the cameras)
   trigger  /dev/ttyACM*, /dev/ttyUSB*  the trigger Arduino
@@ -136,9 +139,12 @@ KINDS = ("gpu", "encoder", "camera", "trigger")
 # GNOME session also has two helpers that keep the GPU's render node open for as long as it runs:
 # gsd-xsettings and mutter-x11-frames (comm "mutter-x11-fram"). At the login screen they run as gdm, whose
 # open files rig.py can not see; logged in, they are the user's and would otherwise look like encoder users
-# that never go away
+# that never go away. Ubuntu's GNOME on a Jetson (an X11 session) adds some that draw with the GPU too:
+# the desktop portals (xdg-desktop-portal, -gnome and -gtk all have the comm "xdg-desktop-por"),
+# GNOME Software's background service, and the first-login wizard (comm "gnome-initial-s")
 DESKTOP = {"gnome-shell", "Xwayland", "Xorg", "Xvnc", "mutter", "kwin_wayland", "kwin_x11", "plasmashell",
-	"sway", "weston", "Hyprland", "xfwm4", "TeamViewer", "gsd-xsettings", "mutter-x11-frames"[:15]}
+	"sway", "weston", "Hyprland", "xfwm4", "TeamViewer", "gsd-xsettings", "mutter-x11-frames"[:15],
+	"xdg-desktop-portal-gnome"[:15], "gnome-software", "gnome-initial-setup"[:15]}
 FLIR_VENDOR = "1e10"
 HZ = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 NO_WINDOW = 0x08000000 if WINDOWS else 0  # CREATE_NO_WINDOW: no console flashing up for nvidia-smi
@@ -167,7 +173,12 @@ def device_kind(path, cameras):
 		return EXTRA[path]
 	if path == "/dev/kfd":
 		return "gpu"
-	if path.startswith("/dev/dri/renderD"):
+	# A Jetson (AGX Orin, JetPack 7.2): CUDA opens /dev/nvgpu/igpu0/ctrl (and /dev/nvmap, renderD128);
+	# the GPU's other nodes are /dev/nvhost-*-gpu. The video encoder is /dev/v4l2-nvenc, which
+	# NVIDIA's V4L2 plugin opens (the node itself is a stand-in: the plugin does the work)
+	if path.startswith("/dev/nvgpu/") or (path.startswith("/dev/nvhost-") and path.endswith("gpu")):
+		return "gpu"
+	if path.startswith("/dev/dri/renderD") or path == "/dev/v4l2-nvenc":
 		return "encoder"
 	if re.match(r"/dev/tty(ACM|USB)\d+$", path):
 		return "trigger"
@@ -1628,7 +1639,9 @@ def cmd_status(args):
 			"camera": "FLIR cameras (Spinnaker loaded)", "trigger": "trigger (%s)" % (" ".join(ports) or "no COM port")}
 	else:
 		cams = flir_cameras()
-		names = {"gpu": "GPU compute (/dev/kfd)", "encoder": "video encoder (/dev/dri/renderD*)",
+		jetson = os.path.isdir("/dev/nvgpu")  # a Jetson's integrated GPU (see device_kind)
+		names = {"gpu": "GPU compute (%s)" % ("/dev/nvgpu/*, /dev/nvhost-*gpu" if jetson else "/dev/kfd"),
+			"encoder": "video encoder (%s)" % ("/dev/v4l2-nvenc, /dev/dri/renderD*" if jetson else "/dev/dri/renderD*"),
 			"camera": "FLIR cameras (%d on USB: %s)" % (len(cams), " ".join(sorted(cams.values())) or "none"),
 			"trigger": "trigger (%s)" % (" ".join(sorted(
 				"/dev/" + d for d in os.listdir("/dev") if re.match(r"tty(ACM|USB)\d+$", d))) or "none plugged in")}

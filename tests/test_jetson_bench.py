@@ -33,12 +33,13 @@ def after(argv, word):
 
 # ------------------------------------------------------------------ commands
 
-def test_gst_pipeline_feeds_gray8_to_the_hardware_encoder_at_a_fixed_qp():
+def test_gst_pipeline_feeds_i420_to_the_hardware_encoder_at_a_fixed_qp():
 	argv = enc.gst_args(1280, 1024, 60, 21, 60, 7)
 	assert argv[:3] == ["gst-launch-1.0", "-q", "-e"]
-	# one word per argument, elements joined by "!"
-	assert argv[argv.index("fdsrc"):argv.index("fdsrc") + 4] == ["fdsrc", "fd=0", "blocksize=1310720", "!"]
-	assert "format=gray8" in argv and "width=1280" in argv and "height=1024" in argv and "framerate=60/1" in argv
+	# one word per argument, elements joined by "!"; I420 by default (JetPack 7.2.1's nvvidconv refuses GRAY8)
+	assert argv[argv.index("fdsrc"):argv.index("fdsrc") + 4] == ["fdsrc", "fd=0", "blocksize=1966080", "!"]
+	assert "format=i420" in argv and "width=1280" in argv and "height=1024" in argv and "framerate=60/1" in argv
+	assert "videoconvert" not in argv
 	order = [argv.index(e) for e in ("rawvideoparse", "nvvidconv", "video/x-raw(memory:NVMM),format=NV12",
 		"nvv4l2h265enc", "h265parse", "fdsink")]
 	assert order == sorted(order)
@@ -47,6 +48,21 @@ def test_gst_pipeline_feeds_gray8_to_the_hardware_encoder_at_a_fixed_qp():
 		assert prop in argv
 	assert "fd=7" in argv
 	assert not any(a.startswith(("preset-level", "maxperf")) for a in argv)
+
+
+def test_gst_inputs():
+	# gray8: the mono frame straight to nvvidconv; gray8-convert: videoconvert makes I420 on the CPU first
+	gray = enc.gst_args(1280, 1024, 60, 21, 60, 7, input_format="gray8")
+	assert "blocksize=1310720" in gray and "format=gray8" in gray and "videoconvert" not in gray
+	conv = enc.gst_args(1280, 1024, 60, 21, 60, 7, input_format="gray8-convert")
+	assert "blocksize=1310720" in conv and "format=gray8" in conv
+	assert conv.index("rawvideoparse") < conv.index("videoconvert") < conv.index("video/x-raw,format=I420") < conv.index("nvvidconv")
+	with pytest.raises(ValueError):
+		enc.gst_args(1280, 1024, 60, 21, 60, 7, input_format="nv12")
+	# I420 = the gray frame as Y, then both quarter-size chroma planes at 128; odd sizes round the chroma up
+	assert enc.frame_bytes(1280, 1024, "i420") == 1280 * 1024 * 3 // 2 and enc.frame_bytes(5, 3, "i420") == 15 + 2 * 3 * 2
+	frame = enc.to_i420(bytes(range(15)), 5, 3)
+	assert frame[:15] == bytes(range(15)) and frame[15:] == b"\x80" * 12
 
 
 def test_gst_optional_properties_and_raw_file_output():
@@ -148,7 +164,8 @@ FAKE_GST = """\
 import os, subprocess, sys
 words = dict(a.split("=", 1) for a in sys.argv[1:] if "=" in a)
 w, h, fps = words["width"], words["height"], words["framerate"].split("/")[0]
-cmd = [{ffmpeg!r}, "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "gray",
+pix_fmt = {{"gray8": "gray", "i420": "yuv420p"}}[words["format"]]
+cmd = [{ffmpeg!r}, "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", pix_fmt,
 	"-s", w + "x" + h, "-framerate", fps, "-i", "pipe:0", "-c:v", "libx265", "-preset", "ultrafast",
 	"-x265-params", "log-level=error", "-f", "hevc"]
 if "fd" in words and "fdsink" in sys.argv:
@@ -159,13 +176,13 @@ sys.exit(subprocess.call(cmd + ["-y", words["location"]]))
 
 @pytest.mark.skipif(not has_encoder("libx265"), reason="this ffmpeg has no libx265")
 @pytest.mark.skipif(sys.platform == "win32", reason="the bench runs on Linux; the stand-in is a #! script")
-@pytest.mark.parametrize("mux", ["ffmpeg", "raw"])
-def test_gstreamer_path_with_a_stand_in(tmp_path, mux):
+@pytest.mark.parametrize("mux,input_format", [("ffmpeg", "i420"), ("raw", "i420"), ("ffmpeg", "gray8")])
+def test_gstreamer_path_with_a_stand_in(tmp_path, mux, input_format):
 	gst = tmp_path / "gst-launch-1.0"
 	gst.write_text(FAKE_GST.format(python=sys.executable, ffmpeg=FFMPEG))
 	gst.chmod(gst.stat().st_mode | stat.S_IEXEC)
 	out = tmp_path / "r.json"
-	code = enc.main(["--gst-launch", str(gst), "--no-property-check", "--mux", mux, "--streams", "2",
+	code = enc.main(["--gst-launch", str(gst), "--no-property-check", "--mux", mux, "--input", input_format, "--streams", "2",
 		"--fps", "20", "--seconds", "1", "--width", "320", "--height", "240", "--pattern-frames", "8",
 		"--psnr-frames", "10", "--ffmpeg", FFMPEG, "--out-dir", str(tmp_path / "v"), "--keep", "--json", str(out)])
 	data = json.loads(out.read_text())
