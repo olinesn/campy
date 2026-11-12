@@ -95,7 +95,7 @@ The encoder's speed falls as the bitrate rises: about 910 megapixels a second in
 
 **The CPU path**, for comparison (`campy-encode-sweep`, the same frames, H.264 quality 21): libx264 preset `ultrafast` kept up with 6 cameras or more (the most tried), `veryfast` with 1. At campy's default CPU preset (`fast`) a recording falls behind with more than one camera, so a config for the CPU sets `gpuID: -1` and `preset: "ultrafast"`.
 
-**What the encoder benchmark measured** (`bench/jetson_encode_bench.py`, before the writer and before pull request PRNUM made the benchmark run the writer's pipeline: H.265 asked for at constant QP 21 with the properties that turned out to be ignored, so in fact at the encoder's default 4 Mbit/s, which its files came to; a keyframe every second, 30 s per run):
+**What the encoder benchmark measured** (`bench/jetson_encode_bench.py`, before the writer and before pull request 404 made the benchmark run the writer's pipeline: H.265 asked for at constant QP 21 with the properties that turned out to be ignored, so in fact at the encoder's default 4 Mbit/s, which its files came to; a keyframe every second, 30 s per run):
 
 | Cameras | Frame rate each | Kept up? |
 |---|---|---|
@@ -242,7 +242,7 @@ Options: `--campy-venv` (default `~/campy/.venv`), `--sleap-venv` (default `~/ve
 
 ## The encoder benchmark: `bench/jetson_encode_bench.py`
 
-Starts one encoder per simulated camera (default 3) and feeds each synthetic 1280×1024 mono frames (bright blobs moving over a noisy gradient, with a ramp of all 256 gray levels across the top 16 rows), paced at 60 fps, the way campy's writer feeds its encoder: one pipe per camera, one frame per write, and a write waits when the encoder falls behind. Since pull request PRNUM each stream is what campy's writer runs for a `gpuMake: "jetson"` camera ([Recording](#recording)), at the same settings:
+Starts one encoder per simulated camera (default 3) and feeds each synthetic 1280×1024 mono frames (bright blobs moving over a noisy gradient, with a ramp of all 256 gray levels across the top 16 rows), paced at 60 fps, the way campy's writer feeds its encoder: one pipe per camera, one frame per write, and a write waits when the encoder falls behind. Since pull request 404 each stream is what campy's writer runs for a `gpuMake: "jetson"` camera ([Recording](#recording)), at the same settings:
 
 ```
 gst-launch-1.0 fdsrc ! rawvideoparse format=gray8 width=1280 height=1024 framerate=60/1 plane-strides=<1280>
