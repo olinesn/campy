@@ -1,7 +1,8 @@
 name: Trigger sketch
 
-# Compiles campy/trigger/trigger.ino, and the outputs board's sketch
-# (campy/outputs_board/campy_outputs, for campy-rules), for real boards. The tests also
+# Compiles campy/trigger/trigger.ino, the outputs board's sketch
+# (campy/outputs_board/campy_outputs, for campy-rules) and the ChronicRecord
+# Pico's (chronicrecord/chronic_timer, its PIO code), for real boards. The tests also
 # run them, but as plain C++ against a simulated Arduino (tests/arduino_sim),
 # which cannot catch what only a board's compiler and core would (an 8-bit int,
 # a missing API, the ESP32's registers).
@@ -14,11 +15,13 @@ on:
     paths:
       - "campy/trigger/trigger.ino"
       - "campy/outputs_board/campy_outputs/**"
+      - "chronicrecord/chronic_timer/**"
       - ".github/workflows/sketch.yml"
   pull_request:
     paths:
       - "campy/trigger/trigger.ino"
       - "campy/outputs_board/campy_outputs/**"
+      - "chronicrecord/chronic_timer/**"
       - ".github/workflows/sketch.yml"
   workflow_dispatch:
 
@@ -62,6 +65,12 @@ jobs:
             sketch: campy/outputs_board/campy_outputs
             platforms: |
               - name: arduino:esp32
+          - name: Raspberry Pi Pico (ChronicRecord timer)
+            fqbn: rp2040:rp2040:rpipico
+            sketch: chronicrecord/chronic_timer
+            platforms: |
+              - name: rp2040:rp2040
+                source-url: https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
     steps:
       - uses: actions/checkout@v4
       - uses: arduino/compile-sketches@v1

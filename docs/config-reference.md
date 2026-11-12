@@ -125,6 +125,7 @@ Every key a campy config file can have, and its command-line option (`--key valu
 | `readyTimeoutSec` | `30` | a number, 0 or more | one for the rig | Longest wait for every camera to be grabbing before campy starts the trigger anyway (and says which cameras were not ready). |
 | `blinkPin` | `"None"` | a whole number, 0 or more, or "None" | one for the rig | Arduino pin driving a test LED that every camera can see, for campy-synctest. |
 | `blinkHz` | `"None"` | a number, 0 or more, or "None" | one for the rig | Test LED blink rate. Pick one that is not near a whole or half multiple of the frame rate (e.g. 43 Hz at 25 or 60 fps). |
+| `picoSync` | `False` | True or False | one for the rig | campy-session's Pico (pico: section) also makes its sync train on GP6 for the OneBox (wired to XA1): 10 ms pulses, a random 200 to 1000 ms apart, from a seed saved in the recording's pico folder, so chronicrecord/sync_match.py can line the Pico's clock up with the OneBox's and find any pulse either missed (default: False). Needs chronic_timer 3 on the Pico. Set it in the rig profile. |
 
 ## Session
 

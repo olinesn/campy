@@ -57,6 +57,10 @@ A profile without `triggerController` works as before: a Pico config only needs 
 
 Why: on 10 November 2026 every calibration from the ChronicRecord rig's panel stopped 2 s in. The Pico had pulsed the rig's cameras since 5 November, and the bout sessions' configs said so. But the rig profile, which the calibration, look and live-tracking configs extend, still started the Arduino on COM9, which had not been plugged in since 2 November.
 
+## Lining up a trigger board's clock with a recording system's
+
+On the ChronicRecord rig the Pico can also send the OneBox a sync line that never repeats: 10 ms pulses, a random 200 to 1000 ms apart, from a seed saved with the session (`picoSync: True` in the rig profile; off by default). `chronicrecord/sync_match.py` finds those pulses in SpikeGLX's OneBox files and matches them to the Pico's plan. It reports the offset and drift between the two clocks, every sync pulse that is missing or extra, and, through the same fit, every camera, gate or LED edge on the OneBox that the Pico didn't plan, with its time on the Pico's clock. That is the way to find out where a stray camera pulse came from. See [Sync pulses for the OneBox](../chronicrecord/README.md#sync-pulses-for-the-onebox). It is not the RatCam's random sync train (`ratcamSyncOut`, below), which `campy-align` can't use.
+
 ## Aligning cameras after recording
 ```
 campy-align ./test/2026-10-18_17-30-05        # the recording's folder (its videoFolder with sessionFolder False)

@@ -6,7 +6,7 @@
 //
 // Every change is due at a time in microseconds from "go" (session time).
 //
-// On the Pico a PIO state machine makes the outputs, GP2-GP5 for channels 0-3,
+// On the Pico a PIO state machine makes the outputs, GP2-GP6 for channels 0-4,
 // from a queue of "these levels, for this many clock ticks". Nothing the
 // processor or USB does moves an edge, unless the queue runs dry, which is
 // counted (stalls=). Changes due together are one instruction, the same clock tick.
@@ -25,6 +25,17 @@
 //                                         count pulses on ch: pulse k rises at
 //                                         start_us + floor(k * 1e9 / rate_mHz),
 //                                         high for width_us (trains in order)
+//   sync <ch> <seed> <width_us> <min_gap_ms> <max_gap_ms>
+//                                         a sync train on ch for the whole session
+//                                         (until "clear"): pulse k rises at the sum of
+//                                         gaps 0..k, gap j = 1000 * (min_gap_ms +
+//                                         SplitMix64(seed, j + 1) % (max_gap_ms -
+//                                         min_gap_ms + 1)) us, high for width_us. Its
+//                                         gaps are random, so any few of them say where
+//                                         in the session they are (chronicrecord/
+//                                         sync_match.py). It runs while the schedule
+//                                         has more to do, or until "end"; a pulse
+//                                         already high still falls on time.
 //   go                                    start: session time 0 is 20 ms later
 //   end <t_us>                            the session ends at t_us: nothing due after
 //                                         it happens (a pulse already high still falls
@@ -38,7 +49,7 @@
 //   ev <t_us> <ch> <level> <late_us>      an edge was made (late_us after its time)
 //   camon <train> <first_rise_us>         a train's first pulse rose
 //   cam <train> <pulses> <first_rise_us> <last_fall_us>   a train is over
-//   done <t_us> pulses=<n> late_max=<us> lost=<lines> stalls=<n> [rises=<n> self_check_us=<us>]
+//   done <t_us> pulses=<n> late_max=<us> lost=<lines> stalls=<n> [rises=<n> self_check_us=<us>] sync=<n>
 //                                         the session is over, all low. late_us and
 //                                         late_max are 0 on the Pico. self_check_us
 //                                         (Pico): the camera pin's own rises, counted by an
@@ -46,6 +57,7 @@
 //                                         the microsecond timer, minus the schedule's; a few
 //                                         microseconds at most, and rises= should be pulses=.
 //                                         bounces=: rises too soon after the last, not counted.
+//                                         sync=: the sync train's pulses (0 with none).
 // Lines it couldn't send (the computer not reading) are counted in "lost", never waited for.
 
 #include <stdint.h>
@@ -64,7 +76,7 @@
 #include "hardware/gpio.h"
 #endif
 
-#define VERSION 2
+#define VERSION 3
 #define MAX_CH 8
 #if defined(USE_PIO)
 #define MAX_EDGES 12288     // the Pico has the room: 2048 bouts of 6 edges and a train,
@@ -77,8 +89,9 @@
 #define GO_DELAY_US 20000   // session time 0, after "go": room to answer first
 #define CRITICAL_US 300     // interrupts off this long before a change
 #define SERIAL_US 1500      // serial only when the next change is further off
-#define PIO_FIRST_PIN 2     // channels 0-3: GP2-GP5
-#define PIO_PINS 4
+#define PIO_FIRST_PIN 2     // channels 0-4: GP2-GP6
+#define PIO_PINS 5
+#define PIO_MASK ((1u << PIO_PINS) - 1)
 #define LOOKAHEAD_US 20000  // how far ahead of the clock the queue is kept
 #define CHUNK_US 10000      // longest entry: a stop waits for no more than the queue
 
@@ -98,6 +111,9 @@ void SetPin(int ch, int pin);
 void AllLow();
 void Settle();
 int64_t NextTime();
+bool SyncMayRise(int64_t next_scheduled);
+uint64_t SplitMix64(uint64_t seed, uint64_t j);
+int64_t SyncGap();
 void Apply(int64_t t);
 void Finish();
 void Report(int64_t t, const int8_t* level, bool rose, int first, int64_t late);
@@ -129,6 +145,15 @@ uint32_t pulses = 0;       // pulses made this session
 int64_t late_max = 0;
 int64_t first_ever = 0, last_ever = 0; // the session's first and last camera rise
 uint32_t lost = 0;
+
+// The sync train, on channel sync_ch (-1: none): random gaps, from a seed
+int sync_ch = -1;
+uint64_t sync_seed = 0;
+uint32_t sync_width = 0, sync_min_ms = 0, sync_max_ms = 0;
+uint64_t sync_j = 0;       // gaps drawn so far
+int64_t sync_rise = NONE;  // its pulse's rise: the next one, or the one high now
+bool sync_high = false;
+uint32_t sync_pulses = 0;
 
 // Lines waiting to be said, while changes were close
 #define QUEUE 64
@@ -166,6 +191,23 @@ int64_t LastFall(const Train& tr) {
 }
 
 
+uint64_t SplitMix64(uint64_t seed, uint64_t j) {
+  // The j-th number of SplitMix64 from seed (Steele, Lea and Flood 2014): the same
+  // in chronicrecord/sync_match.py, which works the planned pulses out from the seed
+  uint64_t z = seed + j * 0x9E3779B97F4A7C15ULL;
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+  return z ^ (z >> 31);
+}
+
+
+int64_t SyncGap() {
+  // The next gap from one sync rise to the next, whole milliseconds
+  sync_j++;
+  return 1000LL * (int64_t) (sync_min_ms + SplitMix64(sync_seed, sync_j) % (sync_max_ms - sync_min_ms + 1));
+}
+
+
 void setup() {
   Serial.begin(115200);
 #if defined(ESP32)
@@ -182,6 +224,9 @@ void setup() {
   SetPin(1, 3);
   SetPin(2, 4);
   SetPin(3, 5);
+#if defined(USE_PIO)
+  SetPin(4, 6); // the sync train's (GP6), when a session has one
+#endif
   char text[40];
   snprintf(text, sizeof text, "ready chronic_timer %d", VERSION);
   Say(text);
@@ -189,8 +234,9 @@ void setup() {
 
 
 #if defined(USE_PIO)
-// The queue's entries: levels in the low 4 bits, then a hold of x + 3 clock
-// ticks: "out pins, 4" and "out x, 28" take a tick each, and "jmp x--" x + 1.
+// The queue's entries: levels in the low 5 bits, then a hold of x + 3 clock
+// ticks: "out pins, 5" and "out x, 27" take a tick each, and "jmp x--" x + 1.
+// 27 bits hold 2^27 ticks, 0.67 s even at 200 MHz: an entry is at most CHUNK_US (10 ms).
 #define PIO_OVERHEAD 3
 uint32_t ticks_per_us = 125;
 uint32_t pio_levels = 0;
@@ -203,8 +249,8 @@ bool first_entry = false;
 PIO pio_block = pio0;
 uint pio_sm = 0;
 const uint16_t pio_code[] = {
-  0x6004,  // out pins, 4
-  0x603c,  // out x, 28
+  0x6000 | PIO_PINS,         // out pins, 5
+  0x6020 | (32 - PIO_PINS),  // out x, 27
   0x0042,  // jmp x--, 2 (pio_add_program moves the address with the program)
 };
 void PioInit() {
@@ -221,7 +267,7 @@ void PioInit() {
   sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX); // 8 entries
   sm_config_set_clkdiv(&c, 1);
   for (int i = 0; i < PIO_PINS; i++) { pio_gpio_init(pio_block, PIO_FIRST_PIN + i); }
-  pio_sm_set_pins_with_mask(pio_block, pio_sm, 0, 0xFu << PIO_FIRST_PIN);
+  pio_sm_set_pins_with_mask(pio_block, pio_sm, 0, PIO_MASK << PIO_FIRST_PIN);
   pio_sm_set_consecutive_pindirs(pio_block, pio_sm, PIO_FIRST_PIN, PIO_PINS, true);
   pio_sm_init(pio_block, pio_sm, offset, &c);
   pio_sm_set_enabled(pio_block, pio_sm, true);
@@ -269,7 +315,7 @@ void PioClearStall() { SimPioClearStall(); }
 void PioHold(int64_t us) {
   // The levels now, for us microseconds; the queue is never full here
   uint32_t ticks = (uint32_t) us * ticks_per_us;
-  PioPush((pio_levels & 0xF) | ((ticks - PIO_OVERHEAD) << PIO_PINS));
+  PioPush((pio_levels & PIO_MASK) | ((ticks - PIO_OVERHEAD) << PIO_PINS));
   if (first_entry) { PioClearStall(); first_entry = false; } // it was waiting for this one
   emitted += us;
 }
@@ -363,7 +409,7 @@ bool Number(char* text, long long* value) {
 
 
 void Command(char* text) {
-  char reply[96];
+  char reply[128]; // the longest, "ok status running ... sync=", is about 110
   char* word = strtok(text, " \t,");
   if (word == NULL) { return; }
   long long a[5];
@@ -394,11 +440,12 @@ void Command(char* text) {
 #endif
   else if (strcmp(word, "status") == 0) {
     if (running) {
-      snprintf(reply, sizeof reply, "ok status running t=%lld pulses=%lu edges=%d/%d trains=%d/%d late_max=%lld",
-        (long long) Now(), (unsigned long) pulses, ei, n_edges, ti, n_trains, (long long) late_max);
+      snprintf(reply, sizeof reply, "ok status running t=%lld pulses=%lu edges=%d/%d trains=%d/%d late_max=%lld sync=%lu",
+        (long long) Now(), (unsigned long) pulses, ei, n_edges, ti, n_trains, (long long) late_max,
+        (unsigned long) sync_pulses);
     }
     else {
-      snprintf(reply, sizeof reply, "ok status idle edges=%d trains=%d", n_edges, n_trains);
+      snprintf(reply, sizeof reply, "ok status idle edges=%d trains=%d%s", n_edges, n_trains, sync_ch >= 0 ? " sync" : "");
     }
     Say(reply);
   }
@@ -408,7 +455,7 @@ void Command(char* text) {
     if (!running) {
       AllLow();
 #if defined(USE_PIO)
-      PioPush(pio_levels & 0xF);
+      PioPush(pio_levels & PIO_MASK);
 #endif
       Say(stop ? "ok stop idle" : "err not running");
       return;
@@ -428,7 +475,7 @@ void Command(char* text) {
   else if (strcmp(word, "pin") == 0) {
     if (n != 2 || a[0] < 0 || a[0] >= MAX_CH || a[1] < -1 || a[1] > 48) { Say("err pin <ch 0-7> <pin, -1 none>"); return; }
 #if defined(USE_PIO)
-    if (a[1] != PIO_FIRST_PIN + a[0]) { Say("err on the Pico, channels 0-3 are GP2-GP5"); return; }
+    if (a[0] >= PIO_PINS || a[1] != PIO_FIRST_PIN + a[0]) { Say("err on the Pico, channels 0-4 are GP2-GP6"); return; }
 #endif
     SetPin((int) a[0], (int) a[1]);
     snprintf(reply, sizeof reply, "ok pin %lld %lld", a[0], a[1]);
@@ -437,6 +484,7 @@ void Command(char* text) {
   else if (strcmp(word, "clear") == 0) {
     n_edges = 0;
     n_trains = 0;
+    sync_ch = -1;
     Say("ok clear");
   }
   else if (strcmp(word, "edge") == 0) {
@@ -466,16 +514,35 @@ void Command(char* text) {
     snprintf(reply, sizeof reply, "ok train %d", n_trains);
     Say(reply);
   }
+  else if (strcmp(word, "sync") == 0) {
+    if (n != 5 || a[0] < 0 || a[0] >= MAX_CH || a[1] < 0 || a[2] < 1 || a[3] < 1 || a[4] < a[3] || a[4] > 100000
+        || a[2] >= a[3] * 1000) {
+      Say("err sync <ch> <seed> <width_us> <min_gap_ms> <max_gap_ms>, width under the shortest gap");
+      return;
+    }
+    if (ch_pin[a[0]] < 0) { Say("err that channel has no pin"); return; }
+    sync_ch = (int) a[0];
+    sync_seed = (uint64_t) a[1];
+    sync_width = (uint32_t) a[2];
+    sync_min_ms = (uint32_t) a[3];
+    sync_max_ms = (uint32_t) a[4];
+    snprintf(reply, sizeof reply, "ok sync %d", sync_ch);
+    Say(reply);
+  }
   else if (strcmp(word, "go") == 0) {
     if (n_edges == 0 && n_trains == 0) { Say("err nothing to run"); return; }
     uint32_t train_channels = 0;
     for (int j = 0; j < n_trains; j++) { train_channels |= 1u << trains[j].ch; }
     for (int i = 0; i < n_edges; i++) {
       if (train_channels & (1u << edges[i].ch)) { Say("err an edge is on a train's channel"); return; }
+      if ((int) edges[i].ch == sync_ch) { Say("err an edge is on the sync train's channel"); return; }
     }
+    if (sync_ch >= 0 && (train_channels & (1u << sync_ch))) { Say("err a train is on the sync train's channel"); return; }
     AllLow();
     ei = 0; ti = 0; tk = 0; high = false; first_rise = -1;
     pulses = 0; late_max = 0; lost = 0;
+    sync_j = 0; sync_high = false; sync_pulses = 0;
+    sync_rise = sync_ch >= 0 ? SyncGap() : NONE;
     end_t = NONE;
     t0 = Micros64() + GO_DELAY_US;
     running = true;
@@ -544,7 +611,20 @@ int64_t NextTime() {
     int64_t next = high ? r + trains[ti].width : r;
     if (next < t) { t = next; }
   }
+  // The sync train: a high pulse always falls; the next rises only while the schedule
+  // has more to do, or before the end "end" set
+  if (sync_ch >= 0) {
+    int64_t s = NONE;
+    if (sync_high) { s = sync_rise + sync_width; }
+    else if (SyncMayRise(t)) { s = sync_rise; }
+    if (s < t) { t = s; }
+  }
   return t;
+}
+
+
+bool SyncMayRise(int64_t next_scheduled) {
+  return sync_rise <= end_t && (next_scheduled != NONE || end_t != NONE);
 }
 
 
@@ -560,6 +640,19 @@ void Changes(int64_t t, int8_t* level, bool* rose) {
     int64_t r = Rise(trains[ti], tk);
     if (!high && r == t) { level[trains[ti].ch] = 1; *rose = true; }
     else if (high && r + trains[ti].width == t) { level[trains[ti].ch] = 0; }
+  }
+  // The sync train's change at t, if any: its own state moves on here (Report is the camera's)
+  if (sync_ch >= 0) {
+    if (sync_high && sync_rise + sync_width == t) {
+      level[sync_ch] = 0;
+      sync_high = false;
+      sync_rise += SyncGap();
+    }
+    else if (!sync_high && sync_rise == t && sync_rise <= end_t) {
+      level[sync_ch] = 1;
+      sync_high = true;
+      sync_pulses++;
+    }
   }
 }
 
@@ -617,17 +710,20 @@ void Finish() {
   running = false;
   n_edges = 0;
   n_trains = 0;
+  sync_ch = -1;
   char text[QUEUE_LINE];
 #if defined(ARDUINO_ARCH_RP2040)
-  snprintf(text, sizeof text, "done %lld pulses=%lu late_max=%lld lost=%lu stalls=%lu rises=%lu bounces=%lu self_check_us=%lld",
+  snprintf(text, sizeof text, "done %lld pulses=%lu late_max=%lld lost=%lu stalls=%lu rises=%lu bounces=%lu self_check_us=%lld sync=%lu",
     (long long) Now(), (unsigned long) pulses, (long long) late_max, (unsigned long) lost, (unsigned long) stalls,
-    (unsigned long) rise_count, (unsigned long) bounces, (long long) ((int64_t) (rise_last - rise_first) - (last_ever - first_ever)));
+    (unsigned long) rise_count, (unsigned long) bounces, (long long) ((int64_t) (rise_last - rise_first) - (last_ever - first_ever)),
+    (unsigned long) sync_pulses);
 #elif defined(USE_PIO)
-  snprintf(text, sizeof text, "done %lld pulses=%lu late_max=%lld lost=%lu stalls=%lu rises=0 self_check_us=0",
-    (long long) Now(), (unsigned long) pulses, (long long) late_max, (unsigned long) lost, (unsigned long) stalls);
+  snprintf(text, sizeof text, "done %lld pulses=%lu late_max=%lld lost=%lu stalls=%lu rises=0 self_check_us=0 sync=%lu",
+    (long long) Now(), (unsigned long) pulses, (long long) late_max, (unsigned long) lost, (unsigned long) stalls,
+    (unsigned long) sync_pulses);
 #else
-  snprintf(text, sizeof text, "done %lld pulses=%lu late_max=%lld lost=%lu stalls=0",
-    (long long) Now(), (unsigned long) pulses, (long long) late_max, (unsigned long) lost);
+  snprintf(text, sizeof text, "done %lld pulses=%lu late_max=%lld lost=%lu stalls=0 sync=%lu",
+    (long long) Now(), (unsigned long) pulses, (long long) late_max, (unsigned long) lost, (unsigned long) sync_pulses);
 #endif
   Queue(text);
 }
@@ -649,7 +745,7 @@ void Feed() {
       if (end_t == NONE || emitted >= end_t) {
         // All low, as the last entry; "done" once the clock gets there
         AllLow();
-        PioPush(pio_levels & 0xF);
+        PioPush(pio_levels & PIO_MASK);
         finishing = true;
         return;
       }

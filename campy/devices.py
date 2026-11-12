@@ -51,7 +51,8 @@ class Devices:
 		except (TypeError, ValueError):
 			fps = None
 		try:
-			self.pico = picomod.Pico(config.pico, sessionmod.Python(), fps) if config.pico is not None else None
+			self.pico = picomod.Pico(config.pico, sessionmod.Python(), fps, bool(config.Value("picoSync", False))) \
+				if config.pico is not None else None
 		except picomod.PicoError as e:
 			raise sessionmod.SessionError(str(e))
 		try:

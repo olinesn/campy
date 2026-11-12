@@ -189,6 +189,18 @@ def test_a_clock_time_for_the_picos_start():
 
 # ------------------------------------------------------------------ the config
 
+def test_pico_sync_turns_on_the_sync_train(tmp_path):
+	# campy's picoSync (the rig profile's switch) is chronic_control.py's SYNC=1 in every session; pico.set can't say it
+	assert "SYNC=1" not in a_pico().Sets(900)
+	assert pico.Pico(section("pico", {}), fps=60, sync=True).Sets(900)[-2:] == ["SYNC=1", "TOTAL_DURATION=900"]
+	with pytest.raises(pico.PicoError, match="picoSync"):
+		a_pico(set={"SYNC": 1})
+	for on in (False, True):
+		config = write_config(tmp_path / "c.yaml", dict({"numCams": 2, "videoFolder": "x", "frameRate": 60},
+			**({"picoSync": True} if on else {})), pico={"gate_check": False})
+		assert devices.Devices(session.Config(str(config))).pico.sync is on
+
+
 def test_the_device_sections_are_read_and_checked(tmp_path):
 	config = write_config(tmp_path / "c.yaml", {"numCams": 2, "videoFolder": "x", "frameRate": 60},
 		pico={"port": "E665485457699D30", "lengths": [{"name": "6 days", "seconds": 518400}]},

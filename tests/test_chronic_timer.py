@@ -67,8 +67,8 @@ def falls(edges, pin):
 
 def test_it_answers_at_once_and_powers_up_low(timer_sim):
 	edges, said = run(timer_sim, 0.1, ["id", "status"])
-	assert said[0][1] == "ready chronic_timer 2"
-	assert [line for _, line in said[1:]] == ["ok chronic_timer 2", "ok status idle edges=0 trains=0"]
+	assert said[0][1] == "ready chronic_timer 3"
+	assert [line for _, line in said[1:]] == ["ok chronic_timer 3", "ok status idle edges=0 trains=0"]
 	assert said[1][0] < 1000 # microseconds: no timeouts to wait out
 	for pin in PIN.values():
 		assert edges[pin] == [(edges[pin][0][0], 0)]
@@ -288,7 +288,7 @@ def test_the_last_report_arrives_whole(timer_sim):
 	done = [line for _, line in said if line.startswith("done ")]
 	assert len(done) == 1 and "stalls=0" in done[0]
 	if "self_check_us" in done[0]:
-		assert done[0].endswith("rises=0 self_check_us=0")
+		assert done[0].endswith("rises=0 self_check_us=0 sync=0")
 
 
 def test_a_six_day_session_fits_and_starts_at_once(timer_sim, tmp_path):
@@ -310,3 +310,91 @@ def test_a_six_day_session_fits_and_starts_at_once(timer_sim, tmp_path):
 	t_asked = int(go * 1e6)
 	assert [t for t, line in said if line == "ok go"][0] - t_asked < 5000 # no long check before it starts
 	assert any(line.startswith("ok status running") for line in replies)
+
+
+# --- the sync train (chronic_timer 3): output E, GP6, channel 4 ---
+
+import sync_match as sm
+
+SYNC = "sync 4 {} 10000 200 1000" # 10 ms pulses, 200-1000 ms from one rise to the next
+
+
+def test_the_sync_train_is_the_seeds(timer_sim):
+	# Every rise where the seed says (sync_match.py works them out the same way), 10 ms wide, and the camera exact as
+	# without it
+	seed = 123456789
+	commands = ["pin 4 6", "train 1 500000 1000 60000 3000", "edge 0 0 1", "edge 0 20000000 0", SYNC.format(seed), "go"]
+	edges, said = run(timer_sim, 21, commands)
+	t0 = went_go(said)
+	want = sm.PlannedRises(seed, 200, 1000, 20000000)
+	up, down = rises(edges, 6) - t0, falls(edges, 6) - t0
+	assert len(up) == len(want) > 15 and np.abs(up - want).max() <= 2
+	assert len(down) == len(up) and np.abs(down - up - 10000).max() <= 2
+	gaps = np.diff(np.r_[0, want])
+	assert (gaps % 1000 == 0).all() and gaps.min() >= 200000 and gaps.max() <= 1000000
+	assert len(set(gaps)) > len(gaps) * 0.9 # random, not a period
+	cam = rises(edges, 3) - t0
+	assert len(cam) == 1000 and np.abs(cam - (500000 + np.arange(1000) * 10**9 // 60000)).max() <= 2
+	assert changes(edges, 2, 1) == [(t0, 1), (t0 + 20000000, 0)]
+	done = [line for _, line in said if line.startswith("done ")]
+	assert len(done) == 1 and "pulses=1000" in done[0] and done[0].endswith("sync={}".format(len(want)))
+	# Another seed, other gaps
+	assert not np.array_equal(sm.PlannedRises(seed + 1, 200, 1000, 20000000)[:5], want[:5])
+
+
+def test_the_sync_train_ends_with_the_schedule_or_at_end(timer_sim):
+	# Without "end" it stops at the schedule's last change (a pulse high then still falls on time); with a later
+	# "end" it goes on to that
+	seed = 7
+	commands = ["pin 4 6", "edge 0 0 1", "edge 0 2000000 0", SYNC.format(seed), "go"]
+	for end_us, later in ((2000000, ()), (4000000, ((0.5, ["end 4000000"]),))):
+		edges, said = run(timer_sim, 6, commands, *later)
+		t0 = went_go(said)
+		want = sm.PlannedRises(seed, 200, 1000, end_us)
+		up, down = rises(edges, 6) - t0, falls(edges, 6) - t0
+		assert len(up) == len(want) and np.abs(up - want).max() <= 2, (end_us, up, want)
+		assert len(down) == len(up) and np.abs(down - up - 10000).max() <= 2
+		assert edges[6][-1][1] == 0
+		assert any(line.startswith("done ") and line.endswith("sync={}".format(len(want))) for _, line in said)
+
+
+def test_the_sync_train_is_refused_what_it_cannot_do(timer_sim):
+	commands = ["pin 4 6", "sync 4 1 300000 200 1000", "sync 4 1 10000 500 200", SYNC.format(1), "edge 4 1000 1",
+		"train 1 0 10 60000 3000", "go", "clear", "sync 1 1 10000 200 1000", "train 1 0 10 60000 3000", "go", "clear",
+		"status", SYNC.format(1), "status"]
+	edges, said = run(timer_sim, 0.5, commands)
+	replies = [line for _, line in said[1:]]
+	bad = "err sync <ch> <seed> <width_us> <min_gap_ms> <max_gap_ms>, width under the shortest gap"
+	assert replies == ["ok pin 4 6", bad, bad, "ok sync 4", "ok edge 1", "ok train 1",
+		"err an edge is on the sync train's channel", "ok clear", "ok sync 1", "ok train 1",
+		"err a train is on the sync train's channel", "ok clear", "ok status idle edges=0 trains=0", "ok sync 4",
+		"ok status idle edges=0 trains=0 sync"]
+
+
+def test_the_sync_train_moves_no_other_edge_on_the_state_machine(timer_sim):
+	# The Pico: the camera and LED edges on their tick exactly, as without the sync train, and every sync edge on its
+	# whole millisecond; the queue never runs dry
+	seed = 99
+	entries, out = pio_entries(timer_sim, 8, ["pin 4 6", "train 1 500000 400 60000 3000", "edge 2 1000000 1",
+		"edge 2 1030000 0", SYNC.format(seed), "go"])
+	said = [line for line in out.splitlines() if line.startswith("serial ")]
+	t0 = int([line.split()[1] for line in said if "ok go" in line][0]) + GO_DELAY_US
+	changed = {bit: [] for bit in range(5)}
+	previous = 0
+	for tick, levels in entries:
+		for bit in range(5):
+			if (levels ^ previous) >> bit & 1:
+				changed[bit].append((tick - t0 * 125, levels >> bit & 1))
+		previous = levels
+	cam = [t for t, _ in changed[1]]
+	want = []
+	for k in range(400):
+		r = 500000 + k * 10**9 // 60000
+		want += [r * 125, (r + 3000) * 125]
+	assert cam == want
+	assert changed[2] == [(1000000 * 125, 1), (1030000 * 125, 0)]
+	last = (500000 + 399 * 10**9 // 60000 + 3000)
+	planned = sm.PlannedRises(seed, 200, 1000, last)
+	assert [t for t, level in changed[4] if level == 1] == list(planned * 125)
+	assert [t for t, level in changed[4] if level == 0] == list((planned + 10000) * 125)
+	assert "stalls=0" in out and "sync={}".format(len(planned)) in out
