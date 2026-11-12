@@ -224,6 +224,7 @@ class Watch:
 			port_gone=None, gpu_log=None):
 		self.params, self.systems, self.cameras = params, systems, cameras
 		self.names = list(cameras.names)
+		self.reconnects = {} # camera: the times it came back after it was unplugged, as last said (cameraReconnect)
 		self.counters = camstatus.Reader(counters, len(self.names))
 		self.folder = folder
 		self.clock, self.sysfs_root, self.say = clock, sysfs_root, say
@@ -502,7 +503,7 @@ class Watch:
 			if row["state"] != camstatus.GRABBING:
 				continue
 			history = self.history[c]
-			history.append((now, row["grabbed"], row["dropped"], row["sent"]))
+			history.append((now, Frames(row), row["dropped"], row["sent"]))
 			while history and history[0][0] < now - max(DROPS_WINDOW_S, SENT_WINDOW_S) - EVERY_S:
 				history.popleft()
 			if row["grabbed"] > 0:
@@ -523,10 +524,20 @@ class Watch:
 
 	def CheckEnded(self, c, name, row, failures):
 		state = row["state"]
-		if state == camstatus.LOST:
+		if state == camstatus.LOST and self.Reconnects(c):
+			self.Raise("{}/ended".format(name), notify.CRITICAL, "{}: the camera is gone (unplugged, or its USB link "
+				"lost) after frame {}; the other cameras go on. campy waits for it: plug it back in, and it rejoins "
+				"the recording on the next trigger pulse (cameraReconnect).".format(name, row["grabbed"]),
+				remind=False)
+		elif state == camstatus.LOST:
 			self.Raise("{}/ended".format(name), notify.CRITICAL, "{}: the camera is gone (unplugged, or its USB link "
 				"lost) after frame {}. Its recording has ended there; the other cameras go on. It needs a replug, and "
 				"a new recording.".format(name, row["grabbed"]), remind=False)
+		elif state == camstatus.GRABBING and row["reconnects"] > self.reconnects.get(c, 0):
+			# Back after it was unplugged (cameraReconnect): recording again, at frame row["grabbed"] as the watch saw it
+			self.reconnects[c] = row["reconnects"]
+			self.Clear("{}/ended".format(name), "{}: back, plugged in again: recording again (at frame {})".format(
+				name, row["grabbed"]))
 		elif state == camstatus.VIDEO_FAILED and row["restarts"]:
 			self.Raise("{}/ended".format(name), notify.CRITICAL, "{}: ffmpeg stopped again, in {}, and the camera "
 				"has stopped, after frame {}. It had been restarted {} time{}, and was not again (at most {} an hour, "
@@ -602,6 +613,13 @@ class Watch:
 		for c in quiet:
 			self.Raise("{}/no-frames".format(self.names[c]), notify.CRITICAL, "{}: no frame for {:.0f} s, since frame "
 				"{}".format(self.names[c], gaps[c][0], rows[c]["grabbed"]))
+
+	def Reconnects(self, c):
+		# Whether camera c is waited for when it is unplugged (as unicam.Reconnects: cameraReconnect, FLIR or emulated)
+		cam = self.cams[c] if self.cams and c < len(self.cams) else {}
+		make = cam.get("cameraMake", PerCamera(self.params.get("cameraMake"), c))
+		on = cam.get("cameraReconnect", self.params.get("cameraReconnect", True))
+		return str(on) not in ("False", "false", "0", "None") and str(make).lower() in ("flir", "emu")
 
 	def Triggered(self, c):
 		# Whether camera c takes a frame at each trigger pulse (as unicam.Triggered): its pulses without a frame count
@@ -1045,10 +1063,11 @@ class Watch:
 					fps = round((history[-1][1] - then[1]) / (history[-1][0] - then[0]), 2)
 			cam = cams.get(name, {})
 			cameras.append({"name": name, "serial": cam.get("cameraSerialNo"), "make": cam.get("cameraMake"),
-				"fps_target": self.frameRate, "fps_measured": fps, "frames": row["grabbed"], "dropped": row["dropped"],
+				"fps_target": self.frameRate, "fps_measured": fps, "frames": Frames(row), "dropped": row["dropped"],
 				"write_queue_s": round(row["queued"] / self.frameRate, 2), "usb_speed": self.usbSpeed.get(name),
 				"state": STATE_NAMES.get(row["state"], str(row["state"])), "ffmpeg_restarts": row["restarts"],
-				"frames_lost_in_encoder": row["lost"], "trigger_pulses_without_frame": row["missed"]})
+				"frames_lost_in_encoder": row["lost"], "trigger_pulses_without_frame": row["missed"],
+				"reconnects": row["reconnects"], "frames_while_unplugged": row["goneFrames"]})
 		return {"schema": STATUS_SCHEMA, "updated_at": Wall(), "host_model": self.notifier.source or None,
 			"campy_version": CampyVersion(), "state": state,
 			"session": {"folder": self.folder, "started_at": self.startedAt,
@@ -1105,7 +1124,7 @@ class Watch:
 
 	def Ended(self, failures, error=None):
 		lines = []
-		dropped = restarts = 0
+		dropped = restarts = reconnects = 0
 		rows = [self.counters.Row(c) for c in range(len(self.names))]
 		try:
 			self.CheckMissed(rows, camstatus.Now(), self.clock(), final=True) # in its last seconds
@@ -1116,7 +1135,11 @@ class Watch:
 			self.CheckRestarts(c, name, row) # one in its last seconds
 			dropped += row["dropped"]
 			restarts += row["restarts"]
-			text = "{}: {} frames".format(name, row["grabbed"])
+			text = "{}: {} frames".format(name, Frames(row))
+			if row["reconnects"]:
+				text += ", unplugged and back {} time{} ({} frames while it was gone)".format(row["reconnects"],
+					"" if row["reconnects"] == 1 else "s", row["goneFrames"])
+				reconnects += 1
 			if row["dropped"]:
 				text += ", {} dropped".format(row["dropped"])
 			if row["restarts"]:
@@ -1156,6 +1179,9 @@ class Watch:
 		elif self.StillOpen(notify.CRITICAL):
 			head, severity = "Recording {} ended after {}, with problems still open:".format(self.Session(), took), \
 				notify.CRITICAL
+		elif reconnects:
+			head, severity = "Recording {} ended after {}, with {} unplugged and plugged back in:".format(
+				self.Session(), took, "a camera" if reconnects == 1 else "cameras"), notify.WARNING
 		elif dropped:
 			head, severity = "Recording {} ended after {}, with dropped frames:".format(self.Session(), took), \
 				notify.WARNING
@@ -1174,6 +1200,12 @@ class Watch:
 		else:
 			head, severity = "Recording {} ended after {}:".format(self.Session(), took), notify.INFO
 		self.notifier.Note("\n".join([head] + lines), severity, urgent=True) # ahead of the messages still waiting
+
+
+def Frames(row):
+	# A camera's frames grabbed, from its counters: its newest frame's number, less the numbers it skipped while it
+	# was unplugged (cameraReconnect)
+	return row["grabbed"] - row.get("goneFrames", 0)
 
 
 def PerCamera(value, c):

@@ -278,6 +278,14 @@ SETTINGS = [
 	Setting("alertGpuStalls", 3, int, section=ALERTS, per_camera=ONE, low=1,
 		help="This many GPU firmware stalls ('Fence fallback timer expired on ring ...' in the kernel log) \
 			within 10 minutes are an alert (default: 3)."),
+	Setting("cameraReconnect", True, bool, section=ALERTS, per_camera=ONE,
+		help="When a camera is unplugged mid-recording (or its USB link is lost), wait for it, and take it back \
+			when it is plugged in again (default: True; FLIR and emulated cameras). Meanwhile the other cameras \
+			record on. Its video, frametimes.npy and live feed go on from the trigger pulse it comes back on: \
+			the frames while it was gone are a gap in its frame numbers, as dropped frames are, and its \
+			timestamps are carried on across the gap, so campy-align puts every later frame on its pulse. \
+			metadata.csv's cameraReconnects says when. False ends its recording when it is unplugged, as \
+			before. See docs/alerts.md."),
 	Setting("restartFfmpeg", False, bool, section=ALERTS, per_camera=ONE,
 		help="When a camera's ffmpeg stops mid-recording (killed, crashed, an encoder error), start a new \
 			one instead of stopping that camera (default: False). The camera never stops; its video goes \

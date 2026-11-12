@@ -1864,3 +1864,33 @@ def test_a_view_waits_for_cameras_still_starting(rings):
 		assert viewer.readers is None and viewer.missingSince is not None
 	finally:
 		viewer.Close()
+
+
+def test_a_camera_campy_waits_for_is_lost_at_once_and_shown_again_when_back(rings):
+	# cameraReconnect: the camera process marks its ring LOST (not ended) while it waits for the camera; the view says
+	# CAMERA LOST at once, and shows its frames again when it is plugged back in and they come
+	prefix, writers, Write = three_feeds(rings, 10)
+	viewer = liveview.Viewer(view_args(prefix))
+	try:
+		viewer.Check()
+		viewer.lastRow = time.monotonic() - 1
+		writers[1].Lost()
+		for n in range(11, 21):
+			Write(n, (0, 2))
+		viewer.Check()
+		assert viewer.lost == {1: 10} and not viewer.ended
+		assert "campy waits for it" in viewer.rig.gone[1]
+		viewer.lastRaw = 0
+		image, frame, row = viewer.Step()
+		assert frame == 20 and frame_value(viewer, image, 1) == 101 // 3
+		# Plugged back in: its frames go on, numbered as the others'
+		for n in range(21, 31):
+			Write(n)
+		assert writers[1].ring.Get("state") == livefeed.RECORDING
+		viewer.Check()
+		assert viewer.lost == {} and viewer.rig.gone == {}
+		viewer.lastRaw = 0
+		image, frame, row = viewer.Step()
+		assert frame == 30 and [frame_value(viewer, image, c) for c in range(3)] == [300 % 256, 301 % 256, 302 % 256]
+	finally:
+		viewer.Close()

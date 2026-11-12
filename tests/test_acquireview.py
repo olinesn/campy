@@ -212,7 +212,8 @@ def test_a_camera_unplugged_mid_recording_leaves_the_others_in_the_view(tmp_path
 		"numCams: 3", 'cameraMake: "emu"', 'videoFolder: "{}"'.format(tmp_path.as_posix()), 'videoFilename: "emuclip.mp4"',
 		"frameRate: 20", "recTimeInSec: 7", "chunkLengthInSec: 1", "displayFrameRate: 10",
 		'pixelFormatInput: "gray"', 'pixelFormatOutput: "yuv420p"', "gpuID: -1", 'codec: "h264"',
-		'preflight: "off"', 'liveFeedName: "{}"'.format(feed), ""]))
+		'preflight: "off"', 'liveFeedName: "{}"'.format(feed), "cameraReconnect: False", ""]))
+	# (cameraReconnect False: its feed ends, as a camera campy can't open again does; the test below has it back)
 	summary = tmp_path / "view_summary.json"
 	env = dict(OFFSCREEN, PYTHONPATH=REPO, PYTHONUNBUFFERED="1", CAMPY_EMU_FAULTS="1:lost@20")
 	for key in (manifest.LAUNCHER_ENV, livefeed.FEED_ENV, "IMAGEIO_FFMPEG_EXE"):
@@ -235,3 +236,44 @@ def test_a_camera_unplugged_mid_recording_leaves_the_others_in_the_view(tmp_path
 	views = json.loads(summary.read_text())["frames_alone"]
 	# At 10 views a second, about 3 s of them after the loss (the view starts ~1 s in, the loss is said ~3 s in)
 	assert views >= 25, (views, log)
+
+
+def test_a_camera_plugged_back_in_comes_back_into_the_view(tmp_path):
+	# 3 emulated cameras, camera 1 unplugged at its 20th frame (1 s in) and plugged back in 2 s later
+	# (cameraReconnect, the default): the view says it is lost while campy waits for it, then shows it again
+	pytest.importorskip("cv2")
+	pytest.importorskip("PyQt5")
+	from test_liveviewqt import OFFSCREEN, QtStarts
+	if not QtStarts():
+		pytest.skip("Qt's offscreen platform does not start here")
+	names = ["Camera0", "Camera1", "Camera2"]
+	for camera in names:
+		(tmp_path / camera).mkdir()
+		write_clip(str(tmp_path / camera / "clip.mp4"), frames=7)
+	feed = "cr{}".format(os.getpid() % 100000)
+	config = tmp_path / "config.yaml"
+	config.write_text("\n".join([
+		"numCams: 3", 'cameraMake: "emu"', 'videoFolder: "{}"'.format(tmp_path.as_posix()), 'videoFilename: "emuclip.mp4"',
+		"frameRate: 20", "recTimeInSec: 7", "chunkLengthInSec: 1", "displayFrameRate: 10",
+		'pixelFormatInput: "gray"', 'pixelFormatOutput: "yuv420p"', "gpuID: -1", 'codec: "h264"',
+		'preflight: "off"', 'liveFeedName: "{}"'.format(feed), ""]))
+	env = dict(OFFSCREEN, PYTHONPATH=REPO, PYTHONUNBUFFERED="1", CAMPY_EMU_FAULTS="1:lost@20+2")
+	for key in (manifest.LAUNCHER_ENV, livefeed.FEED_ENV, "IMAGEIO_FFMPEG_EXE"):
+		env.pop(key, None)
+	code = ("import sys; sys.argv = ['campy-acquire', sys.argv[1]]\n"
+		"from campy import acquireview\n"
+		"args = acquireview.Args\n"
+		"acquireview.Args = lambda p: args(p) + ['--gui', 'qt', '--priority', 'normal']\n"
+		"from campy.campy import Main; Main()")
+	proc = subprocess.run([sys.executable, "-c", code, str(config)], cwd=str(tmp_path), env=env,
+		capture_output=True, text=True, timeout=120)
+	out = proc.stdout + proc.stderr
+	assert proc.returncode == 0, out
+	assert re.search(r"Camera1: back, plugged in again after \d+\.\d s", out), out
+	session, = [d for d in tmp_path.iterdir() if re.fullmatch(r"\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d", d.name)]
+	log = (session / "campy-live-view.log").read_text()
+	lost = re.search(r"Camera1's feed stopped at its frame \d+ while the other cameras record on \(unplugged: campy "
+		r"waits for it to be plugged back in\)", log)
+	back = re.search(r"Camera1 is back: its frames are shown again, from frame \d+", log)
+	assert lost and back and lost.start() < back.start(), log
+	assert "The recording ended." not in log[:back.start()], log

@@ -558,6 +558,12 @@ def GrabData(cam_params):
 	grabdata["firstStamp"] = None
 	grabdata["lastGrabStamp"] = None
 	grabdata["lastDropReport"] = float("-inf")
+	# cameraReconnect: each time the camera was unplugged and came back, [its last frame before, its first after,
+	# seconds gone, the offset added to its timestamps since]; the frame numbers between, and the seconds, in all
+	grabdata["reconnects"] = []
+	grabdata["framesWhileGone"] = 0
+	grabdata["secondsGone"] = 0.0
+	grabdata["firstHostNs"] = None
 
 	return grabdata
 
@@ -636,6 +642,125 @@ def CountFPS(grabdata, frameNumber, timeStamp):
 			.format(grabdata["cameraName"], frameNumber, fpsCount, round(timeElapsed)))
 
 
+# cameraReconnect: how often campy looks for a camera that was unplugged, and says it is still gone
+RECONNECT_EVERY_S = 1.0
+RECONNECT_REPORT_S = 30.0
+# A camera back numbers its first frame as the other cameras' frame of the same trigger pulse: by their newest
+# frame's host time, when it is within MATCH_S of its own; waiting up to MATCH_WAIT_S for one that is (after a
+# trigger pause, the others' frames of the first pulse may come a moment after its own)
+MATCH_S = 1.0
+MATCH_WAIT_S = 0.25
+
+
+def Reconnects(cam_params, cam):
+	# Whether this camera is waited for when it is unplugged, and taken back: cameraReconnect, with a camera module
+	# that can open its camera again (FLIR, emulated)
+	value = cam_params.get("cameraReconnect", True)
+	return str(value) not in ("False", "false", "0", "None") and hasattr(cam, "Reopen")
+
+
+def FrameNumberBack(hostNs, period, others, lastFrame, lastHostNs):
+	"""
+	The frame number of a camera's first frame after it was unplugged and
+	plugged back in: the trigger kept going, so it is the pulse the frame
+	came on, as the other cameras number it. others: their newest frames
+	[(number, host time ns)] (status.Camera.Others). By the others whose
+	newest frame is within MATCH_S of this one (the median: (host time
+	apart) / period added to their number), else by this camera's own last
+	frame before it was gone (a guess across a trigger pause). Never at or
+	below its last frame. Returns (number, True when by the others).
+	"""
+	near = [n + int(round((hostNs - h) / 1e9 / period)) for n, h in others if abs(hostNs - h) <= MATCH_S * 1e9]
+	if near:
+		number, matched = int(sorted(near)[len(near) // 2]), True
+	elif lastHostNs:
+		number, matched = lastFrame + int(round((hostNs - lastHostNs) / 1e9 / period)), False
+	else:
+		number, matched = lastFrame + 1, False
+	return max(number, lastFrame + 1), matched
+
+
+class Resume:
+	"""
+	A camera plugged back in, until its first frame (GrabFrames): that
+	frame's number (FrameNumberBack), and the offset that carries its
+	timestamps on from the camera's clock before it was gone (a FLIR
+	camera's clock starts again at 0 as it powers up): its first frame's
+	timestamp becomes the last frame's plus the pulses between them, so the
+	camera's timestamps in frametimes.npy step over the time it was gone as
+	over frames campy dropped, and campy-align puts every later frame on its
+	trigger pulse.
+	"""
+
+	def __init__(self, lastFrame, lastHostNs, lastStamp, period, lostAt):
+		self.lastFrame, self.lastHostNs, self.lastStamp = lastFrame, lastHostNs, lastStamp
+		self.period, self.lostAt = period, lostAt
+
+	def Number(self, hostNs, others=None):
+		# others: a function giving the other cameras' newest frames, asked again for up to MATCH_WAIT_S
+		# Asked again until one matches, for up to MATCH_WAIT_S: none may have matched yet because the others' frames
+		# of this pulse are not in, or because a camera's counters changed as they were read (status.Camera.Others
+		# leaves those out; on a busy computer that can be every camera at once). With no other camera grabbing, that
+		# wait is all it costs, once
+		deadline = time.monotonic() + MATCH_WAIT_S
+		while True:
+			found = others() if others is not None else []
+			number, matched = FrameNumberBack(hostNs, self.period, found, self.lastFrame, self.lastHostNs)
+			if matched or others is None or time.monotonic() >= deadline:
+				return number, matched
+			time.sleep(0.002)
+
+	def Offset(self, number, stamp):
+		# What to add to the camera's timestamps from now on (s)
+		if self.lastStamp is None:
+			return 0.0
+		return self.lastStamp + (number - self.lastFrame) * self.period - stamp
+
+
+def WaitForCamera(cam, cam_params, camera, grabdata, stopReadQueue):
+	"""
+	cameraReconnect: a camera that is gone (CameraLost), looked for every
+	RECONNECT_EVERY_S until it is back (its module's Reopen opens it again,
+	with campy's settings) and grabbing: returns it. Returns None when the
+	recording ends first: Ctrl-C or a stop file, its writer stopped, no other
+	camera recording any more, or this camera's recTimeInSec over (from its
+	first frame).
+	"""
+	name = cam_params["cameraName"]
+	lost = time.monotonic()
+	said = lost
+	first = grabdata.get("firstHostNs")
+	end = first + float(cam_params["recTimeInSec"]) * 1e9 if first else None
+	error = None
+	while not StopRequested() and not stopReadQueue:
+		if end is not None and clock.HostNs() >= end:
+			Say("{}: its recording's time is up, and the camera did not come back.".format(name))
+			return None
+		if not status.This().OthersGoOn():
+			Say("{}: the other cameras have ended, and the camera did not come back.".format(name))
+			return None
+		try:
+			back = cam.Reopen(cam_params, camera)
+		except Exception as e:
+			back, error = None, e
+		if back is not None:
+			camera = back
+			try:
+				if cam.StartGrabbing(back):
+					return back
+				error = "it opened again, but did not start grabbing"
+			except Exception as e:
+				error = e
+			CloseCamera(cam, cam_params, back)
+		now = time.monotonic()
+		if now - said >= RECONNECT_REPORT_S:
+			said = now
+			Say("{}: still gone after {:.0f} s; waiting for it to be plugged back in{}.".format(name, now - lost,
+				" (last try: {})".format(ErrorText(error)) if error else ""))
+		time.sleep(RECONNECT_EVERY_S)
+	return None
+
+
 def GrabFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=None, recording=None):
 	# recording: what this thread and the writer tell each other (Recording),
 	# when a writer runs alongside (campy.AcquireOneCamera). Metadata is then
@@ -664,6 +789,9 @@ def GrabFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=
 	gaps = frametimes.TriggerGaps() if Triggered(cam_params) else None # trigger pulses without a frame
 	feed = livefeed.Feed(cam_params, say=Say) # liveFeed: every frame into shared memory too (campy-live-view shows it)
 	frameNumber = 0
+	resume = None # a camera back after it was unplugged, until its first frame (cameraReconnect)
+	stampOffset = 0.0 # added to its timestamps since (Resume.Offset)
+	lastHostNs = 0 # the last frame's host time
 
 	# Whatever happens from here on, the camera is closed, the writer is told
 	# to stop, and metadata is saved (finally, below). Without
@@ -684,10 +812,28 @@ def GrabFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=
 				# Grab image from camera buffer if available
 				grabResult = cam.GrabFrame(camera, frameNumber)
 			except CameraLost as e:
-				recording.cameraError = "the camera is gone, after frame {}: {}".format(frameNumber, ErrorText(e))
+				gone = "the camera is gone, after frame {}: {}".format(frameNumber, ErrorText(e))
 				mine.State(status.LOST)
-				Say("{}: {}. Its recording ends there.".format(cam_params["cameraName"], recording.cameraError))
-				break
+				if not Reconnects(cam_params, cam):
+					recording.cameraError = gone
+					Say("{}: {}. Its recording ends there.".format(cam_params["cameraName"], gone))
+					break
+				# cameraReconnect: waited for, while the other cameras record on, and taken back when it is plugged
+				# in again; its video, frametimes.npy and live feed go on from there
+				Say("{}: {}. campy waits for it to be plugged back in (cameraReconnect); the other cameras record "
+					"on.".format(cam_params["cameraName"], gone))
+				feed.Lost()
+				lostAt = time.monotonic()
+				back = WaitForCamera(cam, cam_params, camera, grabdata, stopReadQueue)
+				if back is None:
+					recording.cameraError = gone + "; it was not plugged back in before the recording ended"
+					break
+				camera = back
+				# (lastGrabStamp: as frametimes.npy has it, any earlier offset in)
+				resume = Resume(frameNumber, lastHostNs, grabdata["lastGrabStamp"], grabdata["framePeriod"], lostAt)
+				if gaps is not None:
+					gaps.Restart()
+				continue
 			except Exception as e:
 				# No frame yet. Said when it lasts (FrameWatch).
 				if cam_params["cameraDebug"]:
@@ -697,11 +843,35 @@ def GrabFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=
 				continue
 
 			hostTime = clock.HostNs() # hosttimes.npy's clock, the same in every process
+			if resume is not None:
+				# Back after it was unplugged: its first frame numbered as the other cameras' of the same pulse, and
+				# its timestamps carried on (Resume)
+				number, matched = resume.Number(hostTime, mine.Others)
+				try:
+					stampOffset = resume.Offset(number, cam.GetTimeStamp(grabResult))
+				except Exception:
+					stampOffset = 0.0
+				missed = number - resume.lastFrame - 1
+				seconds = time.monotonic() - resume.lostAt
+				grabdata["reconnects"].append([resume.lastFrame, number, round(seconds, 3), round(stampOffset, 9)])
+				grabdata["framesWhileGone"] += missed
+				grabdata["secondsGone"] += seconds
+				mine.Reconnected(len(grabdata["reconnects"]), grabdata["framesWhileGone"])
+				Say("{}: back, plugged in again after {:.1f} s: its frames go on from frame {} ({} frames while it was "
+					"gone){}.".format(cam_params["cameraName"], seconds, number, missed, "" if matched else
+					", numbered by its own last frame's time, as no other camera had a frame then: off if the trigger "
+					"paused meanwhile"))
+				frameNumber = number - 1
+				resume = None
+				mine.State(status.GRABBING)
 			watch.Frame(frameNumber + 1)
 			try:
 				img = cam.GetImageArray(grabResult)
 				frameNumber += 1 # first frame = 1
-				timeStamp = cam.GetTimeStamp(grabResult)
+				timeStamp = cam.GetTimeStamp(grabResult) + stampOffset
+				lastHostNs = hostTime
+				if grabdata.get("firstHostNs") is None:
+					grabdata["firstHostNs"] = hostTime
 				if grabdata["firstStamp"] is None:
 					grabdata["firstStamp"] = timeStamp
 				grabdata["lastGrabStamp"] = timeStamp
@@ -725,7 +895,7 @@ def GrabFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=
 					grabdata["frameTimes"].Add(frameNumber, timeStamp, hostTime)
 				else:
 					DropFrame(grabdata, frameNumber, maxQueue)
-				mine.Frame(frameNumber, len(writeQueue))
+				mine.Frame(frameNumber, len(writeQueue), hostTime)
 
 				CountFPS(grabdata, frameNumber, timeStamp)
 
@@ -752,7 +922,7 @@ def GrabFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=
 	finally:
 		# Close the camera, tell the writer to stop, and once
 		# the writer has given ffmpeg the frames still queued, save metadata
-		grabdata["framesGrabbed"] = frameNumber
+		grabdata["framesGrabbed"] = frameNumber - grabdata["framesWhileGone"] # not the numbers skipped while it was gone
 		startup.Failed(cam_params, recording.cameraError) # a camera that stopped before it was ready: what it did
 		mine.State(status.ENDED, only_from=(status.WAITING, status.GRABBING))
 		CloseCamera(cam, cam_params, camera)
@@ -810,7 +980,7 @@ def EndLine(name, grabdata, held, recording):
 	holds and where the others went. held: the video's frames.
 	"""
 	grabbed = grabdata["framesGrabbed"]
-	seconds = GrabbedTime(grabdata)
+	seconds = GrabbedTime(grabdata) - grabdata.get("secondsGone", 0.0) # the time it was unplugged left out
 	paused = grabdata.get("pausedSec", 0.0) if grabdata.get("pauses") else 0.0
 	if paused and seconds - paused > 0:
 		# A trigger that paused on purpose: the rate while frames came, and the pauses apart (CountFPS)
@@ -819,6 +989,10 @@ def EndLine(name, grabdata, held, recording):
 			"" if grabdata["pauses"] == 1 else "s", round(paused))
 	else:
 		rate = "{} fps".format(int(round((grabbed - 1) / seconds)) if seconds > 0 else 0)
+	reconnects = grabdata.get("reconnects") or []
+	if reconnects:
+		rate += "; unplugged {} time{}, {:.0f} s and {} frames in all".format(len(reconnects),
+			"" if len(reconnects) == 1 else "s", grabdata["secondsGone"], grabdata["framesWhileGone"])
 	if held >= grabbed and not recording.videoError:
 		return "{} saved {} frames at {}.".format(name, grabbed, rate)
 	dropped = grabdata["framesDropped"]
@@ -890,6 +1064,13 @@ def SaveMetadata(cam_params, grabdata, recording=None):
 			cam_params["videoFiles"] = list(recording.videoFiles)
 		if recording.restarts or recording.videoError:
 			cam_params["framesLostInEncoder"] = recording.framesLost
+		if grabdata.get("reconnects"):
+			# cameraReconnect: the times it was unplugged and came back. cameraReconnects: [its last frame before,
+			# its first after, seconds gone, the offset added to its timestamps since (s): frametimes.npy's minus
+			# that is the camera's own clock]
+			cam_params["cameraReconnects"] = [list(r) for r in grabdata["reconnects"]]
+			cam_params["framesWhileGone"] = grabdata["framesWhileGone"]
+			cam_params["secondsGone"] = round(grabdata["secondsGone"], 3)
 		if not times.count:
 			Say("{} saved no frames.".format(name))
 			if not recording.Failures():

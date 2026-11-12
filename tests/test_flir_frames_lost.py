@@ -549,3 +549,56 @@ def test_a_timeout_is_not_a_lost_camera(flir, monkeypatch):
 	camera.GetNextImage = lambda timeout: (_ for _ in ()).throw(e)
 	with pytest.raises(SpinError):
 		flir.GrabFrame(camera, 0)
+
+
+# ------------------------------------------------------------------ cameraReconnect
+
+class SerialCamera(FakeCamera):
+	def __init__(self, serial, *args, **kwargs):
+		super().__init__(*args, **kwargs)
+		self.serial = serial
+
+	def GetTLDeviceNodeMap(self):
+		return NodeMap({"DeviceModelName": Node("Blackfly S BFS-U3-13Y3M"), "DeviceSerialNumber": Node(self.serial)})
+
+
+class FakeSystem:
+	# Spinnaker's system: the cameras it lists now
+	def __init__(self, cameras=()):
+		self.cameras = list(cameras)
+		self.cleared = 0
+
+	def GetCameras(self):
+		system = self
+		class List:
+			def GetSize(self):
+				return len(system.cameras)
+			def GetByIndex(self, i):
+				return system.cameras[i]
+			def Clear(self):
+				system.cleared += 1
+		return List()
+
+
+def test_a_camera_plugged_back_in_is_found_by_its_serial_and_opened_again(flir, capsys):
+	# Unplugged: not listed, so Reopen gives None. Plugged back in: a new camera object of the same serial, opened and
+	# set up again; the old one let go of; the frames its FrameID skipped before and after counted together
+	old = SerialCamera("18475377", frames(1000, 1001, 1004))
+	camera, cam = flir.OpenCamera(params(old, cameraSerialNo="18475377"))
+	assert flir.StartGrabbing(camera)
+	while camera.images:
+		flir.ReleaseFrame(flir.GrabFrame(camera, 0))
+	system = FakeSystem([SerialCamera("12345678")]) # another camera, not this one
+	cam["system"] = system
+	assert flir.Reopen(cam, old) is None and system.cleared == 1
+	new = SerialCamera("18475377", frames(0, 1, 5)) # its FrameID starts again as it powers up
+	system.cameras.append(new)
+	back = flir.Reopen(cam, old)
+	assert back is new and new.calls == ["Init"] and old.calls[-2:] == ["EndAcquisition", "DeInit"]
+	assert cam["camera"] is new
+	assert flir.StartGrabbing(back)
+	while back.images:
+		flir.ReleaseFrame(flir.GrabFrame(back, 0))
+	flir.CloseCamera(cam, back)
+	assert cam["flirFramesLost"] == 2 + 3 # 1001 -> 1004 before, 1 -> 5 after; not the restart from 1004 to 0
+	assert "Camera0: found again (serial 18475377), and set up as at the start." in capsys.readouterr().out

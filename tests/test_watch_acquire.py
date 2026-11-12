@@ -229,10 +229,84 @@ def test_ffmpeg_frozen(tmp_path, service):
 
 
 def test_a_camera_unplugged(tmp_path, service):
-	code, out = Finish(Start(tmp_path, service, rec=5, faults="1:lost@40"))
+	# cameraReconnect False: its recording ends there, as before
+	code, out = Finish(Start(tmp_path, service, rec=5, faults="1:lost@40", cameraReconnect="False"))
 	assert code == 1, out
 	assert "Camera1: the camera is gone (unplugged, or its USB link lost) after frame 40. Its recording has ended " \
 		"there; the other cameras go on. It needs a replug, and a new recording." in Texts(service), Texts(service)
+
+
+def test_a_camera_unplugged_and_never_back(tmp_path, service):
+	# cameraReconnect (the default): waited for to the recording's end, and said not to have come back
+	code, out = Finish(Start(tmp_path, service, rec=4, faults="1:lost@40"))
+	assert code == 1, out
+	assert "Camera1: the camera is gone (unplugged, or its USB link lost) after frame 40; the other cameras go on. " \
+		"campy waits for it: plug it back in, and it rejoins the recording on the next trigger pulse " \
+		"(cameraReconnect)." in Texts(service), Texts(service)
+	assert "it was not plugged back in before the recording ended" in out, out
+
+
+def test_a_camera_unplugged_and_plugged_back_in(tmp_path, service):
+	# Camera 1 unplugged at its frame 60 (2 s in at 30 fps), plugged back in 2 s later (its clock from 0, as a FLIR
+	# camera's after it powers up). It rejoins the recording on the pulse it comes back on: its frame numbers skip the
+	# time it was gone, numbered as the other cameras', its timestamps carried on across the gap, and campy-align
+	# puts every frame of it on the same trigger pulse as the other cameras' frame of that number
+	from campy import align
+	names = ("Camera0", "Camera1", "Camera2")
+	code, out = Finish(Start(tmp_path, service, names=names, rec=8, faults="1:lost@60+2", cameraTrigger='"Line0"'))
+	assert code == 0, out
+	assert re.search(r"Camera1: back, plugged in again after \d+\.\d s: its frames go on from frame \d+ \(\d+ frames "
+		r"while it was gone\)\.", out), out
+	texts = Texts(service)
+	assert any(t.startswith("Camera1: the camera is gone") and "campy waits for it" in t for t in texts), texts
+	assert any(t.startswith("resolved, after ") and "Camera1: back, plugged in again: recording again (at frame" in t
+		for t in texts), texts
+	# The time it was gone (about 60 pulses) is not counted as trigger pulses it missed. A camera can still miss one or
+	# a few when a busy runner holds its emulated frames up, before or after the gap: camera 2 did, and camera 1 after
+	# it came back, on GitHub's Windows runner, 2026-11-12
+	missed = [int(m) for t in texts for line in t.splitlines() if "Camera1" in line
+		for m in re.findall(r"no frame for (\d+) trigger pulses?", line)]
+	assert all(m < 20 for m in missed), (missed, texts)
+	assert "with a camera unplugged and plugged back in" in texts[-1] and "unplugged and back 1 time" in texts[-1], texts
+	session = Session(tmp_path)
+	frames = {n: np.load(str(session / n / "frametimes.npy")) for n in names}
+	hosts = {n: np.load(str(session / n / "hosttimes.npy")) for n in names}
+	number, stamp = frames["Camera1"][0], frames["Camera1"][1]
+	jumps = np.nonzero(np.diff(number) > 1)[0]
+	assert len(jumps) == 1, number
+	j = jumps[0]
+	before, after = int(number[j]), int(number[j + 1])
+	assert before == 60 and 55 <= after - before - 1 <= 80, (before, after) # 2 s at 30 fps, and its reopening
+	# Carried on across the gap: the step is the frame numbers' (its own clock started again at 0)
+	assert abs((stamp[j + 1] - stamp[j]) * 30 - (after - before)) < 0.01, (stamp[j], stamp[j + 1])
+	assert np.all(np.diff(stamp) > 0)
+	# Numbered as the other cameras: a frame number's host times within half a period of camera 0's
+	common, i0, i1 = np.intersect1d(frames["Camera0"][0], number[j + 1:], return_indices=True)
+	assert len(common) > 100
+	apart = np.abs(hosts["Camera0"][i0].astype(np.int64) - hosts["Camera1"][j + 1:][i1].astype(np.int64)) / 1e6
+	assert np.median(apart) < 1000 / 30 / 2, np.median(apart)
+	# All end on the same frame number (the recording's length)
+	assert abs(int(number[-1]) - int(frames["Camera0"][0][-1])) <= 1
+	meta = dict(row for row in csv.reader(open(session / "Camera1" / "metadata.csv")) if len(row) == 2)
+	reconnects = json.loads(meta["cameraReconnects"])
+	assert [r[:2] for r in reconnects] == [[before, after]] and int(meta["framesWhileGone"]) == after - before - 1
+	assert int(meta["totalFrames"]) == len(number)
+	# campy-align: the frame numbers' gap as triggers without a frame, every frame on its pulse as camera 0's
+	summary = align.Run(str(session), log=lambda *a: None)
+	aligned = {n: np.loadtxt(str(session / n / "aligned.csv"), delimiter=",", skiprows=1) for n in ("Camera0", "Camera1")}
+	shift = {n: (a[:, 1] - a[:, 0]).astype(int) for n, a in aligned.items()}
+	# Across the gap, campy-align puts camera 1's first frame back as many triggers after its last frame before as
+	# their numbers are apart; and camera 1 on camera 0's trigger for each number, when both cameras' timestamps came
+	# clean. (Emulated cameras time-stamp a frame as it is read, so on a busy runner one held up lands a trigger off,
+	# and campy-align's view of that camera wanders: camera 0's did by up to 2 triggers on GitHub's Windows runner,
+	# 2026-11-12. That camera 1 is on camera 0's pulses is checked by host time above, and with real cameras, whose
+	# timestamps are their own, in docs/alerts.md.)
+	a1 = aligned["Camera1"]
+	k = int(np.nonzero(a1[:, 0] == before)[0][0])
+	assert int(a1[k + 1, 0]) == after and int(a1[k + 1, 1] - a1[k, 1]) == after - before, a1[k:k + 2]
+	if len(set(shift["Camera0"])) == 1 and len(set(shift["Camera1"])) == 1:
+		assert set(shift["Camera0"]) == set(shift["Camera1"]), {n: sorted(set(v)) for n, v in shift.items()}
+	assert summary["cameras"]["Camera1"]["triggers_without_frame"] >= after - before - 1, summary["cameras"]["Camera1"]
 
 
 def test_the_trigger_pauses(tmp_path, service):

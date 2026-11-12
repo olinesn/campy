@@ -1571,6 +1571,9 @@ class GoneReader:
 	def Replaced(self):
 		return False
 
+	def Lost(self):
+		return False
+
 	def Info(self, key):
 		return self.frameRate if key == "frameRate" else 0
 
@@ -1697,17 +1700,25 @@ class Viewer:
 				Say("The recording ended.")
 				self.FinishCage("the recording ended") # a cage being drawn isn't lost with the recording
 			else:
-				for c, gone in enumerate(ended):
-					if not gone:
+				for c, (reader, gone) in enumerate(zip(self.readers, ended)):
+					name = reader.cameraName or reader.name
+					waited = not gone and reader.Lost() # gone, and campy waits for it (cameraReconnect): said at once
+					if not gone and not waited:
+						if c in self.endedAt and reader.Latest() > self.lost.get(c, 0):
+							# Plugged back in (cameraReconnect): its frames are shown again
+							self.endedAt.pop(c, None)
+							self.lost.pop(c, None)
+							self.rig.gone.pop(c, None)
+							Say("{} is back: its frames are shown again, from frame {:,}.".format(name, reader.Latest()))
 						continue
-					self.endedAt.setdefault(c, now)
+					self.endedAt.setdefault(c, now - (LOST_AFTER_S if waited else 0.0))
 					if c not in self.lost and now - self.endedAt[c] >= LOST_AFTER_S:
-						self.lost[c] = self.readers[c].Latest()
-						name = self.readers[c].cameraName or self.readers[c].name
+						self.lost[c] = reader.Latest()
 						self.rig.gone[c] = self.LostText(c)
-						Say("{}'s feed ended{} while the other cameras record on (unplugged, or its camera stopped?): "
-							"its tile says CAMERA LOST, the others are shown on.".format(name, " at its frame {:,}".format(
-							self.lost[c]) if self.lost[c] > 0 else ""))
+						Say("{}'s feed {}{} while the other cameras record on ({}): its tile says CAMERA LOST, the "
+							"others are shown on.".format(name, "stopped" if waited else "ended", " at its frame {:,}"
+							.format(self.lost[c]) if self.lost[c] > 0 else "", "unplugged: campy waits for it to be "
+							"plugged back in" if waited else "unplugged, or its camera stopped?"))
 		if self.results is None:
 			try:
 				self.results = liveresults.Results(self.resultsName)
@@ -1768,8 +1779,13 @@ class Viewer:
 
 	def LostText(self, c):
 		# The panel's line for camera c, lost
-		name = self.readers[c].cameraName or self.readers[c].name
+		reader = self.readers[c]
+		name = reader.cameraName or reader.name
 		n = self.lost.get(c, 0)
+		if reader.Lost():
+			return "{}: camera lost{} while the other cameras record on (unplugged): campy waits for it, and it " \
+				"rejoins the recording, and this view, when it is plugged back in.".format(name,
+				" after its frame {:,}".format(n) if n > 0 else "")
 		return "{}: camera lost, its live feed ended{} while the other cameras record on (unplugged, or its camera " \
 			"stopped: campy-acquire records on without it, and does not open it again).".format(name,
 			" at its frame {:,}".format(n) if n > 0 else "")
@@ -2273,7 +2289,7 @@ class Viewer:
 		"""
 		shown = self.Shown()
 		latest = {c: self.readers[c].Latest() for c in shown}
-		live = [c for c in shown if not self.readers[c].Ended() and latest[c] > 0]
+		live = [c for c in shown if not self.readers[c].Ended() and not self.readers[c].Lost() and latest[c] > 0]
 		top = max(latest[c] for c in live) if live else 0
 		keeping = [c for c in live if latest[c] > top - self.readers[c].slots + 1]
 		newest = min(latest[c] for c in keeping) if keeping else max(latest.values(), default=0)
@@ -2409,7 +2425,9 @@ class Viewer:
 		# Across a lost camera's tile: CAMERA LOST, and since when
 		since = time.monotonic() - self.endedAt.get(c, time.monotonic())
 		h, w = tile.shape[:2]
-		lines = [("CAMERA LOST", 0.9), ("unplugged? no frames for {}".format(livehealth.Duration(since)[2:]), 0.5)]
+		waited = self.readers is not None and c < len(self.readers) and self.readers[c].Lost()
+		lines = [("CAMERA LOST", 0.9), ("{} for {}".format("unplugged: waiting for it" if waited else
+			"unplugged? no frames", livehealth.Duration(since)[2:]), 0.5)]
 		if self.lost.get(c):
 			lines.append(("its last frame ({:,}) shown dimmed".format(self.lost[c]), 0.45))
 		y = h // 2 - 20
@@ -2797,7 +2815,7 @@ class Viewer:
 		span = livehealth.WINDOW_S * fps
 		newest = int(got[0][-1]) if got is not None else 0
 		if self.readers is not None:
-			recording = [r.Latest() for r in self.readers if not r.Ended()]
+			recording = [r.Latest() for r in self.readers if not r.Ended() and not r.Lost()]
 			if recording:
 				newest = max(newest, min(recording)) # campy-live behind: dark at the right
 		# Drawn a column a frame (n), then widened to sw: a tenth of the work at 30 fps

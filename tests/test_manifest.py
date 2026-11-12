@@ -58,7 +58,9 @@ def test_only_changes_that_apply_are_said():
 
 
 def test_defaults_version_says_only_later_changes():
-	assert defaults.Warnings({}, {}, flir(), known="2.1.0") == []
+	later = [l.split()[0] for l in defaults.Warnings({}, {}, flir(), known="2.1.0")]
+	assert later == ["cameraReconnect"] # the one campy-acquire key changed after 2.1.0 (pull request 423)
+	assert defaults.Warnings({}, {}, flir(), known=defaults.NEXT) == []
 	assert len(defaults.Warnings({}, {}, flir(), known="2.0.0")) == len(defaults.Warnings({}, {}, flir()))
 	live = defaults.Warnings({}, {}, {"gpu": True}, program="campy-live", known="2.1.0")
 	assert [l.split()[0] for l in live] == ["--engine"] # the one after 2.1.0
@@ -458,7 +460,7 @@ def test_a_recording_says_how_it_was_made(tmp_path):
 
 
 def test_a_config_that_knows_the_defaults_is_not_warned(tmp_path):
-	proc, out, folder = record(tmp_path, seconds=1, extra=['defaultsVersion: "2.1.0"'])
+	proc, out, folder = record(tmp_path, seconds=1, extra=['defaultsVersion: "{}"'.format(defaults.NEXT)])
 	assert proc.returncode == 0, out
 	assert "relies on" not in out
 	assert json.loads((folder / "session.json").read_text())["config"]["defaultWarnings"] == []
