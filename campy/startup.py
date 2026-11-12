@@ -174,5 +174,7 @@ def VideoText(cam_params):
 		return None
 	gpu = cam_params.get("gpuID", -1)
 	device = "CPU" if gpu == -1 or str(gpu) == "-1" else "GPU {}".format(gpu)
+	if device != "CPU" and cam_params.get("gpuMake") == "jetson":
+		device = "the Jetson's encoder" # one per machine: gpuID names nothing
 	codec = cam_params.get("codec")
 	return "{} on {} -> {}".format(codec, device, path) if codec else "{} -> {}".format(device, path)

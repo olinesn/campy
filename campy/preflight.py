@@ -269,6 +269,8 @@ def CheckEncoders(cams, report, exe=None, encoders=None):
 		return set()
 	by_codec = OrderedDict()
 	for cam in cams:
+		if IsJetson(cam):
+			continue # GStreamer's encoder: CheckJetson tries it
 		by_codec.setdefault(writer.EncoderArgs(cam)["codec"], []).append(cam)
 	for codec, group in by_codec.items():
 		if codec in encoders:
@@ -414,6 +416,56 @@ def CheckNvenc(cams, report, exe=None, encoders=None):
 				["{} could not encode test frames with campy's settings. ffmpeg said:".format(where)]
 				+ ["  " + line for line in quoted]
 				+ [NvencHint(said), "To run it by hand: " + CommandText(list(cmd))]))
+
+
+# ------------------------------------------------------------------ Jetson
+
+def IsJetson(cam):
+	return cam["gpuID"] != -1 and cam["gpuMake"] == "jetson"
+
+
+def CheckJetson(cams, report, probe=None):
+	"""
+	gpuMake "jetson" cameras (writer.JetsonEncoderArgs): their settings, and
+	a few test frames encoded through the writer's own GStreamer and ffmpeg
+	(writer.JetsonProbe). Cameras with the same settings share one probe.
+	Returns the cameras the other checks can look at: not those whose
+	settings this path cannot take (they FAIL here).
+	"""
+	probe = probe or writer.JetsonProbe
+	jetson = [cam for cam in cams if IsJetson(cam)]
+	if len(jetson) > writer.JETSON_MAX_ENCODERS:
+		report.add(FAIL, "encoders", "{} cameras on the Jetson's encoder ({}): it encodes at most {} at once. "
+			"With more, its converter and encoder run out of memory contexts (the kernel logs \"all memory "
+			"contexts are busy\"), every camera slows down, and gst-launch-1.0 can crash. Record the others on "
+			"the CPU (gpuID -1).".format(len(jetson), Names(jetson), writer.JETSON_MAX_ENCODERS))
+	kept, probes = [], OrderedDict()
+	for cam in cams:
+		if not IsJetson(cam):
+			kept.append(cam)
+			continue
+		try:
+			enc = writer.EncoderArgs(cam)
+		except ValueError as e:
+			report.add(FAIL, "encoders", "{}: {}".format(cam["cameraName"], e))
+			continue
+		kept.append(cam)
+		shape = (cam["frameWidth"], cam["frameHeight"], float(cam["frameRate"]), str(cam["videoFilename"]))
+		probes.setdefault((tuple(enc["gst"]), tuple(enc["output_params"]), shape), []).append(cam)
+	if not probes:
+		return kept
+	with tempfile.TemporaryDirectory(prefix="campy-jetson-") as folder:
+		for group in probes.values():
+			key = writer.EncoderArgs(group[0])["key"]
+			error = probe(group[0], folder)
+			if error is None:
+				report.add(OK, "encoders", "{} ({}) encoded {} test frames with campy's settings, through "
+					"GStreamer".format(key, Names(group), writer.JETSON_PROBE_FRAMES))
+			else:
+				report.add(FAIL, "encoders", "{} ({}) could not encode test frames with campy's settings: {}. "
+					"gpuMake \"jetson\" needs an NVIDIA Jetson with its GStreamer plugins (docs/jetson.md). "
+					"To run it by hand: {}".format(key, Names(group), error, writer.JetsonCommandText(group[0])))
+	return kept
 
 
 # ------------------------------------------------------------------ capacity
@@ -954,12 +1006,13 @@ def Run(systems, params, sysfs_root="/sys"):
 	report = Report()
 	CheckDevices(systems, cams, report)
 	CheckGige(cams, report, lambda: FlirDiscovery(systems))
-	encoders = CheckEncoders(cams, report)
-	CheckNvenc(cams, report, encoders=encoders)
-	CheckCapacity(cams, table, report, path)
+	encodable = CheckJetson(cams, report) # the encoder checks skip cameras whose settings it FAILed
+	encoders = CheckEncoders(encodable, report)
+	CheckNvenc(encodable, report, encoders=encoders)
+	CheckCapacity(encodable, table, report, path)
 	CheckUsb(cams, params, report, sysfs_root)
 	CheckFrameRate(cams, report, lambda cam: CameraLimits(systems, cam))
-	CheckDisk(cams, params, table, report)
+	CheckDisk(encodable, params, table, report)
 
 	print(report.text("Launch check ({} cameras on {}):".format(len(cams), socket.gethostname())), flush=True)
 	failed = report.count(FAIL)

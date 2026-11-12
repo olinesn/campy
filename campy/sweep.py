@@ -17,6 +17,7 @@ and image quality.
 Examples:
   campy-encode-sweep --width 1280 --height 1024 --frameRate 60 --encoder cpu:veryfast --encoder vaapi
   campy-encode-sweep --config configs/campy_config_8cams_flir_usb3.yaml --streams 1,2,4,6,8,10,12
+  campy-encode-sweep --width 1280 --height 1024 --frameRate 60 --codec h265 --encoder jetson --streams 1,4,8,9,10
 """
 
 import os, sys, json, time, queue, socket, shutil, platform, argparse, datetime, statistics, subprocess, tempfile
@@ -26,7 +27,7 @@ import numpy as np
 from campy import writer, configurator, configschema, strictjson
 
 
-ENCODER_MAKES = ("cpu", "vaapi", "nvidia", "intel", "amd")
+ENCODER_MAKES = ("cpu", "vaapi", "nvidia", "intel", "amd", "jetson")
 
 
 # ------------------------------------------------------------------ frames
@@ -246,7 +247,7 @@ def HostInfo(cam_params):
 # ------------------------------------------------------------------ sweep
 
 def EncoderParams(base, spec):
-	"""Camera parameters for an encoder spec: "cpu[:preset]", "vaapi", "nvidia[:preset]", ..."""
+	"""Camera parameters for an encoder spec: "cpu[:preset]", "vaapi", "nvidia[:preset]", "jetson[:preset]", ..."""
 	make, _, preset = spec.partition(":")
 	if make not in ENCODER_MAKES:
 		raise ValueError("unknown encoder {}: use one of {}".format(spec, ", ".join(ENCODER_MAKES)))
@@ -392,7 +393,7 @@ def ParseArgs(argv=None):
 	parser.add_argument("--ffmpegPath")
 	parser.add_argument("--vaapiDevice")
 	parser.add_argument("--encoder", action="append", dest="encoders",
-		help="cpu[:preset], vaapi, nvidia[:preset], intel[:preset] or amd. Repeat to compare. "
+		help="cpu[:preset], vaapi, nvidia[:preset], intel[:preset], amd or jetson[:preset]. Repeat to compare. "
 		"Default: the config's encoder, else cpu.")
 	parser.add_argument("--streams", default="1,2,4,6,8",
 		help="camera counts to try, in increasing order (default: 1,2,4,6,8)")
