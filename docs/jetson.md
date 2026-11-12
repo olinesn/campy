@@ -114,7 +114,19 @@ At 4 Mbit/s the encoder handled about 600 frames/s of 1280 × 1024; campy's writ
 
 ### Cameras
 
-A FLIR Blackfly S BFS-U3-28S5C (colour) on the developer kit's USB 3 port was found by Spinnaker 4.4.0.246 at SuperSpeed. No recording with it has been timed yet.
+A FLIR Blackfly S BFS-U3-28S5C (colour) on the developer kit's USB 3 port was found by Spinnaker 4.4.0.246 at SuperSpeed.
+
+**A real camera, recorded and tracked** (11 November, campy dev `5b3aefb`, started from campy's panel on the Orin's desktop, `RIG_CLEAN`): that camera, sending Mono8 at 1280 × 960 and 60 fps, free-running (no trigger board), exposure 7 ms, gain 32 dB; recorded on the Orin's encoder (`gpuMake: "jetson"`, H.265 quality 21) while `campy-live` tracked it in 2D with the trained 5-mouse pair, for 2 minutes.
+
+| | |
+|---|---|
+| Frames | 7,200 of 7,200, none dropped; the camera's frame numbers without a gap, 16.666–16.668 ms apart |
+| The video | 7,200 frames, 120.000 s, H.265 (hvc1) marked full range, 78 Mbit/s |
+| `campy-live` | 7,195 sets of 7,200 (5 skipped as the feed started), inference p50 / p99 4.8 / 6.6 ms, latency from the frame 5.6 / 7.5 ms (max 8.6) |
+
+It was a check of the chain, not of the tracking: the room was dark and the lens out of focus, with nothing to track, so the gain is high and the detections (about 2 a frame, from noise) mean nothing. The 78 Mbit/s is that gain's noise, which quality 21 keeps: the rig checks' clips of a lit cage came to 4–5 Mbit/s. The computer's own screen was shared over VNC throughout (step 9 below).
+
+This colour camera tops out below 60 fps at larger frames when it sends Mono8: it makes the gray frames in its own image processor, which handles about 117 million pixels a second of full-width rows (1,936 pixels), whatever width campy asks for. So the number of rows sets the top frame rate: 42.4 fps at 1,440 rows, 58.4 at 1,024 and 62.0 at 960, with the exposure making no difference (7–15 ms). campy's launch check read these from the camera and refused 60 fps at 1,440 and 1,024 rows (`FAIL camera ... can run at only 58.4 fps with campy's settings`), and recorded at 960 with a warning that 60 is close to the camera's limit. A mono Blackfly S has no such step.
 
 ## Setting it up
 
@@ -233,6 +245,22 @@ PyTorch's own CUDA 13.2 wheels for Arm64 work on the Orin: they carry no kernels
 
 With the developer kit's GNOME desktop (an X11 session, logged in automatically), a few desktop programs keep the GPU open: the desktop portals, GNOME Software's background service and, until it is done, the first-login wizard. `rig.py` counts them as the desktop (noted, not waited for) since pull request 401; before that it waited on them for ever, and so did its own tests. On a rig with no screen they do nothing useful, so they were also turned off for the user: `echo yes > ~/.config/gnome-initial-setup-done`, and autostart overrides with `Hidden=true` in `~/.config/autostart/` for `org.gnome.Software.desktop` and for the backup monitor's entry, which started by itself during a timing test and used the GPU for 10 seconds. On the Orin the lock watches `/dev/nvgpu/*` and `/dev/nvhost-*gpu` for CUDA, and `/dev/v4l2-nvenc` for the encoder (pull request 401).
 
+### 9. Its desktop from another computer
+
+The kit has no monitor, and recordings start from campy's panel on the computer's own desktop ([Recording a session from the desktop](recording-a-session.md)), so its desktop is shared over VNC, through SSH:
+
+- **x11vnc** (Ubuntu's package) as a user service, on `127.0.0.1:5900` only, with a VNC password (`x11vnc -storepasswd`; only its first 8 characters count). From a Mac: `ssh -N -o ServerAliveInterval=15 -L 5901:localhost:5900 <the Orin>`, then `open vnc://localhost:5901` (Screen Sharing). Through SSH it works from anywhere SSH does, VPN included.
+- **A monitor that isn't there.** With nothing on its DisplayPort, X runs on a 640 × 480 screen with no monitor, and GNOME draws nothing: VNC showed a black screen with a mouse pointer. Enlarging the screen (`xrandr --fb`), a RandR monitor of its own (`xrandr --setmonitor`) and NVIDIA's documented headless setting (`Virtual 1920 1080` in a `Screen` section of `/etc/X11/xorg.conf`) left GNOME with no monitor, and the kernel has no virtual display driver (`CONFIG_DRM_VKMS` is off). What works: telling NVIDIA's X driver that the DisplayPort has a monitor, with that monitor's description (EDID) in a file, in the `Device` section of `/etc/X11/xorg.conf`:
+
+  ```
+  Option "ConnectedMonitor" "DFP-0"
+  Option "CustomEDID" "DFP-0:/etc/X11/edid-1920x1080.bin"
+  ```
+
+  The EDID is a standard one for 1920 × 1080 at 60 Hz (CEA timing, 148.5 MHz). After `sudo systemctl restart gdm`, `xrandr` shows `DP-0 connected primary 1920x1080` and GNOME draws its desktop. A real monitor plugged into that port would get the same mode.
+- **Not Sunshine/Moonlight**, as on the EVO-X2: Sunshine passes the mouse and keyboard through `uinput`, and NVIDIA's kernel for the Orin (6.8.12-tegra) is built without it (`CONFIG_INPUT_UINPUT` is not set), so it would be view-only.
+- **Firefox** for the panel: Ubuntu's `firefox` package is only a stub for the snap, and snaps have known problems under NVIDIA's kernels. Mozilla's own package (`packages.mozilla.org`, arm64 included, its key checked against fingerprint `35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3`) is pinned above it.
+
 ## Checking the setup: `bench/jetson_setup_check.py`
 
 A read-only checklist. It prints PASS, WARN or FAIL for each item, with a one-line fix for anything that isn't right, and changes nothing: it only reads files and runs commands that report.
@@ -292,5 +320,5 @@ At each release, as on the EVO-X2: in `~/campy`, `git fetch` and `git merge --ff
 
 ## Still to do
 
-- A recording with real cameras, timed, with `campy-live` tracking them.
+- A recording with real cameras of a lit cage with mice, several cameras, triggered, to check the tracking as well as the timing (one camera of a dark room is in [Cameras](#cameras)).
 - How far TensorRT's fp16 moves the keypoints from fp32 here, as measured on the other NVIDIA cards.
