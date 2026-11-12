@@ -699,7 +699,20 @@ Notes on the measurements:
   - 3 cameras: 3,600 sets, 1.7 / 1.8 ms per set, frame to 3D 4.2 / 5.4 ms (`RIG_CONTAMINATED` by one sighting of the endpoint-security agent's CPU use as the cameras started, as on all three tries before);
   - replay: 1,799 sets from frame 2, 1.7 / 1.8 ms per set, frame to 3D 4.7 / 5.9 ms (`RIG_CLEAN`).
 
-  The VM recorded 1,200 frames from 1 camera and 3 × 3,600 from 3, none dropped; both runs were marked `RIG_CONTAMINATED` by other programs' CPU use only. The other machines didn't run their checks, since nothing those checks run changed.
+  The VM recorded 1,200 frames from 1 camera and 3 × 3,600 from 3, none dropped; both runs were marked `RIG_CONTAMINATED` by other programs' CPU use only.
+
+  At 3:21–3:25 AM the other four ran their rig checks too, under their locks; the Pro Tower Plus ran inside its overnight window, and the Jetson AGX Orin once another benchmark had released its lock. Nothing was skipped or misaligned, every camera kept all its frames, and every time was within 0.2 ms of `7952d90`. The Pro Max Slim's replay tracked all 1,800 sets from frame 1 this time; the Pro Tower Plus's started at frame 2, as before.
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | EVO-X2 | 1,800 / 3.1 / 3.2 | 3,600 / 5.7 / 5.9 / 7.8 / 8.7 | 3,600 / 5.6 / 5.8 / 7.3 / 8.2 |
+  | Pro Max Slim | 1,200 / 2.3 / 2.5 | 3,600 / 5.6 / 5.7 / 7.9 / 8.8 | 1,800 / 5.6 / 5.7 / 8.8 / 9.8 |
+  | Pro Tower Plus (RTX A2000) | 1,200 / 2.7 / 2.9 | 3,600 / 6.8 / 7.1 / 9.2 / 10.3 ¹ | 1,799 / 6.9 / 7.2 / 11.1 / 12.4 |
+  | Jetson AGX Orin | 1,800 / 3.9 / 4.1 | 3,600 / 10.2 / 10.7 / 14.5 / 16.0 | 3,600 / 10.1 / 10.3 / 14.5 / 15.7 |
+
+  ¹ `RIG_CONTAMINATED` by one sighting of the endpoint-security agent's CPU use as the cameras started, as before; nothing on the GPU.
+
+  The EVO-X2's and the Orin's replays agreed with the offline tracking as before: a median of 3.8 px in 2D and 4.2 mm in 3D, and 2 identity switches.
 
 ## Four cameras on the Pro Max Slim (26 October 2026)
 

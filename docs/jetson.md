@@ -40,12 +40,17 @@ The rig checks, the same as the EVO-X2's, with campy-live's defaults:
 | **12 November** (campy dev `7952d90`): replay3 | 3,600 of 3,600, 0 skipped | 10.1 / 10.3 ms | 14.5 / 15.7 (29.7) ms | (a replay) |
 | smoke1, on the Orin's encoder | 1,800, 0 skipped | 3.9 / 4.1 ms | | 1,800 |
 | smoke3, on the Orin's encoder | 3,600, 0 skipped | 10.2 / 10.6 ms | 14.6 / 16.0 (22.0) ms | 3 × 3,600 |
+| **12 November, 3:21 AM** (campy dev `e99da09`): replay3 | 3,600 of 3,600, 0 skipped | 10.1 / 10.3 ms | 14.5 / 15.7 (23.9) ms | (a replay) |
+| smoke1, on the Orin's encoder | 1,800, 0 skipped | 3.9 / 4.1 ms | | 1,800 |
+| smoke3, on the Orin's encoder | 3,600, 0 skipped | 10.2 / 10.7 ms | 14.5 / 16.0 (26.1) ms | 3 × 3,600 |
 
 The replay tracked as the other machines do: against the offline SLEAP predictions, 2D median 3.8 px, 3D median 4.2 mm, 99.93% the same identity, 2 identity switches (the EVO-X2: 3.8 px, 4.2 mm, 2 switches). The EVO-X2 takes about half the time (inference 5.5 / 5.6 ms in the same replay). The 3D step alone takes 2.8 ms here against about 1.1 ms there: it runs on the CPU. While smoke3 ran, the CPU was about half busy, the three libx264 encoders included. Recorded on the Orin's encoder instead, tracking took the same time; the CPU was about 38% busy at mid-run (one sample, `top`), most of it the emulated cameras decoding their clips.
 
 Since 11 November the rig check records on the Orin's encoder, as a recording on the Orin would: smoke1 and smoke3 use `gpuMake: "jetson"`, H.265 at quality 21 (`ENC=cpu` still runs the CPU path, libx264 `ultrafast`). Its first run, the three rows from "Since 11 November", came after the Orin's campy moved to dev `5b3aefb` (the Jetson writer, pull request 403): the replay tracked as before (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches), each recorded video held every frame (4.1–5.0 Mbit/s per camera in smoke3), and the CPU was about 39% busy at smoke3's mid-run (one sample).
 
 On 12 November, after the Orin's campy moved to dev `7952d90` (pull requests 406, 408, 410 and 411; none changes what the rig check runs: 408 is for TensorRT engines, which it does not use), the rig check ran again, `RIG_CLEAN`, and gave the same times to within 0.1 ms: the last three rows above. The replay tracked as before (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches), and every frame was recorded.
+
+Later that night, after the Orin's campy moved to dev `e99da09` (pull request 415, `campy-session`'s Ctrl-C at the start, which the rig check doesn't use; and test-only changes), it ran again, `RIG_CLEAN`, with the same times to within 0.1 ms: the last three rows above. The replay tracked as before (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches), and every frame was recorded.
 
 Not checked: how far TensorRT's fp16 moves the keypoints from fp32 on the Orin (the replay's accuracy above already includes it), and a real camera feeding `campy-live`.
 
