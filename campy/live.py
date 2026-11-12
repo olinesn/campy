@@ -3046,7 +3046,7 @@ def Run(args):
 				"has ended: stopped.".format(args.launcher_pid) if gone() else "No live feed after {:g} s.".format(
 				args.wait_sec))
 			return 1
-		Say("Live feed: {}.".format(cameras.Describe()))
+		Say("Live feed: {}.".format(cameras.Describe())) # campy-session reads it: campy-live found the feed (Recorded)
 		if clock is not None and clock.FeedCame():
 			Say("The feed took over {:g} minutes to come, so the GPU's clock wasn't held: without a trigger, "
 				"the first sets may be slow.".format(GpuClock.WAITING_MOST_S / 60))

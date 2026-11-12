@@ -172,6 +172,7 @@ RESTART_AFTER_S = TestSeconds("CAMPY_TEST_LIVE_RESTART_S", (10, 60, 300)) # camp
 # then every 300 s
 RESTARTS_PER_HOUR = 5
 LIVE_END_S = 60 # once the recording has ended, campy-live has this long to finish, then its stop file
+WATCH_END_S = 5 # and campy-watch this long (it sees the feed end within a second), then its stop file
 LIVE_STOP_S = TestSeconds("CAMPY_TEST_LIVE_STOP_S", 30) # ... and this long after it, then it is ended
 LIVE_STALL_S = TestSeconds("CAMPY_TEST_LIVE_STALL_S", 30) # campy-watch's (livewatch.STALL_S): no result this long
 # while the cameras record, and campy-live hangs
@@ -781,6 +782,28 @@ def WatchState(folder, since=None):
 	return status.get("state")
 
 
+def AnyFrames(folder):
+	"""
+	Whether any camera of the recording in folder recorded a frame: a
+	hosttimes.npy (campy/frametimes.py's GrowingNpy: a frame's row goes in
+	after its header) longer than its header. Without numpy, which
+	campy-session doesn't load. True when that can't be told.
+	"""
+	import glob
+	for path in glob.glob(os.path.join(glob.escape(folder), "*", "hosttimes.npy")):
+		try:
+			with open(path, "rb") as f:
+				head = f.read(12)
+			if len(head) < 12 or head[:6] != b"\x93NUMPY":
+				return True
+			end = 10 + int.from_bytes(head[8:10], "little") if head[6] == 1 else 12 + int.from_bytes(head[8:12], "little")
+			if os.path.getsize(path) > end:
+				return True
+		except OSError:
+			return True
+	return False
+
+
 def Stamp(t):
 	return datetime.fromtimestamp(t).astimezone().isoformat(timespec="milliseconds") if t else None
 
@@ -935,11 +958,7 @@ class Session:
 				self.Status()
 				return 1
 			if self.presses:
-				self.state = "stopped"
-				self.Problem("Stopped before the recording started: nothing was recorded.")
-				self.devices.After(self, 1)
-				self.Status()
-				return 1
+				return self.StoppedBeforeRecording()
 
 		if config.live is not None and not self.StartLive(1, wait=True):
 			if config.live["required"]:
@@ -950,15 +969,12 @@ class Session:
 		if config.live is not None and config.live["watch"] and not self.presses:
 			self.StartWatch()
 		if self.presses:
-			self.state = "stopped"
-			self.Problem("Stopped (Ctrl-C) before the recording started: nothing was recorded.")
-			self.EndLive()
-			self.EndWatch()
-			self.Status()
-			return 1
+			return self.StoppedBeforeRecording()
 
 		if config.view["show"]:
 			self.StartView()
+		if self.presses: # while the view started
+			return self.StoppedBeforeRecording()
 
 		env = dict(os.environ, PYTHONUNBUFFERED="1")
 		env[LAUNCHER_ENV] = VERSION
@@ -967,6 +983,11 @@ class Session:
 			"--stopFile", self.stopFile], os.path.join(self.logs, "campy-acquire.log"), env=env,
 			cwd=os.getcwd(), apart="console" if self.detached else False)
 		self.parts["acquire"] = acquire.Start()
+		if self.presses:
+			# A Ctrl-C as campy-acquire started: Press found no campy-acquire to stop, and the press may have come before
+			# campy-acquire was there to get it too. Its stop file says it (campy-acquire refuses to start with one there,
+			# or stops as it sees it); a press that did find it wrote the file already, and this writes nothing
+			self.RequestStop(1)
 		self.state = "recording"
 		self.Status()
 
@@ -1207,6 +1228,36 @@ class Session:
 		self.restart_due = now + after
 		Say("Starting it again in {:g} s.".format(after))
 
+	def Recorded(self, part, attached):
+		# Whether campy-live or campy-watch (part) may have anything to finish once campy-acquire has ended: not when
+		# campy-acquire never started, nor when it recorded no frame (a Ctrl-C as it started, a crash as it opened the
+		# cameras) and part's log doesn't say it found the feed (attached). It then waits for a feed that never comes
+		# (it doesn't take one that has ended), until campy-session ends; campy-session gave it LIVE_END_S (60 s)
+		if not self.parts.get("acquire"):
+			return False
+		if AnyFrames(self.folder):
+			return True
+		try:
+			with open(part.log, encoding="utf-8", errors="replace") as f:
+				return attached in f.read()
+		except (OSError, TypeError):
+			return True
+
+	def StoppedBeforeRecording(self):
+		# Ctrl-C before campy-acquire started: nothing recorded. What did start is ended: campy-live, campy-watch, the
+		# view, and the devices' runs (SpikeGLX's; before, a Ctrl-C while campy-live started left it running)
+		self.state = "stopped"
+		self.Problem("Stopped (Ctrl-C) before the recording started: nothing was recorded.")
+		self.EndLive()
+		self.EndWatch()
+		view = self.parts.get("view")
+		if view is not None:
+			view.End()
+		if self.devices is not None:
+			self.devices.After(self, 1)
+		self.Status()
+		return 1
+
 	def EndLive(self):
 		# campy-live ends once the feed has; else its stop file, then it is ended
 		self.restart_due = None
@@ -1216,7 +1267,7 @@ class Session:
 				live.Check()
 			return
 		Say("Waiting for campy-live to finish (it ends once the feed has)...")
-		deadline = time.monotonic() + (LIVE_END_S if self.parts.get("acquire") else 0)
+		deadline = time.monotonic() + (LIVE_END_S if self.Recorded(live, "] Live feed: ") else 0)
 		asked = False
 		while not live.Check():
 			for part in self.parts.values():
@@ -1235,13 +1286,16 @@ class Session:
 			self.Problem("campy-live ended with exit code {}: see {}.".format(live.code, live.log))
 
 	def EndWatch(self):
-		# campy-watch ends once the feed has (or, before any recording, at once); else its stop file, then it is ended
+		# campy-watch ends once the feed has (or, before any recording, at once); else its stop file, then it is ended.
+		# Once campy-acquire has ended, WATCH_END_S: a campy-watch watching the feed sees it end within a second, and
+		# one that never found it (a recording stopped as it started, before campy-watch looked) never will, as it
+		# doesn't take a feed that has ended; it waited for campy-session to end, which waited LIVE_END_S (60 s) for it
 		watch = self.parts.get("watch")
 		if watch is None or not watch.Running():
 			if watch is not None:
 				watch.Check()
 			return
-		deadline = time.monotonic() + (LIVE_END_S if self.parts.get("acquire") else 0)
+		deadline = time.monotonic() + (WATCH_END_S if self.Recorded(watch, "campy-watch: watching ") else 0)
 		asked = False
 		while not watch.Check():
 			watch.tail.Read()

@@ -823,6 +823,29 @@ def test_the_page_tells_the_server_the_copy_box_folder():
 	assert 'post("/check", {copy_to: box})' in page
 
 
+def test_ctrl_c_as_the_checks_run_after_a_recording_closes_the_panel(tmp_path, home, monkeypatch):
+	# Once a recording has ended, the panel checks again for the next one (campy-live's environment: a Python started,
+	# seconds on a busy computer). A Ctrl-C then ended the panel with a traceback and exit code 1; now it closes it
+	from test_session import write_config
+	config = write_config(tmp_path / "c.yaml", {"numCams": 1, "frameRate": 60, "videoFolder": str(tmp_path / "data"),
+		"recTimeInSec": 60})
+	p = panel.Panel(str(config), browser=False)
+	said = []
+	monkeypatch.setattr(panel, "Say", said.append)
+	from campy import session
+	monkeypatch.setattr(session.Session, "Run", lambda self: 0) # the recording, done
+
+	def checks():
+		raise KeyboardInterrupt
+	monkeypatch.setattr(p, "Checks", checks)
+	p.wanted = {"experiment": "x"}
+	try:
+		code = p.Run()
+	except KeyboardInterrupt: # not out of the test: it would end pytest
+		pytest.fail("Ctrl-C as the checks ran ended the panel with a traceback")
+	assert code == 0 and said[-1] == "Closed."
+
+
 # ------------------------------------------------------------------ the LEDs' power, asked for at Start
 
 LEDS = ["Blue LED (465 nm)", "Yellow LED (560 nm)"]
