@@ -268,6 +268,21 @@ def test_setup_check_parsers():
 	assert chk.clocks_locked([]) == (False, [])
 
 
+def test_setup_check_video_disk_says_what_to_do(tmp_path):
+	# no such folder: a disk of its own, or --video-dir; on the system disk: a disk of its own, nothing
+	# about mounting it at the folder given (on our Orin that folder was the home folder)
+	rep = chk.Report()
+	chk.check_disk(rep, str(tmp_path / "data"), 200)
+	(item,) = rep.items
+	assert item["status"] == chk.FAIL and item["detail"] == "no " + str(tmp_path / "data")
+	assert "USB 3 drive" in item["fix"] and "--video-dir" in item["fix"]
+	rep = chk.Report()
+	chk.check_disk(rep, "/", 0)
+	disk = rep.items[0]
+	assert disk["status"] == chk.FAIL and disk["detail"].endswith("but on the system disk")
+	assert "USB 3 drive" in disk["fix"] and "eMMC" not in disk["detail"] and "mounted at" not in disk["fix"]
+
+
 def test_setup_check_runs_anywhere_and_changes_nothing(tmp_path):
 	# off a Jetson every Jetson item fails, with a fix, and nothing is written but the JSON asked for
 	before = sorted(os.listdir(tmp_path))
