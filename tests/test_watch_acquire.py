@@ -261,7 +261,10 @@ def test_a_camera_unplugged_and_plugged_back_in(tmp_path, service):
 	assert any(t.startswith("Camera1: the camera is gone") and "campy waits for it" in t for t in texts), texts
 	assert any(t.startswith("resolved, after ") and "Camera1: back, plugged in again: recording again (at frame" in t
 		for t in texts), texts
-	assert not any("trigger pulse" in t and "no frame for" in t for t in texts), texts # the gap is not missed pulses
+	# The time it was gone is not counted as trigger pulses it missed (Camera1's; another camera can miss one or two
+	# when a busy runner holds its emulated frames up: Camera2 did, on GitHub's Windows runner, 2026-11-12)
+	assert not any("Camera1" in line and "trigger pulse" in line and "no frame for" in line
+		for t in texts for line in t.splitlines()), texts
 	assert "with a camera unplugged and plugged back in" in texts[-1] and "unplugged and back 1 time" in texts[-1], texts
 	session = Session(tmp_path)
 	frames = {n: np.load(str(session / n / "frametimes.npy")) for n in names}
