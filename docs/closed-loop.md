@@ -189,6 +189,8 @@ The steps, with estimates for the EVO-X2 at 60 fps, until they are measured on a
 
 `campy-rules` prints each step's p50, p99 and worst case at the end, and writes them to its summary.
 
+`campy-rules` hears each line from the board as soon as it arrives: a trigger's report, a command's answer, and the round trips that map the board's clock. Before pull request PRNUM, it read in blocks that waited up to 5 ms for more to come. On the simulated board (on a Mac, 10 runs of the real-time test), the median wait from a trigger to its report being heard fell from 1.8 ms to 0.5 ms. The median wait from a command's write to its answer being heard fell from 4.6 ms to 1.8 ms. This changes when `campy-rules` hears of a change, not when the pin changes. *Not yet measured on the board.*
+
 On a Dell PC, the worst case comes every 15 minutes: Dell Optimizer's TechHub agent makes the BIOS work for about 9 s and then 2 s more, which slows the sets running then. On the Precision 7875 that added up to 2.5 ms to frame-to-3D. On the Pro Tower Plus the cost comes mostly in the first quarter-hour after the agent starts: frame to 3D up to 24.8 ms, against 12.6 ms at the 99th percentile ([Hardware guide](hardware-guide.html), "On a Dell PC, Dell's TechHub agent slows live tracking every 15 minutes").
 
 To check the whole chain with your own eyes:

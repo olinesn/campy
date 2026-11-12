@@ -217,7 +217,10 @@ class Board:
 		last_sync = time.monotonic()
 		while not self.stopping.is_set():
 			try:
-				data = self.connection.read(256)
+				# What has come, at least a byte: a line is taken (and stamped) as it comes. read(256) waited for 256
+				# bytes or the port's 5 ms timeout, so each line (15-40 bytes) was heard up to 5 ms late (2.4 ms in
+				# the middle): a trigger rise's report, a command's answer, and the clock map's round trips
+				data = self.connection.read(max(1, getattr(self.connection, "in_waiting", 0) or 0))
 			except Exception as e:
 				if not self.stopping.is_set():
 					self.error = "the outputs board's port failed: {}".format(e)
