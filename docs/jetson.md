@@ -5,8 +5,7 @@ An **NVIDIA Jetson AGX Orin 64GB Developer Kit** joined the test machines on 11 
 **In short:**
 
 - **Live tracking works.** With campy's defaults (`campy-live --engine auto` picks TensorRT here), the trained 5-mouse pair tracks 3 cameras at 60 fps with 3D, every set, with the same accuracy as the other machines, in about twice the EVO-X2's time per set.
-- **Recording works, on the CPU.** campy can't drive the Orin's hardware encoder yet. Its CPU path (`gpuID: -1`, libx264 preset `ultrafast`) kept up with 3 emulated cameras at 60 fps while they were tracked, every frame recorded.
-- **The hardware encoder works through GStreamer** and keeps up with 8 cameras at 60 fps (1280 × 1024 mono, with 25% headroom). ffmpeg can't use it on the Orin, so campy would need a GStreamer writer for it.
+- **Recording uses the Orin's own video encoder** (`gpuMake: "jetson"`, since pull request PRNUM). ffmpeg can't reach it there, so campy hands each camera's frames to GStreamer, which encodes them, and ffmpeg only writes them into campy's usual MP4. At 1280 × 1024 mono and 60 fps it keeps up with 8 cameras in H.264 and 7 in H.265 (8 at quality 25), at about a fifth of a CPU core per camera; at most 8 at once. Recording and tracking 3 cameras kept every frame. The CPU path (`gpuID: -1`, libx264 preset `ultrafast`) still works, at three quarters of a core per camera.
 - **FLIR cameras work**: Spinnaker 4.4 has an Arm64 build, and a Blackfly S on the Orin's USB 3 port is found at SuperSpeed.
 - **It needs JetPack 7.2 or newer.** JetPack 7.1 installs on an AGX Orin but leaves its GPU without a driver.
 
@@ -34,18 +33,69 @@ The rig checks, the same as the EVO-X2's, with campy-live's defaults:
 | replay3: the 60 s 5-mouse replay, 3 cameras, 3D | 3,600 of 3,600, 0 skipped | 10.1 / 10.4 ms | 14.5 / 15.8 (29.8) ms | (a replay) |
 | smoke1: 1 emulated camera recorded and tracked, 30 s | 1,800, 0 skipped | 4.0 / 4.2 ms | | 1,800 |
 | smoke3: 3 emulated cameras recorded (libx264 `ultrafast` on the CPU) and tracked in 3D, 60 s | 3,600, 0 skipped | 10.2 / 10.7 ms | 14.7 / 16.5 (24.1) ms | 3 × 3,600 |
+| smoke3 recorded on the Orin's encoder (`gpuMake: "jetson"`, H.265 quality 21, pull request PRNUM) | 3,600, 0 skipped | 10.2 / 10.6 ms | 14.5 / 15.8 (23.7) ms | 3 × 3,600 |
 
-The replay tracked as the other machines do: against the offline SLEAP predictions, 2D median 3.8 px, 3D median 4.2 mm, 99.93% the same identity, 2 identity switches (the EVO-X2: 3.8 px, 4.2 mm, 2 switches). The EVO-X2 takes about half the time (inference 5.5 / 5.6 ms in the same replay). The 3D step alone takes 2.8 ms here against about 1.1 ms there: it runs on the CPU. While smoke3 ran, the CPU was about half busy, the three libx264 encoders included.
+The replay tracked as the other machines do: against the offline SLEAP predictions, 2D median 3.8 px, 3D median 4.2 mm, 99.93% the same identity, 2 identity switches (the EVO-X2: 3.8 px, 4.2 mm, 2 switches). The EVO-X2 takes about half the time (inference 5.5 / 5.6 ms in the same replay). The 3D step alone takes 2.8 ms here against about 1.1 ms there: it runs on the CPU. While smoke3 ran, the CPU was about half busy, the three libx264 encoders included. Recorded on the Orin's encoder instead, tracking took the same time; the CPU was about 38% busy at mid-run (one sample, `top`), most of it the emulated cameras decoding their clips.
 
 Not checked: how far TensorRT's fp16 moves the keypoints from fp32 on the Orin (the replay's accuracy above already includes it), and a real camera feeding `campy-live`.
 
 ### Recording
 
-campy records through ffmpeg, and **ffmpeg can't use the Orin's encoder**. Ubuntu's ffmpeg finds no NVENC driver for it. NVIDIA's own ffmpeg build for JetPack 7.2.1 (8.0.1, in its apt repository) has `hevc_nvenc`, but opening it on the Orin fails with `OpenEncodeSessionEx failed: unsupported device`: that route is for the Jetson Thor. On the Orin, NVIDIA's encoder is reached through GStreamer (`nvv4l2h265enc`, `nvv4l2h264enc`, `nvv4l2av1enc`).
+campy records through ffmpeg, and **ffmpeg can't use the Orin's encoder**. Ubuntu's ffmpeg finds no NVENC driver for it. NVIDIA's own ffmpeg build for JetPack 7.2.1 (8.0.1, in its apt repository) has `hevc_nvenc`, but opening it on the Orin fails with `OpenEncodeSessionEx failed: unsupported device`: that route is for the Jetson Thor. On the Orin, NVIDIA's encoder is reached through GStreamer (`nvv4l2h265enc`, `nvv4l2h264enc`).
 
-**campy's CPU encoder** (`campy-encode-sweep`, 1280 × 1024 mono at 60 fps with its 25% headroom, H.264 quality 21): libx264 preset `ultrafast` kept up with 6 cameras or more (the most tried), `veryfast` with 1. `campy-acquire`'s launch check reads this from `~/.campy/capacity.json`. At campy's default CPU preset (`fast`) a recording would fall behind with more than one camera, so an Orin config sets `gpuID: -1` and `preset: "ultrafast"`.
+**campy's Jetson writer** (`gpuMake: "jetson"`, pull request PRNUM) does that. Each camera's video is two processes: GStreamer's `gst-launch-1.0` takes the camera's gray frames, one write each as ffmpeg does on the other machines, and encodes them; ffmpeg copies the encoded stream, untouched, into the same fragmented MP4 campy writes everywhere else (hvc1 for H.265, a keyframe every `keyframeInterval`). A config for it:
 
-**The hardware encoder through GStreamer** (`bench/jetson_encode_bench.py`, 1280 × 1024 mono, H.265 at constant QP 21, a keyframe every second, 30 s per run, one pipe per camera as campy's writer uses):
+```yaml
+gpuID: 0                 # anything but -1
+gpuMake: "jetson"
+codec: "h265"            # or "h264"
+quality: 21              # the QP of every frame, 0-51, as on NVENC
+pixelFormatInput: "gray" # mono frames only
+keyframeInterval: 0.5
+ffmpegPath: "/usr/bin/ffmpeg"
+```
+
+The pipeline, for one camera:
+
+```
+gst-launch-1.0 fdsrc ! rawvideoparse format=gray8 width=1280 height=1024 framerate=60/1
+  ! nvvidconv ! video/x-raw(memory:NVMM),format=I420
+  ! nvv4l2h265enc control-rate=variable_bitrate bitrate=4000000000 qp-range=21,21:21,21:21,21
+      preset-level=1 insert-sps-pps=1 iframeinterval=30 idrinterval=30
+  ! h265parse ! fdsink --pipe--> ffmpeg -f hevc -framerate 60 -r 60 -i pipe:0 -c copy
+      -bsf:v hevc_metadata=video_full_range_flag=1 (campy's MP4 options) 0.mp4
+```
+
+What it had to get right, each found on the Orin (JetPack 7.2.1):
+
+- **Gray frames go straight in.** `nvvidconv`, on the Orin's video converter rather than the CPU, turns them into I420 in the encoder's memory with the gray levels unchanged: a ramp of all 256 levels came back as 0–255. It refuses gray to NV12 ("Transform not supported"), and the route the encoder benchmark took, I420 built by the sender and then converted to NV12, clipped the levels to 16–235 (a ramp came back as 15–236). GStreamer's `videoconvert` would do it on the CPU, at 85% of a core per camera.
+- **Constant QP through `qp-range`.** The encoder's own switch for it (`ratecontrol-enable=0` with `quant-i-frames` and `quant-p-frames`) is ignored on JetPack 7.2.1: QP 15, 25 and 35 gave the same file, at the encoder's default 4 Mbit/s, with every preset. So campy leaves rate control on (variable bitrate, a 4 Gbit/s ceiling) and sets the range of QPs to the one `quality`. The file size then depended only on the QP, the same with ceilings from 200 Mbit/s to 4 Gbit/s. `peak-bitrate` stays at its default: set equal to the ceiling, every file came out at the ceiling whatever the QP.
+- **Marked full range.** The video holds the camera's own levels, 0–255, but the encoder marks it limited range (its `extended-colorformat` property didn't change that), and a reader would then stretch the contrast. ffmpeg marks it full range as it writes the file (`hevc_metadata`, `h264_metadata`), without touching the frames. This writer is always full range, whatever `colorRange` says.
+- **Frame times from the frame rate.** The encoded stream carries none, and with `-framerate` alone ffmpeg gave the frames times that stopped advancing: a 4 s video said 0.2 s. `-r` fixes it (4.000 s). With `ffmpegLogLevel: "warning"` ffmpeg 6.1 still says `Timestamps are unset in a packet` once per camera: harmless, the times in the file are right.
+- **NVIDIA's messages aren't shown.** Its libraries print a few lines as every encoder opens (`NvMMLiteOpen`, `Opening in BLOCKING MODE`, on stdout, which is why the stream has a pipe of its own). campy keeps `gst-launch-1.0`'s other lines: when it stops, its error is in what campy says (`gst-launch-1.0 said: ERROR: from element ...`).
+
+Not supported: AV1 (`nvv4l2av1enc` runs on the Orin, but ignores the QP range: the same file at every QP), colour frames (`nvvidconv` refuses RGB on the converter, "use GPU instead", and the GPU tracks), and `denoise` (an ffmpeg filter, and ffmpeg no longer sees the frames). campy refuses those settings at the launch check. H.264 stays in NVIDIA's default profile, Baseline: High made files 11% smaller at QP 21, but 8 cameras then reached 53 fps each instead of 87.
+
+**Checked on the Orin** (campy dev `c733a7e` plus pull request PRNUM, every run `RIG_CLEAN`):
+
+- 600 synthetic 1280 × 1024 frames through campy's writer, at QP 15, 21 and 28 in each codec: every frame, in order, 10.0 s long at 60 fps, a keyframe every 0.5 s, marked full range, all 256 gray levels back (within 0–2). H.265 at QP 21: 36 Mbit/s, 40.0 dB PSNR against what was sent, 34.0 dB had the video stayed marked limited range. H.264 at QP 21: 62 Mbit/s, 40.6 dB. QP 28: about 1 Mbit/s in either (the sensor noise is gone).
+- The rig check with live tracking (smoke3 in the table above): 3 emulated cameras recorded for 60 s in H.265 at quality 21 while `campy-live` tracked them in 3D. Each video holds all 3,600 frames (60.00 s, 4–5 Mbit/s), and against the clips the cameras played they scored 46.3–47.8 dB (35.6–36.4 dB one frame off, so no frame is out of place; 27–28 dB had they been marked limited range).
+- CPU, 3 cameras at 60 fps recorded for 40 s: `gst-launch-1.0` took 20% of a core per camera and the muxing ffmpeg under 3%, against 73% per camera for libx264 `ultrafast`.
+- The launch check: `OK encoders nvv4l2h265enc/ultrafast (...) encoded 10 test frames with campy's settings, through GStreamer`, then capacity and disk from the sweep below.
+
+**How many cameras** (`campy-encode-sweep --encoder jetson`, 1280 × 1024 mono at 60 fps, a keyframe every 0.5 s, the sweep's noisy synthetic frames; a camera count passes at 75 fps each, 60 with 25% to spare):
+
+| Codec, quality | Bitrate per camera | 6 cameras | 7 cameras | 8 cameras | 9 cameras | Keeps up with |
+|---|---|---|---|---|---|---|
+| H.264, 21 | 63 Mbit/s | 116 fps | 99 fps | 87 fps | 35 fps | **8** |
+| H.265, 21 | 37 Mbit/s | 96 fps | 82 fps | 72 fps | 36 fps | **7** |
+| H.265, 25 | 6 Mbit/s | | 109 fps | 95 fps | | **8** |
+
+The encoder's speed falls as the bitrate rises: about 910 megapixels a second in all for H.264 at quality 21, 760 for H.265 at 21 and 1,000 for H.265 at 25 (the sweep's frames are noisier than a cage: the rig check's recorded mouse clips came to 4–5 Mbit/s at quality 21). One camera alone reached 340 fps. **8 is the most at once**, whatever the speed: the Orin's video converter and encoder have memory for 8. With 9 open the kernel logs `all memory contexts are busy`, the encoders take turns (35 fps each), and `gst-launch-1.0` sometimes crashed (`Caught SIGSEGV`), even with 9 small, slow streams. So the launch check FAILs more than 8 Jetson cameras. The capacity table is `~/.campy/capacity.json`, as on every machine.
+
+**The CPU path**, for comparison (`campy-encode-sweep`, the same frames, H.264 quality 21): libx264 preset `ultrafast` kept up with 6 cameras or more (the most tried), `veryfast` with 1. At campy's default CPU preset (`fast`) a recording falls behind with more than one camera, so a config for the CPU sets `gpuID: -1` and `preset: "ultrafast"`.
+
+**What the encoder benchmark measured** (`bench/jetson_encode_bench.py`, before the writer: H.265 asked for at constant QP 21 with the properties that turned out to be ignored, so in fact at the encoder's default 4 Mbit/s, which its files came to; a keyframe every second, 30 s per run):
 
 | Cameras | Frame rate each | Kept up? |
 |---|---|---|
@@ -55,12 +105,7 @@ campy records through ffmpeg, and **ffmpeg can't use the Orin's encoder**. Ubunt
 | 9 | 75 fps | no: 68 fps |
 | 10, 11, 12 | 60 fps | no: 25, 19 and 16 fps each |
 
-So the encoder handles about 600 frames/s of 1280 × 1024 in all, with no more than 9 encoders at once: past that it doesn't slow down evenly, it falls to a fraction of its speed. Its clock isn't held by `jetson_clocks`: it idles at 115 MHz and runs at up to 998 MHz under load. The benchmark's synthetic frames came to 4.1 Mbit/s per camera at 60 fps. Two runs: the first (3, 6, 9 and 12 cameras at 60 fps, the GRAY8 conversion below, and the CPU sweep above) ended `RIG_CONTAMINATED`, because Ubuntu's backup monitor started by itself and touched the GPU for 10 s at the start of the 6-camera run, which still kept up; the second (6, 8 and 9 cameras at 75 fps, 10 and 11 at 60), after it was turned off (step 8 below), was `RIG_CLEAN`.
-
-Two things a GStreamer writer in campy would have to do:
-
-- **Send I420, not GRAY8.** On JetPack 7.2.1 `nvvidconv` lists GRAY8 but refuses to turn it into the encoder's NV12 ("Transform not supported"). The benchmark sends the mono image as I420's brightness plane with the two colour planes at 128 (`--input i420`, the default since pull request 401), which costs the encoder nothing. Letting GStreamer's `videoconvert` convert on the CPU (`--input gray8-convert`) took 85% of a core per camera, and 3 cameras fell to 54 fps.
-- **Mark the video full range.** The encoder keeps the gray levels 0–255 but labels the stream limited range (16–235): the first 300 frames came back at 41.8 dB PSNR as stored but 31.7 dB when decoded by the label, which stretches the contrast. campy's other encoders write full range and say so.
+At 4 Mbit/s the encoder handled about 600 frames/s of 1280 × 1024; campy's writer, at a constant QP, gets 580–760 depending on the bitrate. Its clock isn't held by `jetson_clocks`: it idles at 115 MHz and runs at up to 998 MHz under load. Two runs: the first (3, 6, 9 and 12 cameras at 60 fps, the GRAY8 conversion, and the CPU sweep above) ended `RIG_CONTAMINATED`, because Ubuntu's backup monitor started by itself and touched the GPU for 10 s at the start of the 6-camera run, which still kept up; the second (6, 8 and 9 cameras at 75 fps, 10 and 11 at 60), after it was turned off (step 8 below), was `RIG_CLEAN`. The benchmark also measured PSNR "as stored" at 41.8 dB and "by the label" at 31.7: its synthetic frames stayed within 16–235, so the clipping above didn't show there.
 
 ### Cameras
 
@@ -228,6 +273,7 @@ At each release, as on the EVO-X2: in `~/campy`, `git fetch` and `git merge --ff
 
 ## Still to do
 
-- A GStreamer writer in campy for the hardware encoder (I420 in, full range marked), so recordings don't use the CPU.
+- The rig check `smoke.sh` still records on the CPU: once the Jetson writer is on the Orin's `~/campy`, it moves to `gpuMake: "jetson"`.
+- `bench/jetson_encode_bench.py` still sets the ignored constant-QP properties and converts I420 to NV12: it should use `qp-range` and gray frames to I420, as campy's writer does.
 - A recording with real cameras, timed, with `campy-live` tracking them.
 - How far TensorRT's fp16 moves the keypoints from fp32 here, as measured on the other NVIDIA cards.

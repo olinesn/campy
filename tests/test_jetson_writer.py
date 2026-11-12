@@ -15,7 +15,7 @@ import imageio_ffmpeg
 import numpy as np
 import pytest
 
-from campy import configurator, configschema, preflight, sweep, writer
+from campy import configurator, configschema, preflight, startup, sweep, writer
 
 from test_failures import CameraProcess, FakeCamera, params
 from test_ffmpeg_restart import Killer, Levels, Near, ReadSegments
@@ -271,3 +271,21 @@ def test_launch_check(monkeypatch):
 	report = preflight.Report()
 	preflight.CheckEncoders(cams[:3], report, exe="ffmpeg", encoders={"libx264"})
 	assert report.lines == []
+
+
+def test_launch_check_at_most_8_cameras():
+	cams = [cam(cameraName="Camera{}".format(i)) for i in range(9)]
+	report = preflight.Report()
+	preflight.CheckJetson(cams, report, probe=lambda c, folder: None)
+	fails = [text for status, _, text in report.lines if status == preflight.FAIL]
+	assert len(fails) == 1 and fails[0].startswith("9 cameras on the Jetson's encoder (Camera0, ")
+	assert "it encodes at most 8 at once" in fails[0]
+	report = preflight.Report()
+	preflight.CheckJetson(cams[:8] + [cam(cameraName="Camera8", gpuID=-1)], report, probe=lambda c, folder: None)
+	assert [status for status, _, _ in report.lines] == [preflight.OK]
+
+
+def test_the_ready_line_names_the_jetsons_encoder(tmp_path):
+	p = cam(videoFolder=str(tmp_path))
+	assert startup.VideoText(p).startswith("h265 on the Jetson's encoder -> ")
+	assert startup.VideoText(dict(p, gpuID=-1)).startswith("h265 on CPU -> ")

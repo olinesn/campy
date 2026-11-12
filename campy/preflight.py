@@ -433,6 +433,12 @@ def CheckJetson(cams, report, probe=None):
 	settings this path cannot take (they FAIL here).
 	"""
 	probe = probe or writer.JetsonProbe
+	jetson = [cam for cam in cams if IsJetson(cam)]
+	if len(jetson) > writer.JETSON_MAX_ENCODERS:
+		report.add(FAIL, "encoders", "{} cameras on the Jetson's encoder ({}): it encodes at most {} at once. "
+			"With more, its converter and encoder run out of memory contexts (the kernel logs \"all memory "
+			"contexts are busy\"), every camera slows down, and gst-launch-1.0 can crash. Record the others on "
+			"the CPU (gpuID -1).".format(len(jetson), Names(jetson), writer.JETSON_MAX_ENCODERS))
 	kept, probes = [], OrderedDict()
 	for cam in cams:
 		if not IsJetson(cam):

@@ -1057,7 +1057,7 @@ An NVIDIA Jetson AGX Orin runs `campy-live` with the same defaults as an NVIDIA 
 
 - **3 cameras at 60 fps fit**, with 5 mice and 3D: in the 5-mouse replay, every one of the 3,600 sets, inference 10.1 / 10.4 ms (p50 / p99), to 3D 14.5 / 15.8 ms, with the EVO-X2's accuracy (2D 3.8 px, 3D 4.2 mm, 2 identity switches). The EVO-X2 takes about half that. 8 cameras fit at 30 fps (22.7 / 22.9 ms per set in the benchmark), not at 60.
 - **TensorRT matters more here**: `torch.compile` took 16.3 ms per 3-camera set against TensorRT's 9.6, and plain PyTorch 23.3.
-- **Recording uses the CPU**: campy can't drive the Orin's video encoder yet (ffmpeg can't reach it there), so a config sets `gpuID: -1` and `preset: "ultrafast"` (libx264). That kept up with 3 cameras at 60 fps while they were tracked in 3D, every frame recorded, the CPU about half busy.
+- **Recording uses the Orin's own encoder** (`gpuMake: "jetson"`, since pull request PRNUM: GStreamer encodes, ffmpeg writes the MP4). 3 cameras at 60 fps recorded in H.265 while they were tracked in 3D: every frame recorded, tracking as fast as with the CPU encoder, about a fifth of a core per camera. It keeps up with 8 cameras at 60 fps in H.264, 7 in H.265 at quality 21, and takes at most 8. The CPU path (`gpuID: -1`, `preset: "ultrafast"`, libx264) works too, at three quarters of a core per camera.
 - **The 3D step runs on the CPU**, 2.8 ms a set against about 1.1 ms on the EVO-X2.
 
 ## On an Intel GPU (`--device xpu`)

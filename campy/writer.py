@@ -364,9 +364,11 @@ def MuxerParams(cam_params, h265):
 #   is always full range, whatever colorRange says.
 # - No B-frames (the Orin's encoder makes none), and the parameter sets
 #   before every keyframe (insert-sps-pps), as on the other GPU paths.
-# - Capacity (Jetson AGX Orin, MAXN power mode, 1280x1024): 8 cameras at 75
-#   fps, 60 with 25% to spare; at most 9 encoders at once, and 10 or more
-#   all slow down together. campy-encode-sweep measures it on each machine.
+# - Capacity (Jetson AGX Orin, MAXN power mode, 1280x1024 at 60 fps, with
+#   campy-encode-sweep's noisy frames): H.264 at quality 21 keeps up with 8
+#   cameras with 25% to spare; H.265 at 21 with 7 (8 reach 72 fps each), at
+#   25 with 8. The encoder's speed falls as the bitrate rises. At most 8 at
+#   once (JETSON_MAX_ENCODERS).
 # Only H.264 and H.265: the Orin's AV1 encoder (nvv4l2av1enc) ignores the QP
 # range (every QP gave the same file). Only gray frames: nvvidconv refuses
 # RGB on the VIC ("use GPU instead"), and the GPU runs the live tracking.
@@ -384,6 +386,11 @@ JETSON_PRESETS = {"ultrafast": 1, "fast": 2, "medium": 3, "slow": 4}
 # The variable rate's ceiling, bits a second (4 Gbit/s, about the most the
 # property takes): the QP alone sets the size
 JETSON_MAX_BITRATE = 4000000000
+# Most cameras the Jetson AGX Orin encodes at once: its video converter and
+# encoder have memory for 8. With 9 or more open, the kernel logs "all memory
+# contexts are busy", the encoders take turns (9 cameras reached 35 fps
+# each, against 72 for 8), and gst-launch-1.0 sometimes crashes (SIGSEGV).
+JETSON_MAX_ENCODERS = 8
 # The command that runs a GStreamer pipeline; tests put a stand-in here
 GST_LAUNCH = ["gst-launch-1.0"]
 
