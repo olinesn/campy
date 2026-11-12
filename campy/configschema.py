@@ -259,7 +259,7 @@ SETTINGS = [
 			pause that would be a fault, and alertNoFramesSec above the longest planned gap. See \
 			docs/alerts.md."),
 	Setting("alertExternalWaitSec", 600, float, section=ALERTS, per_camera=ONE, words=("None",), above=0,
-		help="With an external trigger (startArduino False): no frame from any camera this many seconds \
+		help="With an external trigger (startArduino False, and a camera with cameraTrigger set): no frame from any camera this many seconds \
 			after campy started waiting for the trigger is a warning, 'No frame yet ... is it running?' \
 			(default: 600, 10 minutes; None = never). Set it above how long campy can wait on purpose, \
 			for a session that starts campy well before the device that makes the pulses. With the \

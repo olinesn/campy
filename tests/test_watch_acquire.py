@@ -120,8 +120,9 @@ def test_a_recording_that_goes_well(tmp_path, service):
 	assert code == 0, out
 	texts = Texts(service)
 	session = Session(tmp_path).name
-	assert texts[0] == "Recording {} started: 2 cameras (Camera0, Camera1) at 30 fps, for 3 s, on an external " \
-		"trigger.".format(session) + texts[0].split("external trigger.")[1]
+	# emulated cameras, cameraTrigger "None": free-running
+	assert texts[0] == "Recording {} started: 2 cameras (Camera0, Camera1) at 30 fps, for 3 s, free-running (no " \
+		"trigger).".format(session) + texts[0].split("(no trigger).")[1]
 	assert texts[-1] == "Recording {} ended after {}:\n- Camera0: 90 frames\n- Camera1: 90 frames".format(session,
 		texts[-1].split("ended after ")[1].split(":")[0])
 	assert len(texts) == 2, texts
@@ -235,13 +236,15 @@ def test_a_camera_unplugged(tmp_path, service):
 
 
 def test_the_trigger_pauses(tmp_path, service):
+	# Every camera stopping at once. These emulated cameras free-run (cameraTrigger "None"), so no trigger is blamed
+	# (tests/test_watch.py has the external trigger's and the Arduino's words for it)
 	code, out = Finish(Start(tmp_path, service, names=("Camera0", "Camera1", "Camera2"), rec=8,
 		faults="*:stall@40+3.5"))
 	assert code == 0, out
 	texts = Texts(service)
 	stopped = [t for t in texts if t.startswith("No camera has had a frame for")]
-	assert stopped == ["No camera has had a frame for 2 s: all 3 stopped together, so the trigger has stopped (an "
-		"external trigger: is it still running?)."], texts
+	assert stopped == ["No camera has had a frame for 2 s: all 3 stopped together. They free-run, with no trigger: "
+		"is the computer, or their USB, stuck?"], texts
 	assert any(t.startswith("resolved, after ") and t.endswith(": Frames again") for t in texts), texts
 	assert not any("no frame for" in t for t in texts), texts # not one per camera
 
