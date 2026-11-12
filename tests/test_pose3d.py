@@ -302,6 +302,62 @@ def test_scoring_every_camera_at_once():
 		assert np.array_equal(every[c][:, dets], tracker._Score(c, tracker.X, mean_frame, 4, xy[c, dets]))
 
 
+# numba's compiled loops (campy/pose3d_numba.py, when numba is installed): the same numbers as numpy's
+
+def test_numba_loops_give_numpys_numbers_to_the_last_bit():
+	pytest.importorskip("numba")
+	fast = pose3d.Fast(wait=True)
+	assert fast is not None, pose3d.FastStatus()
+	cams = rig()
+	rng = np.random.default_rng(7)
+	# The undistortion, with and without the check of points beyond the lens model
+	kp = rng.uniform(-50, 1330, (3, 5, 15, 2))
+	kp[rng.random(kp.shape[:-1]) < 0.1] = np.nan
+	f = np.array([c.f for c in cams])[:, None, None]
+	c = np.array([c.c for c in cams])[:, None, None]
+	d = np.array([[-0.33, 0.12, 0.001, -0.002, 0.01], [-0.2, 0, 0, 0, 0], [0.05, -0.1, 0.003, 0.001, 0]])[:, None, None]
+	for check in (0.0, 1.0):
+		u = pose3d._Undistorter(f, c, d, kp.shape[:-1], check_px=check)
+		assert np.array_equal(u(kp, fast), u(kp), equal_nan=True)
+	# Whole runs: every output of every set, numba against numpy, with padding, missed animals and
+	# misplaced nodes; 15 nodes (numpy sums 8 or more by pairs) and 7 (in order)
+	for nodes in (15, 7):
+		X = scene(200)[:, :, :nodes]
+		with_numba = pose3d.Tracker(cams, n_animals=5)
+		numpy_only = pose3d.Tracker(cams, n_animals=5, fast=False)
+		for f_ in range(len(X)):
+			kp, sc, order = observe(cams, X[f_], rng, drop_animal=0.05)
+			junk_nodes(kp, sc, order, rng, 0.05)
+			a, b = with_numba.Update(kp, sc, frame=f_), numpy_only.Update(kp, sc, frame=f_)
+			for name in ("points3d", "reproj_px", "members", "n_views", "outside"):
+				assert np.array_equal(getattr(a, name), getattr(b, name), equal_nan=True), (nodes, f_, name)
+
+
+def test_numba_off_or_missing_leaves_numpy(monkeypatch):
+	import sys
+	cams = rig()
+	X = scene(3)
+	rng = np.random.default_rng(8)
+	sets = [observe(cams, X[f], rng)[:2] for f in range(3)]
+	want = [pose3d.Tracker(cams, 5, fast=False).Update(*s, frame=0).points3d for s in sets]
+	# CAMPY_NUMBA=0: not loaded at all
+	monkeypatch.setattr(pose3d, "_FAST", {"state": "idle", "module": None, "seconds": None, "error": None, "thread": None})
+	monkeypatch.setenv("CAMPY_NUMBA", "0")
+	tracker = pose3d.Tracker(cams, 5)
+	assert pose3d.FastStatus()["state"] == "off" and pose3d.Fast(wait=True) is None
+	assert np.array_equal(tracker.Update(*sets[0], frame=0).points3d, want[0], equal_nan=True)
+	# No numba: said so, and numpy
+	monkeypatch.setattr(pose3d, "_FAST", {"state": "idle", "module": None, "seconds": None, "error": None, "thread": None})
+	monkeypatch.delenv("CAMPY_NUMBA")
+	monkeypatch.delitem(sys.modules, "campy.pose3d_numba", raising=False)
+	monkeypatch.setitem(sys.modules, "numba", None)
+	assert pose3d.Fast(wait=True) is None
+	status = pose3d.FastStatus()
+	assert status["state"] == "missing" and "numba" in status["error"]
+	tracker = pose3d.Tracker(cams, 5)
+	assert np.array_equal(tracker.Update(*sets[1], frame=0).points3d, want[1], equal_nan=True)
+
+
 # ---------------------------------------------------------------- tracking
 
 def identities(order, members):
