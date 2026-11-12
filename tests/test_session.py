@@ -275,6 +275,9 @@ def start(tmp_path, home, config, *args, group=False, env=None):
 
 
 def wait_for(lines, pattern, timeout=60):
+	# Asserted with "".join(lines) as its message: everything campy-session said. Pytest shortens the list itself to
+	# its first two lines, and a wait that ran out once on CI (12 November, campy-live never said "Logging to") left
+	# nothing else to go on
 	t0 = time.monotonic()
 	while time.monotonic() - t0 < timeout:
 		if any(re.search(pattern, line) for line in list(lines)):
@@ -356,7 +359,7 @@ def test_ctrl_c_stops_the_recording_and_campy_live_tracks_to_its_end(tmp_path, h
 	config, clips = emu_session(tmp_path, home, 60, live={"model": "none"})
 	proc, lines = start(tmp_path, home, config, group=True)
 	try:
-		assert wait_for(lines, r"\[acquire\] Camera1 collected 40 frames")
+		assert wait_for(lines, r"\[acquire\] Camera1 collected 40 frames"), "".join(lines)
 		os.killpg(proc.pid, signal.SIGINT)
 		proc.wait(timeout=60)
 	finally:
@@ -383,7 +386,7 @@ def test_ctrl_c_as_the_recording_starts_ends_campy_session_at_once(tmp_path, hom
 	config, clips = emu_session(tmp_path, home, 30, live={"model": "none"})
 	proc, lines = start(tmp_path, home, config, group=True)
 	try:
-		assert wait_for(lines, r"\[session\] campy-live is ready")
+		assert wait_for(lines, r"\[session\] campy-live is ready"), "".join(lines)
 		os.killpg(proc.pid, signal.SIGINT)
 		t0 = time.monotonic()
 		try:
@@ -405,7 +408,7 @@ def test_campy_live_that_dies_is_started_again_and_the_recording_goes_on(tmp_pat
 	config, clips = emu_session(tmp_path, home, 10, live={"model": "none"})
 	proc, lines = start(tmp_path, home, config, env={"CAMPY_TEST_LIVE_RESTART_S": "1,60,300"})
 	try:
-		assert wait_for(lines, r"\[live\] .*Logging to")
+		assert wait_for(lines, r"\[live\] .*Logging to"), "".join(lines)
 		folder = the_folder(clips)
 		pid = json.loads((folder / "launcher.json").read_text())["live"][0]["pid"]
 		os.kill(pid, signal.SIGKILL)
@@ -428,7 +431,7 @@ def test_without_restart_campy_live_stays_down_and_the_recording_goes_on(tmp_pat
 	config, clips = emu_session(tmp_path, home, 5, live={"model": "none", "restart": False})
 	proc, lines = start(tmp_path, home, config)
 	try:
-		assert wait_for(lines, r"\[live\] .*Logging to")
+		assert wait_for(lines, r"\[live\] .*Logging to"), "".join(lines)
 		folder = the_folder(clips)
 		os.kill(json.loads((folder / "launcher.json").read_text())["live"][0]["pid"], signal.SIGKILL)
 		proc.wait(timeout=120)
@@ -446,7 +449,7 @@ def test_the_recording_outlives_campy_session(tmp_path, home):
 	# campy-session killed mid-recording: campy-acquire records on to recTimeInSec, and campy-live to its end
 	config, clips = emu_session(tmp_path, home, 6, live={"model": "none"})
 	proc, lines = start(tmp_path, home, config)
-	assert wait_for(lines, r"\[acquire\] Camera1 collected 20 frames")
+	assert wait_for(lines, r"\[acquire\] Camera1 collected 20 frames"), "".join(lines)
 	folder = the_folder(clips)
 	status = json.loads((folder / "launcher.json").read_text())
 	acquire, live = status["parts"]["acquire"]["pid"], status["live"][0]["pid"]
@@ -775,7 +778,7 @@ def test_a_frozen_campy_live_is_found_by_campy_watch_and_replaced(tmp_path, home
 	proc, lines = start(tmp_path, home, config, env={"CAMPY_TEST_LIVE_STALL_S": "5", "CAMPY_TEST_LIVE_STOP_S": "3",
 		"CAMPY_TEST_LIVE_RESTART_S": "1,60,300"})
 	try:
-		assert wait_for(lines, r"\[live\] .*Logging to")
+		assert wait_for(lines, r"\[live\] .*Logging to"), "".join(lines)
 		folder = the_folder(clips)
 		pid = json.loads((folder / "launcher.json").read_text())["live"][0]["pid"]
 		time.sleep(3)
