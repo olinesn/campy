@@ -56,6 +56,7 @@ import gzip
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -399,7 +400,22 @@ def check_disk(rep, folder, min_free_gb):
     else:
         rep.add(PASS, "video disk", detail)
     if not os.access(folder, os.W_OK):
-        rep.add(FAIL, "video disk access", "%s isn't writable by you" % folder, "sudo chown $USER %s" % folder)
+        rep.add(FAIL, "video disk access", "%s isn't writable by you" % folder, access_fix(folder, same_as_root))
+
+
+def access_fix(folder, on_system_disk):
+    """The fix for a video folder you can't write to.
+
+    A video disk of its own is yours to take over (sudo chown its top
+    folder, as setup step 2 says). A folder on the system disk (/, /home, /opt
+    ...) is not: changing its owner can break the system, so the fix is a new
+    folder in it that you own, given with --video-dir.
+    """
+    if not on_system_disk:
+        return "sudo chown $USER %s" % shlex.quote(folder)
+    sub = shlex.quote(os.path.join(folder, "campy_videos"))
+    return "don't change the owner of a folder on the system disk; make one for recordings: " \
+           "sudo mkdir -p %s && sudo chown $USER %s, then --video-dir %s" % (sub, sub, sub)
 
 
 def lsusb_flir_count():

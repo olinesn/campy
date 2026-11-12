@@ -281,6 +281,12 @@ def test_setup_check_video_disk_says_what_to_do(tmp_path):
 	disk = rep.items[0]
 	assert disk["status"] == chk.FAIL and disk["detail"].endswith("but on the system disk")
 	assert "USB 3 drive" in disk["fix"] and "eMMC" not in disk["detail"] and "mounted at" not in disk["fix"]
+	# not writable: chown only a video disk's own folder, never one on the system disk (such as /)
+	assert chk.access_fix("/data", False) == "sudo chown $USER /data"
+	fix = chk.access_fix("/", True)
+	assert "chown $USER / " not in fix + " " and fix.endswith("--video-dir /campy_videos")
+	assert "sudo mkdir -p /campy_videos && sudo chown $USER /campy_videos" in fix
+	assert chk.access_fix("/my videos", False) == "sudo chown $USER '/my videos'"
 
 
 def test_setup_check_runs_anywhere_and_changes_nothing(tmp_path):
