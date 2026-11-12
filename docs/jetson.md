@@ -95,7 +95,7 @@ The encoder's speed falls as the bitrate rises: about 910 megapixels a second in
 
 **The CPU path**, for comparison (`campy-encode-sweep`, the same frames, H.264 quality 21): libx264 preset `ultrafast` kept up with 6 cameras or more (the most tried), `veryfast` with 1. At campy's default CPU preset (`fast`) a recording falls behind with more than one camera, so a config for the CPU sets `gpuID: -1` and `preset: "ultrafast"`.
 
-**What the encoder benchmark measured** (`bench/jetson_encode_bench.py`, before the writer: H.265 asked for at constant QP 21 with the properties that turned out to be ignored, so in fact at the encoder's default 4 Mbit/s, which its files came to; a keyframe every second, 30 s per run):
+**What the encoder benchmark measured** (`bench/jetson_encode_bench.py`, before the writer and before pull request 404 made the benchmark run the writer's pipeline: H.265 asked for at constant QP 21 with the properties that turned out to be ignored, so in fact at the encoder's default 4 Mbit/s, which its files came to; a keyframe every second, 30 s per run):
 
 | Cameras | Frame rate each | Kept up? |
 |---|---|---|
@@ -242,20 +242,22 @@ Options: `--campy-venv` (default `~/campy/.venv`), `--sleap-venv` (default `~/ve
 
 ## The encoder benchmark: `bench/jetson_encode_bench.py`
 
-Starts one encoder per simulated camera (default 3) and feeds each synthetic 1280×1024 mono frames (bright blobs moving over a noisy gradient), paced at 60 fps, the way campy's writer feeds ffmpeg: one pipe per camera, one frame per write, and a write waits when the encoder falls behind. Each stream is
+Starts one encoder per simulated camera (default 3) and feeds each synthetic 1280×1024 mono frames (bright blobs moving over a noisy gradient, with a ramp of all 256 gray levels across the top 16 rows), paced at 60 fps, the way campy's writer feeds its encoder: one pipe per camera, one frame per write, and a write waits when the encoder falls behind. Since pull request 404 each stream is what campy's writer runs for a `gpuMake: "jetson"` camera ([Recording](#recording)), at the same settings:
 
 ```
-gst-launch-1.0 fdsrc ! rawvideoparse format=i420 width=1280 height=1024 framerate=60/1
-  ! nvvidconv ! video/x-raw(memory:NVMM),format=NV12
-  ! nvv4l2h265enc ratecontrol-enable=0 quant-i-frames=21 quant-p-frames=21
-      iframeinterval=60 idrinterval=60 insert-sps-pps=1 num-B-Frames=0
-  ! h265parse ! fdsink   →   ffmpeg -f hevc -i pipe: -c copy <campy's fragmented-MP4 flags> -tag:v hvc1 streamN.mp4
+gst-launch-1.0 fdsrc ! rawvideoparse format=gray8 width=1280 height=1024 framerate=60/1 plane-strides=<1280>
+  ! nvvidconv ! video/x-raw(memory:NVMM),format=I420
+  ! nvv4l2h265enc control-rate=variable_bitrate bitrate=4000000000 qp-range=21,21:21,21:21,21
+      preset-level=1 insert-sps-pps=1 iframeinterval=60 idrinterval=60
+  ! h265parse ! fdsink   →   ffmpeg -f hevc -framerate 60 -r 60 -i pipe:0 -c copy
+      -bsf:v hevc_metadata=video_full_range_flag=1 <campy's fragmented-MP4 flags> -tag:v hvc1 streamN.mp4
 ```
 
-so the files are laid out like the MP4s campy writes on the other rigs. The frames go in as I420: the mono image as the brightness plane, the two colour planes at 128 ([Recording](#recording) says why not GRAY8). `--input gray8-convert` sends GRAY8 and adds GStreamer's `videoconvert` (on the CPU) before `nvvidconv`; `--input gray8` is the direct GRAY8 path, which JetPack 7.2.1 refuses. The property names are the ones in NVIDIA's Jetson Linux r39.2 Accelerated GStreamer guide, and the script checks them with `gst-inspect-1.0` before it starts.
+so the files are laid out and marked like the ones campy writes, and the file size follows `--qp`. Before, the benchmark asked for its QP with `ratecontrol-enable=0` and `quant-i-frames`/`quant-p-frames`, which JetPack 7.2.1 ignores (every QP came out at the encoder's default 4 Mbit/s), and sent I420 that `nvvidconv` turned into NV12, which clips the gray levels to 16–235. A test checks that its pipeline and muxer options are the writer's. `--input gray8-convert` adds GStreamer's `videoconvert` (gray to I420 on the CPU) before `nvvidconv`, to see what a CPU conversion costs. The property names are the ones in NVIDIA's Jetson Linux r39.2 Accelerated GStreamer guide, and the script checks them with `gst-inspect-1.0` before it starts.
 
 ```
 python3 bench/jetson_encode_bench.py                    # 3 streams x 60 fps for 30 s, QP 21, keyframe every second
+python3 bench/jetson_encode_bench.py --qp 28            # the same at QP 28: a smaller file
 python3 bench/jetson_encode_bench.py --streams 8 --fps 75   # 8 cameras at 60 fps with campy-encode-sweep's 25% headroom
 python3 bench/jetson_encode_bench.py --seconds 1800     # a 30-minute run
 python3 bench/jetson_encode_bench.py --mux raw          # write .h265 files directly, without the ffmpeg step
@@ -263,9 +265,19 @@ python3 bench/jetson_encode_bench.py --cpu-fallback libx264 --cpu-preset ultrafa
 python3 bench/jetson_encode_bench.py --dry-run          # print the commands only
 ```
 
-For each stream it reports the frames written, the frame rate achieved, how long each pipe write took (p50, p99, max), how far the writes fell behind the 60 fps clock (the most, and over the last second: a lag that keeps growing means the encoder can't keep up, and a real recording's write queue would grow), the CPU used by the `gst-launch-1.0` and `ffmpeg` processes (100% = one core), the file size and bitrate, the frames counted back in the file, and, for the first stream, the PSNR of its first 300 frames against what was sent (two ways: as stored, and by the video's range, which tells whether the encoder kept gray levels 0–255 or squeezed them to 16–235). For the whole machine: CPU busy (mean, and the highest 1-second sample), the script's own CPU, and every `tegrastats` line during the run (encoder clock, power, temperatures). Everything goes to a JSON file (`--json`, otherwise a timestamped file in the current folder).
+For each stream it reports the frames written, the frame rate achieved, how long each pipe write took (p50, p99, max), how far the writes fell behind the 60 fps clock (the most, and over the last second: a lag that keeps growing means the encoder can't keep up, and a real recording's write queue would grow), the CPU used by the `gst-launch-1.0` and `ffmpeg` processes (100% = one core), the file size and bitrate, the frames counted back in the file, and, for the first stream, the PSNR of its first 300 frames against what was sent and the lowest and highest gray level its ramp came back as in the first frame. Both are measured two ways: as stored, and by the video's range. The ramp reads 0 and 255 when the levels survive, about 16 and 235 when something on the way clipped them; read by the range, it also shows whether the video is marked full range. For the whole machine: CPU busy (mean, and the highest 1-second sample), the script's own CPU, and every `tegrastats` line during the run (encoder clock, power, temperatures). Everything goes to a JSON file (`--json`, otherwise a timestamped file in the current folder).
 
-The videos go to a new folder under `/data` (`--out-dir` to choose; it should be the disk recordings will use) and are deleted at the end unless `--keep`. Other options: `--streams`, `--fps`, `--seconds`, `--qp`, `--keyframe-interval` (seconds, like campy's `keyframeInterval`), `--preset-level`, `--maxperf` (adds `maxperf-enable=1`, a property older JetPacks list), `--cpu-preset`, `--psnr-frames` (0 skips the PSNR). Needs numpy (the campy venv has it). Run it through [`bench/rig.py`](development.md#timing-tests-on-a-shared-machine-benchrigpy), like every timing test.
+The videos go to a new folder under `/data` if there is one, else in the current folder (`--out-dir` to choose; it should be the disk recordings will use), and are deleted at the end unless `--keep`. Other options: `--streams`, `--fps`, `--seconds`, `--qp` (0–51, campy's `quality`), `--keyframe-interval` (seconds, like campy's `keyframeInterval`), `--preset-level` (1, campy's `"ultrafast"`, by default), `--maxperf` (adds `maxperf-enable=1`, a property older JetPacks list), `--cpu-preset`, `--psnr-frames` (0 skips the PSNR). Needs numpy (the campy venv has it). Run it through [`bench/rig.py`](development.md#timing-tests-on-a-shared-machine-benchrigpy), like every timing test.
+
+**Checked on the Orin** after the change (JetPack 7.2.1, `RIG_CLEAN`, one stream at 60 fps for 5 s, a keyframe every 0.5 s):
+
+| `--qp` | Bitrate | PSNR against what was sent | Ramp back (sent 0–255) |
+|---|---|---|---|
+| 15 | 68.5 Mbit/s | 45.3 dB | 0–255 |
+| 21 | 7.6 Mbit/s | 42.1 dB | 0–255 |
+| 28 | 0.26 Mbit/s | 41.9 dB | 0–255 |
+
+Each file held all 300 frames, said 5.000 s and was marked full range, so the PSNR and the ramp read the same as stored and by the range. The frames' sensor-like noise (2 gray levels, standard deviation) alone puts a video that drops it at about 42 dB: at QP 21 and 28 the encoder drops most of it, so their PSNRs sit near 42 dB while the file shrinks 30-fold, and QP 15 keeps some of it. These frames are calmer than `campy-encode-sweep`'s, so the bitrates are lower than its (37 Mbit/s at QP 21). 8 streams at 75 fps (60 with 25% to spare) at QP 21 for 10 s kept up: every frame, at most 1.6 ms behind the clock at the end, 9.4 Mbit/s and 25–29% of a core per encoder.
 
 ## Updating it with the other machines
 
@@ -274,6 +286,5 @@ At each release, as on the EVO-X2: in `~/campy`, `git fetch` and `git merge --ff
 ## Still to do
 
 - The rig check `smoke.sh` still records on the CPU: once the Jetson writer is on the Orin's `~/campy`, it moves to `gpuMake: "jetson"`.
-- `bench/jetson_encode_bench.py` still sets the ignored constant-QP properties and converts I420 to NV12: it should use `qp-range` and gray frames to I420, as campy's writer does.
 - A recording with real cameras, timed, with `campy-live` tracking them.
 - How far TensorRT's fp16 moves the keypoints from fp32 here, as measured on the other NVIDIA cards.
