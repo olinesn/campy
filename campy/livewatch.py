@@ -220,6 +220,7 @@ def Run(args, notifier=None, say=print):
 					folder = RecordingFolder(readers)
 					if folder:
 						notifier.SetLog(os.path.join(folder, "alerts-live.log"))
+					# campy-session reads it: campy-watch found the feed (Recorded)
 					say("campy-watch: watching {}.".format(", ".join(r.cameraName or r.name for r in readers)))
 				elif not said:
 					said = True

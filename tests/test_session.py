@@ -275,6 +275,9 @@ def start(tmp_path, home, config, *args, group=False, env=None):
 
 
 def wait_for(lines, pattern, timeout=60):
+	# Asserted with "".join(lines) as its message: everything campy-session said. Pytest shortens the list itself to
+	# its first two lines, and a wait that ran out once on CI (12 November, campy-live never said "Logging to") left
+	# nothing else to go on
 	t0 = time.monotonic()
 	while time.monotonic() - t0 < timeout:
 		if any(re.search(pattern, line) for line in list(lines)):
@@ -356,7 +359,7 @@ def test_ctrl_c_stops_the_recording_and_campy_live_tracks_to_its_end(tmp_path, h
 	config, clips = emu_session(tmp_path, home, 60, live={"model": "none"})
 	proc, lines = start(tmp_path, home, config, group=True)
 	try:
-		assert wait_for(lines, r"\[acquire\] Camera1 collected 40 frames")
+		assert wait_for(lines, r"\[acquire\] Camera1 collected 40 frames"), "".join(lines)
 		os.killpg(proc.pid, signal.SIGINT)
 		proc.wait(timeout=60)
 	finally:
@@ -367,9 +370,36 @@ def test_ctrl_c_stops_the_recording_and_campy_live_tracks_to_its_end(tmp_path, h
 	folder = the_folder(clips)
 	counts = recorded(folder)
 	assert 40 <= min(counts) and max(counts) < 400, counts
+	# Once (5 November, Python 3.9, Linux) it wasn't there; what campy-session said, if it happens again
+	assert (folder / "campy-live.json").exists(), out
 	summary = json.loads((folder / "campy-live.json").read_text())
 	assert summary["ended"] == "the recording ended", summary
 	assert not (folder / "logs" / "campy-acquire.stop").exists() # campy-acquire removed it
+
+
+@POSIX
+def test_ctrl_c_as_the_recording_starts_ends_campy_session_at_once(tmp_path, home):
+	# Ctrl-C to the console just as campy-live is ready: campy-acquire stops as it starts, with no frames (or dies of it
+	# as it loads). campy-live and campy-watch then wait for a feed that never comes (or came and ended before they
+	# looked: they don't take an ended one) until campy-session ends, and campy-session waited LIVE_END_S (60 s) for
+	# each. With nothing recorded, it asks them to stop at once
+	config, clips = emu_session(tmp_path, home, 30, live={"model": "none"})
+	proc, lines = start(tmp_path, home, config, group=True)
+	try:
+		assert wait_for(lines, r"\[session\] campy-live is ready"), "".join(lines)
+		os.killpg(proc.pid, signal.SIGINT)
+		t0 = time.monotonic()
+		try:
+			proc.wait(timeout=60)
+		except subprocess.TimeoutExpired:
+			pass
+		took = time.monotonic() - t0
+	finally:
+		if proc.poll() is None:
+			os.killpg(proc.pid, signal.SIGKILL)
+	out = "".join(lines)
+	assert took < 30, (took, out)
+	assert "Ctrl-C" in out, out
 
 
 @POSIX
@@ -378,7 +408,7 @@ def test_campy_live_that_dies_is_started_again_and_the_recording_goes_on(tmp_pat
 	config, clips = emu_session(tmp_path, home, 10, live={"model": "none"})
 	proc, lines = start(tmp_path, home, config, env={"CAMPY_TEST_LIVE_RESTART_S": "1,60,300"})
 	try:
-		assert wait_for(lines, r"\[live\] .*Logging to")
+		assert wait_for(lines, r"\[live\] .*Logging to"), "".join(lines)
 		folder = the_folder(clips)
 		pid = json.loads((folder / "launcher.json").read_text())["live"][0]["pid"]
 		os.kill(pid, signal.SIGKILL)
@@ -401,7 +431,7 @@ def test_without_restart_campy_live_stays_down_and_the_recording_goes_on(tmp_pat
 	config, clips = emu_session(tmp_path, home, 5, live={"model": "none", "restart": False})
 	proc, lines = start(tmp_path, home, config)
 	try:
-		assert wait_for(lines, r"\[live\] .*Logging to")
+		assert wait_for(lines, r"\[live\] .*Logging to"), "".join(lines)
 		folder = the_folder(clips)
 		os.kill(json.loads((folder / "launcher.json").read_text())["live"][0]["pid"], signal.SIGKILL)
 		proc.wait(timeout=120)
@@ -419,7 +449,7 @@ def test_the_recording_outlives_campy_session(tmp_path, home):
 	# campy-session killed mid-recording: campy-acquire records on to recTimeInSec, and campy-live to its end
 	config, clips = emu_session(tmp_path, home, 6, live={"model": "none"})
 	proc, lines = start(tmp_path, home, config)
-	assert wait_for(lines, r"\[acquire\] Camera1 collected 20 frames")
+	assert wait_for(lines, r"\[acquire\] Camera1 collected 20 frames"), "".join(lines)
 	folder = the_folder(clips)
 	status = json.loads((folder / "launcher.json").read_text())
 	acquire, live = status["parts"]["acquire"]["pid"], status["live"][0]["pid"]
@@ -609,6 +639,76 @@ os._exit(code)
 """
 
 
+# A campy-acquire stand-in that records until its stop file is there (at most 20 s): exit code 0 if it saw it, 7 if not
+STOP_STANDIN = """
+import os, sys, time
+stop = sys.argv[sys.argv.index('--stopFile') + 1]
+t0 = time.monotonic()
+while not os.path.exists(stop) and time.monotonic() - t0 < 20:
+	time.sleep(0.05)
+os._exit(0 if os.path.exists(stop) else 7)
+"""
+
+
+def stand_in_session(tmp_path, monkeypatch, standin, view=False):
+	config = write_config(tmp_path / "c.yaml", {"numCams": 2, "cameraMake": "emu", "videoFolder": str(tmp_path /
+		"rec"), "frameRate": 20, "recTimeInSec": 60, "preflight": "off", "liveFeedName": "x"}, view=view,
+		post={"remux": False, "export": False})
+	monkeypatch.setattr(session, "Alert", lambda *a, **k: None)
+	monkeypatch.setattr(session, "ACQUIRE", standin)
+	return session.Session(session.Config(str(config)))
+
+
+def test_any_frames_reads_the_cameras_hosttimes_without_numpy(tmp_path):
+	from campy.frametimes import GrowingNpy
+	assert not session.AnyFrames(str(tmp_path)) # campy-acquire made no camera folder
+	(tmp_path / "Camera0").mkdir()
+	(tmp_path / "Camera1").mkdir()
+	empty = GrowingNpy(str(tmp_path / "Camera0" / "hosttimes.npy"), np.int64)
+	empty.Close()
+	assert not session.AnyFrames(str(tmp_path)) # its header alone
+	one = GrowingNpy(str(tmp_path / "Camera1" / "hosttimes.npy"), np.int64)
+	one.Append(np.array([123], np.int64))
+	one.Close()
+	assert session.AnyFrames(str(tmp_path))
+	(tmp_path / "Camera1" / "hosttimes.npy").write_bytes(b"not npy")
+	assert session.AnyFrames(str(tmp_path)) # can't tell: as if it had
+
+
+def test_ctrl_c_while_the_view_starts_records_nothing(tmp_path, home, monkeypatch):
+	# Ctrl-C after the last look before the view, as it starts: campy-acquire isn't started, and the view is ended.
+	# Before, the press was only said ("stopping before the recording starts"), and the recording ran its full length
+	s = stand_in_session(tmp_path, monkeypatch, STOP_STANDIN, view=True)
+	ended = []
+	monkeypatch.setattr(s, "StartView", lambda: s.Press(signal.SIGINT, None))
+	monkeypatch.setattr(s, "EndLive", lambda: ended.append("live"))
+	# The devices (SpikeGLX's run, started before campy-live): stopped too. Before, only a Ctrl-C before campy-live
+	# started stopped them
+	s.devices = types.SimpleNamespace(Before=lambda s: None, After=lambda s, code: ended.append(("devices", code)),
+		Status=lambda: None)
+	assert s.Run() == 1
+	assert "acquire" not in s.parts and s.state == "stopped" and ended == ["live", ("devices", 1)]
+	assert s.problems[-1][1] == "Stopped (Ctrl-C) before the recording started: nothing was recorded."
+
+
+def test_ctrl_c_as_campy_acquire_starts_reaches_it_through_its_stop_file(tmp_path, home, monkeypatch):
+	# Ctrl-C while campy-acquire starts, before campy-session has it in its parts: Press finds none to stop, and the
+	# press may have come before campy-acquire was there to get it. Its stop file says it. Before, nothing did, and
+	# the recording ran its full length
+	s = stand_in_session(tmp_path, monkeypatch, STOP_STANDIN)
+	real = session.Part.Start
+
+	def Start(part):
+		started = real(part)
+		if part.name == "acquire":
+			s.Press(signal.SIGINT, None) # the handler, run before Start's caller has the part
+		return started
+	monkeypatch.setattr(session.Part, "Start", Start)
+	t0 = time.monotonic()
+	assert s.Run() == 0 # the stand-in saw its stop file
+	assert time.monotonic() - t0 < 15 and s.stop_written == 1
+
+
 @pytest.mark.parametrize("state, code, alert", [
 	("recording", 9, "while it recorded"), # killed mid-recording: no finally ran, its watch said nothing
 	(None, 3, "before its recording watch started"), # an error before the watch started
@@ -678,7 +778,7 @@ def test_a_frozen_campy_live_is_found_by_campy_watch_and_replaced(tmp_path, home
 	proc, lines = start(tmp_path, home, config, env={"CAMPY_TEST_LIVE_STALL_S": "5", "CAMPY_TEST_LIVE_STOP_S": "3",
 		"CAMPY_TEST_LIVE_RESTART_S": "1,60,300"})
 	try:
-		assert wait_for(lines, r"\[live\] .*Logging to")
+		assert wait_for(lines, r"\[live\] .*Logging to"), "".join(lines)
 		folder = the_folder(clips)
 		pid = json.loads((folder / "launcher.json").read_text())["live"][0]["pid"]
 		time.sleep(3)

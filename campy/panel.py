@@ -1737,22 +1737,17 @@ class Panel:
 							break
 						time.sleep(0.2)
 				except KeyboardInterrupt:
-					for job in self.copies.Leave():
-						Say("Not copied: {} ({}).".format(job.folder, job.message))
-					try:
-						if self.copies.Pending():
-							# A copy checked already, its folder being deleted: let it end (Ctrl-C again: now)
-							Say("Closing once the copy being finished ends (Ctrl-C again closes now).")
-						while self.copies.Pending():
-							time.sleep(0.2)
-					except KeyboardInterrupt:
-						pass
-					Say("Closed.")
-					return 0
+					return self.Interrupted()
 				if self.closing:
 					Say("Closed from the page.")
 					return 0
-				self.Record()
+				try:
+					self.Record()
+				except KeyboardInterrupt:
+					# Ctrl-C outside the recording itself (campy-session's own Ctrl-C handles that): as the next one
+					# was set up, or once it had ended, while the checks for the next one ran (a Python started for
+					# campy-live's environment, seconds on a busy computer). It used to end the panel with a traceback
+					return self.Interrupted()
 		finally:
 			self.health.Stop()
 			if getattr(self, "server", None) is not None:
@@ -1764,6 +1759,21 @@ class Panel:
 			except (OSError, ValueError, AttributeError):
 				pass
 			lock.Release()
+
+	def Interrupted(self):
+		# Ctrl-C with nothing recording: the page's copies not started are left (and said), the one being finished ends
+		for job in self.copies.Leave():
+			Say("Not copied: {} ({}).".format(job.folder, job.message))
+		try:
+			if self.copies.Pending():
+				# A copy checked already, its folder being deleted: let it end (Ctrl-C again: now)
+				Say("Closing once the copy being finished ends (Ctrl-C again closes now).")
+			while self.copies.Pending():
+				time.sleep(0.2)
+		except KeyboardInterrupt:
+			pass
+		Say("Closed.")
+		return 0
 
 	def Record(self):
 		# One recording, in this (the main) thread: campy-session's Ctrl-C and its tied children need it
