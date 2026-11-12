@@ -45,7 +45,7 @@ The replay tracked as the other machines do: against the offline SLEAP predictio
 
 Since 11 November the rig check records on the Orin's encoder, as a recording on the Orin would: smoke1 and smoke3 use `gpuMake: "jetson"`, H.265 at quality 21 (`ENC=cpu` still runs the CPU path, libx264 `ultrafast`). Its first run, the three rows from "Since 11 November", came after the Orin's campy moved to dev `5b3aefb` (the Jetson writer, pull request 403): the replay tracked as before (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches), each recorded video held every frame (4.1–5.0 Mbit/s per camera in smoke3), and the CPU was about 39% busy at smoke3's mid-run (one sample).
 
-On 12 November, after the Orin's campy moved to dev `7952d90` (pull requests 406, 408, 410 and 411; none changes how it tracks or records), the rig check ran again, `RIG_CLEAN`, and gave the same times to within 0.1 ms: the last three rows above. The replay tracked as before (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches), and every frame was recorded.
+On 12 November, after the Orin's campy moved to dev `7952d90` (pull requests 406, 408, 410 and 411; none changes what the rig check runs: 408 is for TensorRT engines, which it does not use), the rig check ran again, `RIG_CLEAN`, and gave the same times to within 0.1 ms: the last three rows above. The replay tracked as before (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches), and every frame was recorded.
 
 Not checked: how far TensorRT's fp16 moves the keypoints from fp32 on the Orin (the replay's accuracy above already includes it), and a real camera feeding `campy-live`.
 
