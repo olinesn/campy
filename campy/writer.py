@@ -7,7 +7,7 @@ calls EncoderArgs() too, so the capacity it measures is for the same ffmpeg
 command a recording runs.
 """
 from imageio_ffmpeg import write_frames
-import os, re, sys, time, shutil, logging, functools, threading, subprocess, collections
+import os, re, sys, time, shutil, logging, tempfile, fractions, functools, threading, subprocess, collections
 from campy import newfiles, status, segments, startup
 from campy.cameras import unicam
 from campy.utils.utils import QueueKeyboardInterrupt, Say, ErrorText, ExitCodeText
@@ -33,6 +33,10 @@ def EncoderArgs(cam_params):
 	quality = str(cam_params["quality"])
 	preset = str(cam_params["preset"])
 	gpuID = str(cam_params["gpuID"])
+
+	# NVIDIA Jetson: GStreamer encodes, ffmpeg only puts the stream in the file
+	if cam_params["gpuID"] != -1 and cam_params["gpuMake"] == "jetson":
+		return JetsonEncoderArgs(cam_params)
 
 	# Load defaults
 	input_params = ["-an"] # "-an" no audio
@@ -283,23 +287,7 @@ def EncoderArgs(cam_params):
 	# file is 0.2-0.6 KB a second larger (1-2 MB per camera-hour; 140 bytes
 	# more for each keyframe the encoder adds itself, at a scene cut). Other
 	# containers are left as they are.
-	muxer_params = []
-	if Fragmented(cam_params):
-		muxer_params = [
-			"-movflags", "+frag_keyframe+empty_moov+delay_moov+default_base_moof",
-			"-frag_duration", "1000000", # microseconds
-			"-flush_packets", "1",
-			]
-
-	# H.265 in an MP4 or MOV is tagged hvc1 rather than ffmpeg's hev1, which
-	# Apple's decoder refuses: MATLAB R2023b's VideoReader on a Mac, QuickTime
-	# and Safari would not open any hev1 video ("Cannot Decode"); Chrome opens
-	# either. hvc1 keeps the parameter sets (VPS, SPS, PPS) in the file's
-	# header, where ffmpeg puts them for every encoder. Quick Sync and VA-API
-	# also repeat them before each keyframe: their video decodes to the same
-	# frames either way. (.m4v takes no H.265.)
-	if (codec == "libx265" or codec.startswith("hevc")) and Extension(cam_params) in (".mp4", ".mov"):
-		muxer_params += ["-tag:v", "hvc1"]
+	muxer_params = MuxerParams(cam_params, codec == "libx265" or codec.startswith("hevc"))
 
 	return {
 		"codec": codec,
@@ -314,6 +302,378 @@ def EncoderArgs(cam_params):
 
 
 RGB_FORMATS = ("rgb0", "bgr0", "rgb24", "bgr24", "rgba", "bgra")
+
+
+def MuxerParams(cam_params, h265):
+	# ffmpeg's options for the file itself: fragments (fragmentedVideo, see
+	# EncoderArgs), and hvc1 for H.265 (h265)
+	params = []
+	if Fragmented(cam_params):
+		params = [
+			"-movflags", "+frag_keyframe+empty_moov+delay_moov+default_base_moof",
+			"-frag_duration", "1000000", # microseconds
+			"-flush_packets", "1",
+			]
+	# H.265 in an MP4 or MOV is tagged hvc1 rather than ffmpeg's hev1, which
+	# Apple's decoder refuses: MATLAB R2023b's VideoReader on a Mac, QuickTime
+	# and Safari would not open any hev1 video ("Cannot Decode"); Chrome opens
+	# either. hvc1 keeps the parameter sets (VPS, SPS, PPS) in the file's
+	# header, where ffmpeg puts them for every encoder. Quick Sync, VA-API and
+	# the Jetson's encoder also repeat them before each keyframe: their video
+	# decodes to the same frames either way. (.m4v takes no H.265.)
+	if h265 and Extension(cam_params) in (".mp4", ".mov"):
+		params += ["-tag:v", "hvc1"]
+	return params
+
+
+# ------------------------------------------------------------------ NVIDIA Jetson
+#
+# gpuMake "jetson": the hardware video encoder of an NVIDIA Jetson (measured
+# on a Jetson AGX Orin 64GB, JetPack 7.2.1). ffmpeg cannot reach it: stock
+# ffmpeg has no driver for it, and NVIDIA's own ffmpeg 8.0.1 (hevc_nvenc) is
+# for the Jetson Thor ("OpenEncodeSessionEx failed: unsupported device" on
+# the Orin). GStreamer can, so each camera's video is two processes:
+#
+#   campy --gray frames--> gst-launch-1.0 fdsrc ! rawvideoparse format=gray8
+#     ! nvvidconv ! video/x-raw(memory:NVMM),format=I420 ! nvv4l2h265enc ...
+#     ! h265parse ! fdsink --H.265--> ffmpeg -f hevc -i pipe:0 -c copy
+#     -bsf:v hevc_metadata=video_full_range_flag=1 (campy's MP4 options) video.mp4
+#
+# - The frames go in as the camera sent them, gray (Mono8), one write each,
+#   as to ffmpeg on the other paths. The Jetson's converter (nvvidconv, on
+#   its VIC engine, not the CPU) makes them I420 in the encoder's memory: the
+#   gray levels as the Y plane, unchanged (all 256 come back), both colour
+#   planes 128. Not NV12: on JetPack 7.2.1 nvvidconv refuses GRAY8 to NV12
+#   ("Transform not supported"), and I420 to NV12 clips the levels to
+#   16-235. GStreamer's videoconvert would do it on the CPU, at 85% of a core
+#   per camera.
+# - Constant quantizer: quality is the QP of every frame, as on NVENC and
+#   VA-API. The encoder's own constant-QP switch (ratecontrol-enable=0 with
+#   quant-i-frames, quant-p-frames) is ignored on JetPack 7.2.1: every QP
+#   gave the same file, at the default 4 Mbit/s. So rate control stays on,
+#   variable bitrate, with a ceiling (JETSON_MAX_BITRATE), and the QP range
+#   (qp-range) is that one QP: the files were then the same size whatever
+#   the ceiling, from 200 Mbit/s to 4 Gbit/s, and 0.7-200 Mbit/s from QP 28
+#   to QP 10. peak-bitrate is left at its default: set to the ceiling too,
+#   the encoder held every file at the ceiling, whatever the QP.
+# - Full range: the video holds the camera's own gray levels, 0-255, but the
+#   encoder marks it limited range (its extended-colorformat property did not
+#   change that), so a reader would stretch it: 31.7 dB against what was
+#   sent instead of 41.8. ffmpeg marks it full range as it writes the file
+#   (h264_metadata, hevc_metadata), without touching the frames. This path
+#   is always full range, whatever colorRange says.
+# - No B-frames (the Orin's encoder makes none), and the parameter sets
+#   before every keyframe (insert-sps-pps), as on the other GPU paths.
+# - Capacity (Jetson AGX Orin, MAXN power mode, 1280x1024): 8 cameras at 75
+#   fps, 60 with 25% to spare; at most 9 encoders at once, and 10 or more
+#   all slow down together. campy-encode-sweep measures it on each machine.
+# Only H.264 and H.265: the Orin's AV1 encoder (nvv4l2av1enc) ignores the QP
+# range (every QP gave the same file). Only gray frames: nvvidconv refuses
+# RGB on the VIC ("use GPU instead"), and the GPU runs the live tracking.
+
+# codec: (GStreamer encoder, its parser, ffmpeg's demuxer for the stream,
+# ffmpeg's metadata filter). H.264 stays in nvv4l2h264enc's own profile,
+# Baseline: High (profile=4) made files 11% smaller at QP 21, but 8 cameras
+# then reached 53 fps each instead of 87.
+JETSON_CODECS = {
+	"h264": ("nvv4l2h264enc", "h264parse", "h264", "h264_metadata"),
+	"h265": ("nvv4l2h265enc", "h265parse", "hevc", "hevc_metadata"),
+	}
+# preset: the encoder's preset-level (UltraFastPreset, its default, ... SlowPreset)
+JETSON_PRESETS = {"ultrafast": 1, "fast": 2, "medium": 3, "slow": 4}
+# The variable rate's ceiling, bits a second (4 Gbit/s, about the most the
+# property takes): the QP alone sets the size
+JETSON_MAX_BITRATE = 4000000000
+# The command that runs a GStreamer pipeline; tests put a stand-in here
+GST_LAUNCH = ["gst-launch-1.0"]
+
+
+def JetsonError(text):
+	return ValueError("gpuMake \"jetson\": {}".format(text))
+
+
+def JetsonEncoderArgs(cam_params):
+	"""
+	EncoderArgs for gpuMake "jetson" (see above). input_params and
+	output_params are the muxing ffmpeg's; and, of this path only:
+	  gst: gst-launch-1.0's arguments, up to the sink (GstPipeline adds it)
+	  mux_input: what ffmpeg is told of the stream it reads
+	"""
+	codec = str(cam_params["codec"])
+	if codec not in JETSON_CODECS:
+		raise JetsonError("codec is \"h264\" or \"h265\", not \"{}\" (the Orin's AV1 encoder ignores the "
+			"quality setting).".format(codec))
+	pix_fmt_in = str(cam_params["pixelFormatInput"])
+	if pix_fmt_in != "gray":
+		raise JetsonError("takes gray frames only (pixelFormatInput \"gray\"; a colour FLIR camera can send "
+			"Mono8 too), not \"{}\".".format(pix_fmt_in))
+	if DenoiseFilters(cam_params):
+		raise JetsonError("denoise \"{}\" is an ffmpeg filter, and here GStreamer encodes the frames, not "
+			"ffmpeg: set denoise \"None\".".format(cam_params["denoise"]))
+	width, height = int(cam_params["frameWidth"]), int(cam_params["frameHeight"])
+	if width % 2 or height % 2:
+		raise JetsonError("frames {}x{}: both sides must be even (4:2:0 video).".format(width, height))
+	quality = int(cam_params["quality"])
+	if not 0 <= quality <= 51:
+		raise JetsonError("quality is the QP, 0-51, not {}.".format(quality))
+	preset = str(cam_params["preset"])
+	if preset == "None":
+		preset = "ultrafast"
+	if preset not in JETSON_PRESETS:
+		raise JetsonError("preset is one of {}, not \"{}\".".format(", ".join(JETSON_PRESETS), preset))
+
+	element, parser, demuxer, metadata = JETSON_CODECS[codec]
+	fps = fractions.Fraction(float(cam_params["frameRate"])).limit_denominator()
+	properties = [
+		"control-rate=variable_bitrate",
+		"bitrate={}".format(JETSON_MAX_BITRATE),
+		"qp-range={0},{0}:{0},{0}:{0},{0}".format(quality), # P, I and B frames: min,max each
+		"preset-level={}".format(JETSON_PRESETS[preset]),
+		"insert-sps-pps=1",
+		]
+	# keyframeInterval, as on the other paths ("None": the encoder's own, an
+	# I-frame every 30 frames and an IDR frame every 256)
+	keyframe_interval = str(cam_params.get("keyframeInterval", "None"))
+	if keyframe_interval != "None":
+		gop = max(1, int(round(float(cam_params["frameRate"]) * float(keyframe_interval))))
+		properties += ["iframeinterval={}".format(gop), "idrinterval={}".format(gop)]
+
+	gst = ["-q", "-e",
+		# blocksize: one frame per buffer; plane-strides: rows of exactly
+		# width bytes (GStreamer would round a gray row up to 4 bytes)
+		"fdsrc", "fd=0", "blocksize={}".format(width * height), "!",
+		"rawvideoparse", "format=gray8", "width={}".format(width), "height={}".format(height),
+		"framerate={}/{}".format(fps.numerator, fps.denominator), "plane-strides=<{}>".format(width), "!",
+		"nvvidconv", "!", "video/x-raw(memory:NVMM),format=I420", "!",
+		element] + properties + ["!", parser, "!"]
+	output_params = ["-c", "copy", "-bsf:v", "{}=video_full_range_flag=1".format(metadata)] \
+		+ MuxerParams(cam_params, codec == "h265")
+	return {
+		"codec": element,
+		"pix_fmt_out": "yuv420p", # the video's: I420, full range
+		"input_params": [],
+		"output_params": output_params,
+		"macro_block_size": 1,
+		"key": "{}/{}".format(element, preset),
+		"device": "gpu",
+		"env": {},
+		"gst": gst,
+		# -r: each frame's time from the frame rate. A raw stream has none, and
+		# -framerate alone gave the frames times that stopped advancing (a 4 s
+		# video 0.2 s long)
+		"mux_input": ["-f", demuxer, "-framerate", str(fps), "-r", str(fps)],
+		}
+
+
+# NVIDIA's libraries print these as every encoder opens, on gst-launch-1.0's
+# stderr: not said ("Opening in BLOCKING MODE" goes to its stdout, which is
+# not kept)
+GST_CHATTER = re.compile(r"^\s*(NvMMLite|=+ NvVideo|NvVideo:|NVMEDIA:|H26[45]: (ext)?Profile|Opening in BLOCKING MODE|NvMapMemHandleFree)")
+GST_LINES = 20 # gst-launch-1.0's last lines kept, for why it stopped
+
+
+class GstPipeline:
+	"""
+	The two processes behind a gpuMake "jetson" camera's video, seen by
+	campy as one, as an ffmpeg's subprocess.Popen is on the other paths
+	(FfmpegProcess, ExitWatch): frames go into stdin (gst-launch-1.0's), and
+	it has exited once both have. gst-launch-1.0 hands the encoded stream to
+	the muxing ffmpeg through a pipe of their own: its stdout carries
+	NVIDIA's messages. kill() kills both. Linux only (pass_fds).
+	"""
+
+	def __init__(self, gst, mux, log_level="quiet", mux_stderr=None):
+		self.lines = collections.deque(maxlen=GST_LINES)
+		self.say = str(log_level) not in ("quiet", "panic", "fatal")
+		read, write = os.pipe()
+		try:
+			# Both in a session of their own, as imageio-ffmpeg starts ffmpeg:
+			# Ctrl-C at the console stops the camera, which closes the video
+			self.mux = subprocess.Popen(mux, stdin=read, stdout=subprocess.DEVNULL, stderr=mux_stderr,
+				start_new_session=True)
+		except BaseException:
+			os.close(write)
+			raise
+		finally:
+			os.close(read)
+		try:
+			self.gst = subprocess.Popen(gst + ["fdsink", "fd={}".format(write), "sync=false"],
+				stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+				pass_fds=(write,), start_new_session=True)
+		except BaseException:
+			self.mux.kill()
+			self.mux.wait()
+			raise
+		finally:
+			os.close(write) # gst-launch-1.0's now: the muxer's input ends when it exits
+		self.stdin = self.gst.stdin
+		self.stdout = None
+		self.pid = self.gst.pid
+		self.args = (gst, mux)
+		self.reader = threading.Thread(target=self.Read, daemon=True, name="gst-launch-1.0 stderr")
+		self.reader.start()
+
+	def Read(self):
+		for raw in self.gst.stderr:
+			line = raw.decode("utf-8", "replace").rstrip()
+			if not line.strip() or GST_CHATTER.match(line):
+				continue
+			self.lines.append(line)
+			if self.say:
+				sys.stderr.write(line + "\n")
+
+	def Said(self):
+		# What gst-launch-1.0 said last (its error, when it stopped), on one line
+		self.reader.join(1.0)
+		lines = [l.strip() for l in self.lines]
+		errors = [l for l in lines if l.startswith("ERROR")]
+		return " ".join(errors[-1:] or lines[-2:])
+
+	@property
+	def returncode(self):
+		gst, mux = self.gst.returncode, self.mux.returncode
+		if gst is None or mux is None:
+			return None
+		return gst or mux
+
+	def poll(self):
+		self.gst.poll()
+		self.mux.poll()
+		return self.returncode
+
+	def wait(self, timeout=None):
+		deadline = None if timeout is None else time.monotonic() + timeout
+		for p in (self.gst, self.mux):
+			p.wait(None if deadline is None else max(0.0, deadline - time.monotonic()))
+		return self.returncode
+
+	def kill(self):
+		for p in (self.gst, self.mux):
+			try:
+				p.kill()
+			except OSError:
+				pass
+
+
+def MuxCommand(path, cam_params, enc):
+	# The muxing ffmpeg's command, for gpuMake "jetson": campy's ffmpeg (ffmpegPath, or imageio-ffmpeg's)
+	exe = cam_params.get("ffmpegPath", "None")
+	if str(exe) == "None":
+		import imageio_ffmpeg
+		exe = imageio_ffmpeg.get_ffmpeg_exe()
+	level = str(cam_params.get("ffmpegLogLevel", "quiet"))
+	return [str(exe), "-hide_banner", "-nostdin", "-v", level, "-y"] + enc["mux_input"] + ["-i", "pipe:0"] \
+		+ enc["output_params"] + [path]
+
+
+JETSON_PROBE_FRAMES = 10
+JETSON_PROBE_TIMEOUT = 60
+
+
+def JetsonProbe(cam_params, folder, frames=JETSON_PROBE_FRAMES, timeout=JETSON_PROBE_TIMEOUT):
+	"""
+	Encodes a few gray frames as a gpuMake "jetson" camera's video would be,
+	through the same two processes, into folder (the launch check's test of
+	the encoder, as CheckNvenc's for NVENC). Returns None when the video
+	holds them, else what went wrong.
+	"""
+	enc = EncoderArgs(cam_params)
+	path = os.path.join(folder, "jetson_test" + (Extension(cam_params) or ".mp4"))
+	mux = MuxCommand(path, dict(cam_params, ffmpegLogLevel="error"), enc)
+	mux_said = tempfile.TemporaryFile()
+	try:
+		p = GstPipeline(GST_LAUNCH + enc["gst"], mux, "quiet", mux_stderr=mux_said)
+	except OSError as e:
+		mux_said.close()
+		return "could not start {} ({}): is GStreamer installed (on a Jetson, nvidia-l4t-gstreamer)?".format(
+			GST_LAUNCH[0], ErrorText(e))
+	frame = bytes(int(cam_params["frameWidth"]) * int(cam_params["frameHeight"]))
+	failed = []
+
+	def Feed():
+		try:
+			for _ in range(frames):
+				p.stdin.write(frame)
+			p.stdin.close()
+		except Exception as e:
+			failed.append(ErrorText(e))
+
+	feeder = threading.Thread(target=Feed, daemon=True)
+	feeder.start()
+	try:
+		p.wait(timeout)
+	except subprocess.TimeoutExpired:
+		p.kill()
+		return "did not finish {} frames in {} s".format(frames, timeout)
+	finally:
+		feeder.join(1.0)
+	said = p.Said()
+	mux_said.seek(0)
+	mux_lines = [l.strip() for l in mux_said.read().decode("utf-8", "replace").splitlines() if l.strip()]
+	mux_said.close()
+	if mux_lines and not said:
+		said = "ffmpeg said: " + mux_lines[-1]
+	if p.returncode:
+		return "gst-launch-1.0 exited with {}, ffmpeg with {}{}".format(ExitCodeText(p.gst.returncode),
+			ExitCodeText(p.mux.returncode), ": " + said if said else "")
+	if failed:
+		return "the frames did not go in ({}){}".format(failed[0], ": " + said if said else "")
+	if not os.path.isfile(path) or not os.path.getsize(path):
+		return "wrote no video{}".format(": " + said if said else "")
+	return None
+
+
+def JetsonCommandText(cam_params):
+	# The two commands, as a shell would run them (for the launch check to quote)
+	import shlex
+	enc = EncoderArgs(cam_params)
+	gst = GST_LAUNCH + enc["gst"] + ["fdsink", "fd=1"]
+	return "{} | {}".format(shlex.join(gst), shlex.join(MuxCommand("jetson_test.mp4", cam_params, enc)))
+
+
+def GstWriteFrames(path, cam_params, enc):
+	"""
+	gpuMake "jetson"'s stand-in for imageio-ffmpeg's write_frames: a
+	generator that takes each frame by send() and closes the video at
+	close(), and keeps its processes as p (FfmpegProcess finds them there).
+	"""
+	p = GstPipeline(GST_LAUNCH + enc["gst"], MuxCommand(path, cam_params, enc), cam_params.get("ffmpegLogLevel", "quiet"))
+	interrupted = False
+	try:
+		while True:
+			frame = yield
+			try:
+				p.stdin.write(frame)
+			except Exception as e:
+				try:
+					p.gst.wait(1.0) # for what it says as it exits
+				except subprocess.TimeoutExpired:
+					pass
+				said = p.Said()
+				raise IOError("{}{}".format(ErrorText(e), "; gst-launch-1.0 said: " + said if said else ""))
+	except GeneratorExit:
+		pass
+	except Exception:
+		raise
+	except BaseException:
+		interrupted = True # KeyboardInterrupt, SystemExit: no waiting for the video's end
+		raise
+	finally:
+		if p.poll() is None:
+			try:
+				p.stdin.close() # the end of the frames: gst-launch-1.0 finishes the stream, then ffmpeg the file
+			except Exception:
+				pass
+			if interrupted:
+				p.kill()
+			else:
+				try:
+					while p.poll() is None:
+						time.sleep(0.01)
+				finally:
+					if p.poll() is None:
+						p.kill()
+		p.reader.join(1.0)
 
 
 # denoise: the ffmpeg filters each setting runs before the encoder
@@ -407,10 +767,13 @@ def OpenWriter(cam_params, queue, new=False, path=None):
 		if enc["device"] == "cpu":
 			startup.Video("Opened: {} using CPU to compress the stream.".format(full_file_name), cam_params,
 				first=path is None)
+		elif "gst" in enc:
+			startup.Video("Opened: {} using the Jetson's video encoder ({}, through GStreamer) to compress the "
+				"stream.".format(full_file_name, enc["codec"]), cam_params, first=path is None)
 		else:
 			startup.Video("Opened: {} using GPU {} to compress the stream.".format(full_file_name, cam_params["gpuID"]),
 				cam_params, first=path is None)
-		if FullRange(cam_params) and "-color_range" not in enc["output_params"]:
+		if FullRange(cam_params) and "-color_range" not in enc["output_params"] and "gst" not in enc:
 			Say("{}: colorRange \"full\" does nothing with pixelFormatOutput \"{}\": {} converts RGB to limited-range "
 				"video itself. Use pixelFormatOutput \"yuv420p\" for full range.".format(
 				cam_params["cameraName"], enc["pix_fmt_out"], enc["codec"]))
@@ -424,6 +787,12 @@ def OpenWriter(cam_params, queue, new=False, path=None):
 	# Initialize writer object (imageio-ffmpeg)
 	while(True):
 		try:
+			if "gst" in enc:
+				# gpuMake "jetson": GStreamer encodes, ffmpeg writes the file
+				writer = GstWriteFrames(full_file_name, cam_params, enc)
+				writer.send(None)
+				writing = True
+				break
 			writer = write_frames(
 				full_file_name,
 				[cam_params["frameWidth"], cam_params["frameHeight"]], # size [W,H]

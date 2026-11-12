@@ -195,9 +195,10 @@ SETTINGS = [
 			camera, and less CPU for ffmpeg; raise quality by about 2 for the same file size)."),
 	Setting("gpuID", -1, int, section=ENC, low=-1,
 		help="List of integers assigning the gpu index to stream each camera. Set to -1 to stream with CPU."),
-	Setting("gpuMake", "nvidia", str, section=ENC, choices=("nvidia", "amd", "intel", "vaapi"),
+	Setting("gpuMake", "nvidia", str, section=ENC, choices=("nvidia", "amd", "intel", "vaapi", "jetson"),
 		help="Company that produced the GPU. Currently supported: 'nvidia', 'amd', 'intel' (QuickSync), \
-			'vaapi' (Linux VA-API: AMD through Mesa, or Intel)."),
+			'vaapi' (Linux VA-API: AMD through Mesa, or Intel), 'jetson' (an NVIDIA Jetson's video \
+			encoder, through GStreamer: gray frames, h264 or h265, always full range; docs/jetson.md)."),
 	Setting("codec", "h264", str, section=ENC, choices=("h264", "h265", "av1"),
 		help="Video codec for compression. Currently supported: 'h264', 'h265' (hevc), and 'av1' \
 			with gpuMake 'vaapi', 'nvidia' or 'intel' (quality is then AV1's quantizer index, 0-255)."),
@@ -209,7 +210,8 @@ SETTINGS = [
 			0-51 for h264 and h265, 0-255 for av1."),
 	Setting("preset", "None", str, section=ENC,
 		help="Compression preset (e.g. 'slow', 'fast', 'veryfast'). Incorrect settings may break the pipe. \
-			Test with ffmpegLogLevel 'warning' or 'info'."),
+			Test with ffmpegLogLevel 'warning' or 'info'. gpuMake 'jetson': 'ultrafast' (its default), \
+			'fast', 'medium' or 'slow'."),
 	Setting("keyframeInterval", "None", float, section=ENC, words=("None",), above=0,
 		help="Seconds between keyframes (I-frames), e.g. 0.5. Shorter makes seeking and sparse frame \
 			sampling cheaper (LUCID's image ID-switch check needs 0.5) but files larger. Default: the \
