@@ -21,7 +21,7 @@ from campy import configurator, newfiles, stopfile
 from campy.cameras import unicam
 from campy.utils import utils
 from test_emu import write_clip
-from test_failures import camera_params, hanging_camera_process
+from test_failures import camera_params, closed, hanging_camera_process
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -105,7 +105,7 @@ def test_stop_now_stops_a_camera_process_that_hangs(tmp_path):
 	watch = stopfile.Watch(path, Request, every=0.05, again=0.5).Start()
 	stopfile.Write(path)
 	def again():
-		time.sleep(2.0)
+		closed(cameras) # Camera0 has closed: a fixed 2 s caught it still closing on a busy computer (test_failures)
 		stopfile.Write(path, now=True)
 	threading.Thread(target=again, daemon=True).start()
 	try:
@@ -113,7 +113,7 @@ def test_stop_now_stops_a_camera_process_that_hangs(tmp_path):
 		failures = cameras.Wait(interrupts)
 	finally:
 		watch.Stop()
-	assert time.monotonic() - t0 < 15
+	assert time.monotonic() - t0 < 60 # not for ever
 	assert failures == {"Camera1": ["stopped at the second Ctrl-C, before it had closed"]}
 	assert not cameras.processes[1].is_alive()
 

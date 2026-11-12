@@ -969,6 +969,16 @@ def hanging_camera_process(n_cam, readyQueue, done):
 	time.sleep(600)
 
 
+def closed(cameras, n=0, timeout=60):
+	# Waits until camera process n has ended (Camera0 of hanging_camera_process: it records and closes); True if it did.
+	# The second Ctrl-C has to come after that, not a fixed time after the start: spawning the processes took more than
+	# 2.5 s on a busy computer (4 tests at once), and the second press then caught Camera0 still closing as well
+	deadline = time.monotonic() + timeout
+	while cameras.processes[n].exitcode is None and time.monotonic() < deadline:
+		time.sleep(0.02)
+	return cameras.processes[n].exitcode is not None
+
+
 def camera_params(n, timeout=30):
 	p = configurator.DefaultParams()
 	p.update(numCams=n, readyTimeoutSec=timeout)
@@ -1020,12 +1030,12 @@ def test_a_second_ctrl_c_stops_a_camera_process_that_hangs():
 	cameras.grace = 0.5
 	interrupts = types.SimpleNamespace(count=1) # the first Ctrl-C: Camera0 closes, Camera1 hangs
 	def again():
-		time.sleep(2.5)
+		closed(cameras)
 		interrupts.count = 2
 	threading.Thread(target=again, daemon=True).start()
 	t0 = time.monotonic()
 	failures = cameras.Wait(interrupts)
-	assert time.monotonic() - t0 < 15
+	assert time.monotonic() - t0 < 60 # not for ever
 	why = "stopped at the second Ctrl-C, before it had closed"
 	assert failures == {"Camera1": [why]}
 	kill = "taskkill /F /PID 4242" if sys.platform == "win32" else "kill -9 4242"
@@ -1092,9 +1102,10 @@ def interrupted_function_call():
 class WindowsWait:
 	"""
 	multiprocessing.connection.wait, for unicam only, as on Windows when
-	Ctrl-C comes. presses: (after how many seconds, interrupts.count after
-	it). The first call at or after that time counts the press, as campy's
-	handler does, and raises InterruptedError; others wait as wait does.
+	Ctrl-C comes. presses: (after how many seconds, or a function that says
+	when, interrupts.count after it). The first call at or after that time
+	counts the press, as campy's handler does, and raises InterruptedError;
+	others wait as wait does.
 	"""
 
 	def __init__(self, monkeypatch, interrupts, presses):
@@ -1106,7 +1117,8 @@ class WindowsWait:
 			connection=types.SimpleNamespace(wait=self.wait)))
 
 	def wait(self, objects, timeout=None):
-		if self.presses and time.monotonic() - self.t0 >= self.presses[0][0]:
+		when = self.presses[0][0] if self.presses else None
+		if self.presses and (when() if callable(when) else time.monotonic() - self.t0 >= when):
 			_, self.interrupts.count = self.presses.pop(0)
 			self.raised += 1
 			raise interrupted_function_call()
@@ -1166,8 +1178,11 @@ def test_after_a_wait_that_ctrl_c_interrupts_a_second_ctrl_c_still_stops_a_camer
 	ctx = mp.get_context("spawn")
 	said = []
 	interrupts = types.SimpleNamespace(count=0)
-	windows = WindowsWait(monkeypatch, interrupts, [(0, 1), (2.5, 2)]) # Camera0 closes, Camera1 hangs
-	cameras = unicam.CameraProcesses(ctx, hanging_camera_process, camera_params(2), ctx.Queue(), log=said.append)
+	made = {}
+	# Camera0 closes, Camera1 hangs: the second press once Camera0 has closed
+	windows = WindowsWait(monkeypatch, interrupts, [(0, 1), (lambda: closed(made["cameras"], timeout=0), 2)])
+	cameras = made["cameras"] = unicam.CameraProcesses(ctx, hanging_camera_process, camera_params(2), ctx.Queue(),
+		log=said.append)
 	cameras.grace = 0.5
 	t0 = time.monotonic()
 	try:
@@ -1177,7 +1192,7 @@ def test_after_a_wait_that_ctrl_c_interrupts_a_second_ctrl_c_still_stops_a_camer
 		for p in cameras.processes:
 			if p.is_alive():
 				p.kill()
-	assert time.monotonic() - t0 < 15
+	assert time.monotonic() - t0 < 60 # not for ever
 	assert windows.raised == 2
 	assert failures == {"Camera1": ["stopped at the second Ctrl-C, before it had closed"]}
 	assert said[0] == "Ctrl-C again: stopping Camera1 now, without closing it."

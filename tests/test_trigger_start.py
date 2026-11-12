@@ -304,6 +304,22 @@ def pty():
 	return master, slave
 
 
+def sim_up(proc, log_path, said, timeout=60):
+	"""
+	Waits until the live simulator has started its sketch: it said said (its
+	first line, in the log). A fixed wait isn't one: the first start of a
+	just-compiled simulator on a busy computer (4 tests at once) can take
+	seconds, and a program that opens the port first gets no answer in time.
+	"""
+	deadline = time.monotonic() + timeout
+	while proc.poll() is None and said not in log_path.read_text() and time.monotonic() < deadline:
+		time.sleep(0.01)
+	if proc.poll() is not None or said not in log_path.read_text():
+		proc.kill()
+		proc.wait()
+		raise AssertionError("the simulated board didn't start: {}".format(log_path.read_text()[-2000:]))
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal for the fake Arduino")
 def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path, sim):
 	# The Arduino: trigger.ino itself, in real time (tests/arduino_sim, live) on
@@ -312,6 +328,7 @@ def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path, sim):
 	log_path = tmp_path / "sim.log"
 	with open(str(log_path), "w") as log:
 		arduino_sim = subprocess.Popen([sim, "live"], stdin=master, stdout=master, stderr=log)
+	sim_up(arduino_sim, log_path, "Set baudrate to ")
 	try:
 		for name in ("Camera0", "Camera1"):
 			(tmp_path / name).mkdir()
