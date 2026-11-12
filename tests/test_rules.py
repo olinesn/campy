@@ -513,11 +513,15 @@ def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, ou
 	events = [json.loads(l) for l in open(out + ".events.jsonl")]
 	commands = [e for e in events if e["kind"] == "command"]
 	assert len(commands) == 10, commands
-	# A pulse the board gets too late it refuses (err late), on purpose: a pulse fired late is wrong in a closed loop,
-	# and a pulse isn't sent again. On a busy CI runner (other test workers beside this one) campy-rules can be held
-	# up that long, once: 'err late 3 30 74668' on GitHub's Linux runner. So at most 2 of the 10 may be refused late,
-	# and the board made exactly the others
-	late = [e for e in commands if e["answer"].startswith("err late 3 ")]
+	# A pulse decided too late is refused, on purpose: a pulse fired late is wrong in a closed loop, and a pulse isn't
+	# sent again. The board refuses one it gets past the bound (err late), and campy-rules one it decides past it,
+	# without sending it ("late (campy-rules: ...)"). On a busy CI runner (other test workers beside this one) the
+	# rows or campy-rules can be held up that long, once: 'err late 3 30 74668' on GitHub's Linux runner, and
+	# 'late (campy-rules: 79.9 ms after the frame)' on Python 3.9's (November 2026). So at most 2 of the 10 may be
+	# refused late, either way, and the board made exactly the others
+	late_board = [e for e in commands if e["answer"].startswith("err late 3 ")]
+	late_host = [e for e in commands if e["answer"].startswith("late (campy-rules: ")]
+	late = late_board + late_host
 	made = [e for e in commands if e not in late]
 	assert len(late) <= 2, commands
 	for e in made:
@@ -537,7 +541,8 @@ def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, ou
 	assert all(a["fall_us"] < b["rise_us"] for a, b in zip(pulses, pulses[1:])), pulses
 	summary = json.load(open(out + ".json"))
 	assert summary["frame_offset"] == 0 and summary["frame_offset_changes"] == 0
-	assert summary["latency_ms"]["trigger_to_pin"]["n"] == len(made) and summary["counts"]["late_board"] == len(late)
+	assert summary["latency_ms"]["trigger_to_pin"]["n"] == len(made)
+	assert (summary["counts"]["late_board"], summary["counts"]["late_host"]) == (len(late_board), len(late_host))
 	t2h = summary["trigger_to_host_all_ms"]
 	assert 0 < t2h["p50"] < 16.7 and t2h["n"] >= 55, t2h
 	board = open(out + ".board.txt").read()
