@@ -41,8 +41,8 @@ On Linux (every process the user can see; other users' processes show only their
            loaded (a process that can open, reset or enumerate the cameras)
   trigger  /dev/ttyACM*, /dev/ttyUSB*  the trigger Arduino
   load     the CPU (cores) and disk (MB/s) used by everything outside the job
-  desktop  a desktop drawing on the GPU (gnome-shell, Xwayland, Xorg, GNOME's gsd-xsettings and
-           mutter-x11-frames, ...; any user,
+  desktop  a desktop drawing on the GPU (gnome-shell, Xwayland, Xorg, GNOME's gsd-xsettings,
+           mutter-x11-frames and portal helper xdg-desktop-portal-gnome, ...; any user,
            the login screen too). run does not wait for it (it would not go away),
            but says in the log which was up, and a desktop that starts or ends
            during the run contaminates it.
@@ -139,9 +139,13 @@ KINDS = ("gpu", "encoder", "camera", "trigger")
 # GNOME session also has two helpers that keep the GPU's render node open for as long as it runs:
 # gsd-xsettings and mutter-x11-frames (comm "mutter-x11-fram"). At the login screen they run as gdm, whose
 # open files rig.py can not see; logged in, they are the user's and would otherwise look like encoder users
-# that never go away. Ubuntu's GNOME on a Jetson (an X11 session) adds some that draw with the GPU too:
-# the desktop portals (xdg-desktop-portal, -gnome and -gtk all have the comm "xdg-desktop-por"),
-# GNOME Software's background service, and the first-login wizard (comm "gnome-initial-s")
+# that never go away. So would GNOME's portal helper, xdg-desktop-portal-gnome, on any GNOME desktop: it
+# draws the dialogs apps ask the desktop for (a file chooser, the screen-sharing picker; the capture itself
+# runs in gnome-shell), opens the render node with the first one it draws, and keeps it until it ends. On
+# the EVO-X2 (GNOME on Wayland) it did so partway through a run, and the next run waited until it was
+# stopped. Its comm, "xdg-desktop-por", is also that of the other portals (xdg-desktop-portal itself and
+# -gtk). Ubuntu's GNOME on a Jetson (an X11 session) adds two more that draw with the GPU: GNOME Software's
+# background service, and the first-login wizard (comm "gnome-initial-s")
 DESKTOP = {"gnome-shell", "Xwayland", "Xorg", "Xvnc", "mutter", "kwin_wayland", "kwin_x11", "plasmashell",
 	"sway", "weston", "Hyprland", "xfwm4", "TeamViewer", "gsd-xsettings", "mutter-x11-frames"[:15],
 	"xdg-desktop-portal-gnome"[:15], "gnome-software", "gnome-initial-setup"[:15]}
