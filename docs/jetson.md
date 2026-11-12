@@ -5,7 +5,7 @@ An **NVIDIA Jetson AGX Orin 64GB Developer Kit** joined the test machines on 11 
 **In short:**
 
 - **Live tracking works.** With campy's defaults (`campy-live --engine auto` picks TensorRT here), the trained 5-mouse pair tracks 3 cameras at 60 fps with 3D, every set, with the same accuracy as the other machines, in about twice the EVO-X2's time per set.
-- **Recording uses the Orin's own video encoder** (`gpuMake: "jetson"`, since pull request PRNUM). ffmpeg can't reach it there, so campy hands each camera's frames to GStreamer, which encodes them, and ffmpeg only writes them into campy's usual MP4. At 1280 × 1024 mono and 60 fps it keeps up with 8 cameras in H.264 and 7 in H.265 (8 at quality 25), at about a fifth of a CPU core per camera; at most 8 at once. Recording and tracking 3 cameras kept every frame. The CPU path (`gpuID: -1`, libx264 preset `ultrafast`) still works, at three quarters of a core per camera.
+- **Recording uses the Orin's own video encoder** (`gpuMake: "jetson"`, since pull request 403). ffmpeg can't reach it there, so campy hands each camera's frames to GStreamer, which encodes them, and ffmpeg only writes them into campy's usual MP4. At 1280 × 1024 mono and 60 fps it keeps up with 8 cameras in H.264 and 7 in H.265 (8 at quality 25), at about a fifth of a CPU core per camera; at most 8 at once. Recording and tracking 3 cameras kept every frame. The CPU path (`gpuID: -1`, libx264 preset `ultrafast`) still works, at three quarters of a core per camera.
 - **FLIR cameras work**: Spinnaker 4.4 has an Arm64 build, and a Blackfly S on the Orin's USB 3 port is found at SuperSpeed.
 - **It needs JetPack 7.2 or newer.** JetPack 7.1 installs on an AGX Orin but leaves its GPU without a driver.
 
@@ -33,7 +33,7 @@ The rig checks, the same as the EVO-X2's, with campy-live's defaults:
 | replay3: the 60 s 5-mouse replay, 3 cameras, 3D | 3,600 of 3,600, 0 skipped | 10.1 / 10.4 ms | 14.5 / 15.8 (29.8) ms | (a replay) |
 | smoke1: 1 emulated camera recorded and tracked, 30 s | 1,800, 0 skipped | 4.0 / 4.2 ms | | 1,800 |
 | smoke3: 3 emulated cameras recorded (libx264 `ultrafast` on the CPU) and tracked in 3D, 60 s | 3,600, 0 skipped | 10.2 / 10.7 ms | 14.7 / 16.5 (24.1) ms | 3 × 3,600 |
-| smoke3 recorded on the Orin's encoder (`gpuMake: "jetson"`, H.265 quality 21, pull request PRNUM) | 3,600, 0 skipped | 10.2 / 10.6 ms | 14.5 / 15.8 (23.7) ms | 3 × 3,600 |
+| smoke3 recorded on the Orin's encoder (`gpuMake: "jetson"`, H.265 quality 21, pull request 403) | 3,600, 0 skipped | 10.2 / 10.6 ms | 14.5 / 15.8 (23.7) ms | 3 × 3,600 |
 
 The replay tracked as the other machines do: against the offline SLEAP predictions, 2D median 3.8 px, 3D median 4.2 mm, 99.93% the same identity, 2 identity switches (the EVO-X2: 3.8 px, 4.2 mm, 2 switches). The EVO-X2 takes about half the time (inference 5.5 / 5.6 ms in the same replay). The 3D step alone takes 2.8 ms here against about 1.1 ms there: it runs on the CPU. While smoke3 ran, the CPU was about half busy, the three libx264 encoders included. Recorded on the Orin's encoder instead, tracking took the same time; the CPU was about 38% busy at mid-run (one sample, `top`), most of it the emulated cameras decoding their clips.
 
@@ -43,7 +43,7 @@ Not checked: how far TensorRT's fp16 moves the keypoints from fp32 on the Orin (
 
 campy records through ffmpeg, and **ffmpeg can't use the Orin's encoder**. Ubuntu's ffmpeg finds no NVENC driver for it. NVIDIA's own ffmpeg build for JetPack 7.2.1 (8.0.1, in its apt repository) has `hevc_nvenc`, but opening it on the Orin fails with `OpenEncodeSessionEx failed: unsupported device`: that route is for the Jetson Thor. On the Orin, NVIDIA's encoder is reached through GStreamer (`nvv4l2h265enc`, `nvv4l2h264enc`).
 
-**campy's Jetson writer** (`gpuMake: "jetson"`, pull request PRNUM) does that. Each camera's video is two processes: GStreamer's `gst-launch-1.0` takes the camera's gray frames, one write each as ffmpeg does on the other machines, and encodes them; ffmpeg copies the encoded stream, untouched, into the same fragmented MP4 campy writes everywhere else (hvc1 for H.265, a keyframe every `keyframeInterval`). A config for it:
+**campy's Jetson writer** (`gpuMake: "jetson"`, pull request 403) does that. Each camera's video is two processes: GStreamer's `gst-launch-1.0` takes the camera's gray frames, one write each as ffmpeg does on the other machines, and encodes them; ffmpeg copies the encoded stream, untouched, into the same fragmented MP4 campy writes everywhere else (hvc1 for H.265, a keyframe every `keyframeInterval`). A config for it:
 
 ```yaml
 gpuID: 0                 # anything but -1
@@ -76,7 +76,7 @@ What it had to get right, each found on the Orin (JetPack 7.2.1):
 
 Not supported: AV1 (`nvv4l2av1enc` runs on the Orin, but ignores the QP range: the same file at every QP), colour frames (`nvvidconv` refuses RGB on the converter, "use GPU instead", and the GPU tracks), and `denoise` (an ffmpeg filter, and ffmpeg no longer sees the frames). campy refuses those settings at the launch check. H.264 stays in NVIDIA's default profile, Baseline: High made files 11% smaller at QP 21, but 8 cameras then reached 53 fps each instead of 87.
 
-**Checked on the Orin** (campy dev `c733a7e` plus pull request PRNUM, every run `RIG_CLEAN`):
+**Checked on the Orin** (campy dev `c733a7e` plus pull request 403, every run `RIG_CLEAN`):
 
 - 600 synthetic 1280 × 1024 frames through campy's writer, at QP 15, 21 and 28 in each codec: every frame, in order, 10.0 s long at 60 fps, a keyframe every 0.5 s, marked full range, all 256 gray levels back (within 0–2). H.265 at QP 21: 36 Mbit/s, 40.0 dB PSNR against what was sent, 34.0 dB had the video stayed marked limited range. H.264 at QP 21: 62 Mbit/s, 40.6 dB. QP 28: about 1 Mbit/s in either (the sensor noise is gone).
 - The rig check with live tracking (smoke3 in the table above): 3 emulated cameras recorded for 60 s in H.265 at quality 21 while `campy-live` tracked them in 3D. Each video holds all 3,600 frames (60.00 s, 4–5 Mbit/s), and against the clips the cameras played they scored 46.3–47.8 dB (35.6–36.4 dB one frame off, so no frame is out of place; 27–28 dB had they been marked limited range).
