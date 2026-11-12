@@ -292,8 +292,12 @@ def test_a_camera_unplugged_and_plugged_back_in(tmp_path, service):
 	# campy-align: the frame numbers' gap as triggers without a frame, every frame on its pulse as camera 0's
 	summary = align.Run(str(session), log=lambda *a: None)
 	aligned = {n: np.loadtxt(str(session / n / "aligned.csv"), delimiter=",", skiprows=1) for n in ("Camera0", "Camera1")}
-	shift = {n: set((a[:, 1] - a[:, 0]).astype(int)) for n, a in aligned.items()}
-	assert shift["Camera0"] == shift["Camera1"] and len(shift["Camera1"]) == 1, shift
+	shift = {n: (a[:, 1] - a[:, 0]).astype(int) for n, a in aligned.items()}
+	# Camera1 on one trigger for its number throughout, across the gap: camera 0's for most of its frames. (Emulated
+	# cameras time-stamp a frame as it is read, so one a busy runner holds up can land a trigger off: camera 0's did,
+	# on GitHub's Windows runner, 2026-11-12. The real cameras' timestamps are the camera's own: docs/alerts.md)
+	values, counts = np.unique(shift["Camera0"], return_counts=True)
+	assert set(shift["Camera1"]) == {int(values[np.argmax(counts)])}, {n: sorted(set(v)) for n, v in shift.items()}
 	assert summary["cameras"]["Camera1"]["triggers_without_frame"] >= after - before - 1, summary["cameras"]["Camera1"]
 
 
