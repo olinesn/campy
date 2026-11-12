@@ -637,8 +637,10 @@ def test_a_session_with_the_sync_train(tmp_path, board):
 	p = pins(log_path)
 	t0 = [t for t, level in p[2] if level == 1][0] # the gate rises at the session's time 0
 	up = np.array([t for t, level in p[6] if level == 1]) - t0
-	# The live sketch runs on the computer's clock, tens of us off: test_chronic_timer.py checks it to the microsecond
-	assert len(up) == len(want) and np.abs(up - want).max() <= 2000
+	# The live sketch runs on the computer's clock, which a busy CI runner delays by tens of ms (33.7 ms once): this
+	# checks that the pulses are the seed's (its gaps are 200 ms or more apart), test_chronic_timer.py their timing to
+	# the microsecond on the simulated clock
+	assert len(up) == len(want) and np.abs(up - want).max() <= 50000
 	assert p[6][-1][1] == 0
 
 
