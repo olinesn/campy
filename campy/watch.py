@@ -534,9 +534,9 @@ class Watch:
 				"lost) after frame {}. Its recording has ended there; the other cameras go on. It needs a replug, and "
 				"a new recording.".format(name, row["grabbed"]), remind=False)
 		elif state == camstatus.GRABBING and row["reconnects"] > self.reconnects.get(c, 0):
-			# Back after it was unplugged (cameraReconnect): its first frame since is row["grabbed"]
+			# Back after it was unplugged (cameraReconnect): recording again, at frame row["grabbed"] as the watch saw it
 			self.reconnects[c] = row["reconnects"]
-			self.Clear("{}/ended".format(name), "{}: back, plugged in again: it records from frame {} on".format(
+			self.Clear("{}/ended".format(name), "{}: back, plugged in again: recording again (at frame {})".format(
 				name, row["grabbed"]))
 		elif state == camstatus.VIDEO_FAILED and row["restarts"]:
 			self.Raise("{}/ended".format(name), notify.CRITICAL, "{}: ffmpeg stopped again, in {}, and the camera "

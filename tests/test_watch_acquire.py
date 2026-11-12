@@ -259,7 +259,7 @@ def test_a_camera_unplugged_and_plugged_back_in(tmp_path, service):
 		r"while it was gone\)\.", out), out
 	texts = Texts(service)
 	assert any(t.startswith("Camera1: the camera is gone") and "campy waits for it" in t for t in texts), texts
-	assert any(t.startswith("resolved, after ") and "Camera1: back, plugged in again: it records from frame" in t
+	assert any(t.startswith("resolved, after ") and "Camera1: back, plugged in again: recording again (at frame" in t
 		for t in texts), texts
 	assert not any("trigger pulse" in t and "no frame for" in t for t in texts), texts # the gap is not missed pulses
 	assert "with a camera unplugged and plugged back in" in texts[-1] and "unplugged and back 1 time" in texts[-1], texts
