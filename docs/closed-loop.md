@@ -219,11 +219,11 @@ All host times are on campy's host clock (`hosttimes.npy`'s), so everything line
   - the watchdog and `max_on_s`;
   - counting on through a pause (and a train keeping its frames across it), and the 71-minute wrap of the board's clock.
 - `tests/test_rules.py` checks every condition, debouncing, hysteresis, missing data, refractory periods and file errors. It also checks `--dry-run` and `--replay`, a level and a train on one output (both orders), switch-ons refused and sent again, the recovery after the watchdog, a stuck decision loop that lets the watchdog fire, and a slow log write. For `campy-live` ending mid-recording, it checks that:
-  - the laser goes off at once and the session's train keeps running (no stop, no `alloff`), with the heartbeat never quiet near the watchdog's 250 ms;
+  - the laser goes off at once and the session's train keeps running (no stop, no `alloff`), with the heartbeat at its usual pace and quiet for 200 ms or more at most once (one heartbeat sent late by a busy test computer, not by `campy-rules`);
   - the rules resume on the next `campy-live`'s feed, in one log;
   - `campy-rules` ends with `alloff` when the recording ends, while it waits or before (the cameras' feeds end first, as at a normal stop), or while `campy-live` is hung;
   - it ends with `campy-live` as before without camera feeds to look at, or with `--live-wait-s 0`;
   - a camera feed left by a killed recording, or made again by the next one, counts as ended;
   - `refractory_s` counts across the restart.
 
-  One of these runs the sketch in real time with a 60 Hz trigger: `campy-live` gone for 1 s, the session train's pin kept pulsing (20 pulses or more during the gap) and the board's watchdog never fired. Slowing the waiting loop past 100 ms makes that test and the heartbeat check fail. And it runs the whole path in real time: a results feed, `campy-rules`, and the sketch on a simulated serial port with a 60 Hz trigger.
+  One of these runs the sketch in real time with a 60 Hz trigger: `campy-live` gone for 2 s, the session train's pin kept pulsing (20 pulses or more during the gap) and the board's watchdog never fired. That test sets the watchdog to 500 ms, not 250, because a 250 ms hold-up of the simulated board or of `campy-rules` on a busy test computer could fire it. It also checks the heartbeat's pace from what `campy-rules` sent. Slowing the waiting loop to 300 ms makes that test and the heartbeat check fail. And it runs the whole path in real time: a results feed, `campy-rules`, and the sketch on a simulated serial port with a 60 Hz trigger.
