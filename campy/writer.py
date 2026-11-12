@@ -490,6 +490,8 @@ class GstPipeline:
 	"""
 
 	def __init__(self, gst, mux, log_level="quiet", mux_stderr=None):
+		if os.name == "nt":
+			raise OSError("gpuMake \"jetson\" runs on a Jetson (Linux), not on Windows")
 		self.lines = collections.deque(maxlen=GST_LINES)
 		self.say = str(log_level) not in ("quiet", "panic", "fatal")
 		read, write = os.pipe()

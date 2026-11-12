@@ -113,10 +113,11 @@ FAKE_GST = textwrap.dedent('''
 		sys.stderr.write("ERROR: from element /GstPipeline:pipeline0/nvv4l2h265enc:nvv4l2h265enc0: Could not open "
 			"device '/dev/v4l2-nvenc' for reading and writing.\\n")
 		sys.exit(1)
-	# Lossless H.264 of the gray levels as they are (full range), marked limited range as the Orin's encoder does
+	# Lossless H.264 of the gray levels as they are (4:0:0: no conversion in any ffmpeg version), marked
+	# limited range as the Orin's encoder does
 	code = subprocess.call([os.environ["FAKE_FFMPEG"], "-v", "error", "-f", "rawvideo", "-pix_fmt", "gray",
-		"-s", width + "x" + height, "-framerate", rate, "-i", "pipe:0", "-vf", "scale=out_range=full",
-		"-pix_fmt", "yuv420p", "-c:v", "libx264", "-qp", "0", "-bf", "0", "-g", "30",
+		"-s", width + "x" + height, "-framerate", rate, "-i", "pipe:0",
+		"-pix_fmt", "gray", "-c:v", "libx264", "-qp", "0", "-bf", "0", "-g", "30",
 		"-bsf:v", "h264_metadata=video_full_range_flag=0", "-f", "h264", "pipe:1"], stdout=out)
 	sys.exit(code)
 	''')
@@ -142,9 +143,10 @@ def Probe(path):
 
 
 def GrayFrames(path, width, height):
-	# The video's frames, decoded to gray as they are stored (no range conversion: the luma plane)
+	# The video's frames as they are stored: the decoder's own output (4:2:0, chroma 128), no range or format
+	# conversion, which differs between ffmpeg versions; the gray levels are its luma plane
 	raw = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-v", "error", "-i", str(path), "-f", "rawvideo",
-		"-pix_fmt", "yuv420p", "pipe:1"], capture_output=True, check=True).stdout
+		"pipe:1"], capture_output=True, check=True).stdout
 	size = width * height * 3 // 2
 	return [np.frombuffer(raw[i:i + width * height], np.uint8).reshape(height, width)
 		for i in range(0, len(raw), size)]
@@ -171,7 +173,7 @@ def test_frames_go_through_both_processes_into_a_full_range_mp4(tmp_path, fake_g
 
 	video = os.path.join(str(tmp_path), "Camera0", "0.mp4")
 	info = Probe(video)
-	assert re.search(r"Video: h264 .*yuvj?420p\(pc", info), info # marked full range, as the frames are
+	assert re.search(r"Video: h264 .*(yuvj?420p|gray)\(pc", info), info # marked full range, as the frames are
 	assert "Duration: 00:00:02.50" in info # 75 frames at 30 fps: each frame's time from the frame rate
 	got = GrayFrames(video, 64, 48)
 	assert len(got) == len(frames) # every frame, in order, each gray level as it was sent
@@ -236,6 +238,7 @@ def test_the_probe_encodes_test_frames(tmp_path, fake_gst, monkeypatch):
 	assert said.startswith("gst-launch-1.0 exited with exit code 1") and "Could not open device '/dev/v4l2-nvenc'" in said
 
 
+@posix
 def test_the_probe_without_gstreamer(tmp_path, monkeypatch):
 	monkeypatch.setattr(writer, "GST_LAUNCH", [str(tmp_path / "no-such-gst-launch-1.0")])
 	said = writer.JetsonProbe(cam(codec="h264", frameWidth=64, frameHeight=48), str(tmp_path))
