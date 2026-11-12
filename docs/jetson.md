@@ -41,7 +41,7 @@ The rig checks, the same as the EVO-X2's, with campy-live's defaults:
 | smoke1, on the Orin's encoder | 1,800, 0 skipped | 3.9 / 4.1 ms | | 1,800 |
 | smoke3, on the Orin's encoder | 3,600, 0 skipped | 10.2 / 10.6 ms | 14.6 / 16.0 (22.0) ms | 3 × 3,600 |
 
-The replay tracked as the other machines do: against the offline SLEAP predictions, 2D median 3.8 px, 3D median 4.2 mm, 99.93% the same identity, 2 identity switches (the EVO-X2: 3.8 px, 4.2 mm, 2 switches). The EVO-X2 takes about half the time (inference 5.5 / 5.6 ms in the same replay). The 3D step alone took 2.8 ms here against about 1.1 ms there: it runs on the CPU (2.3 ms here since pull request 420: [The CPU's share](#the-cpus-share-which-cores-and-numpys-threads-12-november)). While smoke3 ran, the CPU was about half busy, the three libx264 encoders included. Recorded on the Orin's encoder instead, tracking took the same time; the CPU was about 38% busy at mid-run (one sample, `top`), most of it the emulated cameras decoding their clips.
+The replay tracked as the other machines do: against the offline SLEAP predictions, 2D median 3.8 px, 3D median 4.2 mm, 99.93% the same identity, 2 identity switches (the EVO-X2: 3.8 px, 4.2 mm, 2 switches). The EVO-X2 takes about half the time (inference 5.5 / 5.6 ms in the same replay). The 3D step alone took 2.8 ms here against about 1.1 ms there: it runs on the CPU (2.3 ms here since pull request 420, 1.9 ms with numba since 421: [The CPU's share](#the-cpus-share-which-cores-and-numpys-threads-12-november)). While smoke3 ran, the CPU was about half busy, the three libx264 encoders included. Recorded on the Orin's encoder instead, tracking took the same time; the CPU was about 38% busy at mid-run (one sample, `top`), most of it the emulated cameras decoding their clips.
 
 Since 11 November the rig check records on the Orin's encoder, as a recording on the Orin would: smoke1 and smoke3 use `gpuMake: "jetson"`, H.265 at quality 21 (`ENC=cpu` still runs the CPU path, libx264 `ultrafast`). Its first run, the three rows from "Since 11 November", came after the Orin's campy moved to dev `5b3aefb` (the Jetson writer, pull request 403): the replay tracked as before (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches), each recorded video held every frame (4.1–5.0 Mbit/s per camera in smoke3), and the CPU was about 39% busy at smoke3's mid-run (one sample).
 
@@ -85,7 +85,18 @@ The GPU results matched numpy's: identical points missing, and the 3D within 3 �
 | Orin, offline (all 3,600 sets, four passes each) | 2.12 / 3.14 ms | **1.65 / 2.59 ms** |
 | EVO-X2, offline (the same) | 0.58 / 0.85 ms | **0.44 / 0.67 ms** |
 
-The replay's accuracy didn't change (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches). Inside `campy-live` the step gains less than offline because it shares Python with the thread running the models. What is left is mostly numpy's eigenvalue solver (the 3D solve) and the undistortion's ten rounds; going further would take compiled code.
+The replay's accuracy didn't change (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches). Inside `campy-live` the step gains less than offline because it shares Python with the thread running the models.
+
+**numba's compiled loops took more off** (pull request 421, when numba is installed). The undistortion and the scoring, the two busiest loops left, run compiled; numpy keeps the matrix products, `exp` and the eigenvalue solver, whose numba versions can differ in the last bit (numba's eigenvalue solver did, on the Orin, and it was no faster: LAPACK's own time, about 1.5 µs a matrix here, is most of it). With no reordering of the arithmetic, and the scores' sum over the nodes done in numpy's own order, the results were again identical to the last bit, on the Orin and the EVO-X2. The loops run without Python's lock, so the thread running the models isn't held up by them. Times per set, p50 / p99, all `RIG_CLEAN` (12 November):
+
+| | numpy (dev before pull request 420) | numpy (pull request 420) | numba (pull request 421) |
+|---|---|---|---|
+| Orin, 3D step inside `campy-live` (the replay check) | 2.76–2.79 / 3.84–3.90 ms | 2.27–2.30 / 3.32–3.38 ms | **1.88–1.90 / 2.92–2.97 ms** |
+| Orin, frame to 3D in the same runs | 14.5 / 15.7 ms | 14.0 / 15.1–15.3 ms | **13.6 / 14.8 ms** |
+| Orin, offline (3,600 sets, four passes) | 2.12 / 3.14 ms | 1.65 / 2.59 ms | **1.30 / 2.24 ms** |
+| EVO-X2, offline | 0.58 / 0.85 ms | 0.44 / 0.67 ms | **0.32 / 0.55 ms** |
+
+Loading the compiled loops took 0.8–1.4 s on the Orin and compiling them the first time 1.8 s (0.6 s on the EVO-X2); numba keeps them after. In the first try, `campy-live` started loading them only once its models were ready, and in two of three replay checks the loading, finished as the feed came, held up the first sets: 1 and 3 sets skipped, one stall of 45–55 ms. Started as `campy-live` starts, while its models load, as since, they were ready before the feed in each of three runs, and every set was tracked. Numba isn't installed in the Orin's environments yet; `~/venvs/sleap/bin/pip install numba` would do it.
 
 ### Recording
 

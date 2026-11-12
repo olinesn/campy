@@ -51,6 +51,8 @@ Then install PyTorch for your computer, sleap-nn and the viewer's packages:
 - **Linux, AMD GPU**: a ROCm build of PyTorch for your GPU first ([Live tracking](live-tracking.md#two-python-environments)), then `pip install "sleap-nn>=0.3.5" opencv-python PyQt5`.
 - **No GPU**: as on Linux. It works, but tracks only a few sets of frames a second.
 
+Optionally, `pip install numba` too: with 3D tracking, `campy-live` then runs the 3D step's busiest loops compiled, faster and with the same numbers ([Live tracking](live-tracking.md#two-python-environments)).
+
 Last, install campy into it without its dependencies, so it doesn't need the camera drivers:
 ```
 pip install --no-deps -e .
