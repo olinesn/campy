@@ -395,7 +395,7 @@ That gave 3,100 pseudo-labelled frames. Two ways of using them were tried:
 - **16 filters**, to keep 2.6 ms of headroom. It is more accurate than the model running now on every measure, though by little in 3D (5.21 against 5.35 mm).
 - **24 filters**, for the most accuracy, at the same speed as now: 9 fewer skeletons on the wrong mouse, and 3D within 4.43 mm at the median against 5.35.
 
-These models aren't on the Tower Plus yet.
+Both are on the Tower Plus since 11 November, in its panel's Live models box beside the round-4 pairs. Its daily live config still starts on the round-4 24-filter pair until someone picks another.
 
 **Precision.** These scores ran in PyTorch fp16, without compiled engines, on a cluster GPU: the teacher has no TensorRT engine, so every model ran the same way. The model on the Tower Plus scores 5.97 px here, against 6.00 px with TensorRT fp16 in round 4. The teacher also ran in fp16 under autocast during training. Its maps differ from fp32 maps by fp16 rounding, which is far smaller than their spot widths.
 
