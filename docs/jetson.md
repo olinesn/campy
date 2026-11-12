@@ -11,7 +11,7 @@ An **NVIDIA Jetson AGX Orin 64GB Developer Kit** joined the test machines on 11 
 
 ## What it measured (11 November 2026)
 
-Every number here: JetPack 7.2.1 (Jetson Linux 39.2.1), power mode MAXN, clocks held by `jetson_clocks` (CPU 2.2 GHz, GPU 1.3 GHz), fan at full speed, under the rig lock ([`bench/rig.py`](development.md#timing-tests-on-a-shared-machine-benchrigpy)), each run `RIG_CLEAN` unless said otherwise. PyTorch 2.15.0+cu132, sleap-nn 0.3.5, TensorRT 10.16.2, campy dev `6cdc979`. No monitor was attached.
+Every number here: JetPack 7.2.1 (Jetson Linux 39.2.1), power mode MAXN, clocks held by `jetson_clocks` (CPU 2.2 GHz, GPU 1.3 GHz), fan at full speed, under the rig lock ([`bench/rig.py`](development.md#timing-tests-on-a-shared-machine-benchrigpy)), each run `RIG_CLEAN` unless said otherwise. PyTorch 2.15.0+cu132, sleap-nn 0.3.5, TensorRT 10.16.2, campy dev `6cdc979` unless said otherwise. No monitor was attached.
 
 ### Live tracking
 
@@ -34,8 +34,13 @@ The rig checks, the same as the EVO-X2's, with campy-live's defaults:
 | smoke1: 1 emulated camera recorded and tracked, 30 s | 1,800, 0 skipped | 4.0 / 4.2 ms | | 1,800 |
 | smoke3: 3 emulated cameras recorded (libx264 `ultrafast` on the CPU) and tracked in 3D, 60 s | 3,600, 0 skipped | 10.2 / 10.7 ms | 14.7 / 16.5 (24.1) ms | 3 × 3,600 |
 | smoke3 recorded on the Orin's encoder (`gpuMake: "jetson"`, H.265 quality 21, pull request 403) | 3,600, 0 skipped | 10.2 / 10.6 ms | 14.5 / 15.8 (23.7) ms | 3 × 3,600 |
+| **Since 11 November** (campy dev `5b3aefb`): replay3 | 3,600 of 3,600, 0 skipped | 10.1 / 10.3 ms | 14.5 / 15.7 (24.3) ms | (a replay) |
+| smoke1, on the Orin's encoder | 1,800, 0 skipped | 3.9 / 4.1 ms | | 1,800 |
+| smoke3, on the Orin's encoder | 3,600, 0 skipped | 10.2 / 10.7 ms | 14.6 / 16.1 (25.3) ms | 3 × 3,600 |
 
 The replay tracked as the other machines do: against the offline SLEAP predictions, 2D median 3.8 px, 3D median 4.2 mm, 99.93% the same identity, 2 identity switches (the EVO-X2: 3.8 px, 4.2 mm, 2 switches). The EVO-X2 takes about half the time (inference 5.5 / 5.6 ms in the same replay). The 3D step alone takes 2.8 ms here against about 1.1 ms there: it runs on the CPU. While smoke3 ran, the CPU was about half busy, the three libx264 encoders included. Recorded on the Orin's encoder instead, tracking took the same time; the CPU was about 38% busy at mid-run (one sample, `top`), most of it the emulated cameras decoding their clips.
+
+Since 11 November the rig check records on the Orin's encoder, as a recording on the Orin would: smoke1 and smoke3 use `gpuMake: "jetson"`, H.265 at quality 21 (`ENC=cpu` still runs the CPU path, libx264 `ultrafast`). Its first run, the last three rows above, came after the Orin's campy moved to dev `5b3aefb` (the Jetson writer, pull request 403): the replay tracked as before (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches), each recorded video held every frame (4.1–5.0 Mbit/s per camera in smoke3), and the CPU was about 39% busy at smoke3's mid-run (one sample).
 
 Not checked: how far TensorRT's fp16 moves the keypoints from fp32 on the Orin (the replay's accuracy above already includes it), and a real camera feeding `campy-live`.
 
@@ -264,9 +269,11 @@ A read-only checklist. It prints PASS, WARN or FAIL for each item, with a one-li
 python3 bench/jetson_setup_check.py
 ```
 
-It checks, in order: the Jetson Linux version (`/etc/nv_tegra_release`, R39.2 wanted) and the `nvidia-jetpack` packages; the power mode (MAXN, mode 0) and whether `jetson_clocks` is holding the clocks; `usbfs_memory_mb` (1000 or more) and USB autosuspend (-1); the `cdc_acm` serial driver (loaded, or in the kernel's config) and a `/dev/ttyACM*` port you can open; GStreamer's `nvv4l2h265enc`, `nvvidconv`, `rawvideoparse` and `h265parse`, and the encoder properties the benchmark sets; ffmpeg, and its `libx264` and `libx265`; FLIR cameras on USB (`lsusb`); PySpin in the campy venv, Spinnaker's version and how many cameras it sees; campy and PyQt5 in the campy venv; torch with CUDA working and sleap-nn in the sleap venv; and the free space on `/data`, and that `/data` is not on the system disk.
+It checks, in order: the Jetson Linux version (`/etc/nv_tegra_release`, R39.2 wanted) and the `nvidia-jetpack` packages; the power mode (MAXN, mode 0) and whether `jetson_clocks` is holding the clocks; `usbfs_memory_mb` (1000 or more) and USB autosuspend (-1); the `cdc_acm` serial driver (loaded, or in the kernel's config) and a `/dev/ttyACM*` port you can open; GStreamer's `nvv4l2h265enc`, `nvvidconv`, `rawvideoparse` and `h265parse`, and the encoder properties the benchmark sets; ffmpeg, and its `libx264` and `libx265`; FLIR cameras on USB (`lsusb`); PySpin in the campy venv, Spinnaker's version and how many cameras it sees; campy and PyQt5 in the campy venv; torch with CUDA working and sleap-nn in the sleap venv; and the video disk: that `/data` (or the folder `--video-dir` names) exists, has room, and is not on the system disk.
 
-Options: `--campy-venv` (default `~/campy/.venv`), `--sleap-venv` (default `~/venvs/sleap`), `--video-dir` (default `/data`), `--min-free-gb` (default 200), `--cameras` (default 3), `--json` to keep the results. Counting cameras opens Spinnaker, so pass `--no-cameras` while a recording is running. It exits 1 if anything failed. Needs only Python's standard library, so it runs with the system `python3`.
+On our kit the video disk item FAILs, as expected: it boots from its only NVMe slot, so there is no `/data` and recordings go on the system disk ([step 2](#2-the-video-disk)). With the defaults the check says `FAIL video disk: no /data`. With `--video-dir` set to the folder recordings use, it gives the free space (1,817 GB of 1,966 GB), then FAILs because that folder is on the system disk. Either FAIL clears once a USB 3 drive is mounted at `/data`. Both ways, on 11 November (JetPack 7.2.1, `--no-cameras`, under the rig lock): 17 items passed, the camera count was skipped (`--no-cameras`), and one WARN said one camera was plugged in, not 3.
+
+Options: `--campy-venv` (default `~/campy/.venv`), `--sleap-venv` (default `~/venvs/sleap`), `--video-dir` (default `/data`; where recordings go), `--min-free-gb` (default 200), `--cameras` (default 3), `--json` to keep the results. Counting cameras opens Spinnaker, so pass `--no-cameras` while a recording is running. It exits 1 if anything failed. Needs only Python's standard library, so it runs with the system `python3`.
 
 ## The encoder benchmark: `bench/jetson_encode_bench.py`
 
@@ -313,6 +320,5 @@ At each release, as on the EVO-X2: in `~/campy`, `git fetch` and `git merge --ff
 
 ## Still to do
 
-- The rig check `smoke.sh` still records on the CPU: once the Jetson writer is on the Orin's `~/campy`, it moves to `gpuMake: "jetson"`.
 - A recording with real cameras of a lit cage with mice, several cameras, triggered, to check the tracking as well as the timing (one camera of a dark room is in [Cameras](#cameras)).
 - How far TensorRT's fp16 moves the keypoints from fp32 here, as measured on the other NVIDIA cards.
