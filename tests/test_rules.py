@@ -780,7 +780,11 @@ def test_after_the_watchdog_the_rules_start_over_and_the_session_trains_again(mo
 			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
 			time.sleep(1 / 60)
 		port.Say("wd 123456") # the board's watchdog switched everything off
-		time.sleep(0.05)
+		# Waited for, not slept on: the wd heard (the board's reading thread) and dealt with (the decision loop
+		# clears watchdog_fired as it sends the release and the session's train). After a fixed 50 ms, a busy runner
+		# could hear the wd only after sets 6-10 were all decided: then no set came after the release, and the
+		# laser stayed off
+		assert until(lambda: runner.counts["watchdog"] == 1 and not runner.watchdog_fired.is_set(), 30)
 		for k in range(6, 11):
 			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
 			time.sleep(1 / 60)
@@ -824,15 +828,25 @@ def test_a_stuck_decision_loop_lets_the_board_watchdog_fire(monkeypatch, tmp_pat
 			said = [x for _, x in port.Lines()]
 			on = [i for i, x in enumerate(said) if x.startswith("on 2 ")] # set 1's, or a later one's if 1 came late
 			return bool(on) and "hb" in said[on[0]:]
-		assert until(beat_since_on)
+		assert until(beat_since_on, 30)
 		for k in range(5, 8):
 			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
 			time.sleep(1 / 60)
-		time.sleep(1.3)
-	run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows)
-	# Nothing at all on the port from LOOP_ALIVE_S into the hold to its end: 0.9 s, well over the watchdog's 250 ms
-	quiet_from = held["at"] + int((rules.LOOP_ALIVE_S + 0.02) * 1e9)
-	assert [x for t, x in port.Lines() if quiet_from <= t <= held["end"]] == []
+		assert until(lambda: "end" in held, 30)
+		time.sleep(0.3)
+	# --bound-ms 0: no limit on a set's age, which isn't what this test checks. On a busy CI runner (Windows, 4
+	# workers) sets 1 to 4 were all decided over 40 ms after they were written, now and then: all rightly refused as
+	# late, so the laser never came on, no set came after them, and the wait for a heartbeat since the laser's on
+	# above ran out
+	run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows, bound_ms=0)
+	# The board hears nothing for most of the hold: the longest quiet stretch on the port within it is at least
+	# 2 x the watchdog's 250 ms (the hold is 1 s; the heartbeat stops LOOP_ALIVE_S into it). With the heartbeat
+	# going whatever the loop does, the longest is about HEARTBEAT_S (50 ms). Not "nothing after exactly
+	# LOOP_ALIVE_S + 20 ms": one heartbeat checked for just before that and written a little late, by a busy runner,
+	# would fail that without the watchdog being any less sure to fire
+	times = [held["at"]] + [t for t, _ in port.Lines() if held["at"] < t < held["end"]] + [held["end"]]
+	quiet_ms = max(np.diff(times)) / 1e6
+	assert quiet_ms >= 2 * 250, (quiet_ms, [(t - held["at"]) / 1e6 for t in times])
 	# Heartbeats before it, as usual
 	assert any(x == "hb" and t < held["at"] for t, x in port.Lines())
 
@@ -921,9 +935,13 @@ def test_campy_live_restarting_keeps_the_session_trains_and_the_rules_resume(mon
 	after = [x for t, x in switches if t >= marks["back"]]
 	assert after[0].startswith("on 2 ") and int(after[0].split()[2]) >= 100 # the new feed's sets, from a fresh start
 	assert after[-1] == "alloff" and "run 1 0" not in after[:-1] # Ctrl-C (the test's stop): all off
-	# The board heard campy-rules all through the gap: never quiet near its watchdog_ms (250)
+	# The board heard campy-rules all through the gap: the heartbeat at its usual pace (HEARTBEAT_S, 50 ms; about
+	# 62 ms on Windows' 15.6 ms ticks), never quiet near the watchdog's 250 ms more than once, never a stop. Before,
+	# the heartbeat stopped for all of the gap; a waiting loop slowed to 300 ms leaves a 200 ms hush every round.
+	# One is let by: a busy runner (4 tests at once) can write a heartbeat late, which isn't campy-rules' doing
 	heard = [t for t, x in lines if marks["gone"] <= t <= marks["back"]]
-	assert len(heard) >= 15 and max(np.diff(heard)) / 1e6 < 200, max(np.diff(heard)) / 1e6
+	gaps_ms = np.diff(heard) / 1e6
+	assert len(heard) >= 8 and sum(gaps_ms >= 200) <= 1 and max(gaps_ms) < 500, list(gaps_ms.round())
 	assert runner.counts["watchdog"] == 0 and runner.counts["live_gaps"] == 1
 	gone = [e for e in events if e["kind"] == "live_gone"]
 	back = [e for e in events if e["kind"] == "live_back"]
@@ -1075,9 +1093,13 @@ def test_refractory_counts_from_the_last_start_across_a_release():
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal for the simulated board")
 def test_the_board_sketch_keeps_the_session_train_and_never_fires_its_watchdog_while_campy_live_is_gone(tmp_path,
 		outputs_sim):
-	# The sketch itself, in real time with a 60 Hz trigger: campy-live gone for 1 s (4 x watchdog_ms) while the
+	# The sketch itself, in real time with a 60 Hz trigger: campy-live gone for 2 s (4 x watchdog_ms) while the
 	# cameras record. The session train's pin keeps pulsing on its frames, the laser goes off, the board's watchdog
-	# never fires; the laser comes back on with the new campy-live's sets
+	# never fires; the laser comes back on with the new campy-live's sets.
+	# watchdog_ms 500 here, not the usual 250: the simulated board and campy-rules are two processes on a CI runner
+	# that runs 4 tests at once, and a 250 ms stall of either one (the simulator checks its watchdog before reading
+	# what came while it was held up) now and then fired it (ARM runner, November 2026). How campy-rules itself keeps
+	# the heartbeat's pace through the gap is checked from its own log of what it sent, below
 	master, slave = pty()
 	sim_log = tmp_path / "sim.log"
 	env = dict(os.environ, SIM_INPUT="10:300000:16667:3000:100000")
@@ -1087,7 +1109,7 @@ def test_the_board_sketch_keeps_the_session_train_and_never_fires_its_watchdog_w
 	cams = CameraRings(prefix)
 	feed = Feed(prefix, rings=cams.names)
 	out = str(tmp_path / "live")
-	config = dict(LASER_RULE, board={"trigger_pin": 10, "bound_ms": 60, "watchdog_ms": 250})
+	config = dict(LASER_RULE, board={"trigger_pin": 10, "bound_ms": 60, "watchdog_ms": 500})
 	args = args_for(prefix, out)
 	args.port = os.ttyname(slave)
 	runner = rules.Runner(args, config)
@@ -1100,21 +1122,21 @@ def test_the_board_sketch_keeps_the_session_train_and_never_fires_its_watchdog_w
 		board = runner.board
 		k0 = next(reversed(board.rises))
 		for k in range(k0 + 1, k0 + 1 + count):
-			assert until(lambda: k in board.rises, 2)
+			assert until(lambda: k in board.rises, 10)
 			rise = board.RiseHostNs(k)
 			feed.Write(make_row(k, IN_NEST, t_ns=rise + 5_000_000 if rise is not None else clock.HostNs()))
 	try:
 		assert until(lambda: runner.board is not None and len(runner.board.rises) >= 5 and
-			runner.board.clock.Ready(), 10)
+			runner.board.clock.Ready(), 30)
 		rows(10)
 		time.sleep(0.05)
 		marks["gone"] = clock.HostNs()
 		feed.Close()
-		assert until(lambda: runner.results is None and runner.counts["live_gaps"] == 1)
-		time.sleep(1.0)
+		assert until(lambda: runner.results is None and runner.counts["live_gaps"] == 1, 30)
+		time.sleep(2.0)
 		marks["back"] = clock.HostNs()
 		feed.publisher = feed.Publisher()
-		assert until(lambda: runner.results is not None)
+		assert until(lambda: runner.results is not None, 30)
 		rows(10)
 		time.sleep(0.2)
 	finally:
@@ -1127,8 +1149,18 @@ def test_the_board_sketch_keeps_the_session_train_and_never_fires_its_watchdog_w
 		os.close(slave)
 		os.close(master)
 	assert result.get("code") == 0, said
-	assert runner.counts["watchdog"] == 0, said
-	assert not [line for line in open(out + ".board.txt") if line.split()[1:2] == ["wd"]] # the board never said wd
+	# What campy-rules sent the board through the gap, on its own clock: the heartbeat at its usual pace
+	# (HEARTBEAT_S, 50 ms), quiet for 200 ms or more at most once (a busy runner), never for 500. This is what
+	# catches a waiting loop slowed to 300 ms (a 200 ms hush every round), which the 500 ms watchdog wouldn't.
+	# Said with any watchdog below, to tell a stalled runner from a bug
+	board_log = [line.split() for line in open(out + ".board.txt")]
+	sent = [int(w[0]) for w in board_log if w[1:2] == [">"] and marks["gone"] <= int(w[0]) <= marks["back"]]
+	gaps_ms = np.diff(sent) / 1e6
+	pace = "{} lines sent in the gap, {} of them 200 ms or more after the one before, at most {:.0f} ms".format(
+		len(sent), sum(gaps_ms >= 200), max(gaps_ms))
+	assert len(sent) >= 15 and sum(gaps_ms >= 200) <= 1 and max(gaps_ms) < 500, pace
+	assert runner.counts["watchdog"] == 0, (pace, said)
+	assert not [w for w in board_log if w[1:2] == ["wd"]], pace # the board never said wd
 	events = [json.loads(l) for l in open(out + ".events.jsonl")]
 	laser = [e["command"].split()[0] for e in events if e["kind"] == "command" and e["output"] == "laser"]
 	assert laser[:3] == ["on", "off", "on"], laser # (then off once the test's sets stop: stale)
