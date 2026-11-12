@@ -153,7 +153,13 @@ If it is not back before the recording ends (its `recTimeInSec`, Ctrl-C, a stop 
 
 `cameraReconnect: False` turns it off: the camera's recording ends when it is unplugged, as before. Other makes (Basler, RatCam) can't be opened again mid-recording yet, and end as before. Its counters of frames lost on the camera and in Spinnaker (`flirTransferQueueOverflowCount`, `flirStream...`) start again with the new acquisition; those of before the unplug went with the camera. `flirFramesLost` and `flirFramesIncomplete` carry on.
 
-Tested on a Mac with emulated cameras (camera 1 unplugged at its frame 60 of a 30 fps recording and plugged back in 2 s later, its clock started again at 0): it came back about 2 s later, its frames' host times a median of under half a frame from camera 0's for the same numbers, and `campy-align` gave both the same trigger for every frame number. Not yet tested by unplugging a real FLIR camera.
+Tested on a Mac with emulated cameras (camera 1 unplugged at its frame 60 of a 30 fps recording and plugged back in 2 s later, its clock started again at 0): it came back about 2 s later, its frames' host times a median of under half a frame from camera 0's for the same numbers, and `campy-align` gave both the same trigger for every frame number.
+
+Tested with real cameras on 12 November 2026 on the GMKtec EVO-X2: its 3 FLIR Blackfly S BFS-U3-13Y3M at 60 fps on the trigger Arduino, 1280x1024, VA-API H.264, a 180 s recording with campy-acquire's own window open. One camera's USB cable was pulled 22 s in, and plugged back in a few seconds later:
+- campy saw it go at once (Spinnaker's -1024, "Camera has been removed"), after frame 1,315; the watch's alert said it waited; the window showed `CAMERA LOST` while the other two went on.
+- It was back 18.4 s after it went, the camera's own start-up included: found by its serial, set up again, back on its USB 3 link. Its frames went on from frame 2,423 (1,107 numbers skipped, as 18.4 s at 60 fps), and the window showed it again.
+- Numbered as the other cameras: for the same frame number, its host times were a median of 0.00 ms from camera 0's (at most 1.7 ms apart), so the same trigger pulse.
+- Every camera ended on frame 10,800; this one saved 9,693 frames, all in its video. `campy-align` put every frame of all three cameras on the same trigger for its number, and counted the 1,107 as triggers without a frame (shown as dropped by campy), none missed by the camera.
 
 ### Restarting a stopped ffmpeg (`restartFfmpeg`)
 
