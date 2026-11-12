@@ -187,11 +187,12 @@ def test_a_desktop_is_noted_not_waited_for_and_one_starting_mid_run_is_caught(ri
 @linux
 def test_a_logged_in_gnome_desktops_helpers_are_desktop_not_device_users(rig, tmp_path):
 	# Logged in, GNOME's gsd-xsettings and mutter-x11-frames keep the render node open for the whole
-	# session; stand-ins named like them hold the fake GPU open, and run neither waits nor is contaminated.
-	# mutter-x11-frames is longer than the 15 characters the kernel keeps of a name, so this checks that too
+	# session, and its portal helper xdg-desktop-portal-gnome from the first dialog it draws until it ends;
+	# stand-ins named like them hold the fake GPU open, and run neither waits nor is contaminated. The last
+	# two names are longer than the 15 characters the kernel keeps of a name, so this checks that too
 	helpers = []
 	with open(rig.gpu) as dev:
-		for name in ("gsd-xsettings", "mutter-x11-frames"):
+		for name in ("gsd-xsettings", "mutter-x11-frames", "xdg-desktop-portal-gnome"):
 			exe = tmp_path / name
 			shutil.copy(shutil.which("sleep"), str(exe))
 			helpers.append(subprocess.Popen([str(exe), "30"], stdin=dev))
@@ -201,6 +202,7 @@ def test_a_logged_in_gnome_desktops_helpers_are_desktop_not_device_users(rig, tm
 		assert r.returncode == 0 and "in use outside" not in r.stdout, r.stdout
 		assert last(log).startswith("RIG_CLEAN (desktop on the GPU:"), log
 		assert "gsd-xsettings" in log and "mutter-x11-frames" in log, log
+		assert "xdg-desktop-portal-gnome (" in last(log), log
 	finally:
 		for h in helpers:
 			h.kill()
