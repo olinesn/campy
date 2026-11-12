@@ -5,7 +5,8 @@
 
 Goal: releases, health checks and rig checks on the rigs (EVO-X2, Dell Pro Max Slim FCS1250, Precision 7875, and since
 2026-10-28 the Dell Pro Tower Plus, an experiment machine: section 5; and since 2026-10-29 a Windows 11 virtual machine
-with an Intel Arc Pro B50 and no cameras: section 6) stop being hand work, without ever disturbing a
+with an Intel Arc Pro B50 and no cameras: section 6; and since 2026-11-11 an NVIDIA Jetson AGX Orin 64GB Developer Kit:
+section 7) stop being hand work, without ever disturbing a
 recording or another session's locked run.
 
 Nothing has been changed on any rig. I only copied the existing rig-check scripts, READMEs and update scripts to my
@@ -472,6 +473,23 @@ What changes because it's a VM:
     rig checks end with refuses any path that isn't on the local disk.
 - **Its own account.** Unlike the Tower, nobody shares it, so the VM gets one account for the fleet (an administrator,
   so installs can be tried). Its password is in your password manager, never in the repo or on the Mac.
+
+## 7. An NVIDIA Jetson AGX Orin: the Arm rig
+
+Added 2026-11-11: an **NVIDIA Jetson AGX Orin 64GB Developer Kit** (12 Arm Cortex-A78AE cores, an Ampere GPU sharing
+64 GB, JetPack 7.2.1 on Ubuntu 24.04), with one FLIR Blackfly S and a trigger Arduino on its USB ports. What it adds to
+the fleet, and what a fleet tool has to allow for there (docs/jetson.md has the setup and the numbers):
+- **The only Arm machine.** campy's tests, its two environments (PyQt5 from Ubuntu, PyTorch's CUDA 13.2 wheels for Arm64)
+  and its rig checks run there as on the EVO-X2; anything that assumes x86-64 shows up there first.
+- **Updates like the EVO-X2's**: a `~/campy` git checkout (the Orin reaches GitHub itself), both environments
+  reinstalled, `rig.py install` when the lock changes, the rig checks (`~/sleap-bench/rigcheck`) under the lock.
+- **Its own devices.** The lock knows its GPU (`/dev/nvgpu/*`) and encoder (`/dev/v4l2-nvenc`) since pull request 401.
+  A GNOME desktop runs on it with no monitor; the programs on it that keep the GPU open count as desktop.
+- **Its encoder isn't campy's yet.** campy records there on the CPU (libx264 `ultrafast`); the hardware encoder, which
+  keeps up with 8 cameras at 60 fps, needs a GStreamer writer in campy. A fleet check on the Orin covers both.
+- **Nobody at it.** It has no screen or keyboard and is reached over SSH only. A reflash needs a person and an x86
+  Ubuntu PC with a USB-C cable (docs/jetson.md, step 1), so nothing a fleet job runs there may touch its boot
+  configuration or network settings.
 
 ---
 
