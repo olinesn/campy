@@ -212,7 +212,8 @@ def test_a_camera_unplugged_mid_recording_leaves_the_others_in_the_view(tmp_path
 		"numCams: 3", 'cameraMake: "emu"', 'videoFolder: "{}"'.format(tmp_path.as_posix()), 'videoFilename: "emuclip.mp4"',
 		"frameRate: 20", "recTimeInSec: 7", "chunkLengthInSec: 1", "displayFrameRate: 10",
 		'pixelFormatInput: "gray"', 'pixelFormatOutput: "yuv420p"', "gpuID: -1", 'codec: "h264"',
-		'preflight: "off"', 'liveFeedName: "{}"'.format(feed), ""]))
+		'preflight: "off"', 'liveFeedName: "{}"'.format(feed), "cameraReconnect: False", ""]))
+	# (cameraReconnect False: its feed ends, as a camera campy can't open again does; the test below has it back)
 	summary = tmp_path / "view_summary.json"
 	env = dict(OFFSCREEN, PYTHONPATH=REPO, PYTHONUNBUFFERED="1", CAMPY_EMU_FAULTS="1:lost@20")
 	for key in (manifest.LAUNCHER_ENV, livefeed.FEED_ENV, "IMAGEIO_FFMPEG_EXE"):
