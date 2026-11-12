@@ -344,9 +344,11 @@ class Blobs(torch.nn.Module):
 
 @needs_tensorrt
 @pytest.mark.parametrize("graphs", [False, True])
-def test_tensorrt_engine(graphs, tmp_path):
+def test_tensorrt_engine(graphs, tmp_path, capfd):
 	# --engine tensorrt on sleap-nn-shaped models: built, cached, and the
-	# same animals and keypoints as sleap-nn's layer
+	# same animals and keypoints as sleap-nn's layer; without a graph (on
+	# CUDA's default stream, as in campy-infer) no "Using default stream"
+	# warning from TensorRT
 	counts = [2, 3]
 	model, host = Model("cuda", graphs=graphs, engine="tensorrt")
 	model.fixed.cache = str(tmp_path)
@@ -360,6 +362,8 @@ def test_tensorrt_engine(graphs, tmp_path):
 	frames = model.Upload(host.tensor)
 	Near(model.Predict(frames), Reference(model, model.Upload(host.tensor)), counts)
 	assert "TensorRT" in model.DescribeGraphs()
+	torch.cuda.synchronize()
+	assert "default stream" not in capfd.readouterr().err
 
 
 def test_engine_options():

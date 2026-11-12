@@ -1966,7 +1966,12 @@ class FixedEngine:
 
 	def Enqueue(self, x):
 		# sleap-nn's normalize_on_gpu for uint8 (float32 / 255), then the
-		# engine on torch's stream; its output buffer is the same every call
+		# engine on torch's stream; its output buffer is the same every call.
+		# Not on CUDA's default stream, though (campy-infer and any run
+		# without a graph): there TensorRT says "Using default stream in
+		# enqueueV3() may lead to performance issues" and synchronizes it on
+		# each call. Then the engine runs on a stream of its own, after what
+		# torch's stream has queued and before what it queues next.
 		torch = self.torch
 		x = x.squeeze(1)
 		if torch.is_floating_point(x):
@@ -1976,8 +1981,14 @@ class FixedEngine:
 			x = x.float() / 255.0
 		x = x.contiguous()
 		self.ctx.set_tensor_address("x", x.data_ptr())
-		if not self.ctx.execute_async_v3(torch.cuda.current_stream().cuda_stream):
+		stream = torch.cuda.current_stream()
+		run = stream if stream.cuda_stream else FixedStream("tensorrt")
+		if run is not stream:
+			run.wait_stream(stream)
+		if not self.ctx.execute_async_v3(run.cuda_stream):
 			raise RuntimeError("TensorRT: the {} network didn't run".format(self.name))
+		if run is not stream:
+			stream.wait_stream(run)
 		return self.out
 
 	def __call__(self, x):
