@@ -32,11 +32,11 @@ What it watches:
 
 | | Linux | Windows |
 |---|---|---|
-| GPU | `/dev/kfd` open | a CUDA program (type C in `nvidia-smi -q -d PIDS`), or any `python*.exe` |
-| Video encoder | `/dev/dri/renderD*` open | `ffmpeg*.exe` |
+| GPU | `/dev/kfd` open; on a Jetson, `/dev/nvgpu/*` or `/dev/nvhost-*gpu` | a CUDA program (type C in `nvidia-smi -q -d PIDS`), or any `python*.exe` |
+| Video encoder | `/dev/dri/renderD*` open (CUDA on a Jetson opens it too); on a Jetson, `/dev/v4l2-nvenc` | `ffmpeg*.exe` |
 | FLIR cameras | their USB devices open, or Spinnaker loaded | a Spinnaker DLL loaded |
 | Trigger | `/dev/ttyACM*`, `/dev/ttyUSB*` open | a COM port open |
-| Desktop on the GPU (noted, not waited for) | gnome-shell, Xwayland, and a logged-in GNOME session's gsd-xsettings and mutter-x11-frames, ...; one starting or ending contaminates the run | programs that draw on the GPU (dwm.exe, explorer.exe, ...); Windows starts and ends some by itself, so this is only logged |
+| Desktop on the GPU (noted, not waited for) | gnome-shell, Xwayland, Xorg, and a logged-in GNOME session's gsd-xsettings and mutter-x11-frames; the desktop portals, GNOME Software's background service and the first-login wizard, which keep the GPU open on a Jetson's desktop, ...; one starting or ending contaminates the run | programs that draw on the GPU (dwm.exe, explorer.exe, ...); Windows starts and ends some by itself, so this is only logged |
 
 On Windows, every Python process counts as a GPU user, because any of them may start CUDA (`nvidia-smi` lists a CUDA program only once it has). The disk load there starts from what all the physical disks actually read and wrote (the `PhysicalDisk(_Total)` counter): what processes outside the job read and wrote, but no more than the disks moved, since Windows counts a process's pipes, devices, network and cached files alike; or, if more, what the disks moved beyond the job's own reads and writes, which catches a file copy that went into Windows' memory cache and was written out after the copy had ended. The kernel's own count ("System", pid 4) is left out: Windows' display driver charges it with every frame a job copies to the GPU, 400-800 MB/s on the Precision 7875 with nothing read from or written to a disk, which made every GPU benchmark there end `RIG_CONTAMINATED` before. The lock there is a file, `C:\campy_data\live\gpu.lock`, created only if it is absent, and deleted when the run ends. It names who holds the rig and since when, and the process ids of `rig.py` and of the job: once both have ended, the lock counts as free, so a crash can't leave the rig locked. A `gpu.lock` written by hand (a name and a time) holds the rig until whoever wrote it deletes it, or `rig.py break`.
 

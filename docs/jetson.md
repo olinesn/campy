@@ -4,7 +4,7 @@ An NVIDIA Jetson AGX Orin 64GB developer kit is being set up as a small, stand-a
 
 The target: JetPack 7.2.1 (Jetson Linux 39.2.1: Ubuntu 24.04, Python 3.12, CUDA 13.2, TensorRT 10.16), three FLIR Blackfly S Mono 1.3 MP cameras (1280×1024, 8-bit mono) triggered at 60 fps by an Arduino Nano ESP32 on `/dev/ttyACM0`, and `campy-live-view` on the Orin's own monitor.
 
-**Why the encoder is different here.** Stock ffmpeg can't use the Orin's hardware video encoder: the Orin has no `libnvidia-encode`, so `hevc_nvenc` fails. NVIDIA's route is GStreamer's `nvv4l2h265enc`, fed gray frames that `nvvidconv` turns into NV12 in the Orin's hardware memory. `bench/jetson_encode_bench.py` measures whether that keeps up with three cameras before campy is changed to use it.
+**Why the encoder is different here.** ffmpeg can't use the Orin's hardware video encoder: stock ffmpeg finds no NVENC driver for it, and NVIDIA's own ffmpeg for JetPack 7.2.1 (8.0.1, whose `hevc_nvenc` is for the Jetson Thor) fails with `OpenEncodeSessionEx failed: unsupported device`. NVIDIA's route is GStreamer's `nvv4l2h265enc`, fed frames that `nvvidconv` turns into NV12 in the Orin's hardware memory. On JetPack 7.2.1 `nvvidconv` refuses GRAY8 there ("Transform not supported"), so the frames go in as I420: the mono image as the Y plane, the two color planes at 128. `bench/jetson_encode_bench.py` measures whether that keeps up with three cameras before campy is changed to use it.
 
 ## Setting up the Orin
 
@@ -57,14 +57,14 @@ Options: `--campy-venv` (default `~/campy/.venv`), `--sleap-venv` (default `~/ve
 Starts one encoder per simulated camera (default 3) and feeds each synthetic 1280×1024 mono frames (bright blobs moving over a noisy gradient), paced at 60 fps, the way campy's writer feeds ffmpeg today: one pipe per camera, one frame per write, and a write waits when the encoder falls behind. Each stream is
 
 ```
-gst-launch-1.0 fdsrc ! rawvideoparse format=gray8 width=1280 height=1024 framerate=60/1
+gst-launch-1.0 fdsrc ! rawvideoparse format=i420 width=1280 height=1024 framerate=60/1
   ! nvvidconv ! video/x-raw(memory:NVMM),format=NV12
   ! nvv4l2h265enc ratecontrol-enable=0 quant-i-frames=21 quant-p-frames=21
       iframeinterval=60 idrinterval=60 insert-sps-pps=1 num-B-Frames=0
   ! h265parse ! fdsink   →   ffmpeg -f hevc -i pipe: -c copy <campy's fragmented-MP4 flags> -tag:v hvc1 streamN.mp4
 ```
 
-so the files are laid out like the MP4s campy writes on the other rigs. The property names are the ones in NVIDIA's Jetson Linux r39.2 Accelerated GStreamer guide, and the script checks them with `gst-inspect-1.0` before it starts.
+so the files are laid out like the MP4s campy writes on the other rigs. `--input i420` (the default) is that; `--input gray8-convert` sends GRAY8 and adds GStreamer's `videoconvert` (on the CPU) before `nvvidconv`; `--input gray8` is the direct GRAY8 path, which JetPack 7.2.1 refuses. The property names are the ones in NVIDIA's Jetson Linux r39.2 Accelerated GStreamer guide, and the script checks them with `gst-inspect-1.0` before it starts.
 
 ```
 python3 bench/jetson_encode_bench.py                    # 3 streams x 60 fps for 30 s, QP 21, keyframe every second
