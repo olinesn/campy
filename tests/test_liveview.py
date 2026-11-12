@@ -1689,3 +1689,178 @@ def test_frame_numbers_have_thousands_separators_and_their_time():
 	assert liveview.Viewer.FrameTime(types.SimpleNamespace(rig=None), 0, frame) is None
 	assert liveview.MarkText({"number": 3, "time": "2026-10-21 16:46:27.532", "frame": 12444, "event": "mark",
 		"note": ""}).startswith("3 at 16:46:27, frame 12,444")
+
+
+# -------------------------------------------------------------- a camera unplugged
+
+SHAPE = (240, 320) # frames large enough that a tile's corner is clear of its text
+
+
+def three_feeds(rings, frames, slots=8):
+	# 3 cameras' rings, frames 1..frames written; camera c's frame n all of value 10 n + c
+	prefix = name()
+	writers = [rings(livefeed.RingName(prefix, c), SHAPE, np.uint8, slots=slots, frameRate=30.0,
+		cameraName="Camera{}".format(c)) for c in range(3)]
+	def Write(n, cameras=(0, 1, 2)):
+		for c in cameras:
+			writers[c].Write(np.full(SHAPE, (10 * n + c) % 256, np.uint8), n, 1000 * n)
+	for n in range(1, frames + 1):
+		Write(n)
+	return prefix, writers, Write
+
+
+def frame_value(viewer, image, c):
+	# The value of a pixel of camera c's frame in its tile: clear of its text and outline
+	tile = tile_of(viewer, image, c)
+	return int(tile[tile.shape[0] - 8, 8, 0])
+
+
+def test_one_camera_unplugged_leaves_the_others_shown_and_says_so(rings, monkeypatch):
+	# A camera's feed ends (unplugged: its camera process closes its ring) while the others record on. The view
+	# used to call that the recording's end and stop drawing every camera (2026-11-12). Now the others are shown
+	# on, the lost camera's tile says CAMERA LOST over its last frame, dimmed, and the panel says so in red
+	monkeypatch.setattr(liveview, "LOST_AFTER_S", 0.0)
+	prefix, writers, Write = three_feeds(rings, 10)
+	viewer = liveview.Viewer(view_args(prefix))
+	try:
+		viewer.Check()
+		viewer.lastRow = time.monotonic() - 1 # no results: the frames alone
+		writers[1].Close() # camera 1 unplugged at its frame 10
+		for n in range(11, 31):
+			Write(n, (0, 2))
+		viewer.Check()
+		assert viewer.readers is not None and not viewer.ended # not the recording's end
+		assert viewer.lost == {1: 10}
+		viewer.lastRaw = 0
+		image, frame, row = viewer.Step()
+		assert frame == 30 and row is None # the newest frame of the cameras still recording
+		assert frame_value(viewer, image, 0) == 300 % 256 and frame_value(viewer, image, 2) == 302 % 256
+		assert frame_value(viewer, image, 1) == 101 // 3 # its last frame, dimmed: not passed off as live
+		assert like(tile_of(viewer, image, 1), liveview.WARN).sum() > 200 # its mark, and a red frame round it
+		# (Frames written here all at once make the others' rates differ by a few %: only the loss is checked)
+		alerts = [text for text, _ in viewer.Alerts() if "camera lost" in text]
+		assert len(alerts) == 1 and alerts[0].startswith("Camera1: camera lost, its live feed ended at its frame 10 "
+			"while the other cameras record on")
+		assert [s.problems[0][0] if s.gone else None for s in viewer.rig.Status().cameras] == [None, "CAMERA LOST", None]
+		assert "Camera1 lost" in viewer.RigText()[0]
+		# Frames go on coming from the others, and are drawn
+		for n in range(31, 41):
+			Write(n, (0, 2))
+		viewer.lastRaw = 0
+		image, frame, row = viewer.Step()
+		assert frame == 40 and frame_value(viewer, image, 0) == 400 % 256
+		# Single view of the lost camera: its last frame, said lost
+		viewer.Key(ord("2"))
+		viewer.lastRaw = 0
+		image, frame, row = viewer.Step()
+		assert viewer.Shown() == [1] and frame == 10
+		# Every camera's feed ended: now that is the recording's end
+		writers[0].Close()
+		writers[2].Close()
+		viewer.Check()
+		assert viewer.ended and viewer.readers is None and viewer.lost == {}
+	finally:
+		viewer.Close()
+
+
+def test_feeds_ending_together_are_the_recordings_end_not_a_camera_lost(rings):
+	# As a recording stops, the cameras' feeds end a few ms apart: none is called lost meanwhile
+	prefix, writers, Write = three_feeds(rings, 10)
+	viewer = liveview.Viewer(view_args(prefix))
+	try:
+		viewer.Check()
+		writers[0].Close()
+		viewer.Check() # within LOST_AFTER_S of its end
+		assert viewer.lost == {} and not viewer.ended
+		writers[1].Close()
+		writers[2].Close()
+		viewer.Check()
+		assert viewer.ended and viewer.lost == {}
+	finally:
+		viewer.Close()
+
+
+def test_a_stalled_camera_does_not_hold_the_others_frames_back(rings):
+	# Camera 2 stops sending (its trigger cable out, say) but its feed hasn't ended: the frames alone used to be
+	# frame min(newest) of every camera, gone from the others' rings once camera 2 was a ring's length behind,
+	# so nothing was drawn. Now the others show their newest, and camera 2 its own
+	prefix, writers, Write = three_feeds(rings, 10)
+	viewer = liveview.Viewer(view_args(prefix))
+	try:
+		viewer.Check()
+		viewer.lastRow = time.monotonic() - 1
+		for n in range(11, 31):
+			Write(n, (0, 1))
+		viewer.lastRaw = 0
+		image, frame, row = viewer.Step()
+		assert frame == 30
+		assert [frame_value(viewer, image, c) for c in range(3)] == [300 % 256, 301 % 256, 102]
+		assert viewer.lost == {} # stalled, not lost: its badge says NO FRAMES once it lasts
+		# Within a ring's length of the others: the same frame number on every camera, as before
+		Write(31)
+		viewer.lastRaw = 0
+		image, frame, row = viewer.Step()
+		assert frame == 31 and [frame_value(viewer, image, c) for c in range(3)] == [310 % 256, 311 % 256, 312 % 256]
+	finally:
+		viewer.Close()
+
+
+def test_campy_lives_rows_without_the_lost_camera_are_drawn_on_the_others(rings, monkeypatch):
+	# campy-live tracks on with the cameras left: its rows give the lost camera's frame as -1 (left out of the set)
+	monkeypatch.setattr(liveview, "LOST_AFTER_S", 0.0)
+	cams, truth, keypoints, scores, order = mice()
+	prefix, writers, Write = three_feeds(rings, 10)
+	publisher = liveresults.Publisher(liveresults.RingName(prefix), live.RowType(3, 3, truth.shape[1], 3),
+		cameras=["Camera0", "Camera1", "Camera2"], rings=[livefeed.RingName(prefix, c) for c in range(3)],
+		edges=EDGES, animals=3)
+	try:
+		viewer = liveview.Viewer(view_args(prefix))
+		viewer.Check()
+		writers[2].Close()
+		for n in range(11, 21):
+			Write(n, (0, 1))
+		viewer.Check()
+		assert viewer.lost == {2: 10} and viewer.readers is not None
+		row = row_for(20, cams, truth, keypoints / 16, scores, order)
+		row["cam_frame"] = [20, 20, -1]
+		publisher.Write(row)
+		image, frame, got = viewer.Step()
+		assert frame == 20 and got is not None
+		assert frame_value(viewer, image, 0) == 200 and frame_value(viewer, image, 2) == 102 // 3
+		viewer.Close()
+	finally:
+		publisher.Close()
+
+
+def test_a_view_opened_after_a_camera_was_unplugged_shows_the_others(rings, monkeypatch):
+	# The view (re)opened mid-recording, camera 1's ring gone: it used to wait for it for ever. Once the others
+	# have had frames for MISSING_S, it shows them, and camera 1 as lost (a black tile)
+	monkeypatch.setattr(liveview, "MISSING_S", 0.0)
+	prefix, writers, Write = three_feeds(rings, 10)
+	writers[1].Close()
+	viewer = liveview.Viewer(view_args(prefix))
+	try:
+		viewer.Check()
+		viewer.Check()
+		assert viewer.readers is not None and isinstance(viewer.readers[1], liveview.GoneReader)
+		assert viewer.lost == {1: 0}
+		viewer.lastRow = time.monotonic() - 1
+		viewer.lastRaw = 0
+		image, frame, row = viewer.Step()
+		assert frame == 10 and frame_value(viewer, image, 0) == 100 and frame_value(viewer, image, 1) == 0
+		assert any(text.startswith("{}: camera lost".format(livefeed.RingName(prefix, 1))) for text, _ in viewer.Alerts())
+	finally:
+		viewer.Close()
+
+
+def test_a_view_waits_for_cameras_still_starting(rings):
+	# As a recording starts, the cameras' rings come one by one: within MISSING_S the view waits for every one
+	prefix = name()
+	writer = rings(livefeed.RingName(prefix, 0), (64, 80), np.uint8, slots=8)
+	writer.Write(np.zeros((64, 80), np.uint8), 1, 1000)
+	viewer = liveview.Viewer(view_args(prefix))
+	try:
+		viewer.Check()
+		assert viewer.readers is None and viewer.missingSince is not None
+	finally:
+		viewer.Close()

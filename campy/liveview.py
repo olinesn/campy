@@ -119,7 +119,9 @@ So that a problem shows at a glance (campy/livehealth.py says how each is
 told):
 - Each camera's tile says its frames a second at its top right, in green, or
   in red what is wrong, with a red frame round the tile: behind the other
-  cameras or no frames (12.0 FPS, NO FRAMES), frames the camera lost (LOST
+  cameras or no frames (12.0 FPS, NO FRAMES), a camera whose feed ended
+  while the others record on (CAMERA LOST: unplugged; its last frame shown
+  dimmed, the others drawn on), frames the camera lost (LOST
   n), frame numbers missing from its feed (GAP n) or frames that came a frame
   late (LATE n), in the last 10 s, and a camera whose host times are a frame
   or more off the others' for the same frame number (1 FRAME AHEAD: as a
@@ -243,6 +245,12 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 LINE = 20 # px between the panel's lines
 PAD = 8
 STALE_S = 0.5 # no row for this long: the frames alone
+# One camera's feed ended (unplugged, or its camera process stopped) while the others record on: CAMERA LOST on its
+# tile once this long has passed and the others still have not ended (every camera's feed ends within it when the
+# recording ends). A camera's ring missing as the view opens, while the others' have frames: shown as lost after
+# MISSING_S (cameras open at different times as a recording starts)
+LOST_AFTER_S = 2.0
+MISSING_S = 10.0
 STRIP_H, STRIP_LABEL = 14, 110 # px: each identity's strip, its label before it
 # The strip's colours, as a cv2.LUT: between identities, no row from campy-live, no 3D, good, fair, bad
 STRIP_COLORS = np.zeros((1, 256, 3), np.uint8)
@@ -1538,6 +1546,51 @@ def BookmarkKind(key):
 RecordingFolder = livefeed.RecordingFolder # where liveview's bookmarks go: beside the cameras' folders
 
 
+class GoneReader:
+	"""
+	In place of the RingReader of a camera whose ring was not there (or had
+	ended) as the view attached to the others' (the camera was unplugged before
+	the view opened): no frames, ended, its frames' size the others'.
+	"""
+
+	def __init__(self, name, like):
+		self.name, self.cameraName = name, ""
+		self.shape, self.dtype, self.slots = like.shape, like.dtype, like.slots
+		self.ringId = None
+		self.frameRate = like.Info("frameRate")
+
+	def Latest(self):
+		return 0
+
+	def State(self):
+		return livefeed.ENDED
+
+	def Ended(self):
+		return True
+
+	def Replaced(self):
+		return False
+
+	def Info(self, key):
+		return self.frameRate if key == "frameRate" else 0
+
+	def Description(self):
+		return ""
+
+	def Slots(self):
+		empty = np.zeros(0, np.int64)
+		return empty, empty, np.zeros(0, np.float64), empty
+
+	def HostTime(self, frameNumber):
+		return None
+
+	def Read(self, frameNumber, out=None):
+		return None
+
+	def Close(self):
+		pass
+
+
 class Viewer:
 	"""
 	The feed and the results, and the view of them. Step makes the next
@@ -1584,6 +1637,9 @@ class Viewer:
 		self.after = 0 # the last row taken
 		self.lastRow = self.lastRaw = self.checked = 0.0
 		self.ended = False # a recording's feed came and ended
+		self.endedAt = {} # camera: when its feed was first seen ended, while the others' had not
+		self.lost = {} # camera: its last frame number, once its feed ended LOST_AFTER_S ago and the others record on
+		self.missingSince = None # some cameras' rings there with frames, others not: since then
 		self.layoutKey = self.layout = None
 		# For the panel and the summary
 		self.rows, self.gone, self.passed, self.raw = 0, 0, 0, 0 # rows taken, gone, passed over; views of frames alone
@@ -1621,20 +1677,37 @@ class Viewer:
 	# -- the shared memory
 
 	def Check(self):
-		# Attaches what has come, lets go of what ended
-		self.checked = time.monotonic()
+		# Attaches what has come, lets go of what ended. The recording ended when every camera's feed did (or one
+		# was made again: a new recording's); one camera's feed ending while the others go on is that camera lost
+		# (unplugged): its tile says so and the others are shown on, as campy-acquire and campy-live record on
+		now = self.checked = time.monotonic()
 		self.WatchCage()
 		if self.results is not None and self.results.Ended():
 			self.results.Close()
 			self.results = None
 			self.rate = [] # its results a second: none now
-		if self.readers is not None and any(r.Ended() or r.Replaced() for r in self.readers):
-			for r in self.readers:
-				r.Close()
-			self.readers = None
-			self.ended = True
-			Say("The recording ended.")
-			self.FinishCage("the recording ended") # a cage being drawn isn't lost with the recording
+		if self.readers is not None:
+			ended = [r.Ended() for r in self.readers]
+			if all(ended) or any(r.Replaced() for r in self.readers):
+				for r in self.readers:
+					r.Close()
+				self.readers = None
+				self.ended = True
+				self.endedAt, self.lost = {}, {}
+				Say("The recording ended.")
+				self.FinishCage("the recording ended") # a cage being drawn isn't lost with the recording
+			else:
+				for c, gone in enumerate(ended):
+					if not gone:
+						continue
+					self.endedAt.setdefault(c, now)
+					if c not in self.lost and now - self.endedAt[c] >= LOST_AFTER_S:
+						self.lost[c] = self.readers[c].Latest()
+						name = self.readers[c].cameraName or self.readers[c].name
+						self.rig.gone[c] = self.LostText(c)
+						Say("{}'s feed ended{} while the other cameras record on (unplugged, or its camera stopped?): "
+							"its tile says CAMERA LOST, the others are shown on.".format(name, " at its frame {:,}".format(
+							self.lost[c]) if self.lost[c] > 0 else ""))
 		if self.results is None:
 			try:
 				self.results = liveresults.Results(self.resultsName)
@@ -1653,26 +1726,53 @@ class Viewer:
 				try:
 					reader = livefeed.RingReader(name)
 				except (OSError, ValueError):
-					break
-				if reader.Ended():
+					reader = None
+				if reader is not None and reader.Ended():
 					reader.Close()
-					break
+					reader = None
 				readers.append(reader)
-			if len(readers) == len(self.ringNames):
-				self.readers = readers
-				self.pixelFormats = [livefeed.PixelFormat(r) for r in readers]
-				self.buffers = [np.empty(r.shape, r.dtype) for r in readers]
-				self.ended = False
-				self.cameraTrails.fps = self.cameraTrails.fps or readers[0].Info("frameRate")
-				self.rig = livehealth.Rig([r.cameraName or r.name for r in readers], readers[0].Info("frameRate"),
-					readers[0].slots, self.args.pause_sec, self.args.stop_sec)
-				self.rigAt = 0.0
-				self.recording = RecordingFolder(readers)
-				Say("Live feed: {}. Bookmarks (m) go to {}.".format(", ".join("{} {}x{}".format(r.cameraName or r.name,
-					r.shape[1], r.shape[0]) for r in readers), self.bookmarks.Where(self.recording)))
-			else:
-				for r in readers:
-					r.Close()
+			there = [r for r in readers if r is not None]
+			if len(there) < len(readers):
+				# Some cameras' rings missing (or ended): attached without them once the others have had frames
+				# for MISSING_S (a camera unplugged before the view opened), else looked for again
+				if there and max(r.Latest() for r in there) > 0:
+					self.missingSince = self.missingSince or now
+				else:
+					self.missingSince = None
+				if self.missingSince is None or now - self.missingSince < MISSING_S:
+					for r in there:
+						r.Close()
+					return
+				missing = [name for name, r in zip(self.ringNames, readers) if r is None]
+				readers = [r if r is not None else GoneReader(name, there[0]) for name, r in zip(self.ringNames, readers)]
+				Say("No live feed from {} while the other cameras record: shown as CAMERA LOST.".format(", ".join(missing)))
+			self.missingSince = None
+			self.readers = readers
+			self.endedAt, self.lost = {}, {}
+			for c, r in enumerate(readers):
+				if isinstance(r, GoneReader):
+					self.endedAt[c] = now - LOST_AFTER_S
+					self.lost[c] = 0
+			self.pixelFormats = [livefeed.PixelFormat(r) for r in readers]
+			self.buffers = [np.empty(r.shape, r.dtype) for r in readers]
+			self.ended = False
+			self.cameraTrails.fps = self.cameraTrails.fps or there[0].Info("frameRate")
+			self.rig = livehealth.Rig([r.cameraName or r.name for r in readers], there[0].Info("frameRate"),
+				there[0].slots, self.args.pause_sec, self.args.stop_sec)
+			self.rigAt = 0.0
+			for c in self.lost:
+				self.rig.gone[c] = self.LostText(c)
+			self.recording = RecordingFolder(there)
+			Say("Live feed: {}. Bookmarks (m) go to {}.".format(", ".join("{} {}x{}".format(r.cameraName or r.name,
+				r.shape[1], r.shape[0]) for r in there), self.bookmarks.Where(self.recording)))
+
+	def LostText(self, c):
+		# The panel's line for camera c, lost
+		name = self.readers[c].cameraName or self.readers[c].name
+		n = self.lost.get(c, 0)
+		return "{}: camera lost, its live feed ended{} while the other cameras record on (unplugged, or its camera " \
+			"stopped: campy-acquire records on without it, and does not open it again).".format(name,
+			" at its frame {:,}".format(n) if n > 0 else "")
 
 	def Describe(self, d):
 		# What campy-live said about its results: its cameras' rings, the skeleton, the calibration
@@ -2073,19 +2173,29 @@ class Viewer:
 			return [self.selected]
 		return list(range(n))
 
-	def Read(self, n, row=None):
+	def Read(self, n, row=None, own=None):
 		# Frame n of each camera shown, or None if a ring no longer holds it. With a row of campy-live's: each
 		# camera's own frame of the set (cam_frame: it differs after the camera lost a frame), and the newest
-		# frame of a camera campy-live left out of the set (cam_frame -1: its feed ended or stalled)
-		own = row["cam_frame"] if row is not None and "cam_frame" in row.dtype.names else None
+		# frame of a camera campy-live left out of the set (cam_frame -1: its feed ended or stalled). own: such
+		# frame numbers for the frames alone ({camera: -1}: its newest). A camera whose feed ended (lost) shows its
+		# last frame (its tile says CAMERA LOST), or a black one when its ring holds none
+		if own is None and row is not None and "cam_frame" in row.dtype.names:
+			own = row["cam_frame"]
 		frames = []
 		for c in self.Shown():
-			m = n if own is None or own[c] == 0 else int(own[c]) # 0: not given (frame numbers start at 1)
+			m = n if own is None or c >= len(own) or own[c] == 0 else int(own[c]) # 0: not given (frames from 1)
+			reader = self.readers[c]
 			if m < 0:
-				m = self.readers[c].Latest()
-				frame = self.readers[c].Read(m, self.buffers[c]) or self.readers[c].Read(m - 1, self.buffers[c])
+				m = reader.Latest()
+				frame = (reader.Read(m, self.buffers[c]) or reader.Read(m - 1, self.buffers[c])) if m > 0 else None
 			else:
-				frame = self.readers[c].Read(m, self.buffers[c])
+				frame = reader.Read(m, self.buffers[c])
+			if frame is None and c in self.endedAt:
+				m = reader.Latest()
+				frame = reader.Read(m, self.buffers[c]) if m > 0 else None
+				if frame is None:
+					self.buffers[c].fill(0)
+					frame = livefeed.Frame(self.buffers[c], max(m, 0), 0, float("nan"), 0)
 			if frame is None:
 				return None
 			frames.append(frame)
@@ -2142,15 +2252,33 @@ class Viewer:
 					self.lastRow = now
 					return self.Compose(frames, row), int(row["frame"]), row
 		if now - self.lastRow > STALE_S and now - self.lastRaw >= 1.0 / max(1e-3, self.args.fps):
-			# No results: the newest frames alone
-			newest = min(self.readers[c].Latest() for c in self.Shown())
-			frames = self.Read(newest) if newest > 0 else None
+			# No results: the newest frames alone, of the same frame number on every camera that keeps up. A
+			# camera whose feed ended, or that has fallen out of its ring's reach (stalled), shows its own newest
+			newest, own = self.Newest()
+			frames = self.Read(newest, own=own) if newest > 0 or all(c in self.lost for c in self.Shown()) else None
 			if frames is None:
 				return None
 			self.lastRaw = now
 			self.raw += 1
 			return self.Compose(frames, None), newest, None
 		return None
+
+	def Newest(self):
+		"""
+		For the frames alone: (the newest frame number every camera shown that
+		keeps up still holds, own), own None when they all keep up, else -1
+		for each camera that does not (its feed ended, or its newest frame is
+		a ring's length behind the newest: stalled), shown at its own newest,
+		and 0 for the others. Frame number 0 before a frame.
+		"""
+		shown = self.Shown()
+		latest = {c: self.readers[c].Latest() for c in shown}
+		live = [c for c in shown if not self.readers[c].Ended() and latest[c] > 0]
+		top = max(latest[c] for c in live) if live else 0
+		keeping = [c for c in live if latest[c] > top - self.readers[c].slots + 1]
+		newest = min(latest[c] for c in keeping) if keeping else max(latest.values(), default=0)
+		own = [0 if c in keeping else -1 for c in range(len(self.readers))]
+		return newest, (own if len(keeping) < len(shown) else None)
 
 	def Dimmed(self, row):
 		# The identities to draw dimmed in row, {identity: px}: those whose error's median over the last half
@@ -2229,6 +2357,9 @@ class Viewer:
 			scale, origin = zoom.Window(frame.image.shape, layout.tile, layout.scale)
 			image, bgr = Colours(frame.image, self.pixelFormats[c] if c < len(self.pixelFormats) else "")
 			tile = Gray(image, layout.tile, scale, origin, bgr=bgr)
+			if c in self.lost: # its last frame, not live: dimmed, and said across it
+				tile //= 3
+				self.LostMark(tile, c, words)
 			text = self.Header(c, frame, row, cameraNames, calibNames, zoom, rig)
 			header = TextBox(text, (PAD, PAD + 12), 0.5, words)
 			health = time.perf_counter()
@@ -2273,6 +2404,19 @@ class Viewer:
 		if row is not None and self.trails and self.cameraTrails.seconds > 0:
 			self.cameraTrailMs.append(trailS * 1e3)
 		return full
+
+	def LostMark(self, tile, c, words=None):
+		# Across a lost camera's tile: CAMERA LOST, and since when
+		since = time.monotonic() - self.endedAt.get(c, time.monotonic())
+		h, w = tile.shape[:2]
+		lines = [("CAMERA LOST", 0.9), ("unplugged? no frames for {}".format(livehealth.Duration(since)[2:]), 0.5)]
+		if self.lost.get(c):
+			lines.append(("its last frame ({:,}) shown dimmed".format(self.lost[c]), 0.45))
+		y = h // 2 - 20
+		for text, size in lines:
+			(tw, th), _ = TextSize(text, size, words)
+			Text(tile, text, (max(PAD, (w - tw) // 2), y), WARN if size > 0.5 else TEXT, size, words=words)
+			y += th + 14
 
 	def FrameTime(self, c, frame, status=None):
 		# Camera c's frame's time into the recording (s), as the panel's "Recording" counts it (livehealth.Rig:
@@ -2339,7 +2483,7 @@ class Viewer:
 			return None
 		frames, row = self.last
 		if self.Shown() != self.lastCameras:
-			frames = (self.Read(frames[0].frameNumber) if row is None else self.Read(int(row["frame"]), row)) \
+			frames = (self.Read(*self.Newest()) if row is None else self.Read(int(row["frame"]), row)) \
 				if self.readers is not None else None
 			if frames is None:
 				return None
@@ -2653,7 +2797,9 @@ class Viewer:
 		span = livehealth.WINDOW_S * fps
 		newest = int(got[0][-1]) if got is not None else 0
 		if self.readers is not None:
-			newest = max(newest, min(r.Latest() for r in self.readers)) # campy-live behind: dark at the right
+			recording = [r.Latest() for r in self.readers if not r.Ended()]
+			if recording:
+				newest = max(newest, min(recording)) # campy-live behind: dark at the right
 		# Drawn a column a frame (n), then widened to sw: a tenth of the work at 30 fps
 		n = int(max(10, min(sw, round(span))))
 		cols = newest - (n - 1 - np.arange(n)) * span / n # each column's frame number
@@ -2701,8 +2847,8 @@ class Viewer:
 		status = self.rig.Status()
 		text = "Recording {}".format(livehealth.Duration(status.recording_s)) if status.recording_s is not None \
 			else "Recording"
-		text += "; frames/s: {}".format(", ".join("{} {}".format(s.name, "-" if s.fps is None else "{:.1f}".format(s.fps))
-			for s in status.cameras))
+		text += "; frames/s: {}".format(", ".join("{} {}".format(s.name, "lost" if getattr(s, "gone", False) else
+			"-" if s.fps is None else "{:.1f}".format(s.fps)) for s in status.cameras))
 		offsets = [s.offset_ms for s in status.cameras if s.offset_ms is not None]
 		if len(offsets) > 1:
 			text += "; host times within {:.0f} ms".format(max(offsets) - min(offsets))

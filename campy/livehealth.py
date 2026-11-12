@@ -117,6 +117,10 @@ class Rig:
 		self.sampledAt = None # time.perf_counter_ns() of the last Sample
 		self.rates = [collections.deque(maxlen=36000) for _ in names] # each camera's frames/s, at each Sample
 		self.cache = (None, None)
+		# Cameras lost: their feed ended while the others record on (campy-live-view says which): {camera: the
+		# panel's sentence}. Left out of the others' checks (the fastest rate, the trigger's pause, the offsets),
+		# their tile says CAMERA LOST
+		self.gone = {}
 
 	def Sample(self, readers):
 		for c, reader in enumerate(readers):
@@ -212,9 +216,10 @@ class Rig:
 
 	def Offsets(self, now):
 		# Each camera's host times against the middle camera's, ms, for the same frame numbers; None: too few
-		feeds = self.feeds
+		keep = [c for c in range(len(self.feeds)) if c not in self.gone]
+		feeds = [self.feeds[c] for c in keep]
 		if len(feeds) < 2 or not feeds[0].order:
-			return [None] * len(feeds)
+			return [None] * len(self.feeds)
 		since = now - OFFSET_S * 1e9
 		common = []
 		for n in reversed(feeds[0].order):
@@ -223,12 +228,15 @@ class Rig:
 			if all(n in f.frames for f in feeds[1:]):
 				common.append(n)
 		if len(common) < 5:
-			return [None] * len(feeds)
+			return [None] * len(self.feeds)
 		H = np.array([[f.frames[n][0] for n in common] for f in feeds], np.float64)
 		middle = np.sort(H, 0)[(len(feeds) - 1) // 2] # the middle camera's (with 2: the earlier one's)
 		d = np.sort((H - middle) / 1e6, 1)
 		cut = len(common) // 10
-		return [float(v) for v in d[:, cut:len(common) - cut].mean(1)]
+		offsets = [None] * len(self.feeds)
+		for c, v in zip(keep, d[:, cut:len(common) - cut].mean(1)):
+			offsets[c] = float(v)
+		return offsets
 
 	def Rate(self, feed, now):
 		# Frames a second over the last second, and seconds since its newest frame (None: none yet)
@@ -260,28 +268,33 @@ class Rig:
 		"""
 		if now is None:
 			now = self.sampledAt if self.sampledAt is not None else time.perf_counter_ns()
-		key = (self.samples, now)
+		key = (self.samples, now, tuple(sorted(self.gone.items())))
 		if self.cache[0] == key:
 			return self.cache[1]
 		period = self.Period()
 		since = now - WINDOW_S * 1e9
 		rates = [self.Rate(f, now) for f in self.feeds]
-		known = [r for r, _ in rates if r is not None]
+		known = [r for c, (r, _) in enumerate(rates) if r is not None and c not in self.gone]
 		fastest = max(known) if known else None
 		offsets = self.Offsets(now)
 		quiet_min = max(0.5, 5 * period)
-		quiets = [q for _, q in rates]
+		quiets = [q for c, (_, q) in enumerate(rates) if c not in self.gone]
 		paused = None
 		if self.pause_s and quiets and all(q is not None and q > quiet_min for q in quiets) \
 				and max(quiets) - min(quiets) < 1.0 and (self.stop_s is None or min(quiets) < self.stop_s):
 			paused = min(quiets) # every camera stopped together: the trigger pauses
 		cameras = []
-		for feed, (fps, quiet), offset in zip(self.feeds, rates, offsets):
+		for c, (feed, (fps, quiet), offset) in enumerate(zip(self.feeds, rates, offsets)):
 			while feed.events and feed.events[0][0] < since:
 				feed.events.popleft()
 			s = types.SimpleNamespace(name=feed.name, fps=fps, quiet_s=quiet, offset_ms=offset, frames_off=0,
 				lost=feed.Recent("lost", since), gaps=feed.Recent("gaps", since), late=feed.Recent("late", since),
-				totals=dict(feed.totals), problems=[], paused_s=None)
+				totals=dict(feed.totals), problems=[], paused_s=None, gone=c in self.gone)
+			if s.gone:
+				s.fps = None
+				s.problems.append(("CAMERA LOST", self.gone[c]))
+				cameras.append(s)
+				continue
 			if paused is not None:
 				s.paused_s = quiet
 			elif quiet is not None and quiet > quiet_min:
