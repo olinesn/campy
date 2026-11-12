@@ -432,6 +432,24 @@ def pty():
 	return master, slave
 
 
+def live_sim(outputs_sim, master, sim_log, env):
+	"""
+	The board's sketch in real time on the pty, once it is up: it said "ready"
+	(its power-up line, in sim_log). campy-rules gives a board 2 s to answer
+	"id", as a real one is running before campy-rules opens it; the first start
+	of a just-compiled simulator, on a busy computer (4 tests at once), took
+	longer now and then, and campy-rules rightly said the board didn't answer.
+	"""
+	with open(str(sim_log), "w") as log:
+		board_sim = subprocess.Popen([outputs_sim, "live"], stdin=master, stdout=master, stderr=log, env=env)
+	up = until(lambda: board_sim.poll() is not None or "ready campy_outputs" in sim_log.read_text(), 60)
+	if not up or board_sim.poll() is not None:
+		board_sim.kill()
+		board_sim.wait()
+		raise AssertionError("the simulated board didn't start: {}".format(sim_log.read_text()[-2000:]))
+	return board_sim
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal for the simulated board")
 def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, outputs_sim):
 	"""
@@ -444,8 +462,7 @@ def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, ou
 	master, slave = pty()
 	sim_log = tmp_path / "sim.log"
 	env = dict(os.environ, SIM_INPUT="10:300000:{}:3000:100000".format(period_us))
-	with open(str(sim_log), "w") as log:
-		board_sim = subprocess.Popen([outputs_sim, "live"], stdin=master, stdout=master, stderr=log, env=env)
+	board_sim = live_sim(outputs_sim, master, sim_log, env)
 	prefix = name()
 	feed = Feed(prefix)
 	out = str(tmp_path / "live")
@@ -464,15 +481,19 @@ def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, ou
 		# before its trigger; the live simulation's own timing is too rough to
 		# place it closer). campy's frame numbers are the board's: both count
 		# from the first trigger.
-		deadline = time.monotonic() + 10
-		while time.monotonic() < deadline and (runner.board is None or len(runner.board.rises) < 5 or
-				not runner.board.clock.Ready()):
-			time.sleep(0.01)
+		# Waited for as long as it takes (a busy runner, 4 tests at once, took over 10 s now and then), and not at
+		# all once campy-rules has ended (it couldn't open the board: said says why)
+		assert until(lambda: "code" in result or (runner.board is not None and len(runner.board.rises) >= 5 and
+			runner.board.clock.Ready()), 60), said
+		assert "code" not in result, (result, said)
 		board = runner.board
 		k0 = next(reversed(board.rises))
 		for k in range(k0 + 2, k0 + 62):
-			while k not in board.rises and time.monotonic() < deadline + 5:
+			# Each trigger looked for every 0.5 ms (not until's 5): the row goes as soon as its trigger is reported
+			deadline = time.monotonic() + 10
+			while k not in board.rises and time.monotonic() < deadline:
 				time.sleep(0.0005)
+			assert k in board.rises, (k, said)
 			# The frame reached the host 5 ms after its trigger, as a camera's does: its time from the trigger's,
 			# not from when this loop got to it. On a busy computer (other tests beside this one) the loop can be
 			# held up for more than 3 frames, and a frame stamped then would look late by that much, which
@@ -492,11 +513,15 @@ def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, ou
 	events = [json.loads(l) for l in open(out + ".events.jsonl")]
 	commands = [e for e in events if e["kind"] == "command"]
 	assert len(commands) == 10, commands
-	# A pulse the board gets too late it refuses (err late), on purpose: a pulse fired late is wrong in a closed loop,
-	# and a pulse isn't sent again. On a busy CI runner (other test workers beside this one) campy-rules can be held
-	# up that long, once: 'err late 3 30 74668' on GitHub's Linux runner. So at most 2 of the 10 may be refused late,
-	# and the board made exactly the others
-	late = [e for e in commands if e["answer"].startswith("err late 3 ")]
+	# A pulse decided too late is refused, on purpose: a pulse fired late is wrong in a closed loop, and a pulse isn't
+	# sent again. The board refuses one it gets past the bound (err late), and campy-rules one it decides past it,
+	# without sending it ("late (campy-rules: ...)"). On a busy CI runner (other test workers beside this one) the
+	# rows or campy-rules can be held up that long, once: 'err late 3 30 74668' on GitHub's Linux runner, and
+	# 'late (campy-rules: 79.9 ms after the frame)' on Python 3.9's (November 2026). So at most 2 of the 10 may be
+	# refused late, either way, and the board made exactly the others
+	late_board = [e for e in commands if e["answer"].startswith("err late 3 ")]
+	late_host = [e for e in commands if e["answer"].startswith("late (campy-rules: ")]
+	late = late_board + late_host
 	made = [e for e in commands if e not in late]
 	assert len(late) <= 2, commands
 	for e in made:
@@ -516,7 +541,8 @@ def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, ou
 	assert all(a["fall_us"] < b["rise_us"] for a, b in zip(pulses, pulses[1:])), pulses
 	summary = json.load(open(out + ".json"))
 	assert summary["frame_offset"] == 0 and summary["frame_offset_changes"] == 0
-	assert summary["latency_ms"]["trigger_to_pin"]["n"] == len(made) and summary["counts"]["late_board"] == len(late)
+	assert summary["latency_ms"]["trigger_to_pin"]["n"] == len(made)
+	assert (summary["counts"]["late_board"], summary["counts"]["late_host"]) == (len(late_board), len(late_host))
 	t2h = summary["trigger_to_host_all_ms"]
 	assert 0 < t2h["p50"] < 16.7 and t2h["n"] >= 55, t2h
 	board = open(out + ".board.txt").read()
@@ -1103,8 +1129,7 @@ def test_the_board_sketch_keeps_the_session_train_and_never_fires_its_watchdog_w
 	master, slave = pty()
 	sim_log = tmp_path / "sim.log"
 	env = dict(os.environ, SIM_INPUT="10:300000:16667:3000:100000")
-	with open(str(sim_log), "w") as log:
-		board_sim = subprocess.Popen([outputs_sim, "live"], stdin=master, stdout=master, stderr=log, env=env)
+	board_sim = live_sim(outputs_sim, master, sim_log, env)
 	prefix = name()
 	cams = CameraRings(prefix)
 	feed = Feed(prefix, rings=cams.names)
