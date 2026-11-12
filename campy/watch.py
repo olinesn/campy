@@ -11,7 +11,8 @@ and checks:
   no frames        a camera that has sent frames sends none for
                    alertNoFramesSec (10 s): critical. Every camera at once
                    (their last frames within a second of each other): one
-                   alert, the trigger has stopped
+                   alert, the trigger has stopped (free-running cameras:
+                   one alert too, which doesn't blame a trigger)
   trigger pause    a triggered camera's own timestamps show trigger pulses
                    it got no frame for (status.Camera.Missed, counted by
                    frametimes.TriggerGaps). Every camera missing the same
@@ -24,9 +25,11 @@ and checks:
                    alertTriggerPauseSec, a pause at least that long is
                    planned (a trigger that runs the cameras in bouts):
                    said on the console and written in alerts.log, not sent
-  first frame      no frame 10 s after the trigger Arduino started (an
-                   external trigger: a warning after alertExternalWaitSec,
-                   10 min, of waiting; None: never)
+  first frame      no frame 10 s after the trigger Arduino started, or
+                   after the start when every camera free-runs
+                   (cameraTrigger "None"): critical (an external trigger:
+                   a warning after alertExternalWaitSec, 10 min, of
+                   waiting; None: never)
   dropped frames   frames dropped in the last minute, because more than
                    writeQueueMaxSec of frames waited for ffmpeg: a warning,
                    critical above 1 % of them; resolved after 2 min without
@@ -242,7 +245,6 @@ class Watch:
 		self.notifier = notifier
 		if folder:
 			self.notifier.SetLog(os.path.join(folder, "alerts.log"))
-		self.cams = cams
 		self.frameRate = float(params["frameRate"])
 		self.noFramesSec = float(params.get("alertNoFramesSec", 10))
 		self.diskFree = float(params.get("alertDiskFreeGB", 20)) * 1e9
@@ -254,7 +256,12 @@ class Watch:
 		self.plannedPause = None if planned is None or str(planned) == "None" else float(planned)
 		wait = params.get("alertExternalWaitSec", EXTERNAL_WAIT_S)
 		self.externalWait = None if wait is None or str(wait) == "None" else float(wait) # None: never said
-		self.external = "serial" not in systems
+		self.cams = cams
+		# What makes the frames: the trigger Arduino campy starts (systems' "serial"), else a trigger campy doesn't
+		# control (a camera with cameraTrigger set: the Pico, another board), else nothing: the cameras free-run
+		self.board = "serial" in systems
+		self.freeRunning = not self.board and not any(self.Triggered(c) for c in range(len(self.names)))
+		self.external = not self.board and not self.freeRunning
 		self.problems = {} # key: Problem, open
 		self.history = collections.defaultdict(collections.deque) # camera: (t, grabbed, dropped, sent)
 		self.disks = collections.defaultdict(collections.deque) # folder: (t, free, frames grabbed by its cameras)
@@ -578,9 +585,13 @@ class Watch:
 		lasts = [gaps[c][1] for c in nearly]
 		together = len(gaps) >= 2 and len(nearly) == len(gaps) and camstatus.Together(lasts)
 		if together and len(quiet) == len(gaps):
+			if self.freeRunning: # no trigger to blame: the cameras time their own frames
+				why = "They free-run, with no trigger: is the computer, or their USB, stuck?"
+			else:
+				why = "so the trigger has stopped ({}).".format(self.TriggerText())
 			self.Raise("trigger/stopped", notify.CRITICAL, "No camera has had a frame for {:.0f} s: all {} stopped "
-				"together, so the trigger has stopped ({}).".format(min(gaps[c][0] for c in quiet), len(gaps),
-				self.TriggerText()))
+				"together{}{}".format(min(gaps[c][0] for c in quiet), len(gaps), ". " if self.freeRunning else ", ",
+				why))
 			return
 		if together:
 			return # the others are about to be quiet too
@@ -594,9 +605,14 @@ class Watch:
 
 	def Triggered(self, c):
 		# Whether camera c takes a frame at each trigger pulse (as unicam.Triggered): its pulses without a frame count
-		cam = self.cams[c] if self.cams and c < len(self.cams) else self.params
-		return str(cam.get("cameraTrigger", self.params.get("cameraTrigger", "None"))) != "None" and \
-			cam.get("cameraMake", self.params.get("cameraMake")) != "ratcam"
+		if self.cams and c < len(self.cams):
+			cam = self.cams[c]
+			trigger = cam.get("cameraTrigger", self.params.get("cameraTrigger", "None"))
+			make = cam.get("cameraMake", self.params.get("cameraMake"))
+		else: # no camera list (tests): the config's own, one a camera where it gives a list
+			trigger, make = (PerCamera(self.params.get(key, default), c) for key, default in
+				(("cameraTrigger", "None"), ("cameraMake", None)))
+		return str(trigger) != "None" and make != "ratcam"
 
 	def CheckMissed(self, rows, ns, now, final=False):
 		# Trigger pulses without a frame, new since the last check, once every camera that missed them has had its
@@ -691,6 +707,12 @@ class Watch:
 			"frame {}.".format(len(self.planned), "" if len(self.planned) == 1 else "s", self.plannedPause,
 			notify.Duration(total / self.frameRate), self.planned[0][1])
 
+	def TriggerNote(self):
+		# How the frames are made, for the start note: nothing for the trigger Arduino (said on the console)
+		if self.freeRunning:
+			return ", free-running (no trigger)"
+		return ", on an external trigger" if self.external else ""
+
 	def TriggerText(self):
 		if self.external:
 			return "an external trigger: is it still running?"
@@ -707,6 +729,9 @@ class Watch:
 				if self.externalWait is not None and waited >= self.externalWait:
 					self.Raise("trigger/first", notify.WARNING, "No frame yet, {} after campy started waiting for the "
 						"external trigger: is it running?".format(notify.Duration(waited)))
+			elif waited >= FIRST_FRAME_S and self.freeRunning:
+				self.Raise("trigger/first", notify.CRITICAL, "No camera has had a frame {:.0f} s after the recording "
+					"started. They free-run, with no trigger, so their frames should have come at once.".format(waited))
 			elif waited >= FIRST_FRAME_S:
 				self.Raise("trigger/first", notify.CRITICAL, "No camera has had a frame {:.0f} s after the trigger "
 					"Arduino on {} started.".format(waited, self.params.get("serialPort")))
@@ -1065,7 +1090,7 @@ class Watch:
 				pass
 		self.notifier.Note("Recording {} started: {} camera{} ({}) at {:g} fps, for {}{}. {} free.".format(
 			self.Session(), len(self.names), "" if len(self.names) == 1 else "s", ", ".join(self.names), self.frameRate,
-			notify.Duration(self.recTime), ", on an external trigger" if self.external else "",
+			notify.Duration(self.recTime), self.TriggerNote(),
 			" and ".join(frees) or "Unknown space"))
 		self.notifier.Heartbeat()
 
@@ -1149,6 +1174,13 @@ class Watch:
 		else:
 			head, severity = "Recording {} ended after {}:".format(self.Session(), took), notify.INFO
 		self.notifier.Note("\n".join([head] + lines), severity, urgent=True) # ahead of the messages still waiting
+
+
+def PerCamera(value, c):
+	# A setting a config can give one a camera (a list) or one for all
+	if isinstance(value, (list, tuple)):
+		return value[c] if c < len(value) else (value[-1] if value else None)
+	return value
 
 
 def Wall():
