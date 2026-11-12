@@ -103,7 +103,7 @@ CHANGES = [
 		"A camera unplugged mid-recording is waited for, and taken back into the recording when it is plugged in "
 		"again: its video and frametimes.npy go on from the trigger pulse it comes back on (the frames while it "
 		"was gone are a gap in its frame numbers). Before, its recording ended there.",
-		AnyCamera(lambda cam: Make(cam) in ("flir", "emu")), pr=None),
+		AnyCamera(lambda cam: Make(cam) in ("flir", "emu")), pr=423),
 
 	# campy-live: options
 	Change("--fixed-crops", "2.1.0", "off", "auto",
