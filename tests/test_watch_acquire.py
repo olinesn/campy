@@ -261,10 +261,12 @@ def test_a_camera_unplugged_and_plugged_back_in(tmp_path, service):
 	assert any(t.startswith("Camera1: the camera is gone") and "campy waits for it" in t for t in texts), texts
 	assert any(t.startswith("resolved, after ") and "Camera1: back, plugged in again: recording again (at frame" in t
 		for t in texts), texts
-	# The time it was gone is not counted as trigger pulses it missed (Camera1's; another camera can miss one or two
-	# when a busy runner holds its emulated frames up: Camera2 did, on GitHub's Windows runner, 2026-11-12)
-	assert not any("Camera1" in line and "trigger pulse" in line and "no frame for" in line
-		for t in texts for line in t.splitlines()), texts
+	# The time it was gone (about 60 pulses) is not counted as trigger pulses it missed. A camera can still miss one or
+	# a few when a busy runner holds its emulated frames up, before or after the gap: camera 2 did, and camera 1 after
+	# it came back, on GitHub's Windows runner, 2026-11-12
+	missed = [int(m) for t in texts for line in t.splitlines() if "Camera1" in line
+		for m in re.findall(r"no frame for (\d+) trigger pulses?", line)]
+	assert all(m < 20 for m in missed), (missed, texts)
 	assert "with a camera unplugged and plugged back in" in texts[-1] and "unplugged and back 1 time" in texts[-1], texts
 	session = Session(tmp_path)
 	frames = {n: np.load(str(session / n / "frametimes.npy")) for n in names}
