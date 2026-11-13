@@ -88,7 +88,9 @@ def test_pose3d_cpus_resolved_only_on_linux_with_a_3d_step(monkeypatch):
 
 
 def test_the_rest_of_campy_live_kept_off_the_3d_steps_cpus(placed, monkeypatch):
+	# Linux: the process's CPUs are the rest's (Windows' mask and default CPU sets: the test below)
 	monkeypatch.setattr(cpus, "All", lambda: list(range(12)))
+	monkeypatch.setattr(live.sys, "platform", "linux")
 
 	def Run(cpus_option, hybrid=None):
 		monkeypatch.setattr(cpus, "Hybrid", lambda: hybrid)
