@@ -97,7 +97,7 @@ def test_on_and_off_unquoted_are_words():
 	(dict(servos__door__safe="ajar"), r"'ajar' is none of its positions"),
 	(dict(servos__door__positions={"closed": 1000, "open": 2600}), r"2600 us is outside"),
 	(dict(links__reward_left__when="nose"), r"when: must be one of the inputs"),
-	(dict(task__states__ready__on={"poke_middle": "reward"}), r"no input 'poke_middle'"),
+	(dict(task__states__ready__on={"poke_middle": "reward"}), r"no input or pose 'poke_middle'"),
 	(dict(task__states__ready__next="nowhere"), r"no state 'nowhere'"),
 	(dict(task__states__ready__arm={"mark_pokes": 1}), r"armed always already"),
 	(dict(task__states__reward__next=None), r"after_s needs next"),
@@ -437,3 +437,137 @@ def test_the_task_file_is_kept_beside_the_logs(tmp_path):
 	runner.say = lambda text: None
 	assert runner.Run() == 0
 	assert (tmp_path / "out" / "box.task.yaml").read_text() == TASK
+
+
+# ---------------------------------------------------------------- poses: campy-live's results in the task
+
+POSE_TASK = TASK + """
+live: {stale_ms: 150}
+regions:
+  port: {box: [[0, 0, 0], [100, 100, 50]]}
+poses:
+  m2_at_port: {when: {inside: {region: port, animal: 2, node: nose}}, enter_ms: 30}
+"""
+
+
+def pose_task(**changes):
+	config = Task(POSE_TASK, task__end={"trials": 5}, **changes)
+	# ready: waits for mouse 2 at the port; there, a poke rewards only while it is still there, else -> iti
+	config["task"]["states"]["ready"]["on"] = {"m2_at_port": "at_port"}
+	config["task"]["states"]["at_port"] = {"on": {"poke_left": {"to": "reward", "if": "m2_at_port", "else": "iti"},
+		"m2_at_port": {"to": "ready", "edge": "inactive"}}}
+	return config
+
+
+def test_poses_in_the_file_are_checked():
+	b = box.Box(pose_task())
+	assert b.states["at_port"].on[0].guard == ("m2_at_port", True) and b.states["at_port"].on[0].otherwise == "iti"
+	said = []
+	box.Check(b, say=said.append)
+	text = "\n".join(said)
+	assert "Poses (checked against campy-live's results when they come, campy-live): m2_at_port" in text
+	assert "poke_left on if m2_at_port (else -> iti) -> reward; m2_at_port lets go -> ready" in text
+	bad = pose_task()
+	bad["task"]["states"]["at_port"]["on"]["poke_left"]["if"] = "m3_at_port"
+	with pytest.raises(box.BoxError, match=r"if: 'm3_at_port' is no pose"):
+		box.Box(bad)
+	bad = pose_task()
+	bad["poses"]["poke_left"] = {"when": {"test": {"every": 2}}}
+	with pytest.raises(box.BoxError, match=r"two share a name"):
+		box.Box(bad)
+	# Fitted to campy-live's results only when they come: a node they don't have is said then
+	from test_rules import desc
+	bad = pose_task()
+	bad["poses"]["m2_at_port"]["when"]["inside"]["node"] = "tail_tip"
+	with pytest.raises(box.RulesError, match=r"tail_tip"):
+		box.Box(bad).Poses(desc())
+
+
+def test_a_poke_rewarded_only_while_mouse_2_is_at_the_port(tmp_path):
+	from test_livefeed import name
+	from test_rules import Feed, make_row
+	prefix = name()
+	feed = Feed(prefix)
+	port = FakeBoard()
+	args = argparse.Namespace(task=None, port="", out=str(tmp_path / "box"), check=False, duration_s=10,
+		live_name=prefix)
+	runner = box.Runner(args, box.Box(pose_task()), connection=port)
+	said = []
+	runner.say = said.append
+	result = {}
+	thread = threading.Thread(target=lambda: result.setdefault("code", runner.Run()), daemon=True)
+	thread.start()
+	frame = [0]
+
+	def sets(where, seconds):
+		# Sets at 60 Hz with mouse 2's nose at where
+		end = time.monotonic() + seconds
+		while time.monotonic() < end:
+			frame[0] += 1
+			feed.Write(make_row(frame[0], {2: {"nose": where}}, t_ns=clock.HostNs()))
+			time.sleep(1 / 60)
+
+	inside, outside = [50, 50, 10], [500, 50, 10]
+	try:
+		assert until(lambda: runner.state == "ready" and runner.counts["live_sets"] == 0 and
+			any("campy-live's results: 1 poses" in s for s in said) or runner.state == "ready", 10)
+		sets(outside, 0.3)
+		assert runner.state == "ready" # mouse 2 elsewhere: no move
+		sets(inside, 0.3)
+		assert until(lambda: runner.state == "at_port"), (runner.state, said)
+		port.Say("i 0 1 5000000 300 100") # a poke while mouse 2 is there: rewarded
+		assert until(lambda: runner.state == "reward")
+		assert until(lambda: runner.state == "ready", 5)
+		sets(inside, 0.3)
+		assert until(lambda: runner.state == "at_port")
+		sets(outside, 0.1)
+		assert until(lambda: runner.state == "ready") # mouse 2 left before poking: back to ready
+		sets(inside, 0.3)
+		assert until(lambda: runner.state == "at_port")
+		time.sleep(0.4) # no set for longer than stale_ms: the pose lets go
+		assert until(lambda: runner.state == "ready")
+	finally:
+		runner.stop.set()
+		thread.join(5)
+		feed.Close()
+	assert result["code"] == 0, said
+	ev = events(tmp_path)
+	states = [(e["state"], e["why"]) for e in ev if e["kind"] == "state"]
+	assert ("at_port", "pose") in states and ("reward", "input") in states
+	reward = [e for e in ev if e["kind"] == "state" and e["state"] == "reward"][0]
+	assert reward["guard"] == "m2_at_port" and reward["guard_holds"] is True
+	poses = [(e["holds"], e["why"]) for e in ev if e["kind"] == "pose"]
+	# Held three times: let go when the sets stopped (stale: while the task rewarded, and at the end) and when mouse
+	# 2 left. (A test computer busy enough to hold the sets up past stale_ms adds a let-go and a hold: allowed)
+	assert poses[0] == (True, None) and (False, None) in poses and poses[-1] == (False, "stale"), poses
+	assert all(a[0] != b[0] for a, b in zip(poses, poses[1:])), poses # holds and lets go in turn
+	assert json.load(open(str(tmp_path / "box.json")))["counts"]["poses"]["m2_at_port"] == len(poses) // 2 >= 3
+
+
+def runner_alone(config):
+	# A Runner with no board: its moves only
+	args = argparse.Namespace(task=None, port="", out="", check=False, duration_s=0)
+	runner = box.Runner(args, box.Box(config))
+	runner.Send = lambda command, record=None: None
+	runner.Event = lambda record: None
+	return runner
+
+
+def test_a_poke_from_the_wrong_mouse_goes_to_else():
+	config = pose_task()
+	del config["task"]["states"]["at_port"]["on"]["m2_at_port"]
+	runner = runner_alone(config)
+	runner.Enter("at_port", dict(why="test"))
+	# m2_at_port doesn't hold: the poke goes to else
+	runner.Edge(runner.box.inputs["poke_left"], True, dict(board_us=1, host_ns=1, frame=1, after_us=0))
+	assert runner.state == "iti"
+
+
+def test_a_pose_that_already_holds_moves_the_state_at_once():
+	runner = runner_alone(pose_task())
+	runner.holding["m2_at_port"] = True
+	runner.Enter("ready", dict(why="test"))
+	assert runner.state == "at_port" # mouse 2 at the port already
+	runner.holding["m2_at_port"] = False
+	runner.Enter("at_port", dict(why="test"))
+	assert runner.state == "ready" # entered without mouse 2 there: its lets-go move at once

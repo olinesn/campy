@@ -69,6 +69,22 @@ task: start (the first state; default the first one listed), end (trials: the ta
 trial N+1; minutes), seed (for the random times and choices; default a new one, logged),
 after_watchdog (the state to go to after the board's watchdog made the box safe; default start).
 
+Poses (with campy-live tracking the animals): conditions on the live poses, as campy-rules' (an animal's node in a
+region, two animals close: python -m pydoc campy.rules), named, with their own regions:
+  live: {name: campy-live, stale_ms: 200}   # campy-live's liveFeedName (--live-name); no set this long: none holds
+  regions:
+    port: {sphere: {center: [200, 40, 20], radius: 25}}
+  poses:
+    m2_at_port: {when: {inside: {region: port, animal: 2, node: nose}}, enter_ms: 50, exit_ms: 100}
+A pose holds once its condition has been true for enter_ms, and lets go once false for exit_ms; a missing animal
+keeps its last value for missing_ms (100), then counts as false. In a state, on: takes a pose as it takes an input:
+{m2_at_port: cue} when it starts holding (edge: inactive, when it lets go; count: the n-th time). A pose is a level,
+so a state also moves at once if, as it is entered, the pose already holds (edge: inactive: already doesn't). An input's (or a
+pose's) move can depend on a pose: {poke_left: {to: reward, if: m2_at_port, else: wrong_mouse}} (unless: the other
+way round); without else, an edge that fails its if is ignored. Poses come with campy-live's sets, a few tens of
+ms after their frame: a reward that depends on one is the task's (an action), not a link's. The conditions are
+checked against campy-live's cameras, nodes and animals when its results first come.
+
 Timing: the board stamps every edge with its own clock (microseconds since power-up) and the camera frame it fell
 in (frame 1 is the first camera trigger after campy-box starts: start it before the recording so its frames are
 campy's), and how long after that frame's trigger. campy-box maps board times to campy's host clock
@@ -97,6 +113,7 @@ from datetime import datetime
 
 from campy import clock, strictjson
 from campy.frametimes import Writer
+from campy import rules as rulesmod
 from campy.rules import Output, RulesError
 
 LOOP_ALIVE_S = 0.1 # the board's heartbeat goes only while the task's loop has gone round this recently
@@ -375,15 +392,34 @@ class Next:
 
 class Transition:
 	def __init__(self, input_name, spec, box, states, where):
-		if input_name not in box.inputs:
-			raise BoxError("{}: no input {!r}".format(where, input_name))
-		self.input = box.inputs[input_name]
+		self.input = box.inputs.get(input_name)
+		self.pose = input_name if input_name in box.poses else None
+		if self.input is None and self.pose is None:
+			raise BoxError("{}: no input or pose {!r}".format(where, input_name))
 		if isinstance(spec, str):
 			spec = {"to": spec}
 		spec = Mapping(spec, where)
+		unknown = set(spec) - {"to", "edge", "count", "if", "unless", "else"}
+		if unknown:
+			raise BoxError("{}: unknown keys {} (it takes to, edge, count, if, unless, else)".format(where,
+				", ".join(sorted(unknown))))
 		if spec.get("to") not in states:
 			raise BoxError("{}: to: {!r} is no state".format(where, spec.get("to")))
 		self.to = spec["to"]
+		self.guard = None # (pose, whether it must hold)
+		for key, want in (("if", True), ("unless", False)):
+			if key in spec:
+				if self.guard is not None:
+					raise BoxError("{}: if or unless, not both".format(where))
+				if spec[key] not in box.poses:
+					raise BoxError("{}: {}: {!r} is no pose".format(where, key, spec[key]))
+				self.guard = (spec[key], want)
+		self.otherwise = spec.get("else")
+		if self.otherwise is not None:
+			if self.guard is None:
+				raise BoxError("{}: else needs if or unless".format(where))
+			if self.otherwise not in states:
+				raise BoxError("{}: else: {!r} is no state".format(where, self.otherwise))
 		edge = str(spec.get("edge", "active")).lower()
 		if edge not in ("active", "inactive"):
 			raise BoxError("{}: edge must be active or inactive".format(where))
@@ -436,11 +472,26 @@ class State:
 			raise BoxError("{}: it never ends: give it next, on or end: true".format(where))
 
 
+class PoseRule(rulesmod.Rule):
+	"""A named pose: campy-rules' condition, with its enter_ms, exit_ms and missing_ms (Rule.Step), and no output."""
+
+	def __init__(self, name, spec, d, regions):
+		where = "poses: {}".format(name)
+		self.name = name
+		self.condition = rulesmod.Condition(spec["when"], d, regions, where)
+		self.enter_ns = int(rulesmod.Number(spec.get("enter_ms", 0), where) * 1e6)
+		self.exit_ns = int(rulesmod.Number(spec.get("exit_ms", 0), where) * 1e6)
+		self.missing_ns = int(rulesmod.Number(spec.get("missing_ms", 100), where) * 1e6)
+		self.refractory_ns = 0
+		self.started_ns = None
+		self.Reset()
+
+
 class Box:
 	"""The whole task file, checked: Setup() gives the board's commands."""
 
 	def __init__(self, config):
-		known = {"board", "inputs", "outputs", "servos", "links", "task"}
+		known = {"board", "inputs", "outputs", "servos", "links", "task", "live", "regions", "poses"}
 		unknown = set(config) - known
 		if unknown:
 			raise BoxError("unknown sections {} (a task file has {})".format(", ".join(sorted(unknown)),
@@ -459,13 +510,29 @@ class Box:
 			except RulesError as e:
 				raise BoxError(str(e))
 		self.servos = {name: Servo(name, spec) for name, spec in Mapping(config.get("servos"), "servos").items()}
+		self.live = Mapping(config.get("live"), "live")
+		unknown = set(self.live) - {"name", "stale_ms"}
+		if unknown:
+			raise BoxError("live: unknown keys {} (it takes name, stale_ms)".format(", ".join(sorted(unknown))))
+		stale = self.live.get("stale_ms", 200)
+		if isinstance(stale, bool) or not isinstance(stale, (int, float)) or stale <= 0:
+			raise BoxError("live: stale_ms must be more than 0")
+		self.stale_ms = float(stale)
+		self.regions = Mapping(config.get("regions"), "regions")
+		self.poses = {}
+		for name, spec in Mapping(config.get("poses"), "poses").items():
+			spec = Mapping(spec, "poses: {}".format(name))
+			unknown = set(spec) - {"when", "enter_ms", "exit_ms", "missing_ms"}
+			if unknown or "when" not in spec:
+				raise BoxError("poses: {}: needs when:, and takes enter_ms, exit_ms, missing_ms".format(name))
+			self.poses[name] = spec
 		for what, things in (("inputs", self.inputs), ("outputs", self.outputs), ("servos", self.servos)):
 			numbers = [getattr(t, "channel", getattr(t, "index", None)) for t in things.values()]
 			if len(set(numbers)) != len(numbers):
 				raise BoxError("{}: two of them have the same number".format(what))
-		names = list(self.inputs) + list(self.outputs) + list(self.servos)
+		names = list(self.inputs) + list(self.outputs) + list(self.servos) + list(self.poses)
 		if len(set(names)) != len(names):
-			raise BoxError("inputs, outputs and servos: two share a name")
+			raise BoxError("inputs, outputs, servos and poses: two share a name")
 		trigger = self.board.get("trigger_pin", 10)
 		self.trigger_pin = None if trigger is None or str(trigger).lower() == "none" else Pin(trigger, "board: "
 			"trigger_pin")
@@ -517,6 +584,12 @@ class Box:
 		self.by_channel = {o.channel: o for o in self.outputs.values()}
 		self.by_servo = {s.index: s for s in self.servos.values()}
 		self.by_link = {l.number: l for l in self.links.values()}
+
+	def Poses(self, d):
+		"""The poses bound to campy-live's results (rules.Description d): PoseRules, by name. RulesError if one
+		doesn't fit them (a node, a camera, an animal campy-live doesn't have)."""
+		regions = {name: rulesmod.Region(name, spec, d) for name, spec in self.regions.items()}
+		return {name: PoseRule(name, spec, d, regions) for name, spec in self.poses.items()}
 
 	def Setup(self):
 		"""The board's commands: everything else freed, then this box's outputs, inputs, servos and links."""
@@ -604,6 +677,10 @@ class Runner:
 			clash=0)
 		self.said = set()
 		self.created = time.time()
+		self.holding = {name: False for name in box.poses} # each pose's state, as the task sees it
+		self.counts["poses"] = {name: 0 for name in box.poses}
+		self.counts.update(live_sets=0, live_gone=0)
+		self.live_name = getattr(args, "live_name", "") or box.live.get("name") or "campy-live"
 
 	def Alive(self):
 		return self.beat is None or time.monotonic() - self.beat < LOOP_ALIVE_S
@@ -723,6 +800,26 @@ class Runner:
 				self.Send(command)
 			if self.state is not None:
 				self.Enter(box.after_watchdog, dict(why="watchdog"))
+		elif kind == "pose":
+			name, holds, frame, row_ns, read_ns, why = fields
+			self.holding[name] = holds
+			if holds:
+				self.counts["poses"][name] += 1
+			record = dict(kind="pose", pose=name, holds=holds, frame=frame, row_ns=row_ns, read_ns=read_ns, why=why,
+				state=self.state, trial=self.trial)
+			self.Event(record)
+			self.Edge(None, holds, record, pose=name)
+		elif kind == "live":
+			what, text = fields
+			if what == "gone":
+				self.counts["live_gone"] += 1
+			self.Event(dict(kind="live", what=what, text=text, heard_ns=heard_ns, state=self.state, trial=self.trial))
+			if what == "error":
+				self.say("campy-box: {}. Stopping.".format(text))
+				self.end_why = "poses: " + text
+				self.stop.set()
+			else:
+				self.say("campy-box: {}".format(text))
 		elif kind == "lost":
 			self.say("campy-box: {}. The board makes the box safe by itself (its watchdog). Stopping.".format(
 				fields[0]))
@@ -734,18 +831,30 @@ class Runner:
 			self.end_why = "board restarted"
 			self.stop.set()
 
-	def Edge(self, inp, active, record):
+	def Edge(self, inp, active, record, pose=None):
+		# An input's edge (inp), or a pose starting or ending (pose: its name): the state's move on it, if any
 		if self.state is None:
 			return # the task hasn't started (waiting for the first frame)
 		state = self.box.states[self.state]
+		name = pose if pose is not None else inp.name
 		for tr in state.on:
-			if tr.input is not inp or tr.active != active:
+			if tr.active != active or (tr.pose != pose if pose is not None else tr.input is not inp):
 				continue
-			key = (inp.name, active)
+			if pose is not None:
+				cause = dict(why="pose", pose=pose, holds=int(active), frame=record["frame"], row_ns=record["row_ns"])
+			else:
+				cause = dict(why="input", input=name, active=int(active), board_us=record["board_us"],
+					host_ns=record["host_ns"], frame=record["frame"], after_us=record["after_us"])
+			if tr.guard is not None:
+				guard, want = tr.guard
+				cause.update(guard=guard, guard_holds=self.holding[guard])
+				if self.holding[guard] != want:
+					if tr.otherwise is not None:
+						self.Enter(tr.otherwise, dict(cause, why=cause["why"] + " (else)"))
+					return
+			key = (name, active)
 			self.edges[key] = self.edges.get(key, 0) + 1
 			if self.edges[key] >= tr.count:
-				cause = dict(why="input", input=inp.name, active=int(active), board_us=record["board_us"],
-					host_ns=record["host_ns"], frame=record["frame"], after_us=record["after_us"])
 				self.Enter(tr.to, cause)
 			return
 
@@ -781,6 +890,26 @@ class Runner:
 		if state.end:
 			self.Finish("state {}".format(name), dict(why="end state"))
 			return
+		# A pose is a level: a state whose on: names one moves at once if, as it is entered, the pose already holds
+		# (edge: inactive: already doesn't)
+		for tr in state.on:
+			if tr.pose is None or tr.count != 1 or self.holding[tr.pose] != tr.active:
+				continue
+			cause = dict(why="pose", pose=tr.pose, holds=int(tr.active), at_entry=True)
+			to = tr.to
+			if tr.guard is not None:
+				guard, want = tr.guard
+				cause.update(guard=guard, guard_holds=self.holding[guard])
+				if self.holding[guard] != want:
+					if tr.otherwise is None:
+						continue
+					to, cause["why"] = tr.otherwise, "pose (else)"
+			if depth >= IMMEDIATE_MAX:
+				raise BoxError("states moving on at once {} times in a row, from {}: the task loops".format(
+					IMMEDIATE_MAX, name))
+			self.deadline = None
+			self.Enter(to, cause, depth + 1)
+			return
 		self.deadline = None
 		if state.next is not None:
 			lo, hi = state.after
@@ -792,6 +921,77 @@ class Runner:
 					raise BoxError("states moving on at once {} times in a row, from {}: the task loops".format(
 						IMMEDIATE_MAX, name))
 				self.Enter(self.next, dict(why="next"), depth + 1)
+
+	def ReadPoses(self):
+		"""
+		The poses, from campy-live's results feed (its own thread): each set through every pose; a pose that starts
+		or lets go goes to the task's queue. No set for stale_ms, or the feed ended (campy-live restarting): every
+		pose lets go, and the feed is looked for again.
+		"""
+		from campy import liveresults
+		ring = liveresults.RingName(self.live_name)
+		stale = self.box.stale_ms / 1e3
+		results, poses, n, last, released = None, None, 0, time.monotonic(), True
+		said_waiting = False
+
+		def Release(why):
+			for p in poses.values():
+				if p.holding:
+					self.queue.put(("pose", (p.name, False, None, None, clock.HostNs(), why), clock.HostNs(), ""))
+				p.Reset()
+
+		while not self.stop.is_set():
+			if results is None:
+				results = rulesmod.Runner.TryAttach(ring)
+				if results is None:
+					if not said_waiting:
+						said_waiting = True
+						self.queue.put(("live", ("waiting", "waiting for campy-live's results ({}) for the poses".format(
+							self.live_name)), clock.HostNs(), ""))
+					self.stop.wait(0.2)
+					continue
+				try:
+					d = rulesmod.Description.From(results.description, results.rows_type)
+					poses = self.box.Poses(d)
+				except RulesError as e:
+					results.Close()
+					self.queue.put(("live", ("error", "the poses don't fit campy-live's results: {}".format(e)),
+						clock.HostNs(), ""))
+					return
+				n, last, released = results.Latest(), time.monotonic(), True # from the next set on
+				self.queue.put(("live", ("attached", "campy-live's results: {} poses on {} cameras{}".format(len(poses),
+					len(d.cameras), ", {} animals in 3D".format(d.animals) if d.animals else "")), clock.HostNs(), ""))
+			latest = results.Latest()
+			if latest <= n:
+				now = time.monotonic()
+				if not released and now - last > stale:
+					Release("stale")
+					released = True
+				if results.Ended():
+					if not released:
+						Release("campy-live ended")
+					results.Close()
+					results, said_waiting = None, True
+					self.queue.put(("live", ("gone", "campy-live's results ended: no pose holds until they come "
+						"again"), clock.HostNs(), ""))
+					continue
+				self.stop.wait(0.002)
+				continue
+			for m in range(max(n + 1, latest - results.slots + 1), latest + 1):
+				row = results.Read(m)
+				if row is None:
+					continue
+				read_ns = clock.HostNs()
+				t = rulesmod.RowNs(row)
+				self.counts["live_sets"] += 1
+				for p in poses.values():
+					raw, change = p.Step(row, t)
+					if change:
+						self.queue.put(("pose", (p.name, change == "start", int(row["frame"]), t, read_ns, None),
+							read_ns, ""))
+			n, last, released = latest, time.monotonic(), False
+		if results is not None:
+			results.Close()
 
 	def Finish(self, why, cause):
 		if self.end_why is None:
@@ -923,6 +1123,8 @@ class Runner:
 				WriteJson(args.ready_file, dict(pid=os.getpid(), seed=self.seed, port=port))
 			if self.Waiting():
 				self.say("campy-box: the board is set up; the task starts at the first camera frame.")
+			if box.poses:
+				threading.Thread(target=self.ReadPoses, name="campy-box poses", daemon=True).start()
 			self.Loop()
 		except (BoxError, RulesError) as e:
 			self.say("campy-box: {}".format(e))
@@ -975,6 +1177,9 @@ def Check(box, say=print):
 	say("Board setup ({} commands):".format(len(box.Setup()) + len(box.SessionStarts())))
 	for command in box.Setup() + box.SessionStarts():
 		say("  " + command)
+	if box.poses:
+		say("Poses (checked against campy-live's results when they come, {}): {}".format(
+			box.live.get("name") or "campy-live", ", ".join(box.poses)))
 	say("States (start: {}):".format(box.start))
 	for s in box.states.values():
 		parts = []
@@ -986,8 +1191,13 @@ def Check(box, say=print):
 			parts.append("arms " + ", ".join("{} ({})".format(l, "until it ends" if n == -1 else "x{}".format(n))
 				for l, n in s.arm.items()))
 		for tr in s.on:
-			parts.append("{} {}{} -> {}".format(tr.input.name, "on" if tr.active else "off",
-				" x{}".format(tr.count) if tr.count > 1 else "", tr.to))
+			guard = ""
+			if tr.guard is not None:
+				guard = " {} {}".format("if" if tr.guard[1] else "unless", tr.guard[0])
+				if tr.otherwise is not None:
+					guard += " (else -> {})".format(tr.otherwise)
+			parts.append("{} {}{}{} -> {}".format(tr.pose or tr.input.name, ("holds" if tr.active else "lets go") if
+				tr.pose else ("on" if tr.active else "off"), " x{}".format(tr.count) if tr.count > 1 else "", guard, tr.to))
 		if s.next is not None:
 			lo, hi = s.after
 			when = "at once" if hi == 0 else "after {:g} s".format(lo) if lo == hi else "after {:g}-{:g} s".format(lo, hi)
@@ -1011,6 +1221,8 @@ def Main(argv=None):
 	p.add_argument("--recording-folder", default="", help="end when campy-acquire's watch says this recording ended")
 	p.add_argument("--launcher-pid", type=int, default=0, help="campy-session: stop waiting for the first frame if it "
 		"has ended")
+	p.add_argument("--live-name", default="", help="campy-live's liveFeedName, for the poses (default: live: name: in "
+		"the task file, else campy-live)")
 	p.add_argument("--ready-file", default="", help="written once the board is set up")
 	p.add_argument("--status-file", default="", help="the state, trial and counts, written every second")
 	args = p.parse_args(argv)
