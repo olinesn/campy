@@ -314,7 +314,7 @@ sudo apt-mark hold ffmpeg
 
 ### 6. FLIR Spinnaker
 
-Spinnaker 4.4.0.246 for Arm64 / Ubuntu 24.04 (`spinnaker-4.4.0.246-noble-arm64-pkg.tar.gz`) and its Python wheel for Python 3.12 (`spinnaker_python-4.4.0.246-cp312-cp312-linux_aarch64.tar.gz`), from Teledyne FLIR's site (it needs their login). The wheel must match Spinnaker's version exactly. First `sudo apt install libusb-1.0-0 qtbase5-dev qtchooser qt5-qmake qtbase5-dev-tools` (SpinView's Qt libraries).
+Spinnaker 4.4.0.246 for Arm64 / Ubuntu 24.04 (`spinnaker-4.4.0.246-noble-arm64-pkg.tar.gz`) and its Python wheel for Python 3.12 (`spinnaker_python-4.4.0.246-cp312-cp312-linux_aarch64.tar.gz`), from Teledyne FLIR's site (it needs their login). The wheel must match Spinnaker's version exactly. `python3 tools/spinnaker_check.py <folder>` checks them against the SHA-256s of the files the rigs run ([Installation](install.md#spinnakers-files-which-ones-and-why-campy-doesnt-ship-them)). First `sudo apt install libusb-1.0-0 qtbase5-dev qtchooser qt5-qmake qtbase5-dev-tools` (SpinView's Qt libraries).
 
 FLIR's `install_spinnaker_arm.sh` shows its license in a text box that, over SSH, may not take the keyboard (`^[[C` printed for the arrow keys, Enter doing nothing). Installing its packages in the same order with Debian's plain-text prompts avoids that:
 
