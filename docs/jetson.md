@@ -88,7 +88,7 @@ The GPU results matched numpy's: identical points missing, and the 3D within 3 �
 | Orin, offline (all 3,600 sets, four passes each) | 2.12 / 3.14 ms | **1.65 / 2.59 ms** |
 | EVO-X2, offline (the same) | 0.58 / 0.85 ms | **0.44 / 0.67 ms** |
 
-The replay's accuracy didn't change (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches). Inside `campy-live` the step gains less than offline because it shares Python with the thread running the models.
+The replay's accuracy didn't change (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches). Inside `campy-live` the step is slower than offline, and gains less. Python's lock, shared with the thread running the models, is only a small part of why (below).
 
 **numba's compiled loops took more off** (pull request 421, when numba is installed). The undistortion and the scoring, the two busiest loops left, run compiled; numpy keeps the matrix products, `exp` and the eigenvalue solver, whose numba versions can differ in the last bit (numba's eigenvalue solver did, on the Orin, and it was no faster: LAPACK's own time, about 1.5 µs a matrix here, is most of it). With no reordering of the arithmetic, and the scores' sum over the nodes done in numpy's own order, the results were again identical to the last bit, on the Orin and the EVO-X2. The loops run without Python's lock, so the thread running the models isn't held up by them. Times per set, p50 / p99, all `RIG_CLEAN` (12 November):
 
@@ -100,6 +100,16 @@ The replay's accuracy didn't change (2D median 3.8 px, 3D median 4.2 mm, 2 ident
 | EVO-X2, offline | 0.58 / 0.85 ms | 0.44 / 0.67 ms | **0.32 / 0.55 ms** |
 
 Loading the compiled loops took 0.8–1.4 s on the Orin and compiling them the first time 1.8 s (0.6 s on the EVO-X2); numba keeps them after. In the first try, `campy-live` started loading them only once its models were ready, and in two of three replay checks the loading, finished as the feed came, held up the first sets: 1 and 3 sets skipped, one stall of 45–55 ms. Started as `campy-live` starts, while its models load, as since, they were ready before the feed in each of three runs, and every set was tracked. Since 13 November numba 0.68.1 is installed in the Orin's tracking environment (`~/venvs/sleap/bin/pip install numba`, which added only numba and llvmlite 0.50.0; numpy stayed 2.5.4). The rig check on dev `a21e0f6`, which doesn't use numba yet, gave the same as before it (replay3: 3D step 2.79 / 3.90 ms, frame to 3D 14.5 / 15.8 ms, 3.8 px, 4.2 mm, 2 switches; smoke1 inference 4.0 / 4.1 ms; smoke3 frame to 3D 14.6 / 16.1 ms; every set tracked, `RIG_CLEAN`). Two replay checks with this pull request's code and the installed numba: loaded in 1.4 s, 3D step 1.81–1.84 / 2.87–2.89 ms, frame to 3D 13.5 / 14.7–14.8 ms, every set tracked, the same 3.8 px, 4.2 mm and 2 switches. This pull request's tests passed there too (23, the bit-for-bit one among them).
+
+**A process of its own for the 3D step didn't help** (tried 13 November, not in campy). The step ran in a Python process of its own, so it had Python's lock to itself, with `campy-live`'s 3D thread handing it each set through a pipe; the poses were the same. In three replay checks against two on the usual thread, alternating, all with numba:
+
+| | On a thread (as now) | In a process of its own |
+|---|---|---|
+| The 3D step itself | 1.83–1.86 / 2.85–2.89 ms | 1.75–1.76 / 2.71–2.73 ms |
+| With the handing over (what `campy-live` waits for) | the same | 2.19–2.24 / 3.16–3.20 ms |
+| Frame to 3D | 13.5 / 14.7–14.8 ms | 13.9 / 15.0–15.1 ms |
+
+The lock cost only about 0.1 ms, and handing each set over (pickling it, the pipe, waking the other process, and back) cost about 0.45 ms, so the 3D poses came about 0.4 ms later. The gap to offline (1.30 ms) isn't the time between sets either. Offline, one set every 1/60 s, as the cameras give them, took 1.31–1.32 ms against 1.27–1.29 ms back to back, and the same pinned to one cluster of cores (`taskset -c 4-7`). What is left is likely the rest of the replay check sharing the chip: the feed decoding three videos on the CPU, and the GPU's inference, which on the Orin shares the CPU's memory. That wasn't measured.
 
 ### Recording
 
