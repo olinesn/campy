@@ -727,6 +727,8 @@ Notes on the measurements:
   | EVO-X2 | 1,800 / 3.1 / 3.2 | 3,600 / 5.7 / 6.1 / 7.8 / 8.8 | 3,600 / 5.6 / 5.8 / 7.3 / 8.2 |
   | Jetson AGX Orin | 1,800 / 3.9 / 4.1 | 3,600 / 10.2 / 10.7 / 14.5 / 15.9 | 3,600 / 10.1 / 10.3 / 14.5 / 15.7 |
 
+  The Windows 11 VM's recording checks (it has no live-tracking environment) ran at 9:24–9:26 AM under the same lock, after a guarded no-op job (`RIG_CLEAN`): every frame kept, 1,200 from 1 camera and 3 × 3,600 from 3. The 1-camera run was `RIG_CLEAN_BACKGROUND`, for one look in which the security agent's disk reads (40 MB/s) took the disks to 75 MB/s; the 3-camera run was `RIG_CLEAN`. The evening before, both had been `RIG_CONTAMINATED`: the 1-camera run by 2 looks of disk load, the 3-camera run also by another program using the VM's GPU without the lock. Programs on the VM now take the lock too, and its checks wait their turn for it.
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
