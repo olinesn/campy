@@ -1487,3 +1487,58 @@ def test_a_cameras_feed_says_its_processes(tmp_path):
 		"folder": os.path.join(str(tmp_path), "Camera0")}
 	readers = [types.SimpleNamespace(Description=feed.Description), types.SimpleNamespace(Description=lambda: "")]
 	assert livefeed.Processes(readers) == sorted({os.getpid(), os.getppid()})
+
+
+def test_a_ring_says_its_camera_is_lost_until_its_next_frame(rings):
+	# cameraReconnect: LOST while campy waits for the camera, RECORDING again with its next frame; never ended
+	ring = name()
+	w = rings(ring, (4, 4), np.uint8)
+	w.Write(frame(1, (4, 4)), 1, 1000)
+	r = livefeed.RingReader(ring)
+	try:
+		w.Lost()
+		assert r.Lost() and not r.Ended()
+		w.Write(frame(70, (4, 4)), 70, 2000)
+		assert not r.Lost() and r.State() == livefeed.RECORDING and r.Latest() == 70
+	finally:
+		r.Close()
+
+
+def test_campy_live_takes_back_a_camera_plugged_back_in(rings, monkeypatch):
+	# cameraReconnect: camera 1 unplugged after pulse 30 (its ring LOST, not ended), plugged back in at pulse 91, its
+	# frames numbered as the other cameras' again: left out meanwhile as a stalled camera, then taken back, every set
+	# pairing one pulse's frames, with no offset
+	monkeypatch.setattr(live, "STALL_S", 0.3)
+	writers, cams, said = three(rings)
+	out = np.empty((3, 16, 20, 1), np.uint8)
+	got = []
+	done = threading.Event()
+
+	def Read():
+		while not done.is_set():
+			r = cams.NextSet(out, stop=done.is_set)
+			if r is None:
+				return
+			got.append((r[0].number, list(r[0].own), pulses(out)))
+
+	reader = threading.Thread(target=Read)
+	reader.start()
+	try:
+		t0 = clock.HostNs()
+		for p in range(1, 151): # 2.5 s at 60 fps
+			if p == 31:
+				writers[1].Lost()
+			pulse(writers, p, t0, skip=(1,) if 30 < p <= 90 else ())
+			time.sleep(PERIOD / 1e9)
+		time.sleep(0.2)
+	finally:
+		done.set()
+		reader.join()
+		cams.Close()
+	assert any("No frame from Camera1" in s for s in said), said
+	assert any("Camera1's frames came again" in s for s in said), said
+	back = [g for g in got if g[0] > 95 and g[1][1] != -1]
+	assert back, got
+	for number, own, seen in back:
+		assert seen[0] == seen[1] == seen[2] == number % 251 and own[1] == number, (number, own, seen)
+	assert cams.offset == [0, 0, 0]

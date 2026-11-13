@@ -344,6 +344,60 @@ def CloseCamera(cam_params, camera):
 			Say("{}: {} failed as it closed: {}".format(name, step, e))
 
 
+def Find(system, serial):
+	# The camera of that serial number among those Spinnaker lists now (after a replug: a new camera object), or None
+	cameras = system.GetCameras()
+	try:
+		for i in range(cameras.GetSize()):
+			device = cameras.GetByIndex(i)
+			if str(GetSerialNumber(device)).strip() == serial:
+				return device
+		return None
+	finally:
+		cameras.Clear()
+
+
+def Reopen(cam_params, camera):
+	"""
+	cameraReconnect (unicam.WaitForCamera): the camera again after it was
+	unplugged (CameraLost), once Spinnaker lists its serial number again; None
+	while it does not. The camera powers up with its saved settings, so it is
+	set up as at the start (OpenCamera: Init, LoadSettings: trigger, frame
+	size, pixel format, exposure, gain, the USB link's limit...). The old
+	camera object is let go of first (DeInit fails on an unplugged camera:
+	not said). What it had lost before it was gone (FrameCount) is carried
+	on; the camera's and Spinnaker's own counters start again with the new
+	acquisition (those of before are gone with the camera).
+	"""
+	system = cam_params.get("system")
+	serial = str(cam_params.get("cameraSerialNo", "")).strip()
+	if system is None or not serial:
+		raise RuntimeError("no Spinnaker system or serial number to find the camera by")
+	device = Find(system, serial)
+	if device is None:
+		return None
+	for step in (camera.EndAcquisition, camera.DeInit):
+		try:
+			step()
+		except Exception:
+			pass
+	entry = _frameCounts.pop(id(camera), None)
+	cam_params["camera"] = cam_params["device"] = device
+	try:
+		device, cam_params = OpenCamera(cam_params)
+	except Exception:
+		try:
+			device.DeInit()
+		except Exception:
+			pass
+		raise
+	if entry is not None:
+		old, new = entry[1], Counts(device)
+		new.lost, new.incomplete, new.counted = old.lost, old.incomplete, old.counted
+	Say("{}: found again (serial {}), and set up as at the start.".format(cam_params["cameraName"], serial))
+	return device
+
+
 def CloseSystem(system, device_list):
 	try:
 		device_list.Clear()

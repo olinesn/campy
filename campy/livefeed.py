@@ -35,7 +35,11 @@ All numbers little-endian. One ring holds a header and `slots` slots:
   40      uint64      slot bytes: from one slot to the next
   48      uint64      frame bytes
   56      int64       ring id: a random number, new for every ring made
-  64      int64       state: 1 recording, 2 ended (the camera stopped)
+  64      int64       state: 1 recording, 2 ended (the camera stopped), 3 lost
+                      (the camera is gone, unplugged: campy waits for it
+                      to be plugged back in, cameraReconnect, and then
+                      writes its frames here again, state 1; from campy
+                      after November 2026)
   72      int64       latest: the newest frame number written, 0 before the first
   80      float64     frame rate (frameRate)
   88      int64       camera index (n_cam)
@@ -108,7 +112,7 @@ DEFAULT_SLOTS = 8
 # whatever liveFeed says, for the campy-live-view window it opens itself (displayFrameRate, campy/acquireview.py)
 FEED_ENV = "CAMPY_LIVE_FEED"
 
-RECORDING, ENDED = 1, 2
+RECORDING, ENDED, LOST = 1, 2, 3
 
 # Header fields: (offset, numpy type)
 _HEADER = {
@@ -344,6 +348,13 @@ class RingWriter:
 		self.ring.Set("state", RECORDING)
 		self.written = 0
 		self.notWritten = 0
+		self.lost = False # state LOST: the camera is gone, until its next frame
+
+	def Lost(self):
+		# Its camera is gone (unplugged), and campy waits for it: readers see state LOST until its next frame
+		if self.ring is not None:
+			self.lost = True
+			self.ring.Set("state", LOST)
 
 	@staticmethod
 	def _Make(name, size):
@@ -402,6 +413,9 @@ class RingWriter:
 		_Release() # and the frame and its fields before end
 		fields[END] = n
 		ring.Set("latest", n)
+		if self.lost:
+			self.lost = False
+			ring.Set("state", RECORDING) # its camera is back
 		self.written += 1
 		ring.Set("written", self.written)
 		return True
@@ -479,6 +493,10 @@ class RingReader:
 
 	def Ended(self):
 		return self.State() == ENDED
+
+	def Lost(self):
+		# Its camera is gone (unplugged) and campy waits for it: frames may come again (state LOST)
+		return self.State() == LOST
 
 	def Replaced(self):
 		# Windows: a new recording reused this ring's memory (RingWriter._Make)
@@ -630,6 +648,12 @@ class Feed:
 			self.on = False
 			self.say("{}: the live feed stopped, {}: {}. The recording goes on.".format(self.cameraName, when, e))
 			self.Close()
+
+	def Lost(self):
+		# The camera is gone (unplugged), and campy waits for it (unicam's cameraReconnect): the ring says so to its
+		# readers until the camera's next frame
+		if self.on and self.writer is not None:
+			self._Do(self.writer.Lost, "as its camera was lost")
 
 	def Write(self, img, frameNumber, hostTime, timeStamp):
 		if self.on:
