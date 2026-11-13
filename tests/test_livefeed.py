@@ -589,6 +589,63 @@ def test_campy_live_waits_for_a_ring_still_being_made(rings):
 		cams.Close()
 
 
+def fields_not_written(writer):
+	# A ring as a campy-acquire from before 13 November 2026 left it for a moment: MAGIC and the
+	# version written, the other fields (dtype, sizes) not yet. Returns what makes it whole again.
+	header = writer.ring.header
+	saved = header.copy()
+	header[12:] = 0
+	def Finish():
+		header[:] = saved
+	return Finish
+
+
+def test_the_writer_shows_magic_only_after_every_field(monkeypatch):
+	# MAGIC comes last, past a release fence: a reader that sees it sees the whole header. Written
+	# first, a campy-live attaching in between read an empty dtype and stopped ("data type ''
+	# not understood", seen once on a CI runner)
+	made, seen = [], []
+	make = livefeed.RingWriter._Make
+	monkeypatch.setattr(livefeed.RingWriter, "_Make", staticmethod(lambda n, size: made.append(make(n, size)) or made[-1]))
+	monkeypatch.setattr(livefeed, "_Release",
+		lambda: seen.append((bytes(made[-1].buf[:8]), bytes(made[-1].buf[32:40]).rstrip(b"\0"))))
+	w = livefeed.RingWriter(name(), (16, 20), np.uint8, slots=4)
+	try:
+		assert seen and seen[0] == (b"\0" * 8, b"|u1")
+		assert bytes(w.shm.buf[:8]) == livefeed.MAGIC
+		reader = livefeed.RingReader(w.name)
+		assert reader.dtype == np.uint8 and reader.shape == (16, 20, 1)
+		reader.Close()
+	finally:
+		w.Close()
+
+
+def test_a_ring_with_its_fields_not_written_yet_is_refused_and_waited_for(rings, monkeypatch):
+	# MAGIC there but not the rest (an older writer's ring, for a moment): refused like a ring not
+	# made yet, its memory let go of, and campy-live waits for it instead of stopping
+	opened = []
+	attach = livefeed.Attach
+	monkeypatch.setattr(livefeed, "Attach", lambda n: opened.append(attach(n)) or opened[-1])
+	w = rings(name(), (16, 20), np.uint8, slots=4)
+	finish = fields_not_written(w)
+	with pytest.raises(ValueError, match="its header is being written"):
+		livefeed.RingReader(w.name)
+	assert len(opened) == 1 and opened[0].buf is None
+	monkeypatch.setattr(livefeed, "Attach", attach)
+	prefix = name()
+	writers = [rings(livefeed.RingName(prefix, c), (16, 20), np.uint8, slots=4) for c in range(2)]
+	finish2 = fields_not_written(writers[1])
+	cams = live.Cameras([x.name for x in writers], poll=0.0001)
+	try:
+		threading.Timer(0.5, finish2).start()
+		start = time.monotonic()
+		assert cams.Attach(wait=10)
+		assert time.monotonic() - start >= 0.4
+	finally:
+		cams.Close()
+		finish()
+
+
 def _record(prefix, cameras, frames, rate, delay, trigger=None, lose=None):
 	# campy-acquire's rings, made after delay, and frames at rate from when
 	# trigger is set: campy makes its rings a few seconds before the trigger,
@@ -1487,3 +1544,63 @@ def test_a_cameras_feed_says_its_processes(tmp_path):
 		"folder": os.path.join(str(tmp_path), "Camera0")}
 	readers = [types.SimpleNamespace(Description=feed.Description), types.SimpleNamespace(Description=lambda: "")]
 	assert livefeed.Processes(readers) == sorted({os.getpid(), os.getppid()})
+
+
+def test_a_ring_says_its_camera_is_lost_until_its_next_frame(rings):
+	# cameraReconnect: LOST while campy waits for the camera, RECORDING again with its next frame; never ended
+	ring = name()
+	w = rings(ring, (4, 4), np.uint8)
+	w.Write(frame(1, (4, 4)), 1, 1000)
+	r = livefeed.RingReader(ring)
+	try:
+		w.Lost()
+		assert r.Lost() and not r.Ended()
+		w.Write(frame(70, (4, 4)), 70, 2000)
+		assert not r.Lost() and r.State() == livefeed.RECORDING and r.Latest() == 70
+	finally:
+		r.Close()
+
+
+def test_campy_live_takes_back_a_camera_plugged_back_in(rings, monkeypatch):
+	# cameraReconnect: camera 1 unplugged after pulse 30 (its ring LOST, not ended), plugged back in at pulse 91, its
+	# frames numbered as the other cameras' again: left out meanwhile, then taken back, every set pairing one pulse's
+	# frames, with no offset. Left out at once, as its feed says it is lost: not after STALL_S (1 s, here the
+	# whole time it is gone), which held every camera's sets back that long, untracked
+	writers, cams, said = three(rings)
+	out = np.empty((3, 16, 20, 1), np.uint8)
+	got = []
+	done = threading.Event()
+
+	def Read():
+		while not done.is_set():
+			r = cams.NextSet(out, stop=done.is_set)
+			if r is None:
+				return
+			got.append((r[0].number, list(r[0].own), pulses(out)))
+
+	reader = threading.Thread(target=Read)
+	reader.start()
+	try:
+		t0 = clock.HostNs()
+		for p in range(1, 151): # 2.5 s at 60 fps
+			if p == 31:
+				writers[1].Lost()
+			pulse(writers, p, t0, skip=(1,) if 30 < p <= 90 else ())
+			time.sleep(PERIOD / 1e9)
+		time.sleep(0.2)
+	finally:
+		done.set()
+		reader.join()
+		cams.Close()
+	assert any("Camera1 unplugged after its frame 30" in s for s in said), said
+	assert not any("No frame from Camera1" in s for s in said), said
+	assert any("Camera1's frames came again" in s for s in said), said
+	# The sets without it start within a few pulses of the unplug (a loaded runner: up to 0.25 s), not 1 s later
+	without = [g[0] for g in got if g[1][1] == -1]
+	assert without and min(without) <= 45, without
+	assert cams.Report()["events"][0]["why"] == "lost"
+	back = [g for g in got if g[0] > 95 and g[1][1] != -1]
+	assert back, got
+	for number, own, seen in back:
+		assert seen[0] == seen[1] == seen[2] == number % 251 and own[1] == number, (number, own, seen)
+	assert cams.offset == [0, 0, 0]

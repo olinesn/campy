@@ -6,6 +6,9 @@
 // A command "@<path>" is that file's contents (Windows limits a command line's length).
 // SIM_START_US in the environment starts the clock there instead of at 0 (to
 // run a sketch across micros()'s 32-bit wrap); all times printed are the clock's.
+// SIM_USB_TX="<bytes>:<us>" gives the serial port a transmit buffer of that many bytes, which USB empties at that
+// many bytes per <us> (the Nano ESP32's is 64 bytes): availableForWrite says the room left, and a print that
+// doesn't fit waits for it, the clock running, as the real one does. Unset: no limit. Simulated clock only.
 // SIM_INPUT makes an input pin a pulse train, as a camera trigger:
 // "<pin>:<start_us>:<period_us>:<high_us>:<count>", several separated by ";"
 // (digitalRead: HIGH during a pulse). In live mode, times from the start.
@@ -160,6 +163,43 @@ void SimPioClearStall() {
 	pio_stalled = false;
 }
 
+// The transmit buffer (SIM_USB_TX): its size (0: no limit), how long USB takes to empty it, what's in it
+static unsigned long long tx_size = 0, tx_drain_us = 1, tx_fill = 0, tx_at = 0;
+
+static void ReadUsbTx() {
+	const char* text = std::getenv("SIM_USB_TX");
+	if (!text) return;
+	std::sscanf(text, "%llu:%llu", &tx_size, &tx_drain_us);
+	if (tx_drain_us == 0) tx_drain_us = 1;
+}
+
+static void TxDrain() {
+	// What USB took since the last look
+	unsigned long long now = Now();
+	unsigned long long gone = (now - tx_at) * tx_size / tx_drain_us;
+	if (gone > 0 || now < tx_at) {
+		tx_fill = gone >= tx_fill ? 0 : tx_fill - gone;
+		tx_at = now;
+	}
+}
+
+int SimSerial::availableForWrite() {
+	if (live || tx_size == 0) return 4096;
+	TxDrain();
+	return (int) (tx_size - tx_fill);
+}
+
+static void TxWait(size_t bytes) {
+	// A print waits until the buffer has room for all of it: the clock runs meanwhile
+	if (live || tx_size == 0) return;
+	TxDrain();
+	while (tx_fill + bytes > tx_size && bytes <= tx_size) {
+		now_us++;
+		TxDrain();
+	}
+	tx_fill += bytes > tx_size ? tx_size : bytes;
+}
+
 static std::string Escaped(const std::string& text) {
 	std::string out;
 	for (char c : text) {
@@ -178,6 +218,7 @@ static void Say(const std::string& text) {
 		return;
 	}
 #endif
+	TxWait(text.size());
 	std::printf("serial %llu %s\n", Now(), Escaped(text).c_str());
 }
 
@@ -275,6 +316,7 @@ static std::string Command(const std::string& arg) {
 
 int main(int argc, char** argv) {
 	ReadInputs();
+	ReadUsbTx();
 	if (argc == 2 && std::strcmp(argv[1], "live") == 0) {
 		live = true;
 		started = std::chrono::steady_clock::now();

@@ -399,7 +399,7 @@ The full description is at the top of the sketch.
 
 ## Tests
 
-`tests/test_chronic_timer.py` compiles the sketch for the computer and runs it on a simulated clock (`tests/arduino_sim`), the sync train included: its pulses are the seed's to the microsecond, and every camera and LED edge stays on its clock tick.
+`tests/test_chronic_timer.py` compiles the sketch for the computer and runs it on a simulated clock (`tests/arduino_sim`), the sync train included: its pulses are the seed's to the microsecond, and every camera and LED edge stays on its clock tick. The tests of what it says give it a USB transmit buffer: 64 bytes, as a Nano ESP32's, or 256, as the Pico's. Before pull request 432, the sketch dropped a line that didn't fit that buffer at once: on a Nano ESP32 every `ok status running` (about 85 characters) and a long `done`. On the Pico, with its 256 bytes, the same tests lost nothing, as the real sessions' `lost=0` showed. Now every line goes out whole, in pieces if need be, and nothing is waited for.
 
 `tests/test_sync_match.py` runs `sync_match.py` on made-up OneBox files from a real plan, on a clock that runs fast: a clean session, a dropped and a glitched sync pulse with a stray camera pulse, files that start mid-session and mid-pulse, and 40 ppm of drift over an hour.
 

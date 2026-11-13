@@ -193,26 +193,54 @@ def _Normalize(xy, f, c, dist, iterations=10, check_px=0.0):
 	# check_px > 0: points that do not distort back to within check_px of where they
 	# were are NaN. With a strong barrel distortion (k1 around -0.35) the lens model
 	# folds back near the image corners, where a pixel has no undistorted point.
-	x0 = (xy[..., 0] - c[..., 0]) / f[..., 0]
-	y0 = (xy[..., 1] - c[..., 1]) / f[..., 1]
-	k1, k2, p1, p2, k3 = (dist[..., i] for i in range(5))
-	x, y = x0, y0
-	if np.any(dist):
-		for _ in range(iterations):
-			r2 = x * x + y * y
-			radial = 1 + r2 * (k1 + r2 * (k2 + r2 * k3))
-			x, y = ((x0 - 2 * p1 * x * y - p2 * (r2 + 2 * x * x)) / radial,
-				(y0 - p1 * (r2 + 2 * y * y) - 2 * p2 * x * y) / radial)
-		if check_px > 0:
-			r2 = x * x + y * y
-			radial = 1 + r2 * (k1 + r2 * (k2 + r2 * k3))
-			ex = (x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x) - x0) * f[..., 0]
-			ey = (y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y - y0) * f[..., 1]
-			with np.errstate(invalid="ignore"):
-				off = ex * ex + ey * ey > check_px * check_px
-			x = np.where(off, np.nan, x)
-			y = np.where(off, np.nan, y)
-	return np.stack([x, y], -1)
+	xy = np.asarray(xy, float)
+	f, c, dist = np.asarray(f, float), np.asarray(c, float), np.asarray(dist, float)
+	shape = np.broadcast_shapes(xy.shape[:-1], f.shape[:-1], c.shape[:-1], dist.shape[:-1])
+	return _Undistorter(f, c, dist, shape, iterations, check_px)(np.broadcast_to(xy, shape + (2,)))
+
+
+class _Undistorter:
+	# _Normalize for points of one shape: its constants are spread to that shape and
+	# flattened once, so a Tracker, whose sets all have the same shape, makes them once.
+	# numpy takes about three times as long over a strided or broadcast array as over a
+	# flat one, and a little longer with a Python number than with an array; a set's
+	# arrays (cameras x animals x nodes) are small enough that numpy's time per operation
+	# is most of the work. Each point's arithmetic is the same, in the same order, so its
+	# result is too.
+
+	def __init__(self, f, c, dist, shape, iterations=10, check_px=0.0):
+		def flat(a):
+			return np.array(np.broadcast_to(a, shape), float).ravel()
+
+		self.shape, self.iterations, self.check_px = tuple(shape), int(iterations), float(check_px)
+		self.fx, self.fy, self.cx, self.cy = (flat(a) for a in (f[..., 0], f[..., 1], c[..., 0], c[..., 1]))
+		self.distorted = bool(np.any(dist))
+		self.k1, self.k2, self.p1, self.p2, self.k3 = (flat(dist[..., i]) for i in range(5))
+		self.p1x2, self.p2x2 = 2 * self.p1, 2 * self.p2
+		self.one, self.two = np.ones(self.fx.size), np.full(self.fx.size, 2.0)
+
+	def __call__(self, xy):
+		x0 = (xy[..., 0].ravel() - self.cx) / self.fx
+		y0 = (xy[..., 1].ravel() - self.cy) / self.fy
+		x, y = x0, y0
+		if self.distorted:
+			k1, k2, p1, p2, k3, p1x2, p2x2 = self.k1, self.k2, self.p1, self.p2, self.k3, self.p1x2, self.p2x2
+			one, two = self.one, self.two
+			for _ in range(self.iterations):
+				r2 = x * x + y * y
+				radial = one + r2 * (k1 + r2 * (k2 + r2 * k3))
+				x, y = ((x0 - p1x2 * x * y - p2 * (r2 + two * x * x)) / radial,
+					(y0 - p1 * (r2 + two * y * y) - p2x2 * x * y) / radial)
+			if self.check_px > 0:
+				r2 = x * x + y * y
+				radial = one + r2 * (k1 + r2 * (k2 + r2 * k3))
+				ex = (x * radial + p1x2 * x * y + p2 * (r2 + two * x * x) - x0) * self.fx
+				ey = (y * radial + p1 * (r2 + two * y * y) + p2x2 * x * y - y0) * self.fy
+				with np.errstate(invalid="ignore"):
+					off = ex * ex + ey * ey > self.check_px * self.check_px
+				x = np.where(off, np.nan, x)
+				y = np.where(off, np.nan, y)
+		return np.stack([x, y], -1).reshape(self.shape + (2,))
 
 
 def _ReadToml(path):
@@ -271,6 +299,17 @@ class _Frame:
 		# P' = P diag(s, s, s, 1) with the translation folded in: P'[X'; 1] = P[sX' + c; 1]
 		self.P = np.array([np.hstack([c.Rt[:, :3] * self.s, (c.Rt[:, :3] @ self.c + c.Rt[:, 3])[:, None]])
 			for c in cameras])
+		self.cameras = list(cameras)
+		self._stacked = None
+
+	def Stacked(self):
+		# The cameras' R^T (V, 3, 3), t (V, 3) and focal lengths (V, 2), each stacked once
+		if self._stacked is None:
+			# R^T as a transposed view of R, as Camera.ProjectNormalized's R.T: the same
+			# layout, so numpy (BLAS) multiplies by it the same way, to the last bit
+			self._stacked = (np.array([c.R for c in self.cameras]).transpose(0, 2, 1), np.array([c.t for c in self.cameras]),
+				np.array([c.f for c in self.cameras]))
+		return self._stacked
 
 
 def Triangulate(xy, cameras, weights=None, frame=None):
@@ -304,13 +343,25 @@ def Triangulate(xy, cameras, weights=None, frame=None):
 	return X.reshape(shape + (3,))
 
 
-def ReprojectionErrors(X, xy, cameras):
-	"""Per view, distance (undistorted pixels) between X (..., 3) projected and xy (views, ..., 2) normalized."""
-	out = np.empty(np.shape(xy)[:-1])
-	for v, cam in enumerate(cameras):
-		d = (cam.ProjectNormalized(X) - xy[v]) * cam.f
-		out[v] = np.sqrt((d * d).sum(-1))
-	return out
+def ReprojectionErrors(X, xy, cameras, frame=None):
+	"""Per view, distance (undistorted pixels) between X (..., 3) projected and xy (views, ..., 2) normalized.
+
+	frame: the cameras' _Frame, if made already. Every view is done at once when X and xy[v]
+	have as many axes (numpy's time per operation is most of the work at a set's sizes); each
+	number is the same as one view at a time would give."""
+	X, xy = np.asarray(X, float), np.asarray(xy, float)
+	V = len(cameras)
+	if X.ndim < 2 or X.ndim - 1 != xy.ndim - 2:
+		out = np.empty(xy.shape[:-1])
+		for v, cam in enumerate(cameras):
+			d = (cam.ProjectNormalized(X) - xy[v]) * cam.f
+			out[v] = np.sqrt((d * d).sum(-1))
+		return out
+	RT, t, f = (frame if frame is not None else _Frame(cameras)).Stacked()
+	lead = (V,) + (1,) * (X.ndim - 2)
+	p = np.matmul(X[None], RT[(slice(None),) + (None,) * (X.ndim - 2)]) + t.reshape(lead + (1, 3))   # (V, ..., 3): X @ R.T + t
+	d = (p[..., :2] / p[..., 2:3] - xy) * f.reshape(lead + (1, 2))
+	return np.broadcast_to(np.sqrt((d * d).sum(-1)), xy.shape[:-1]).copy()
 
 
 def TriangulateChecked(xy, cameras, weights=None, reproj_threshold=None, frame=None, X=None):
@@ -323,8 +374,9 @@ def TriangulateChecked(xy, cameras, weights=None, reproj_threshold=None, frame=N
 	xy = np.asarray(xy, float)
 	w = np.ones(xy.shape[:-1]) if weights is None else np.array(weights, float)
 	w[~np.isfinite(xy).all(-1)] = 0.0
+	frame = frame if frame is not None else _Frame(cameras)
 	X = Triangulate(xy, cameras, w, frame) if X is None else np.array(X, float)
-	err = ReprojectionErrors(X, xy, cameras)
+	err = ReprojectionErrors(X, xy, cameras, frame)
 	err[w <= 0] = np.nan
 	if reproj_threshold:
 		V = len(cameras)
@@ -343,14 +395,14 @@ def TriangulateChecked(xy, cameras, weights=None, reproj_threshold=None, frame=N
 			trial[np.arange(V), np.arange(V)] = 0.0
 			Xt = Triangulate(np.broadcast_to(xx, (V,) + xx.shape).transpose(1, 0, 2, 3), cameras,
 				trial.transpose(1, 0, 2), frame)                             # (V left out, k, 3)
-			et = ReprojectionErrors(Xt, np.broadcast_to(xx[:, None], (V, V) + xx.shape[1:]), cameras)
+			et = ReprojectionErrors(Xt, np.broadcast_to(xx[:, None], (V, V) + xx.shape[1:]), cameras, frame)
 			et = np.where(trial.transpose(1, 0, 2) > 0, et, -1.0).max(0)    # (V left out, k)
 			et[wx <= 0] = np.inf                                             # only views it has
 			best = et.argmin(0)
 			k = np.arange(len(best))
 			w[(best,) + idx] = 0.0
 			X[idx] = Xt[best, k]
-			e = ReprojectionErrors(X[idx], xx, cameras)
+			e = ReprojectionErrors(X[idx], xx, cameras, frame)
 			e[w[sub] <= 0] = np.nan
 			err[sub] = e
 		bad = np.where(np.isfinite(err), err, -1.0).max(0) > reproj_threshold
@@ -598,6 +650,7 @@ class Tracker:
 		self._f = np.array([c.f for c in self.cameras])[:, None, None]       # (C, 1, 1, 2)
 		self._c = np.array([c.c for c in self.cameras])[:, None, None]
 		self._dist = np.array([c.dist for c in self.cameras])[:, None, None]
+		self._undistort = None                                              # _Undistorter for the sets' shape
 		# Essential matrices between camera pairs, for births: E[a][b] maps a's point to b's line
 		self.E = {}
 		for a, ca in enumerate(self.cameras):
@@ -640,7 +693,9 @@ class Tracker:
 		self.last_frame = f
 
 		# Every detection, undistorted and normalized
-		xy = _Normalize(keypoints, self._f, self._c, self._dist, check_px=1.0)
+		if self._undistort is None or self._undistort.shape != (C, I, N):
+			self._undistort = _Undistorter(self._f, self._c, self._dist, (C, I, N), check_px=1.0)
+		xy = self._undistort(keypoints)
 		w = np.ones((C, I, N)) if scores is None or not self.weighted else np.nan_to_num(np.asarray(scores, float))
 		if scores is not None and self.min_score > 0:
 			xy[np.asarray(scores) < self.min_score] = np.nan
@@ -664,11 +719,15 @@ class Tracker:
 		touched = np.zeros(self.n_animals, bool)
 		leftovers = {}
 
+		# With every animal's target made, none is born this set: X0 is what every camera is
+		# matched against, so all of them are scored at once. Each camera's detection slots
+		# are scored, then its present ones taken.
+		every = self._ScoreCameras(range(C), X0, mean_frame, f, xy) if T and T >= self.n_animals else None
 		for c in range(C):
 			dets = np.nonzero(present[c])[0]
 			taken = np.zeros(len(dets), bool)
 			if T and len(dets):
-				score = self._Score(c, X0, mean_frame, f, xy[c, dets])
+				score = every[c][:, dets] if every is not None else self._Score(c, X0, mean_frame, f, xy[c, dets])
 				rows, cols = linear_sum_assignment(score, maximize=True)
 				for t, j in zip(rows, cols):
 					self._Take(t, c, dets[j], xy[c, dets[j]], w[c, dets[j]], f)
@@ -755,20 +814,31 @@ class Tracker:
 
 	def _Score(self, c, X, mean_frame, f, dxy):
 		# LUC3D's adjacency (higher = better match): targets (T) x detections (D) of camera c
-		cam = self.cameras[c]
-		nw = np.ones(dxy.shape[1]) if self.node_weights is None else self.node_weights
+		return self._ScoreCameras([c], X, mean_frame, f, dxy[None])[0]
+
+	def _ScoreCameras(self, cams, X, mean_frame, f, dxy):
+		# _Score of several cameras at once, (len(cams), T, D): dxy (len(cams), D, N, 2). One
+		# call does what one per camera would, each number by the same arithmetic; numpy's
+		# time per operation, not the arithmetic, is most of the cost at these sizes.
+		nw = np.ones(dxy.shape[-2]) if self.node_weights is None else self.node_weights
 		with np.errstate(invalid="ignore", divide="ignore"):
 			# 2D: the target's 3D projected into this camera vs the detection, normalized units
-			proj = cam.ProjectNormalized(X)                                  # (T, N, 2)
-			d2 = np.sqrt(((proj[:, None] - dxy[None]) ** 2).sum(-1))         # (T, D, N)
+			cams = list(cams)
+			RT, t, _ = self.frame_of_cameras.Stacked()
+			R = RT.transpose(0, 2, 1)[cams]          # R as Camera.R is laid out; R.T as Camera.R.T (a view)
+			p = np.matmul(X[None], R.transpose(0, 2, 1)[:, None]) + t[cams][:, None, None]   # (K, T, N, 3): X @ R.T + t
+			proj = p[..., :2] / p[..., 2:3]                                          # (K, T, N, 2)
+			d2 = np.sqrt(((proj[:, :, None] - dxy[:, None]) ** 2).sum(-1))           # (K, T, D, N)
 			dt = (f - mean_frame)[:, None, None]
 			s2 = self.corr2d * (1 - d2 / (self.vel * (1 + dt))) * np.exp(-self.time_penalty * dt)
 			# 3D: distance from the target's 3D to the detection's rays (from the camera centre)
-			rays = np.concatenate([dxy, np.ones(dxy.shape[:2] + (1,))], -1) @ cam.R    # R^T [x y 1]
+			h = np.concatenate([dxy, np.ones(dxy.shape[:-1] + (1,))], -1)
+			rays = np.matmul(h, R[:, None])                                           # R^T [x y 1]: (K, D, N, 3)
+			centre = np.array([self.cameras[c].center for c in cams])
 			rays /= np.linalg.norm(rays, axis=-1, keepdims=True)
-			v = (X - cam.center)[:, None]                                    # (T, 1, N, 3)
-			r = rays[None]                                                   # (1, D, N, 3)
-			cx = v[..., 1] * r[..., 2] - v[..., 2] * r[..., 1]               # |v x r|: (T, D, N)
+			v = (X[None] - centre[:, None, None])[:, :, None]                         # (K, T, 1, N, 3)
+			r = rays[:, None]                                                         # (K, 1, D, N, 3)
+			cx = v[..., 1] * r[..., 2] - v[..., 2] * r[..., 1]                        # |v x r|: (K, T, D, N)
 			cy = v[..., 2] * r[..., 0] - v[..., 0] * r[..., 2]
 			cz = v[..., 0] * r[..., 1] - v[..., 1] * r[..., 0]
 			d3 = np.sqrt(cx * cx + cy * cy + cz * cz)

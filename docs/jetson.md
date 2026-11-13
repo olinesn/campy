@@ -40,14 +40,58 @@ The rig checks, the same as the EVO-X2's, with campy-live's defaults:
 | **12 November** (campy dev `7952d90`): replay3 | 3,600 of 3,600, 0 skipped | 10.1 / 10.3 ms | 14.5 / 15.7 (29.7) ms | (a replay) |
 | smoke1, on the Orin's encoder | 1,800, 0 skipped | 3.9 / 4.1 ms | | 1,800 |
 | smoke3, on the Orin's encoder | 3,600, 0 skipped | 10.2 / 10.6 ms | 14.6 / 16.0 (22.0) ms | 3 × 3,600 |
+| **12 November, 3:21 AM** (campy dev `e99da09`): replay3 | 3,600 of 3,600, 0 skipped | 10.1 / 10.3 ms | 14.5 / 15.7 (23.9) ms | (a replay) |
+| smoke1, on the Orin's encoder | 1,800, 0 skipped | 3.9 / 4.1 ms | | 1,800 |
+| smoke3, on the Orin's encoder | 3,600, 0 skipped | 10.2 / 10.7 ms | 14.5 / 16.0 (26.1) ms | 3 × 3,600 |
+| **12 November, evening** (campy dev `a21e0f6`, pull requests 422 and 423: an unplugged camera, and `cameraReconnect`): replay3 | 3,600 of 3,600, 0 skipped | 10.1 / 10.3 ms | 14.5 / 15.7 (28.1) ms | (a replay) |
+| smoke1, on the Orin's encoder | 1,800, 0 skipped | 3.9 / 4.1 ms | | 1,800 |
+| smoke3, on the Orin's encoder | 3,600, 0 skipped | 10.2 / 10.6 ms | 14.6 / 16.2 (22.4) ms | 3 × 3,600 |
 
-The replay tracked as the other machines do: against the offline SLEAP predictions, 2D median 3.8 px, 3D median 4.2 mm, 99.93% the same identity, 2 identity switches (the EVO-X2: 3.8 px, 4.2 mm, 2 switches). The EVO-X2 takes about half the time (inference 5.5 / 5.6 ms in the same replay). The 3D step alone takes 2.8 ms here against about 1.1 ms there: it runs on the CPU. While smoke3 ran, the CPU was about half busy, the three libx264 encoders included. Recorded on the Orin's encoder instead, tracking took the same time; the CPU was about 38% busy at mid-run (one sample, `top`), most of it the emulated cameras decoding their clips.
+The replay tracked as the other machines do: against the offline SLEAP predictions, 2D median 3.8 px, 3D median 4.2 mm, 99.93% the same identity, 2 identity switches (the EVO-X2: 3.8 px, 4.2 mm, 2 switches). The EVO-X2 takes about half the time (inference 5.5 / 5.6 ms in the same replay). The 3D step alone took 2.8 ms here against about 1.1 ms there: it runs on the CPU (2.3 ms here since pull request 420: [The CPU's share](#the-cpus-share-which-cores-and-numpys-threads-12-november)). While smoke3 ran, the CPU was about half busy, the three libx264 encoders included. Recorded on the Orin's encoder instead, tracking took the same time; the CPU was about 38% busy at mid-run (one sample, `top`), most of it the emulated cameras decoding their clips.
 
 Since 11 November the rig check records on the Orin's encoder, as a recording on the Orin would: smoke1 and smoke3 use `gpuMake: "jetson"`, H.265 at quality 21 (`ENC=cpu` still runs the CPU path, libx264 `ultrafast`). Its first run, the three rows from "Since 11 November", came after the Orin's campy moved to dev `5b3aefb` (the Jetson writer, pull request 403): the replay tracked as before (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches), each recorded video held every frame (4.1–5.0 Mbit/s per camera in smoke3), and the CPU was about 39% busy at smoke3's mid-run (one sample).
 
-On 12 November, after the Orin's campy moved to dev `7952d90` (pull requests 406, 408, 410 and 411; none changes what the rig check runs: 408 is for TensorRT engines, which it does not use), the rig check ran again, `RIG_CLEAN`, and gave the same times to within 0.1 ms: the last three rows above. The replay tracked as before (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches), and every frame was recorded.
+On 12 November, after the Orin's campy moved to dev `7952d90` (pull requests 406, 408, 410 and 411; none changes what the rig check runs: 408 is for TensorRT engines, which it does not use), the rig check ran again, `RIG_CLEAN`, and gave the same times to within 0.1 ms: the three rows marked 12 November. At 3:21 AM, after it moved to dev `e99da09` (pull request 415, `campy-session`'s Ctrl-C at the start, which the rig check doesn't use; and test-only changes), it ran again, `RIG_CLEAN`, with the same times to within 0.1 ms and every frame recorded: the rows marked 3:21 AM. After it moved to dev `a21e0f6` that evening (an unplugged camera is waited for and rejoins the recording, pull requests 422 and 423; the rig check's tracking is unchanged), it ran again, `RIG_CLEAN`, with the same times to within 0.2 ms and the same accuracy: the last three rows. The replay tracked as before (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches), and every frame was recorded.
 
 Not checked: how far TensorRT's fp16 moves the keypoints from fp32 on the Orin (the replay's accuracy above already includes it), and a real camera feeding `campy-live`.
+
+#### The CPU's share: which cores, and numpy's threads (12 November)
+
+The Orin's cores are at their fastest already (MAXN, 2.2 GHz held), and each is slower than an x86 desktop core, so the 3D step, which runs on the CPU, takes about 2.5 times as long as on the EVO-X2. Its 12 cores are three clusters of four (0–3, 4–7, 8–11), each sharing its own cache, and every hardware interrupt (USB, the NVMe disk, the network) is handled on CPU 0. What changing how the CPU is used does, measured with the replay check (60 s, 3 cameras, 5 mice, 3D), each setting run twice, in alternating order, all under one lock, `RIG_CLEAN` (campy dev `7952d90`). Times in ms, the two runs' p50 / p99:
+
+| Setting | 3D step alone | Frame to 3D | Inference |
+|---|---|---|---|
+| Defaults (`campy-live` on all 12 cores) | 2.76–2.78 / 3.88–3.90 | 14.5 / 15.7 | 10.1 / 10.3 |
+| `--cpus 4-7` (one cluster, off CPU 0) | 2.65–2.68 / 3.75–3.78 | 14.2–14.3 / 15.5–15.6 | 9.9 / 10.3 |
+| `--cpus 4-7`, and the replay's feeder on 8–11 (`taskset -c 8-11`) | 2.55–2.57 / 3.66–3.73 | 14.1–14.2 / 15.4 | 10.0 / 10.3 |
+| `OPENBLAS_NUM_THREADS=1` alone | 2.73–2.76 / 3.86 | 14.5 / 15.7 | 10.1 / 10.3 |
+| All three | 2.49–2.54 / 3.63–3.70 | 14.1 / 15.4 | 10.0 / 10.2 |
+
+- **Keeping `campy-live` on one cluster and what feeds it on another helps a little**: about 0.25 ms off the 3D step and 0.4 ms off frame to 3D at the median (about 3%), 0.3 ms at p99. Every set was tracked in every run, and the accuracy didn't change at all (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches, in each of the ten).
+- **numpy's thread count doesn't matter.** numpy's OpenBLAS starts 12 threads, but the 3D step's matrices are too small for it to use them: one thread gave the same times.
+- **The desktop costs nothing measurable.** GNOME, X and the VNC server used 80–150 ms of CPU over each 70 s run, about 0.2% of one core, so turning the desktop off while tracking (which needs `sudo`) wasn't tried.
+- **For a recording**, the same split would be `campy-live --cpus 4-7 --campy-cpus 8-11`, which moves `campy-acquire`, its camera processes and their encoders onto the third cluster when the feed comes. Not measured with cameras.
+- The worst set of each run (the max, 21–31 ms frame to 3D) moved about as much from run to run as between settings.
+
+**The GPU doesn't help, as the step is written.** The same 3,600 sets, run offline through `campy/pose3d.py`'s tracker on the Orin's CPU, reproduced the run's 3D exactly (the same missing points, within the log's float32 rounding), at 2.15 / 3.20 ms per set (p50 / p99), under the rig lock. That is 0.6 ms less than inside `campy-live`, where it shares Python with the thread running the models. Its time is spread over hundreds of small numpy operations on 3 × 5 × 12 points: undistorting the keypoints 0.50 ms a set, scoring each camera's detections against the animals 0.59, the solves 1.1. The arithmetic itself is tiny; most of the time is the cost of starting each operation. On the GPU, through PyTorch, starting one operation cost 25 µs of CPU time, and one with its result read back 77 µs. So each piece took longer there, timed with its result back on the CPU:
+
+| One call | numpy on the CPU | PyTorch on the GPU, fp64 | PyTorch on the GPU, fp32 |
+|---|---|---|---|
+| Undistorting a set's keypoints (`_Normalize`) | 430 µs | 8,383 µs | 8,236 µs |
+| The 3D solve of 5 animals × 12 nodes (`Triangulate`) | 314 µs | 1,767 µs | 1,627 µs |
+
+The GPU results matched numpy's: identical points missing, and the 3D within 3 × 10⁻¹² mm in fp64 and 0.002 mm in fp32. Recording the solve as one CUDA graph, which would replace its launches with one, failed: the eigenvalue solver and the masking of missing points need the CPU partway through. And the tracker has to read results back at least four times a set: once per camera, to match its detections to the animals, and once for the 3D. At 77 µs each that is 0.3 ms before any work. To pay off on the GPU, the step would need its own fused kernels, not PyTorch's operations. Measured 12 November (2:40 AM, `RIG_CLEAN`), replaying the replay check's logged keypoints through the tracker.
+
+**Fewer, larger numpy operations on the CPU did help** (pull request 420). Most of numpy's time on arrays this small is spent starting each operation, and it takes about three times as long over a strided or broadcast array as over a flat one. Since that pull request, the step undistorts the keypoints on flat arrays, with the lens constants made once per tracker; once all 5 animals are being followed, it scores every camera's detections in one call instead of one call per camera; and it computes every view's reprojection errors at once. Each number is computed with the same arithmetic, in the same order, as before, so the results are identical to the last bit: the 3,600 sets' 3D, the reprojection errors and the identities matched the old code's exactly, offline on the Orin, the EVO-X2 and a Mac. Times per set, p50 / p99, all `RIG_CLEAN` (12 November):
+
+| | Before | After |
+|---|---|---|
+| Orin, inside `campy-live` (the replay check, two runs each, alternating) | 2.77 / 3.86–3.88 ms | **2.27–2.30 / 3.32–3.38 ms** |
+| Orin, frame to 3D in the same runs | 14.5 / 15.7 ms | **14.0 / 15.1–15.3 ms** |
+| Orin, offline (all 3,600 sets, four passes each) | 2.12 / 3.14 ms | **1.65 / 2.59 ms** |
+| EVO-X2, offline (the same) | 0.58 / 0.85 ms | **0.44 / 0.67 ms** |
+
+The replay's accuracy didn't change (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches). Inside `campy-live` the step gains less than offline because it shares Python with the thread running the models. What is left is mostly numpy's eigenvalue solver (the 3D solve) and the undistortion's ten rounds; going further would take compiled code.
 
 ### Recording
 

@@ -217,7 +217,11 @@ class Board:
 		last_sync = time.monotonic()
 		while not self.stopping.is_set():
 			try:
-				data = self.connection.read(256)
+				# What has come, at least a byte: a line is taken (and stamped) as it comes. read(256) waited for 256
+				# bytes or the port's 5 ms timeout (about 15 ms on Windows, the system timer's step), so each line
+				# (15-40 bytes) was heard that much late: a trigger rise's report, a command's answer, and the clock
+				# map's round trips (14 ms at best on a real Nano ESP32 on Windows, 0.4 ms now)
+				data = self.connection.read(max(1, getattr(self.connection, "in_waiting", 0) or 0))
 			except Exception as e:
 				if not self.stopping.is_set():
 					self.error = "the outputs board's port failed: {}".format(e)

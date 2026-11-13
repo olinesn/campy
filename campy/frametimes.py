@@ -365,8 +365,19 @@ class TriggerGaps:
 		self.missed = 0 # pulses without a frame so far
 		self.frame = None # the frame just after the latest of them
 
+	def Restart(self):
+		# A camera unplugged and back (unicam's cameraReconnect): the step across the time it was gone is not counted
+		# (the recording watch says that time apart), and counting goes on from its next frame
+		if self.period is None:
+			self.first = []
+		else:
+			self.last = None
+
 	def Add(self, timeStamp, frameNumber):
 		"""A frame's timestamp (s, the camera's clock) and number: returns the pulses without a frame found now."""
+		if self.period is not None and self.last is None:
+			self.last = timeStamp
+			return 0
 		if self.period is None:
 			self.first.append((timeStamp, frameNumber))
 			if len(self.first) <= self.LEARN:

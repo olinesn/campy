@@ -40,7 +40,7 @@ arduino-cli upload --fqbn arduino:esp32:nano_nora -p <port> campy/outputs_board/
 ```
 The port is `/dev/ttyACM1` or similar on Linux, `COM5` or similar on Windows. The board answers `ok campy_outputs 2` to `id` at 115200 baud.
 
-Upload it again after each campy update that changes the sketch. `campy-rules` checks the version when it starts and refuses a board that runs another one, saying which it found. Version 2 came with pull request 304: a board that still answers `ok campy_outputs 1` restarts its frame count after a pause in the trigger (see *Order matters* below), so `campy-rules` won't start with it.
+Upload it again after each campy update that changes the sketch. `campy-rules` checks the version when it starts and refuses a board that runs another one, saying which it found. Version 2 came with pull request 304: a board that still answers `ok campy_outputs 1` restarts its frame count after a pause in the trigger (see *Order matters* below), so `campy-rules` won't start with it. Pull request 430 changed the sketch but not its version, since nothing it says changed: a board flashed before it drops any line that doesn't fit its 64-byte USB buffer at once (`status` every time, and now and then a line when several come together). Upload it again to get every line.
 
 ## The rules file
 
@@ -162,7 +162,7 @@ The events log has a `live_gone` line when the results end and a `live_back` lin
 ## Safety
 
 - **Off by default.** The outputs are low from power-up and after every reset.
-- **Watchdog.** `campy-rules` sends the board a heartbeat every 50 ms. If 250 ms pass without one while anything is on, the board switches everything off by itself. That covers a crash, a kill or an unplugged cable. It also covers a stuck decision loop: the heartbeat goes out only while the loop that checks the rules has gone round in the last 100 ms. Before pull request 304, another thread sent it, so a stuck loop kept the watchdog quiet.
+- **Watchdog.** `campy-rules` sends the board a heartbeat every 50 ms. If 250 ms pass without one while anything is on, the board switches everything off by itself. That covers a crash, a kill or an unplugged cable. It also covers a stuck decision loop: the heartbeat goes out only while the loop that checks the rules has gone round in the last 100 ms. Before pull request 304, another thread sent it, so a stuck loop kept the watchdog quiet. On a real board it fires 250 ms after the board last heard anything, to within 0.01 ms ([On a real board](#on-a-real-board)).
 - **After the watchdog.** `campy-rules` starts the rules over from the next sets, and starts the session's trains (`run: session`) again. A rule that still holds then switches its output on again.
 - **Logs never hold up a decision.** `campy-rules` writes its logs on a thread of its own. A slow disk delays neither the decisions, nor the stale-feed check, nor the heartbeat.
 - **Clean exit.** `campy-rules` switches everything off when it ends, whatever the reason, the session's photometry trains included.
@@ -189,6 +189,8 @@ The steps, with estimates for the EVO-X2 at 60 fps, until they are measured on a
 
 `campy-rules` prints each step's p50, p99 and worst case at the end, and writes them to its summary.
 
+`campy-rules` hears each line from the board as soon as it arrives: a trigger's report, a command's answer, and the round trips that map the board's clock. Before pull request 417, it read in blocks that waited up to 5 ms for more to come; on Windows that wait is about 15 ms, the system timer's step. Measured on a real Nano ESP32 running `campy_outputs` on a Windows PC (the Dell Pro Tower Plus, 12 November, 3,000 commands each way, alternated): an answer was heard 6.0 ms after its command at the median (p99 10.6 ms) before, and 0.66 ms (p99 1.05 ms) after. The quickest round trip, which sets how well board times map to host times, was 14–15 ms before and 0.34–0.41 ms after. So, before, a pin time given on the host clock could be up to about 7 ms off on Windows; it is now within about 0.2 ms. The board's own latency per event (frame trigger to pin) is timed on the board's clock and was never affected. On the simulated board on a Mac, a trigger's report was heard 0.5 ms after it at the median, not 1.8 ms. This changes when `campy-rules` hears of a change, not when the pin changes.
+
 On a Dell PC, the worst case comes every 15 minutes: Dell Optimizer's TechHub agent makes the BIOS work for about 9 s and then 2 s more, which slows the sets running then. On the Precision 7875 that added up to 2.5 ms to frame-to-3D. On the Pro Tower Plus the cost comes mostly in the first quarter-hour after the agent starts: frame to 3D up to 24.8 ms, against 12.6 ms at the 99th percentile ([Hardware guide](hardware-guide.html), "On a Dell PC, Dell's TechHub agent slows live tracking every 15 minutes").
 
 To check the whole chain with your own eyes:
@@ -207,7 +209,7 @@ All host times are on campy's host clock (`hosttimes.npy`'s), so everything line
   Also one line per pulse the board made, with both edges. And `live_gone` / `live_back` when `campy-live` was gone during the recording (pose rules off between them).
 - **`<out>.board.txt`**: every line to and from the board. That includes every camera trigger's rise, `t <frame> <board µs>`.
 - **`<out>.npy`**: per set, its frame, times, each rule's value (−1 unknown) and whether it held.
-- **`<out>.json`**: the summary. Counts, the latency of each step, and the map from the board's clock to the host clock. That map is good to half a USB round trip, about 1 ms.
+- **`<out>.json`**: the summary. Counts, the latency of each step, and the map from the board's clock to the host clock. That map is good to half its quickest round trip: about 0.2 ms on a Windows PC with a Nano ESP32 (up to about 7 ms before pull request 417).
 
 ## Tests
 
@@ -217,7 +219,8 @@ All host times are on campy's host clock (`hosttimes.npy`'s), so everything line
   - groups never on together;
   - refusing late commands;
   - the watchdog and `max_on_s`;
-  - counting on through a pause (and a train keeping its frames across it), and the 71-minute wrap of the board's clock.
+  - counting on through a pause (and a train keeping its frames across it), and the 71-minute wrap of the board's clock;
+  - every line coming whole through a 64-byte USB transmit buffer, as a Nano ESP32's (the simulated board has one since pull request 430): `status` (about 110 characters), seven answers back to back, and four trains' pulse reports at once. Before, the sketch dropped a line that didn't fit at once; the simulated board had no such buffer, so no test saw it. On a real Nano ESP32 (13 November, the Dell Pro Tower Plus's camera-trigger board, flashed for the test and restored after it), `status` came whole 5 times out of 5, 30 commands sent at once were all answered in order with nothing lost, `status` read both outputs high before the watchdog and none after it (fired 249.989 ms after the board last heard anything), and a port closed while answers were still coming left nothing for the next program to open it.
 - `tests/test_rules.py` checks every condition, debouncing, hysteresis, missing data, refractory periods and file errors. It also checks `--dry-run` and `--replay`, a level and a train on one output (both orders), switch-ons refused and sent again, the recovery after the watchdog, a stuck decision loop that lets the watchdog fire, and a slow log write. For `campy-live` ending mid-recording, it checks that:
   - the laser goes off at once and the session's train keeps running (no stop, no `alloff`), with the heartbeat at its usual pace and quiet for 200 ms or more at most once (one heartbeat sent late by a busy test computer, not by `campy-rules`);
   - the rules resume on the next `campy-live`'s feed, in one log;
@@ -227,3 +230,13 @@ All host times are on campy's host clock (`hosttimes.npy`'s), so everything line
   - `refractory_s` counts across the restart.
 
   One of these runs the sketch in real time with a 60 Hz trigger: `campy-live` gone for 2 s, the session train's pin kept pulsing (20 pulses or more during the gap) and the board's watchdog never fired. That test sets the watchdog to 500 ms, not 250, because a 250 ms hold-up of the simulated board or of `campy-rules` on a busy test computer could fire it. It also checks the heartbeat's pace from what `campy-rules` sent. Slowing the waiting loop to 300 ms makes that test and the heartbeat check fail. And it runs the whole path in real time: a results feed, `campy-rules`, and the sketch on a simulated serial port with a 60 Hz trigger.
+
+### On a real board
+
+On 12 and 13 November the camera-trigger Nano ESP32 of the Dell Pro Tower Plus was flashed with `campy_outputs` (version 2) for a few minutes at a time. Each time it was flashed back afterwards with the exact binary it had run before, and it answered its trigger commands as before. Its outputs were the board's own RGB LED (pins 14 and 15, on no header pin); no trigger was wired. Under `campy-rules`' own `Board` (`campy/trigger/outputs.py`), with the heartbeat stopped the way a stuck decision loop stops it:
+
+- the watchdog fired 249.996 ms and 249.995 ms after the board last heard anything (with one and with two outputs on; `watchdog_ms` 250), and 999.994 ms with 1,000, timed on the board's own clock;
+- it stayed quiet with nothing on, and with an output on while heartbeats came (3 s);
+- once the heartbeat came back, nothing switched itself on again, and the next `on` worked.
+
+With the sketch from before pull request 430, the board can't answer `status` on a Nano ESP32: its answer (about 110 characters) is longer than the 64 bytes its USB serial buffer holds, and that sketch drops a line that doesn't fit rather than wait. Pull request 430 sends such lines in pieces. `campy-rules` doesn't use `status`. Not checked on the real board yet, since they need a trigger wired to it: a level and a train on one output each switching off, and the trains across a trigger pause. The pins' levels weren't measured with an instrument either; that the outputs went low after the watchdog is the board's own report (`wd`: "everything is low").

@@ -18,8 +18,12 @@ camera a camera index or * (every camera), from its frame-th frame on:
 	stall   no frame for <seconds> (as when the trigger pauses), then frames
 	        again, on time (the frames meanwhile were never taken)
 	stop    no frame ever again (a trigger that stopped)
-	lost    the camera is gone (unplugged): unicam.CameraLost
-"*:stall@60+5" pauses every camera after 60 frames for 5 s.
+	lost    the camera is gone (unplugged): unicam.CameraLost; with
+	        <seconds>, plugged back in that long after (Reopen opens it
+	        again, cameraReconnect), its clock started again at 0 as a
+	        FLIR camera's is, its next frame on the next pulse
+"*:stall@60+5" pauses every camera after 60 frames for 5 s; "1:lost@20+5"
+unplugs camera 1 at its frame 20, and plugs it back in 5 s later.
 """
 
 from campy.cameras import unicam
@@ -150,6 +154,8 @@ class EmulatedCamera:
 		self.startTime = None
 		self.faults = list(faults) # (kind, frame, seconds): see Faults
 		self.stalled = None # when the stall now going began
+		self.goneAt = None # lost: when it was unplugged (time.perf_counter)
+		self.resume = False # plugged back in: its next frame is the next pulse's
 
 	def Fault(self, frameNumber):
 		# Raises what this frame's fault makes the camera do, if it has one
@@ -157,6 +163,8 @@ class EmulatedCamera:
 			if frameNumber < frame:
 				continue
 			if kind == "lost":
+				if self.goneAt is None:
+					self.goneAt = time.perf_counter()
 				raise unicam.CameraLost("emulated: the camera is gone")
 			if kind == "stop":
 				time.sleep(0.02)
@@ -189,11 +197,27 @@ class EmulatedCamera:
 				self.startTime = self.start.value
 		return self.startTime
 
+	def Back(self):
+		# Reopen: plugged back in, once its lost fault's seconds have passed since it was unplugged
+		for fault in self.faults:
+			kind, frame, seconds = fault
+			if kind == "lost" and self.goneAt is not None:
+				if seconds <= 0 or time.perf_counter() - self.goneAt < seconds:
+					return False
+				self.faults.remove(fault)
+				self.goneAt, self.resume = None, True
+				return True
+		return False
+
 	def get_data(self, frameNumber):
 		start = self.Start()
 		if self.faults:
 			self.Fault(frameNumber)
 			start = self.startTime
+		if self.resume and self.framePeriod > 0:
+			# Back after it was unplugged: the trigger went on meanwhile, so its next frame is the next pulse's
+			self.resume = False
+			frameNumber = max(frameNumber, int(np.ceil((time.perf_counter() - start) / self.framePeriod)))
 		# The frame first, then the wait until its time (relative to frame 0):
 		# reading it does not make it late
 		img = self.clip.get_data(frameNumber)
@@ -303,9 +327,28 @@ def GetImageArray(grabResult):
 	return grabResult
 
 
+# Its clock (GetTimeStamp): time.perf_counter() from here, started again at 0 when it is plugged back in (Reopen), as
+# a FLIR camera's is when it powers up
+_stampBase = 0.0
+
+
 def GetTimeStamp(grabResult):
 
-	return time.perf_counter()
+	return time.perf_counter() - _stampBase
+
+
+def Reopen(cam_params, camera):
+	"""
+	cameraReconnect (unicam.WaitForCamera): the emulated camera again, once
+	its lost fault's seconds have passed (CAMPY_EMU_FAULTS "1:lost@20+5"),
+	its clock from 0; None while it is still gone.
+	"""
+	global _stampBase
+	if not camera.Back():
+		return None
+	_stampBase = time.perf_counter()
+	Say("{}: the emulated camera is plugged back in.".format(cam_params["cameraName"]))
+	return camera
 
 
 def ReleaseFrame(grabResult):

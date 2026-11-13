@@ -2,7 +2,10 @@
 
 The simulated clock (tests/arduino_sim) advances a microsecond each time the
 sketch reads it, so an edge's time here is when the sketch wrote it, to the
-microsecond. Pins: channel 0 (gate) on 2, 1 (camera) on 3, 2 (LED1) on 4, 3 (LED2) on 5.
+microsecond. Pins: channel 0 (gate) on 2, 1 (camera) on 3, 2 (LED1) on 4, 3 (LED2) on 5. The tests of what it
+says give the serial port a 64-byte transmit buffer, emptied in 100 us, as a Nano ESP32's USB (the Pico's holds
+256): SIM_USB_TX. The timing tests don't: they take session time 0 from when "ok go" is said, which a busy buffer
+puts later (the session itself doesn't move: test_without_the_usb_limit_nothing_changes).
 """
 
 import os, subprocess, sys
@@ -14,16 +17,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import chronic_control as cc
 
 PIN = {0: 2, 1: 3, 2: 4, 3: 5}
+USB = "64:100"  # the Nano ESP32's USB serial transmit buffer: 64 bytes (the Pico's is 256)
 GO_DELAY_US = 20000
 
 
-def run(timer_sim, end_s, commands, *later, start_us=0):
+def run(timer_sim, end_s, commands, *later, start_us=0, usb=""):
 	"""
 	Run the sketch: commands are waiting at power-up, later ones, (seconds,
 	commands), arrive then. Returns each pin's changes [(us, level)] and what
 	it said [(us, line)].
 	"""
-	env = dict(os.environ, SIM_START_US=str(start_us))
+	env = dict(os.environ, SIM_START_US=str(start_us), SIM_USB_TX=usb)
 	argv = [timer_sim, str(start_us + int(end_s * 1e6)), "\n".join(commands) + "\n"]
 	argv += ["{}:{}".format(start_us + int(t * 1e6), "\n".join(c) + "\n") for t, c in later]
 	out = subprocess.run(argv, capture_output=True, text=True, check=True, timeout=120, env=env).stdout
@@ -66,7 +70,7 @@ def falls(edges, pin):
 
 
 def test_it_answers_at_once_and_powers_up_low(timer_sim):
-	edges, said = run(timer_sim, 0.1, ["id", "status"])
+	edges, said = run(timer_sim, 0.1, ["id", "status"], usb=USB)
 	assert said[0][1] == "ready chronic_timer 3"
 	assert [line for _, line in said[1:]] == ["ok chronic_timer 3", "ok status idle edges=0 trains=0"]
 	assert said[1][0] < 1000 # microseconds: no timeouts to wait out
@@ -131,13 +135,16 @@ def test_changes_due_together_are_written_together(timer_sim):
 def test_serial_traffic_does_not_move_an_edge(timer_sim):
 	# The Pi asking for status ten times a second, through a whole train
 	later = [(0.6 + 0.1 * i, ["status"]) for i in range(80)]
-	edges, said = run(timer_sim, 10, ["train 1 500000 400 60000 3000", "go"], *later)
+	edges, said = run(timer_sim, 10, ["train 1 500000 400 60000 3000", "go"], *later, usb=USB)
 	t0 = went_go(said)
 	want = t0 + 500000 + np.arange(400) * 10**9 // 60000
 	assert np.abs(rises(edges, 3) - want).max() <= 2
 	assert np.abs(falls(edges, 3) - want - 3000).max() <= 2
-	answers = [line for _, line in said if line.startswith("ok status running")]
-	assert len(answers) >= 60
+	answers = [line for _, line in said if line.startswith("ok status ")]
+	running = [line for line in answers if line.startswith("ok status running")]
+	# Each answered, whole: a Nano ESP32 used to drop every "running" one (about 85 characters). The train ends
+	# after about 7.2 s: the later ones are "idle"
+	assert len(answers) == 80 and len(running) >= 60
 
 
 def test_end_after_a_bout_keeps_its_last_edge(timer_sim):
@@ -284,7 +291,7 @@ def test_a_camera_only_session(timer_sim):
 
 def test_the_last_report_arrives_whole(timer_sim):
 	# On the Pico its end, self_check_us, is what shows the timing on the real board
-	got, said = run(timer_sim, 1, ["train 1 0 10 60000 3000", "go"])
+	got, said = run(timer_sim, 1, ["train 1 0 10 60000 3000", "go"], usb=USB)
 	done = [line for _, line in said if line.startswith("done ")]
 	assert len(done) == 1 and "stalls=0" in done[0]
 	if "self_check_us" in done[0]:
@@ -398,3 +405,40 @@ def test_the_sync_train_moves_no_other_edge_on_the_state_machine(timer_sim):
 	assert [t for t, level in changed[4] if level == 1] == list(planned * 125)
 	assert [t for t, level in changed[4] if level == 0] == list((planned + 10000) * 125)
 	assert "stalls=0" in out and "sync={}".format(len(planned)) in out
+
+
+# ---------------------------------------------------------------- a small USB transmit buffer
+
+def test_status_while_running_comes_whole(timer_sim):
+	# "ok status running ..." is about 85 characters: more than a Nano ESP32's USB takes at once, so the Nano dropped
+	# it every time. Now it goes out in pieces as USB takes them
+	got, said = run(timer_sim, 0.6, ["train 1 0 30 60000 3000", "go"], (0.3, ["status"]), usb=USB)
+	line = [l for _, l in said if l.startswith("ok status running")]
+	assert len(line) == 1, said
+	fields = dict(kv.split("=") for kv in line[0].split()[3:])
+	assert set(fields) == {"t", "pulses", "edges", "trains", "late_max", "sync"}
+
+
+@pytest.mark.parametrize("usb", ["64:100", "256:100"])
+def test_answers_back_to_back_all_come_in_order(timer_sim, usb):
+	# Twenty commands at once (about 250 bytes of answers within microseconds), with a 64-byte buffer (the Nano's)
+	# and a 256-byte one (the Pico's): every answer, in order
+	commands = ["clear"] + ["edge 0 {} {}".format(100000 * (i + 1), i % 2) for i in range(18)] + ["status"]
+	got, said = run(timer_sim, 0.05, commands, usb=usb)
+	answers = [l for _, l in said if l.startswith("ok ")]
+	assert [a.split()[1] for a in answers] == ["clear"] + ["edge"] * 18 + ["status"]
+	assert [int(a.split()[2]) for a in answers[1:19]] == list(range(1, 19))
+
+
+def test_without_the_usb_limit_nothing_changes(timer_sim):
+	# The same session with no transmit buffer limit, as before this test simulated one: the same edges and lines
+	commands = ["train 1 0 30 60000 3000", "edge 2 100000 1", "edge 2 200000 0", "go"]
+	limited = run(timer_sim, 0.8, commands, (0.3, ["status"]), usb=USB)
+	free = run(timer_sim, 0.8, commands, (0.3, ["status"]), usb="")
+	assert limited[0] == free[0]
+	# The same lines; only "done"'s time can differ by a microsecond or two: it is when the loop noticed the end, and
+	# the simulated clock moves with each read, which a line still draining through the small buffer adds to
+	done_t = lambda said: [int(l.split()[1]) for _, l in said if l.startswith("done ")]
+	plain = lambda said: [" ".join(l.split()[:1] + l.split()[2:]) if l.startswith("done ") else l for _, l in said]
+	assert plain(limited[1]) == plain(free[1])
+	assert abs(done_t(limited[1])[0] - done_t(free[1])[0]) <= 5

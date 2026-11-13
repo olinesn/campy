@@ -58,7 +58,8 @@
 //                                         microseconds at most, and rises= should be pulses=.
 //                                         bounces=: rises too soon after the last, not counted.
 //                                         sync=: the sync train's pulses (0 with none).
-// Lines it couldn't send (the computer not reading) are counted in "lost", never waited for.
+// Every line waits its turn in a queue and goes out as USB takes it, in pieces if need be, never waited for;
+// "lost" counts lines that didn't fit in the queue (the computer not reading).
 
 #include <stdint.h>
 #include <stdio.h>
@@ -106,6 +107,7 @@ void Command(char* line);
 void ReadSerial(int64_t until);
 void Say(const char* line);
 void Queue(const char* line);
+bool SendSome();
 void FlushQueue(int64_t until);
 void SetPin(int ch, int pin);
 void AllLow();
@@ -155,11 +157,16 @@ int64_t sync_rise = NONE;  // its pulse's rise: the next one, or the one high no
 bool sync_high = false;
 uint32_t sync_pulses = 0;
 
-// Lines waiting to be said, while changes were close
+// Lines waiting to be said, each with its "\r\n": while changes were close, or while USB couldn't take them yet.
+// The head line may be partly sent (q_sent of its characters). Each goes out as USB takes it, in pieces if need
+// be, never waited for: the Nano ESP32's USB serial buffer holds 64 bytes and the Pico's 256, and a line that
+// didn't fit at once used to be dropped (the Nano's "ok status running", about 85 characters, always was).
+// Lines are dropped, and counted in "lost", only when the queue is full.
 #define QUEUE 64
 #define QUEUE_LINE 160
 char queue[QUEUE][QUEUE_LINE];
-int q_head = 0, q_len = 0;
+int q_head = 0, q_len = 0, q_sent = 0;
+uint64_t closed_since = 0; // Micros64() when the host was first seen with the port closed, 0: open
 
 char line[128];
 int line_len = 0;
@@ -373,29 +380,59 @@ void AllLow() {
 
 
 void Say(const char* text) {
-  // Now, if it fits in what USB can take without waiting; else it's lost
-#if defined(ESP32) || defined(ARDUINO_ARCH_RP2040)
-  if (Serial.availableForWrite() < (int) strlen(text) + 2) { lost++; return; }
-#endif
-  Serial.print(text);
-  Serial.print("\r\n");
+  // An answer: now, as far as USB takes it, after whatever is waiting (so the answers keep their order); the rest
+  // as USB takes it (FlushQueue). Never waited for.
+  Queue(text);
+  SendSome();
 }
 
 
 void Queue(const char* text) {
   if (q_len == QUEUE) { lost++; return; }
-  strncpy(queue[(q_head + q_len) % QUEUE], text, QUEUE_LINE - 1);
-  queue[(q_head + q_len) % QUEUE][QUEUE_LINE - 1] = 0;
+  char* slot = queue[(q_head + q_len) % QUEUE];
+  size_t n = strlen(text);
+  if (n > QUEUE_LINE - 3) { n = QUEUE_LINE - 3; }
+  memcpy(slot, text, n);
+  memcpy(slot + n, "\r\n", 3);
   q_len++;
 }
 
 
-void FlushQueue(int64_t until) {
-  // What's waiting, until it's time (session time) to make the next change
-  while (q_len > 0 && (!running || Now() < until)) {
-    Say(queue[q_head]);
+bool SendSome() {
+  // As much of what's waiting as USB takes now, never more: a bigger write waits (the Nano's until USB takes it,
+  // the Pico's up to a second). True once nothing is left.
+  if (!Serial) {
+    // The host closed the port: the next one hears none of it. Only after 100 ms, since the Pico's says closed for
+    // an instant when its USB is busy
+    uint64_t now = Micros64();
+    if (closed_since == 0) { closed_since = now; }
+    else if (now - closed_since > 100000) { q_len = 0; q_sent = 0; return true; }
+    return false;
+  }
+  closed_since = 0;
+  char piece[QUEUE_LINE];
+  while (q_len > 0) {
+    const char* text = queue[q_head] + q_sent;
+    int len = (int) strlen(text);
+    int room = Serial.availableForWrite();
+    if (room <= 0) { return false; }
+    int n = len < room ? len : room;
+    memcpy(piece, text, n);
+    piece[n] = 0;
+    Serial.print(piece);
+    if (n < len) { q_sent += n; return false; }
     q_head = (q_head + 1) % QUEUE;
     q_len--;
+    q_sent = 0;
+  }
+  return true;
+}
+
+
+void FlushQueue(int64_t until) {
+  // What's waiting, as USB takes it, until it's time (session time) to make the next change
+  while (q_len > 0 && (!running || Now() < until)) {
+    if (!SendSome()) { return; }
   }
 }
 

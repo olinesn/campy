@@ -1387,3 +1387,37 @@ def test_trigger_check(monkeypatch):
 	assert panel.TriggerCheck(dict(pico, cameraTrigger="None"), None, ports=lambda: []) is None
 	# An external trigger on a rig that names no board (startArduino False): as before, no line
 	assert panel.TriggerCheck({"startArduino": False, "cameraTrigger": "Line3"}, None, ports=lambda: []) is None
+
+
+def test_the_panel_says_a_camera_unplugged_and_shows_the_others(monkeypatch):
+	# One camera's feed ends while the others record on: its thumbnail's health says CAMERA LOST, the others' go on
+	from campy import livefeed
+	from test_livefeed import name
+	monkeypatch.setattr(panel, "LOST_AFTER_S", 0.0)
+	prefix = name()
+	writers = [livefeed.RingWriter(livefeed.RingName(prefix, c), (8, 8), np.uint8, frameRate=30.0,
+		cameraName="Camera{}".format(c)) for c in range(3)]
+	health = panel.Health(prefix, 3)
+	try:
+		for n in range(1, 6):
+			for w in writers:
+				w.Write(np.zeros((8, 8), np.uint8), n, 1000 * n)
+		health.Step()
+		writers[1].Close()
+		for n in range(6, 11):
+			for c in (0, 2):
+				writers[c].Write(np.zeros((8, 8), np.uint8), n, 1000 * n)
+		health.Step()
+		snap = health.snapshot
+		assert snap["feed"] and not snap["ended"]
+		assert [c["frame"] for c in snap["cameras"]] == [10, 5, 10]
+		assert snap["cameras"][1]["problems"] == ["CAMERA LOST"] and "CAMERA LOST" not in snap["cameras"][0]["problems"]
+		assert snap["cameras"][1]["sentences"][0].startswith("Camera1: camera lost, its live feed ended at its frame 5")
+		writers[0].Close()
+		writers[2].Close()
+		health.Step()
+		assert health.snapshot["ended"] and health.readers is None
+	finally:
+		for w in writers:
+			w.Close()
+		health.Detach()

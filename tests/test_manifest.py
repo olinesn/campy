@@ -58,7 +58,9 @@ def test_only_changes_that_apply_are_said():
 
 
 def test_defaults_version_says_only_later_changes():
-	assert defaults.Warnings({}, {}, flir(), known="2.1.0") == []
+	later = [l.split()[0] for l in defaults.Warnings({}, {}, flir(), known="2.1.0")]
+	assert later == ["cameraReconnect"] # the one campy-acquire key changed after 2.1.0 (pull request 423)
+	assert defaults.Warnings({}, {}, flir(), known=defaults.NEXT) == []
 	assert len(defaults.Warnings({}, {}, flir(), known="2.0.0")) == len(defaults.Warnings({}, {}, flir()))
 	live = defaults.Warnings({}, {}, {"gpu": True}, program="campy-live", known="2.1.0")
 	assert [l.split()[0] for l in live] == ["--engine"] # the one after 2.1.0
@@ -458,7 +460,7 @@ def test_a_recording_says_how_it_was_made(tmp_path):
 
 
 def test_a_config_that_knows_the_defaults_is_not_warned(tmp_path):
-	proc, out, folder = record(tmp_path, seconds=1, extra=['defaultsVersion: "2.1.0"'])
+	proc, out, folder = record(tmp_path, seconds=1, extra=['defaultsVersion: "{}"'.format(defaults.NEXT)])
 	assert proc.returncode == 0, out
 	assert "relies on" not in out
 	assert json.loads((folder / "session.json").read_text())["config"]["defaultWarnings"] == []
@@ -538,7 +540,10 @@ def test_campy_live_tracks_from_the_first_frame_while_its_session_is_written(tmp
 	assert test_livefeed.run_live(test_livefeed.name(), out, ["--model", "none", "--report-sec", "0",
 		"--wait-sec", "30", "--frame-shape", "16x20x1"], frames=120, rate=60, delay=0.1) == 0
 	rows = np.load(out + ".npy")
-	assert rows["frame"][0] <= 3 and rows["frame"][-1] == 120
+	# Waited for, the 1.5 s write would put the first set near frame 90 at 60
+	# fps. A busy CI runner can be a few frames late to the first set without
+	# it (frame 5 on GitHub's Windows runner), so up to 0.25 s (15 frames) passes.
+	assert rows["frame"][0] <= 15 and rows["frame"][-1] == 120
 	# The file is the same as when written before the first set
 	data = strict_json(open(out + ".session.json").read())
 	assert data["options"]["--wait-sec"] == {"value": 30.0, "source": "command line"}
