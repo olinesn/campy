@@ -40,7 +40,7 @@ arduino-cli upload --fqbn arduino:esp32:nano_nora -p <port> campy/outputs_board/
 ```
 The port is `/dev/ttyACM1` or similar on Linux, `COM5` or similar on Windows. The board answers `ok campy_outputs 2` to `id` at 115200 baud.
 
-Upload it again after each campy update that changes the sketch. `campy-rules` checks the version when it starts and refuses a board that runs another one, saying which it found. Version 2 came with pull request 304: a board that still answers `ok campy_outputs 1` restarts its frame count after a pause in the trigger (see *Order matters* below), so `campy-rules` won't start with it. Pull request PRNUM changed the sketch but not its version, since nothing it says changed: a board flashed before it drops any line that doesn't fit its 64-byte USB buffer at once (`status` every time, and now and then a line when several come together). Upload it again to get every line.
+Upload it again after each campy update that changes the sketch. `campy-rules` checks the version when it starts and refuses a board that runs another one, saying which it found. Version 2 came with pull request 304: a board that still answers `ok campy_outputs 1` restarts its frame count after a pause in the trigger (see *Order matters* below), so `campy-rules` won't start with it. Pull request 430 changed the sketch but not its version, since nothing it says changed: a board flashed before it drops any line that doesn't fit its 64-byte USB buffer at once (`status` every time, and now and then a line when several come together). Upload it again to get every line.
 
 ## The rules file
 
@@ -218,7 +218,7 @@ All host times are on campy's host clock (`hosttimes.npy`'s), so everything line
   - refusing late commands;
   - the watchdog and `max_on_s`;
   - counting on through a pause (and a train keeping its frames across it), and the 71-minute wrap of the board's clock;
-  - every line coming whole through a 64-byte USB transmit buffer, as a Nano ESP32's (the simulated board has one since pull request PRNUM): `status` (about 110 characters), seven answers back to back, and four trains' pulse reports at once. Before, the sketch dropped a line that didn't fit at once; the simulated board had no such buffer, so no test saw it.
+  - every line coming whole through a 64-byte USB transmit buffer, as a Nano ESP32's (the simulated board has one since pull request 430): `status` (about 110 characters), seven answers back to back, and four trains' pulse reports at once. Before, the sketch dropped a line that didn't fit at once; the simulated board had no such buffer, so no test saw it.
 - `tests/test_rules.py` checks every condition, debouncing, hysteresis, missing data, refractory periods and file errors. It also checks `--dry-run` and `--replay`, a level and a train on one output (both orders), switch-ons refused and sent again, the recovery after the watchdog, a stuck decision loop that lets the watchdog fire, and a slow log write. For `campy-live` ending mid-recording, it checks that:
   - the laser goes off at once and the session's train keeps running (no stop, no `alloff`), with the heartbeat at its usual pace and quiet for 200 ms or more at most once (one heartbeat sent late by a busy test computer, not by `campy-rules`);
   - the rules resume on the next `campy-live`'s feed, in one log;
