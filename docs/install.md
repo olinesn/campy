@@ -34,6 +34,7 @@ To encode on an NVIDIA GPU, check this ffmpeg first: see [NVIDIA GPU encoding (N
   ```
   pip3 install <wheel>
   ```
+  - campy's rigs all run Spinnaker 4.4.0.246, which was still FLIR's newest in November 2026. Before installing a Spinnaker or PySpin file, check that it is the one the rigs run: `python tools/spinnaker_check.py <file or folder>` says OK or MISMATCH for each. campy can't ship these files itself, so get them from FLIR's site (it needs your FLIR account) or copy them from one of your own computers. See [Spinnaker's files: which ones, and why campy doesn't ship them](#spinnakers-files-which-ones-and-why-campy-doesnt-ship-them).
   - An environment with an older PySpin (e.g. Spinnaker 2.x's, for Python 3.7) kept working on Windows after the computer's Spinnaker was updated: on the Dell Pro Tower Plus, an older campy with PySpin 2.3.0.77 recorded its 8 cameras on Spinnaker 4.4.0.246's camera driver ([Updating Spinnaker on a Windows computer](#updating-spinnaker-on-a-windows-computer)). On Windows, an older Spinnaker (before 3.2) running next to campy turns Spinnaker's search for GigE cameras back on each time it runs ([FLIR cameras](flir.md#an-older-spinnaker-on-the-same-windows-computer-turns-the-search-back-on)). On Linux this wasn't checked: there, upgrade a computer's Spinnaker and its campy environment together.
   - On Linux, have `campy-flir-reset` run at startup, so that a camera left plugged in through a restart does not stay at 43 MB/s: see [FLIR cameras at 43 MB/s after a restart](flir.md#flir-cameras-at-43-mbs-after-a-restart).
   - If all of a computer's FLIR cameras are USB3, turn off Spinnaker's search for GigE cameras, which costs about a second each time campy starts: `campy-flir-reset --gige off`, after step 7. See [Faster startup: Spinnaker's search for GigE cameras](flir.md#faster-startup-spinnakers-search-for-gige-cameras).
@@ -88,6 +89,29 @@ A Dell SupportAssist update can turn it back on (it did on the Pro Max Slim on 8
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\campy_data\launchers\keep_dell_techhub_disabled.ps1 -Install
 ```
 That turns the agent off now if it is on, and adds the scheduled task "campy keep DellTechHub disabled", which does it again every day at 7 PM, when the PC starts, and whenever a service's start type changes. Each time it finds the agent on, it adds a line to `C:\campy_data\dell_techhub_disabled.txt`. To turn the agent on for a test without the task undoing it, put a time such as `2026-11-09T21:30:00` in `C:\campy_data\dell_techhub_hold_until.txt`; the task leaves it alone until then; an empty file, or one without a time, holds nothing. It ends only the programs DellTechHub started after it started, and those named `Dell.TechHub*`: a program whose parent ended long ago, and whose parent's process number DellTechHub now has (Windows uses the numbers again), isn't taken for one of its own. `-Uninstall` removes the task. The task is installed on the three Dell PCs since 9 November 2026. The version of 10 November 2026 (an empty hold file no longer stops the task, and the process-number check) has to be copied to each of them and installed again with `-Install`.
+
+## Spinnaker's files: which ones, and why campy doesn't ship them
+Every rig runs Spinnaker 4.4.0.246 and its PySpin for Python 3.12. On 13 November 2026 FLIR's release notes still listed 4.4.0.246 as the newest version. Its PySpin wheels are built for Python 3.12 on Windows x64, macOS and Ubuntu 24.04 (x86-64 and Arm64), and for Python 3.10 on Ubuntu 22.04. None is built for Python 3.13. The PyPI package `spinnaker-python` holds only an old 2.4.0.144 wheel for Python 3.8 on Windows, so don't install PySpin from PyPI.
+
+These are the files the rigs were installed from. The SHA-256s were worked out from the rigs' own copies on 13 November 2026, and the Arm64 package gave the same SHA-256 on two computers:
+
+| File | Size | For |
+|---|---:|---|
+| `SpinnakerSDK_FULL_4.4.0.246_x64.exe` | 269 MB | Windows: the SDK, SpinView and the camera drivers |
+| `spinnaker_python-4.4.0.246-cp312-cp312-win_amd64.zip` | 360 MB | Windows: PySpin; the zip holds the wheel (70 MB), its README and licences |
+| `spinnaker-4.4.0.246-noble-amd64-pkg.tar.gz` | 51 MB | Ubuntu 24.04 x86-64 (GMKtec EVO-X2) |
+| `spinnaker_python-4.4.0.246-cp312-cp312-linux_x86_64.tar.gz` | 52 MB | its PySpin; holds the wheel (12 MB) |
+| `spinnaker-4.4.0.246-noble-arm64-pkg.tar.gz` | 46 MB | Ubuntu 24.04 Arm64 ([Jetson AGX Orin](jetson.md#6-flir-spinnaker)) |
+| `spinnaker_python-4.4.0.246-cp312-cp312-linux_aarch64.tar.gz` | 51 MB | its PySpin; holds the wheel (11 MB) |
+
+`tools/spinnaker_check.py` holds these SHA-256s and the wheels' own. It needs only Python's standard library, so any Python 3.9 or newer can run it before campy or PySpin is installed. Give it files, or a folder such as Downloads, and it checks every file there whose name starts with "spinnaker":
+```
+python tools/spinnaker_check.py ~/Downloads
+python tools/spinnaker_check.py --list        # the pinned files and their SHA-256s
+```
+Each file is OK, MISMATCH (a damaged or changed file: don't install it) or "not listed" (another version or platform). It matches each file by its name, so a renamed file comes out "not listed". It exits 1 on any MISMATCH. Otherwise it exits 0 if at least one listed file was OK, and 2 if none was. When the rigs move to a new Spinnaker, the same pull request adds its files to the script and to this table.
+
+**Why campy doesn't host them.** FLIR's licence for Spinnaker, the "FLIR Spinnaker SDK License Agreement" in each download (also `licenses/FLIR_license.txt` in the PySpin zip), covers the SDK, SpinView and PySpin alike. Under it, the SDK may be used only with FLIR cameras you own. Its copies must be limited to "a reasonable number of backup copies for your own use only", kept "in your possession and control", and it must not be provided or disclosed to any third party. The one right to pass files on (section 4) is for equipment makers: only the libraries, drivers and programs their own product needs, and only if they stop anyone else from passing them on. Putting the installer or the wheel in this public repository, or in its Releases, would give them to anyone, so campy keeps only their names, versions and SHA-256s. Each computer gets the files from FLIR's site, which needs a FLIR account, or from a copy already on one of your own computers.
 
 ## Updating Spinnaker on a Windows computer
 How to replace an older Spinnaker SDK (and its SpinView) with a newer one on a Windows computer that already records, as done on the Dell Pro Tower Plus on 7 November 2026 (Spinnaker 4.2.0.88 to 4.4.0.246, 8 FLIR Blackfly S on USB3). Do it at the computer or over Remote Desktop, while nothing records.
