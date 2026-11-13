@@ -46,6 +46,16 @@
 // (at its speed). An armed link and a servo away from its safe position count as active: the
 // watchdog guards them as it guards an output that is on.
 //
+// One board for the cameras and the box (version 4, docs/design/single-board-box.md): the board can make the
+// camera pulses itself, so that one Nano ESP32 does both jobs. They come from a hardware timer (the ESP32-S3's
+// MCPWM), as trigger.ino's: a period of P microseconds, low for its first half and high for its second, so frame
+// k (from 0) rises at k * P + P / 2 after time 0, and from the timer alone: nothing the sketch does moves an edge.
+// The board's frames then come from it (not from a trigger pin): it knows each one's time, so its frame count and
+// times are exact by design. An interrupt counts the rises and stops the timer at its planned count, at a period's
+// end. The sync output for other recorders (trigger.ino's seeded random train, from the same time 0) comes from
+// the board's own timed changes. Neither the watchdog nor alloff stops the cameras; camwatch can, after a long
+// silence.
+//
 // Commands, one per line (\n or \r), each answered at once with a line
 // starting "ok" or "err" (k: a frame number, optional; ch: channel 0-7). A
 // command refused because its frame was too long ago is answered
@@ -88,6 +98,16 @@
 //   arm <l> <n>                       the link fires n more times, -1 until disarmed, 0 disarmed
 //                                     -> ok arm <l> <n> <t_us>
 //   box                               -> ok box t=... in=<active inputs> armed=<armed links> s0=<pos>/<target> ...
+//   cam <period_us> <pin> [pin ...]   the camera pulses: their period (100-65535) and up to 4 pins; the frames
+//                                     now come from them, not from the trigger pin -> ok cam <period_us> <pins>;
+//                                     cam 0: none
+//   camsync <pin> <seed> <width_us> <min_ms> <max_ms>
+//                                     the sync output, as trigger.ino's -> ok camsync ...; camsync -1: none
+//   camgo <n>                         start them now: n pulses, 0 until stopped -> ok camgo <n> <t0_us> <period_us>
+//                                     (time 0, when the first period starts, on the board's clock)
+//   camstop                           stop at a period's end, no pulse cut or added -> ok camstop <frames>
+//   camwatch <ms>                     stop them after that long without a word from the host (0: never, the default)
+//   camstatus                         -> ok camstatus running=.. frames=.. planned=.. hw=.. t0=.. period=..
 // Pins: 0-48, or 100-107 for A0-A7.
 // What it says on its own (t_us: the board's clock, microseconds since power-up):
 //   ready campy_outputs <version>     at power-up
@@ -102,6 +122,9 @@
 //   x <l> <in> <t_us> <k> <done>      a link fired on its input's edge at t_us; done 0: what it does was
 //                                     refused (the channel high, a clash, no pin)
 //   m <s> <us> <t_us>                 a servo got where it was sent
+//   camend <frames> <t_us>            the camera pulses ended (t_us: the last one's period's end)
+//   camwd <t_us>                      camwatch stopped them (the host said nothing for that long)
+//   camerr hw=<n> frames=<n>          the timer's count and the frames said differ
 // Every line waits its turn in a queue and goes out as USB takes it, in pieces if need be, between the board's
 // timed changes: never waited for. The Nano ESP32's USB serial buffer holds 64 bytes, so a line that didn't fit
 // at once used to be dropped (status, about 110 characters, always was). Lines are dropped, and counted in
@@ -115,9 +138,24 @@
 #if defined(ESP32)
 #include "soc/gpio_struct.h"
 #endif
+// The camera timer: the ESP32-S3's MCPWM, register by register (Arduino-ESP32 2's IDF), or the simulated board's
+// stand-in (tests/arduino_sim). Not on other boards, nor yet on Arduino-ESP32 3.
+#if defined(ESP32) && !(defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3)
+#include <type_traits>
+#include "soc/mcpwm_struct.h"
+#include "soc/gpio_sig_map.h"
+#include "esp_rom_gpio.h"
+#include "esp_intr_alloc.h"
+#include "driver/periph_ctrl.h"
+#define CAM_TIMER 1
+#elif defined(ARDUINO_SIM)
+#define CAM_TIMER 1
+#else
+#define CAM_TIMER 0
+#endif
 
-#define VERSION 3           // 2: counts on through trigger pauses, says gap, takes reset (pull request 304);
-                            // 3: inputs, servos and links, for operant boxes
+#define VERSION 4           // 2: counts on through trigger pauses, says gap, takes reset (pull request 304);
+                            // 3: inputs, servos and links, for operant boxes; 4: the camera pulses themselves
 #define MAX_CH 8
 #define MAX_IN 8
 #define MAX_SERVO 4
@@ -126,6 +164,10 @@
 #define SERVO_BITS 14
 #define SERVO_PERIOD_US 20000
 #define SERVO_STEP_US 20000 // a moving servo's pulse changes once a period
+#define MAX_CAM_PINS 4
+#define CAM_MARGIN_US 50    // a stop asked for this close to a period's end lets one more period through
+#define CAM_HOLD_US 20      // the loop holds the pins low this long after the last period's end (the timer has
+                            // stopped itself at it): a second guard, and never early
 #define RISES 1024          // trigger rises remembered: 17 s at 60 fps
 #define NONE INT64_MAX
 #define CRITICAL_US 300     // interrupts off this long before a change
@@ -204,12 +246,40 @@ void TakeInputs(int64_t now);
 void StepServos(int64_t now);
 void ServoWrite(int s);
 void SafeBox();
+bool CamPin(int pin);
+int64_t CamNextRise();
+void WaitRise(int64_t t);
+void CamCheck(int64_t now);
+void SyncNext();
+void WriteSync(int level);
 
 Channel chans[MAX_CH];
 Input inputs[MAX_IN];
 Servo servos[MAX_SERVO];
 Link links[MAX_LINK];
 int input_count = 0;        // inputs with a pin: none, and SampleInputs costs nothing
+// The camera pulses (cam): their pins, period, time 0 and planned count; cam_hw_* are the timer interrupt's
+int cam_pins[MAX_CAM_PINS];
+int cam_npins = 0;
+int64_t cam_period = 0;     // 0: no camera pulses (the frames come from the trigger pin)
+bool cam_running = false;
+int64_t cam_t0 = 0;
+volatile uint32_t cam_planned = 0;  // pulses in all, 0: until stopped
+volatile uint32_t cam_hw_rises = 0;
+int64_t camwatch_us = 0;
+bool camwd_fired = false;
+// The sync output: trigger.ino's train, from the cameras' time 0
+int sync_pin = -1;
+uint64_t sync_seed = 0;
+int64_t sync_width = 0, sync_min_ms = 0, sync_max_ms = 0;
+uint64_t sync_j = 0;
+int64_t sync_rise = 0;      // the pulse's rise, us from time 0
+bool sync_high = false;
+int64_t sync_at = INT64_MAX; // its next edge, board us; NONE: none due
+#if defined(ESP32)
+uint32_t sync_mask = 0;
+uint8_t sync_bank = 0;
+#endif
 #if defined(ESP32)
 uint32_t in_mask0 = 0, in_mask1 = 0, in_last0 = 0, in_last1 = 0;
 #endif
@@ -272,6 +342,7 @@ void setup() {
   for (int i = 0; i < MAX_IN; i++) { inputs[i].pin = -1; }
   for (int s = 0; s < MAX_SERVO; s++) { servos[s].pin = -1; }
   for (int l = 0; l < MAX_LINK; l++) { links[l].in = -1; links[l].armed = 0; }
+  for (int i = 0; i < MAX_CAM_PINS; i++) { cam_pins[i] = -1; }
   // Defaults (docs/live-tracking.md): channels 0-7 on D2-D9, low from
   // power-up, the camera trigger in on D10. campy-rules sets them again.
   for (int ch = 0; ch < MAX_CH; ch++) { SetPin(ch, 2 + ch); }
@@ -511,6 +582,7 @@ int64_t NextTime() {
     if (c.next_rise < t) { t = c.next_rise; }
     if (c.level && c.max_us > 0 && c.level_since + c.max_us < t) { t = c.level_since + c.max_us; }
   }
+  if (sync_at < t) { t = sync_at; }
   if (Active() && last_heard + watchdog_us < t) { t = last_heard + watchdog_us; }
   return t;
 }
@@ -559,6 +631,8 @@ void Apply(int64_t t) {
     }
   }
 
+  bool sync_due = sync_at == t;
+
   noInterrupts();
   int64_t now;
   while (true) {
@@ -567,9 +641,14 @@ void Apply(int64_t t) {
     SampleInputs(now);
   }
   WritePins(level);
+  if (sync_due) { WriteSync(sync_high ? 0 : 1); }
   interrupts();
 
   if (now - t > late_max) { late_max = now - t; }
+  if (sync_due) {
+    sync_high = !sync_high;
+    SyncNext();
+  }
   if (watchdog) {
     AllOff();
     SafeBox();
@@ -637,7 +716,7 @@ bool PinTaken(int pin, int in_except, int servo_except) {
   for (int ch = 0; ch < MAX_CH; ch++) { if (chans[ch].pin == pin) { return true; } }
   for (int i = 0; i < MAX_IN; i++) { if (i != in_except && inputs[i].pin == pin) { return true; } }
   for (int s = 0; s < MAX_SERVO; s++) { if (s != servo_except && servos[s].pin == pin) { return true; } }
-  return false;
+  return CamPin(pin);
 }
 
 
@@ -646,7 +725,7 @@ bool BoxPin(int pin) {
   // as before version 3)
   for (int i = 0; i < MAX_IN; i++) { if (inputs[i].pin == pin) { return true; } }
   for (int s = 0; s < MAX_SERVO; s++) { if (servos[s].pin == pin) { return true; } }
-  return false;
+  return CamPin(pin);
 }
 
 
@@ -877,6 +956,218 @@ void SafeBox() {
 }
 
 
+// ---------------------------------------------------------------- the camera pulses (one board for both)
+
+void CamHwStopAtZero();
+
+void CamOnRise() {
+  // The timer's interrupt at each rise (the simulated board calls it there too): count it, and at the planned count
+  // stop the timer when it next reaches zero, the end of this period, so the last pulse ends whole
+  cam_hw_rises = cam_hw_rises + 1;
+  if (cam_planned != 0 && cam_hw_rises >= cam_planned) { CamHwStopAtZero(); }
+}
+
+#if CAM_TIMER && defined(ESP32)
+// MCPWM0, register by register (IDF's hal/mcpwm_ll.h, which does the same, is C only): timer 0 at 1 MHz
+// (160 MHz / 16 / 10), counting 0..P-1; operator 0's generator A low at zero, high at comparator A (P/2); its output
+// on every camera pin; an interrupt at comparator A. Each register is read, changed and written whole (32 bits).
+#define CAM_SET(reg, field, value) do { \
+  std::remove_cv<std::remove_reference<decltype(reg)>::type>::type r_; r_.val = (reg).val; \
+  r_.field = (value); (reg).val = r_.val; } while (0)
+#define CAM_CMP_BIT (1UL << 15) // operator 0, comparator A: int bit 15 + comparator * 3 + operator
+#define CAM_STOP_AT_ZERO 0      // timer_start: stop when counting to zero
+#define CAM_START_NO_STOP 2     // timer_start: start, run on
+#define CAM_GEN_ACTIONS ((1 << 0) | (2 << 4)) // generator A: low at zero (UTEZ = 1), high at comparator A (UTEA = 2)
+intr_handle_t cam_intr = NULL;
+
+void IRAM_ATTR CamHwStopAtZero() {
+  CAM_SET(MCPWM0.timer[0].timer_cfg1, timer_start, CAM_STOP_AT_ZERO);
+}
+
+void IRAM_ATTR CamIsr(void*) {
+  uint32_t status = MCPWM0.int_st.val;
+  MCPWM0.int_clr.val = status;
+  if (status & CAM_CMP_BIT) {
+    cam_hw_rises = cam_hw_rises + 1;
+    if (cam_planned != 0 && cam_hw_rises >= cam_planned) { CamHwStopAtZero(); }
+  }
+}
+
+void CamForceLow(bool on) {
+  // Generator A held low (continuous force), or let go
+  CAM_SET(MCPWM0.operators[0].gen_force, gen_cntuforce_upmethod, 0); // at once
+  CAM_SET(MCPWM0.operators[0].gen_force, gen_a_cntuforce_mode, on ? 1 : 0);
+}
+
+bool CamHwSetup() {
+  periph_module_enable(PERIPH_PWM0_MODULE);
+  CAM_SET(MCPWM0.clk_cfg, clk_prescale, 16 - 1);
+  CAM_SET(MCPWM0.timer[0].timer_cfg0, timer_prescale, 10 - 1);
+  CAM_SET(MCPWM0.timer[0].timer_cfg1, timer_mod, 0); // paused
+  CAM_SET(MCPWM0.timer[0].timer_cfg1, timer_start, CAM_STOP_AT_ZERO);
+  CAM_SET(MCPWM0.timer[0].timer_cfg0, timer_period_upmethod, 0); // its period at once
+  CAM_SET(MCPWM0.timer[0].timer_cfg0, timer_period, (uint32_t) cam_period - 1);
+  CAM_SET(MCPWM0.operator_timersel, operator0_timersel, 0);
+  MCPWM0.operators[0].gen_stmp_cfg.val = MCPWM0.operators[0].gen_stmp_cfg.val & ~0x0FUL; // comparator A at once
+  CAM_SET(MCPWM0.operators[0].timestamp[0], gen, (uint32_t) (cam_period / 2));
+  MCPWM0.operators[0].generator[0].val = CAM_GEN_ACTIONS;
+  CamForceLow(true); // low until it starts
+  for (int i = 0; i < cam_npins; i++) {
+    pinMode(cam_pins[i], OUTPUT);
+    digitalWrite(cam_pins[i], LOW);
+    esp_rom_gpio_connect_out_signal(digitalPinToGPIONumber(cam_pins[i]), PWM0_OUT0A_IDX, false, false);
+  }
+  if (cam_intr == NULL && esp_intr_alloc(ETS_PWM0_INTR_SOURCE, ESP_INTR_FLAG_IRAM, CamIsr, NULL, &cam_intr) != ESP_OK) {
+    return false;
+  }
+  MCPWM0.int_clr.val = CAM_CMP_BIT;
+  MCPWM0.int_ena.val = MCPWM0.int_ena.val | CAM_CMP_BIT;
+  return true;
+}
+
+int64_t CamHwStart() {
+  // Starts counting from 0 now; returns time 0 on the board's clock (both from the one crystal)
+  CamForceLow(false);
+  int64_t before = Now();
+  CAM_SET(MCPWM0.timer[0].timer_cfg1, timer_mod, 1); // counting up
+  CAM_SET(MCPWM0.timer[0].timer_cfg1, timer_start, CAM_START_NO_STOP);
+  int64_t after = Now();
+  return (before + after) / 2;
+}
+
+void CamHwHold() {
+  // Stopped, its pins low
+  CamHwStopAtZero();
+  CamForceLow(true);
+}
+
+void CamHwFree() {
+  // The pins back to plain outputs, low
+  CamHwHold();
+  for (int i = 0; i < cam_npins; i++) {
+    esp_rom_gpio_connect_out_signal(digitalPinToGPIONumber(cam_pins[i]), SIG_GPIO_OUT_IDX, false, false);
+    digitalWrite(cam_pins[i], LOW);
+  }
+}
+#elif CAM_TIMER
+void CamHwStopAtZero() { SimCamStopAtZero(); }
+bool CamHwSetup() {
+  for (int i = 0; i < cam_npins; i++) { pinMode(cam_pins[i], OUTPUT); digitalWrite(cam_pins[i], LOW); }
+  return true;
+}
+int64_t CamHwStart() { return (int64_t) SimCamStart(cam_pins, cam_npins, (unsigned long) cam_period, CamOnRise); }
+void CamHwHold() { SimCamHold(); }
+void CamHwFree() { SimCamHold(); }
+#else
+void CamHwStopAtZero() {}
+#endif
+
+
+int64_t CamNextRise() {
+  // The next camera rise the board hasn't counted as a frame yet; NONE when none is to come
+  if (!cam_running) { return NONE; }
+  if (cam_planned != 0 && frame >= (int64_t) cam_planned) { return NONE; }
+  return cam_t0 + frame * cam_period + cam_period / 2;
+}
+
+
+void WaitRise(int64_t t) {
+  // A camera rise the board made: its frame at exactly t, as Rose for one the trigger pin brought
+  noInterrupts();
+  while (true) {
+    int64_t now = Now();
+    if (now >= t) { break; }
+    SampleInputs(now);
+  }
+  Rose(t);
+  interrupts();
+}
+
+
+void WriteSync(int level) {
+#if defined(ESP32)
+  if (level) { if (sync_bank) GPIO.out1_w1ts.val = sync_mask; else GPIO.out_w1ts = sync_mask; }
+  else { if (sync_bank) GPIO.out1_w1tc.val = sync_mask; else GPIO.out_w1tc = sync_mask; }
+#else
+  digitalWrite(sync_pin, level ? HIGH : LOW);
+#endif
+}
+
+
+uint64_t SplitMix64(uint64_t seed, uint64_t j) {
+  // As trigger.ino's (and campy/syncmatch.py's)
+  uint64_t z = seed + j * 0x9E3779B97F4A7C15ULL;
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+  return z ^ (z >> 31);
+}
+
+
+void SyncNext() {
+  // The sync output's next edge: this pulse's fall, or the next pulse's rise (pulse k rises at the sum of gaps
+  // 1..k+1, gap j = 1000 * (min + SplitMix64(seed, j) % (max - min + 1)) us, from the cameras' time 0). No rise
+  // after the cameras' last period.
+  if (sync_pin < 0) { sync_at = NONE; return; }
+  if (sync_high) { sync_at = cam_t0 + sync_rise + sync_width; return; }
+  sync_j++;
+  sync_rise += 1000 * (sync_min_ms + (int64_t) (SplitMix64(sync_seed, sync_j) %
+    (uint64_t) (sync_max_ms - sync_min_ms + 1)));
+  sync_at = cam_t0 + sync_rise;
+  if (!cam_running || (cam_planned != 0 && sync_at >= cam_t0 + (int64_t) cam_planned * cam_period)) {
+    sync_at = NONE;
+  }
+}
+
+
+uint32_t CamStop(int64_t now) {
+  // Stop at a period's end with no pulse cut or added: in a period's first half, after its rise (the rise's
+  // interrupt stops the timer); in its second half, at its end, unless that is under CAM_MARGIN_US away, when the
+  // next period's rise stops it. Interrupts off, so the rise's interrupt can't come between the count and the order.
+  int64_t rel = now - cam_t0;
+  int64_t i = rel / cam_period, pos = rel % cam_period;
+  uint32_t planned = (uint32_t) (pos < cam_period / 2 || cam_period - pos > CAM_MARGIN_US ? i + 1 : i + 2);
+  noInterrupts();
+  if (cam_planned == 0 || planned < cam_planned) { cam_planned = planned; }
+  if (cam_hw_rises >= cam_planned) { CamHwStopAtZero(); }
+  interrupts();
+  return cam_planned;
+}
+
+
+void CamCheck(int64_t now) {
+  // The pulses' end (their planned count, and the last period over), and camwatch
+  if (!cam_running) { return; }
+  if (camwatch_us > 0 && !camwd_fired && now - last_heard > camwatch_us) {
+    camwd_fired = true;
+    CamStop(now);
+    char text[40];
+    snprintf(text, sizeof text, "camwd %lld", (long long) now);
+    Queue(text);
+  }
+  if (cam_planned == 0 || frame < (int64_t) cam_planned) { return; }
+  int64_t end = cam_t0 + (int64_t) cam_planned * cam_period;
+  if (now < end + CAM_HOLD_US) { return; }
+#if CAM_TIMER
+  CamHwHold();
+#endif
+  cam_running = false;
+  if (!sync_high) { sync_at = NONE; } // a sync pulse that is high ends as planned
+  char text[64];
+  snprintf(text, sizeof text, "camend %lld %lld", (long long) frame, (long long) end);
+  Queue(text);
+  if ((int64_t) cam_hw_rises != frame) {
+    snprintf(text, sizeof text, "camerr hw=%lu frames=%lld", (unsigned long) cam_hw_rises, (long long) frame);
+    Queue(text);
+  }
+}
+
+
+bool CamPin(int pin) {
+  for (int i = 0; i < cam_npins; i++) { if (cam_pins[i] == pin) { return true; } }
+  return pin >= 0 && pin == sync_pin;
+}
+
+
 void AllOff() {
   for (int ch = 0; ch < MAX_CH; ch++) {
     Channel& c = chans[ch];
@@ -970,6 +1261,9 @@ void Command(char* text) {
     snprintf(reply, sizeof reply, "ok alloff %lld", (long long) Now());
     Say(reply);
   }
+  else if ((strcmp(word, "reset") == 0 || strcmp(word, "trig") == 0) && cam_period > 0) {
+    Say("err the board makes the camera pulses (cam): its frames come from them; cam 0 first");
+  }
   else if (strcmp(word, "reset") == 0) {
     frame = 0;
     period = 0;
@@ -979,7 +1273,7 @@ void Command(char* text) {
   else if (strcmp(word, "pin") == 0) {
     int pin = n == 2 ? (a[1] == -1 ? -1 : PinOf(a[1])) : -2;
     if (!chOk || pin < -1) { Say("err pin <ch 0-7> <pin, -1 none>"); return; }
-    if (pin >= 0 && BoxPin(pin)) { Say("err that pin is an input's or a servo's"); return; }
+    if (pin >= 0 && BoxPin(pin)) { Say("err that pin is an input's, a servo's or a camera's"); return; }
     AllOff();
     SetPin(ch, pin);
     snprintf(reply, sizeof reply, "ok pin %d %lld", ch, a[1]);
@@ -988,7 +1282,7 @@ void Command(char* text) {
   else if (strcmp(word, "trig") == 0) {
     int pin = n == 1 ? (a[0] == -1 ? -1 : PinOf(a[0])) : -2;
     if (pin < -1) { Say("err trig <pin, -1 none>"); return; }
-    if (pin >= 0 && BoxPin(pin)) { Say("err that pin is an input's or a servo's"); return; }
+    if (pin >= 0 && BoxPin(pin)) { Say("err that pin is an input's, a servo's or a camera's"); return; }
     trig_pin = pin;
     frame = 0;
     period = 0;
@@ -1106,6 +1400,122 @@ void Command(char* text) {
     snprintf(reply, sizeof reply, "ok run %d %lld %lld %lld %lld", ch, a[1], (long long) now, k, (long long) after);
     Say(reply);
   }
+  else if (strcmp(word, "cam") == 0) {
+    if (cam_running) { Say("err the camera pulses are running: camstop first"); return; }
+    if (n == 1 && a[0] == 0) {
+#if CAM_TIMER
+      if (cam_period > 0) { CamHwFree(); }
+#endif
+      cam_period = 0;
+      cam_npins = 0;
+      Say("ok cam 0");
+      return;
+    }
+#if !CAM_TIMER
+    Say("err no camera timer on this board");
+    return;
+#else
+    int pins[MAX_CAM_PINS];
+    bool ok = n >= 2 && a[0] >= 100 && a[0] <= 65535;
+    for (int i = 1; ok && i < n; i++) {
+      pins[i - 1] = PinOf(a[i]);
+      ok = pins[i - 1] >= 0;
+      for (int j = 1; ok && j < i; j++) { ok = pins[j - 1] != pins[i - 1]; }
+    }
+    if (!ok) { Say("err cam <period_us 100-65535> <pin> [pin ...] (up to 4), or cam 0"); return; }
+    // Its own pins, and the trigger pin it replaces, may be named again
+    int old_n = cam_npins, old_trig = trig_pin;
+    cam_npins = 0;
+    trig_pin = -1;
+    for (int i = 0; i < n - 1; i++) {
+      if (PinTaken(pins[i], -1, -1)) { cam_npins = old_n; trig_pin = old_trig; Say("err that pin is taken"); return; }
+    }
+    if (old_n > 0) { cam_npins = old_n; CamHwFree(); }
+    // trig_pin stays -1: the frames come from the camera pulses now
+    for (int i = 0; i < n - 1; i++) { cam_pins[i] = pins[i]; }
+    cam_npins = n - 1;
+    cam_period = a[0];
+    frame = 0;
+    period = 0;
+    if (!CamHwSetup()) { cam_period = 0; cam_npins = 0; Say("err the camera timer could not be set up"); return; }
+    snprintf(reply, sizeof reply, "ok cam %lld %d", a[0], cam_npins);
+    Say(reply);
+#endif
+  }
+  else if (strcmp(word, "camsync") == 0) {
+    if (cam_running) { Say("err the camera pulses are running: camstop first"); return; }
+    if (n == 1 && a[0] == -1) {
+      if (sync_pin >= 0) { digitalWrite(sync_pin, LOW); }
+      sync_pin = -1;
+      Say("ok camsync -1");
+      return;
+    }
+    int pin = n == 5 ? PinOf(a[0]) : -2;
+    if (pin < 0 || a[1] < 0 || a[2] < 1 || a[3] < 1 || a[4] < a[3] || a[2] >= a[3] * 1000) {
+      Say("err camsync <pin> <seed> <width_us, under min_ms> <min_ms> <max_ms>, or camsync -1");
+      return;
+    }
+    if (pin != sync_pin && PinTaken(pin, -1, -1)) { Say("err that pin is taken"); return; }
+    sync_pin = pin;
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);
+#if defined(ESP32)
+    int gpio = digitalPinToGPIONumber(pin);
+    sync_bank = gpio > 31 ? 1 : 0;
+    sync_mask = 1UL << (gpio & 31);
+#endif
+    sync_seed = (uint64_t) a[1];
+    sync_width = a[2];
+    sync_min_ms = a[3];
+    sync_max_ms = a[4];
+    snprintf(reply, sizeof reply, "ok camsync %d %lld %lld %lld %lld", pin, a[1], a[2], a[3], a[4]);
+    Say(reply);
+  }
+  else if (strcmp(word, "camgo") == 0) {
+    if (n != 1 || a[0] < 0) { Say("err camgo <n, 0 until stopped>"); return; }
+    if (cam_period <= 0) { Say("err no camera pulses set (cam)"); return; }
+    if (cam_running) { Say("err the camera pulses are running"); return; }
+#if CAM_TIMER
+    frame = 0;
+    period = 0;
+    cam_planned = (uint32_t) a[0];
+    cam_hw_rises = 0;
+    camwd_fired = false;
+    sync_j = 0;
+    sync_rise = 0;
+    sync_high = false;
+    cam_running = true;
+    cam_t0 = CamHwStart();
+    SyncNext();
+    snprintf(reply, sizeof reply, "ok camgo %lld %lld %lld", a[0], (long long) cam_t0, (long long) cam_period);
+    Say(reply);
+#endif
+  }
+  else if (strcmp(word, "camstop") == 0) {
+    if (!cam_running) { Say("err the camera pulses aren't running"); return; }
+    snprintf(reply, sizeof reply, "ok camstop %lu", (unsigned long) CamStop(Now()));
+    Say(reply);
+  }
+  else if (strcmp(word, "camwatch") == 0) {
+    if (n != 1 || a[0] < 0) { Say("err camwatch <ms, 0 never>"); return; }
+    camwatch_us = a[0] * 1000;
+    snprintf(reply, sizeof reply, "ok camwatch %lld", a[0]);
+    Say(reply);
+  }
+  else if (strcmp(word, "camstatus") == 0) {
+    snprintf(reply, sizeof reply, "ok camstatus running=%d frames=%lld planned=%lu hw=%lu t0=%lld period=%lld",
+      cam_running ? 1 : 0, (long long) frame, (unsigned long) cam_planned, (unsigned long) cam_hw_rises,
+      (long long) cam_t0, (long long) cam_period);
+    Say(reply);
+  }
+#if defined(ARDUINO_SIM)
+  else if (strcmp(word, "simstall") == 0) {
+    // Tests only: the loop held up for a[0] us (the timer and its interrupt go on), as a stalled sketch would be
+    int64_t until = now + (n == 1 ? a[0] : 0);
+    while (Now() < until) {}
+    Say("ok simstall");
+  }
+#endif
   else if (strcmp(word, "in") == 0) {
     int i = n >= 1 && a[0] >= 0 && a[0] < MAX_IN ? (int) a[0] : -1;
     if (i >= 0 && n == 2 && a[1] == -1) {
@@ -1289,9 +1699,11 @@ void loop() {
   if (level && !trig_level) { trig_level = true; Rose(now); }
   else { trig_level = level; }
   TakeInputs(now);
+  CamCheck(now);
 
   int64_t t = NextTime();
-  int64_t expected = ExpectedTrigger(now);
+  // The next frame: the camera pulse the board makes (cam), or the trigger pin's, as expected from the last two
+  int64_t expected = cam_running ? CamNextRise() : ExpectedTrigger(now);
   int64_t soon = t;
   if (expected != NONE && expected - CRITICAL_US < soon) { soon = expected - CRITICAL_US; }
   if (soon == NONE || soon - now > SERIAL_US) {
@@ -1307,6 +1719,10 @@ void loop() {
     return;
   }
   if (expected != NONE && expected - now <= CRITICAL_US) {
+    if (cam_running) {
+      WaitRise(expected); // its time is known: no pin to watch
+      return;
+    }
     int64_t until = expected + TRIG_SLACK_US;
     if (t != NONE && t < until) { until = t; }
     WaitTrigger(until);

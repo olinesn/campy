@@ -30,6 +30,10 @@ int digitalRead(int pin);
 bool ledcAttach(uint8_t pin, uint32_t freq, uint8_t resolution);
 bool ledcWrite(uint8_t pin, uint32_t duty);
 bool ledcDetach(uint8_t pin);
+// The ESP32's camera pulse timer (MCPWM) as campy_outputs uses it: see sim.cpp. Start returns time 0.
+unsigned long SimCamStart(const int* pins, int npins, unsigned long period_us, void (*on_rise)());
+void SimCamStopAtZero();
+void SimCamHold();
 void noInterrupts();
 void interrupts();
 // A PIO state machine's queue (chronic_timer.ino, compiled with SIM_PIO): see sim.cpp

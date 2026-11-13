@@ -83,8 +83,8 @@ def heartbeats(until_s, every_s=0.1):
 
 def test_frames_are_counted_from_the_trigger(outputs_sim):
 	edges, said = run(outputs_sim, 0.6, ["id"])
-	assert said[0][1] == "ready campy_outputs 3"
-	assert ("ok campy_outputs 3" in [line for _, line in said])
+	assert said[0][1] == "ready campy_outputs 4"
+	assert ("ok campy_outputs 4" in [line for _, line in said])
 	rises = [(int(l.split()[1]), int(l.split()[2])) for _, l in lines(said, "t")]
 	assert [k for k, _ in rises] == list(range(1, 31))
 	for k, t in rises:
@@ -458,7 +458,7 @@ def test_pins_are_never_shared_with_an_input_or_a_servo(outputs_sim):
 	edges, said = run(outputs_sim, 0.05, commands, inputs="")
 	answers = [l for _, l in said if l.startswith(("ok", "err"))]
 	assert answers == ["err that pin is taken", "err that pin is taken", "ok in 0 30 0", "err that pin is taken",
-		"err that pin is an input's or a servo's", "err that pin is an input's or a servo's", "err that pin is taken",
+		"err that pin is an input's, a servo's or a camera's", "err that pin is an input's, a servo's or a camera's", "err that pin is taken",
 		"ok servo 0 11 " + answers[7].split()[4], "err that pin is taken", "ok in 0 -1", "ok pin 0 100"]
 
 
@@ -483,3 +483,171 @@ def test_bad_box_commands_are_answered(outputs_sim):
 		"move 0 1500", "link 0 0 1 1 3 1000", "arm 0 1", "link 0 9 1 1 3 1000", "link 0 0 1 6 3 1000"]
 	edges, said = run(outputs_sim, 0.05, commands, inputs="")
 	assert len([l for _, l in said if l.startswith("err")]) == len(commands)
+
+
+# ---------------------------------------------------------------- one board for the cameras and the box (version 4)
+
+CAM_P = 16666 # 60 fps, as trigger.ino rounds it (syncmatch.TriggerPeriodUs(60))
+CAMS = (11, 12)
+
+
+def camgo(said):
+	# time 0 and the period, from the answer to camgo
+	words = [l for _, l in said if l.startswith("ok camgo")][0].split()
+	return int(words[3]), int(words[4])
+
+
+def check_camera_pulses(edges, t0, n, period=CAM_P, pins=CAMS):
+	# Every camera pin: n pulses, frame k (from 0) high from k * P + P / 2 to (k + 1) * P after time 0, exactly
+	for pin in pins:
+		got = pulses(edges, pin)
+		assert len(got) == n, (pin, len(got), n)
+		for k, (r, f) in enumerate(got):
+			assert r == t0 + k * period + period // 2 and f == t0 + (k + 1) * period, (pin, k, r - t0, f - t0)
+
+
+def test_the_board_makes_the_camera_pulses_as_trigger_ino_does(outputs_sim):
+	# 30 frames at 60 fps on two camera pins: each where trigger.ino puts it, to the microsecond, and the board's frames
+	# are those pulses (no trigger pin), each said with its exact time; then camend, and the count checked
+	commands = ["cam {} {} {}".format(CAM_P, *CAMS), "camgo 30"]
+	edges, said = run(outputs_sim, 0.7, commands, *heartbeats(0.7), (0.65, ["camstatus"]), inputs="")
+	assert [l for _, l in said if l.startswith("ok cam ")] == ["ok cam {} 2".format(CAM_P)]
+	t0, period = camgo(said)
+	assert period == CAM_P
+	check_camera_pulses(edges, t0, 30)
+	frames = [(int(l.split()[1]), int(l.split()[2])) for _, l in lines(said, "t")]
+	assert frames == [(k + 1, t0 + k * CAM_P + CAM_P // 2) for k in range(30)]
+	end = [l.split() for _, l in lines(said, "camend")]
+	assert end == [["camend", "30", str(t0 + 30 * CAM_P)]]
+	assert not lines(said, "camerr")
+	st = [l for _, l in said if l.startswith("ok camstatus")][0]
+	assert "running=0 frames=30 planned=30 hw=30" in st
+
+
+def test_frame_locked_trains_and_sensor_stamps_on_the_cameras_frames(outputs_sim):
+	# A photometry train on odd frames and a poke stamped with its frame, with the frames from the board's own pulses
+	poke = 0.2e6
+	ins = pulse(A[0], poke, 20000)
+	commands = ["cam {} {}".format(CAM_P, CAMS[0]), "in 0 100 2 1 0", "train 0 2 1 0 3000", "run 0 -1", "camgo 40"]
+	edges, said = run(outputs_sim, 0.75, commands, *heartbeats(0.75), inputs=ins)
+	t0, _ = camgo(said)
+	check_camera_pulses(edges, t0, 40, pins=CAMS[:1])
+	for i, (r, f) in enumerate(pulses(edges, 2)):
+		k = 2 * i + 1 # frames from 1: odd frames
+		assert 0 <= r - (t0 + (k - 1) * CAM_P + CAM_P // 2) <= 3 and f - r == 3000, (k, r)
+	got = said_inputs(said, 0)[0]
+	k = got[3]
+	assert got[2] - poke in range(0, 4) and t0 + (k - 1) * CAM_P + CAM_P // 2 <= got[2] < t0 + k * CAM_P + CAM_P // 2
+
+
+@pytest.mark.parametrize("where, extra", [(0.25, 0), (0.75, 0), (1.0, 1)])
+def test_camstop_ends_at_a_period_end_with_no_pulse_cut_or_added(outputs_sim, where, extra):
+	# A stop in a period's first half keeps its pulse; in its second half the pulse has risen and ends whole; under
+	# CAM_MARGIN_US (50) from its end, one more period goes through. Never a short pulse, never one more than said.
+	period_us = CAM_P
+	k_stop = 12
+	at = {0.25: period_us // 4, 0.75: 3 * period_us // 4, 1.0: period_us - 20}[where]
+	commands = ["cam {} {}".format(period_us, CAMS[0]), "camgo 0"]
+	# The command reaches the board then; t0 is a few us after the start of the run's clock
+	edges, said = run(outputs_sim, 0.5, commands, *heartbeats(0.5), inputs="")
+	t0, _ = camgo(said)
+	stop_t = (t0 + k_stop * period_us + at) / 1e6
+	edges, said = run(outputs_sim, 0.5, commands, (stop_t, ["camstop"]), *heartbeats(0.5), inputs="")
+	assert camgo(said)[0] == t0
+	planned = int([l for _, l in said if l.startswith("ok camstop")][0].split()[2])
+	assert planned == k_stop + 1 + extra, (planned, where)
+	check_camera_pulses(edges, t0, planned, pins=CAMS[:1])
+	assert [l.split()[1] for _, l in lines(said, "camend")] == [str(planned)]
+	assert not lines(said, "camerr")
+
+
+@pytest.mark.parametrize("stop", [False, True])
+def test_the_timer_stops_itself_while_the_sketch_is_stalled(outputs_sim, stop):
+	# The loop held up (simstall, the simulated board's only) across the end: the timer's interrupt stops it at its
+	# count by itself, the last pulse whole. And a camstop in a period's second half, the loop stalled right after:
+	# the order given then stops it at that period's end.
+	commands = ["cam {} {}".format(CAM_P, CAMS[0]), "camgo {}".format(0 if stop else 10)]
+	edges, said = run(outputs_sim, 0.6, commands, inputs="")
+	t0, _ = camgo(said)
+	if stop:
+		at = (t0 + 6 * CAM_P + 3 * CAM_P // 4) / 1e6
+		later = [(at, ["camstop", "simstall 300000"])]
+		n = 7
+	else:
+		later = [((t0 + 8 * CAM_P) / 1e6, ["simstall 300000"])] # from frame 9 to well past the end
+		n = 10
+	edges, said = run(outputs_sim, 0.6, commands, *later, inputs="")
+	check_camera_pulses(edges, t0, n, pins=CAMS[:1])
+	assert [l.split()[1] for _, l in lines(said, "camend")] == [str(n)] and not lines(said, "camerr")
+
+
+def test_the_sync_output_is_where_campy_syncmatch_works_it_out(outputs_sim):
+	# trigger.ino's sync train (seed, 10 ms pulses, 200-1000 ms gaps) from the cameras' time 0, its edges exactly where
+	# campy-syncmatch puts them with no hold (the camera edges are the timer's: nothing to hold)
+	from campy import syncmatch
+	sync = dict(seed=4242, width_us=10000, min_gap_ms=200, max_gap_ms=1000, frame_period_us=CAM_P, hold_guard_us=0,
+		hold_after_us=0)
+	commands = ["cam {} {}".format(CAM_P, CAMS[0]), "camsync 13 4242 10000 200 1000", "camgo 0"]
+	edges, said = run(outputs_sim, 4.0, commands, *heartbeats(4.0), inputs="")
+	t0, _ = camgo(said)
+	got = pulses(edges, 13)
+	rises, falls = syncmatch.SyncEdges(sync, 4.0e6 - t0 - 20000)
+	assert len(got) == len(rises) >= 4
+	for (r, f), wr, wf in zip(got, rises, falls):
+		assert 0 <= r - t0 - wr <= 1 and 0 <= f - t0 - wf <= 1, (r - t0, wr, f - t0, wf)
+
+
+def test_the_sync_output_ends_with_the_cameras(outputs_sim):
+	commands = ["cam {} {}".format(CAM_P, CAMS[0]), "camsync 13 7 5000 50 100", "camgo 60"] # 1 s of frames
+	edges, said = run(outputs_sim, 2.0, commands, *heartbeats(2.0), inputs="")
+	t0, _ = camgo(said)
+	end = t0 + 60 * CAM_P
+	got = pulses(edges, 13)
+	assert got and all(r < end for r, _ in got)
+	assert edges[13][-1][1] == 0 # low at the end
+
+
+def test_the_watchdog_never_stops_the_cameras_but_camwatch_does(outputs_sim):
+	# The host goes quiet at 0.2 s with a level on: the box's watchdog switches it off at 0.45 s, and the camera pulses
+	# go on to their count. With camwatch 300 ms they stop at a period's end once 300 ms have gone by (camwd).
+	commands = ["cam {} {}".format(CAM_P, CAMS[0]), "on 3", "camgo 60"]
+	edges, said = run(outputs_sim, 1.3, commands, (0.2, HB), inputs="")
+	t0, _ = camgo(said)
+	assert lines(said, "wd")
+	check_camera_pulses(edges, t0, 60, pins=CAMS[:1])
+	edges, said = run(outputs_sim, 1.3, ["camwatch 300"] + commands, (0.2, HB), inputs="")
+	t0, _ = camgo(said)
+	wd_t = int(lines(said, "camwd")[0][1].split()[1])
+	assert 500000 <= wd_t <= 501000
+	n = int(lines(said, "camend")[0][1].split()[1])
+	assert (wd_t - t0) // CAM_P <= n <= (wd_t - t0) // CAM_P + 2 and n < 60
+	check_camera_pulses(edges, t0, n, pins=CAMS[:1])
+
+
+def test_box_work_moves_no_camera_edge(outputs_sim):
+	# A servo moving, an input chattering at 500 Hz, and a burst of serial commands while the camera pulses run: every
+	# camera edge where it belongs, and every frame said
+	chatter = "{}:{}:{}:{}:{}".format(A[1], 50000, 2000, 1000, 300)
+	commands = ["cam {} {}".format(CAM_P, CAMS[0]), "in 1 101 2 1 0", "servo 0 14 1000 2000 1000 5000",
+		"camgo 40"]
+	busy = [(0.1 + 0.05 * i, ["move 0 {}".format(2000 if i % 2 == 0 else 1000), "status", "box", "camstatus"])
+		for i in range(10)]
+	edges, said = run(outputs_sim, 0.8, commands, *busy, *heartbeats(0.8), inputs=chatter)
+	t0, _ = camgo(said)
+	check_camera_pulses(edges, t0, 40, pins=CAMS[:1])
+	assert len(lines(said, "t")) == 40 and len(said_inputs(said, 1)) >= 100
+
+
+def test_camera_commands_are_checked(outputs_sim):
+	commands = ["cam 50 11", "cam 70000 11", "cam 16666 2", "cam 16666 11 11", "camgo 10", "cam 16666 11",
+		"trig 10", "reset", "camsync 11 1 1000 50 100", "camsync 13 1 60000 50 100", "camstop", "cam 0", "camgo 1"]
+	edges, said = run(outputs_sim, 0.05, commands, inputs="")
+	answers = [l for _, l in said if l.startswith(("ok", "err"))]
+	assert answers[:5] == ["err cam <period_us 100-65535> <pin> [pin ...] (up to 4), or cam 0"] * 2 + \
+		["err that pin is taken", "err cam <period_us 100-65535> <pin> [pin ...] (up to 4), or cam 0",
+		"err no camera pulses set (cam)"]
+	assert answers[5] == "ok cam 16666 1"
+	assert answers[6:8] == ["err the board makes the camera pulses (cam): its frames come from them; cam 0 first"] * 2
+	assert answers[8] == "err that pin is taken" and answers[9].startswith("err camsync")
+	assert answers[10] == "err the camera pulses aren't running" and answers[11] == "ok cam 0"
+	assert answers[12] == "err no camera pulses set (cam)"
