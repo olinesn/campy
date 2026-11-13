@@ -156,17 +156,20 @@ def _ByClass(cores):
 		"efficiency": sorted(cpu for c, cpus in cores if c != best for cpu in cpus)}
 
 
-def _LinuxCores():
+def _LinuxCores(sys_devices="/sys/devices"):
 	def Read(path):
 		try:
-			with open(path) as f:
+			with open(os.path.join(sys_devices, path)) as f:
 				return ParseList(f.read().strip())
 		except (OSError, ValueError):
 			return None
-	performance, efficiency = Read("/sys/devices/cpu_core/cpus"), Read("/sys/devices/cpu_atom/cpus")
+	performance, efficiency = Read("cpu_core/cpus"), Read("cpu_atom/cpus")
 	if performance and efficiency:
 		return {"performance": performance, "efficiency": efficiency}
-	return {"performance": sorted(os.sched_getaffinity(0)), "efficiency": []}
+	# A CPU of one kind: every CPU online. Not this process's own CPUs (sched_getaffinity): the answer is kept for
+	# the program's life, and asked after campy-live pinned itself (--cpus 0-3), 'all' was those 4 (--campy-cpus
+	# all put campy-acquire beside campy-live on the Jetson AGX Orin: 92-104 sets skipped a minute)
+	return {"performance": Read("system/cpu/online") or list(range(os.cpu_count() or 1)), "efficiency": []}
 
 
 def All():

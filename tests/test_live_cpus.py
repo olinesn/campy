@@ -64,3 +64,88 @@ def test_measured_only_on_windows_with_a_model(monkeypatch):
 	assert live.GpuInterrupts(args) is None
 	monkeypatch.setattr(live.sys, "platform", "win32")
 	assert live.GpuInterrupts(types.SimpleNamespace(model="none", device="auto")) is None
+
+
+# --pose3d-cpus: the 3D step's thread alone on CPUs of its own, the rest of campy-live kept off them (Linux)
+
+def three_d(monkeypatch, option, calibration="cal.toml", platform="linux"):
+	monkeypatch.setattr(live.sys, "platform", platform)
+	return live.Pose3DCpus(types.SimpleNamespace(pose3d_cpus=option, calibration=calibration))
+
+
+def test_pose3d_cpus_resolved_only_on_linux_with_a_3d_step(monkeypatch):
+	said = []
+	monkeypatch.setattr(live, "Say", said.append)
+	monkeypatch.setattr(cpus, "All", lambda: list(range(12)))
+	assert three_d(monkeypatch, "4-7") == [4, 5, 6, 7]
+	assert three_d(monkeypatch, "none") is None and three_d(monkeypatch, "") is None and not said
+	assert three_d(monkeypatch, "4-7", calibration="") is None and "no 3D step" in said[-1]
+	assert three_d(monkeypatch, "4-7", platform="win32") is None and "only on Linux" in said[-1]
+	with pytest.raises(SystemExit):
+		three_d(monkeypatch, "4-x")
+
+
+def test_the_rest_of_campy_live_kept_off_the_3d_steps_cpus(placed, monkeypatch):
+	monkeypatch.setattr(cpus, "All", lambda: list(range(12)))
+
+	def Run(cpus_option, hybrid=None):
+		monkeypatch.setattr(cpus, "Hybrid", lambda: hybrid)
+		monkeypatch.setattr(live, "GpuInterrupts", lambda args: None)
+		done = {}
+		monkeypatch.setattr(cpus, "Pin", lambda c, pid=None: done.__setitem__("cpus", list(c)))
+		monkeypatch.setattr(cpus, "SetPriority", lambda name, pid=None: done.__setitem__("priority", name))
+		text, _ = live.PlaceSelf(types.SimpleNamespace(cpus=cpus_option, priority="auto"), keep_off=[4, 5, 6, 7])
+		return text, done
+
+	# A CPU of one kind (the Jetson AGX Orin), --cpus auto: all but the 3D step's, at normal priority
+	text, done = Run("auto")
+	assert done == {"cpus": [0, 1, 2, 3, 8, 9, 10, 11]}
+	assert text == "CPUs 0-3,8-11 (all but the 3D step's); the 3D step alone on CPUs 4-7"
+	# --cpus 0-3: already off them
+	text, done = Run("0-3")
+	assert done == {"cpus": [0, 1, 2, 3], "priority": "high"}
+	assert text == "CPUs 0-3 at high priority; the 3D step alone on CPUs 4-7"
+	# A list that takes them in: less them
+	assert Run("0-7")[1]["cpus"] == [0, 1, 2, 3]
+	# The performance cores
+	text, done = Run("auto", hybrid={"performance": list(range(8)), "efficiency": [8, 9, 10, 11]})
+	assert done["cpus"] == [0, 1, 2, 3] and "(the performance cores, less the 3D step's)" in text
+	# None left for the rest
+	with pytest.raises(SystemExit):
+		Run("4-5")
+
+
+@pytest.mark.skipif(not hasattr(live.os, "sched_setaffinity"), reason="pins threads on Linux only")
+def test_the_3d_thread_runs_on_its_cpus_and_the_caller_stays_where_it_was():
+	import os
+	allowed = sorted(os.sched_getaffinity(0))
+	mine = allowed[-1:]
+	seen = []
+
+	class Tracker:
+		def Update(self, keypoints, scores, frame):
+			seen.append(sorted(os.sched_getaffinity(0)))
+			return []
+
+	class Log:
+		def Add(self, *a, **k):
+			pass
+
+	worker = live.Pose3DThread(Tracker(), Log(), cpus=mine)
+	worker.Put({"keypoints": None, "peak_vals": None, "frame": 0}, None, 0)
+	worker.Close()
+	assert seen == [mine] and sorted(os.sched_getaffinity(0)) == allowed
+
+
+def test_all_is_every_cpu_online_not_this_process_s_own(tmp_path, monkeypatch):
+	# A CPU of one kind (the Jetson AGX Orin): 'all' was the CPUs campy-live had pinned itself to, when first asked
+	# after that (--cpus 0-3 --campy-cpus all)
+	(tmp_path / "system" / "cpu").mkdir(parents=True)
+	(tmp_path / "system" / "cpu" / "online").write_text("0-11\n")
+	monkeypatch.setattr(cpus.os, "sched_getaffinity", lambda pid: {0, 1, 2, 3}, raising=False)
+	assert cpus._LinuxCores(str(tmp_path)) == {"performance": list(range(12)), "efficiency": []}
+	# Intel's hybrid CPUs on Linux: the two kinds
+	(tmp_path / "cpu_core").mkdir(), (tmp_path / "cpu_atom").mkdir()
+	(tmp_path / "cpu_core" / "cpus").write_text("0-7\n")
+	(tmp_path / "cpu_atom" / "cpus").write_text("8-15\n")
+	assert cpus._LinuxCores(str(tmp_path)) == {"performance": list(range(8)), "efficiency": list(range(8, 16))}
