@@ -1,0 +1,811 @@
+<title>ChronicRecord Run Book</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column of numbered steps, wide figures and tables scroll on their own; channel colours (gate, camera, blue, yellow) carry meaning everywhere. */
+:root{
+  --bg:#f5f6f3; --panel:#ffffff; --fg:#1d2321; --muted:#5b6560; --line:#cfd5d0; --code:#eceee9;
+  --accent:#0f6b5c;           /* gate / primary */
+  --cam:#3a3f8f;              /* camera trigger */
+  --blue:#1f6fd1; --yellow:#b37a00;
+  --warn:#9a5b00; --warnbg:#fbf1dc; --bad:#a3312b; --badbg:#f8e3e1; --ok:#2c6e3a; --okbg:#e2f0e3;
+  --f-display:"Barlow Condensed","Arial Narrow",Arial,sans-serif;
+  --f-body:"Source Sans 3","Segoe UI",system-ui,sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#141917; --panel:#1b211f; --fg:#e3e8e4; --muted:#9aa59f; --line:#34403b; --code:#222a27;
+  --accent:#4cc3aa; --cam:#9da3ff; --blue:#6aa8ff; --yellow:#e7b33c;
+  --warn:#f0b75a; --warnbg:#3a2e17; --bad:#ff8f86; --badbg:#3b1f1d; --ok:#7fd08d; --okbg:#1c3121; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#141917; --panel:#1b211f; --fg:#e3e8e4; --muted:#9aa59f; --line:#34403b; --code:#222a27;
+  --accent:#4cc3aa; --cam:#9da3ff; --blue:#6aa8ff; --yellow:#e7b33c;
+  --warn:#f0b75a; --warnbg:#3a2e17; --bad:#ff8f86; --badbg:#3b1f1d; --ok:#7fd08d; --okbg:#1c3121; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:17px;line-height:1.55}
+.wrap{max-width:860px;margin:0 auto;padding-block:32px 80px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1,h2,h3{font-family:var(--f-display);line-height:1.1;text-wrap:balance;letter-spacing:.01em}
+h1{font-size:2.6rem;margin:.2em 0 .1em;font-weight:700}
+h2{font-size:1.9rem;margin:2.4em 0 .5em;padding-top:.6em;border-top:2px solid var(--fg);font-weight:600}
+h2 .n{color:var(--accent);margin-right:.35em}
+h3{font-size:1.35rem;margin:1.6em 0 .4em;font-weight:600}
+p,li{max-width:68ch}
+a{color:var(--accent)}
+.eyebrow{font-family:var(--f-mono);font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.lede{font-size:1.1rem;color:var(--muted);margin-top:.3em}
+code{font-family:var(--f-mono);font-size:.86em;background:var(--code);padding:.08em .3em;border-radius:3px}
+.cmd{position:relative;margin:.6em 0}
+.cmd pre{margin:0;background:var(--code);border:1px solid var(--line);border-radius:6px;padding:12px 70px 12px 14px;overflow-x:auto;font-family:var(--f-mono);font-size:.84rem;line-height:1.5}
+.cmd .where{font-family:var(--f-mono);font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);display:block;margin-bottom:4px}
+.cmd button{position:absolute;right:8px;bottom:8px;font:600 .72rem var(--f-mono);border:1px solid var(--line);background:var(--panel);color:var(--fg);border-radius:4px;padding:3px 8px;cursor:pointer}
+.cmd button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.see{border-left:3px solid var(--ok);background:var(--okbg);padding:8px 12px;margin:.6em 0 1em;border-radius:0 6px 6px 0;font-size:.95rem}
+.see b{font-family:var(--f-mono);font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--ok);display:block}
+.see pre{margin:.3em 0 0;font-family:var(--f-mono);font-size:.78rem;white-space:pre-wrap;word-break:break-word}
+.note{border:1px solid var(--line);background:var(--panel);padding:12px 16px;border-radius:6px;margin:1em 0}
+.warnbox{border-left:4px solid var(--warn);background:var(--warnbg);padding:12px 16px;border-radius:0 6px 6px 0;margin:1em 0}
+.badbox{border-left:4px solid var(--bad);background:var(--badbg);padding:12px 16px;border-radius:0 6px 6px 0;margin:1em 0}
+.open{border:2px solid var(--bad);border-radius:8px;padding:14px 18px;margin:1.4em 0;background:var(--panel)}
+.open h3{margin-top:0;color:var(--bad)}
+.open ol{margin:.4em 0 0;padding-left:1.3em}
+ol.steps{counter-reset:s;list-style:none;padding:0;margin:0}
+ol.steps>li{counter-increment:s;position:relative;padding-left:46px;margin:1.2em 0;max-width:none}
+ol.steps>li::before{content:counter(s);position:absolute;left:0;top:-2px;width:32px;height:32px;border-radius:50%;border:2px solid var(--accent);color:var(--accent);font:700 1rem/28px var(--f-display);text-align:center}
+ol.steps>li>p:first-child{margin-top:0}
+.tbl{overflow-x:auto;margin:1em 0;border:1px solid var(--line);border-radius:6px}
+table{border-collapse:collapse;width:100%;font-size:.92rem;background:var(--panel)}
+th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{font-family:var(--f-mono);font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);background:var(--code)}
+tr:last-child td{border-bottom:0}
+td code{white-space:nowrap}
+.tbl.wide table{min-width:720px}
+figure{margin:1.4em 0;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
+figure .scroll{overflow-x:auto}
+figure svg{display:block;width:100%;height:auto;min-width:640px}
+figcaption{font-size:.9rem;color:var(--muted);margin-top:8px;max-width:none}
+.chip{display:inline-block;font:600 .7rem var(--f-mono);text-transform:uppercase;letter-spacing:.06em;padding:1px 6px;border-radius:3px;vertical-align:1px}
+.chip.slack{background:var(--badbg);color:var(--bad)}
+.chip.log{background:var(--okbg);color:var(--ok)}
+.chip.warn{background:var(--warnbg);color:var(--warn)}
+.toc{columns:2;column-gap:28px;font-size:.95rem;padding-left:1.2em}
+@media (max-width:560px){.toc{columns:1}h1{font-size:2.1rem}ol.steps>li{padding-left:40px}}
+.tab{font-variant-numeric:tabular-nums}
+footer{margin-top:4em;font-size:.85rem;color:var(--muted);border-top:1px solid var(--line);padding-top:1em}
+</style>
+
+<div class="wrap">
+<div class="eyebrow">ChronicRecord rig · Dell Pro Max Slim FCS1250 · campy dev f563862 · checked 13 Nov 2026</div>
+<h1>Running a chronic recording on ChronicRecord</h1>
+<p class="lede">A multi-day bout session: a Raspberry Pi Pico, plugged into the recording PC, times the cameras, the two fiber photometry LEDs and the SpikeGLX gate; campy records four FLIR cameras; SpikeGLX records the Neuropixels probe, the OneBox and the two photoreceivers. One page in the browser, campy's panel (the <b>campy recording</b> icon on the PC's desktop, experiment <i>ChronicRecord session (Pico + SpikeGLX)</i>), starts SpikeGLX, campy and the Pico, and everything lands in one folder per session on the PC's 4 TB data disk, D:. After the end the panel copies that folder to the lab's server and checks the copy byte for byte. Follow it top to bottom, from the day before to the files on disk.</p>
+
+<div class="open">
+<h3>Settle these before a 6-day run</h3>
+<ol>
+<li><b>The photometry light levels for a long run aren't settled.</b> On 10 November (three 15-minute gate tests with a fiber-implanted mouse), 21 µW at the fiber tip drove both photoreceivers to the OneBox's +5 V limit; 20 mA on each LED (blue 5 µW, yellow 3 µW) fitted, but only 3 mA above the current where the LEDs flicker. On 12 November a 4-hour session ran at 29 mA (blue) and 24 mA (yellow): both readings fitted (3.86 to 3.96 V), but the blue light reaching the red receiver held XA6 at +5 V in every blue flash, and the powers at the tip weren't measured (the panel saved 0 µW). A neutral density filter of about OD 0.5 on each LED's cord is still the suggestion, not yet tried. See <a href="#photometry">Fiber photometry</a>.</li>
+<li><b>The cage's red camera lights reach the red receiver.</b> With them on, XA6 sat at +5 V for a whole recording (10 November). On 12 November the patch cord's mating sleeve was wrapped and some of their light still reached both receivers, so that session too ran with the lights off and the cameras recorded a dark cage. The mouse's end has to be made light-tight (a cover over the headcap as well, or infrared camera lights if the cube's red band rejects them) before the cameras can see.</li>
+<li><b>Windows Update: paused until 19 November, 5:37 PM.</b> A PC restart ends campy and SpikeGLX, and also the Pico's session (the Pico loses its USB power). The panel wants the pause to last until a day after the session's end, so a 6-day session started now needs it longer (any start after 5:37 PM on 12 November): the panel's checks show a <b>Pause Windows Update</b> button (one administrator click). See <a href="#pcsettings">This PC's settings</a>.</li>
+<li><b>Never longer than 96 bouts; with a mouse, 4 hours.</b> The longest session from the panel is the 8-hour, 96-bout rehearsal with no animal (6 November): every camera got all 278,400 frames. With a mouse the longest is 49 bouts (12 November, 3:15 to 7:19 PM): all 153,600 camera pulses on time, and every one saved by all four cameras. See <a href="#untested">What hasn't been tested</a>.</li>
+<li><b>D: holds one 6-day session at a time.</b> 2.9 TB of its 3.84 TB free. The panel copies it to the lab's server after the end; at the 17 MB/s a 7.6 GB gate test copied at, 2.9 TB would take about two days, and the byte-for-byte check about as long again (an estimate: nothing that size has been copied). Leave the PC on and the panel open until it says <b>verified</b>, and free D: before the next long session. See <a href="#copies">Copies</a>.</li>
+</ol>
+<p style="margin:.8em 0 0;font-size:.95rem"><b>Settled since 6 November:</b> the data disk (D:, since 10 November), the fiber photometry flash pattern (the panel's config, since 10 November) and its readout script.</p>
+</div>
+
+<ul class="toc">
+<li><a href="#system">1. What the system is</a></li>
+<li><a href="#before">2. Before the day</a></li>
+<li><a href="#start">3. Starting a recording</a></li>
+<li><a href="#during">4. During the recording</a></li>
+<li><a href="#after">5. Stopping and after</a></li>
+<li><a href="#trouble">6. Troubleshooting</a></li>
+<li><a href="#untested">7. What hasn't been tested</a></li>
+</ul>
+
+<!-- ============================================================ 1 -->
+<h2 id="system"><span class="n">1</span>What the system is</h2>
+<p>Two devices take part, and only one of them keeps time:</p>
+<ul>
+<li><b>The ChronicRecord PC</b> (Dell Pro Max Slim FCS1250, Windows 11) runs campy, which waits for camera pulses; SpikeGLX, which records a file each time the gate goes high; and <code>chronic_control.py</code>, which plans the whole session, loads it onto the Pico over USB, logs what the Pico reports, and stops it. campy's panel, a page in the PC's browser opened from the <b>campy recording</b> desktop icon, starts SpikeGLX's run (through SpikeGLX's command server), then campy, then the Pico, all writing into one session folder on D:, the PC's second drive (a 4 TB Crucial P310 NVMe, fitted on 10 November 2026; C: is the 1 TB system drive). (The PowerShell launcher <code>chronic6day.ps1</code> does the same and stays as a fallback.) You use the PC through Remote Desktop; <code>status</code> and <code>stop</code> also work over SSH.</li>
+<li><b>Raspberry Pi Pico</b> (on one of the PC's USB ports) makes every edge from its own crystal: gate, camera trigger, blue LED, yellow LED. If <code>chronic_control.py</code> or the USB link drops, the edges don't move. If the Pico loses power (a PC restart), its session ends. It is the only board on the cameras' trigger line: the rig's campy profile says so (<code>triggerController: pico</code>), so no config on this PC can start an Arduino on the same cameras, and the panel's checks show <b>Trigger: the Pico</b>. A fifth output, E (GP6), can send the OneBox a sync train that never repeats; it is off on the rig and not wired yet (see <a href="#sync">Sync pulses</a>).</li>
+<li><b>Fiber photometry.</b> The blue (465 nm) and yellow (560 nm) LEDs are a photometry system's excitation light: a Doric LED driver, a Doric fluorescence minicube and one patch cord to the mouse's implanted fiber. Two New Focus 2151 photoreceivers read the emission and go to the OneBox (XA5 green, XA6 red), so SpikeGLX samples them on the same clock as every edge. See <a href="#photometry">Fiber photometry</a>.</li>
+</ul>
+<p>Until 5 November 2026 a Raspberry Pi 3B ran <code>chronic_control.py</code> and the Pico hung off its USB. It is retired; its old logs are archived on the PC in <code>C:\campy_data\pico\pi_archive</code>.</p>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 900 1045" role="img" aria-label="Wiring and the enclosure. Wiring: the PC drives the Pico over USB. Each of the Pico's four outputs runs straight to a OneBox input (GP2 gate to XA0, GP3 camera trigger through a 50 ohm resistor to XA2, GP4 blue to XA3, GP5 yellow to XA4) and also feeds its device: the four cameras' Line3, and the Doric LED driver's blue and yellow channels. The two photometry receivers feed XA5 (green) and XA6 (red). The cameras send frames to campy over USB3 and the OneBox feeds SpikeGLX, both on the PC. Below, the behavior enclosure in a three-quarter view from the long side, to scale: the wedge-shaped cage floor, about 28 cm long, 25 cm across the wide end and 6 cm across the flat narrow end, on a 10 cm grid, with the four cameras 37 to 47 cm above it, each looking down into the cage." font-family="JetBrains Mono, monospace" font-size="12">
+<defs>
+<marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/></marker>
+<marker id="arc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--cam)"/></marker>
+<marker id="arb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--blue)"/></marker>
+<marker id="ary" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--yellow)"/></marker>
+<marker id="arf" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+</defs>
+
+<!-- column headings -->
+<g fill="currentColor" font-size="10" letter-spacing="1" opacity=".7">
+<text x="120" y="40" text-anchor="middle">TIMING</text>
+<text x="555" y="40" text-anchor="middle">DEVICE IT DRIVES</text>
+<text x="790" y="40" text-anchor="middle">RECORDED BY SPIKEGLX</text>
+</g>
+
+<!-- boxes -->
+<g fill="none" stroke="currentColor" stroke-width="1.5">
+<rect x="30" y="56" width="180" height="436" rx="6" stroke-width="2"/>
+<rect x="700" y="56" width="180" height="436" rx="6"/>
+<rect x="460" y="252" width="190" height="50" rx="5"/>
+<rect x="460" y="352" width="190" height="50" rx="5"/>
+<rect x="460" y="452" width="190" height="50" rx="5"/>
+<rect x="20" y="560" width="190" height="56" rx="5"/>
+<rect x="280" y="550" width="600" height="72" rx="6" stroke-width="2"/>
+</g>
+
+<!-- Pico -->
+<g fill="currentColor">
+<text x="120" y="82" text-anchor="middle" font-weight="600">Raspberry Pi Pico</text>
+<text x="120" y="99" text-anchor="middle" font-size="11">makes every edge from</text>
+<text x="120" y="113" text-anchor="middle" font-size="11">its own crystal clock</text>
+<text x="120" y="478" text-anchor="middle" font-size="10">GND pin 3/8 → all grounds</text>
+</g>
+<g font-weight="600" text-anchor="end">
+<text x="200" y="134" fill="var(--accent)">GP2 · pin 4</text>
+<text x="200" y="234" fill="var(--cam)">GP3 · pin 5</text>
+<text x="200" y="334" fill="var(--blue)">GP4 · pin 6</text>
+<text x="200" y="434" fill="var(--yellow)">GP5 · pin 7</text>
+</g>
+
+<!-- OneBox -->
+<g fill="currentColor">
+<text x="790" y="82" text-anchor="middle" font-weight="600">OneBox</text>
+<text x="790" y="99" text-anchor="middle" font-size="11">SpikeGLX obx0</text>
+<text x="790" y="113" text-anchor="middle" font-size="11">+ Neuropixels probe</text>
+</g>
+<g font-weight="600">
+<text x="712" y="134" fill="var(--accent)">XA0 · trigger</text>
+<text x="712" y="234" fill="var(--cam)">XA2</text>
+<text x="712" y="334" fill="var(--blue)">XA3</text>
+<text x="712" y="434" fill="var(--yellow)">XA4</text>
+<text x="712" y="464" fill="var(--ok)" font-size="11">XA5 ← green receiver</text>
+<text x="712" y="481" fill="var(--bad)" font-size="11">XA6 ← red receiver</text>
+</g>
+
+<!-- A: gate -->
+<line x1="210" y1="130" x2="698" y2="130" stroke="var(--accent)" stroke-width="2.5" marker-end="url(#arg)"/>
+<text x="224" y="121" fill="var(--accent)" font-size="11">A · gate (level)</text>
+<text x="555" y="156" fill="currentColor" font-size="11" text-anchor="middle" opacity=".8">no device: SpikeGLX opens</text>
+<text x="555" y="171" fill="currentColor" font-size="11" text-anchor="middle" opacity=".8">a file while it is high</text>
+
+<!-- B: camera, through 50 ohm -->
+<line x1="210" y1="230" x2="400" y2="230" stroke="var(--cam)" stroke-width="2.5"/>
+<rect x="400" y="221" width="46" height="18" rx="2" fill="var(--panel)" stroke="var(--cam)" stroke-width="2"/>
+<text x="423" y="234" fill="var(--cam)" font-size="11" text-anchor="middle">50 Ω</text>
+<line x1="446" y1="230" x2="698" y2="230" stroke="var(--cam)" stroke-width="2.5" marker-end="url(#arc)"/>
+<text x="224" y="221" fill="var(--cam)" font-size="11">B · camera, 3 ms pulses</text>
+<circle cx="555" cy="230" r="4.5" fill="var(--cam)"/>
+<line x1="555" y1="230" x2="555" y2="250" stroke="var(--cam)" stroke-width="2.5" marker-end="url(#arc)"/>
+
+<!-- C: blue -->
+<line x1="210" y1="330" x2="698" y2="330" stroke="var(--blue)" stroke-width="2.5" marker-end="url(#arb)"/>
+<text x="224" y="321" fill="var(--blue)" font-size="11">C · blue LED TTL</text>
+<circle cx="555" cy="330" r="4.5" fill="var(--blue)"/>
+<line x1="555" y1="330" x2="555" y2="350" stroke="var(--blue)" stroke-width="2.5" marker-end="url(#arb)"/>
+
+<!-- D: yellow -->
+<line x1="210" y1="430" x2="698" y2="430" stroke="var(--yellow)" stroke-width="2.5" marker-end="url(#ary)"/>
+<text x="224" y="421" fill="var(--yellow)" font-size="11">D · yellow LED TTL</text>
+<circle cx="555" cy="430" r="4.5" fill="var(--yellow)"/>
+<line x1="555" y1="430" x2="555" y2="450" stroke="var(--yellow)" stroke-width="2.5" marker-end="url(#ary)"/>
+
+<!-- device boxes -->
+<g fill="currentColor" text-anchor="middle">
+<text x="555" y="272" font-weight="600">4 × FLIR Blackfly S</text>
+<text x="555" y="290" font-size="11">Line3 · one frame per pulse</text>
+<text x="555" y="372" font-weight="600">Blue LED · 465 nm</text>
+<text x="555" y="390" font-size="11">Doric LED driver, TTL in</text>
+<text x="555" y="472" font-weight="600">Yellow LED · 560 nm</text>
+<text x="555" y="490" font-size="11">Doric LED driver, TTL in</text>
+</g>
+
+<!-- cameras to PC over USB3, hopping over wires C and D -->
+<path d="M650,277 L668,277 L668,322 A8,8 0 0 1 668,338 L668,422 A8,8 0 0 1 668,438 L668,548" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#arf)"/>
+<text x="662" y="532" fill="currentColor" font-size="11" text-anchor="end">USB3 ×4</text>
+<!-- OneBox to PC -->
+<line x1="790" y1="492" x2="790" y2="548" stroke="currentColor" stroke-width="1.5" marker-end="url(#arf)"/>
+<!-- PC to Pico: USB -->
+<path d="M340,550 L340,525 L120,525 L120,494" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#arf)"/>
+<text x="130" y="518" fill="currentColor" font-size="11">USB: power + session</text>
+<!-- your computer to PC -->
+<line x1="210" y1="588" x2="278" y2="588" stroke="currentColor" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arf)"/>
+
+<g fill="currentColor" text-anchor="middle">
+<text x="115" y="584" font-weight="600">Your computer</text>
+<text x="115" y="602" font-size="11">Remote Desktop · SSH</text>
+<text x="580" y="573" font-weight="600">ChronicRecord PC · Dell Pro Max Slim FCS1250</text>
+<text x="580" y="593" font-size="11">chronic_control.py → Pico · campy ← cameras · SpikeGLX ← OneBox</text>
+<text x="580" y="610" font-size="11">all started together from campy's panel</text>
+</g>
+
+
+<!-- ===== the behavior enclosure, 3/4 view from the long side, to scale from calibration4.toml and calibration4.cage.json ===== -->
+<line x1="20" y1="655" x2="880" y2="655" stroke="var(--line)" stroke-width="1.5"/>
+<text x="30" y="684" fill="currentColor" font-size="10" letter-spacing="1" opacity=".7">BEHAVIOR ENCLOSURE · THE WEDGE CAGE AND ITS FOUR CAMERAS, TO SCALE</text>
+<polygon points="60.0,915.4 171.5,1021.0 358.4,941.8 226.1,865.5" fill="var(--code)" stroke="var(--line)" stroke-width="1"/>
+<line x1="67.4" y1="922.4" x2="235.1" y2="870.7" stroke="var(--line)" stroke-width="1"/>
+<line x1="87.1" y1="941.0" x2="259.1" y2="884.5" stroke="var(--line)" stroke-width="1"/>
+<line x1="108.8" y1="961.6" x2="285.2" y2="899.6" stroke="var(--line)" stroke-width="1"/>
+<line x1="132.9" y1="984.5" x2="313.7" y2="916.1" stroke="var(--line)" stroke-width="1"/>
+<line x1="159.8" y1="1010.0" x2="345.0" y2="934.1" stroke="var(--line)" stroke-width="1"/>
+<line x1="75.8" y1="910.6" x2="189.8" y2="1013.2" stroke="var(--line)" stroke-width="1"/>
+<line x1="113.5" y1="899.3" x2="233.2" y2="994.8" stroke="var(--line)" stroke-width="1"/>
+<line x1="149.0" y1="888.6" x2="273.4" y2="977.8" stroke="var(--line)" stroke-width="1"/>
+<line x1="182.4" y1="878.6" x2="310.6" y2="962.1" stroke="var(--line)" stroke-width="1"/>
+<line x1="214.0" y1="869.1" x2="345.2" y2="947.4" stroke="var(--line)" stroke-width="1"/>
+<polygon points="139.9,937.2 225.0,893.6 293.1,936.5 154.0,950.2" fill="currentColor" fill-opacity=".14" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+<line x1="124.9" y1="717.1" x2="134.4" y2="922.8" stroke="currentColor" stroke-opacity=".45" stroke-width="1" stroke-dasharray="2 3"/>
+<circle cx="134.4" cy="922.8" r="2" fill="currentColor" fill-opacity=".45"/>
+<line x1="124.9" y1="717.1" x2="246.5" y2="940.8" stroke="var(--cam)" stroke-width="1.4" stroke-dasharray="5 4"/>
+<circle cx="246.5" cy="940.8" r="3" fill="var(--cam)"/>
+<line x1="191.1" y1="716.0" x2="192.6" y2="912.0" stroke="currentColor" stroke-opacity=".45" stroke-width="1" stroke-dasharray="2 3"/>
+<circle cx="192.6" cy="912.0" r="2" fill="currentColor" fill-opacity=".45"/>
+<line x1="191.1" y1="716.0" x2="208.2" y2="933.5" stroke="var(--cam)" stroke-width="1.4" stroke-dasharray="5 4"/>
+<circle cx="208.2" cy="933.5" r="3" fill="var(--cam)"/>
+<line x1="147.2" y1="777.2" x2="152.8" y2="940.0" stroke="currentColor" stroke-opacity=".45" stroke-width="1" stroke-dasharray="2 3"/>
+<circle cx="152.8" cy="940.0" r="2" fill="currentColor" fill-opacity=".45"/>
+<line x1="147.2" y1="777.2" x2="199.4" y2="922.1" stroke="var(--cam)" stroke-width="1.4" stroke-dasharray="5 4"/>
+<circle cx="199.4" cy="922.1" r="3" fill="var(--cam)"/>
+<line x1="266.9" y1="755.4" x2="261.1" y2="911.3" stroke="currentColor" stroke-opacity=".45" stroke-width="1" stroke-dasharray="2 3"/>
+<circle cx="261.1" cy="911.3" r="2" fill="currentColor" fill-opacity=".45"/>
+<line x1="266.9" y1="755.4" x2="207.7" y2="925.4" stroke="var(--cam)" stroke-width="1.4" stroke-dasharray="5 4"/>
+<circle cx="207.7" cy="925.4" r="3" fill="var(--cam)"/>
+<g transform="translate(124.9,717.1) rotate(61.5)"><polygon points="11,-5 21,-10 21,10 11,5" fill="var(--code)" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><rect x="-13" y="-12" width="26" height="24" rx="5" fill="var(--code)" stroke="currentColor" stroke-width="1.5"/></g>
+<text x="124.9" y="722.1" fill="currentColor" font-size="14" font-weight="600" text-anchor="middle">0</text>
+<g transform="translate(191.1,716.0) rotate(85.5)"><polygon points="11,-5 21,-10 21,10 11,5" fill="var(--code)" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><rect x="-13" y="-12" width="26" height="24" rx="5" fill="var(--code)" stroke="currentColor" stroke-width="1.5"/></g>
+<text x="191.1" y="721.0" fill="currentColor" font-size="14" font-weight="600" text-anchor="middle">1</text>
+<g transform="translate(147.2,777.2) rotate(70.2)"><polygon points="11,-5 21,-10 21,10 11,5" fill="var(--code)" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><rect x="-13" y="-12" width="26" height="24" rx="5" fill="var(--code)" stroke="currentColor" stroke-width="1.5"/></g>
+<text x="147.2" y="782.2" fill="currentColor" font-size="14" font-weight="600" text-anchor="middle">2</text>
+<g transform="translate(266.9,755.4) rotate(109.2)"><polygon points="11,-5 21,-10 21,10 11,5" fill="var(--code)" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><rect x="-13" y="-12" width="26" height="24" rx="5" fill="var(--code)" stroke="currentColor" stroke-width="1.5"/></g>
+<text x="266.9" y="760.4" fill="currentColor" font-size="14" font-weight="600" text-anchor="middle">3</text>
+<g fill="currentColor">
+<text x="520" y="735" font-weight="600" font-size="12">Wedge cage floor</text>
+<text x="520" y="753" font-weight="400" font-size="11">28 cm long, 25 cm across the wide end,</text>
+<text x="520" y="769" font-weight="400" font-size="11">6 cm across the flat narrow end</text>
+<text x="520" y="805" font-weight="600" font-size="12">4 × FLIR Blackfly S, looking down</text>
+<text x="520" y="823" font-weight="400" font-size="11">0  Camera0 · 47 cm above the floor</text>
+<text x="520" y="839" font-weight="400" font-size="11">1  Camera1 · 46 cm above the floor</text>
+<text x="520" y="855" font-weight="400" font-size="11">2  Camera2 · 37 cm above the floor</text>
+<text x="520" y="871" font-weight="400" font-size="11">3  Camera3 · 38 cm above the floor</text>
+<text x="520" y="903" font-size="11">dashed: where each camera's view centre</text>
+<text x="520" y="919" font-size="11">lands on the floor · grid: 10 cm</text>
+<text x="520" y="955" font-weight="600" font-size="12">The same cameras as above</text>
+<text x="520" y="973" font-size="11">each: Line3 ← Pico GP3 (row B),</text>
+<text x="520" y="989" font-size="11">USB3 → the PC (campy)</text>
+</g>
+</svg>
+</div>
+<figcaption>The real wiring. Each of the Pico's four 3.3 V outputs runs straight across to a OneBox input, so SpikeGLX records every edge; a dot marks where the same wire also feeds its device. The gate (A) drives nothing else: SpikeGLX starts a file when XA0 goes high and closes it when it goes low. Where the cameras' USB cable hops over a wire, the two aren't connected. The camera line reads 2.97 V high on the OneBox with the 50 Ω resistor in place; the cameras count 2.6 V or more as high. XA5 and XA6 carry the photometry receivers' outputs (their light path is drawn under <a href="#photometry">Fiber photometry</a>). <b>Below</b>, the behavior enclosure in a three-quarter view from the long side, drawn to scale from the rig's camera calibration (26 October) and the cage outline drawn in campy (27 October, clicked in two cameras, so good to a few centimetres): the wedge-shaped cage floor on a 10 cm grid, each camera where it hangs (a dotted line drops to the floor beneath it), its lens turned the way it looks, and, dashed, where the centre of its view lands on the floor.</figcaption>
+</figure>
+
+<h3>One bout, to scale</h3>
+<p>Every 300 s the Pico runs one bout: gate high, 5 s wait, camera on at 60 Hz, the two LEDs 5 s into the camera (yellow 50 ms, 150 ms dark, then blue 50 ms), camera off after 10 s (240 s in bouts 1, 7, 13, … every 6th), 10 s wait, gate low. SpikeGLX adds 1 s of margin before and after the gate. The panel's page draws the same bout under <b>Start recording</b>, and redraws it as the bout settings change.</p>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 900 440" role="img" aria-label="A standard bout to scale: SpikeGLX file from minus 1 to 26 s, gate high 0 to 25 s, camera pulses 5 to 15 s (600 pulses). Zoomed in below: yellow LED from 9.999 s for 50 ms, lighting frames 300 to 302, then 150 ms dark, then blue from 10.199 s for 50 ms, lighting frames 312 to 314." font-family="JetBrains Mono, monospace" font-size="12">
+<!-- scale: x = 188 + t*24 -->
+<g stroke="var(--line)" stroke-width="1">
+  <line x1="188" y1="30" x2="188" y2="250"/><line x1="308" y1="30" x2="308" y2="250"/><line x1="428" y1="30" x2="428" y2="250"/>
+  <line x1="548" y1="30" x2="548" y2="250"/><line x1="668" y1="30" x2="668" y2="250"/><line x1="788" y1="30" x2="788" y2="250"/>
+</g>
+<g fill="currentColor" font-size="11" text-anchor="middle">
+  <text x="188" y="268">0 s</text><text x="308" y="268">5</text><text x="428" y="268">10</text><text x="548" y="268">15</text><text x="668" y="268">20</text><text x="788" y="268">25</text>
+  <text x="488" y="286">seconds after the gate rises (standard bout)</text>
+</g>
+<g fill="currentColor" font-weight="600" text-anchor="end" font-size="12">
+  <text x="128" y="54">SpikeGLX file</text>
+  <text x="128" y="94" fill="var(--accent)">A · gate</text>
+  <text x="128" y="134" fill="var(--cam)">B · camera</text>
+  <text x="128" y="174" fill="var(--blue)">C · blue</text>
+  <text x="128" y="214" fill="var(--yellow)">D · yellow</text>
+</g>
+<rect x="164" y="40" width="648" height="20" rx="3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 3"/>
+<text x="488" y="54" fill="currentColor" font-size="11" text-anchor="middle">one file, 27 s (1 s margin each side)</text>
+<polyline points="140,100 188,100 188,80 788,80 788,100 860,100" fill="none" stroke="var(--accent)" stroke-width="2.5"/>
+<line x1="140" y1="140" x2="860" y2="140" stroke="var(--cam)" stroke-width="1.2"/>
+<rect x="308" y="120" width="240" height="20" fill="var(--cam)" opacity=".35"/>
+<g stroke="var(--cam)" stroke-width="1.2">
+<line x1="308" y1="120" x2="308" y2="140"/><line x1="320" y1="120" x2="320" y2="140"/><line x1="332" y1="120" x2="332" y2="140"/><line x1="344" y1="120" x2="344" y2="140"/>
+<line x1="512" y1="120" x2="512" y2="140"/><line x1="524" y1="120" x2="524" y2="140"/><line x1="536" y1="120" x2="536" y2="140"/><line x1="548" y1="120" x2="548" y2="140"/>
+</g>
+<text x="428" y="115" fill="var(--cam)" font-size="11" text-anchor="middle">600 pulses at 60 Hz, 3 ms wide</text>
+<polyline points="140,180 432.8,180 432.8,160 434.8,160 434.8,180 860,180" fill="none" stroke="var(--blue)" stroke-width="2.5"/>
+<text x="444" y="168" fill="var(--blue)" font-size="11">10.199 s, 50 ms · frames 312–314</text>
+<polyline points="140,220 428.0,220 428.0,200 430.0,200 430.0,220 860,220" fill="none" stroke="var(--yellow)" stroke-width="2.5"/>
+<text x="444" y="208" fill="var(--yellow)" font-size="11">9.999 s, 50 ms · frames 300–302</text>
+<g fill="currentColor" font-size="11">
+<line x1="188" y1="236" x2="308" y2="236" stroke="currentColor" marker-start="url(#ar2)" marker-end="url(#ar2)"/>
+<text x="248" y="248" text-anchor="middle">5 s</text>
+<line x1="548" y1="236" x2="788" y2="236" stroke="currentColor"/>
+<text x="668" y="248" text-anchor="middle">10 s after the last pulse</text>
+</g>
+<!-- zoom -->
+<rect x="424" y="152" width="16" height="76" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="3 2" opacity=".7"/>
+<line x1="424" y1="228" x2="188" y2="306" stroke="currentColor" stroke-width=".8" stroke-dasharray="3 2" opacity=".5"/>
+<line x1="440" y1="228" x2="788" y2="306" stroke="currentColor" stroke-width=".8" stroke-dasharray="3 2" opacity=".5"/>
+<rect x="188" y="306" width="600" height="104" fill="none" stroke="var(--line)" stroke-width="1"/>
+<g fill="currentColor" font-weight="600" text-anchor="end" font-size="12">
+  <text x="178" y="336" fill="var(--cam)">B · camera</text>
+  <text x="178" y="376" fill="var(--blue)">C · blue</text>
+  <text x="178" y="399" fill="var(--yellow)">D · yellow</text>
+</g>
+<text x="800" y="320" fill="currentColor" font-size="10" opacity=".7">ZOOMED IN</text>
+<text x="800" y="334" fill="currentColor" font-size="10" opacity=".7">9.95–10.30 s</text>
+<line x1="188" y1="340" x2="788" y2="340" stroke="var(--cam)" stroke-width="1"/>
+<rect x="188.0" y="322" width="5.1" height="18" fill="var(--cam)"/>
+<rect x="216.6" y="322" width="5.1" height="18" fill="var(--cam)"/>
+<rect x="245.1" y="322" width="5.1" height="18" fill="var(--cam)"/>
+<rect x="273.7" y="322" width="5.1" height="18" fill="var(--yellow)"/>
+<rect x="302.3" y="322" width="5.1" height="18" fill="var(--yellow)"/>
+<rect x="330.9" y="322" width="5.1" height="18" fill="var(--yellow)"/>
+<rect x="359.4" y="322" width="5.1" height="18" fill="var(--cam)"/>
+<rect x="388.0" y="322" width="5.1" height="18" fill="var(--cam)"/>
+<rect x="416.6" y="322" width="5.1" height="18" fill="var(--cam)"/>
+<rect x="445.1" y="322" width="5.1" height="18" fill="var(--cam)"/>
+<rect x="473.7" y="322" width="5.1" height="18" fill="var(--cam)"/>
+<rect x="502.3" y="322" width="5.1" height="18" fill="var(--cam)"/>
+<rect x="530.9" y="322" width="5.1" height="18" fill="var(--cam)"/>
+<rect x="559.4" y="322" width="5.1" height="18" fill="var(--cam)"/>
+<rect x="588.0" y="322" width="5.1" height="18" fill="var(--cam)"/>
+<rect x="616.6" y="322" width="5.1" height="18" fill="var(--blue)"/>
+<rect x="645.1" y="322" width="5.1" height="18" fill="var(--blue)"/>
+<rect x="673.7" y="322" width="5.1" height="18" fill="var(--blue)"/>
+<rect x="702.3" y="322" width="5.1" height="18" fill="var(--cam)"/>
+<rect x="730.9" y="322" width="5.1" height="18" fill="var(--cam)"/>
+<rect x="759.4" y="322" width="5.1" height="18" fill="var(--cam)"/>
+<g fill="currentColor" font-size="10"><text x="276.2" y="354" text-anchor="middle">300</text><text x="333.4" y="354" text-anchor="middle">302</text><text x="619.1" y="354" text-anchor="middle">312</text><text x="676.2" y="354" text-anchor="middle">314</text></g>
+<rect x="614.9" y="364" width="85.7" height="16" fill="var(--blue)"/>
+<text x="657.7" y="376" fill="var(--panel)" font-size="10" text-anchor="middle" font-weight="600">blue 50 ms</text>
+<rect x="272.0" y="387" width="85.7" height="16" fill="var(--yellow)"/>
+<text x="314.9" y="399" fill="var(--panel)" font-size="10" text-anchor="middle" font-weight="600">yellow 50 ms</text>
+<line x1="360.7" y1="395" x2="611.9" y2="395" stroke="currentColor" stroke-width="1" marker-start="url(#ar2)" marker-end="url(#ar2)"/>
+<text x="486.3" y="390" fill="currentColor" font-size="11" text-anchor="middle">150 ms dark (9 frames)</text>
+<line x1="273.7" y1="410" x2="273.7" y2="415" stroke="currentColor"/><text x="273.7" y="428" text-anchor="middle">10.0 s</text><line x1="445.1" y1="410" x2="445.1" y2="415" stroke="currentColor"/><text x="445.1" y="428" text-anchor="middle">10.1 s</text><line x1="616.6" y1="410" x2="616.6" y2="415" stroke="currentColor"/><text x="616.6" y="428" text-anchor="middle">10.2 s</text><line x1="788.0" y1="410" x2="788.0" y2="415" stroke="currentColor"/><text x="788.0" y="428" text-anchor="middle">10.3 s</text>
+<defs><marker id="ar2" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+</svg>
+</div>
+<figcaption>A standard bout. The camera starts exactly 5 s after the gate rises; each LED switches on 1 ms before a camera pulse, in the dark between exposures, so every frame is wholly lit or wholly dark. Zoomed in: the panel's fiber photometry pattern (the "snapshot" of the neuro-seeER paper), 50 ms of yellow lighting frames 300–302, 150 ms dark, then 50 ms of blue lighting frames 312–314; the coloured pulses are the lit frames. In the gate tests of 10 November each flash was 49.995 to 50.028 ms and each gap 149.985 to 150.018 ms on the OneBox. <code>chronic_control.py</code>'s own default, and the PowerShell launcher's, is the old pattern: blue 30 ms then yellow 30 ms at once (frames 300–301 and 302–303). A long bout is the same with 240 s of camera (14,400 pulses), so its gate is high 255 s and its SpikeGLX file is 257 s.</figcaption>
+</figure>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 900 200" role="img" aria-label="The first 35 minutes of the schedule: a long bout at 0 s, standard bouts every 300 s, the next long bout at 1800 s; gaps without camera pulses are 60 s after a long bout and 290 s after a standard one." font-family="JetBrains Mono, monospace" font-size="11">
+<!-- x = 60 + t*0.38 ; t 0..2100 -->
+<line x1="60" y1="120" x2="860" y2="120" stroke="currentColor" stroke-width="1"/>
+<g fill="currentColor" text-anchor="middle">
+<text x="60" y="140">0</text><text x="174" y="140">5 min</text><text x="288" y="140">10</text><text x="402" y="140">15</text><text x="516" y="140">20</text><text x="630" y="140">25</text><text x="744" y="140">30</text><text x="858" y="140">35</text>
+</g>
+<g stroke="currentColor"><line x1="60" y1="117" x2="60" y2="123"/><line x1="174" y1="117" x2="174" y2="123"/><line x1="288" y1="117" x2="288" y2="123"/><line x1="402" y1="117" x2="402" y2="123"/><line x1="516" y1="117" x2="516" y2="123"/><line x1="630" y1="117" x2="630" y2="123"/><line x1="744" y1="117" x2="744" y2="123"/><line x1="858" y1="117" x2="858" y2="123"/></g>
+<!-- gate bars (accent, outline) and camera (cam fill) -->
+<g fill="var(--accent)" opacity=".28">
+<rect x="60" y="70" width="97" height="44"/><rect x="174" y="70" width="10" height="44"/><rect x="288" y="70" width="10" height="44"/><rect x="402" y="70" width="10" height="44"/><rect x="516" y="70" width="10" height="44"/><rect x="630" y="70" width="10" height="44"/><rect x="744" y="70" width="97" height="44"/>
+</g>
+<g fill="var(--cam)">
+<rect x="62" y="84" width="91" height="30"/><rect x="176" y="84" width="4" height="30"/><rect x="290" y="84" width="4" height="30"/><rect x="404" y="84" width="4" height="30"/><rect x="518" y="84" width="4" height="30"/><rect x="632" y="84" width="4" height="30"/><rect x="746" y="84" width="91" height="30"/>
+</g>
+<g fill="currentColor" font-weight="600">
+<text x="108" y="62" text-anchor="middle">bout 1 · long</text>
+<text x="180" y="62" text-anchor="middle">2</text><text x="294" y="62" text-anchor="middle">3</text><text x="408" y="62" text-anchor="middle">4</text><text x="522" y="62" text-anchor="middle">5</text><text x="636" y="62" text-anchor="middle">6</text>
+<text x="792" y="62" text-anchor="middle">bout 7 · long</text>
+</g>
+<g fill="currentColor">
+<line x1="153" y1="160" x2="176" y2="160" stroke="currentColor"/><text x="164" y="176" text-anchor="middle">60 s</text>
+<line x1="180" y1="160" x2="290" y2="160" stroke="currentColor"/><text x="235" y="176" text-anchor="middle">290 s, no pulses</text>
+<text x="60" y="30" font-weight="600">Schedule: one bout every 300 s, every 6th long</text>
+<rect x="560" y="20" width="12" height="12" fill="var(--accent)" opacity=".28"/><text x="578" y="30">gate high</text>
+<rect x="660" y="20" width="12" height="12" fill="var(--cam)"/><text x="678" y="30">camera pulses</text>
+</g>
+</svg>
+</div>
+<figcaption>Thirty-five minutes of the plan, to scale. Between bouts campy gets no frames for 60 s (after a long bout) or 290 s (after a standard one); the profile treats any pause of 30 s or more as planned. A 6-day plan is 1,728 bouts (288 long): 5,011,200 frames per camera, and the last gate falls 518,125 s (5 days 23 h 55 min) after the Pico's start.</figcaption>
+</figure>
+
+<!-- ============================================================ 2 -->
+<h2 id="before"><span class="n">2</span>Before the day</h2>
+
+<h3 id="disk">Disk space</h3>
+<p>Everything a session writes goes into one folder on the data disk, <code>D:\data\&lt;date_time&gt;\</code>: campy's videos, SpikeGLX's run (in <code>spikeglx\</code>) and the Pico's log. SpikeGLX is the big one: about 24 MB/s while the gate is high. The disk is a 4 TB Crucial P310 NVMe SSD, fitted on 10 November 2026; every other recording on the panel goes there too (<code>D:\data\calibration</code>, <code>look</code>, <code>live_demo</code>, <code>gatetest</code>, <code>rehearsal</code>). The recordings made in <code>C:\data</code> before then were moved to D:.</p>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 900 175" role="img" aria-label="Disk: D: holds 4 TB, 161 GB used and 3,840 GB free on 13 November; the 6-day plan needs about 2.9 TB, of which about 2.7 TB is SpikeGLX and 140 to 200 GB is video, so it fits once." font-family="JetBrains Mono, monospace" font-size="12">
+<g stroke="var(--line)"><line x1="170" y1="20" x2="170" y2="132"/><line x1="335" y1="20" x2="335" y2="132"/><line x1="500" y1="20" x2="500" y2="132"/><line x1="665" y1="20" x2="665" y2="132"/><line x1="830" y1="20" x2="830" y2="132"/></g>
+<g fill="currentColor" text-anchor="middle" font-size="11"><text x="170" y="150">0</text><text x="335" y="150">1 TB</text><text x="500" y="150">2 TB</text><text x="665" y="150">3 TB</text><text x="830" y="150">4 TB</text></g>
+<g fill="currentColor" text-anchor="end" font-weight="600"><text x="160" y="48">D: today</text><text x="160" y="105">6-day need</text></g>
+<rect x="170" y="32" width="26.6" height="24" fill="currentColor" opacity=".3"/>
+<rect x="196.6" y="32" width="633.6" height="24" fill="var(--ok)"/>
+<text x="513.4" y="49" fill="var(--panel)" text-anchor="middle" font-weight="600">3,840 GB free</text>
+<text x="176" y="72" fill="currentColor" font-size="11">161 GB used (gate tests, the 4-hour session, calibrations) · 13 November, 3:27 PM</text>
+<rect x="170" y="90" width="445.5" height="24" fill="var(--bad)" opacity=".8"/>
+<rect x="615.5" y="90" width="33.0" height="24" fill="var(--cam)"/>
+<text x="392.8" y="107" fill="var(--panel)" text-anchor="middle" font-weight="600">SpikeGLX ≈ 2.7 TB</text>
+<text x="656.5" y="107" fill="currentColor" font-size="11">video · then about 930 GB to spare</text>
+</svg>
+</div>
+<figcaption>The 6-day plan needs about 2.9 TB: SpikeGLX about 2.7 TB for 31.4 hours of gate plus margin (the 8-hour rehearsal wrote 150.3 GB, as worked out), and the videos, estimated at 140–200 GB for 6 days with mice (not yet measured at 60 fps; the denoise filter, on since 9 November, makes them smaller). About 475 GB a day in all. It fits on D: once; the next long session needs this one copied off and deleted.</figcaption>
+</figure>
+
+<p><b>The panel checks this before the start.</b> For the length you pick, the checks list says how much it needs: SpikeGLX's open-gate seconds plus its 1 s margins at 24 MB/s, and the videos at 0.6 MB/s a camera (an estimate on the high side), plus 2 GB kept free. For 6 days that is about 2,910 GB of the 3,840 GB free on 13 November (76%): green. Above 80% of the free space it turns yellow, a warning you can start through: once less than about 3,640 GB is free, that is after about 200 GB more of other recordings on D:. A length that doesn't fit is red, and <b>Start recording</b> then asks whether to start anyway, naming the shortfall. The two rates are settings in the panel config (<code>spikeglx.write_mb_s</code>, <code>panel.video_mb_s</code>).</p>
+<p>campy's disk warning (<code>alertDiskFreeGB: 500</code>) watches D:, so it counts SpikeGLX's files too; on the empty data disk it comes only with less than about a day's room left.</p>
+<p>Check free space on the PC in PowerShell:</p>
+<div class="cmd"><span class="where">PC · PowerShell</span><pre>Get-PSDrive D</pre></div>
+<div class="see"><b>You should see</b>the <code>Free (GB)</code> column: 3,576 on 13 November. PowerShell counts in units of 1,073,741,824 bytes; the panel counts GB of 1,000,000,000 bytes, so the panel says 3,840 GB for the same space. A 6-day session wants about 2,910 of the panel's GB (2,710 of PowerShell's).</div>
+
+<h3 id="pcsettings">This PC's settings</h3>
+<p>A session runs for days, so Windows must not restart, sleep or power-save the USB ports in that time. The panel's checks (and the launcher's) look at the first two before anything starts.</p>
+<div class="tbl"><table>
+<tr><th>Setting</th><th>How</th><th>On 13 November, 3:30 PM</th></tr>
+<tr><td>Windows Update paused for the whole session plus a day</td><td>The panel's <b>Pause Windows Update</b> button (one administrator click), or <code>C:\campy_data\launchers\pause_windows_update.ps1 -Days 14</code>, or Settings → Windows Update → Pause updates</td><td><b style="color:var(--ok)">paused until 19 Nov, 5:37 PM</b>: too short for a 6-day session started now; the panel's button pauses it longer</td></tr>
+<tr><td>USB selective suspend: Disabled</td><td>Power plan → USB settings, or run <code>C:\campy_data\launchers\disable_usb_selective_suspend.ps1</code> as administrator</td><td><b style="color:var(--ok)">Disabled</b> (plugged in and on battery)</td></tr>
+<tr><td><code>D:\data</code> (and <code>C:\data</code>, <code>C:\campy_data</code>) kept out of Windows Search</td><td><code>C:\campy_data\launchers\exclude_from_search_index.ps1</code>, or Settings → Searching Windows</td><td><b style="color:var(--ok)">excluded</b></td></tr>
+<tr><td>Dell's TechHub agent kept off (it reads the hardware every 15 minutes and stalls the PC for a moment)</td><td>The scheduled task <i>campy keep DellTechHub disabled</i> (<code>keep_dell_techhub_disabled.ps1</code>), which turns it off again after a SupportAssist update</td><td><b style="color:var(--ok)">off</b>, task ready</td></tr>
+</table></div>
+
+<h3>Wiring check</h3>
+<ol class="steps">
+<li><p>Check the cables against the table. The Pico's pins are 3.3 V only: never connect anything above 3.3 V to them.</p>
+<div class="tbl"><table>
+<tr><th>Output</th><th>Pico pin</th><th>Goes to</th><th>OneBox</th></tr>
+<tr><td style="color:var(--accent)"><b>A</b> gate (level)</td><td>GP2 (board pin 4)</td><td>SpikeGLX record trigger</td><td>XA0</td></tr>
+<tr><td style="color:var(--cam)"><b>B</b> camera, 3 ms high</td><td>GP3 (pin 5), <b>through the 50 Ω resistor</b></td><td>Line3 of all 4 cameras</td><td>XA2</td></tr>
+<tr><td style="color:var(--blue)"><b>C</b> blue LED TTL</td><td>GP4 (pin 6)</td><td>465 nm LED controller</td><td>XA3</td></tr>
+<tr><td style="color:var(--yellow)"><b>D</b> yellow LED TTL</td><td>GP5 (pin 7)</td><td>560 nm LED controller</td><td>XA4</td></tr>
+<tr><td style="color:var(--ok)"><b>green</b> photometry</td><td>none</td><td>from the green photoreceiver (500–540 nm)</td><td>XA5</td></tr>
+<tr><td style="color:var(--bad)"><b>red</b> photometry</td><td>none</td><td>from the red photoreceiver (580–680 nm)</td><td>XA6</td></tr>
+<tr><td><b>E</b> sync pulses (optional, off)</td><td>GP6 (pin 9)</td><td>nothing else: <b>not wired yet</b></td><td>XA1</td></tr>
+<tr><td>Ground</td><td>GND (pin 3 or 8)</td><td>every cable's ground</td><td></td></tr>
+</table></div>
+<p>The setup notes also call for a 10 kΩ pull-down from each of GP2–GP5 to GND (and GP6 once it is wired), so nothing reads high while the Pico resets.</p>
+<p id="sync"><b>Sync pulses (output E), for later.</b> 10 ms pulses at random gaps of 200 to 1000 ms from a seed, through the whole session, in and between bouts, so any four in a row say exactly where in the session they are, and <code>sync_match.py</code> (in campy's <code>chronicrecord</code> folder) can tie every OneBox sample to the Pico's clock and check every other line pulse by pulse. To use it: wire GP6 to XA1 (with its pull-down), flash the Pico with <code>chronic_timer</code> version 3 (the rig's Pico runs version 2, which refuses a session with the sync train), set <code>picoSync: True</code> in the rig's campy profile, and check it with <code>python chronic_control.py wiring --channels E %P%</code> (five blinks on XA1). It was checked on 13 November on the camera line instead (GP3 → XA2): all 232 pulses inside SpikeGLX's files matched the plan, none missing or extra, residuals 20.6 µs at most.</p></li>
+<li><p>Check the Pico is plugged into the PC. Only the rig's Pico should be: with a second one (a spare) plugged in too, the commands below need <code>--port</code> and the Pico's USB serial number.</p>
+<div class="cmd"><span class="where">PC · PowerShell</span><pre>Get-PnpDevice -PresentOnly | Where-Object InstanceId -match 'VID_2E8A' | Select-Object FriendlyName</pre></div>
+<div class="see"><b>You should see</b><code>USB Serial Device (COM12)</code> (the number may differ) and <code>USB Composite Device</code>. <code>chronic_control.py</code> finds the Pico by its USB IDs, never campy's trigger Arduino.</div></li>
+<li><p><b>The Pico commands on this page</b> run in an Anaconda Prompt on the PC, in the recording environment, from the program's folder, with the launcher's state and log folders (so <code>status</code> and <code>stop</code> see the launcher's session). Set this up once per window:</p>
+<div class="cmd"><span class="where">PC · Anaconda Prompt</span><pre>conda activate campy_vPython3.12
+cd /d C:\campy_data\launchers\pico
+set P=--state-dir C:\campy_data\pico\state --log-dir C:\campy_data\pico\logs</pre></div>
+<p>Check the plan for the length you want. For 6 days:</p>
+<div class="cmd"><span class="where">PC · Anaconda Prompt</span><pre>python chronic_control.py plan --set TOTAL_DURATION=518400 %P%</pre></div>
+<div class="see"><b>You should see</b><pre>1728 bouts; 5011200 camera pulses; 10368 edges; the board's gate goes low last at 518125.000000 s</pre>(the last line). 5,011,200 / 60 = 83,520 s, which is <code>recTimeInSec</code> in campy's profile; the panel picks the plan and campy's recording length together, so they always match. For another length, see <a href="#lengths">Other lengths</a>. <code>chronic_control.py</code> on its own lists its own LED pattern (blue 30 ms, then yellow); to see the panel's, add <code>--set YELLOW_FIRST=1 --set PULSE_WIDTH_D=0.05 --set LED_GAP=0.15 --set PULSE_WIDTH_C=0.05</code>. The pulse counts are the same.</div></li>
+</ol>
+
+<h3>Pico self-check</h3>
+<p>A 10-second camera-only burst exercises the camera pin and the Pico's own counters. The gate stays low, so SpikeGLX records nothing.</p>
+<ol class="steps">
+<li><div class="cmd"><span class="where">PC · Anaconda Prompt</span><pre>python chronic_control.py start --set CAMERA_ONLY=10 %P%</pre></div>
+<div class="see"><b>You should see</b><code>Session started (pid …): 1 bouts, 10 s. Log: C:\campy_data\pico\logs\&lt;date&gt;\timestamps.txt</code></div></li>
+<li><p>After 15 seconds, read the end of its log:</p>
+<div class="cmd"><span class="where">PC · PowerShell</span><pre>Get-Content C:\campy_data\pico\state\session.out -Tail 2</pre></div>
+<div class="see"><b>You should see</b><pre>SYSTEM: Board finished the session at t=9.986336 s, every output low: pulses=600 late_max=0 lost=0 stalls=0 rises=600 bounces=0 self_check_us=-2
+SYSTEM: Session over: 600 camera pulses</pre><code>rises</code> equal to <code>pulses</code>, <code>stalls=0</code>, <code>bounces=0</code>, and <code>self_check_us</code> a few microseconds at most. <code>bounces=600</code> means the 50 Ω resistor on GP3 is missing or bypassed.</div></li>
+</ol>
+
+<h3 id="photometry">Fiber photometry: LEDs and receivers</h3>
+<p>The blue and yellow LEDs are the excitation light of a fiber photometry system, read once a bout as a "snapshot" (the pattern of the neuro-seeER reporter's paper, EGFP and FusionRed): 50 ms of yellow, 150 ms dark, 50 ms of blue. The emission comes back up the same fiber to two photoreceivers, which the OneBox samples every 33 µs, on the same clock as the gate, the camera pulses and the LED lines.</p>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 900 310" role="img" aria-label="The photometry light path. The Pico's outputs C and D drive the two channels of a Doric LED driver in TTL mode; the driver powers a 465 nm and a 560 nm LED; both lights enter a Doric FMC5 minicube, which sends them down one patch cord to the mouse's implanted fiber. The emission comes back to the cube, which splits it to two New Focus 2151 photoreceivers on DC Low: green, 500 to 540 nm, to OneBox XA5, and red, 580 to 680 nm, to XA6." font-family="JetBrains Mono, monospace" font-size="12">
+<defs>
+<marker id="pb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--blue)"/></marker>
+<marker id="py" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--yellow)"/></marker>
+<marker id="pg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ok)"/></marker>
+<marker id="pr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--bad)"/></marker>
+<marker id="pf" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+</defs>
+<g fill="none" stroke="currentColor" stroke-width="1.5">
+<rect x="20" y="58" width="120" height="74" rx="6" stroke-width="2"/>
+<rect x="190" y="58" width="150" height="74" rx="5"/>
+<rect x="390" y="28" width="130" height="54" rx="5"/>
+<rect x="390" y="108" width="130" height="54" rx="5"/>
+<rect x="570" y="28" width="150" height="134" rx="6"/>
+<rect x="770" y="66" width="110" height="58" rx="5"/>
+<rect x="520" y="212" width="170" height="54" rx="5"/>
+<rect x="710" y="212" width="170" height="54" rx="5"/>
+<rect x="20" y="206" width="180" height="74" rx="6"/>
+</g>
+<g fill="currentColor" text-anchor="middle">
+<text x="80" y="84" font-weight="600">Pico</text>
+<text x="80" y="104" font-size="11" fill="var(--blue)">C · GP4</text>
+<text x="80" y="121" font-size="11" fill="var(--yellow)">D · GP5</text>
+<text x="265" y="84" font-weight="600">Doric LED driver</text>
+<text x="265" y="102" font-size="11">2 channels, TTL mode</text>
+<text x="265" y="118" font-size="11">current set per channel</text>
+<text x="455" y="52" font-weight="600" fill="var(--blue)">465 nm LED</text>
+<text x="455" y="70" font-size="11">blue</text>
+<text x="455" y="132" font-weight="600" fill="var(--yellow)">560 nm LED</text>
+<text x="455" y="150" font-size="11">yellow</text>
+<text x="645" y="52" font-weight="600">Doric FMC5</text>
+<text x="645" y="68" font-size="11">fluorescence minicube</text>
+<text x="645" y="92" font-size="11" fill="var(--blue)">in 465–480 nm</text>
+<text x="645" y="107" font-size="11" fill="var(--yellow)">in 555–570 nm</text>
+<text x="645" y="130" font-size="11" fill="var(--ok)">out 500–540 nm</text>
+<text x="645" y="145" font-size="11" fill="var(--bad)">out 580–680 nm</text>
+<text x="825" y="91" font-weight="600">Mouse</text>
+<text x="825" y="109" font-size="11">implanted fiber</text>
+<text x="825" y="146" font-size="11">patch cord</text>
+<text x="825" y="161" font-size="11">400 µm, NA 0.57</text>
+<text x="605" y="235" font-weight="600">New Focus 2151</text>
+<text x="605" y="254" font-size="11" fill="var(--ok)">green · DC Low · 9 V</text>
+<text x="795" y="235" font-weight="600">New Focus 2151</text>
+<text x="795" y="254" font-size="11" fill="var(--bad)">red · DC Low · 9 V</text>
+<text x="110" y="230" font-weight="600">OneBox</text>
+<text x="110" y="250" font-size="11" fill="var(--ok)">XA5 ← green</text>
+<text x="110" y="267" font-size="11" fill="var(--bad)">XA6 ← red</text>
+</g>
+<!-- TTLs -->
+<line x1="140" y1="99" x2="188" y2="99" stroke="var(--blue)" stroke-width="2" marker-end="url(#pb)"/>
+<line x1="140" y1="117" x2="188" y2="117" stroke="var(--yellow)" stroke-width="2" marker-end="url(#py)"/>
+<!-- driver to LEDs -->
+<polyline points="340,76 364,76 364,55 388,55" fill="none" stroke="var(--blue)" stroke-width="2" marker-end="url(#pb)"/>
+<polyline points="340,114 364,114 364,135 388,135" fill="none" stroke="var(--yellow)" stroke-width="2" marker-end="url(#py)"/>
+<!-- light into cube -->
+<line x1="520" y1="55" x2="568" y2="55" stroke="var(--blue)" stroke-width="3.5" marker-end="url(#pb)"/>
+<line x1="520" y1="135" x2="568" y2="135" stroke="var(--yellow)" stroke-width="3.5" marker-end="url(#py)"/>
+<!-- cord -->
+<line x1="720" y1="95" x2="768" y2="95" stroke="currentColor" stroke-width="4" marker-start="url(#pf)" marker-end="url(#pf)"/>
+<!-- emission down to receivers -->
+<line x1="605" y1="162" x2="605" y2="210" stroke="var(--ok)" stroke-width="3" marker-end="url(#pg)"/>
+<polyline points="690,162 690,186 795,186 795,210" fill="none" stroke="var(--bad)" stroke-width="3" marker-end="url(#pr)"/>
+<!-- receivers to OneBox -->
+<line x1="520" y1="246" x2="202" y2="246" stroke="var(--ok)" stroke-width="1.8" marker-end="url(#pg)"/>
+<polyline points="795,266 795,296 230,296 230,264 202,264" fill="none" stroke="var(--bad)" stroke-width="1.8" marker-end="url(#pr)"/>
+<text x="360" y="238" fill="currentColor" font-size="11" text-anchor="middle">voltage, sampled every 33 µs</text>
+</svg>
+</div>
+<figcaption>The light path. Thick lines are light, thin ones electrical signals. The Pico's C and D outputs also run to OneBox XA3 and XA4 (the wiring above), so each flash's real edges are recorded next to what it lit. The receivers run on 9 V batteries. The cords from the LEDs to the cube aren't drawn.</figcaption>
+</figure>
+
+<ol class="steps">
+<li><p><b>The receivers on DC Low</b> (2×10¹⁰ V/A, DC to 750 Hz), both of them. On their AC settings a flash's steady level is filtered out: each flash shows as a jump that sags back within the flash. <b>Fresh 9 V batteries</b> in both: a flat battery reads a steady 0.2 V or so that doesn't move when its LED flashes (the cause of the first gate test of 10 November). How long a battery lasts hasn't been measured, so start a long run with new ones.</p></li>
+<li><p><b>The LED driver's two channels on TTL</b>, following the Pico's C (blue) and D (yellow). Set each channel's current, then measure the light at the fiber tip with the power meter <b>before the fiber is connected to the mouse</b>. The panel asks for both numbers at every Start (below).</p>
+<div class="tbl"><table>
+<tr><th>10 November, mouse connected, room lights off</th><th>XA5 green</th><th>XA6 red</th></tr>
+<tr><td>dark level (taken off the rows below)</td><td>0.04 V</td><td>0.20 V</td></tr>
+<tr><td>21 µW each at the tip (blue 115 mA, yellow 150 mA)</td><td colspan="2"><b style="color:var(--bad)">both at the +5 V limit</b> in their flash, every bout</td></tr>
+<tr><td>blue at 20 mA (5 µW)</td><td><b>2.87 V</b></td><td>4.07 V (blue light reaching the red receiver)</td></tr>
+<tr><td>yellow at 20 mA (3 µW)</td><td>0.01 V</td><td><b>3.27 V</b></td></tr>
+</table></div>
+<p>At 20 mA the three bouts' readings were within 0.25% (green) and 0.4% (red) of each other. But both LEDs flicker at 17 mA and are off at 16 mA, so 20 mA is close to the edge, and XA6 in the blue flash at 4.1 V is close to the limit. The suggestion for long runs is a neutral density filter of about OD 0.5 in each LED's cord, between the LED and the cube, which would put these powers at roughly 65 to 75 mA (worked out between two measured points per LED, not tried). Another mouse's implant may want other powers: check with the gate test.</p>
+<p><b>On 12 November</b>, four hours (49 bouts) at 29 mA blue and 24 mA yellow, sleeve wrapped, lights off: <code>green_V</code> 3.86 to 3.90 V and <code>red_V</code> 3.86 to 3.96 V, never clipped, dark levels near 0 V; XA6 sat at +5 V through every blue flash, so the blue light's bleed into the red receiver couldn't be measured. Red scattered more between bouts than green (0.48% against 0.16%) and carried a 727 Hz ripple, about 26 mV rms, only while the yellow LED was on, most likely from its driver at 24 mA (the reading's 16.7 ms window averages it out). Measure the powers at the tip before every session: skipped, the panel saves 0 µW.</p></li>
+<li><p><b>Keep the room's red camera lights out of the fiber.</b> With them on, XA6 sat at +5 V for a whole recording, dark included: red light passes through tissue, and the red receiver takes 580–680 nm. The tests with the mouse ran with the lights off. Before a long run, make the mouse's end light-tight (black heat-shrink over the ferrule's mating sleeve was not enough on 12 November: a cover over the headcap too, or infrared camera lights), and check XA6's dark level with the lights on.</p></li>
+<li><p><b>Run the panel's 15-minute gate test with the mouse connected</b> and read it with <code>photometry_snapshots.py</code> (see <a href="#readphot">Reading the photometry</a>): no reading at 5 V (its <code>note</code> column says so), and each LED's reading steady from bout to bout.</p></li>
+</ol>
+
+<h3>SpikeGLX</h3>
+<p>The panel (and the launcher) starts and stops SpikeGLX's run itself, through SpikeGLX's command server. It also opens SpikeGLX if it isn't open (with SpikeGLX's own saved settings: probe, trigger, command server) and does the Configure dialog's Detect and Verify itself (you'll see that dialog open and close by itself: don't click in it). If SpikeGLX is already open, leave it <b>idle</b> (no run). The command server only needs turning on once: <b>Options → Command Server Settings → Enable</b> (address 127.0.0.1, port 4142; it listens on the PC only). It checks the trigger is TTL before it starts anything; these are the settings it found on the rig:</p>
+<div class="tbl"><table>
+<tr><th>Setting</th><th>Value</th></tr>
+<tr><td>Trigger</td><td>TTL, stream <code>obx0</code>, digital (not analog), bit 0: the gate on XA0</td></tr>
+<tr><td>Mode</td><td>follow high: a file opens when the gate rises and closes when it falls</td></tr>
+<tr><td>Margin</td><td>1 s before and after (each bout's file is 27 s or 257 s)</td></tr>
+<tr><td>Threshold</td><td>2.5 V (the gate reads about 3.2 V high)</td></tr>
+<tr><td>Data folder, run name</td><td>set by the panel: <code>&lt;session folder&gt;\spikeglx</code>, run <code>chronic_&lt;date&gt;_&lt;time&gt;</code></td></tr>
+</table></div>
+<div class="note"><b>"Enable Recording" is done for you.</b> SpikeGLX only opens files once recording is enabled; a test session once recorded no SpikeGLX files because it hadn't been clicked. The panel now enables it, once the OneBox's samples are flowing (SpikeGLX says it is running about 6 s before they are), and then proves it with a gate blink.</div>
+
+<h3>Gate-blink control</h3>
+<p>The panel does this itself, right after it starts SpikeGLX's run: the gate goes high once for 0.5 s, and SpikeGLX must open a file for it (file <code>t0</code> of the run, 2.5 s long with its margins), or the panel stops before campy starts. To do it by hand (with SpikeGLX running and recording enabled):</p>
+<ol class="steps">
+<li><div class="cmd"><span class="where">PC · Anaconda Prompt</span><pre>python chronic_control.py wiring --channels A %P%</pre></div>
+<div class="see"><b>You should see</b><code>Wiring check started (pid …): …, until 'stop'. Log: …/wiring.txt</code>, and within a second or two, a new SpikeGLX file (a few seconds long: the 0.5 s blink plus its 1 s margins).</div></li>
+<li><p>Stop it after the first blink. It would otherwise keep blinking, and each blink opens a file.</p>
+<div class="cmd"><span class="where">PC · Anaconda Prompt</span><pre>python chronic_control.py stop %P%</pre></div>
+<div class="see"><b>You should see</b><code>Session stopped: wiring check stopped after 1 rounds</code>; <code>status</code> then says <code>Wiring check: done, … 1 rounds</code>. No new file in SpikeGLX? Recording isn't enabled or the trigger is wrong: fix that before going on.</div></li>
+</ol>
+
+<h3 id="calibration">Calibration, from the same panel</h3>
+<p>The cameras' calibration is its own experiment on the same page, <b>Calibration recording</b>: 60 s at 10 frames a second, pulsed by the Pico (camera only: no gate, no LEDs, no SpikeGLX). Pick it in the Experiment box, press <b>Start recording</b>, then <b>Start the Pico</b> once all 4 cameras are ready, and move the ChArUco board (14 × 9 squares of 20 mm, 15 mm markers, dictionary 5×5_1000) through the cage. After the recording, calibrat3 makes <code>calibration.toml</code> in the recording's folder, <code>D:\data\calibration\&lt;date_time&gt;\</code>, by itself (<i>Step … · Calibration (calibrat3)</i> on the page). The last one was made on 10 November at 2:31 PM. The <i>Look at the cameras (5 min)</i> and the two <i>Live tracking</i> experiments are camera-only Pico sessions in the same way. Switch back to <i>ChronicRecord session</i> before the real session.</p>
+
+<!-- ============================================================ 3 -->
+<h2 id="start"><span class="n">3</span>Starting a recording</h2>
+<div class="warnbox"><b>The order matters, and the panel keeps it.</b> SpikeGLX first, then campy, then the Pico, once every camera is grabbing: a camera that isn't grabbing when the first pulse comes misses frames the others have. Use the panel from the PC's own screen or through <b>Remote Desktop</b> (it answers only on the PC itself), and leave its black window open for the whole session: it is the panel, and it holds the rig lock.</div>
+
+<ol class="steps">
+<li><p><b>Open the panel:</b> double-click <b>campy recording</b> on the PC's desktop (the rig's one icon, for every kind of recording), and pick <b>ChronicRecord session (Pico + SpikeGLX)</b> in the <b>Experiment</b> box at the top of the page. The page opens on the experiment picked last on this PC, which on 12 November was this one.</p>
+<div class="see"><b>You should see</b>a black window filling with lines (leave it open; Ctrl-C in it does nothing while it holds the rig), and the panel's page in the browser, with the software's version at the top right (<code>v2.8.0 +… · dev · 7952d90…</code>). If the browser doesn't open, the black window's first lines give the address (<code>http://127.0.0.1:8765/?t=…</code>): copy it whole into the browser. <b>A+</b> at the top left makes the page's text larger. SpikeGLX can be closed or open and idle: the panel opens it at Start if needed.</div></li>
+<li><p><b>Before the start:</b> pick the <b>session length</b> (6 days, a 15-minute gate test of 3 bouts, an hour, or an 8-hour overnight rehearsal of 96 bouts), fill in the experiment name, animal IDs and notes, check the copy folder, and read the checks.</p>
+<div class="see"><b>You should see</b>the plan for that length (for 6 days: 1,728 bouts, 5,011,200 camera pulses) and, under <b>Bout settings</b>, the bout's settings with a line saying what one bout does (<i>yellow LED at 9.999 s for 50 ms (frames 300-302), then 150 ms dark, then blue for 50 ms (frames 312-314)</i>) and a drawing of it. Leave them as the config has them: a changed setting is outlined, and <b>Back to the config's</b> undoes every change. Then a list of checks, each <b>ok</b> (green), <b>warning</b> (yellow) or <b>stops the start</b> (red): <b>Trigger: the Pico</b>, which answers and is idle; SpikeGLX answers (or is closed), is idle, and its trigger is TTL; Windows Update is paused until a day after the session (if not, a <b>Pause Windows Update</b> button: click Yes in Windows' prompt); USB selective suspend is off; and the disk (6 days: about 2,910 GB of D:'s free space, green below 80%). A gate test goes into <code>D:\data\gatetest\</code>, a rehearsal into <code>D:\data\rehearsal\</code>, the others into <code>D:\data\</code>. To have the Pico start by itself, give a time (<code>7:20 PM</code>).</div>
+<p><b>Copy each recording to</b>: picking <b>6 days</b> or the gate test fills this box with the lab's server folder set in the rig's config; the hour and the rehearsal put back the folder last used for them (empty for none). Change it if this recording should go elsewhere. <b>Delete each recording from this computer once its copy is checked</b> is off unless you tick it: tick it only if the server folder is where the session is kept for good (see <a href="#copies">Copies</a>). If the page can't reach the folder at Start, it says so and doesn't start.</p></li>
+<li><p><b>Press Start recording, and confirm the LED power.</b> The page first asks, for each LED, its current on the Doric driver (mA) and its power at the fiber tip (µW), measured before the fiber went on the mouse. The boxes hold the last values confirmed, with when (yellow if from an earlier day). If you changed a current, measure that LED again and change its power too: <b>Confirm and start</b> saves both boxes as they are, into the recording's <code>session.json</code>. The recording doesn't start without them.</p>
+<div class="see"><b>You should see</b>, in order: <b>SpikeGLX</b>: if it was closed, it opens and its Configure dialog opens and closes by itself (don't click in it), then its run starts into the session's <code>spikeglx\</code> folder with recording on; <b>Gate check</b>: the gate blinks once and SpikeGLX opens a file for it (file <code>t0</code>), or nothing else starts and the page says what to check; <b>Cameras</b>: campy starts and one <b>campy-live-view</b> window shows the 4 cameras, dark until the Pico pulses (the cameras take a frame only on a pulse; closing that window doesn't touch the recording). The page's camera cards say <i>No picture yet: the camera waits for the Pico's pulses</i>. The <b>Pico</b> card counts <code>Cameras getting ready: n of 4</code>, then turns green: <b>All 4 cameras are ready. Press Start the Pico.</b>, with a short chime, and the browser tab's title changes to <i>Cameras ready · campy panel</i>. No need to watch the black window.</div></li>
+<li><p><b>Start the Pico:</b> once the page says all 4 cameras are ready, press <b>Start the Pico</b> (it asks first), or let it start at the time you gave. If a camera isn't ready, the button says so: stop, and start again.</p>
+<div class="see"><b>You should see</b>the <b>Pico</b> card showing bout 1 of 1,728, the camera pulses so far and when the session ends; the <b>SpikeGLX</b> card showing its run, a file open while the gate is high, and the number of files; each camera's picture and frame rate. Between bouts each camera shows a grey <code>PAUSED</code> with how long (in the page and in campy-live-view), not a red <code>NO FRAMES</code>, and when the next bout starts no camera turns red with <code>LOST</code>. Once a bout's gate has fallen, the Pico card says <code>between bouts (1728 in all)</code>. Seen on the rig on 6 November.</div>
+<div class="note">Don't connect or disconnect Remote Desktop in the seconds after the Pico starts. Once, all four Quick Sync encoders failed to open as a Remote Desktop session was taken over at the moment of the first frame. campy now retries them, but avoid it.</div></li>
+<li><p><b>Leave Remote Desktop.</b> Disconnect (close the window); <b>don't sign out</b>, which would end the panel, campy and the Pico's program. Closing the browser tab is fine: the page can be opened again from the desktop icon at any time.</p></li>
+</ol>
+
+<div class="note"><b>Without the panel</b> (a fallback): the PowerShell launcher does the same steps from a PowerShell window in Remote Desktop: <code>powershell -NoProfile -ExecutionPolicy Bypass -File C:\campy_data\launchers\chronic6day.ps1</code> (add <code>-PicoStartAt "10:00 AM"</code> to start the Pico at a time). Press Enter at <code>All 4 cameras are ready.</code> to start the Pico; Ctrl-C, then the <b>y</b> key, ends the session early (it stops the Pico, campy and SpikeGLX's run, in that order, and ends with a yellow <code>STOPPED</code>). Keep its window open the whole session.</div>
+
+<!-- ============================================================ 4 -->
+<h2 id="during"><span class="n">4</span>During the recording</h2>
+
+<h3>What Slack says, and what it doesn't</h3>
+<div class="tbl wide"><table>
+<tr><th>Message</th><th>Where</th><th>What it means</th></tr>
+<tr><td><code>The trigger paused as planned: all 4 cameras got no frame for the same 17400 pulses (4 min 50 s) … logged, not sent</code></td><td><span class="chip log">log only</span></td><td>Every gap between bouts (60 s or 290 s). On campy's console and in <code>alerts.log</code>; nothing goes to Slack. Normal.</td></tr>
+<tr><td><code>Recording … started: 4 cameras … at 60 fps … on an external trigger. … GB free.</code></td><td><span class="chip log">log only</span></td><td>Start note (info level; not sent to a warning-level Slack channel).</td></tr>
+<tr><td><code>Only … free on the disk</code></td><td><span class="chip slack">Slack</span></td><td>Below 500 GB free on D:, about a day's room left, then again every 30 minutes ("still, for …"). On D: as it is on 13 November a 6-day session ends with about 930 GB free, so it shouldn't come; if it does, D: holds old recordings.</td></tr>
+<tr><td><code>The disk … fills at N MB/s while the cameras record: down to 2.00 GB free after …</code></td><td><span class="chip slack">Slack</span></td><td>campy's forecast that the disk won't last to the end. In the overnight rehearsal it came about every 15 minutes, saying 150 to 346 MB/s, and was <b>wrong</b>: SpikeGLX's writes around each bout's few frames were counted against those frames. Since pull request 297 (on the rig since 6 November, 4:02 PM) campy counts over the whole recording for a bout session, and this should come only when the disk really won't last.</td></tr>
+<tr><td><code>No frame yet, … after campy started waiting for the external trigger: is it running?</code></td><td><span class="chip slack">Slack</span></td><td>An hour after campy started, no pulse yet: the Pico wasn't started (<b>Start the Pico</b>). Clears by itself when frames come.</td></tr>
+<tr><td>"the trigger has stopped" / no frame for 400 s</td><td><span class="chip slack">Slack</span></td><td>Longer than any planned gap: the Pico has stopped. Check <code>status</code>.</td></tr>
+<tr><td>"trigger paused" warning</td><td><span class="chip slack">Slack</span></td><td>A pause <b>shorter than 30 s</b>: not part of the plan. A real glitch; check the Pico's log.</td></tr>
+<tr><td>A camera misses pulses the others got; dropped frames; frames waiting for ffmpeg; ffmpeg stopped</td><td><span class="chip slack">Slack</span></td><td>Real problems on one camera or the disk/encoder. See Troubleshooting.</td></tr>
+<tr><td>End message: each camera's frames, "The trigger paused as planned 1727 times …"</td><td><span class="chip warn">depends</span></td><td>Sent as a warning if a problem was still open (in the November tests, the disk warning); otherwise info. Planned pauses alone don't make it a warning.</td></tr>
+</table></div>
+
+<h3>Checking on the Pico</h3>
+<p>On the PC (Anaconda Prompt set up as in <a href="#before">Before the day</a>), or from another computer over SSH to the PC:</p>
+<div class="cmd"><span class="where">PC · Anaconda Prompt</span><pre>python chronic_control.py status %P%</pre></div>
+<div class="see"><b>You should see</b><pre>Session: running
+  86412.3 s in, bout 289 of 1728; ends at 518125.0 s
+  log: C:\campy_data\pico\logs\&lt;date&gt;\timestamps.txt</pre><code>gone (the program stopped; the board may still be running: 'attach' …)</code> means <code>chronic_control.py</code> died; the Pico carries on by itself, but nothing is being logged. From a window on the PC's desktop, <code>python chronic_control.py attach %P%</code> picks the session up again and logs it to the end.</div>
+<p>The full log, every edge with its board time and how late it was:</p>
+<div class="cmd"><span class="where">PC · PowerShell</span><pre>Get-Content C:\campy_data\pico\state\session.out -Tail 5</pre></div>
+<div class="see"><b>You should see</b>lines like <code>Output A (Record Gate): HIGH (SpikeGLX File Recording Started) [board t=…, 0 us late, bout 289]</code> and <code>Output B (Camera): OFF after exactly 600 pulses (planned 600)</code>.</div>
+
+<h3>Checking on the PC</h3>
+<ul>
+<li>The panel's page shows the Pico's bout, SpikeGLX's files, each camera, the disk and the warnings, once a second; open it again from the desktop icon at any time. campy's own messages (for example <code>Trigger: The trigger paused as planned …</code> after each bout) are in the session's <code>alerts.log</code>.</li>
+<li>The <code>collected N frames at 60.0 fps for … sec of frames (… in all, with N trigger pauses …)</code> lines give the rate without the gaps. Earlier campy (2.4.0) also printed <code>CameraN: no frame for 3 s … GenTL error code: -1011</code> for every camera in every gap; the rig's campy (dev, since 5 November) doesn't, except for a camera that stops while the others still get frames.</li>
+<li>Each recording's <code>alerts.log</code> lists everything the watch saw, sent or not:</li>
+</ul>
+<div class="cmd"><span class="where">PC · PowerShell</span><pre>$d = (Get-ChildItem D:\data -Directory -Filter 20* | Sort-Object Name | Select-Object -Last 1).FullName
+Get-Content "$d\alerts.log" -Tail 3</pre></div>
+<div class="see"><b>You should see</b>the latest <code>planned pause</code> lines, each with <code>"status": "logged only"</code> and "Planned pause N of the recording", N rising by one every 5 minutes.</div>
+<ul>
+<li>SpikeGLX should gain one file every 5 minutes. The page's <b>Disk free</b> tile shows a ring for D: (what the rest of the plan still needs, in yellow) and one for the drive the copies go to; or check once a day with <code>Get-PSDrive D</code>.</li>
+</ul>
+
+<!-- ============================================================ 5 -->
+<h2 id="after"><span class="n">5</span>Stopping and after</h2>
+
+<h3>At the planned end</h3>
+<p>Nothing to do. campy stops by itself after its 5,011,200th frame per camera; the Pico's session ends 10 s later, when bout 1,728's gate falls. The panel waits for that, then stops SpikeGLX's run (closing its files).</p>
+<div class="see"><b>You should see</b>the page show the session as ended, with the Pico's last counts (<code>pulses=5011200 … stalls=0 bounces=0</code>) and SpikeGLX's run stopped. If campy ended early on its own (a camera lost, say), the Pico and SpikeGLX are left running so the LED schedule goes on and is recorded: the page lists them under <b>Still running</b>, with <b>Stop the Pico</b>, then <b>Stop SpikeGLX's run</b>, for when you decide. Close the panel with <b>Close the panel</b> at the top of the page once nothing records (and the copy is verified). Closing only the browser tab leaves the panel running, still holding the rig: on 12 November that kept a queued job waiting until the next morning.</div>
+
+<h3>Stopping early</h3>
+<p>Press <b>Stop</b> on the page. It asks first, and offers two ways:</p>
+<ul>
+<li><b>Stop after this bout:</b> the Pico finishes the bout it is in, so its gate falls on time and SpikeGLX's file closes as planned; then campy and SpikeGLX stop.</li>
+<li><b>Stop now:</b> the Pico stops at once (every output low), then campy (each camera closes its video), then SpikeGLX's run.</li>
+</ul>
+<p>From another computer over SSH, the Pico alone can be stopped with <code>python chronic_control.py stop %P%</code> (after this bout) or <code>stop --now</code> (see <a href="#during">Checking on the Pico</a>); campy then keeps waiting for frames until the panel's Stop, or its stop file.</p>
+
+<h3>Where the files are</h3>
+<div class="tbl"><table>
+<tr><th>Who</th><th>Where</th><th>What</th></tr>
+<tr><td colspan="3">All in one folder: <code>D:\data\&lt;YYYY-MM-DD_HH-MM-SS&gt;\</code></td></tr>
+<tr><td>campy</td><td><code>Camera0\</code>–<code>Camera3\</code>, and in the folder itself</td><td>each camera's <code>0.mp4</code>, <code>frametimes.npy</code>, <code>hosttimes.npy</code>, <code>metadata.csv</code>, and after the post steps <code>aligned.csv</code>; <code>alerts.log</code>, <code>bookmarks.csv</code>, <code>trigger.json</code>, <code>session.json</code> (with the LED currents and powers confirmed at Start, under <code>ledPower</code>)</td></tr>
+<tr><td>SpikeGLX</td><td><code>spikeglx\chronic_&lt;date&gt;_&lt;time&gt;_g0\</code></td><td><code>t0</code> = the gate check's blink; then one file set per bout: 1,728 for 6 days</td></tr>
+<tr><td>Pico (<code>chronic_control.py</code>)</td><td><code>pico\&lt;start date&gt;\timestamps.txt</code> (and the gate check's <code>wiring.txt</code>); <code>pico\session.out</code></td><td>the plan, every edge as the Pico reported it, the end counts</td></tr>
+<tr><td>The panel</td><td><code>logs\</code>, <code>launcher.json</code></td><td><code>campy-acquire.log</code> (campy's console), <code>post.log</code> and <code>post.json</code> (the post steps and the copy), <code>session-config.yaml</code> (the config as used, with any bout settings changed on the page marked as the panel's); <code>launcher.json</code> holds each step's result and every setting the Pico ran with. (The PowerShell launcher writes <code>launcher.log</code> instead.)</td></tr>
+</table></div>
+
+<h3>Post steps: remux and align</h3>
+<p><b>From the panel, the post steps run by themselves</b> once campy has stopped cleanly: in the overnight rehearsal they took 40 seconds. The page shows them under <b>After the recording</b> (<i>Step … of … · …</i>), then, under <b>How it went</b>, one line per problem (cameras that dropped frames, alerts still open) or <i>All 4 cameras: every frame saved</i>. The PowerShell launcher runs <code>campy-acquire</code> directly, so after it, run them by hand on the PC in the recording environment (the conda environment <code>campy_vPython3.12</code>):</p>
+<div class="cmd"><span class="where">PC · Anaconda Prompt</span><pre>conda activate campy_vPython3.12
+campy-session post D:\data\&lt;YYYY-MM-DD_HH-MM-SS&gt;</pre></div>
+<div class="see"><b>You should see</b>each step logged in <code>&lt;folder&gt;\logs\post.log</code>: <b>remux</b> turns each fragmented video into a plain MP4 without re-encoding (checked packet by packet first; it needs room for one more copy of the video); <b>join</b> only does something if an ffmpeg was restarted; <b>align</b> writes <code>aligned.csv</code> per camera and <code>alignment.json</code>, listing the 1,727 gaps as trigger pauses. <code>export</code> is skipped (no live tracking ran), and so is <code>calibrate</code> (only a calibration recording runs it).</div>
+<p>It runs only after a clean stop (every camera's <code>metadata.csv</code> has its totals and no error). Otherwise it says why; look at the recording, then <code>campy-session post &lt;folder&gt; --force</code>.</p>
+
+<h3 id="copies">Copies</h3>
+<p>With a folder in <b>Copy each recording to</b>, the panel copies the session's folder there after the post steps, in the background, then reads every file back from both places and checks they are the same, byte for byte. The page lists it under <b>Copies</b> (copying, checking, <b>verified</b>, or failed with the reason) and, while it runs, a <b>Copying in the background</b> strip at the top with the percent done, the time left and when it should be done. A new recording can start meanwhile; leave the PC on and the panel open until the copy is verified. <b>Close the panel</b> waits for the copies, then closes by itself.</p>
+<ul>
+<li><b>How long:</b> a 7.6 GB gate test (mostly one 5.5 GB SpikeGLX file) copied to a network share in about 7 minutes (17 MB/s), and the check takes about as long again. At that rate a 6-day session's 2.9 TB would take about two days to copy and two more to check: an estimate, nothing that size has been copied.</li>
+<li><b>Deleting here:</b> only with the delete box ticked, and only once every file is the same in the copy. A session that didn't stop cleanly, a file that differs, or a file a program still has open keeps it here, and the page says why (an alert too). Nothing is ever deleted in the copy.</li>
+<li><b>By hand:</b> each recording's <code>logs\post.log</code> gives the command that copies it, for a copy that was cut short.</li>
+</ul>
+
+<h3>Check the counts</h3>
+<ul>
+<li><b>Pico:</b> <code>pulses=5011200</code> in the last <code>Board finished</code> line of <code>session.out</code>, with <code>stalls=0 bounces=0</code>.</li>
+<li><b>campy:</b> 5,011,200 frames on every camera in the end message and each <code>metadata.csv</code>, none dropped. In the 1-hour rehearsal: 34,800 = 34,800 on all four; in the 8-hour one, 278,400 = 278,400 on all four, "0 dropped by campy, 0 missed by the camera" in <code>post.log</code>.</li>
+<li><b>SpikeGLX:</b> 1,729 files: the gate check's <code>t0</code> (2.5 s, no camera pulses), then one per bout, each with 600 or 14,400 camera pulses on XA2, the first 5.000 s after the gate.</li>
+</ul>
+
+<h3>Lining video up with SpikeGLX</h3>
+<p>SpikeGLX records every edge, so its clock is the reference. Frame <i>k</i> of a bout is camera pulse <i>k</i> on XA2 in that bout's file. Skip <code>t0</code> (the gate check) and walk the bouts in order: bout 1 (<code>t1</code>) holds frames 1–14,400, bout 2 the next 600, and so on (bouts 1, 7, 13, … are long). Each camera's <code>aligned.csv</code> gives every frame's own Pico pulse, so a stray frame shifts nothing. With the panel's pattern, yellow lights frames 300–302 of each bout and blue 312–314 (counted from 0 at the bout's first pulse), a check visible in the video.</p>
+<p><b>The clocks</b>, measured over the 8-hour rehearsal: counted at its nominal 30,303 samples/s, the OneBox's clock gains 3.21 parts per million on the Pico's (91.6 ms over the 7.9 hours from bout 1 to bout 96, 0.28 s a day), steadily: no bout was more than 72 µs off a straight line. The Pico and the PC's clock agree to 0.05 ppm, so the 3.2 ppm is the OneBox's sample rate, not the Pico (the 1-hour rehearsal gave 3.2 ppm too). It doesn't matter for lining up, because each pulse's time comes from SpikeGLX itself; SpikeGLX's own calibrated sample rate, if set, takes it out. With the sync output wired (see <a href="#sync">Sync pulses</a>), <code>python sync_match.py &lt;session folder&gt;</code>, run on a copy, fits the OneBox's samples to the Pico's clock through every sync pulse and lists any camera, gate or LED edge the Pico didn't plan.</p>
+
+<h3 id="readphot">Reading the photometry</h3>
+<p><code>photometry_snapshots.py</code> (in campy's <code>chronicrecord</code> folder; needs numpy only) reads a session's OneBox files and writes <code>photometry_snapshots.csv</code>, one row per bout. Run it on a copy of the session (the server's), not on the rig while it records:</p>
+<div class="cmd"><span class="where">Any computer with the copy · Python</span><pre>python photometry_snapshots.py &lt;session folder&gt; --campy &lt;session folder&gt;</pre></div>
+<div class="see"><b>You should see</b>per bout: each flash's time on the OneBox's clock, its width, the frames it lit and its lead before its first frame's pulse; <code>green_V</code> (XA5 in the blue flash) and <code>red_V</code> (XA6 in the yellow one), each the mean over the flash's last 16.7 ms (one mains cycle) less the dark before the first flash; the bleed between channels; how fast each receiver rose; and a <code>note</code> for any sample at the OneBox's ±5 V limit. It ends with the order, frames, widths, gap and leads as ranges over all bouts, which should be the same in every bout. Flashes under 18.7 ms are read over less than a mains cycle, and its <code>note</code> says so.</div>
+
+<h3 id="lengths">Other lengths</h3>
+<p>campy counts camera time, not the wall clock: <code>recTimeInSec</code> = camera pulses / 60. Change both together.</p>
+<div class="tbl"><table class="tab">
+<tr><th>Session</th><th>Pico: <code>TOTAL_DURATION</code> (launcher: <code>-TotalDuration</code>)</th><th>Bouts (long)</th><th>Pulses</th><th>campy: <code>recTimeInSec</code></th></tr>
+<tr><td>1 hour (the program's default)</td><td>3600</td><td>12 (2)</td><td>34,800</td><td>580</td></tr>
+<tr><td>4 days</td><td>345600</td><td>1,152 (192)</td><td>3,340,800</td><td>55680</td></tr>
+<tr><td>8 hours (the overnight rehearsal)</td><td>28800</td><td>96 (16)</td><td>278,400</td><td>4640</td></tr>
+<tr><td>6 days (the profile)</td><td>518400</td><td>1,728 (288)</td><td>5,011,200</td><td>83520</td></tr>
+</table></div>
+<p>The Pico holds at most 2,048 bouts (7.1 days at 300 s); a longer session is refused at <code>start</code> with "too many edges". The launcher refuses to start if <code>recTimeInSec</code> in the profile doesn't match the plan; for another length, use a profile with the matching value (<code>-Config</code>).</p>
+
+<!-- ============================================================ 6 -->
+<h2 id="trouble"><span class="n">6</span>Troubleshooting</h2>
+<div class="tbl wide"><table>
+<tr><th>Symptom</th><th>Cause</th><th>Fix</th></tr>
+<tr><td>Preview windows black or frozen</td><td>No pulses: before the Pico starts, and between bouts. The cameras take a frame only on a pulse.</td><td>Normal. If they stay dark during a bout, check the GP3 cable and resistor, and <code>status</code>.</td></tr>
+<tr><td>Launcher: <code>SpikeGLX doesn't answer on 127.0.0.1:4142</code></td><td>SpikeGLX isn't open, or its command server is off.</td><td>Open it; Options → Command Server Settings → Enable. Run the launcher again.</td></tr>
+<tr><td>Launcher: <code>SpikeGLX is running a run already</code></td><td>A run was started in SpikeGLX by hand.</td><td>Stop it in SpikeGLX (the launcher starts its own, into the session folder) and run the launcher again.</td></tr>
+<tr><td>Launcher: <code>SpikeGLX's trigger isn't TTL</code></td><td>SpikeGLX would record all the time, filling the disk.</td><td>Set the trigger to TTL (table above), run again.</td></tr>
+<tr><td>Launcher: <code>the gate check failed: SpikeGLX opened no file</code></td><td>The gate doesn't reach SpikeGLX's trigger: cable, or trigger not on obx0 bit 0 follow-high.</td><td>Check the gate cable (Pico GP2 to OneBox XA0) and SpikeGLX's trigger settings. The launcher has stopped SpikeGLX's run; nothing else started.</td></tr>
+<tr><td><code>3 of 4 cameras are ready</code></td><td>A camera didn't start.</td><td>Stop on the page (or Ctrl-C, then y, in the launcher); start again.</td></tr>
+<tr><td>Launcher stuck on "waiting for the rig lock"</td><td>Another job (a test, a benchmark) holds the PC.</td><td>Wait; it starts when the lock frees.</td></tr>
+<tr><td><code>FAILED: the Pico starts at …; too early / too late</code></td><td><code>-PicoStartAt</code> more than 55 min, or under 90 s, away.</td><td>Run it again in the window it names.</td></tr>
+<tr><td>"Frames waiting for ffmpeg" warning in the first seconds</td><td>The four Quick Sync encoders open on the first frame; about 1–2 s of frames queue meanwhile. campy 2.4.0 no longer warns for the first 10 s.</td><td>Nothing; it catches up within seconds and drops nothing. If it persists, the disk or encoder is stalling.</td></tr>
+<tr><td>All four encoders fail at the first frame</td><td>Remote Desktop was connected or taken over at that moment.</td><td>Don't touch Remote Desktop around the Pico's start. campy retries the encoder 3 times and loses nothing.</td></tr>
+<tr><td><code>CameraN: no frame for 3 s … GenTL error code: -1011</code></td><td>Since the rig's update (5 November) only for a camera that stops while the others still get frames (campy 2.4.0 printed it for every camera in every gap).</td><td>Look at that camera: cable, power, <code>alerts.log</code>.</td></tr>
+<tr><td><code>bounces=</code> equal to <code>pulses=</code></td><td>The camera cable rings at each fall; the 50 Ω resistor on GP3 is missing or bypassed.</td><td>Refit the resistor. The cameras didn't see the ring before (one frame per pulse), but the Pico's check should read 0.</td></tr>
+<tr><td><code>stalls=</code> above 0</td><td>The Pico's output queue ran dry; edges may be late.</td><td>Look at <code>late_max=</code> and the log; tell whoever maintains the Pico code.</td></tr>
+<tr><td>"Trigger paused" warning on Slack</td><td>A pause under 30 s: not planned.</td><td>Check the Pico's log (<code>session.out</code>) around that time. No frame is lost; <code>frametimes.npy</code> has each frame's time.</td></tr>
+<tr><td>"No frame yet … is it running?"</td><td>Enter wasn't pressed within an hour of starting the launcher.</td><td>Press Enter; the alert clears with the first frames.</td></tr>
+<tr><td>No frame for 400 s / trigger stopped</td><td>The Pico stopped (unplugged, lost power in a PC restart, stopped by hand).</td><td><code>status</code>. If it says <code>gone</code> and the Pico still runs, <code>attach</code> picks it up; otherwise <code>stop --now</code>, then stop campy.</td></tr>
+<tr><td>Disk warning on Slack</td><td>Under 500 GB free on D:.</td><td>D: holds older sessions: check they are copied (<b>verified</b>), then delete them from D:.</td></tr>
+<tr><td>The panel's disk line is yellow or red</td><td>The length needs more than 80% of D:'s free space (yellow), or more than all of it (red).</td><td>Yellow: you can start, with little to spare. Red: free D: (copied sessions), or pick a shorter length. Start anyway only if data will be moved off during the session.</td></tr>
+<tr><td>The panel stops the start after 120 s: <i>SpikeGLX's run didn't start acquiring</i>; SpikeGLX's console shows <code>385CH</code> and repeated <code>obx stream not enabled</code></td><td>Seen once (10 November) after a recording was stopped early: SpikeGLX started the next run without the OneBox.</td><td>Quit SpikeGLX and press <b>Start recording</b> again, so the panel opens it afresh.</td></tr>
+<tr><td>Copy failed, <code>1 not the same</code>, or <b>kept here</b></td><td>A file differs or is missing in the copy, a program still had a file open, or the session didn't stop cleanly.</td><td>The session stays on D:. The page and <code>logs\post.log</code> say why; <code>post.log</code> gives the command to copy it again by hand.</td></tr>
+<tr><td>The page can't reach the copy folder at Start</td><td>The server share isn't reachable, or the last folder doesn't exist yet.</td><td>Open the share once in File Explorer; for a missing last folder press <b>Create this folder</b>, then Start again.</td></tr>
+<tr><td>XA6 at +5 V the whole time, dark included</td><td>The room's red camera lights reach the red receiver through the mouse's head or the mating sleeve.</td><td>Make the mouse end light-tight, or lights off for a test.</td></tr>
+<tr><td>A reading at +5 V only during its flash</td><td>Too much light for this implant.</td><td>Lower that LED's current (not below about 20 mA: it flickers at 17), or add a neutral density filter.</td></tr>
+<tr><td>XA5 or XA6 flat at about 0.2 V, no step at a flash, no mains hum</td><td>That receiver's 9 V battery is flat.</td><td>Replace it.</td></tr>
+<tr><td>A reading that swings 0 to 4 V hundreds of times a second during a flash</td><td>The LED flickers: its current is at the driver's lowest (17 mA or less).</td><td>Raise the current; dim the light optically instead.</td></tr>
+<tr><td>Jobs under the rig lock wait after a session ended</td><td>The panel still runs (only its browser tab was closed), and holds the rig.</td><td>Open the page from the desktop icon and press <b>Close the panel</b>.</td></tr>
+<tr><td><b>Trigger</b> check red</td><td>The rig's Pico isn't plugged in, or doesn't answer.</td><td>Plug it in (it shows as a <code>USB Serial Device</code>); <code>status</code>; then Start again.</td></tr>
+<tr><td>campy ends with <code>stopped early: only 1.95 GB free</code></td><td>The disk filled (likely SpikeGLX).</td><td>Free space; SpikeGLX itself won't stop.</td></tr>
+<tr><td>campy keeps running after the Pico was stopped</td><td>It waits for its 5,011,200 frames.</td><td>Stop on the page (or Ctrl-C then y in the launcher, or the stop file).</td></tr>
+<tr><td><code>A session is already running (pid …)</code></td><td>An earlier session or wiring check is still going.</td><td><code>status</code>, then <code>stop</code> (or <code>stop --now</code>).</td></tr>
+<tr><td>"too many edges"</td><td>More than 2,048 bouts (over 7.1 days).</td><td>Shorten <code>TOTAL_DURATION</code>.</td></tr>
+<tr><td>Launcher: <code>the rig's Pico … doesn't answer on this PC, or is already running a session</code></td><td>The Pico is unplugged, another program has its COM port open, or a session (or a wiring check) is still running on it.</td><td>Plug it in; <code>status</code>, then <code>stop --now</code> if something is running; run the launcher again.</td></tr>
+<tr><td><code>2 Picos: pick one with --port</code></td><td>A spare Pico is plugged in too.</td><td>Unplug the spare, or add <code>--port &lt;its USB serial number&gt;</code> (the launcher names the rig's Pico by its own).</td></tr>
+<tr><td>Launcher <code>WARNING: Windows Update is not paused</code> / <code>USB selective suspend is on</code></td><td>The PC could restart, or power-save the Pico's port, mid-session.</td><td>The launcher pauses Windows Update itself (click Yes in Windows' administrator prompt); or run <code>pause_windows_update.ps1</code> (launchers folder). USB selective suspend: run <code>disable_usb_selective_suspend.ps1</code> (in the launchers folder) as administrator. Then run the launcher again.</td></tr>
+<tr><td><code>campy-align</code> exits silently, code <code>-1066598273</code></td><td>NumPy's Intel MKL crash on Windows.</td><td>The recording environment was switched to OpenBLAS on 26 October; use that environment.</td></tr>
+<tr><td><code>Post-steps skipped: the recording did not stop cleanly</code></td><td>A camera has no totals in <code>metadata.csv</code>, or an error.</td><td>Look at it, then <code>campy-session post &lt;folder&gt; --force</code>.</td></tr>
+</table></div>
+
+<!-- ============================================================ 7 -->
+<h2 id="untested"><span class="n">7</span>What hasn't been tested yet</h2>
+<ul>
+<li><b>More than 96 bouts.</b> The longest Pico session on the rig was the 8-hour, 96-bout rehearsal from the panel (6 November, 1:38 to 9:34 AM).</li>
+<li><b>A full 6 days,</b> or any session over 8 hours: disk, Windows updates or sleep over days.</li>
+<li><b>Surviving a PC restart.</b> On USB power the Pico loses power and its session ends (measured 5 November). A separate 5 V supply was considered and isn't planned (6 November): keep Windows Update paused and don't restart the PC during a session.</li>
+<li><b>A mouse for longer than 4 hours, or with the camera lights on.</b> With a fiber-implanted mouse: three 15-minute gate tests (10 November) and one 4-hour session (12 November, 49 bouts), all with the room lights off and a Neuropixels 2.0 probe plugged in but not implanted. Video sizes at 60 fps with mice are still estimated from 30 fps recordings; the panel's disk check uses 0.6 MB/s a camera until a real session gives a measured rate.</li>
+<li><b>Photometry over days:</b> the mouse end made light-tight with the camera lights on, the LEDs behind a neutral density filter, how long the receivers' 9 V batteries last, and the cords from the LEDs to the cube.</li>
+<li><b>The sync output on the rig:</b> GP6 wired to XA1, and whether SpikeGLX's digital copy of XA1 (XD0 bit 1) shows it. Checked only on the camera line (13 November).</li>
+<li><b>Copying a session of terabytes</b> to the server, and the check after it: only gate tests of a few GB have been copied.</li>
+<li><b>The <code>chronic6day.ps1</code> launcher in a real session,</b> and the one-hour first-frame wait on the rig (covered by campy's tests, not yet seen live). Its sister <code>gatetest_pc.ps1</code> ran the 3-bout gate test from the PC on 5 November, including SpikeGLX opened by the launcher and an early stop with Ctrl-C. Both now default to <code>D:\data</code>, and keep <code>chronic_control.py</code>'s own LED pattern (blue 30 ms, then yellow), not the panel's.</li>
+<li><b>A 6-day session on D:.</b> The data disk has held gate tests and a calibration since 10 November, nothing longer.</li>
+<li><b>SpikeGLX's calibrated sample rate</b> for the OneBox: the 8-hour rehearsal shows the OneBox runs 3.2 ppm off its nominal 30,303 samples/s against both the Pico and the PC (see <a href="#after">Lining video up with SpikeGLX</a>). It doesn't affect lining up the data.</li>
+</ul>
+
+<footer>
+<p>Sources: campy's <code>chronicrecord/README.md</code>, <code>chronic_pico.yaml</code> and <code>chronic_control.py</code> (pull request 274, which moves the Pico to the PC), the docs on recording, alerts and hardware, pull requests 248, 256, 259, 261 and 263–269, the checks on the rig on 5 November 2026 (the Pico on the PC: noise against the Pi, the 3-bout gate test, a restart with a spare Pico; the 3-bout gate test again with SpikeGLX started by the launcher, everything in one folder), and the ChronicRecord PC's launchers (<code>chronic6day.ps1</code>, <code>gatetest_pc.ps1</code>). Updated 5 November 2026: the PC drives the Pico, the Raspberry Pi 3B is retired, and one launcher puts campy, SpikeGLX and the Pico's log into one folder. Updated again that evening, then at 11 PM for the panel (pull request 283) and campy 2.5.0 on every rig: 409 GB free, USB selective suspend off and <code>C:\data</code> out of Windows Search (pull request 278), Windows Update paused until 19 November (pull request 280 adds the script). The rig runs campy dev 2591dc6 since 5:20 PM (pull requests 274, 276, 277, 279 merged), so the launcher uses campy's own <code>chronic_control.py</code>. The launcher now opens SpikeGLX itself, shows the cameras in one campy-live-view window, names SpikeGLX's run <code>chronic_YYYY-MM-DD_HH-MM-SS</code>, and asks before Ctrl-C ends a session. Updated 6 November 2026, afternoon: the 8-hour overnight rehearsal from the panel (its counts, disk use and clock drift), and what changed on the rig since: the page says when the cameras are ready (pull request 288), shows <code>between bouts</code> (289), <i>No picture yet</i> (290) and no false <code>LOST</code> after a pause (291), offers the 8-hour length (294), stops the false disk forecasts (297), and checks the disk before the start (309); the rig runs campy dev 9d9e75f since 4:44 PM. Updated 12 November 2026, from the rig itself (read only) and campy dev 7952d90, which it runs since 12:29 AM: the 4 TB data disk D: (pull request 388), the fiber photometry flash pattern and its readout script (378), bout settings on the page (331, 333), one <b>campy recording</b> icon with an Experiment list (341), background copies checked byte for byte with an optional delete (342, 358, 382–384, 394, 395, 397), LED power asked at Start and the bout drawing (380), the denoise filter (364), one trigger board per rig (385) and calibration from the panel (386); the photometry levels with a mouse and the SpikeGLX restart are from the 10 November recordings (pull request 398). Updated 13 November 2026 (campy dev f563862, on the rig since 2:42 PM): the 4-hour photometry session of 12 November (pull request 426), the readout from <code>aligned.csv</code> (399), the optional sync output and <code>sync_match.py</code> (419), D:'s free space and the Windows Update pause as the PC had them at 3:27 PM. Times are US Eastern.</p>
+<p>Version 14 · updated 13 November 2026 · reflects campy changes through pull request 450 · source: <code>docs/chronicrecord-run-book.html</code> in the campy repository</p>
+</footer>
+</div>
+
+<script>
+document.querySelectorAll('.cmd').forEach(function(box){
+  var pre=box.querySelector('pre'); var b=document.createElement('button'); b.type='button'; b.textContent='Copy';
+  b.addEventListener('click',function(){
+    var t=pre.innerText;
+    function sel(){var r=document.createRange();r.selectNodeContents(pre);var s=getSelection();s.removeAllRanges();s.addRange(r);b.textContent='Selected';}
+    try{navigator.clipboard.writeText(t).then(function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1500)},sel)}catch(e){sel()}
+  });
+  box.appendChild(b);
+});
+</script>
+
+
+
+
+

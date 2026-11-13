@@ -117,6 +117,8 @@ When you are done for the day, press **Close the panel** at the top of the page 
 
 ## On the ChronicRecord rig: the Pico and SpikeGLX
 
+*The [ChronicRecord run book](https://claude.ai/artifact/NFxr3z2Vvpc9G7gFnK255L) (source: [chronicrecord-run-book.html](chronicrecord-run-book.html)) takes a multi-day session from the day before to the files on disk, with the wiring and fiber photometry; this section is the panel's part of it.*
+
 On the ChronicRecord rig the same page also runs the Pico (which makes the camera pulses, SpikeGLX's record gate and the two LED drivers' TTLs) and SpikeGLX, which records the probe while the gate is high. It replaces the PowerShell launcher (`chronic6day.ps1`). What changes:
 
 **Before the start.** Pick the **session length**: 6 days, a 15-minute gate test (3 bouts), an hour, or an 8-hour overnight rehearsal (96 bouts; on 6 November it took 152 GB: SpikeGLX 150 GB, the videos only 2 GB with no animal in the cage, so it fits easily; the 6 days, about 2.9 TB, fit on the rig's 4 TB data disk). The page shows what that plan holds (bouts, camera pulses, camera time). campy records exactly the plan's camera time, so the two always agree. A gate test goes into `D:\data\gatetest\`, a rehearsal into `D:\data\rehearsal\`, the others into `D:\data\` (all on the 4 TB data disk). The checks add:

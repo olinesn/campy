@@ -1,5 +1,7 @@
 # ChronicRecord timer
 
+*To run a session on the rig, step by step, read the [ChronicRecord run book](https://claude.ai/artifact/NFxr3z2Vvpc9G7gFnK255L) (source: [docs/chronicrecord-run-book.html](../docs/chronicrecord-run-book.html)). This page is how the timer works.*
+
 The ChronicRecord rig's TTL outputs, made by a Raspberry Pi Pico instead of the Raspberry Pi 3B's own GPIO pins:
 
 | Output | What it drives | Pi 3B before (chronicControlv13.py) | Pico now |
