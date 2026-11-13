@@ -205,8 +205,9 @@ the CPU that took them is left out, and the startup line and
 campy-live-session.json (cpus) say which. python -m campy.cpus --gpu N says
 it for any GPU.
 
-On Linux --pose3d-cpus puts the 3D step's thread alone on the CPUs given and
-keeps the rest of campy-live off them. On the Jetson AGX Orin, whose cores
+On Linux and Windows --pose3d-cpus puts the 3D step's thread alone on the
+CPUs given and keeps the rest of campy-live off them (on Windows by the
+process's default CPU sets, cpus.KeepOff). On the Jetson AGX Orin, whose cores
 are in three clusters of four with a cache each, the 3D step ran a quarter
 slower when the replay check's feeder shared its cluster; with the feeder on
 8-11, campy-live on 0-3 and the 3D step alone on 4-7, it took 1.48 ms
@@ -2816,13 +2817,12 @@ class Pose3DThread:
 		self.thread.start()
 
 	def Place(self):
-		# This thread onto --pose3d-cpus: on Linux each thread has its own CPUs, and a thread's id is a pid
-		# to sched_setaffinity. The rest of campy-live was kept off them (PlaceSelf)
+		# This thread onto --pose3d-cpus (cpus.PinThread); the rest of campy-live was kept off them (PlaceSelf)
 		if not self.cpus:
 			return
 		try:
-			os.sched_setaffinity(threading.get_native_id(), self.cpus)
-		except (AttributeError, OSError) as e:
+			cpus.PinThread(self.cpus)
+		except OSError as e:
 			Say("Could not pin the 3D step to CPUs {} (--pose3d-cpus): {}".format(cpus.Text(self.cpus), e))
 
 	def Put(self, row, frames, inference):
@@ -3373,12 +3373,11 @@ def Publish(args, log, names, cameras, model, tracker, frameRate, interrupts=Non
 def Pose3DCpus(args):
 	"""
 	--pose3d-cpus as a list of CPUs, or None (none asked, no --calibration so
-	no 3D step, or not Linux). Only on Linux can one thread be pinned apart
-	from the rest of its process and the threads it starts: on Windows a new
-	thread takes the process's CPUs, so keeping the rest of campy-live off the
-	3D step's would mean pinning each of its threads, and the 3D thread alone
-	on CPUs of its own, the rest free to join it, gained nothing on the Jetson
-	AGX Orin (docs/jetson.md).
+	no 3D step, or neither Linux nor Windows). On Linux each thread has CPUs
+	of its own, and a thread starts on its starter's; on Windows a new thread
+	takes the process's affinity mask, so the rest of campy-live is kept off
+	by the process's default CPU sets instead (cpus.KeepOff), which threads
+	started later take too.
 	"""
 	text = (getattr(args, "pose3d_cpus", "") or "none").strip().lower()
 	if text == "none":
@@ -3386,8 +3385,8 @@ def Pose3DCpus(args):
 	if not getattr(args, "calibration", ""):
 		Say("--pose3d-cpus without --calibration: there is no 3D step to pin.")
 		return None
-	if not sys.platform.startswith("linux"):
-		Say("--pose3d-cpus: pinning the 3D step's thread alone is done only on Linux; left as it is.")
+	if not (sys.platform.startswith("linux") or sys.platform == "win32"):
+		Say("--pose3d-cpus: pinning the 3D step's thread alone is done only on Linux and Windows; left as it is.")
 		return None
 	try:
 		chosen = cpus.Resolve(args.pose3d_cpus)
@@ -3452,7 +3451,13 @@ def PlaceSelf(args, keep_off=None):
 	done = []
 	if chosen is not None:
 		try:
-			cpus.Pin(chosen)
+			if keep_off and sys.platform == "win32":
+				# A Windows thread can't leave its process's affinity mask, and a new one takes it: the mask
+				# takes the 3D step's CPUs in too, and the process's default CPU sets keep the rest off them
+				cpus.Pin(sorted(set(chosen) | set(keep_off)))
+				cpus.KeepOff(chosen)
+			else:
+				cpus.Pin(chosen)
 			done.append("CPUs {}".format(cpus.Text(chosen)) + why)
 		except OSError as e:
 			Say("Could not pin campy-live to CPUs {} (--cpus): {}".format(cpus.Text(chosen), e))
@@ -3708,7 +3713,7 @@ def Parser():
 		efficiency cores, the performance cores; elsewhere all; on Windows less the CPU that handles the GPU's \
 		interrupts), performance, efficiency, all, none (as it is started), or a list such as 0,1,10-13. python -m \
 		campy.cpus says which are which, and python -m campy.cpus --gpu N which CPU handles GPU N's interrupts.")
-	p.add_argument("--pose3d-cpus", default="none", help="Linux, with --calibration: the 3D step's thread alone on \
+	p.add_argument("--pose3d-cpus", default="none", help="Linux and Windows, with --calibration: the 3D step's thread alone on \
 		these CPUs (a list such as 4-7), and the rest of campy-live kept off them; keep campy-acquire off them \
 		too with --campy-cpus. On the Jetson AGX Orin it helped the replay check but not a recording, and on the \
 		EVO-X2 it was slower (docs/jetson.md). none (the default): as --cpus puts it.")

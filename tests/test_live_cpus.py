@@ -2,6 +2,7 @@
 campy-live --cpus auto: on Windows it leaves out the CPU that handles its
 GPU's interrupts (cpus.GpuInterruptCpus), and says so. No GPU needed.
 """
+import time
 import types
 
 import pytest
@@ -80,7 +81,8 @@ def test_pose3d_cpus_resolved_only_on_linux_with_a_3d_step(monkeypatch):
 	assert three_d(monkeypatch, "4-7") == [4, 5, 6, 7]
 	assert three_d(monkeypatch, "none") is None and three_d(monkeypatch, "") is None and not said
 	assert three_d(monkeypatch, "4-7", calibration="") is None and "no 3D step" in said[-1]
-	assert three_d(monkeypatch, "4-7", platform="win32") is None and "only on Linux" in said[-1]
+	assert three_d(monkeypatch, "4-7", platform="win32") == [4, 5, 6, 7]
+	assert three_d(monkeypatch, "4-7", platform="darwin") is None and "only on Linux and Windows" in said[-1]
 	with pytest.raises(SystemExit):
 		three_d(monkeypatch, "4-x")
 
@@ -115,16 +117,51 @@ def test_the_rest_of_campy_live_kept_off_the_3d_steps_cpus(placed, monkeypatch):
 		Run("4-5")
 
 
-@pytest.mark.skipif(not hasattr(live.os, "sched_setaffinity"), reason="pins threads on Linux only")
+def test_on_windows_the_mask_takes_the_3d_cpus_in_and_default_cpu_sets_keep_the_rest_off(placed, monkeypatch):
+	# A Windows thread can't leave its process's affinity mask, and a new thread takes the process's
+	monkeypatch.setattr(cpus, "All", lambda: list(range(12)))
+	monkeypatch.setattr(cpus, "Hybrid", lambda: None)
+	monkeypatch.setattr(live, "GpuInterrupts", lambda args: None)
+	monkeypatch.setattr(live.sys, "platform", "win32")
+	done = {}
+	monkeypatch.setattr(cpus, "Pin", lambda c, pid=None: done.__setitem__("mask", list(c)))
+	monkeypatch.setattr(cpus, "KeepOff", lambda c: done.__setitem__("default", list(c)))
+	monkeypatch.setattr(cpus, "SetPriority", lambda name, pid=None: done.__setitem__("priority", name))
+	text, _ = live.PlaceSelf(types.SimpleNamespace(cpus="0-3", priority="auto"), keep_off=[4, 5, 6, 7])
+	assert done == {"mask": list(range(8)), "default": [0, 1, 2, 3], "priority": "high"}
+	assert text == "CPUs 0-3 at high priority; the 3D step alone on CPUs 4-7"
+
+
+def test_cpu_set_ids_read_from_windows_entries():
+	import struct
+	def Entry(cid, group, index):
+		# SYSTEM_CPU_SET_INFORMATION: Size 32, Type 0, Id, Group, LogicalProcessorIndex, then the rest
+		return struct.pack("<IIIHB", 32, 0, cid, group, index) + bytes(32 - 15)
+	data = Entry(256, 0, 0) + Entry(257, 0, 1) + Entry(300, 1, 2) + struct.pack("<II", 16, 1) + bytes(8)
+	assert cpus._ParseCpuSets(data) == {0: 256, 1: 257, 66: 300}
+
+
+def Where():
+	# The CPU this thread runs on now
+	import ctypes, os
+	if live.sys.platform == "win32":
+		return ctypes.windll.kernel32.GetCurrentProcessorNumber()
+	return sorted(os.sched_getaffinity(0)) # Linux: the CPUs it may run on
+
+
+@pytest.mark.skipif(not (hasattr(live.os, "sched_setaffinity") or live.sys.platform == "win32"),
+	reason="pins threads on Linux and Windows only")
 def test_the_3d_thread_runs_on_its_cpus_and_the_caller_stays_where_it_was():
-	import os
-	allowed = sorted(os.sched_getaffinity(0))
+	allowed = cpus.Affinity()
 	mine = allowed[-1:]
-	seen = []
+	seen, before = [], Where()
 
 	class Tracker:
 		def Update(self, keypoints, scores, frame):
-			seen.append(sorted(os.sched_getaffinity(0)))
+			end = time.perf_counter() + 0.005 # busy long enough to be moved, were it free to
+			while time.perf_counter() < end:
+				pass
+			seen.append(Where())
 			return []
 
 	class Log:
@@ -132,9 +169,13 @@ def test_the_3d_thread_runs_on_its_cpus_and_the_caller_stays_where_it_was():
 			pass
 
 	worker = live.Pose3DThread(Tracker(), Log(), cpus=mine)
-	worker.Put({"keypoints": None, "peak_vals": None, "frame": 0}, None, 0)
+	for frame in range(20):
+		worker.Put({"keypoints": None, "peak_vals": None, "frame": frame}, None, 0)
 	worker.Close()
-	assert seen == [mine] and sorted(os.sched_getaffinity(0)) == allowed
+	if live.sys.platform == "win32":
+		assert set(seen) == set(mine) and cpus.Affinity() == allowed
+	else:
+		assert seen == [mine] * 20 and Where() == before == allowed
 
 
 def test_all_is_every_cpu_online_not_this_process_s_own(tmp_path, monkeypatch):
