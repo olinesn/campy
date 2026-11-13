@@ -720,6 +720,13 @@ Notes on the measurements:
 
   ² `RIG_CLEAN_BACKGROUND`: one look of the security agent within its ceilings.
 
+  The EVO-X2 (9:09–9:12 AM) and the Jetson AGX Orin (9:11–9:15 AM) reran theirs too, under the same lock: every run `RIG_CLEAN`, with no sighting of other load, nothing skipped or misaligned, every camera keeping all its frames and every set tracked from frame 1. The times matched the evening before to within 0.3 ms, and the Orin's replay agreed with the offline tracking as before (2D median 3.8 px, 2 identity switches):
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | EVO-X2 | 1,800 / 3.1 / 3.2 | 3,600 / 5.7 / 6.1 / 7.8 / 8.8 | 3,600 / 5.6 / 5.8 / 7.3 / 8.2 |
+  | Jetson AGX Orin | 1,800 / 3.9 / 4.1 | 3,600 / 10.2 / 10.7 / 14.5 / 15.9 | 3,600 / 10.1 / 10.3 / 14.5 / 15.7 |
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
