@@ -844,7 +844,17 @@ Notes on the measurements:
 
   The Windows 11 VM's recording checks (2:17–2:19 PM) were both `RIG_CLEAN` and kept every frame: 1,200 from 1 camera, then 3 × 3,600 from 3.
 
-- At 2:41–2:44 PM on 13 November all six machines moved on to dev `f563862` from `1b244fb`, and spock's campy copy with them, each under its lock and `RIG_CLEAN`. It brings two pull requests: 445, a camera plugged back in reads its first frame's timestamp once, so its clock carries on across the gap exactly (`cameraReconnect`); and 447, the panel takes its port exclusively on Windows, so a second panel moves to the next free port. `setup.py` didn't change, so no environment was reinstalled. The Pro Tower Plus's first try was stopped before it started, because its on-screen test banner didn't show within 15 s; the try a minute later showed it and ran. The Windows 11 VM's update waited half a minute in the lock's queue for another program to leave its GPU. No rig checks were run on `f563862`.
+- At 2:41–2:44 PM on 13 November all six machines moved on to dev `f563862` from `1b244fb`, and spock's campy copy with them, each under its lock and `RIG_CLEAN`. It brings two pull requests: 445, a camera plugged back in reads its first frame's timestamp once, so its clock carries on across the gap exactly (`cameraReconnect`); and 447, the panel takes its port exclusively on Windows, so a second panel moves to the next free port. `setup.py` didn't change, so no environment was reinstalled. The Pro Tower Plus's first try was stopped before it started, because its on-screen test banner didn't show within 15 s; the try a minute later showed it and ran. The Windows 11 VM's update waited half a minute in the lock's queue for another program to leave its GPU.
+
+  At 2:52–2:55 PM all six machines ran their rig checks on `f563862`, under their locks. Every run was `RIG_CLEAN` but one: the Windows 11 VM's 1-camera check came out `RIG_CONTAMINATED` from an 86–87 MB/s disk burst charged to no program, the load described in [Development](development.md). It kept all 1,200 frames, and its rerun at 2:57 PM was `RIG_CLEAN`. Nothing was skipped or misaligned, and every camera kept all its frames. Every set was tracked from frame 1, but the replays on the Precision 7875 and the Pro Tower Plus from frame 2, as before. The times matched `1b244fb`'s to within 0.07 ms at the median and 0.2 ms at p99. Replay against offline SLEAP on the EVO-X2 and the Jetson AGX Orin: 2D median 3.8 px, 2 switches, as before. The Windows 11 VM's recording checks kept every frame: 1,200 from 1 camera, then 3 × 3,600 from 3.
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | EVO-X2 | 1,800 / 3.1 / 3.2 | 3,600 / 5.7 / 6.0 / 7.5 / 8.4 | 3,600 / 5.6 / 5.8 / 7.0 / 7.8 |
+  | Pro Max Slim | 1,200 / 2.3 / 2.5 | 3,600 / 5.6 / 5.8 / 7.6 / 8.4 | 1,800 / 5.6 / 5.7 / 8.5 / 9.4 |
+  | Precision 7875 | 1,200 / 0.9 / 1.1 | 3,600 / 1.7 / 1.8 / 3.7 / 4.7 | 1,799 / 1.7 / 1.8 / 4.3 / 5.4 |
+  | Pro Tower Plus (RTX A2000) | 1,200 / 2.7 / 2.9 | 3,600 / 6.8 / 7.1 / 9.0 / 10.0 | 1,799 / 6.9 / 7.2 / 11.0 / 12.1 |
+  | Jetson AGX Orin | 1,800 / 3.9 / 4.1 | 3,600 / 10.1 / 10.6 / 13.6 / 15.0 | 3,600 / 10.0 / 10.3 / 13.5 / 14.8 |
 
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
