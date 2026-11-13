@@ -122,8 +122,11 @@ def test_background_within_its_ceiling_is_taken_out_of_the_load(tmp_path, monkey
 		return round(load.cpu, 1), round(load.io), round(load.rest_cpu, 1), round(load.rest_io), load.background
 	w.sample()  # the first look measures nothing
 	assert look(agent=(2.5, 100), disk=100) == (2.5, 100, 0, 0, [("agent.exe", 2.5, 100.0, True)])
-	# Its reads from Windows' file cache reached no disk; the copy's writes did
-	assert look(agent=(1, 150), other=(0.5, 60), disk=60) == (1.5, 60, 0.5, 60, [("agent.exe", 1.0, 150.0, True)])
+	# Its reads from Windows' file cache reached no disk; the copy's writes did. Against its ceiling goes at
+	# most what the disks moved
+	assert look(agent=(1, 150), other=(0.5, 60), disk=60) == (1.5, 60, 0.5, 60, [("agent.exe", 1.0, 60.0, True)])
+	# A count that is mostly not disk (the network, pipes): 6,000 MB/s with the disks at 5 is within 200
+	assert look(agent=(1, 6000), disk=5) == (1, 5, 0, 0, [("agent.exe", 1.0, 5.0, True)])
 	# Above its ceiling it is load like anyone's
 	assert look(agent=(5, 10), disk=10) == (5, 10, 5, 10, [("agent.exe", 5.0, 10.0, False)])
 	load = rig.Load(5.0, 10.0, [], None, 5.0, 10.0, [("agent.exe", 5.0, 10.0, False)])

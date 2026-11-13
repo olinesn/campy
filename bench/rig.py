@@ -637,18 +637,24 @@ class Watch:
 			if i is not None:
 				s = seen.setdefault(i, [0.0, 0.0])
 				s[0], s[1] = s[0] + c, s[1] + b
-		background = [(bg.entries[i]["label"], c, b, c <= bg.entries[i]["cpu"] and b <= bg.entries[i]["io"])
-			for i, (c, b) in sorted(seen.items())]
-		bg_cpu = sum(c for _, c, _, ok in background if ok)
-		bg_io = sum(b for _, _, b, ok in background if ok)
-		rest_cpu, rest_io = cpu - bg_cpu, io - bg_io
 		disks = None
 		if measured and disk is not None and self.prev_disk is not None:
+			disks = max(0.0, (disk - self.prev_disk) / 1e6 / (t - self.prev_t))
+		# On Windows a program's count is all its I/O, disk or not (a security agent's reached 6,102 MB/s with
+		# the disks at a few): against its ceiling goes at most what the disks moved
+		background, bg_cpu, bg_io = [], 0.0, 0.0
+		for i, (c, b) in sorted(seen.items()):
+			e, disk_b = bg.entries[i], b if disks is None else min(b, disks)
+			ok = c <= e["cpu"] and disk_b <= e["io"]
+			background.append((e["label"], c, disk_b, ok))
+			if ok:  # taken out of the load: all its CPU, and all its I/O as counted
+				bg_cpu, bg_io = bg_cpu + c, bg_io + b
+		rest_cpu, rest_io = cpu - bg_cpu, io - bg_io
+		if disks is not None:
 			# What outside programs read and wrote, as far as it reached a disk; and at least what the
 			# disks moved beyond the job's own reads and writes, which catches writes that Windows'
 			# file cache took and the kernel wrote out later, after their program had gone. What is left
 			# once the background is out: the same, with its reads and writes taken off the disks' too
-			disks = max(0.0, (disk - self.prev_disk) / 1e6 / (t - self.prev_t))
 			io = max(min(io, disks), disks - own_io)
 			rest_io = max(min(rest_io, disks), disks - own_io - bg_io)
 		self.prev_disk = disk
