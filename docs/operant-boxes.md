@@ -4,7 +4,7 @@ campy can run an operant box's hardware: read its sensors (IR beam breaks, nose 
 
 It is the [outputs board](closed-loop.md#the-board) grown by a few features, not a new board. The same Arduino Nano ESP32 and the same sketch, `campy/outputs_board/campy_outputs` (version 3), already count the camera's frames, make exact pulses, and switch everything off when the computer goes away. Version 3 adds inputs, servos and *links* (reflexes on the board). One board per box does all of it, so a rule can combine a poke with the animals' live poses.
 
-**What exists today, and what comes next.** This page describes the board (pull request NNN). The programs that use it come in the next pull requests:
+**What exists today, and what comes next.** This page describes the board (pull request 449). The programs that use it come in the next pull requests:
 
 1. **The board** (this one): inputs, servos, links, the safe state; tested on a simulated board.
 2. **`campy-box`**: runs a task from a YAML file (states such as *wait for a poke, open the door, give a reward*), and logs every event with the board's time, the computer's time and the camera frame.
