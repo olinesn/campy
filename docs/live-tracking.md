@@ -800,7 +800,35 @@ Notes on the measurements:
   - 441: the trigger sketch's optional sync output to other recorders, and `campy-syncmatch`;
   - 443: the trigger sketch started as quickly by upstream campy's commands as by its own sketch, and campy telling a sketch without the sync output.
 
-  `setup.py` gained the `campy-syncmatch` command, so both environments on each machine were reinstalled (`--no-deps -e`); each reads the new code and has the command. The EVO-X2's trigger Arduino (a Nano ESP32) runs `865f783`'s `trigger.ino` since 1:11 PM; no other machine's trigger board was flashed. No rig checks on `865f783` yet.
+  `setup.py` gained the `campy-syncmatch` command, so both environments on each machine were reinstalled (`--no-deps -e`); each reads the new code and has the command. The EVO-X2's trigger Arduino (a Nano ESP32) runs `865f783`'s `trigger.ino` since 1:11 PM; no other machine's trigger board was flashed.
+
+  At 1:22–1:27 PM all six machines ran their rig checks on `865f783`, under their locks. Every run was clean but one:
+  - **The VM's 1-camera check** came out `RIG_CONTAMINATED`: the disk moved 62 MB/s for two looks in a row with no program charged for it, the load described in [Development](development.md). It kept all 1,200 frames, and its rerun at 1:25 PM was `RIG_CLEAN`.
+  - **The Pro Max Slim's replay** was `RIG_CLEAN_BACKGROUND`: two looks of the security agent, and one look at 2.1 cores, too short to count.
+
+  Nothing was skipped or misaligned, and every camera kept all its frames. Every set was tracked from frame 1, but the replay on the three Dell PCs from frame 2, as on `e1f3d35`. The time per set matched `5490252`'s to within 0.2 ms. Replay against offline SLEAP on the EVO-X2 and the Jetson AGX Orin: 2D median 3.8 px, 2 identity switches, as before.
+
+  Pull request 421 shows in the 3D step: numba's compiled loops took 9–22% off its median on every machine. In ms, p50 / p99, `5490252` → `865f783`:
+
+  | Machine | 3 cameras | Replay |
+  |---|---|---|
+  | EVO-X2 | 0.91 / 1.55 → 0.80 / 1.35 | 0.73 / 1.43 → 0.66 / 1.26 |
+  | Pro Max Slim | 0.84 / 1.30 → 0.70 / 1.18 | 0.79 / 1.27 → 0.68 / 1.16 |
+  | Precision 7875 | 1.01 / 1.74 → 0.81 / 1.53 | 1.08 / 1.76 → 0.84 / 1.43 |
+  | Pro Tower Plus | 0.85 / 1.81 → 0.73 / 1.68 | 0.83 / 1.73 → 0.68 / 1.33 |
+  | Jetson AGX Orin | 2.40 / 3.56 → 2.01 / 3.10 | 2.26 / 3.33 → 1.87 / 2.93 |
+
+  So a set reached 3D up to 0.5 ms sooner at the median. The Pro Max Slim's replay p99 rose from 9.4 to 10.0 ms in its `RIG_CLEAN_BACKGROUND` run, the agent's look included.
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | EVO-X2 | 1,800 / 3.1 / 3.2 | 3,600 / 5.7 / 5.9 / 7.5 / 8.3 | 3,600 / 5.6 / 5.8 / 7.0 / 7.8 |
+  | Pro Max Slim | 1,200 / 2.3 / 2.5 | 3,600 / 5.6 / 5.8 / 7.6 / 8.5 | 1,799 / 5.6 / 5.8 / 8.6 / 10.0 |
+  | Precision 7875 | 1,200 / 0.9 / 1.1 | 3,600 / 1.7 / 1.8 / 3.8 / 4.9 | 1,799 / 1.7 / 1.8 / 4.3 / 5.4 |
+  | Pro Tower Plus (RTX A2000) | 1,200 / 2.7 / 2.9 | 3,600 / 6.9 / 7.2 / 9.1 / 10.3 | 1,799 / 6.9 / 7.2 / 10.9 / 12.0 |
+  | Jetson AGX Orin | 1,800 / 3.9 / 4.1 | 3,600 / 10.1 / 10.5 / 13.6 / 14.9 | 3,600 / 10.0 / 10.3 / 13.6 / 14.8 |
+
+  The Windows 11 VM's recording checks kept every frame: 1,200 from 1 camera, then 3 × 3,600 from 3.
 
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
