@@ -843,14 +843,21 @@ def GrabFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=
 				continue
 
 			hostTime = clock.HostNs() # hosttimes.npy's clock, the same in every process
+			# The camera's timestamp of this frame, read once: the offset that carries it on (Resume.Offset) is made
+			# from the same value frametimes.npy gets. A FLIR camera's is the frame's own, read any number of times;
+			# an emulated camera's is its clock as it is read, so read again after Resume.Number (which can wait up
+			# to MATCH_WAIT_S) it was later by that wait, and the step across the gap off by it: by 1.5 ms on a busy
+			# GitHub runner, 2026-11-13
+			stamp = None
 			if resume is not None:
 				# Back after it was unplugged: its first frame numbered as the other cameras' of the same pulse, and
 				# its timestamps carried on (Resume)
 				number, matched = resume.Number(hostTime, mine.Others)
 				try:
-					stampOffset = resume.Offset(number, cam.GetTimeStamp(grabResult))
+					stamp = cam.GetTimeStamp(grabResult)
+					stampOffset = resume.Offset(number, stamp)
 				except Exception:
-					stampOffset = 0.0
+					stamp, stampOffset = None, 0.0
 				missed = number - resume.lastFrame - 1
 				seconds = time.monotonic() - resume.lostAt
 				grabdata["reconnects"].append([resume.lastFrame, number, round(seconds, 3), round(stampOffset, 9)])
@@ -868,7 +875,7 @@ def GrabFrames(cam_params, writeQueue, stopReadQueue, stopWriteQueue, openQueue=
 			try:
 				img = cam.GetImageArray(grabResult)
 				frameNumber += 1 # first frame = 1
-				timeStamp = cam.GetTimeStamp(grabResult) + stampOffset
+				timeStamp = (cam.GetTimeStamp(grabResult) if stamp is None else stamp) + stampOffset
 				lastHostNs = hostTime
 				if grabdata.get("firstHostNs") is None:
 					grabdata["firstHostNs"] = hostTime
