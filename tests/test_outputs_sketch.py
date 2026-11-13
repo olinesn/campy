@@ -3,7 +3,8 @@
 The simulated clock (tests/arduino_sim) advances a microsecond each time the
 sketch reads it, so an edge's time here is when the sketch wrote it, to the
 microsecond. The camera trigger is a simulated input (SIM_INPUT) on pin 10,
-the sketch's default: 60 Hz, 3 ms high, from 0.1 s. Channels 0-7 are on pins 2-9.
+the sketch's default: 60 Hz, 3 ms high, from 0.1 s. Channels 0-7 are on pins 2-9. The serial port's
+transmit buffer is 64 bytes, emptied in 100 us, as a Nano ESP32's USB (SIM_USB_TX), unless a test says otherwise.
 """
 
 import os, subprocess
@@ -13,19 +14,21 @@ import pytest
 TRIG = 10
 PERIOD = 16667
 START = 100000
+USB = "64:100"  # the Nano ESP32's USB serial transmit buffer: 64 bytes
 
 
 def trigger(count=60, start=START, period=PERIOD, high=3000, pin=TRIG):
 	return "{}:{}:{}:{}:{}".format(pin, start, period, high, count)
 
 
-def run(sim, end_s, commands, *later, inputs=None, start_us=0):
+def run(sim, end_s, commands, *later, inputs=None, start_us=0, usb=USB):
 	"""
 	Run the sketch: commands are waiting at power-up, later ones, (seconds,
 	commands), arrive then. Returns each pin's changes [(us, level)] (power-up's
 	lows left out) and what it said [(us, line)].
 	"""
-	env = dict(os.environ, SIM_START_US=str(start_us), SIM_INPUT=inputs if inputs is not None else trigger())
+	env = dict(os.environ, SIM_START_US=str(start_us), SIM_INPUT=inputs if inputs is not None else trigger(),
+		SIM_USB_TX=usb)
 	argv = [sim, str(start_us + int(end_s * 1e6)), "\n".join(commands) + "\n"]
 	argv += ["{}:{}".format(start_us + int(t * 1e6), "\n".join(c) + "\n") for t, c in sorted(later)] # in order
 	out = subprocess.run(argv, capture_output=True, text=True, check=True, timeout=120, env=env).stdout
@@ -250,3 +253,49 @@ def test_bad_commands_are_answered(outputs_sim):
 		"on 0 x"], inputs="")
 	errs = [l for _, l in said if l.startswith("err")]
 	assert len(errs) == 6
+
+
+# ---------------------------------------------------------------- the 64-byte USB buffer (a real Nano ESP32's)
+
+def status(said):
+	line = [l for _, l in said if l.startswith("ok status")][-1]
+	return dict(kv.split("=") for kv in line.split()[2:])
+
+
+def test_status_comes_whole_through_a_64_byte_usb_buffer(outputs_sim):
+	# About 110 characters: more than the Nano ESP32's USB takes at once. It was dropped, every time, on the real
+	# board (13 November); now it goes out in pieces as USB takes them
+	edges, said = run(outputs_sim, 0.3, ["id"], (0.25, ["status"]))
+	st = status(said)
+	assert set(st) == {"t", "frame", "period", "high", "running", "clashes", "lates", "wds", "late_max", "lost"}
+	assert st["frame"] == "10" and st["lost"] == "0"
+
+
+def test_answers_back_to_back_all_come_in_order(outputs_sim):
+	# Seven commands at once: their answers, about 150 bytes together, come out within microseconds of each other
+	commands = ["id", "time", "watchdog 300", "bound 40000", "time", "max 0 0", "id"]
+	edges, said = run(outputs_sim, 0.05, commands, inputs="")
+	answers = [l.split()[1] for _, l in said if l.startswith("ok ")]
+	assert answers == ["campy_outputs", "time", "watchdog", "bound", "time", "max", "campy_outputs"]
+
+
+def test_a_burst_of_pulse_reports_is_not_lost(outputs_sim):
+	# Four trains on every frame: each trigger brings a "t" line, and 3 ms later four "p" lines at once (about
+	# 150 bytes), more than USB takes at once. Each pulse is reported, and nothing is counted lost
+	commands = ["train {} 1 0 0 3000".format(ch) for ch in range(4)] + ["run {} -1".format(ch) for ch in range(4)]
+	edges, said = run(outputs_sim, 0.6, commands, *heartbeats(0.6), (0.55, ["status"]))
+	for ch in range(4):
+		made = pulses(edges, 2 + ch)
+		reported = [l for _, l in lines(said, "p") if l.split()[1] == str(ch)]
+		assert len(made) >= 25 and len(reported) == len(made), (ch, len(made), len(reported))
+	assert [int(l.split()[1]) for _, l in lines(said, "t")] == list(range(1, len(lines(said, "t")) + 1))
+	assert status(said)["lost"] == "0"
+
+
+def test_without_the_usb_limit_nothing_changes(outputs_sim):
+	# The same burst with no transmit buffer limit, as before this test simulated one: the same pulses and reports
+	commands = ["train 0 1 0 0 3000", "run 0 -1"]
+	limited = run(outputs_sim, 0.4, commands, *heartbeats(0.4))
+	free = run(outputs_sim, 0.4, commands, *heartbeats(0.4), usb="")
+	assert pulses(limited[0], 2) == pulses(free[0], 2)
+	assert [l for _, l in limited[1]] == [l for _, l in free[1]]

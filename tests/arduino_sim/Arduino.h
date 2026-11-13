@@ -28,6 +28,10 @@ struct SimSerial {
 	void begin(uint32_t) {}
 	int available();
 	int read();
+	// What USB takes now without waiting (SIM_USB_TX, see sim.cpp); a large number when it isn't set
+	int availableForWrite();
+	// The host has the port open (always, here)
+	explicit operator bool() const { return true; }
 	float parseFloat();
 	// What the sketch says: Print's formatting (floats with 2 decimals)
 	void print(const char* text);

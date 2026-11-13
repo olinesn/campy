@@ -63,7 +63,11 @@
 //   e <ch> <0|1> <t_us> <why>         a level changed by itself: max, wd
 //   clash <ch> <k> <t_us>             a pulse skipped: its group had a channel high
 //   wd <t_us>                         the watchdog fired: everything is low
-// Lines it couldn't send (the host not reading) are counted in "lost", never waited for.
+// Every line waits its turn in a queue and goes out as USB takes it, in pieces if need be, between the board's
+// timed changes: never waited for. The Nano ESP32's USB serial buffer holds 64 bytes, so a line that didn't fit
+// at once used to be dropped (status, about 110 characters, always was). Lines are dropped, and counted in
+// "lost", only when the queue is full (a host that stopped reading), and the queue is emptied when the host
+// closes the port, so the next one hears none of the last one's answers.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -108,6 +112,7 @@ void Command(char* line);
 void ReadSerial(int64_t until);
 void Say(const char* line);
 void Queue(const char* line);
+bool SendSome();
 void FlushQueue(int64_t until);
 void SetPin(int ch, int pin);
 void WritePins(const int8_t* level);
@@ -137,10 +142,12 @@ int64_t last_heard = 0;
 uint32_t clashes = 0, lates = 0, wds = 0;
 int64_t late_max = 0;
 
-// Lines waiting to be said, while changes were close
+// Lines waiting to be said, each with its "\r\n": while changes were close, or while USB couldn't take them yet.
+// The head line may be partly sent (q_sent of its characters).
 #define QUEUE 128
-char queue[QUEUE][64];
-int q_head = 0, q_len = 0;
+#define LINE_BYTES 128
+char queue[QUEUE][LINE_BYTES];
+int q_head = 0, q_len = 0, q_sent = 0;
 uint32_t lost = 0;
 
 char line[128];
@@ -261,29 +268,50 @@ bool Clash(int ch, const int8_t* rising) {
 
 
 void Say(const char* text) {
-  // Now, if it fits in what USB can take without waiting; else it's lost
-#if defined(ESP32)
-  if (Serial.availableForWrite() < (int) strlen(text) + 2) { lost++; return; }
-#endif
-  Serial.print(text);
-  Serial.print("\r\n");
+  // An answer: now, as far as USB takes it, after whatever is waiting (so the answers keep their order); the rest
+  // as USB takes it (FlushQueue). Never waited for.
+  Queue(text);
+  SendSome();
 }
 
 
 void Queue(const char* text) {
   if (q_len == QUEUE) { lost++; return; }
-  strncpy(queue[(q_head + q_len) % QUEUE], text, 63);
-  queue[(q_head + q_len) % QUEUE][63] = 0;
+  char* slot = queue[(q_head + q_len) % QUEUE];
+  size_t n = strlen(text);
+  if (n > LINE_BYTES - 3) { n = LINE_BYTES - 3; }
+  memcpy(slot, text, n);
+  memcpy(slot + n, "\r\n", 3);
   q_len++;
 }
 
 
-void FlushQueue(int64_t until) {
-  // What's waiting, until it's time to make the next change
-  while (q_len > 0 && Now() < until) {
-    Say(queue[q_head]);
+bool SendSome() {
+  // As much of what's waiting as USB takes now, without waiting for it. True once nothing is left.
+  if (!Serial) { q_len = 0; q_sent = 0; return true; } // the host closed the port: the next one hears none of it
+  char piece[LINE_BYTES];
+  while (q_len > 0) {
+    const char* text = queue[q_head] + q_sent;
+    int len = (int) strlen(text);
+    int room = Serial.availableForWrite();
+    if (room <= 0) { return false; }
+    int n = len < room ? len : room;
+    memcpy(piece, text, n);
+    piece[n] = 0;
+    Serial.print(piece);
+    if (n < len) { q_sent += n; return false; }
     q_head = (q_head + 1) % QUEUE;
     q_len--;
+    q_sent = 0;
+  }
+  return true;
+}
+
+
+void FlushQueue(int64_t until) {
+  // What's waiting, as USB takes it, until it's time to make the next change
+  while (q_len > 0 && Now() < until) {
+    if (!SendSome()) { return; }
   }
 }
 
