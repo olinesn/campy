@@ -74,7 +74,11 @@ others) or that sends no frame for STALL_S (1 s) while the others send
 half a second of frames is left out of the sets, said once on the
 console: tracking and 3D go on with the other cameras, and its columns in
 those sets are empty (cam_frame -1, host_ns 0, keypoints NaN, members -1).
-A stalled camera is taken back once its frames come again. Every camera
+A camera whose feed says it is lost (cameraReconnect: it was unplugged,
+and campy waits for it) is left out at once, at the next look (every
+WATCH_S), not after STALL_S: the sets of the other cameras would otherwise
+wait a second for it, and that second go untracked.
+A stalled or lost camera is taken back once its frames come again. Every camera
 pausing at once (the trigger's pause, between a Pico's bouts) is not a
 stall: nothing is left out, and the sets go on after it as before.
 A camera that lost a frame numbers its later frames one lower than the
@@ -326,7 +330,8 @@ def DeadWriter(reader):
 
 # A camera whose feed ended, or that sent no frame for STALL_S while the
 # others sent half a second of frames, is left out of the sets till it sends
-# frames again (an ended one: for good). A pause of every camera at once (the
+# frames again (an ended one: for good). One whose feed says it is lost
+# (unplugged, campy waiting for it) is left out at once. A pause of every camera at once (the
 # trigger's: between a Pico's bouts) is never taken for one.
 STALL_S = 1.0
 # Sets in a row whose host times are more than half a frame apart, before
@@ -376,7 +381,7 @@ class Cameras:
 		n = len(self.names)
 		self.offset = [0] * n # each camera's frame number for set n is n + offset
 		self.active = list(range(n)) # the cameras in the sets
-		self.left = {} # camera: why it is left out ("ended", "stalled")
+		self.left = {} # camera: why it is left out ("ended", "stalled", "lost": unplugged, campy waiting for it)
 		self.leftAt = [0.0] * n
 		self.seen = [0] * n # each camera's newest frame number as last looked at
 		self.movedAt = [0.0] * n # when it last changed
@@ -579,11 +584,13 @@ class Cameras:
 				break
 			# Not moved for STALL_S (or ended), while the others sent half a second of frames: every camera
 			# pausing at once (the trigger's pause) is not that
-			ended = self.readers[i].Ended()
-			if (ended or now - self.movedAt[i] >= STALL_S) and newest - self.snap[i] >= self.stallFrames:
-				self.Leave(i, "ended" if ended else "stalled", now)
-		back = [i for i, why in self.left.items() if why == "stalled" and self.movedAt[i] > self.leftAt[i] and
-			not self.readers[i].Ended()]
+			# The feed saying its camera is lost (unplugged, campy waiting for it): at once, without waiting for
+			# STALL_S, which would hold every camera's sets back that long
+			ended, lost = self.readers[i].Ended(), self.readers[i].Lost()
+			if lost or (ended or now - self.movedAt[i] >= STALL_S) and newest - self.snap[i] >= self.stallFrames:
+				self.Leave(i, "lost" if lost else "ended" if ended else "stalled", now)
+		back = [i for i, why in self.left.items() if why in ("stalled", "lost") and self.movedAt[i] > self.leftAt[i]
+			and not self.readers[i].Ended()]
 		# Only cameras sending frames: one that stopped is left out after STALL_S instead, and its newest frame
 		# is no time to pair the others' with
 		moving = [i for i in self.active if now - self.movedAt[i] < REPAIR_S]
@@ -605,7 +612,11 @@ class Cameras:
 			self.buffer[i] = 0 # the model gets a blank frame for it, and its results are dropped (Log.Row)
 		self.Event(i, "left out", why=why, frame=self.seen[i])
 		others = ", ".join(self.Name(j) for j in self.active)
-		if why == "ended":
+		if why == "lost":
+			self.say("{} unplugged after its frame {}, campy waiting for it, while the other cameras record on: tracking "
+				"goes on with {}, and takes it back when it is plugged in again.".format(self.Name(i), self.seen[i],
+				others))
+		elif why == "ended":
 			self.say("{}'s feed ended at its frame {} while the other cameras record on (camera lost?): tracking "
 				"goes on with {}, without it.".format(self.Name(i), self.seen[i], others))
 		else:

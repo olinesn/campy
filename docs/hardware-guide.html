@@ -643,7 +643,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
     <li><b>Recording and tracking 3 cameras at once fits too, on the CPU.</b> campy-acquire recorded 3 emulated cameras for 60 s with libx264 <code>ultrafast</code> while <code>campy-live</code> tracked them in 3D: all 3,600 frames of each, every set tracked (inference 10.2 / 10.7 ms, to 3D 14.7 / 16.5), the CPU about half busy. At campy's default CPU preset (<code>fast</code>), only 1 camera keeps up.</li>
     <li><b>campy records on its own encoder now (<code>gpuMake: "jetson"</code>), at a fifth of a core per camera.</b> ffmpeg can't reach the Orin's encoder (NVIDIA's own ffmpeg's NVENC is for the Jetson Thor), so campy sends each camera's frames to GStreamer, which encodes them, and ffmpeg only writes them into campy's usual MP4. Measured with <code>campy-encode-sweep</code> (1280 × 1024 mono at 60 fps, 25% headroom, quality 21): H.264 kept up with 8 cameras, H.265 with 7 (8 reached 72 fps each), and with 8 at quality 25. 8 is also the most at once: with 9 the encoders take turns, at 35 fps each. Recording 3 cameras while <code>campy-live</code> tracked them in 3D kept all 3,600 frames of each, every set tracked (inference 10.2 / 10.6 ms, to 3D 14.5 / 15.8), the gray levels 0–255 as the cameras sent them (46–48 dB against the clips played), and took about 20% of a core per camera against 73% for libx264 <code>ultrafast</code>.</li>
     <li><b>TensorRT matters more here than on the PCs:</b> <code>torch.compile</code> took 1.7 times as long, and plain PyTorch 2.4 times. The engines took 30–45 s to build the first time; later starts took 9 s.</li>
-    <li><b>The 3D step runs on the CPU</b>, 2.8 ms a set, against about 1.1 ms on the EVO-X2's faster cores.</li>
+    <li><b>The 3D step runs on the CPU</b>, 2.3 ms a set (2.8 ms before pull request 420, which takes about a fifth off here and on the EVO-X2, with the same results to the last bit), against about 1.1 ms on the EVO-X2's faster cores before it.</li>
     <li><b>JetPack 7.2 or newer.</b> JetPack 7.1 installs on an AGX Orin but leaves its GPU without a driver; this one came that way and had to be reflashed.</li>
     <li><b>Not checked:</b> how far TensorRT's fp16 moves the keypoints from fp32 on the Orin (the replay's accuracy includes it), and real cameras feeding <code>campy-live</code>.</li>
   </ul>
@@ -762,7 +762,7 @@ footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rul
 
 <footer>
   <p>Measured 18–29 October 2026 on a GMKtec EVO-X2, a Dell Pro Max Slim FCS1250, a Dell Precision 7875 and a Dell Pro Tower Plus, on 7 November 2026 on an Intel Arc Pro B50 in a Windows 11 virtual machine and (the Dell agent's pauses) on the Dell Precision 7875, on 7–9 November 2026 (lighter models for 2 mice) on the Dell Pro Tower Plus, on 9 November 2026 with its 8 real cameras and 2 mice, on 10 November 2026 (a calibration made from the recording page) on the Dell Pro Max Slim FCS1250 and the GMKtec EVO-X2, and on 11 November 2026 on an NVIDIA Jetson AGX Orin 64GB Developer Kit.</p>
-  <p class="meta">Version 74 · updated 13 November 2026 · reflects campy changes through pull request 429 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
+  <p class="meta">Version 75 · updated 13 November 2026 · reflects campy changes through pull request 420 · source: <code>docs/hardware-guide.html</code> in the campy repository</p>
 </footer>
 </div>
 

@@ -1506,9 +1506,9 @@ def test_a_ring_says_its_camera_is_lost_until_its_next_frame(rings):
 
 def test_campy_live_takes_back_a_camera_plugged_back_in(rings, monkeypatch):
 	# cameraReconnect: camera 1 unplugged after pulse 30 (its ring LOST, not ended), plugged back in at pulse 91, its
-	# frames numbered as the other cameras' again: left out meanwhile as a stalled camera, then taken back, every set
-	# pairing one pulse's frames, with no offset
-	monkeypatch.setattr(live, "STALL_S", 0.3)
+	# frames numbered as the other cameras' again: left out meanwhile, then taken back, every set pairing one pulse's
+	# frames, with no offset. Left out at once, as its feed says it is lost: not after STALL_S (1 s, here the
+	# whole time it is gone), which held every camera's sets back that long, untracked
 	writers, cams, said = three(rings)
 	out = np.empty((3, 16, 20, 1), np.uint8)
 	got = []
@@ -1535,8 +1535,13 @@ def test_campy_live_takes_back_a_camera_plugged_back_in(rings, monkeypatch):
 		done.set()
 		reader.join()
 		cams.Close()
-	assert any("No frame from Camera1" in s for s in said), said
+	assert any("Camera1 unplugged after its frame 30" in s for s in said), said
+	assert not any("No frame from Camera1" in s for s in said), said
 	assert any("Camera1's frames came again" in s for s in said), said
+	# The sets without it start within a few pulses of the unplug (a loaded runner: up to 0.25 s), not 1 s later
+	without = [g[0] for g in got if g[1][1] == -1]
+	assert without and min(without) <= 45, without
+	assert cams.Report()["events"][0]["why"] == "lost"
 	back = [g for g in got if g[0] > 95 and g[1][1] != -1]
 	assert back, got
 	for number, own, seen in back:
