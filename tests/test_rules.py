@@ -1198,3 +1198,119 @@ def test_the_board_sketch_keeps_the_session_train_and_never_fires_its_watchdog_w
 	pulses = [e for e in events if e["kind"] == "pulse" and e["channel"] == 1 and e.get("rise_ns")]
 	during = [p for p in pulses if marks["gone"] + 100_000_000 < p["rise_ns"] < marks["back"]]
 	assert len(during) >= 20, len(during)
+
+
+# ---------------------------------------------------------------- an operant box's inputs (sketch version 3)
+
+POKE = {"poke": {"input": 0, "pin": "A0", "pull": "up"}}
+
+
+def test_a_poke_rewarded_only_when_mouse_2_is_at_the_port():
+	# all: [the poke, mouse 2's nose in the port]: a poke while mouse 2 is elsewhere gives nothing
+	r = build({"outputs": OUT, "inputs": POKE, "regions": {"port": NEST}, "rules": [
+		{"name": "m2_poke", "when": {"all": [{"input": "poke"}, {"inside": {"region": "port", "animal": 2,
+			"node": "nose"}}]}, "do": {"output": "reward", "action": "pulse"}}]})
+	poke = r.inputs["poke"]
+	inside, outside = {2: {"nose": [50, 50, 10]}}, {2: {"nose": [500, 50, 10]}}
+	poke.Set(False)
+	t = lambda k: int(k * 16_666_667)
+	assert r.Step(make_row(1, inside), t(1))[1] == []        # mouse 2 there, no poke
+	poke.Edge(True)
+	assert r.Step(make_row(2, outside), t(2))[1] == []       # a poke, mouse 2 elsewhere
+	poke.Edge(False)
+	assert r.Step(make_row(3, inside), t(3))[1] == []
+	poke.Edge(True)
+	assert [c[3] for c in r.Step(make_row(4, inside), t(4))[1]] == ["pulse 3 50000"]
+	assert r.inputs["poke"].count == 2
+
+
+def test_an_input_shorter_than_a_frame_still_counts_once():
+	# A lick between two sets (active, then inactive before the next set): true for that set only
+	r = build({"outputs": OUT, "inputs": {"lick": {"input": 3, "pin": "A3", "pull": "down", "debounce_ms": 0.5}},
+		"rules": [{"name": "lick", "when": {"input": "lick"}, "do": {"output": "laser"}}]})
+	lick = r.inputs["lick"]
+	lick.Set(False)
+	t = lambda k: int(k * 16_666_667)
+	assert r.Step(make_row(1), t(1))[1] == []
+	lick.Edge(True)
+	lick.Edge(False)
+	assert [c[3] for c in r.Step(make_row(2), t(2))[1]] == ["on 2"]
+	assert [c[3] for c in r.Step(make_row(3), t(3))[1]] == ["off 2"]
+
+
+def test_an_input_unknown_without_a_board_never_switches_on():
+	r = build({"outputs": OUT, "inputs": POKE, "rules": [{"name": "p", "when": {"input": "poke"},
+		"do": {"output": "laser"}}]})
+	assert all(c == [] for c in steps(r, [make_row(k) for k in range(1, 20)]))
+
+
+def test_inputs_are_set_up_on_the_board():
+	r = build({"outputs": OUT, "inputs": POKE, "rules": []})
+	assert r.Setup()[-1] == "in 0 100 1 0 1000"
+	free = r.Free()
+	assert "in 7 -1" in free and "servo 3 -1" in free and "link 0 -1" in free
+	assert [c for c in free if c.startswith("pin")] == ["pin 4 -1", "pin 5 -1", "pin 6 -1", "pin 7 -1"]
+	assert build({"outputs": OUT, "rules": []}).Free()[-1] == "servo 3 -1" # no inputs: the channels keep their pins
+	with pytest.raises(rules.RulesError, match=r"input poke and output laser are both on D4"):
+		build({"outputs": OUT, "inputs": {"poke": {"input": 0, "pin": 4}}, "rules": []})
+	with pytest.raises(rules.RulesError, match=r"no input 'nose_poke'"):
+		build({"outputs": OUT, "inputs": POKE, "rules": [{"when": {"input": "nose_poke"}, "do": {"output": "laser"}}]})
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal for the simulated board")
+def test_live_rules_reward_pokes_from_the_board(tmp_path, outputs_sim):
+	"""
+	The whole path with an input: the sketch in real time, a 60 Hz trigger, a poke on A0 (pulled low) every 0.25 s,
+	rows into the results feed. A rule rewards each poke: the board says each edge (logged, with its frame), the
+	rules see it with the next set, and the reward pulse follows.
+	"""
+	period_us = 16667
+	master, slave = pty()
+	sim_log = tmp_path / "sim.log"
+	env = dict(os.environ, SIM_INPUT="10:300000:{}:3000:100000;30:500000:250000:40000:1000".format(period_us))
+	board_sim = live_sim(outputs_sim, master, sim_log, env)
+	prefix = name()
+	feed = Feed(prefix)
+	out = str(tmp_path / "live")
+	config = {"board": {"trigger_pin": 10, "bound_ms": 200, "watchdog_ms": 250},
+		"outputs": {"reward": {"channel": 3, "pin": 5, "pulse_ms": 2}}, "inputs": POKE,
+		"rules": [{"name": "poke", "when": {"input": "poke"}, "do": {"output": "reward", "action": "pulse"}}]}
+	args = args_for(prefix, out)
+	args.port = os.ttyname(slave)
+	runner = rules.Runner(args, config)
+	said = []
+	runner.say = said.append
+	thread, result = start(runner)
+	try:
+		assert until(lambda: "code" in result or (runner.board is not None and len(runner.board.rises) >= 5 and
+			runner.board.clock.Ready()), 60), said
+		assert "code" not in result, (result, said)
+		board = runner.board
+		k0 = next(reversed(board.rises))
+		for k in range(k0 + 1, k0 + 90): # 1.5 s of sets: about 6 pokes
+			deadline = time.monotonic() + 10
+			while k not in board.rises and time.monotonic() < deadline:
+				time.sleep(0.0005)
+			rise = board.RiseHostNs(k)
+			feed.Write(make_row(k, t_ns=rise + 5_000_000 if rise is not None else clock.HostNs()))
+		time.sleep(0.3)
+	finally:
+		runner.stop.set()
+		thread.join(10)
+		feed.Close()
+		board_sim.terminate()
+		board_sim.wait()
+		os.close(slave)
+		os.close(master)
+	assert result.get("code") == 0, said
+	events = [json.loads(l) for l in open(out + ".events.jsonl")]
+	pokes = [e for e in events if e["kind"] == "input" and e["active"] == 1]
+	assert len(pokes) >= 4, events
+	for e in pokes:
+		assert e["input"] == "poke" and (e["board_us"] - 500000) % 250000 < 3000 and e["board_frame"] >= 1, e
+	pulses = [e for e in events if e["kind"] == "command" and e["command"].startswith("pulse 3 2000")]
+	# Each poke rewarded once (a poke lasts 40 ms: two or three sets, one start of the rule), within a few sets
+	assert abs(len(pulses) - len(pokes)) <= 1, (pokes, pulses)
+	summary = json.load(open(out + ".json"))
+	assert summary["inputs"]["poke"]["went_active"] == len(pokes) and summary["counts"]["inputs"] >= 2 * len(pokes) - 1
+	assert any(l.startswith("> in 0 100 1 0 1000") for l in [x.split(" ", 1)[1] for x in open(out + ".board.txt")])

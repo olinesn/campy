@@ -103,6 +103,18 @@ To light only part of the exposure, use `offset_us` to place the pulse within th
 - **`near`**: two body parts within `within` mm (pixels with `camera:`), until they are more than `leave` apart.
   - `a` and `b` each name an animal and a node. `b`'s animal can be `other` (any but a's), `same` (a's own, for example nose to tail) or an identity.
 - **`test: {every: N}`**: true on every Nth frame, for measuring latency without any animal.
+- **`input: <name>`**: an [operant box](operant-boxes.md)'s sensor on the same board, named in an `inputs:` section (as in a `campy-box` task: `poke: {input: 0, pin: A0, pull: up}`). True for a set while the input is active, or if it went active since the set before, so a lick shorter than a frame still counts once. With a pose under `all:`, for example a reward only when mouse 2 is the one at the port:
+
+  ```yaml
+  inputs:
+    poke: {input: 0, pin: A0, pull: up}
+  rules:
+    - name: mouse2_pokes
+      when: {all: [{input: poke}, {inside: {region: port, animal: 2, node: nose}}]}
+      do: {output: reward, action: pulse}
+  ```
+
+  The board says each edge as it happens, with its frame; the rules see it with the next set, so the reward follows the poke by about a set's latency (the frame's trigger to its poses), not within microseconds as a `campy-box` link would. Without a board (`--dry-run`, `--replay`) an input is unknown, so it never switches anything on. The rules file's inputs take pins no output and not the trigger has: a channel the rules don't use is unpinned, so its default pin (D2 to D9) is free.
 - **`all`, `any`, `not`** combine conditions.
 - **`animal:`** an identity (0 to animals − 1, from `campy-live --calibration`), a list of them, or `any`.
 - **`node:`** a name, an index, a list (their mean), or `all`.
@@ -206,7 +218,7 @@ All host times are on campy's host clock (`hosttimes.npy`'s), so everything line
   - the board's pin time (on the board's clock, and on the host clock);
   - `after_us`: the pin's change after the frame's trigger.
 
-  Also one line per pulse the board made, with both edges. And `live_gone` / `live_back` when `campy-live` was gone during the recording (pose rules off between them).
+  Also one line per pulse the board made, with both edges; one per input edge (`kind: input`, with its board time, host time and the board's frame); and `live_gone` / `live_back` when `campy-live` was gone during the recording (pose rules off between them).
 - **`<out>.board.txt`**: every line to and from the board. That includes every camera trigger's rise, `t <frame> <board µs>`.
 - **`<out>.npy`**: per set, its frame, times, each rule's value (−1 unknown) and whether it held.
 - **`<out>.json`**: the summary. Counts, the latency of each step, and the map from the board's clock to the host clock. That map is good to half its quickest round trip: about 0.2 ms on a Windows PC with a Nano ESP32 (up to about 7 ms before pull request 417).
@@ -228,6 +240,8 @@ All host times are on campy's host clock (`hosttimes.npy`'s), so everything line
   - it ends with `campy-live` as before without camera feeds to look at, or with `--live-wait-s 0`;
   - a camera feed left by a killed recording, or made again by the next one, counts as ended;
   - `refractory_s` counts across the restart.
+
+  For inputs, it checks a poke rewarded only with mouse 2 at the port, an input shorter than a frame counted once, an input that is unknown without a board, the board's setup, and the whole path in real time: pokes on the simulated board's A0, each rewarded once.
 
   One of these runs the sketch in real time with a 60 Hz trigger: `campy-live` gone for 2 s, the session train's pin kept pulsing (20 pulses or more during the gap) and the board's watchdog never fired. That test sets the watchdog to 500 ms, not 250, because a 250 ms hold-up of the simulated board or of `campy-rules` on a busy test computer could fire it. It also checks the heartbeat's pace from what `campy-rules` sent. Slowing the waiting loop to 300 ms makes that test and the heartbeat check fail. And it runs the whole path in real time: a results feed, `campy-rules`, and the sketch on a simulated serial port with a 60 Hz trigger.
 

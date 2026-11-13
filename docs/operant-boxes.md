@@ -9,7 +9,8 @@ It is the [outputs board](closed-loop.md#the-board) grown by a few features, not
 1. **The board** (pull request 449): inputs, servos, links, the safe state; tested on a simulated board.
 2. **`campy-box`** (pull request 451): runs a task from a YAML file (states such as *wait for a poke, open the door, give a reward*), and logs every event with the board's time, the computer's time and the camera frame. [Running a task](#running-a-task-campy-box) below.
 3. **Recordings** (pull request 454): a `box:` section in the config makes `campy-session` (and the panel) start the task with the recording, keep its logs in the recording's folder, and show its trial and counts. [With a recording](#with-a-recording-the-box-section) below.
-4. **Poses in the task** (after that): `campy-rules`' conditions (an animal in a region, two animals close) usable in a task, and the box's inputs usable in `campy-rules`.
+4. **The box's sensors in `campy-rules`** (pull request NNN): an `input:` condition, alone or with a pose, such as a reward only when mouse 2 is the one at the port ([Closed-loop outputs](closed-loop.md#conditions)). `campy-rules` and `campy-box` can't share a board: a box runs one or the other.
+5. **Poses in the task** (next): `campy-rules`' conditions (an animal in a region, two animals close) usable in a `campy-box` task's states.
 
 ## How the work is divided
 
