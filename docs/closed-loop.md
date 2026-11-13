@@ -162,7 +162,7 @@ The events log has a `live_gone` line when the results end and a `live_back` lin
 ## Safety
 
 - **Off by default.** The outputs are low from power-up and after every reset.
-- **Watchdog.** `campy-rules` sends the board a heartbeat every 50 ms. If 250 ms pass without one while anything is on, the board switches everything off by itself. That covers a crash, a kill or an unplugged cable. It also covers a stuck decision loop: the heartbeat goes out only while the loop that checks the rules has gone round in the last 100 ms. Before pull request 304, another thread sent it, so a stuck loop kept the watchdog quiet.
+- **Watchdog.** `campy-rules` sends the board a heartbeat every 50 ms. If 250 ms pass without one while anything is on, the board switches everything off by itself. That covers a crash, a kill or an unplugged cable. It also covers a stuck decision loop: the heartbeat goes out only while the loop that checks the rules has gone round in the last 100 ms. Before pull request 304, another thread sent it, so a stuck loop kept the watchdog quiet. On a real board it fires 250 ms after the board last heard anything, to within 0.01 ms ([On a real board](#on-a-real-board)).
 - **After the watchdog.** `campy-rules` starts the rules over from the next sets, and starts the session's trains (`run: session`) again. A rule that still holds then switches its output on again.
 - **Logs never hold up a decision.** `campy-rules` writes its logs on a thread of its own. A slow disk delays neither the decisions, nor the stale-feed check, nor the heartbeat.
 - **Clean exit.** `campy-rules` switches everything off when it ends, whatever the reason, the session's photometry trains included.
@@ -230,3 +230,13 @@ All host times are on campy's host clock (`hosttimes.npy`'s), so everything line
   - `refractory_s` counts across the restart.
 
   One of these runs the sketch in real time with a 60 Hz trigger: `campy-live` gone for 2 s, the session train's pin kept pulsing (20 pulses or more during the gap) and the board's watchdog never fired. That test sets the watchdog to 500 ms, not 250, because a 250 ms hold-up of the simulated board or of `campy-rules` on a busy test computer could fire it. It also checks the heartbeat's pace from what `campy-rules` sent. Slowing the waiting loop to 300 ms makes that test and the heartbeat check fail. And it runs the whole path in real time: a results feed, `campy-rules`, and the sketch on a simulated serial port with a 60 Hz trigger.
+
+### On a real board
+
+On 12 and 13 November the camera-trigger Nano ESP32 of the Dell Pro Tower Plus was flashed with `campy_outputs` (version 2) for a few minutes at a time. Each time it was flashed back afterwards with the exact binary it had run before, and it answered its trigger commands as before. Its outputs were the board's own RGB LED (pins 14 and 15, on no header pin); no trigger was wired. Under `campy-rules`' own `Board` (`campy/trigger/outputs.py`), with the heartbeat stopped the way a stuck decision loop stops it:
+
+- the watchdog fired 249.996 ms and 249.995 ms after the board last heard anything (with one and with two outputs on; `watchdog_ms` 250), and 999.994 ms with 1,000, timed on the board's own clock;
+- it stayed quiet with nothing on, and with an output on while heartbeats came (3 s);
+- once the heartbeat came back, nothing switched itself on again, and the next `on` worked.
+
+With the sketch from before pull request 430, the board can't answer `status` on a Nano ESP32: its answer (about 110 characters) is longer than the 64 bytes its USB serial buffer holds, and that sketch drops a line that doesn't fit rather than wait. Pull request 430 sends such lines in pieces. `campy-rules` doesn't use `status`. Not checked on the real board yet, since they need a trigger wired to it: a level and a train on one output each switching off, and the trains across a trigger pause. The pins' levels weren't measured with an instrument either; that the outputs went low after the watchdog is the board's own report (`wd`: "everything is low").
