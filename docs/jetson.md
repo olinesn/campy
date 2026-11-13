@@ -109,7 +109,24 @@ Loading the compiled loops took 0.8–1.4 s on the Orin and compiling them the f
 | With the handing over (what `campy-live` waits for) | the same | 2.19–2.24 / 3.16–3.20 ms |
 | Frame to 3D | 13.5 / 14.7–14.8 ms | 13.9 / 15.0–15.1 ms |
 
-The lock cost only about 0.1 ms, and handing each set over (pickling it, the pipe, waking the other process, and back) cost about 0.45 ms, so the 3D poses came about 0.4 ms later. The gap to offline (1.30 ms) isn't the time between sets either. Offline, one set every 1/60 s, as the cameras give them, took 1.31–1.32 ms against 1.27–1.29 ms back to back, and the same pinned to one cluster of cores (`taskset -c 4-7`). What is left is likely the rest of the replay check sharing the chip: the feed decoding three videos on the CPU, and the GPU's inference, which on the Orin shares the CPU's memory. That wasn't measured.
+The lock cost only about 0.1 ms, and handing each set over (pickling it, the pipe, waking the other process, and back) cost about 0.45 ms, so the 3D poses came about 0.4 ms later. The gap to offline (1.30 ms) isn't the time between sets either. Offline, one set every 1/60 s, as the cameras give them, took 1.31–1.32 ms against 1.27–1.29 ms back to back, and the same pinned to one cluster of cores (`taskset -c 4-7`). What is left is the replay check's feeder, measured next.
+
+**What slows the 3D step during the replay check: its feeder, on the same cores** (13 November). Each part of the step was timed set by set (the undistortion, the scoring, the matching, the triangulations), offline at one set every 1/60 s beside each of the replay check's loads in turn, and inside `campy-live`. Every part slowed by about the same share, as when a core and its cache are shared. The feeder is the replay check's own stand-in for the cameras: Python with three `ffmpeg` processes decoding the recorded videos on the CPU. The Orin's 12 cores are in three clusters of four (0–3, 4–7, 8–11), each with its own cache. The 3D step, p50 / p99 per set (with the timing itself, which adds about 0.04 ms), with numba:
+
+| Where the step ran, and what ran beside it | 3D step | Frame to 3D |
+|---|---|---|
+| Offline, alone (any core, or cores 4–7) | 1.34–1.36 / 2.28–2.33 ms | |
+| Offline, beside a GPU-only load (about 9 ms of work every 1/60 s) | 1.40 / 2.36 ms | |
+| Offline on cores 4–7, the feeder on 8–11 or on 0–3 | 1.37–1.38 / 2.35–2.37 ms | |
+| Offline on cores 4–7, the feeder on the same cores | 1.89 / 2.87 ms | |
+| Offline, the feeder on any core | 1.81–1.88 / 2.80–2.91 ms | |
+| Offline, beside the whole replay tracked in 2D (feeder and models) | 1.97 / 2.98 ms | |
+| `campy-live`, nothing pinned (as the rig check runs) | 1.87–1.90 / 2.86–2.96 ms | 13.6 ms |
+| `campy-live` on any core, the feeder on 8–11 | 1.67 / 2.77 ms | 13.2 ms |
+| `campy-live --cpus 4-7`, the feeder on 8–11 | 1.69 / 2.76 ms | 13.3 ms |
+| The 3D thread alone on 4–7, the rest of `campy-live` on 0–3, the feeder on 8–11 | **1.51–1.52 / 2.62–2.68 ms** | **13.1 ms** |
+
+So the GPU, which shares the CPU's memory on the Orin, costs the step almost nothing; the feeder does, when it shares the step's cluster, and left to itself it spreads over all of them. Inside `campy-live` the 3D step also shares its cluster with `campy-live`'s other threads unless it has one of its own. With its own cluster it ran within about 0.15 ms of offline, about what Python's lock was found to cost above. Nothing in campy pins the 3D thread on its own yet: the last row used a test-only hook. Each layout ran once or twice, one after another. Two runs in which the models' thread could share the 3D thread's cluster (`--cpus 4-7`, and the 3D thread on 4–7 with the rest of `campy-live` on any core, 1.67 ms) each skipped one set; the others skipped none. A real recording has no feeder: campy's own recording process takes its place, with frames from the cameras and the encoder in hardware; how much it slows the step wasn't measured.
 
 ### Recording
 
