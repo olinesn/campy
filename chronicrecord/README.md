@@ -155,6 +155,58 @@ The powers in brackets were measured at the fiber tip after the mouse was discon
 
 Not checked yet: keeping the camera lights out at the mouse's end, the LEDs' currents behind a neutral density filter, a session longer than 15 minutes with a mouse, and the patch cords other than the one to the mouse.
 
+
+### A four-hour session with an estradiol injection (12 November 2026)
+
+A mouse with a 400 µm fiber implanted in the medial prefrontal cortex, expressing neuro-seeER, was recorded from the panel with the "Overnight rehearsal (8 h, 96 bouts)" length. The recording started at 3:15 PM and was stopped after bout 49, at 7:19 PM. At 4:15 PM, between bouts 12 and 13, the mouse was given 100 µg of estradiol (E2). The LEDs were at **29 mA (blue) and 24 mA (yellow)**, with the snapshot pattern above. The patch cord's mating sleeve was wrapped. The room's red camera lights were **off for the whole session**, since some of their light still reached XA5 and XA6 with the sleeve wrapped. The cameras recorded a dark cage. The powers at the fiber tip weren't measured before the session: the panel saved 0 µW for both LEDs.
+
+**The recording itself was clean.**
+- The Pico's 153,600 camera pulses were all on time: `late_max=0 lost=0 stalls=0 bounces=0`. Every LED and gate edge was 0 µs late.
+- All four cameras saved 153,600 frames, one per pulse.
+- SpikeGLX opened 50 files: the gate check's blink and one per bout.
+- Stopping from the panel ended the session after the bout in progress, a long one, so that bout's 240 s of camera is complete.
+- The panel's steps after the recording all passed: remux, campy-align (all four cameras on the trigger's timeline) and the SpikeGLX checksums.
+- `photometry_snapshots.py --campy` on the PC after the session placed every bout in campy's videos: each camera had 600 frames in each 10 s bout and 14,400 in each 240 s bout (bouts 1, 7, ..., 49), which add up to all 153,600, so no frame fell outside a bout. In every bout yellow lit the bout's frames 300–302 and blue 312–314. Its readings equal the ones taken during the session from a 0.55 s window of each file, to the last digit.
+
+**Every bout read cleanly except the bleed of blue light into XA6.** With the blue LED at 29 mA, XA6 sat at the OneBox's +5 V limit for the whole of every blue flash, so how much blue light reaches the red receiver couldn't be measured. The two readings themselves never clipped:
+
+| | `green_V` (XA5, blue flash) | `red_V` (XA6, yellow flash) |
+|---|---|---|
+| range over 49 bouts | 3.860 to 3.902 V | 3.861 to 3.964 V |
+| bout-to-bout scatter, bouts 1–12 (before E2) | 0.16% | 0.48% |
+| dark level, mean | −0.005 V | +0.002 V |
+| dark noise | 15 to 17 mV rms | 8 to 10 mV rms |
+
+- XA5 in the yellow flash read 0.009 to 0.012 V.
+- Each receiver reached half its step 0.26 to 0.30 ms after its LED's edge.
+- Each reading starts with a spike 0.45 to 0.60 V above its level, peaking 0.8 to 1 ms after the LED comes on (green 4.3 to 4.4 V, red 4.4 to 4.6 V) and settling within about 6 ms. The readout's window starts 33 ms into the flash, well after it.
+- The dark levels were near 0 V all session, so with the camera lights off no room light reached the receivers.
+- The flash timing was as planned in every bout: each flash 49.995 to 50.028 ms, 149.985 to 150.018 ms of dark between them, each LED on 990 to 1023 µs before its first frame's pulse.
+
+**The readings over the session**, as the change from the mean of bouts 1–12 (3:15 to 4:10 PM, before the injection):
+
+| bouts | time | `green_V` | `red_V` |
+|---|---|---|---|
+| 1–12 | 3:15–4:10 PM | 0% | 0% |
+| 13–18 | 4:15–4:40 PM | +0.20% | −0.18% |
+| 19–24 | 4:45–5:10 PM | +0.34% | −0.92% |
+| 25–30 | 5:15–5:40 PM | +0.50% | −0.92% |
+| 31–36 | 5:45–6:10 PM | +0.63% | −0.10% |
+| 37–42 | 6:15–6:40 PM | +0.54% | −0.16% |
+| 43–49 | 6:45–7:15 PM | +0.51% | +0.16% |
+
+- **Green rose slowly and smoothly from the start, with no step at the injection.** It went up about 0.5% an hour from 3:15 PM, before the injection as after it, and levelled off at +0.5 to +0.6% from about 5:45 PM. No bleaching: green never fell.
+- **Red dipped for about an hour, from about 30 minutes after the injection.** It averaged −0.92% in bouts 19–30 (4:45 to 5:40 PM), lowest at −1.84% in bout 21 (4:55 PM), and was back at its baseline from about 5:45 PM. Twelve bouts at −0.92% is about six times the standard error of their mean, given red's 0.48% scatter between bouts, so it is a real change in the reading. The data can't say whether it came from the mouse or from the yellow LED: at 24 mA the LED runs a few mA above where it flickered on 10 November, and nothing on the rig measures its output during a flash.
+- **Red scatters more than green between bouts**, 0.48% against 0.16%, so the ratio green/red takes red's scatter (0.54%). Green on its own is the steadier measure here.
+
+**In the traces** (each flash averaged over the bouts of each half hour):
+- **Red carries a 727 Hz ripple, about 26 mV rms, only while the yellow LED is on.** XA6's dark noise is 9 mV and XA5's in the blue flash 16 mV, so it most likely comes from the yellow LED's driver at 24 mA. The readout's 16.7 ms window holds about 12 of its cycles, so it averages out of the readings.
+- **Red falls about 0.6% over each 50 ms yellow flash**, in every half hour, while green holds flat through its blue flash. The yellow LED's output may sag as it warms within the pulse, or the red fluorophore may partly bleach within the flash. The readout's window, the flash's last 16.7 ms, reads the flash slightly below its start.
+
+**One thing about closing the panel.** After the stop, closing the panel's browser tab left its server running (`campy.session panel`), still holding the rig's lock through `rig.py`. Jobs queued under `rig.py` (here the readout with `--campy` above) waited until the next morning, when the panel was closed with **Close the panel** at the top of its page, as [Recording a session](../docs/recording-a-session.md) says to do before closing the tab.
+
+Not checked yet: the LEDs' powers at the fiber tip at 29 and 24 mA, the yellow LED's stability at 24 mA against a power meter, and a session with the camera lights on and the sleeve wrapped.
+
 ## Running it
 
 On the computer the Pico is plugged into, in a Python environment with pyserial (the recording's own, on the PC; `python3` on Linux):
