@@ -214,7 +214,8 @@ slower when the replay check's feeder shared its cluster; with the feeder on
 instead of 1.64. In a recording (campy-acquire and its encoders instead of
 the feeder) the step gained as much, but frame to 3D only 0.2 ms at the
 median, and lost 0.4-0.5 ms at p99: the models and campy-acquire share
-fewer cores. On the EVO-X2 the step got slower. So it is off by default
+fewer cores. On the EVO-X2, the Precision 7875 and the Dell Pro Tower Plus
+the step got slower, and on the Dell Pro Max Slim nothing changed. So it is off by default
 (docs/jetson.md, docs/live-tracking.md).
 
 --cuda-graphs records each model's GPU work once per input shape and then
@@ -3716,7 +3717,7 @@ def Parser():
 	p.add_argument("--pose3d-cpus", default="none", help="Linux and Windows, with --calibration: the 3D step's thread alone on \
 		these CPUs (a list such as 4-7), and the rest of campy-live kept off them; keep campy-acquire off them \
 		too with --campy-cpus. On the Jetson AGX Orin it helped the replay check but not a recording, and on the \
-		EVO-X2 it was slower (docs/jetson.md). none (the default): as --cpus puts it.")
+		EVO-X2 and the Windows PCs tried it gained nothing or was slower (docs/live-tracking.md). none (the default): as --cpus puts it.")
 	p.add_argument("--priority", default="auto", choices=("auto",) + cpus.PRIORITIES, help="campy-live's priority: \
 		auto is high when --cpus auto put it on the performance cores, else normal. Above normal needs root on Linux.")
 	p.add_argument("--campy-cpus", default="auto", help="The CPUs campy-acquire (its camera processes and \
