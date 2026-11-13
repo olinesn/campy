@@ -277,8 +277,11 @@ def test_a_camera_unplugged_and_plugged_back_in(tmp_path, service):
 	j = jumps[0]
 	before, after = int(number[j]), int(number[j + 1])
 	assert before == 60 and 55 <= after - before - 1 <= 80, (before, after) # 2 s at 30 fps, and its reopening
-	# Carried on across the gap: the step is the frame numbers' (its own clock started again at 0)
-	assert abs((stamp[j + 1] - stamp[j]) * 30 - (after - before)) < 0.01, (stamp[j], stamp[j + 1])
+	# Carried on across the gap: the step is the frame numbers' (its own clock started again at 0). Exactly, but for
+	# rounding: the offset is made from the first frame's own timestamp (unicam.Resume.Offset), read once, so no runner
+	# load can move it. (It was read twice, and this emulated camera's clock moved on between the reads: off by 1.5 ms,
+	# 0.045 periods, on a busy GitHub runner, 2026-11-13)
+	assert abs((stamp[j + 1] - stamp[j]) * 30 - (after - before)) < 1e-6, (stamp[j], stamp[j + 1])
 	assert np.all(np.diff(stamp) > 0)
 	# Numbered as the other cameras: a frame number's host times within half a period of camera 0's
 	common, i0, i1 = np.intersect1d(frames["Camera0"][0], number[j + 1:], return_indices=True)
