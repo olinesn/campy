@@ -589,6 +589,63 @@ def test_campy_live_waits_for_a_ring_still_being_made(rings):
 		cams.Close()
 
 
+def fields_not_written(writer):
+	# A ring as a campy-acquire from before 13 November 2026 left it for a moment: MAGIC and the
+	# version written, the other fields (dtype, sizes) not yet. Returns what makes it whole again.
+	header = writer.ring.header
+	saved = header.copy()
+	header[12:] = 0
+	def Finish():
+		header[:] = saved
+	return Finish
+
+
+def test_the_writer_shows_magic_only_after_every_field(monkeypatch):
+	# MAGIC comes last, past a release fence: a reader that sees it sees the whole header. Written
+	# first, a campy-live attaching in between read an empty dtype and stopped ("data type ''
+	# not understood", seen once on a CI runner)
+	made, seen = [], []
+	make = livefeed.RingWriter._Make
+	monkeypatch.setattr(livefeed.RingWriter, "_Make", staticmethod(lambda n, size: made.append(make(n, size)) or made[-1]))
+	monkeypatch.setattr(livefeed, "_Release",
+		lambda: seen.append((bytes(made[-1].buf[:8]), bytes(made[-1].buf[32:40]).rstrip(b"\0"))))
+	w = livefeed.RingWriter(name(), (16, 20), np.uint8, slots=4)
+	try:
+		assert seen and seen[0] == (b"\0" * 8, b"|u1")
+		assert bytes(w.shm.buf[:8]) == livefeed.MAGIC
+		reader = livefeed.RingReader(w.name)
+		assert reader.dtype == np.uint8 and reader.shape == (16, 20, 1)
+		reader.Close()
+	finally:
+		w.Close()
+
+
+def test_a_ring_with_its_fields_not_written_yet_is_refused_and_waited_for(rings, monkeypatch):
+	# MAGIC there but not the rest (an older writer's ring, for a moment): refused like a ring not
+	# made yet, its memory let go of, and campy-live waits for it instead of stopping
+	opened = []
+	attach = livefeed.Attach
+	monkeypatch.setattr(livefeed, "Attach", lambda n: opened.append(attach(n)) or opened[-1])
+	w = rings(name(), (16, 20), np.uint8, slots=4)
+	finish = fields_not_written(w)
+	with pytest.raises(ValueError, match="its header is being written"):
+		livefeed.RingReader(w.name)
+	assert len(opened) == 1 and opened[0].buf is None
+	monkeypatch.setattr(livefeed, "Attach", attach)
+	prefix = name()
+	writers = [rings(livefeed.RingName(prefix, c), (16, 20), np.uint8, slots=4) for c in range(2)]
+	finish2 = fields_not_written(writers[1])
+	cams = live.Cameras([x.name for x in writers], poll=0.0001)
+	try:
+		threading.Timer(0.5, finish2).start()
+		start = time.monotonic()
+		assert cams.Attach(wait=10)
+		assert time.monotonic() - start >= 0.4
+	finally:
+		cams.Close()
+		finish()
+
+
 def _record(prefix, cameras, frames, rate, delay, trigger=None, lose=None):
 	# campy-acquire's rings, made after delay, and frames at rate from when
 	# trigger is set: campy makes its rings a few seconds before the trigger,
