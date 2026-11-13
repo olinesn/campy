@@ -29,6 +29,23 @@
 // channels of the same group are never high together: what would make the
 // second one high is skipped and said (clash).
 //
+// An operant box (version 3) adds inputs, servos and reflexes, all off until the host sets them:
+// - Inputs (0-7): beam breaks, nose pokes, TTL lick or touch sensors. Each edge is said with the time
+//   the pin changed (the board's clock, to a few microseconds: the pins are read in every timing loop
+//   too), the camera frame it fell in and how long after that frame's trigger. 1 is "active" (a beam
+//   broken, a poke in), whichever level that is on the wire. Debouncing is a lockout: an edge is taken
+//   at once, then the input is ignored for debounce_us; a change during the lockout is said once it
+//   ends, with the time it happened. So the first edge is never late and a short pulse still has both
+//   its edges.
+// - Servos (0-3): hobby servos on the ESP32's PWM hardware, 50 Hz, a pulse of min_us to max_us.
+//   A move goes at most speed microseconds of pulse a second (0: at once), and is said once there.
+// - Reflexes (links 0-7): an input's edge makes a pulse, a level on or off, a train run or a servo
+//   move, on the board, within a millisecond, as long as the host has armed the link (once, n times
+//   or until disarmed).
+// Safety: the watchdog and alloff also disarm every link and send every servo to its safe position
+// (at its speed). An armed link and a servo away from its safe position count as active: the
+// watchdog guards them as it guards an output that is on.
+//
 // Commands, one per line (\n or \r), each answered at once with a line
 // starting "ok" or "err" (k: a frame number, optional; ch: channel 0-7). A
 // command refused because its frame was too long ago is answered
@@ -55,6 +72,23 @@
 //   time                              -> ok time <t_us> <frame> <its rise_us>
 //   hb                                nothing but keeping the watchdog quiet (no answer)
 //   status                            -> ok status ...
+//   in <i> <pin> <pull> <active> <debounce_us>
+//                                     input i (0-7) on pin; pull 0 none, 1 up, 2 down; active 1 high,
+//                                     0 low -> ok in <i> <pin> <its level now>; in <i> -1: none
+//   servo <s> <pin> <min_us> <max_us> <safe_us> <speed>
+//                                     servo s (0-3) on pin, starting at safe_us; speed: us of pulse a
+//                                     second, 0 at once -> ok servo <s> <pin> <t_us>; servo <s> -1: none
+//                                     (its pulses stop)
+//   move <s> <us> [k]                 -> ok move <s> <us> <t_us> <k> <after_us>
+//   link <l> <in> <edge> <what> <a> <b>
+//                                     link l (0-7): input in's edge (1 to active, 0 to inactive) does
+//                                     what: 1 pulse channel a for b us, 2 on a, 3 off a, 4 move servo
+//                                     a to b us, 5 run channel a's train for b pulses. Disarmed.
+//                                     link <l> -1: none
+//   arm <l> <n>                       the link fires n more times, -1 until disarmed, 0 disarmed
+//                                     -> ok arm <l> <n> <t_us>
+//   box                               -> ok box t=... in=<active inputs> armed=<armed links> s0=<pos>/<target> ...
+// Pins: 0-48, or 100-107 for A0-A7.
 // What it says on its own (t_us: the board's clock, microseconds since power-up):
 //   ready campy_outputs <version>     at power-up
 //   t <k> <t_us>                      the camera trigger rose: frame k
@@ -63,6 +97,11 @@
 //   e <ch> <0|1> <t_us> <why>         a level changed by itself: max, wd
 //   clash <ch> <k> <t_us>             a pulse skipped: its group had a channel high
 //   wd <t_us>                         the watchdog fired: everything is low
+//   i <in> <0|1> <t_us> <k> <after_us> an input changed at t_us (1: active), in frame k (0: none yet),
+//                                     after_us after its trigger (-1: unknown)
+//   x <l> <in> <t_us> <k> <done>      a link fired on its input's edge at t_us; done 0: what it does was
+//                                     refused (the channel high, a clash, no pin)
+//   m <s> <us> <t_us>                 a servo got where it was sent
 // Every line waits its turn in a queue and goes out as USB takes it, in pieces if need be, between the board's
 // timed changes: never waited for. The Nano ESP32's USB serial buffer holds 64 bytes, so a line that didn't fit
 // at once used to be dropped (status, about 110 characters, always was). Lines are dropped, and counted in
@@ -77,8 +116,16 @@
 #include "soc/gpio_struct.h"
 #endif
 
-#define VERSION 2           // 2: counts on through trigger pauses, says gap, takes reset (pull request 304)
+#define VERSION 3           // 2: counts on through trigger pauses, says gap, takes reset (pull request 304);
+                            // 3: inputs, servos and links, for operant boxes
 #define MAX_CH 8
+#define MAX_IN 8
+#define MAX_SERVO 4
+#define MAX_LINK 8
+#define SERVO_HZ 50
+#define SERVO_BITS 14
+#define SERVO_PERIOD_US 20000
+#define SERVO_STEP_US 20000 // a moving servo's pulse changes once a period
 #define RISES 1024          // trigger rises remembered: 17 s at 60 fps
 #define NONE INT64_MAX
 #define CRITICAL_US 300     // interrupts off this long before a change
@@ -106,6 +153,35 @@ struct Channel {
   int64_t next_rise;        // its next pulse's rise, NONE: not yet known
   int64_t next_k;
 };
+struct Input {
+  int pin;                  // -1: none
+  bool active_low;
+  int64_t debounce;
+  bool raw;                 // the pin as last read (true: high)
+  int64_t first_t;          // when the pin first left the taken level since it was taken, NONE: it hasn't
+  bool level;               // the taken level (true: high)
+  int64_t locked_until;
+#if defined(ESP32)
+  uint32_t mask;
+  uint8_t bank;
+#endif
+};
+struct Servo {
+  int pin;                  // -1: none
+  int64_t min_us, max_us, safe_us, speed;
+  int64_t pos_ns;           // its pulse now, ns (so slow moves keep their fractions)
+  int64_t target_us;
+  int64_t last_step;
+  uint32_t duty;            // as written
+  bool told;                // its arrival said
+};
+struct Link {
+  int in;                   // -1: none
+  bool edge;                // true: to active
+  int what;
+  int64_t a, b;
+  int64_t armed;            // fires left: -1 until disarmed, 0 disarmed
+};
 uint64_t Micros64();
 int64_t Now();
 void Command(char* line);
@@ -123,8 +199,20 @@ int64_t NextTime();
 int64_t ExpectedTrigger(int64_t now);
 void Apply(int64_t t);
 void WaitTrigger(int64_t until);
+void SampleInputs(int64_t now);
+void TakeInputs(int64_t now);
+void StepServos(int64_t now);
+void ServoWrite(int s);
+void SafeBox();
 
 Channel chans[MAX_CH];
+Input inputs[MAX_IN];
+Servo servos[MAX_SERVO];
+Link links[MAX_LINK];
+int input_count = 0;        // inputs with a pin: none, and SampleInputs costs nothing
+#if defined(ESP32)
+uint32_t in_mask0 = 0, in_mask1 = 0, in_last0 = 0, in_last1 = 0;
+#endif
 #if defined(ESP32)
 uint32_t ch_mask[MAX_CH];
 uint8_t ch_bank[MAX_CH];
@@ -181,6 +269,9 @@ void setup() {
     c.fall_at = NONE; c.pulse_rise = 0; c.pulse_k = -1;
     c.every = 1; c.phase = 0; c.offset = 0; c.width = 0; c.remaining = 0; c.next_rise = NONE; c.next_k = -1;
   }
+  for (int i = 0; i < MAX_IN; i++) { inputs[i].pin = -1; }
+  for (int s = 0; s < MAX_SERVO; s++) { servos[s].pin = -1; }
+  for (int l = 0; l < MAX_LINK; l++) { links[l].in = -1; links[l].armed = 0; }
   // Defaults (docs/live-tracking.md): channels 0-7 on D2-D9, low from
   // power-up, the camera trigger in on D10. campy-rules sets them again.
   for (int ch = 0; ch < MAX_CH; ch++) { SetPin(ch, 2 + ch); }
@@ -321,6 +412,13 @@ bool Active() {
   for (int ch = 0; ch < MAX_CH; ch++) {
     const Channel& c = chans[ch];
     if (c.level || c.fall_at != NONE || c.remaining != 0) { return true; }
+  }
+  for (int l = 0; l < MAX_LINK; l++) {
+    if (links[l].in >= 0 && links[l].armed != 0) { return true; }
+  }
+  for (int s = 0; s < MAX_SERVO; s++) {
+    // Sent away from its safe position (not on its way back to it: that needs no guarding)
+    if (servos[s].pin >= 0 && servos[s].target_us != servos[s].safe_us) { return true; }
   }
   return false;
 }
@@ -463,13 +561,18 @@ void Apply(int64_t t) {
 
   noInterrupts();
   int64_t now;
-  do { now = Now(); } while (now < t);
+  while (true) {
+    now = Now();
+    if (now >= t) { break; }
+    SampleInputs(now);
+  }
   WritePins(level);
   interrupts();
 
   if (now - t > late_max) { late_max = now - t; }
   if (watchdog) {
     AllOff();
+    SafeBox();
     wds++;
     char text[40];
     snprintf(text, sizeof text, "wd %lld", (long long) now);
@@ -507,10 +610,270 @@ void WaitTrigger(int64_t until) {
     bool level = ReadTrigger();
     if (level && !trig_level) { trig_level = true; rose = true; break; }
     trig_level = level;
+    SampleInputs(t);
     if (t >= until) { break; }
   }
   if (rose) { Rose(t); }
   interrupts();
+}
+
+
+// ---------------------------------------------------------------- an operant box: inputs, servos, links
+
+int PinOf(long long value) {
+  // A command's pin: 0-48, or 100-107 for A0-A7; -2 if neither
+#if defined(A7)
+  static const int analog[8] = {A0, A1, A2, A3, A4, A5, A6, A7};
+  if (value >= 100 && value <= 107) { return analog[value - 100]; }
+#endif
+  if (value >= 0 && value <= 48) { return (int) value; }
+  return -2;
+}
+
+
+bool PinTaken(int pin, int in_except, int servo_except) {
+  // Is pin already the trigger's, a channel's, another input's or another servo's?
+  if (pin == trig_pin) { return true; }
+  for (int ch = 0; ch < MAX_CH; ch++) { if (chans[ch].pin == pin) { return true; } }
+  for (int i = 0; i < MAX_IN; i++) { if (i != in_except && inputs[i].pin == pin) { return true; } }
+  for (int s = 0; s < MAX_SERVO; s++) { if (s != servo_except && servos[s].pin == pin) { return true; } }
+  return false;
+}
+
+
+bool BoxPin(int pin) {
+  // An input's or a servo's: a channel or the trigger can't have it (channels may still share pins with each other,
+  // as before version 3)
+  for (int i = 0; i < MAX_IN; i++) { if (inputs[i].pin == pin) { return true; } }
+  for (int s = 0; s < MAX_SERVO; s++) { if (servos[s].pin == pin) { return true; } }
+  return false;
+}
+
+
+bool ReadInput(const Input& in) {
+#if defined(ESP32)
+  return ((in.bank ? GPIO.in1.val : GPIO.in) & in.mask) != 0;
+#else
+  return digitalRead(in.pin) == HIGH;
+#endif
+}
+
+
+void SampleInputs(int64_t now) {
+  // Read the inputs' pins, noting when each changed. Cheap enough for the timing loops: on the ESP32 two
+  // register reads, and nothing more unless a pin changed.
+  if (input_count == 0) { return; }
+#if defined(ESP32)
+  uint32_t v0 = GPIO.in & in_mask0;
+  uint32_t v1 = in_mask1 ? (GPIO.in1.val & in_mask1) : 0;
+  if (v0 == in_last0 && v1 == in_last1) { return; }
+  in_last0 = v0;
+  in_last1 = v1;
+#endif
+  for (int i = 0; i < MAX_IN; i++) {
+    Input& in = inputs[i];
+    if (in.pin < 0) { continue; }
+#if defined(ESP32)
+    bool r = ((in.bank ? v1 : v0) & in.mask) != 0;
+#else
+    bool r = ReadInput(in);
+#endif
+    if (r == in.raw) { continue; }
+    in.raw = r;
+    if (r != in.level) { if (in.first_t == NONE) { in.first_t = now; } }
+    else { in.first_t = NONE; } // back where it was: a change shorter than a look, or a bounce in the lockout
+  }
+}
+
+
+void FrameAt(int64_t t, int64_t* k, int64_t* after) {
+  // The camera frame t fell in (the last trigger rise at or before it), 0 if none is known, and how long after
+  // its rise
+  int64_t j = frame;
+  while (j >= 1 && frame - j < RISES && rises[j % RISES] > t) { j--; }
+  if (j < 1 || frame - j >= RISES) { *k = 0; *after = -1; return; }
+  *k = j;
+  *after = t - rises[j % RISES];
+}
+
+
+bool Fire(const Link& link, int64_t t) {
+  // What a link does, now. False if it was refused.
+  int what = link.what;
+  if (what == 4) {
+    Servo& s = servos[link.a];
+    if (s.pin < 0) { return false; }
+    s.target_us = link.b;
+    s.told = false;
+    if (s.speed == 0) { StepServos(Now()); }
+    return true;
+  }
+  Channel& c = chans[link.a];
+  if (c.pin < 0) { return false; }
+  if (what == 3) {
+    c.level = false;
+    if (c.fall_at == NONE && c.high) {
+      WriteOne((int) link.a, 0);
+      char text[48];
+      snprintf(text, sizeof text, "e %d 0 %lld link", (int) link.a, (long long) Now());
+      Queue(text);
+    }
+    return true;
+  }
+  if (what == 5) {
+    if (c.width <= 0) { return false; }
+    c.remaining = link.b;
+    ScheduleTrain((int) link.a, Now());
+    return true;
+  }
+  // pulse or on
+  if (what == 1 && (c.fall_at != NONE || c.level)) { return false; }
+  if (!c.high && Clash((int) link.a, NULL)) { clashes++; return false; }
+  noInterrupts();
+  int64_t now = Now();
+  WriteOne((int) link.a, 1);
+  interrupts();
+  if (what == 1) {
+    int64_t k, after;
+    FrameAt(t, &k, &after);
+    c.pulse_rise = now;
+    c.pulse_k = k > 0 ? k : -1;
+    c.fall_at = now + link.b;
+  }
+  else if (!c.level) {
+    c.level = true;
+    c.level_since = now;
+    char text[48];
+    snprintf(text, sizeof text, "e %d 1 %lld link", (int) link.a, (long long) now);
+    Queue(text);
+  }
+  return true;
+}
+
+
+void TakeInputs(int64_t now) {
+  // The inputs' changes, once their lockout is over: said, and their links fired
+  SampleInputs(now);
+  for (int i = 0; i < MAX_IN; i++) {
+    Input& in = inputs[i];
+    if (in.pin < 0 || in.raw == in.level || now < in.locked_until) { continue; }
+    int64_t t = in.first_t != NONE ? in.first_t : now;
+    in.level = in.raw;
+    in.first_t = NONE;
+    in.locked_until = t + in.debounce;
+    bool active = in.level != in.active_low;
+    int64_t k, after;
+    FrameAt(t, &k, &after);
+    char text[64];
+    snprintf(text, sizeof text, "i %d %d %lld %lld %lld", i, active ? 1 : 0, (long long) t, (long long) k,
+      (long long) after);
+    Queue(text); // said once USB takes it: the links below fire first
+    for (int l = 0; l < MAX_LINK; l++) {
+      Link& link = links[l];
+      if (link.in != i || link.armed == 0 || link.edge != active) { continue; }
+      bool done = Fire(link, t);
+      if (link.armed > 0) { link.armed--; }
+      snprintf(text, sizeof text, "x %d %d %lld %lld %d", l, i, (long long) t, (long long) k, done ? 1 : 0);
+      Queue(text);
+    }
+  }
+}
+
+
+void SetInputMasks() {
+  input_count = 0;
+#if defined(ESP32)
+  in_mask0 = in_mask1 = 0;
+#endif
+  for (int i = 0; i < MAX_IN; i++) {
+    if (inputs[i].pin < 0) { continue; }
+    input_count++;
+#if defined(ESP32)
+    if (inputs[i].bank) { in_mask1 |= inputs[i].mask; } else { in_mask0 |= inputs[i].mask; }
+#endif
+  }
+#if defined(ESP32)
+  in_last0 = GPIO.in & in_mask0;
+  in_last1 = in_mask1 ? (GPIO.in1.val & in_mask1) : 0;
+#endif
+}
+
+
+// The servos' PWM: the ESP32's LEDC hardware (Arduino-ESP32 3's API, or 2's), or the simulated board's
+#if defined(ESP32) || defined(ARDUINO_SIM)
+#define SERVOS 1
+#if defined(ESP32) && defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR < 3
+bool PwmStart(int s, int pin) { ledcSetup(s, SERVO_HZ, SERVO_BITS); ledcAttachPin(pin, s); return true; }
+void PwmWrite(int s, int pin, uint32_t duty) { (void) pin; ledcWrite(s, duty); }
+void PwmStop(int s, int pin) { (void) s; ledcDetachPin(pin); pinMode(pin, OUTPUT); digitalWrite(pin, LOW); }
+#else
+bool PwmStart(int s, int pin) { (void) s; return ledcAttach(pin, SERVO_HZ, SERVO_BITS); }
+void PwmWrite(int s, int pin, uint32_t duty) { (void) s; ledcWrite(pin, duty); }
+void PwmStop(int s, int pin) { (void) s; ledcDetach(pin); pinMode(pin, OUTPUT); digitalWrite(pin, LOW); }
+#endif
+#else
+#define SERVOS 0
+#endif
+
+
+void ServoWrite(int s) {
+#if SERVOS
+  Servo& sv = servos[s];
+  int64_t us = (sv.pos_ns + 500) / 1000;
+  uint32_t duty = (uint32_t) ((us * (1L << SERVO_BITS) + SERVO_PERIOD_US / 2) / SERVO_PERIOD_US);
+  if (duty == sv.duty) { return; }
+  sv.duty = duty;
+  PwmWrite(s, sv.pin, duty);
+#else
+  (void) s;
+#endif
+}
+
+
+void StepServos(int64_t now) {
+  // Each moving servo a step nearer its target, once a period; said once there
+  for (int s = 0; s < MAX_SERVO; s++) {
+    Servo& sv = servos[s];
+    if (sv.pin < 0) { continue; }
+    int64_t target = sv.target_us * 1000;
+    if (sv.pos_ns == target) {
+      sv.last_step = now;
+      if (!sv.told) {
+        sv.told = true;
+        char text[48];
+        snprintf(text, sizeof text, "m %d %lld %lld", s, (long long) sv.target_us, (long long) now);
+        Queue(text);
+      }
+      continue;
+    }
+    if (sv.speed > 0 && now - sv.last_step < SERVO_STEP_US) { continue; }
+    int64_t step = sv.speed > 0 ? sv.speed * (now - sv.last_step) / 1000 : INT64_MAX; // ns of pulse
+    if (step < 1) { step = 1; }
+    sv.last_step = now;
+    int64_t left = target - sv.pos_ns;
+    if (left > step) { sv.pos_ns += step; }
+    else if (-left > step) { sv.pos_ns -= step; }
+    else { sv.pos_ns = target; }
+    ServoWrite(s);
+    if (sv.pos_ns == target && !sv.told) {
+      sv.told = true;
+      char text[48];
+      snprintf(text, sizeof text, "m %d %lld %lld", s, (long long) sv.target_us, (long long) now);
+      Queue(text);
+    }
+  }
+}
+
+
+void SafeBox() {
+  // The watchdog's and alloff's part for a box: every link disarmed, every servo on its way to its safe position
+  for (int l = 0; l < MAX_LINK; l++) { links[l].armed = 0; }
+  for (int s = 0; s < MAX_SERVO; s++) {
+    Servo& sv = servos[s];
+    if (sv.pin < 0 || sv.target_us == sv.safe_us) { continue; }
+    sv.target_us = sv.safe_us;
+    sv.told = false;
+  }
 }
 
 
@@ -603,6 +966,7 @@ void Command(char* text) {
   }
   else if (strcmp(word, "alloff") == 0) {
     AllOff();
+    SafeBox();
     snprintf(reply, sizeof reply, "ok alloff %lld", (long long) Now());
     Say(reply);
   }
@@ -613,15 +977,19 @@ void Command(char* text) {
     Say(reply);
   }
   else if (strcmp(word, "pin") == 0) {
-    if (n != 2 || !chOk || a[1] < -1 || a[1] > 48) { Say("err pin <ch 0-7> <pin, -1 none>"); return; }
+    int pin = n == 2 ? (a[1] == -1 ? -1 : PinOf(a[1])) : -2;
+    if (!chOk || pin < -1) { Say("err pin <ch 0-7> <pin, -1 none>"); return; }
+    if (pin >= 0 && BoxPin(pin)) { Say("err that pin is an input's or a servo's"); return; }
     AllOff();
-    SetPin(ch, (int) a[1]);
+    SetPin(ch, pin);
     snprintf(reply, sizeof reply, "ok pin %d %lld", ch, a[1]);
     Say(reply);
   }
   else if (strcmp(word, "trig") == 0) {
-    if (n != 1 || a[0] < -1 || a[0] > 48) { Say("err trig <pin, -1 none>"); return; }
-    trig_pin = (int) a[0];
+    int pin = n == 1 ? (a[0] == -1 ? -1 : PinOf(a[0])) : -2;
+    if (pin < -1) { Say("err trig <pin, -1 none>"); return; }
+    if (pin >= 0 && BoxPin(pin)) { Say("err that pin is an input's or a servo's"); return; }
+    trig_pin = pin;
     frame = 0;
     period = 0;
     if (trig_pin >= 0) {
@@ -633,7 +1001,7 @@ void Command(char* text) {
 #endif
     }
     trig_level = ReadTrigger();
-    snprintf(reply, sizeof reply, "ok trig %lld", a[0]);
+    snprintf(reply, sizeof reply, "ok trig %d", pin);
     Say(reply);
   }
   else if (strcmp(word, "group") == 0) {
@@ -738,6 +1106,157 @@ void Command(char* text) {
     snprintf(reply, sizeof reply, "ok run %d %lld %lld %lld %lld", ch, a[1], (long long) now, k, (long long) after);
     Say(reply);
   }
+  else if (strcmp(word, "in") == 0) {
+    int i = n >= 1 && a[0] >= 0 && a[0] < MAX_IN ? (int) a[0] : -1;
+    if (i >= 0 && n == 2 && a[1] == -1) {
+      inputs[i].pin = -1;
+      for (int l = 0; l < MAX_LINK; l++) { if (links[l].in == i) { links[l].in = -1; links[l].armed = 0; } }
+      SetInputMasks();
+      snprintf(reply, sizeof reply, "ok in %d -1", i);
+      Say(reply);
+      return;
+    }
+    int pin = n == 5 ? PinOf(a[1]) : -2;
+    if (i < 0 || pin < 0 || a[2] < 0 || a[2] > 2 || a[3] < 0 || a[3] > 1 || a[4] < 0 || a[4] > 1000000) {
+      Say("err in <i 0-7> <pin, -1 none> <pull 0 none, 1 up, 2 down> <active 1 high, 0 low> <debounce_us>");
+      return;
+    }
+    if (PinTaken(pin, i, -1)) { Say("err that pin is taken"); return; }
+    Input& in = inputs[i];
+    in.pin = pin;
+    pinMode(pin, a[2] == 1 ? INPUT_PULLUP : a[2] == 2 ? INPUT_PULLDOWN : INPUT);
+    in.active_low = a[3] == 0;
+    in.debounce = a[4];
+#if defined(ESP32)
+    int gpio = digitalPinToGPIONumber(pin);
+    in.bank = gpio > 31 ? 1 : 0;
+    in.mask = 1UL << (gpio & 31);
+#endif
+    in.raw = in.level = ReadInput(in);
+    in.first_t = NONE;
+    in.locked_until = 0;
+    SetInputMasks();
+    snprintf(reply, sizeof reply, "ok in %d %d %d", i, pin, in.level != in.active_low ? 1 : 0);
+    Say(reply);
+  }
+  else if (strcmp(word, "servo") == 0) {
+    int s = n >= 1 && a[0] >= 0 && a[0] < MAX_SERVO ? (int) a[0] : -1;
+    if (s >= 0 && n == 2 && a[1] == -1) {
+      if (servos[s].pin >= 0) {
+#if SERVOS
+        PwmStop(s, servos[s].pin);
+#endif
+      }
+      servos[s].pin = -1;
+      for (int l = 0; l < MAX_LINK; l++) {
+        if (links[l].in >= 0 && links[l].what == 4 && links[l].a == s) { links[l].in = -1; links[l].armed = 0; }
+      }
+      snprintf(reply, sizeof reply, "ok servo %d -1", s);
+      Say(reply);
+      return;
+    }
+    int pin = n == 6 ? PinOf(a[1]) : -2;
+    if (s < 0 || pin < 0 || a[2] < 500 || a[3] > 2500 || a[2] >= a[3] || a[4] < a[2] || a[4] > a[3] || a[5] < 0) {
+      Say("err servo <s 0-3> <pin, -1 none> <min_us 500-> <max_us -2500> <safe_us> <speed us/s, 0 at once>");
+      return;
+    }
+#if !SERVOS
+    Say("err no servos on this board");
+    return;
+#else
+    if (servos[s].pin >= 0 && servos[s].pin != pin) { PwmStop(s, servos[s].pin); servos[s].pin = -1; }
+    if (PinTaken(pin, -1, s)) { Say("err that pin is taken"); return; }
+    Servo& sv = servos[s];
+    if (sv.pin != pin && !PwmStart(s, pin)) { Say("err that pin can't make PWM"); return; }
+    sv.pin = pin;
+    sv.min_us = a[2];
+    sv.max_us = a[3];
+    sv.safe_us = a[4];
+    sv.speed = a[5];
+    sv.target_us = sv.safe_us;
+    sv.pos_ns = sv.safe_us * 1000;
+    sv.last_step = now;
+    sv.duty = 0xffffffffu;
+    sv.told = true;
+    ServoWrite(s);
+    snprintf(reply, sizeof reply, "ok servo %d %d %lld", s, pin, (long long) now);
+    Say(reply);
+#endif
+  }
+  else if (strcmp(word, "move") == 0) {
+    int s = n >= 2 && a[0] >= 0 && a[0] < MAX_SERVO ? (int) a[0] : -1;
+    if (s < 0 || n > 3) { Say("err move <s 0-3> <us> [frame]"); return; }
+    Servo& sv = servos[s];
+    if (sv.pin < 0) { Say("err that servo has no pin"); return; }
+    if (a[1] < sv.min_us || a[1] > sv.max_us) { Say("err move: past that servo's min or max"); return; }
+    long long k = n > 2 ? a[2] : -1;
+    int64_t after;
+    if (Late(s, k, n - 2, now, &after)) { return; }
+    sv.target_us = a[1];
+    sv.told = false;
+    if (sv.speed == 0) { StepServos(now); }
+    snprintf(reply, sizeof reply, "ok move %d %lld %lld %lld %lld", s, a[1], (long long) now, k, (long long) after);
+    Say(reply);
+  }
+  else if (strcmp(word, "link") == 0) {
+    int l = n >= 1 && a[0] >= 0 && a[0] < MAX_LINK ? (int) a[0] : -1;
+    if (l >= 0 && n == 2 && a[1] == -1) {
+      links[l].in = -1;
+      links[l].armed = 0;
+      snprintf(reply, sizeof reply, "ok link %d -1", l);
+      Say(reply);
+      return;
+    }
+    bool ok = l >= 0 && n == 6 && a[1] >= 0 && a[1] < MAX_IN && (a[2] == 0 || a[2] == 1) && a[3] >= 1 && a[3] <= 5;
+    if (ok && a[3] == 4) { ok = a[4] >= 0 && a[4] < MAX_SERVO; }
+    else if (ok) { ok = a[4] >= 0 && a[4] < MAX_CH; }
+    if (ok && a[3] == 1) { ok = a[5] >= 1; }
+    if (ok && a[3] == 5) { ok = a[5] >= -1 && a[5] != 0; }
+    if (!ok) {
+      Say("err link <l 0-7> <in> <edge 1 active, 0 inactive> <what: 1 pulse ch us, 2 on ch, 3 off ch, "
+        "4 move servo us, 5 run ch n> <a> <b>");
+      return;
+    }
+    if (inputs[a[1]].pin < 0) { Say("err that input has no pin"); return; }
+    if (a[3] == 4) {
+      const Servo& sv = servos[a[4]];
+      if (sv.pin < 0) { Say("err that servo has no pin"); return; }
+      if (a[5] < sv.min_us || a[5] > sv.max_us) { Say("err link: past that servo's min or max"); return; }
+    }
+    else if (chans[a[4]].pin < 0) { Say("err that channel has no pin"); return; }
+    else if (a[3] == 5 && chans[a[4]].width <= 0) { Say("err that channel has no train"); return; }
+    Link& link = links[l];
+    link.in = (int) a[1];
+    link.edge = a[2] == 1;
+    link.what = (int) a[3];
+    link.a = a[4];
+    link.b = a[5];
+    link.armed = 0;
+    snprintf(reply, sizeof reply, "ok link %d %lld %lld %lld %lld %lld", l, a[1], a[2], a[3], a[4], a[5]);
+    Say(reply);
+  }
+  else if (strcmp(word, "arm") == 0) {
+    int l = n == 2 && a[0] >= 0 && a[0] < MAX_LINK ? (int) a[0] : -1;
+    if (l < 0 || a[1] < -1) { Say("err arm <l 0-7> <n, -1 until disarmed, 0 disarm>"); return; }
+    if (links[l].in < 0 && a[1] != 0) { Say("err that link isn't set"); return; }
+    links[l].armed = a[1];
+    snprintf(reply, sizeof reply, "ok arm %d %lld %lld", l, a[1], (long long) now);
+    Say(reply);
+  }
+  else if (strcmp(word, "box") == 0) {
+    int active = 0, armed = 0;
+    for (int i = 0; i < MAX_IN; i++) {
+      if (inputs[i].pin >= 0 && inputs[i].level != inputs[i].active_low) { active |= 1 << i; }
+    }
+    for (int l = 0; l < MAX_LINK; l++) { if (links[l].in >= 0 && links[l].armed != 0) { armed |= 1 << l; } }
+    int len = snprintf(reply, sizeof reply, "ok box t=%lld in=%d armed=%d", (long long) now, active, armed);
+    for (int s = 0; s < MAX_SERVO && len < (int) sizeof reply; s++) {
+      if (servos[s].pin < 0) { continue; }
+      len += snprintf(reply + len, sizeof reply - len, " s%d=%lld/%lld", s,
+        (long long) ((servos[s].pos_ns + 500) / 1000), (long long) servos[s].target_us);
+    }
+    Say(reply);
+  }
   else {
     Say("err unknown command");
   }
@@ -769,6 +1288,7 @@ void loop() {
   bool level = ReadTrigger();
   if (level && !trig_level) { trig_level = true; Rose(now); }
   else { trig_level = level; }
+  TakeInputs(now);
 
   int64_t t = NextTime();
   int64_t expected = ExpectedTrigger(now);
@@ -777,6 +1297,7 @@ void loop() {
   if (soon == NONE || soon - now > SERIAL_US) {
     int64_t until = soon == NONE ? NONE : soon - CRITICAL_US;
     if (soon == NONE) { until = now + SERIAL_US; } // still look at the trigger often
+    StepServos(now);
     FlushQueue(until);
     ReadSerial(until);
     return;

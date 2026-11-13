@@ -59,6 +59,7 @@ Each run records into a new folder inside the config's `videoFolder`, named by t
 | [RatCam cameras](docs/ratcam.md) | nir-eye-cam's NIR eye cameras |
 | [Live tracking](docs/live-tracking.md), [Watching it live](docs/live-view.md), [3D poses](docs/pose3d.md) | `campy-live`, `campy-live-view`, `campy-live-export`, and the 3D tracker |
 | [Closed-loop outputs](docs/closed-loop.md) | `campy-rules`: TTL outputs on an Arduino from the live poses, with the wiring, the rules file, safety and latency |
+| [Operant boxes](docs/operant-boxes.md) | The outputs board as an operant box's controller: sensors stamped with the camera frame, servos, valve and cue pulses, reflexes on the board, wiring and safety |
 | [Models](docs/models.md), [Offline inference](docs/offline-inference.md) | Small models that keep up live; running SLEAP faster on recorded videos |
 | [Hardware](docs/hardware.md) | What to buy, with the measurements behind it |
 | [Calibration](docs/calibration.md) | Camera placement, exposure and calibration |

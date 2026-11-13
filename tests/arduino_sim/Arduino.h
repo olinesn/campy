@@ -9,12 +9,27 @@
 #define OUTPUT 1
 #define INPUT 0
 #define INPUT_PULLDOWN 9
+#define INPUT_PULLUP 5
+#define ARDUINO_SIM 1
+// The analog pins as digital pins (any numbers no sketch uses otherwise)
+#define A0 30
+#define A1 31
+#define A2 32
+#define A3 33
+#define A4 34
+#define A5 35
+#define A6 36
+#define A7 37
 
 unsigned long micros();
 void delay(unsigned long ms);
 void pinMode(int pin, int mode);
 void digitalWrite(int pin, int level);
 int digitalRead(int pin);
+// The ESP32's LEDC PWM (Arduino-ESP32 3's API): what it writes is printed (see sim.cpp)
+bool ledcAttach(uint8_t pin, uint32_t freq, uint8_t resolution);
+bool ledcWrite(uint8_t pin, uint32_t duty);
+bool ledcDetach(uint8_t pin);
 void noInterrupts();
 void interrupts();
 // A PIO state machine's queue (chronic_timer.ino, compiled with SIM_PIO): see sim.cpp

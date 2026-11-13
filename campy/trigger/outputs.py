@@ -29,7 +29,13 @@ HEARTBEAT_S = 0.05
 SYNC_S = 1.0
 ANSWER_TIMEOUT_S = 2.0
 SKETCH = "campy_outputs"
-VERSION = 2 # the sketch's VERSION: 2 counts on through trigger pauses (pull request 304)
+VERSION = 3 # the sketch's VERSION: 2 counts on through trigger pauses (pull request 304); 3 inputs, servos and links
+# What each older version lacks, for the message that refuses it
+OLDER = {
+	1: "it counts the camera's frames from 1 again after a pause in the trigger, as between two bouts, while campy "
+		"doesn't, so trains would land on the wrong frames",
+	2: "it has no inputs, servos or links (an operant box's), and campy only works with the sketch it ships",
+	}
 RISES = 4096 # trigger rises kept (68 s at 60 fps)
 
 
@@ -44,10 +50,9 @@ def Mismatch(port, line):
 		"\"Uploading the sketch\").")
 	if len(words) >= 3 and words[1] == SKETCH and words[2].isdigit():
 		if int(words[2]) < VERSION:
-			return ("The outputs board on {} runs an older campy_outputs (version {}); this campy needs version {}. "
-				"The older one counts the camera's frames from 1 again after a pause in the trigger, as between "
-				"two bouts, while campy doesn't, so trains would land on the wrong frames. {}".format(
-				port, words[2], VERSION, upload))
+			why = OLDER.get(int(words[2]), OLDER[1])
+			return ("The outputs board on {} runs an older campy_outputs (version {}); this campy needs version {}: "
+				"{}. {}".format(port, words[2], VERSION, why, upload))
 		return ("The outputs board on {} runs a newer campy_outputs (version {}) than this campy knows (version {}). "
 			"Update campy, or {}".format(port, words[2], VERSION, upload[0].lower() + upload[1:]))
 	return "The board on {} answered {!r}: not campy_outputs version {}. {}".format(port, line, VERSION, upload)
