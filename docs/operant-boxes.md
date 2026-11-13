@@ -8,7 +8,7 @@ It is the [outputs board](closed-loop.md#the-board) grown by a few features, not
 
 1. **The board** (pull request 449): inputs, servos, links, the safe state; tested on a simulated board.
 2. **`campy-box`** (pull request 451): runs a task from a YAML file (states such as *wait for a poke, open the door, give a reward*), and logs every event with the board's time, the computer's time and the camera frame. [Running a task](#running-a-task-campy-box) below.
-3. **Recordings** (next): `campy-session` starts the task with the recording and keeps its log in the recording's folder; the panel shows the counts. Until then, start `campy-box` by hand before the recording.
+3. **Recordings** (pull request NNN): a `box:` section in the config makes `campy-session` (and the panel) start the task with the recording, keep its logs in the recording's folder, and show its trial and counts. [With a recording](#with-a-recording-the-box-section) below.
 4. **Poses in the task** (after that): `campy-rules`' conditions (an animal in a region, two animals close) usable in a task, and the box's inputs usable in `campy-rules`.
 
 ## How the work is divided
@@ -80,6 +80,24 @@ task:
 - `<out>.events.jsonl`, a line per event: every input edge (`kind: input`, with `board_us`, `host_ns` on campy's host clock as in `hosttimes.npy`, `frame` and `after_us`), every link firing, each state entered (with what caused it: the input and its times, or the timer), each pulse with its edges, levels switched by the board, servo arrivals, every command and its answer, trigger pauses and the watchdog;
 - `<out>.board.txt`, every line to and from the board;
 - `<out>.json`, the summary: trials, why it ended, counts per input, link and state, the seed and the board-to-host clock map.
+
+## With a recording: the box: section
+
+A `box:` section in the rig's config makes every recording run the task:
+
+```yaml
+box:
+  task: tasks/two-port-reward.yaml   # from the folder of the file that says it
+  port: COM7                         # else the task file's board: port:
+  required: true                     # no recording if the board can't be set up (default true)
+  end_recording: false               # true: the task's end (its trials or minutes) stops the recording too
+```
+
+- `campy-session` starts `campy-box` before the cameras, waits until it has set the board up (`ready_timeout_s`, 30 s by default), then starts the recording. The task starts with the **first camera frame**, so the board's frame 1 is the recording's frame 1 and every event's frame is a video frame.
+- If the board can't be set up, there is no recording (`required: true`, the default), or the recording goes on without the task (`required: false`).
+- The task ends with the recording. If its own end comes first (its trials, its minutes, an `end: true` state), the recording goes on to its own end, or stops too with `end_recording: true`.
+- `campy-box` is not tied to `campy-session`: if `campy-session` is closed mid-recording, the task goes on and still ends with the recording (it watches the recording's state itself). If `campy-box` fails during the recording, the board makes the box safe, the recording goes on, and an alert says so.
+- Its logs go into the recording's folder: `box/campy-box.events.jsonl`, `.board.txt`, `.json` and `.task.yaml` (the task file as it was), and `logs/campy-box.log`. The panel shows the trial, the state and each sensor's count while it records ([Recording a session](recording-a-session.md)).
 
 ## Wiring (Arduino Nano ESP32)
 
@@ -162,4 +180,5 @@ An armed link and a servo sent away from its safe position count as active, so t
 - **On a simulated board** (`tests/test_outputs_sketch.py`, run in CI on Linux (x86 and Arm) and Windows, and on a Mac): input edges stamped within 3 µs of the change and in the right frame, also while the board watches for a trigger and while a train's pulse is due; pull-up beam breaks; bouncing contacts as one press; a pulse shorter than the lockout keeping both edges; licks at 7 Hz beside two photometry trains, whose pulses stay exact to the microsecond; a link firing once; a servo moving at its speed in 20 ms steps; the watchdog and `alloff` disarming links and sending servos back; pins never shared. The sketch's earlier tests all pass unchanged, so nothing `campy-rules` relies on moved.
 - **Compiled for the Nano ESP32** (Arduino ESP32 core 2.0.18, as in CI). The simulated board stands in for the ESP32's input registers and PWM hardware, so the real board's timing is not measured yet.
 - **`campy-box`** (`tests/test_box.py`): the file's checks, a task run against a scripted board (pokes, trials, the end after N trials, a fixed ratio, the watchdog, the seed), and the whole path on the board's sketch running in real time on a pseudo-terminal: pokes every 0.4 s on a pull-up input, each rewarded by the board's link in the right frame, three trials, the door servo's PWM.
+- **Recordings** (`tests/test_session.py`): `campy-session` with emulated cameras and the board's sketch in real time: the task started before the cameras, ended with the recording, its logs in the recording's folder and its status in `launcher.json`; a task ending the recording (`end_recording`); a board that can't be set up, with `required` true and false. The emulated cameras don't take the simulated board's trigger, so there the task starts as soon as the board is set up; on a rig, its frame 1 is the cameras' first.
 - **Not yet on a real board, sensor or servo.** That needs a spare Nano ESP32: every one on the test machines today is a camera trigger.

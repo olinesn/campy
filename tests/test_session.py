@@ -796,3 +796,143 @@ def test_a_frozen_campy_live_is_found_by_campy_watch_and_replaced(tmp_path, home
 	assert "Starting campy-live again (campy-live.part2)" in out
 	status = json.loads((folder / "launcher.json").read_text())
 	assert status["live_restarts"] == 1 and status["live"][1]["exit_code"] == 0
+
+
+# ------------------------------------------------------------------ an operant box (box:, campy-box)
+
+BOX_TASK = """
+board: {trigger_pin: 10, watchdog_ms: 250}
+inputs:
+  poke: {input: 0, pin: A0, pull: up}
+outputs:
+  valve: {channel: 0, pin: D2, pulse_ms: 20}
+links:
+  reward: {when: poke, do: {output: valve}}
+task:
+  end: {trials: TRIALS}
+  states:
+    ready:
+      trial: true
+      arm: {reward: 1}
+      on: {poke: done}
+    done:
+      after_s: 0.05
+      next: ready
+"""
+
+
+def test_the_box_section_is_checked(tmp_path):
+	(tmp_path / "tasks").mkdir()
+	(tmp_path / "tasks" / "t.yaml").write_text(BOX_TASK)
+	config = write_config(tmp_path / "c.yaml", {"numCams": 1}, box={"task": "tasks/t.yaml"})
+	c = session.Config(str(config))
+	assert c.box["task"] == str(tmp_path / "tasks" / "t.yaml") # from the config's folder
+	# A profile's box: from the profile's folder
+	(tmp_path / "rig").mkdir()
+	(tmp_path / "rig" / "t.yaml").write_text(BOX_TASK)
+	write_config(tmp_path / "rig" / "profile.yaml", {"numCams": 1}, box={"task": "t.yaml"})
+	(tmp_path / "exp.yaml").write_text("extends: rig/profile.yaml\n")
+	assert session.Config(str(tmp_path / "exp.yaml")).box["task"] == str(tmp_path / "rig" / "t.yaml")
+	assert c.box["required"] is True and c.box["end_recording"] is False and c.box["ready_timeout_s"] == 30
+	for box, message in [({"required": False}, r"box: needs task:"), ({"task": "nope.yaml"}, r"box\.task: .*nope\.yaml is not a file"),
+			({"task": "tasks/t.yaml", "reqired": True}, r'Did you mean "required"')]:
+		config = write_config(tmp_path / "c.yaml", {"numCams": 1}, box=box)
+		with pytest.raises(session.SessionError, match=message):
+			session.Config(str(config))
+
+
+def box_board(tmp_path, outputs_sim):
+	# The board's sketch in real time on a pseudo-terminal: a 60 Hz camera trigger, a poke on A0 every 0.3 s
+	import tty
+	master, slave = os.openpty()
+	tty.setraw(slave)
+	log = tmp_path / "sim.log"
+	env = dict(os.environ, SIM_INPUT="10:300000:16667:3000:100000;30:400000:300000:30000:1000")
+	with open(str(log), "w") as f:
+		sim = subprocess.Popen([outputs_sim, "live"], stdin=master, stdout=master, stderr=f, env=env)
+	t0 = time.monotonic()
+	while "ready campy_outputs" not in log.read_text() and time.monotonic() - t0 < 60 and sim.poll() is None:
+		time.sleep(0.05)
+	return sim, master, slave
+
+
+@POSIX
+def test_a_recording_with_an_operant_box(tmp_path, home, outputs_sim):
+	# campy-box starts before the cameras, its task with the first frame; it ends with the recording, its logs in
+	# the recording's folder, its state in launcher.json
+	sim, master, slave = box_board(tmp_path, outputs_sim)
+	try:
+		task = tmp_path / "task.yaml"
+		task.write_text(BOX_TASK.replace("TRIALS", "1000"))
+		config, clips = emu_session(tmp_path, home, 3)
+		with open(str(config), "a") as f:
+			f.write(yaml.safe_dump({"box": {"task": str(task), "port": os.ttyname(slave)}}))
+		proc, lines = start(tmp_path, home, config)
+		proc.wait(timeout=180)
+	finally:
+		sim.terminate()
+		sim.wait()
+		os.close(slave)
+		os.close(master)
+	out = "".join(lines)
+	assert proc.returncode == 0, out
+	assert "campy-box is ready." in out and "[box]" in out
+	folder = the_folder(clips)
+	assert recorded(folder) == [60, 60]
+	logs = folder / "logs"
+	assert {"campy-box.log", "campy-box.ready", "campy-box.status.json"} <= {p.name for p in logs.iterdir()}
+	boxdir = folder / "box"
+	assert sorted(p.name for p in boxdir.iterdir()) == ["campy-box.board.txt", "campy-box.events.jsonl",
+		"campy-box.json", "campy-box.task.yaml"]
+	summary = json.loads((boxdir / "campy-box.json").read_text())
+	assert summary["ended"] in ("stop file", "the recording ended"), summary
+	assert summary["trials"] >= 3 and summary["counts"]["links"]["reward"] >= 2
+	status = json.loads((folder / "launcher.json").read_text())
+	assert status["parts"]["box"]["exit_code"] == 0 and status["problems"] == []
+	assert status["box"]["task"] == "task.yaml" and status["box"]["ended"] == summary["ended"]
+	assert status["box"]["inputs"]["poke"] >= 3
+	assert "campy-box: {} trials; ended".format(summary["trials"]) in out
+
+
+@POSIX
+def test_a_task_that_ends_can_end_the_recording(tmp_path, home, outputs_sim):
+	sim, master, slave = box_board(tmp_path, outputs_sim)
+	try:
+		task = tmp_path / "task.yaml"
+		# 20 trials, a poke every 0.3 s: about 6 s, once the cameras record (the simulated board's trigger runs from
+		# before they start, unlike a rig's, so the task starts as soon as the board is set up)
+		task.write_text(BOX_TASK.replace("TRIALS", "20"))
+		config, clips = emu_session(tmp_path, home, 60)
+		with open(str(config), "a") as f:
+			f.write(yaml.safe_dump({"box": {"task": str(task), "port": os.ttyname(slave), "end_recording": True}}))
+		proc, lines = start(tmp_path, home, config)
+		proc.wait(timeout=180)
+	finally:
+		sim.terminate()
+		sim.wait()
+		os.close(slave)
+		os.close(master)
+	out = "".join(lines)
+	assert proc.returncode == 0, out
+	assert "campy-box: the task ended after its 20 trials. Stopping the recording (box.end_recording)." in out
+	folder = the_folder(clips)
+	assert 0 < max(recorded(folder)) < 20 * 30 # stopped long before its 60 s
+
+
+def test_a_box_that_cannot_start_stops_the_recording_or_not(tmp_path, home):
+	task = tmp_path / "task.yaml"
+	task.write_text(BOX_TASK.replace("TRIALS", "2"))
+	for required in (True, False):
+		config, clips = emu_session(tmp_path, home, 2)
+		with open(str(config), "a") as f:
+			f.write(yaml.safe_dump({"box": {"task": str(task), "port": str(tmp_path / "no-such-port"),
+				"required": required}}))
+		proc, lines = start(tmp_path, home, config)
+		proc.wait(timeout=120)
+		out = "".join(lines)
+		assert "campy-box ended before the board was set up" in out, out
+		if required:
+			assert proc.returncode == 1 and "No recording: campy-box did not set the board up" in out
+		else:
+			assert proc.returncode == 0, out
+		shutil.rmtree(str(clips))
