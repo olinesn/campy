@@ -81,8 +81,8 @@ Only the standard library and numpy (campy's recording environment): the
 page is one file of HTML and JavaScript (campy/panelpage.py), no build step.
 """
 
-import argparse, collections, http.server, json, os, platform, re, secrets, shutil, struct, sys, threading, time, \
-	webbrowser, zlib
+import argparse, collections, http.server, json, os, platform, re, secrets, shutil, socket, struct, sys, threading, \
+	time, webbrowser, zlib
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
@@ -898,6 +898,26 @@ class Types:
 
 
 # ------------------------------------------------------------------ the panel
+
+
+class PanelServer(http.server.ThreadingHTTPServer):
+	"""The panel's HTTP server: a port another socket listens on counts as taken, on every OS.
+
+	ThreadingHTTPServer sets SO_REUSEADDR. On Linux and macOS that only lets a restarted panel bind its port again
+	while the old connections sit in TIME_WAIT. On Windows it also lets it bind a port that another socket with
+	SO_REUSEADDR is listening on (seen on GitHub's Windows runner: a second ThreadingHTTPServer bound the first one's
+	port), so a second panel, or another Python HTTP server, would share the port instead of moving to the next free
+	one, and requests would land on either. There the socket takes the port with SO_EXCLUSIVEADDRUSE instead: binding
+	it fails while anything else holds it, and nothing else can bind it while the panel listens.
+	"""
+
+	if sys.platform == "win32":
+		allow_reuse_address = False
+
+		def server_bind(self):
+			self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+			super().server_bind()
+
 
 class Panel:
 	def __init__(self, config_path, args=(), port=PORT, browser=True, new_key=False):
@@ -1718,7 +1738,7 @@ class Panel:
 
 		for port in range(self.port, self.port + 20):
 			try:
-				server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+				server = PanelServer(("127.0.0.1", port), Handler)
 				break
 			except OSError:
 				continue
