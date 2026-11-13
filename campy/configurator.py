@@ -288,7 +288,7 @@ def ResolveClargs(clargs):
 	problems += EveryCamera(params, sources)
 
 	for check in (lambda p: ValidateCameraLists(p, sources, notes), lambda p: ValidateSerials(p, sources),
-			ValidateColorRange, ValidateGamma, ValidateExperiment,
+			ValidateColorRange, ValidateGamma, ValidateExperiment, ValidateSync,
 			lambda p: ValidateTriggerBoard(p, sources, chain, sections, section_sources)):
 		try:
 			check(params)
@@ -330,7 +330,7 @@ def ConfigureCamParams(systems, params, n_cam):
 
 
 # Lists that are not one value per camera
-NON_CAMERA_LISTS = ("digitalPins", "ratcamPorts", "animalIds")
+NON_CAMERA_LISTS = ("digitalPins", "ratcamPorts", "animalIds", "syncGapMs")
 # Lists that need a value for every camera: one name or index cannot be shared
 EVERY_CAMERA_LISTS = ("cameraNames", "cameraSelection", "cameraSerials")
 
@@ -519,6 +519,46 @@ def BlinkSettings(params):
 		return -1, 0
 	hz = float(hz)
 	return int(pin), (int(hz) if hz.is_integer() else hz)
+
+
+def SyncSettings(params, seed=None):
+	"""
+	The trigger's sync output for this recording, as trigger.ino takes it and
+	sync.json keeps it (campy/syncmatch.py reads it); None when syncPin is
+	None. seed: the one to use when syncSeed is None (default: a new random one).
+	"""
+	pin = params.get("syncPin", "None")
+	if str(pin) == "None":
+		return None
+	gaps = params.get("syncGapMs", [200, 1000])
+	gaps = list(gaps) if isinstance(gaps, (list, tuple)) else [gaps]
+	if len(gaps) != 2 or int(gaps[0]) > int(gaps[1]):
+		raise ValueError("syncGapMs: give the shortest and longest gap, e.g. [200, 1000], not {}".format(gaps))
+	width_us = int(round(float(params.get("syncPulseMs", 10)) * 1000))
+	if width_us + 3000 > int(gaps[0]) * 1000:
+		raise ValueError("syncPulseMs {:g} leaves too little of the shortest gap ({} ms): the pulse must end at least "
+			"3 ms before the next one".format(width_us / 1000, gaps[0]))
+	if str(params.get("syncSeed", "None")) != "None":
+		seed = int(params["syncSeed"])
+	elif seed is None:
+		import secrets
+		seed = secrets.randbelow(2 ** 31)
+	return dict(pin=int(pin), seed=int(seed), width_us=width_us, min_gap_ms=int(gaps[0]), max_gap_ms=int(gaps[1]))
+
+
+def ValidateSync(params):
+	# The sync output's pin is its own: not a camera's trigger pin, nor the test LED's
+	if str(params.get("syncPin", "None")) == "None":
+		return
+	SyncSettings(params, seed=0)
+	pin = int(params["syncPin"])
+	pins = params.get("digitalPins", [])
+	pins = list(pins) if isinstance(pins, (list, tuple)) else [pins]
+	if pin in [int(p) for p in pins]:
+		raise ValueError("syncPin {} is one of digitalPins {}, which trigger the cameras: give the sync output a pin "
+			"of its own.".format(pin, pins))
+	if str(params.get("blinkPin", "None")) != "None" and int(params["blinkPin"]) == pin:
+		raise ValueError("syncPin {} is also blinkPin, the test LED's: give each its own pin.".format(pin))
 
 
 def CameraParams(params, n_cam):

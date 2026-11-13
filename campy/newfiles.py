@@ -56,6 +56,7 @@ CALIBRATION_WORD = "calibration"
 CALIBRATION_FOLDER = "calibration_images"
 
 TRIGGER_FILE = "trigger.json" # trigger.SaveStart
+SYNC_FILE = "sync.json" # the trigger's sync output: trigger.SaveStart, read by campy-syncmatch
 SESSION_FILE = "session.json" # how the recording was made: manifest.Session
 ALERTS_FILE = "alerts.log" # what the recording watch found: watch.Watch
 RATCAM_FILES = ("ratcam_frames.csv", "ratcam_sync.csv") # ratcam.Logs
@@ -104,9 +105,10 @@ def CameraFiles(cam_params):
 
 def RecordingFiles(params):
 	# Every file a recording with these params writes, as (path, n_cam), n_cam
-	# None for trigger.json, session.json and alerts.log
+	# None for trigger.json, session.json, alerts.log and sync.json (with syncPin)
 	from campy import configurator # it imports the camera modules, which import this one
-	files = [(os.path.join(params["videoFolder"], name), None) for name in (TRIGGER_FILE, SESSION_FILE, ALERTS_FILE)]
+	names = (TRIGGER_FILE, SESSION_FILE, ALERTS_FILE) + ((SYNC_FILE,) if str(params.get("syncPin", "None")) != "None" else ())
+	files = [(os.path.join(params["videoFolder"], name), None) for name in names]
 	for n in range(params["numCams"]):
 		files += [(path, n) for path in CameraFiles(configurator.CameraParams(params, n))]
 	return files

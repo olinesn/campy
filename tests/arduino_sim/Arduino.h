@@ -33,6 +33,8 @@ struct SimSerial {
 	// The host has the port open (always, here)
 	explicit operator bool() const { return true; }
 	float parseFloat();
+	long parseInt();
+	int peek();
 	// What the sketch says: Print's formatting (floats with 2 decimals)
 	void print(const char* text);
 	void print(int value);

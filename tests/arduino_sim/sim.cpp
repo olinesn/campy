@@ -302,6 +302,25 @@ float SimSerial::parseFloat() {
 	return std::strtof(number.c_str(), 0);
 }
 
+long SimSerial::parseInt() {
+	// Like Stream::parseInt: skip to a digit or '-', then read the digits, with the timeout as parseFloat
+	int c;
+	while ((c = TimedPeek()) >= 0 && !std::isdigit(c) && c != '-') pos++;
+	if (c < 0) return 0;
+	std::string number;
+	while ((c = TimedPeek()) >= 0 && (std::isdigit(c) || (c == '-' && number.empty()))) {
+		number += (char) c;
+		pos++;
+	}
+	return std::strtol(number.c_str(), 0, 10);
+}
+
+int SimSerial::peek() {
+	// The next character without taking it, or -1: no waiting
+	if (available() <= 0) return -1;
+	return (unsigned char) input[pos];
+}
+
 static std::string Command(const std::string& arg) {
 	if (arg.empty() || arg[0] != '@') return arg;
 	std::string path = arg.substr(1, arg.find_first_of("\r\n") - 1), text;

@@ -1,6 +1,6 @@
 # Triggering and synchronization
 
-Triggering cameras together from an Arduino or Teensy (or an external trigger), putting every camera on the trigger's timeline after recording (`campy-align`), and checking that triggered cameras expose at the same moment (`campy-synctest`).
+Triggering cameras together from an Arduino or Teensy (or an external trigger), putting every camera on the trigger's timeline after recording (`campy-align`), sending a sync line to another recorder and putting its clock on the trigger's (`syncPin`, `campy-syncmatch`), and checking that triggered cameras expose at the same moment (`campy-synctest`).
 
 ## Camera Triggering
 Campy's trigger module supports Python integration with Arduino and Teensy microcontrollers:
@@ -56,6 +56,61 @@ A profile without `triggerController` works as before: a Pico config only needs 
 **The panel's checks list** has a **Trigger** line before Start. With the Arduino, campy's `serialPort` must be one of the computer's serial ports. Otherwise the line is red, names the ports there are, and the start is stopped, rather than campy-acquire stopping 2 s into the recording. With the Pico (`triggerController: pico`), the config needs a `pico:` section to start the Pico's pulses. Without one the cameras would wait for pulses nobody makes, so the start is stopped. A camera-only session is enough (`pico: {set: {CAMERA_ONLY: 60, CAMERA_FPS: 10}}`, the length and `frameRate` of the recording; [camera-only sessions](../chronicrecord/README.md#camera-only-sessions)).
 
 Why: on 10 November 2026 every calibration from the ChronicRecord rig's panel stopped 2 s in. The Pico had pulsed the rig's cameras since 5 November, and the bout sessions' configs said so. But the rig profile, which the calibration, look and live-tracking configs extend, still started the Arduino on COM9, which had not been plugged in since 2 November.
+
+## A sync output for other recorders
+
+An ephys, photometry or other recording system has a clock of its own. To put its samples and the camera frames on one timeline, campy's trigger board can send it a **sync line**: 10 ms pulses with random gaps of 200 to 1000 ms, made from the same clock as the camera triggers. Each gap is a whole number of milliseconds, one of 801 values, so any four gaps in a row (about 2.4 s of pulses) say where in the recording they are. A recorder that started late, missed a stretch or dropped pulses still lines up. It is the same pulse train as the ChronicRecord Pico's (pull request 419), now from `trigger.ino` on any board.
+
+Turn it on in the config, wire the pin to one of the recorder's inputs (and the grounds together), and upload the current `trigger.ino`:
+
+```yaml
+syncPin: 7            # the board's pin; None (the default): off
+syncSeed: None        # None: a new random seed for each recording
+syncPulseMs: 10       # how long each pulse is high
+syncGapMs: [200, 1000] # shortest and longest gap
+```
+
+The pin must be the sync output's own (not one of `digitalPins`, nor `blinkPin`): campy checks this before it starts. Mind the voltages: the Nano ESP32 and Teensy 4.x put out 3.3 V, an Uno 5 V. campy sends the settings after the test LED's, and an older sketch ignores them. The sketch says `Sync output on pin 7, seed ..., 10000 us pulses, gaps 200 to 1000 ms.`, or `Sync output off: <why>` when it can't (`pin triggers a camera`, `frame rate too high for this board`, `pulse too short, or too long for the gaps`).
+
+Each recording keeps the settings in **`sync.json`**, next to `trigger.json` (which also gets `syncPin`, `syncSeed` and `syncFile`): the seed, pulse length and gaps, and the frame period. That is all it takes to work out every pulse. Time 0 is the start of the trigger's first frame period: pulse *k* (from 0) rises at the sum of gaps 1 to *k* + 1, and frame *k*'s trigger rises at *k* × period + period / 2. Gap *j* is 1000 × (shortest + SplitMix64(seed, *j*) mod (longest − shortest + 1)) µs: `campy/syncmatch.py` and the sketch compute it the same way.
+
+### Keeping the camera edges where they were
+
+`trigger.ino` makes every edge in one loop that waits on the board's microsecond clock. A sync edge written just before a camera edge would delay that camera edge by the time the write takes (a few µs on an Uno). So a sync edge due within 50 µs before a camera edge, or at the same moment, waits until 10 µs after it. The rule is deterministic, so `campy-syncmatch` works out the moved edges exactly. How many edges move depends on the frame rate, because whole-millisecond gaps often line up with a whole-millisecond frame period. Over a day of pulses: 20% at 100 and 200 fps (every edge that falls on a camera edge), 5% at 25 fps, 3% at 333 fps, under 1% at 30 and 60 fps. Each moves by 10 to 60 µs, which the matcher allows for. The sketch works out the next sync edge (64-bit arithmetic, slow on an 8-bit board) only while the next camera edge is more than 200 µs away, or 1500 µs on an AVR board such as the Uno. That caps the frame rate with a sync output at about 1,900 fps on 32-bit boards, and 320 fps on an Uno or Mega.
+
+In the tests' simulated board (`tests/test_trigger_sketch.py`), the camera edges came at exactly the same microsecond with and without the sync output, at 25, 100 and 333 fps (2,700 to 36,000 edges each). Every sync edge came 0 to 2 µs after the time the matcher works out for it, across the 32-bit wrap of `micros()` too. This has not been measured on a real board yet. There, the loop has a little more to do on each turn (one more function call and comparison), so a camera edge may come up to that much later than without the sync output: well under 1 µs on a Teensy or Nano ESP32, perhaps 1 to 2 µs on an Uno.
+
+### Which board: the clock
+
+What decides how well the recorder's clock can be put on the board's is the clock behind the board's main chip:
+
+| Clock | Boards | How far off nominal | Its sync line |
+|---|---|---|---|
+| Crystal | Teensy 3.2 and 4.x, Nano ESP32, Pico and Pico 2 (and the Nano RP2040 Connect), Leonardo and Micro, Due, Zero and the MKR boards, Nano 33 IoT, Giga R1 | tens of ppm, and drifts a few ppm with temperature | matched at any rate the search covers; one line when it fits, else 30 s lines |
+| Ceramic resonator | Uno R3 and the classic Nano (ATmega328P; the shiny 16 MHz crystal on an Uno drives its USB chip, not the 328P); the Mega 2560's part varies, so measure yours | about 0.5%, and more with temperature | matched the same way; its rate wanders more, so expect the 30 s lines |
+| Internal oscillator | Uno R4 Minima (about 1% off on one rig), Nano Every and Uno WiFi Rev2 (ATmega4809, factory-calibrated to about 2%) | 1 to 3% | matched the same way, within the search's 3% |
+
+A resonator or internal-oscillator board also triggers the cameras at the wrong rate: a "100 fps" Uno R4 Minima runs at about 99 or 101 fps. `campy-align` and `campy-syncmatch` don't mind, but anything that assumes the nominal rate will. So use a board with a crystal: the Nano ESP32 in [the hardware list](hardware.md), or a Teensy. How far an edge moves in the loop matters little here: a recorder sampling at 30 kHz only sees 33 µs steps.
+
+### Matching the recorder's pulses: `campy-syncmatch`
+
+Export the sync line's rises from the recorder (and its falls, if you can), then:
+
+```bash
+campy-syncmatch edges.csv --sync <recording>/sync.json [--sample-rate 30000] [--frames 72000]
+```
+
+The edges file is a `.npy` array or a `.csv`/`.txt` file: one pulse per row, its rise time and optionally its fall time, with an optional header line. The times are in seconds, or sample numbers with `--sample-rate`. The ChronicRecord Pico's `sync_*.json` works as `--sync` too (it has no frame period, so no edge is held back).
+
+What it does:
+- works out every planned edge from the seed, with the held ones where the sketch put them;
+- finds the board's clock rate first. It reads every stretch of four gaps at each rate within `--max-rate-error` of nominal (3% by default, in steps of 0.01%), and keeps the rate at which the most stretches name a place in the plan. A gap must read within 0.3 ms of a whole millisecond. At a fixed nominal rate, a clock more than about 300 ppm off would fail that check, so resonator and internal-oscillator boards could not be matched at all;
+- fits recorder time = *a* + *b* × board time through every matched pulse. That is one line if it fits to `--line-us` (100 µs); otherwise one line per 30 s of board time (`--segment-s`), which follows a clock whose rate wanders with temperature. On made-up pulses whose rate swung by 100 ppm over an hour, one line was off by tens of ms, and the 30 s lines by under 35 µs, at 30 kHz sampling;
+- reports where board time 0 falls on the recorder's clock, the rate in ppm, the residuals, and every pulse missing from the recorder or extra on it. A pulse of the wrong width, when falls are given, is reported as extra too.
+
+It writes `<edges>_syncmatch.csv` (one row per pulse: recorder time, pulse number, board time, residual, or why it is missing or extra) and `<edges>_syncmatch.json` (the fit and the counts). With `--frames N`, it also writes `<edges>_frames.csv`: frame *k*'s trigger on the recorder's clock, for the first *N* frames. A camera that missed triggers, or a trigger that paused, still needs `campy-align`'s trigger numbers to say which trigger each saved frame came from.
+
+Tested on made-up pulses (`tests/test_syncmatch.py`): crystal-like (3 and 40 ppm), resonator-like (0.5%) and internal-oscillator-like (1% and 2.5%) clocks, sampled at 25 or 30 kHz, with 1 to 2% of pulses lost, stray pulses added, and the recorder starting late. Every pulse was matched, with residuals within about half a sample (under 20 µs at 30 kHz). The test also runs the simulated sketch's own sync edges through a recorder clock running 0.4% fast, and checks every frame's trigger time to within 30 µs. Not yet checked: a real board's sync line recorded by a real recorder.
 
 ## Aligning cameras after recording
 ```
