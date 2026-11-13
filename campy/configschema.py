@@ -373,6 +373,11 @@ SETTINGS = [
 	Setting("syncGapMs", [200, 1000], int, section=TRIGGER, per_camera=LIST, low=1, high=60000,
 		help="The sync pulses' shortest and longest gap (rise to rise), in whole ms. Each gap is one of \
 			these values, at random, so any four in a row say where in the recording they are."),
+	Setting("picoSync", False, bool, section=TRIGGER, per_camera=ONE,
+		help="campy-session's Pico (pico: section) also makes its sync train on GP6 for the OneBox (wired to \
+			XA1): 10 ms pulses, a random 200 to 1000 ms apart, from a seed saved in the recording's pico \
+			folder, so chronicrecord/sync_match.py can line the Pico's clock up with the OneBox's and find any \
+			pulse either missed (default: False). Needs chronic_timer 3 on the Pico. Set it in the rig profile."),
 
 	# Session: the experiment, for the recording's session.json (campy/manifest.py), and the
 	# warnings for defaults that changed (campy/defaults.py)

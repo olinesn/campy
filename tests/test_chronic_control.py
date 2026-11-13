@@ -593,3 +593,59 @@ def test_attach_with_nothing_running(tmp_path, fake_board):
 	wait_done(tmp_path)
 	out = subprocess.run(command, capture_output=True, text=True, timeout=60)
 	assert out.returncode == 1 and "not running a session" in out.stdout, out.stdout
+
+
+# --- the sync train (SYNC=1, output E on GP6) ---
+
+def test_the_sync_settings():
+	s = cc.Settings()
+	assert s["SYNC"] == 0 and (s["SYNC_WIDTH_US"], s["SYNC_MIN_GAP_MS"], s["SYNC_MAX_GAP_MS"]) == (10000, 200, 1000)
+	for bad in (["SYNC=2"], ["SYNC=1", "SYNC_WIDTH_US=200000"], ["SYNC=1", "SYNC_MIN_GAP_MS=900", "SYNC_MAX_GAP_MS=800"]):
+		with pytest.raises(SystemExit):
+			cc.Settings(bad)
+	s = cc.Settings(["SYNC=1", "SYNC_SEED=42"])
+	assert cc.SyncCommand(s) == "sync 4 42 10000 200 1000"
+	assert "Sync train on output E (GP6): 10 ms pulses, a random 200-1000 ms from one to the next, seed 42" in \
+		"\n".join(cc.Describe(s, cc.Plan(s)[0]))
+	# The wiring check blinks E five times, only when asked
+	edges, _ = cc.WiringPlan("E")
+	assert sum(1 for t, ch, level in edges if level == 1) == 5 and {ch for _, ch, _ in edges} == {cc.SYNC_CH}
+	assert cc.SYNC_CH not in {ch for _, ch, _ in cc.WiringPlan("ABCD")[0]}
+
+
+def test_a_session_with_the_sync_train(tmp_path, board):
+	# SYNC=1: the board makes the seed's pulses on GP6 from the session's start to its last gate, and the seed is saved
+	# beside timestamps.txt for sync_match.py
+	import json
+	import sync_match as sm
+	port, log_path = board
+	settings = SHORT + ["SYNC=1", "SYNC_SEED=4242"]
+	start = control(tmp_path, port, "start", settings=settings)
+	assert start.returncode == 0, start.stdout + start.stderr
+	assert wait_done(tmp_path)["state"] == "done"
+	(day,) = (tmp_path / "logs").iterdir()
+	(path,) = day.glob("sync_*.json")
+	sync = json.loads(path.read_text())
+	assert (sync["seed"], sync["width_us"], sync["min_gap_ms"], sync["max_gap_ms"], sync["pin"]) == (4242, 10000, 200,
+		1000, "GP6")
+	bouts, _, _ = cc.Plan(cc.Settings(settings))
+	assert sync["ends_us"] == bouts[-1]["gate_off"] and sync["settings"]["SYNC_SEED"] == 4242
+	want = sm.PlannedRises(4242, 200, 1000, bouts[-1]["gate_off"])
+	assert "sync={}".format(len(want)) in sync["done"]
+	text = timestamps(tmp_path)
+	assert "Sync train on output E (GP6): 10000 us pulses, gaps of 200-1000 ms from seed 4242" in text
+	p = pins(log_path)
+	t0 = [t for t, level in p[2] if level == 1][0] # the gate rises at the session's time 0
+	up = np.array([t for t, level in p[6] if level == 1]) - t0
+	# The live sketch runs on the computer's clock, which a busy CI runner delays by tens of ms (33.7 ms once): this
+	# checks that the pulses are the seed's (its gaps are 200 ms or more apart), test_chronic_timer.py their timing to
+	# the microsecond on the simulated clock
+	assert len(up) == len(want) and np.abs(up - want).max() <= 50000
+	assert p[6][-1][1] == 0
+
+
+def test_sync_needs_chronic_timer_3(tmp_path, fake_board):
+	# A board still on chronic_timer 2 has no channel 4: the session doesn't start, and says why
+	start = control(tmp_path, fake_board, "start", settings=SHORT + ["SYNC=1"])
+	assert start.returncode == 1
+	assert "needs chronic_timer 3 or later on the board, which runs chronic_timer 2" in start.stdout, start.stdout

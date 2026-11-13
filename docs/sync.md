@@ -127,6 +127,10 @@ It writes `<edges>_syncmatch.csv` (one row per pulse: recorder time, pulse numbe
 
 Tested on made-up pulses (`tests/test_syncmatch.py`): crystal-like (3 and 40 ppm), resonator-like (0.5%) and internal-oscillator-like (1% and 2.5%) clocks, sampled at 25 or 30 kHz, with 1 to 2% of pulses lost, stray pulses added, and the recorder starting late. Every pulse was matched, with residuals within about half a sample (under 20 µs at 30 kHz). The test also runs the simulated sketch's own sync edges through a recorder clock running 0.4% fast, and checks every frame's trigger time to within 30 µs. Not yet checked: a real board's sync line recorded by a real recorder (the test above had nothing on the sync pin).
 
+## The ChronicRecord Pico's sync line to the OneBox
+
+On the ChronicRecord rig the Pico can also send the OneBox a sync line that never repeats: 10 ms pulses, a random 200 to 1000 ms apart, from a seed saved with the session (`picoSync: True` in the rig profile; off by default). `chronicrecord/sync_match.py` finds those pulses in SpikeGLX's OneBox files and matches them to the Pico's plan. It reports the offset and drift between the two clocks, every sync pulse that is missing or extra, and, through the same fit, every camera, gate or LED edge on the OneBox that the Pico didn't plan, with its time on the Pico's clock. That is the way to find out where a stray camera pulse came from. `campy-syncmatch` (above) also reads the Pico's `sync_*.json`, for sync edges exported from another recorder. See [Sync pulses for the OneBox](../chronicrecord/README.md#sync-pulses-for-the-onebox). It is not the RatCam's random sync train (`ratcamSyncOut`, below), which `campy-align` can't use.
+
 ## Aligning cameras after recording
 ```
 campy-align ./test/2026-10-18_17-30-05        # the recording's folder (its videoFolder with sessionFolder False)
