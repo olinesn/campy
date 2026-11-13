@@ -96,7 +96,7 @@ The replay's accuracy didn't change (2D median 3.8 px, 3D median 4.2 mm, 2 ident
 | Orin, offline (3,600 sets, four passes) | 2.12 / 3.14 ms | 1.65 / 2.59 ms | **1.30 / 2.24 ms** |
 | EVO-X2, offline | 0.58 / 0.85 ms | 0.44 / 0.67 ms | **0.32 / 0.55 ms** |
 
-Loading the compiled loops took 0.8–1.4 s on the Orin and compiling them the first time 1.8 s (0.6 s on the EVO-X2); numba keeps them after. In the first try, `campy-live` started loading them only once its models were ready, and in two of three replay checks the loading, finished as the feed came, held up the first sets: 1 and 3 sets skipped, one stall of 45–55 ms. Started as `campy-live` starts, while its models load, as since, they were ready before the feed in each of three runs, and every set was tracked. Numba isn't installed in the Orin's environments yet; `~/venvs/sleap/bin/pip install numba` would do it.
+Loading the compiled loops took 0.8–1.4 s on the Orin and compiling them the first time 1.8 s (0.6 s on the EVO-X2); numba keeps them after. In the first try, `campy-live` started loading them only once its models were ready, and in two of three replay checks the loading, finished as the feed came, held up the first sets: 1 and 3 sets skipped, one stall of 45–55 ms. Started as `campy-live` starts, while its models load, as since, they were ready before the feed in each of three runs, and every set was tracked. Since 13 November numba 0.68.1 is installed in the Orin's tracking environment (`~/venvs/sleap/bin/pip install numba`, which added only numba and llvmlite 0.50.0; numpy stayed 2.5.4). The rig check on dev `a21e0f6`, which doesn't use numba yet, gave the same as before it (replay3: 3D step 2.79 / 3.90 ms, frame to 3D 14.5 / 15.8 ms, 3.8 px, 4.2 mm, 2 switches; smoke1 inference 4.0 / 4.1 ms; smoke3 frame to 3D 14.6 / 16.1 ms; every set tracked, `RIG_CLEAN`). Two replay checks with this pull request's code and the installed numba: loaded in 1.4 s, 3D step 1.81–1.84 / 2.87–2.89 ms, frame to 3D 13.5 / 14.7–14.8 ms, every set tracked, the same 3.8 px, 4.2 mm and 2 switches. This pull request's tests passed there too (23, the bit-for-bit one among them).
 
 ### Recording
 
@@ -291,6 +291,7 @@ python3 -m venv --system-site-packages ~/venvs/sleap
 ~/venvs/sleap/bin/pip install sleap-nn==0.3.5 "torch==2.15.0" "torchvision==0.29.2" --extra-index-url https://download.pytorch.org/whl/cu132
 ~/venvs/sleap/bin/pip install -e ~/campy onnx
 ~/venvs/sleap/bin/pip install --ignore-installed matplotlib contourpy kiwisolver pandas pillow fonttools pyparsing cycler python-dateutil pytz six packaging
+~/venvs/sleap/bin/pip install numba    # optional: the 3D step's loops compiled (pull request 421)
 ```
 
 PyTorch's own CUDA 13.2 wheels for Arm64 work on the Orin: they carry no kernels built for its compute capability 8.7, but their 8.0 kernels run on it. Pinning torch when installing sleap-nn keeps pip from replacing it. `onnx` is what campy's TensorRT engines need besides `tensorrt`, which the venv sees from JetPack's system Python packages.
