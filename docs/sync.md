@@ -78,7 +78,16 @@ Each recording keeps the settings in **`sync.json`**, next to `trigger.json` (wh
 
 `trigger.ino` makes every edge in one loop that waits on the board's microsecond clock. A sync edge written just before a camera edge would delay that camera edge by the time the write takes (a few µs on an Uno). So a sync edge due within 50 µs before a camera edge, or at the same moment, waits until 10 µs after it. The rule is deterministic, so `campy-syncmatch` works out the moved edges exactly. How many edges move depends on the frame rate, because whole-millisecond gaps often line up with a whole-millisecond frame period. Over a day of pulses: 20% at 100 and 200 fps (every edge that falls on a camera edge), 5% at 25 fps, 3% at 333 fps, under 1% at 30 and 60 fps. Each moves by 10 to 60 µs, which the matcher allows for. The sketch works out the next sync edge (64-bit arithmetic, slow on an 8-bit board) only while the next camera edge is more than 200 µs away, or 1500 µs on an AVR board such as the Uno. That caps the frame rate with a sync output at about 1,900 fps on 32-bit boards, and 320 fps on an Uno or Mega.
 
-In the tests' simulated board (`tests/test_trigger_sketch.py`), the camera edges came at exactly the same microsecond with and without the sync output, at 25, 100 and 333 fps (2,700 to 36,000 edges each). Every sync edge came 0 to 2 µs after the time the matcher works out for it, across the 32-bit wrap of `micros()` too. This has not been measured on a real board yet. There, the loop has a little more to do on each turn (one more function call and comparison), so a camera edge may come up to that much later than without the sync output: well under 1 µs on a Teensy or Nano ESP32, perhaps 1 to 2 µs on an Uno.
+In the tests' simulated board (`tests/test_trigger_sketch.py`), the camera edges came at exactly the same microsecond with and without the sync output, at 25, 100 and 333 fps (2,700 to 36,000 edges each). Every sync edge came 0 to 2 µs after the time the matcher works out for it, across the 32-bit wrap of `micros()` too. On a real board, the cameras saw no difference either. The test (13 November 2026) used the Arduino Nano ESP32 that triggers a test rig's three FLIR Blackfly S cameras, with the sync output on a pin wired to nothing. It made four 60 s recordings, at 60 and 100 fps, each with the sync output off and on. The cameras' own timestamps measured the time between frames, so the figures include the cameras' own jitter:
+
+| | 60 fps, off | 60 fps, on | 100 fps, off | 100 fps, on |
+|---|---|---|---|---|
+| Frames per camera (none missed) | 3,600 | 3,600 | 6,000 | 6,000 |
+| Time between frames: standard deviation | 1.00–1.05 µs | 1.00–1.01 µs | 0.53–0.57 µs | 0.54–0.59 µs |
+| 99th percentile of the deviation | 4.4–4.6 µs | 3.8–4.4 µs | 1.32–1.42 µs | 1.36–1.46 µs |
+| Largest deviation | 8.2–9.0 µs | 8.6–8.9 µs | 1.6–1.7 µs | 1.8–2.4 µs |
+
+The ranges are over the three cameras. At 100 fps, where one sync edge in five is held back from a camera edge, the largest single deviation was 0.2 to 0.7 µs larger with the sync output. Whether that is the sync output or chance would take longer runs; the spread and the 99th percentile didn't change. The sketch answered campy as in the simulator: sync on, off with campy's stop command, and refused on the camera's pin. The pulses on the sync pin weren't recorded, since nothing was wired to it. On an Uno, whose loop is slower, a camera edge may come 1 to 2 µs later than without the sync output; that is not measured.
 
 ### Which board: the clock
 
@@ -86,7 +95,7 @@ What decides how well the recorder's clock can be put on the board's is the cloc
 
 | Clock | Boards | How far off nominal | Its sync line |
 |---|---|---|---|
-| Crystal | Teensy 3.2 and 4.x, Nano ESP32, Pico and Pico 2 (and the Nano RP2040 Connect), Leonardo and Micro, Due, Zero and the MKR boards, Nano 33 IoT, Giga R1 | tens of ppm, and drifts a few ppm with temperature | matched at any rate the search covers; one line when it fits, else 30 s lines |
+| Crystal | Teensy 3.2 and 4.x, Nano ESP32, Pico and Pico 2 (and the Nano RP2040 Connect), Leonardo and Micro, Due, Zero and the MKR boards, Nano 33 IoT, Giga R1 | tens of ppm, and drifts a few ppm with temperature. The test rig's Nano ESP32 was 22 to 30 ppm off against its three cameras' clocks, which differ by 8 ppm among themselves | matched at any rate the search covers; one line when it fits, else 30 s lines |
 | Ceramic resonator | Uno R3 and the classic Nano (ATmega328P; the shiny 16 MHz crystal on an Uno drives its USB chip, not the 328P); the Mega 2560's part varies, so measure yours | about 0.5%, and more with temperature | matched the same way; its rate wanders more, so expect the 30 s lines |
 | Internal oscillator | Uno R4 Minima (about 1% off on one rig), Nano Every and Uno WiFi Rev2 (ATmega4809, factory-calibrated to about 2%) | 1 to 3% | matched the same way, within the search's 3% |
 
@@ -110,7 +119,7 @@ What it does:
 
 It writes `<edges>_syncmatch.csv` (one row per pulse: recorder time, pulse number, board time, residual, or why it is missing or extra) and `<edges>_syncmatch.json` (the fit and the counts). With `--frames N`, it also writes `<edges>_frames.csv`: frame *k*'s trigger on the recorder's clock, for the first *N* frames. A camera that missed triggers, or a trigger that paused, still needs `campy-align`'s trigger numbers to say which trigger each saved frame came from.
 
-Tested on made-up pulses (`tests/test_syncmatch.py`): crystal-like (3 and 40 ppm), resonator-like (0.5%) and internal-oscillator-like (1% and 2.5%) clocks, sampled at 25 or 30 kHz, with 1 to 2% of pulses lost, stray pulses added, and the recorder starting late. Every pulse was matched, with residuals within about half a sample (under 20 µs at 30 kHz). The test also runs the simulated sketch's own sync edges through a recorder clock running 0.4% fast, and checks every frame's trigger time to within 30 µs. Not yet checked: a real board's sync line recorded by a real recorder.
+Tested on made-up pulses (`tests/test_syncmatch.py`): crystal-like (3 and 40 ppm), resonator-like (0.5%) and internal-oscillator-like (1% and 2.5%) clocks, sampled at 25 or 30 kHz, with 1 to 2% of pulses lost, stray pulses added, and the recorder starting late. Every pulse was matched, with residuals within about half a sample (under 20 µs at 30 kHz). The test also runs the simulated sketch's own sync edges through a recorder clock running 0.4% fast, and checks every frame's trigger time to within 30 µs. Not yet checked: a real board's sync line recorded by a real recorder (the test above had nothing on the sync pin).
 
 ## Aligning cameras after recording
 ```
