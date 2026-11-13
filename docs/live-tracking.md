@@ -830,6 +830,22 @@ Notes on the measurements:
 
   The Windows 11 VM's recording checks kept every frame: 1,200 from 1 camera, then 3 × 3,600 from 3.
 
+- At 2:06–2:07 PM on 13 November five machines moved to dev `1b244fb` from `865f783`: the Pro Max Slim, Precision 7875, Pro Tower Plus, EVO-X2 and Jetson AGX Orin, and spock's campy copy with them; the Windows 11 VM followed at 2:17 PM. Each was idle and updated under its lock: `RIG_CLEAN`, or on the Precision 7875 `RIG_CLEAN_BACKGROUND` from one look of the security agent. The Windows 11 VM's update waited 9 minutes in the lock's queue, until another program (not under the lock) left its GPU. The update brings pull request 419: the ChronicRecord Pico's optional sync train to the OneBox (`picoSync`, off by default; `chronic_timer` version 3) and `chronicrecord/sync_match.py`. `setup.py` didn't change, so no environment was reinstalled; both environments on each machine read the new code. Nothing on the path of `campy-live` or of a recording's frames changed (a new setting, and the panel's Pico steps). The Pro Max Slim's Pico still runs `chronic_timer` version 2, which runs every session as before while `picoSync` is off.
+
+  At 2:10–2:13 PM the five ran their rig checks on `1b244fb`, under their locks. Every run was `RIG_CLEAN`, but the Precision 7875's 3-camera run and replay, `RIG_CLEAN_BACKGROUND` from one look each of the security agent. Nothing was skipped or misaligned, and every camera kept all its frames. Every set was tracked from frame 1, but the replays on the Precision 7875 and the Pro Tower Plus from frame 2, as before; the Pro Max Slim's replay was tracked from frame 1 this time (1,800 sets). The times matched `865f783`'s to within 0.1 ms at the median; the largest change at p99 was the Pro Tower Plus's replay to 3D, 12.0 → 12.2 ms. Replay against offline SLEAP on the EVO-X2 and the Jetson AGX Orin: 2D median 3.8 px, 3D 4.2 mm, the same identity pairing in 99.93% of sets, 2 switches, as before.
+
+  | Machine | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | EVO-X2 | 1,800 / 3.1 / 3.3 | 3,600 / 5.7 / 6.0 / 7.5 / 8.4 | 3,600 / 5.6 / 5.8 / 7.0 / 7.9 |
+  | Pro Max Slim | 1,200 / 2.3 / 2.5 | 3,600 / 5.6 / 5.7 / 7.6 / 8.4 | 1,800 / 5.6 / 5.7 / 8.5 / 9.3 |
+  | Precision 7875 | 1,200 / 0.9 / 1.1 | 3,600 / 1.7 / 1.8 / 3.8 / 4.9 | 1,799 / 1.7 / 1.8 / 4.3 / 5.3 |
+  | Pro Tower Plus (RTX A2000) | 1,200 / 2.7 / 2.9 | 3,600 / 6.8 / 7.1 / 8.9 / 10.0 | 1,799 / 6.9 / 7.2 / 11.0 / 12.2 |
+  | Jetson AGX Orin | 1,800 / 3.9 / 4.1 | 3,600 / 10.1 / 10.6 / 13.6 / 14.9 | 3,600 / 10.0 / 10.3 / 13.5 / 14.7 |
+
+  The Windows 11 VM's recording checks (2:17–2:19 PM) were both `RIG_CLEAN` and kept every frame: 1,200 from 1 camera, then 3 × 3,600 from 3.
+
+- At 2:41–2:44 PM on 13 November all six machines moved on to dev `f563862` from `1b244fb`, and spock's campy copy with them, each under its lock and `RIG_CLEAN`. It brings two pull requests: 445, a camera plugged back in reads its first frame's timestamp once, so its clock carries on across the gap exactly (`cameraReconnect`); and 447, the panel takes its port exclusively on Windows, so a second panel moves to the next free port. `setup.py` didn't change, so no environment was reinstalled. The Pro Tower Plus's first try was stopped before it started, because its on-screen test banner didn't show within 15 s; the try a minute later showed it and ran. The Windows 11 VM's update waited half a minute in the lock's queue for another program to leave its GPU. No rig checks were run on `f563862`.
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:

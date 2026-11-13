@@ -263,6 +263,15 @@ class _nothing:
 
 # ---------------------------------------------------------------- campy-live
 
+def Last(said):
+	"""
+	What campy-live said last, leaving out its one line about the 3D step's loops ("3D: in numba ..."): it comes once
+	numba's compiled loops have loaded in their thread, which can be during any set, after the line a test is reading
+	(5.2 s on GitHub's Windows runner, 13 Nov 2026)
+	"""
+	return [s for s in said if not s.startswith("3D: in ")][-1]
+
+
 def live_args(calibration, *extra):
 	return live.Parser().parse_args(["--model", "none", "--calibration", calibration, "--animals", "1"] + list(extra))
 
@@ -279,26 +288,26 @@ def test_campy_live_uses_the_cage_beside_the_calibration_from_when_it_is_drawn(t
 	ghost = ghost_of(cams, mouse)
 	tracker = live.Pose3D(live_args(calibration), names)
 	path = pose3d.CagePath(calibration)
-	assert tracker.cagePath == path and tracker.tracker.cage is None and "No cage yet" in said[-1]
+	assert tracker.cagePath == path and tracker.tracker.cage is None and "No cage yet" in Last(said)
 	for f in range(3):
 		tracker.Update(*views(cams, [[mouse]] * 3), f)
 	assert not tracker.Update(*views(cams, [[mouse], [ghost], [None]]), 3).outside.any() # no cage: kept
 	# Drawn while it runs: used from the next set
 	pose3d.Cage.FromClicks(clicks_of(cams, BOX), cams)[0].Save(path)
 	p = tracker.Update(*views(cams, [[mouse], [ghost], [None]]), 4)
-	assert p.outside.tolist() == [True] and tracker.tracker.cage is not None and "from frame 4" in said[-1]
+	assert p.outside.tolist() == [True] and tracker.tracker.cage is not None and "from frame 4" in Last(said)
 	# One drawn on another calibration: not used
 	moved = [scene3d.look_at(c.name, eye) for c, eye in zip(cams, [(40, 30, 700), (-560, -280, 450), (530, -300, 470)])]
 	time.sleep(0.01)
 	pose3d.Cage.FromClicks(clicks_of(moved, BOX), moved)[0].Save(path)
 	assert not tracker.Update(*views(cams, [[mouse], [ghost], [None]]), 5).outside.any()
-	assert tracker.tracker.cage is None and "another calibration" in said[-1]
+	assert tracker.tracker.cage is None and "another calibration" in Last(said)
 	# Removed
 	pose3d.Cage.FromClicks(clicks_of(cams, BOX), cams)[0].Save(path)
 	tracker.Update(*views(cams, [[mouse]] * 3), 6)
 	os.remove(path)
 	tracker.Update(*views(cams, [[mouse]] * 3), 7)
-	assert tracker.tracker.cage is None and "removed" in said[-1]
+	assert tracker.tracker.cage is None and "removed" in Last(said)
 	assert [c["from_frame"] for c in tracker.cages] == [None, 4, 5, 6, 7]
 	assert [c["cage"] is not None for c in tracker.cages] == [False, True, False, True, False]
 	assert tracker.cages[2]["refused"] and tracker.cages[1]["cage"]["kind"] == "campy cage"
@@ -324,7 +333,7 @@ def test_campy_live_warns_when_a_cameras_frames_are_not_its_calibrations_size(tm
 	assert tracker.sizes == [] and not any("Warning" in s for s in said)
 	tracker.CheckSizes([(1024, 1280, 1), (512, 640, 1)] + [(1024, 1280, 1)] * (len(cams) - 2)) # binned 2 x 2
 	assert tracker.sizes == [{"camera": names[1], "calibration": [1280, 1024], "feed": [640, 512]}]
-	assert "Warning: {}'s frames are 640x512, its calibration's 1280x1024".format(names[1]) in said[-1]
+	assert "Warning: {}'s frames are 640x512, its calibration's 1280x1024".format(names[1]) in Last(said)
 	for cam in tracker.cameras:
 		cam.size = None # a calibration without sizes: nothing to compare
 	tracker.sizes = []
