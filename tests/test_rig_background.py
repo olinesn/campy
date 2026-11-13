@@ -265,4 +265,7 @@ def test_a_listed_program_above_its_ceiling_and_strict(run):
 		log = run.log(tag)
 		assert last(log).startswith("RIG_CONTAMINATED") and " load " in last(log), log
 	assert "--strict: any look with load outside the job" in run.log("strict")
-	assert "ABOVE its ceiling" in run.log("over")
+	# A LOAD line is logged at most every 30 s: the first may come from other programs, before bgspin started.
+	# Any that names it says it was above its ceiling
+	named = [l for l in run.log("over").splitlines() if " LOAD " in l and "bgspin" in l]
+	assert all("ABOVE its ceiling" in l for l in named), run.log("over")

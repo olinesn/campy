@@ -219,6 +219,89 @@ def test_reprojection_check_drops_the_bad_view():
 	assert np.isnan(fixed[7]).all() and used[7] == 0
 
 
+# The 3D step works on whole sets at once (fewer, larger numpy operations); these hold it
+# to what one camera or one view at a time gives, to the last bit.
+
+def normalize_one_by_one(xy, f, c, dist, iterations=10, check_px=0.0):
+	# _Normalize as it was written before it worked on flat arrays
+	x0 = (xy[..., 0] - c[..., 0]) / f[..., 0]
+	y0 = (xy[..., 1] - c[..., 1]) / f[..., 1]
+	k1, k2, p1, p2, k3 = (dist[..., i] for i in range(5))
+	x, y = x0, y0
+	if np.any(dist):
+		for _ in range(iterations):
+			r2 = x * x + y * y
+			radial = 1 + r2 * (k1 + r2 * (k2 + r2 * k3))
+			x, y = ((x0 - 2 * p1 * x * y - p2 * (r2 + 2 * x * x)) / radial,
+				(y0 - p1 * (r2 + 2 * y * y) - 2 * p2 * x * y) / radial)
+		if check_px > 0:
+			r2 = x * x + y * y
+			radial = 1 + r2 * (k1 + r2 * (k2 + r2 * k3))
+			ex = (x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x) - x0) * f[..., 0]
+			ey = (y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y - y0) * f[..., 1]
+			with np.errstate(invalid="ignore"):
+				off = ex * ex + ey * ey > check_px * check_px
+			x = np.where(off, np.nan, x)
+			y = np.where(off, np.nan, y)
+	return np.stack([x, y], -1)
+
+
+def test_normalize_is_the_same_on_flat_arrays():
+	cams = rig()
+	rng = np.random.default_rng(4)
+	kp = rng.uniform(-50, 1330, (3, 5, 15, 2))
+	kp[rng.random(kp.shape[:-1]) < 0.1] = np.nan
+	f = np.array([c.f for c in cams])[:, None, None]
+	c = np.array([c.c for c in cams])[:, None, None]
+	d = np.array([[-0.33, 0.12, 0.001, -0.002, 0.01], [-0.2, 0, 0, 0, 0], [0.05, -0.1, 0.003, 0.001, 0]])[:, None, None]
+	for check in (0.0, 1.0):
+		want = normalize_one_by_one(kp, f, c, d, check_px=check)
+		assert np.array_equal(pose3d._Normalize(kp, f, c, d, check_px=check), want, equal_nan=True)
+		assert np.array_equal(pose3d._Undistorter(f, c, d, kp.shape[:-1], check_px=check)(kp), want, equal_nan=True)
+	# One camera's points, its own constants
+	assert np.array_equal(cams[0].Normalize(kp[0]), normalize_one_by_one(kp[0], cams[0].f, cams[0].c, cams[0].dist),
+		equal_nan=True)
+
+
+def test_reprojection_errors_of_every_view_at_once():
+	cams = rig()
+	X = scene(1)[0]                                              # (5, 15, 3)
+	rng = np.random.default_rng(5)
+	xy = normalized_views(cams, X) + rng.normal(0, 0.002, (3, 5, 15, 2))
+	xy[0, 1, 3] = np.nan
+
+	def one_view_at_a_time(X, xy):
+		out = np.empty(xy.shape[:-1])
+		for v, cam in enumerate(cams):
+			d = (cam.ProjectNormalized(X) - xy[v]) * cam.f
+			out[v] = np.sqrt((d * d).sum(-1))
+		return out
+	frame = pose3d._Frame(cams)
+	for Xi, xyi in ((X, xy), (X[0], xy[:, 0]), (np.stack([X[0]] * 3), np.broadcast_to(xy[:, None, 0], (3, 3, 15, 2)))):
+		want = one_view_at_a_time(Xi, xyi)
+		assert np.array_equal(pose3d.ReprojectionErrors(Xi, xyi, cams), want, equal_nan=True)
+		assert np.array_equal(pose3d.ReprojectionErrors(Xi, xyi, cams, frame), want, equal_nan=True)
+	# One point: one view at a time, as before
+	assert np.array_equal(pose3d.ReprojectionErrors(X[0, 0], xy[:, 0, 0], cams), one_view_at_a_time(X[0, 0], xy[:, 0, 0]))
+
+
+def test_scoring_every_camera_at_once():
+	cams = rig()
+	X = scene(5)
+	rng = np.random.default_rng(6)
+	tracker = pose3d.Tracker(cams, n_animals=5)
+	for f in range(4):
+		tracker.Update(*observe(cams, X[f], rng)[:2], frame=f)
+	assert tracker.n_targets == 5
+	kp, sc, _ = observe(cams, X[4], rng)
+	xy = pose3d._Normalize(kp, tracker._f, tracker._c, tracker._dist, check_px=1.0)
+	mean_frame = np.full(5, 3.0)
+	every = tracker._ScoreCameras(range(3), tracker.X, mean_frame, 4, xy)
+	for c in range(3):
+		dets = np.nonzero(np.isfinite(xy[c]).all(-1).any(-1))[0]
+		assert np.array_equal(every[c][:, dets], tracker._Score(c, tracker.X, mean_frame, 4, xy[c, dets]))
+
+
 # ---------------------------------------------------------------- tracking
 
 def identities(order, members):
