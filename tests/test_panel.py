@@ -149,12 +149,17 @@ def test_recording_json_only_when_it_is_this_recordings_and_fresh(tmp_path, monk
 
 # ------------------------------------------------------------------ the page's requests, and a second launch
 
-def stub_panel():
+# Each pytest worker's in-process panels start from a port of their own, not campy's 8765 (CI runs 4 workers at once;
+# the subprocess panels further down use 18700 and 18800 the same way)
+SERVE_PORT = 19700 + os.getpid() % 1000
+
+
+def stub_panel(port=SERVE_PORT):
 	# The real Serve's handler, on a Panel whose actions are stubs: nothing starts
 	calls = []
 	p = object.__new__(panel.Panel)
 	p.token = "T0kenT0kenT0kenT0kenT0ke"
-	p.port = 19700 + os.getpid() % 1000
+	p.port = port
 	p.health = types.SimpleNamespace(thumbs={})
 	p.Status = lambda: {"state": "ready"}
 	p.Start = lambda body: calls.append(("start", body)) or None
@@ -186,6 +191,29 @@ def test_a_start_refused_for_a_copy_folder_not_there_yet_offers_to_make_it(tmp_p
 		p.server.shutdown()
 		p.server.server_close()
 
+
+def test_a_port_already_listened_on_is_skipped():
+	# A second panel from the same port takes the next free one, and so does a panel whose port another program listens
+	# on. On Windows, Python's HTTP server (SO_REUSEADDR) bound the port another one listened on and shared it (seen on
+	# GitHub's Windows runner without the fix: both panels on one port), so requests reached either one, and one that
+	# closed reset them (WinError 10054). The panel's server takes its port exclusively there instead.
+	import socket
+	panels, other = [], socket.socket()
+	try:
+		panels.append(stub_panel(SERVE_PORT + 40)[0]) # clear of stub_panel's usual ports
+		panels.append(stub_panel(panels[0].port)[0])
+		assert panels[1].port != panels[0].port
+		other.bind(("127.0.0.1", 0)) # another program, on a port the system picks
+		other.listen()
+		panels.append(stub_panel(other.getsockname()[1])[0])
+		assert panels[2].port != other.getsockname()[1]
+		for p in panels: # each answers on its own port
+			assert raw(p, "GET", "/status.json?t=" + p.token)[0] == 200
+	finally:
+		for p in panels:
+			p.server.shutdown()
+			p.server.server_close()
+		other.close()
 
 def raw(p, method, path, headers=None, body=None):
 	c = http.client.HTTPConnection("127.0.0.1", p.port, timeout=10)
@@ -764,6 +792,7 @@ def test_the_copy_room_is_the_folder_typed_in_the_box(tmp_path, home, monkeypatc
 	copies = lambda: [d["name"] for d in p.Drives(str(tmp_path / "D")) if d["copies"]]
 	assert [level for level, _ in room()] == ["ok"] and copies() == ["C:"] # before the page has said: the usual folder
 	assert p.Status()["fields"]["copy_box"] is None
+	p.port = SERVE_PORT
 	p.Serve()
 	try:
 		def box(to):
@@ -793,6 +822,7 @@ def test_the_copy_room_is_the_folder_typed_in_the_box(tmp_path, home, monkeypatc
 		assert p.copy_box == share
 	finally:
 		p.server.shutdown()
+		p.server.server_close()
 
 
 def test_a_typed_share_is_measured_at_most_every_10_s(tmp_path, home, monkeypatch):
@@ -1277,6 +1307,7 @@ def test_a_switch_while_the_panel_is_open_follows_the_new_cameras(tmp_path, home
 def test_the_page_picks_and_stars_over_http(tmp_path, home):
 	folder = configs_folder(tmp_path)
 	p = panel.Panel(str(folder), browser=False)
+	p.port = SERVE_PORT
 	p.Serve()
 	try:
 		url = p.url
