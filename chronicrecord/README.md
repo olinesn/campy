@@ -365,6 +365,6 @@ The full description is at the top of the sketch.
 
 ## Tests
 
-`tests/test_chronic_timer.py` compiles the sketch for the computer and runs it on a simulated clock (`tests/arduino_sim`).
+`tests/test_chronic_timer.py` compiles the sketch for the computer and runs it on a simulated clock (`tests/arduino_sim`). The tests of what it says give it a USB transmit buffer: 64 bytes, as a Nano ESP32's, or 256, as the Pico's. Before pull request PRNUM, the sketch dropped a line that didn't fit that buffer at once: on a Nano ESP32 every `ok status running` (about 85 characters) and a long `done`. On the Pico, with its 256 bytes, the same tests lost nothing, as the real sessions' `lost=0` showed. Now every line goes out whole, in pieces if need be, and nothing is waited for.
 
 `tests/test_chronic_control.py` checks the program's plan against chronicControlv13.py's timeline. It also runs `start`, `status`, `stop`, `stop --now` and `attach` (after the session program is killed) end to end against the sketch running live on a pseudo-terminal. Where there is no pseudo-terminal (Windows), the same commands run against a stand-in board on a network socket, which answers as the sketch does but reports only the session's end. It also checks that the Pico is found by its USB IDs, never an Arduino, off the Pi.
