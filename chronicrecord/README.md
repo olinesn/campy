@@ -372,7 +372,15 @@ It finds the session's sync file and the OneBox files (one per gate opening, pla
 
 It writes `sync_match.csv` (one row per sync pulse, seen, missing or extra: its file, OneBox sample and time, width, planned pulse and board time, residual) and `sync_match.json` (the fit, the counts, and the other lines' odd pulses) in the session folder. `--sync <file>` picks the sync file when the folder has more than one; `--no-lines` checks only the sync line.
 
-*Not yet checked on the rig:* the wiring to XA1, SpikeGLX's XD0 bit 1, and a real session's numbers. Flashing the Pico with version 3 and a gate test are the next step.
+**Checked on the rig, on the camera line (13 November 2026, 1:35 to 1:41 PM).** GP6 wasn't wired yet, so the sync train ran on the camera output instead (GP3, already wired to the OneBox's XA2 and recorded as XD0 bit 2), with no camera train and no LEDs. The Pico ran version 3, built with arduino-pico 6.3.2; no animal, campy not recording (the cameras got the sync pulses on Line3 and nothing recorded them).
+- **Flashing and the board's own check:** version 3 went on in about 6 s (a 1200-baud reset into its USB drive, then the .uf2 copied). A 30 s camera-only session with the sync train on GP6 then made its 1,800 camera pulses with `stalls=0`, `lost=0`, `rises=1800`, `bounces=0`, and 51 sync pulses, exactly the seed's plan. Its `self_check_us` read −11 µs (−10 µs on version 2 built with the same core, against −1 to −3 µs with the build of 2 November); it didn't grow from 10 s to 30 s.
+- **Against the OneBox:** the gate opened three times (30, 30 and 80 s) with SpikeGLX's TTL trigger and 1 s margin, so SpikeGLX wrote three files, 32, 32 and 82 s long. The board made 329 sync pulses over the 205 s session, as planned (`stalls=0`, `lost=0`). `sync_match.py --sync-bit 2 --no-lines` matched every one of the 232 inside the files (51, 51 and 130, as many as the plan puts there) to its planned pulse: none missing, none extra.
+- **The clocks:** the OneBox counted 30,303.1054 samples per second of the Pico's crystal, 3.48 ppm over its `obSampRate` (0.30 s a day), close to the 3.2 to 3.3 ppm the gate showed in the hour-long and 8-hour checks above. The residuals from the fitted line were 20.6 µs at most and 10.1 µs rms, under one sample (33 µs).
+- **An independent check of the fit:** the gate's own edges, put on the board's clock through it, came out 0.000012, 30.000007, 60.000002, 89.999996, 119.999991 and 200.000010 s, against 0, 30, 60, 90, 120 and 200 s planned: within 12 µs.
+
+Afterwards the Pico got dev's version 2 back (the same core), and a 10 s camera-only session with the rig's own `chronic_control.py` ran clean (600 pulses, `stalls=0`, `rises=600`).
+
+*Still not checked on the rig:* GP6 itself wired to XA1, and whether SpikeGLX's XD0 bit 1 copies XA1 as bit 2 copies XA2 (the matcher can read XA1's voltage instead, `--sync-xa XA1`).
 
 ## Commands the board takes
 
