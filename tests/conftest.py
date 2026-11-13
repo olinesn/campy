@@ -51,6 +51,20 @@ def old_sim(tmp_path_factory):
 		os.path.join(old, "prototypes.h"))
 
 
+@pytest.fixture(scope="session")
+def upstream_sim(tmp_path_factory):
+	# The trigger sketch upstream campy (github.com/ksseverson57/campy, master) ships: tests/old_trigger/trigger.ino
+	# with its settling delay at 4 s instead of 6 s, its only difference from that copy (checked 13 November 2026)
+	old = os.path.join(HERE, "old_trigger")
+	folder = tmp_path_factory.mktemp("upstream_sketch")
+	with open(os.path.join(old, "trigger.ino")) as f:
+		text = f.read()
+	assert text.count("delay(6000);") == 1
+	sketch = folder / "trigger.ino"
+	sketch.write_text(text.replace("delay(6000);", "delay(4000);"))
+	return Compile(str(sketch), str(folder / "sim"), "-include", os.path.join(old, "prototypes.h"))
+
+
 @pytest.fixture(scope="session", params=["pico", "nano"])
 def timer_sim(request, tmp_path_factory):
 	# chronicrecord/chronic_timer/chronic_timer.ino: the ChronicRecord rig's timer,

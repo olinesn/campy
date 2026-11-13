@@ -7,6 +7,8 @@
 //   # dig pins, dig pin IDs, frame rate, test LED pin, test LED Hz[, sync pin, sync seed,
 //   sync pulse us, shortest gap ms, longest gap ms]
 // The test LED (for campy-synctest) is optional: -1 or nothing leaves it off.
+// A command that ends after the frame rate (upstream campy's, and campy's
+// before the test LED) starts the trigger as soon as the sketch it shipped did.
 // It blinks from the same clock as the trigger, toggled while the loop waits
 // for the trigger's edges, so it can move an edge by a few microseconds.
 //
@@ -183,9 +185,16 @@ unsigned long SetFramePeriod( unsigned long fr ) {
 
 void SetBlink() {
   // Optional test LED: pin, then frequency. A sender that stops after the
-  // frame rate (campy before the test LED) times out here and leaves it off.
-  int pin = int(Serial.parseFloat());
-  float hz = Serial.parseFloat();
+  // frame rate (campy before the test LED, and upstream campy) has nothing
+  // left to read, or a line end: the test LED is off, at once, so its
+  // trigger starts as soon as with the sketch it shipped (no wait for numbers
+  // that never come). One that goes on has its comma waiting.
+  int pin = -1;
+  float hz = 0;
+  if (Serial.available() > 0 && Serial.peek() == ',') {
+    pin = int(Serial.parseFloat());
+    hz = Serial.parseFloat();
+  }
 
   if (blink_pin >= 0) { digitalWrite(blink_pin, LOW); }
   blink_pin = -1;

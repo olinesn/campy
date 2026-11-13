@@ -28,6 +28,12 @@ Until pull request 284, campy sent the start 5.5 s after the answer. That worked
 - 8 cameras, 2 minutes at 60 fps, the Arduino still on `campy_v03`'s sketch;
 - 7,200 frames on every camera, none dropped or missed, and every camera from the trigger's first pulse (campy-align). There is no check without `startArduino: True` and `triggerController: "arduino"` (external triggers, below).
 
+**Upstream campy** ([ksseverson57/campy](https://github.com/ksseverson57/campy)) and this one work with each other's trigger sketch, in both directions. Upstream's `trigger.ino` is this one before the test LED, with the settling delay at 4 s.
+- **Upstream campy with this `trigger.ino`:** upstream sends the pin count, the pins and the frame rate, and stops with frame rate −1. This sketch then triggers the same pins at the same rate, from the same moment as upstream's own sketch (5.5 s after the command at power-up, at 25 fps), and stops at once. The test LED and the sync output stay off. Until pull request 443 the first pulse came 2 s later, because the sketch waited for the test LED's two numbers.
+- **This campy with upstream's `trigger.ino`:** campy's check is answered, and the trigger starts and stops. That sketch has no test LED and no sync output. It throws their settings away and never says `Test LED off.` or `Sync output off.` after its answer to the check, so campy says so at the start, records no `sync.json`, and doesn't claim a blinking LED. Upload this `trigger.ino` to have them.
+
+`tests/test_trigger_sketch.py` runs upstream's sketch on its simulated clock and checks both directions.
+
 Alternatively, to configure campy for external triggering:
 Start campy before triggering. Campy will wait for external triggers to initialize; start them once it prints "All N cameras are ready.", and every camera's first frame is the first trigger. To stop the recording, either configure a set recording time in campy or stop triggers before manually exiting campy (see [Stop Recording](acquire.md#stop-recording)). 
 ```
@@ -70,7 +76,7 @@ syncPulseMs: 10       # how long each pulse is high
 syncGapMs: [200, 1000] # shortest and longest gap
 ```
 
-The pin must be the sync output's own (not one of `digitalPins`, nor `blinkPin`): campy checks this before it starts. Mind the voltages: the Nano ESP32 and Teensy 4.x put out 3.3 V, an Uno 5 V. campy sends the settings after the test LED's, and an older sketch ignores them. The sketch says `Sync output on pin 7, seed ..., 10000 us pulses, gaps 200 to 1000 ms.`, or `Sync output off: <why>` when it can't (`pin triggers a camera`, `frame rate too high for this board`, `pulse too short, or too long for the gaps`).
+The pin must be the sync output's own (not one of `digitalPins`, nor `blinkPin`): campy checks this before it starts. Mind the voltages: the Nano ESP32 and Teensy 4.x put out 3.3 V, an Uno 5 V. campy sends the settings after the test LED's. An older sketch, or upstream campy's, has no sync output: campy hears that from its answer to the check, says so, and records no `sync.json`. The sketch says `Sync output on pin 7, seed ..., 10000 us pulses, gaps 200 to 1000 ms.`, or `Sync output off: <why>` when it can't (`pin triggers a camera`, `frame rate too high for this board`, `pulse too short, or too long for the gaps`).
 
 Each recording keeps the settings in **`sync.json`**, next to `trigger.json` (which also gets `syncPin`, `syncSeed` and `syncFile`): the seed, pulse length and gaps, and the frame period. That is all it takes to work out every pulse. Time 0 is the start of the trigger's first frame period: pulse *k* (from 0) rises at the sum of gaps 1 to *k* + 1, and frame *k*'s trigger rises at *k* × period + period / 2. Gap *j* is 1000 × (shortest + SplitMix64(seed, *j*) mod (longest − shortest + 1)) µs: `campy/syncmatch.py` and the sketch compute it the same way.
 
@@ -138,7 +144,7 @@ puts every camera on the trigger's timeline (`campy-session` runs it after each 
 ## Checking that cameras expose together
 `campy-synctest` checks from a recording that triggered cameras really expose at the same moment, and says how far apart they are, by filming one LED that the trigger controller blinks from the same clock as the trigger.
 1. Wire an LED and a 330 Ω resistor in series from a spare pin of the trigger controller to ground, where every camera can see it. A red LED suits visible-light cameras; behind an IR-pass filter, use an IR LED.
-2. Upload the current `trigger.ino`: it reads the test LED's pin and rate after the frame rate. (An older sketch ignores them and never blinks.)
+2. Upload the current `trigger.ino`: it reads the test LED's pin and rate after the frame rate. (An older sketch ignores them and never blinks; campy says so at the start.)
 3. In the config, set the LED's pin and a blink rate that is not near a whole or half multiple of `frameRate` (43 Hz suits 25 and 60 fps), and keep the exposure under a quarter of the blink period (5.8 ms at 43 Hz; about 2 ms is good):
 ```
 blinkPin: 13

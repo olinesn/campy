@@ -61,8 +61,10 @@ def OpenTriggers(systems, params, interrupted=lambda: False):
 			"another campy) has it open. {}".format(port, e, again))
 	try:
 		pins = Pins(params)
+		said = []
 		systems["triggerCheckedAt"] = Check(connection, ",".join(str(item) for item in [len(pins)] + pins + [-1, -1, 0]),
-			interrupted=interrupted)
+			interrupted=interrupted, said=said)
+		systems["triggerSaid"] = "".join(said) # WaitToStart adds the rest of its answer
 	except TriggerInterrupted:
 		connection.close()
 		raise TriggerInterrupted("Stopped (Ctrl-C) while checking the trigger Arduino on {}, before any camera "
@@ -75,10 +77,11 @@ def OpenTriggers(systems, params, interrupted=lambda: False):
 	return systems
 
 
-def Check(connection, command, timeout=None, resend=None, interrupted=lambda: False):
+def Check(connection, command, timeout=None, resend=None, interrupted=lambda: False, said=None):
 	# Send the stop command until the sketch answers it. Returns when the
 	# answer came (time.monotonic): the sketch says it as it reads the command.
 	# Ctrl-C (interrupted) stops it within a read's timeout: TriggerInterrupted.
+	# said (a list): gets what the sketch said, the answer included.
 	timeout = CHECK_TIMEOUT_S if timeout is None else timeout
 	resend = RESEND_S if resend is None else resend
 	connection.reset_input_buffer() # what it said before campy asked
@@ -95,19 +98,47 @@ def Check(connection, command, timeout=None, resend=None, interrupted=lambda: Fa
 			sent = now
 		heard = (heard + connection.read(256).decode("ascii", "replace"))[-1000:]
 		if ANSWER.search(heard):
+			if said is not None:
+				said.append(heard)
 			return time.monotonic()
 
 
 def WaitToStart(systems, interrupted=lambda: False):
 	# Until the sketch is done with the check's command, START_AFTER_CHECK_S
-	# after its answer. False if interrupted meanwhile.
+	# after its answer. False if interrupted meanwhile. Meanwhile it keeps what
+	# the sketch says (triggerSaid): the rest of its answer, which says whether
+	# it has a test LED and a sync output (Knows)
 	if "triggerCheckedAt" not in systems:
 		return True
-	while time.monotonic() < systems["triggerCheckedAt"] + START_AFTER_CHECK_S:
+	while True:
+		Listen(systems)
+		if time.monotonic() >= systems["triggerCheckedAt"] + START_AFTER_CHECK_S:
+			return True
 		if interrupted():
 			return False
 		time.sleep(0.02)
-	return True
+
+
+def Listen(systems):
+	# What the sketch said since, without waiting for more
+	connection = systems.get("serial")
+	try:
+		waiting = connection.in_waiting if connection is not None else 0
+		if waiting:
+			systems["triggerSaid"] = (systems.get("triggerSaid", "") + connection.read(waiting).decode("ascii",
+				"replace"))[-2000:]
+	except Exception:
+		pass
+
+
+def Knows(systems, words):
+	# Whether the sketch on the board has a feature, from its answer to the
+	# check: the current trigger.ino says "Test LED off." and "Sync output
+	# off." after it; an older sketch, or upstream campy's, says neither.
+	# None when campy didn't hear the answer (no check).
+	if "triggerSaid" not in systems:
+		return None
+	return words in systems["triggerSaid"]
 
 
 def SyncRecord(sync, frameRate):
@@ -135,6 +166,17 @@ def StartTriggers(systems, params):
 		pins = Pins(params)
 		serialList = [len(pins)] + pins + [frameRate, blinkPin, blinkHz]
 		sync = configurator.SyncSettings(params)
+		if sync is not None and Knows(systems, "Sync output") is False:
+			Say("syncPin is {}, but the trigger Arduino on {} runs a sketch without the sync output (an older "
+				"trigger.ino, or upstream campy's): it didn't say \"Sync output off.\" to campy's check. Recording "
+				"without sync pulses, and without sync.json. Upload campy's current campy/trigger/trigger.ino to have "
+				"them.".format(sync["pin"], params["serialPort"]))
+			sync = None
+		if blinkPin >= 0 and Knows(systems, "Test LED") is False:
+			Say("blinkPin is {}, but the trigger Arduino on {} runs a sketch without the test LED (an older "
+				"trigger.ino, or upstream campy's): the LED won't blink, and campy-synctest will find no blink in this "
+				"recording. Upload campy's current campy/trigger/trigger.ino to have it.".format(blinkPin,
+				params["serialPort"]))
 		if sync is not None:
 			serialList += [sync["pin"], sync["seed"], sync["width_us"], sync["min_gap_ms"], sync["max_gap_ms"]]
 			systems["triggerSync"] = SyncRecord(sync, frameRate)
@@ -149,7 +191,8 @@ def StartTriggers(systems, params):
 
 		Say("Arduino on port {} is triggering pins {} at {} fps{}{}."\
 			.format(params["serialPort"], pins, frameRate,
-				", and blinking the test LED on pin {} at {} Hz".format(blinkPin, blinkHz) if blinkPin >= 0 else "",
+				", and blinking the test LED on pin {} at {} Hz".format(blinkPin, blinkHz)
+					if blinkPin >= 0 and Knows(systems, "Test LED") is not False else "",
 				", with sync pulses on pin {} (seed {})".format(sync["pin"], sync["seed"]) if sync else ""))
 
 	except Exception as e:
