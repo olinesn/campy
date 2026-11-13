@@ -146,7 +146,7 @@ box:
 
 The host sets every pin when it starts (`in`, `servo`, `pin`, `trig`), so other pins work too. No pin can be both an input or a servo and anything else; the board refuses such a command.
 
-**Two Nano ESP32s.** A rig with a box has two: one runs `trigger.ino` and pulses the cameras (campy-acquire drives it), the other runs this sketch for the box ([hardware list](hardware.md)). The trigger board's pulse is 3.3 V too, so its camera output goes straight to the box board's D10, with the two boards' grounds joined. A 5 V trigger board (an Uno) needs a divider there instead.
+**Two Nano ESP32s.** A rig with a box has two (one board for both is [being designed](design/single-board-box.md)): one runs `trigger.ino` and pulses the cameras (campy-acquire drives it), the other runs this sketch for the box ([hardware list](hardware.md)). The trigger board's pulse is 3.3 V too, so its camera output goes straight to the box board's D10, with the two boards' grounds joined. A 5 V trigger board (an Uno) needs a divider there instead.
 
 **3.3 V logic.** The ESP32's pins take at most 3.3 V.
 
