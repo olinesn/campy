@@ -367,9 +367,11 @@ def test_pokes_on_the_simulated_board(tmp_path, outputs_sim):
 	valve = [e for e in ev if e["kind"] == "pulse" and e["output"] == "valve"]
 	assert len(valve) == 3
 	for r, p in zip(rewards, valve):
-		# (in real time the simulated board's clock steps tens of microseconds at a time: the exact timing is
-		# tests/test_outputs_sketch.py's, on a simulated clock)
-		assert 0 <= p["rise_us"] - r["board_us"] < 5000 and 40000 <= p["fall_us"] - p["rise_us"] < 41000, (r, p)
+		# Never shorter than 40 ms. In real time the simulated board ends a pulse at its first clock read past it, and
+		# each read sleeps 50 us: on a busy computer the process wakes later (42.3 ms once on GitHub's Python 3.9
+		# runner, 13 November; campy-rules' live test saw 54 ms). The exact timing is tests/test_outputs_sketch.py's,
+		# on a simulated clock
+		assert 0 <= p["rise_us"] - r["board_us"] < 50000 and 40000 <= p["fall_us"] - p["rise_us"] < 100000, (r, p)
 		assert p["frame"] == r["frame"]
 	moves = [e for e in ev if e["kind"] == "servo"]
 	assert {e["position"] for e in moves} == {"open", "closed"}
