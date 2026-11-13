@@ -19,6 +19,19 @@ The recording and the inference run in separate environments, because one needs 
   pip install --no-deps -e <campy folder>
   ```
   `campy-live` imports only numpy and campy's own feed modules, besides torch and sleap-nn.
+- **Optionally numba** in the inference environment (`pip install numba`, or campy's `fast3d` extra), with 3D tracking (`--calibration`): `campy-live` then runs the 3D step's two busiest loops compiled, with the same numbers to the last bit, and says so in its log ("3D: in numba ...'s compiled loops"). Inside `campy-live` the 3D step took a quarter to two-fifths less time on every rig (table below; offline, on the step alone, a third less on the Jetson AGX Orin and almost half less on the EVO-X2: pull request 421, [Jetson AGX Orin](jetson.md#the-cpus-share-which-cores-and-numpys-threads-12-november)). Without numba, or with `CAMPY_NUMBA=0` set, it runs in numpy. Loading the compiled loops takes about a second (a few the first time, while numba compiles them); `campy-live` starts it as it starts, while its models load.
+
+numba 0.68.1 went into the inference environment of all five rigs on 13 November. pip added only numba and llvmlite, and left numpy as it was. The rig checks run afterwards on dev, which doesn't use numba yet, matched the ones before within 0.1 ms (on the Windows machines the security agent's file scanning flagged some of them for CPU load, as at earlier updates). Then two replay checks on each rig ran pull request 421's code, which does use it; every set was tracked and each job ended `RIG_CLEAN`. The model's inference time didn't change: numba speeds up only the 3D step, which runs on the CPU. The replay check's 3D step, p50 / p99 per set, and the frame to 3D pose, p50 (the EVO-X2's and the Orin's replays are 60 s, the Windows machines' 30 s):
+
+| | 3D step, numpy | 3D step, numba | frame to 3D, numpy → numba |
+|---|---|---|---|
+| Jetson AGX Orin 64GB | 2.79 / 3.90 ms | 1.81–1.84 / 2.87–2.89 ms | 14.5 → 13.5 ms |
+| EVO-X2 | 0.89 / 1.66 ms | 0.66–0.67 / 1.28–1.30 ms | 7.2 → 7.0 ms |
+| Precision 7875 | 1.32 / 2.05 ms | 0.81–0.82 / 1.48 ms | 4.6 → 4.2 ms |
+| Dell Pro Max Slim FCS1250 | 0.95 / 1.44 ms | 0.66–0.67 / 1.08–1.09 ms | 8.8 → 8.5–8.6 ms |
+| Dell Pro Tower Plus | 1.01 / 1.90 ms | 0.69–0.70 / 1.69–1.71 ms | 11.3 → 10.8–10.9 ms |
+
+The Windows virtual machine in the fleet has no inference environment (its checks record only), so it has no numba.
 
 Which torch build:
 - **Linux, AMD GPU (ROCm)**: a ROCm build for your GPU. The EVO-X2's Radeon 8060S (gfx1151) used AMD's own torch wheels (torch 2.14.0+rocm10.1.0).
@@ -1164,7 +1177,7 @@ An NVIDIA Jetson AGX Orin runs `campy-live` with the same defaults as an NVIDIA 
 - **3 cameras at 60 fps fit**, with 5 mice and 3D: in the 5-mouse replay, every one of the 3,600 sets, inference 10.1 / 10.4 ms (p50 / p99), to 3D 14.5 / 15.8 ms, with the EVO-X2's accuracy (2D 3.8 px, 3D 4.2 mm, 2 identity switches). The EVO-X2 takes about half that. 8 cameras fit at 30 fps (22.7 / 22.9 ms per set in the benchmark), not at 60.
 - **TensorRT matters more here**: `torch.compile` took 16.3 ms per 3-camera set against TensorRT's 9.6, and plain PyTorch 23.3.
 - **Recording uses the Orin's own encoder** (`gpuMake: "jetson"`, since pull request 403: GStreamer encodes, ffmpeg writes the MP4). 3 cameras at 60 fps recorded in H.265 while they were tracked in 3D: every frame recorded, tracking as fast as with the CPU encoder, about a fifth of a core per camera. It keeps up with 8 cameras at 60 fps in H.264, 7 in H.265 at quality 21, and takes at most 8. The CPU path (`gpuID: -1`, `preset: "ultrafast"`, libx264) works too, at three quarters of a core per camera.
-- **The 3D step runs on the CPU**, 2.3 ms a set since pull request 420 (2.8 ms before it), against about 1.1 ms on the EVO-X2 before it; that pull request takes about a fifth off on both, with the same results to the last bit. Keeping `campy-live` on one cluster of cores (`--cpus 4-7`) and what feeds it on another takes about 0.25 ms off it; numpy's thread count and the desktop make no difference, and running it on the GPU through PyTorch was slower, not faster ([Jetson AGX Orin](jetson.md#the-cpus-share-which-cores-and-numpys-threads-12-november)).
+- **The 3D step runs on the CPU**, 2.3 ms a set since pull request 420 (2.8 ms before it), against about 1.1 ms on the EVO-X2 before it; that pull request takes about a fifth off on both, with the same results to the last bit. With numba installed (pull request 421) it takes 1.9 ms, with the same results again. Keeping `campy-live` on one cluster of cores (`--cpus 4-7`) and what feeds it on another takes about 0.25 ms off it; numpy's thread count and the desktop make no difference, and running it on the GPU through PyTorch was slower, not faster ([Jetson AGX Orin](jetson.md#the-cpus-share-which-cores-and-numpys-threads-12-november)).
 
 ## On an Intel GPU (`--device xpu`)
 

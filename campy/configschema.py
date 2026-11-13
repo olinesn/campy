@@ -359,6 +359,20 @@ SETTINGS = [
 	Setting("blinkHz", "None", float, section=TRIGGER, per_camera=ONE, words=("None",), low=0,
 		help="Test LED blink rate. Pick one that is not near a whole or half multiple of the frame rate \
 			(e.g. 43 Hz at 25 or 60 fps)."),
+	Setting("syncPin", "None", int, section=TRIGGER, per_camera=ONE, words=("None",), low=0,
+		help="Arduino pin for a sync output: pulses with random gaps, from the trigger's clock, for a \
+			recorder with a clock of its own (ephys, photometry, a DAQ). Wire it to one of the recorder's \
+			inputs; campy-syncmatch then puts the recorder's time on the trigger's, frame by frame \
+			(docs/sync.md). Needs the current trigger.ino, a board with a crystal for the best fit. \
+			None: off."),
+	Setting("syncSeed", "None", int, section=TRIGGER, per_camera=ONE, words=("None",), low=0, high=2 ** 31 - 1,
+		help="The sync output's seed, which sets its gaps. None: a new random one for each recording. \
+			Either way it is saved in the recording's sync.json."),
+	Setting("syncPulseMs", 10, float, section=TRIGGER, per_camera=ONE, above=0,
+		help="How long each sync pulse is high, in ms."),
+	Setting("syncGapMs", [200, 1000], int, section=TRIGGER, per_camera=LIST, low=1, high=60000,
+		help="The sync pulses' shortest and longest gap (rise to rise), in whole ms. Each gap is one of \
+			these values, at random, so any four in a row say where in the recording they are."),
 	Setting("picoSync", False, bool, section=TRIGGER, per_camera=ONE,
 		help="campy-session's Pico (pico: section) also makes its sync train on GP6 for the OneBox (wired to \
 			XA1): 10 ms pulses, a random 200 to 1000 ms apart, from a seed saved in the recording's pico \

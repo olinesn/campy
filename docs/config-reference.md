@@ -126,6 +126,10 @@ Every key a campy config file can have, and its command-line option (`--key valu
 | `readyTimeoutSec` | `30` | a number, 0 or more | one for the rig | Longest wait for every camera to be grabbing before campy starts the trigger anyway (and says which cameras were not ready). |
 | `blinkPin` | `"None"` | a whole number, 0 or more, or "None" | one for the rig | Arduino pin driving a test LED that every camera can see, for campy-synctest. |
 | `blinkHz` | `"None"` | a number, 0 or more, or "None" | one for the rig | Test LED blink rate. Pick one that is not near a whole or half multiple of the frame rate (e.g. 43 Hz at 25 or 60 fps). |
+| `syncPin` | `"None"` | a whole number, 0 or more, or "None" | one for the rig | Arduino pin for a sync output: pulses with random gaps, from the trigger's clock, for a recorder with a clock of its own (ephys, photometry, a DAQ). Wire it to one of the recorder's inputs; campy-syncmatch then puts the recorder's time on the trigger's, frame by frame (docs/sync.md). Needs the current trigger.ino, a board with a crystal for the best fit. None: off. |
+| `syncSeed` | `"None"` | a whole number from 0 to 2.14748e+09, or "None" | one for the rig | The sync output's seed, which sets its gaps. None: a new random one for each recording. Either way it is saved in the recording's sync.json. |
+| `syncPulseMs` | `10` | a number above 0 | one for the rig | How long each sync pulse is high, in ms. |
+| `syncGapMs` | `[200, 1000]` | a whole number from 1 to 60000 | a list | The sync pulses' shortest and longest gap (rise to rise), in whole ms. Each gap is one of these values, at random, so any four in a row say where in the recording they are. |
 | `picoSync` | `False` | True or False | one for the rig | campy-session's Pico (pico: section) also makes its sync train on GP6 for the OneBox (wired to XA1): 10 ms pulses, a random 200 to 1000 ms apart, from a seed saved in the recording's pico folder, so chronicrecord/sync_match.py can line the Pico's clock up with the OneBox's and find any pulse either missed (default: False). Needs chronic_timer 3 on the Pico. Set it in the rig profile. |
 
 ## Session

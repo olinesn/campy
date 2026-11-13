@@ -2686,6 +2686,8 @@ class Pose3D:
 		self.tracker = pose3d.Tracker(self.cameras, n_animals=self.animals)
 		self.text = "{} animals, cameras {} of {}".format(self.animals, ", ".join(names), args.calibration)
 		Say("3D: {}.".format(self.text))
+		self.fastSaid = False
+		self.SayFast()
 		# The cage (--cage): its file, looked at again once a second (Watch)
 		cage = args.cage.strip()
 		self.cagePath = None if cage.lower() == "off" else os.path.abspath(
@@ -2716,7 +2718,26 @@ class Pose3D:
 
 	def Update(self, keypoints, scores, frame):
 		self.Watch(frame)
+		if not self.fastSaid:
+			self.SayFast()
 		return self.tracker.Update(keypoints, scores, frame=frame)
+
+	def SayFast(self):
+		# Once: whether the 3D step runs in numba's compiled loops or in numpy (the same numbers either way)
+		from campy import pose3d
+		fast = pose3d.FastStatus()
+		if fast["state"] == "ready":
+			Say("3D: in numba {}'s compiled loops, loaded in {:.1f} s.".format(fast["numba"], fast["seconds"]))
+		elif fast["state"] == "missing":
+			Say("3D: in numpy. With numba installed (pip install numba) its busiest loops are compiled, about a "
+				"fifth faster, with the same numbers.")
+		elif fast["state"] == "failed":
+			Say("3D: in numpy: numba's compiled loops failed ({}).".format(fast["error"]))
+		elif fast["state"] == "off":
+			Say("3D: in numpy (CAMPY_NUMBA=0).")
+		else:
+			return                                   # still loading: said once it is done
+		self.fastSaid = True
 
 	def Watch(self, frame):
 		"""
@@ -3021,6 +3042,13 @@ def Run(args):
 		except (AttributeError, OSError) as e:
 			Say("Could not lower this program's priority (--nice): {}".format(e))
 
+	if args.calibration:
+		# numba's compiled loops for the 3D step (when numba is installed), loaded in a thread of their own
+		# from now, while the models load: loading them takes about a second, compiling them the first time
+		# a few. Until they are ready the 3D step runs in numpy, with the same numbers; loaded after the feed
+		# came, they held up its first sets (the Jetson AGX Orin's replay check: 1-3 sets skipped)
+		from campy import pose3d
+		pose3d.StartFast()
 	cameras = Cameras(names, poll=args.poll_ms / 1e3)
 	log = worker = clock = session = moved = None
 	# What campy-live-session.json says of the models, campy and the computer,

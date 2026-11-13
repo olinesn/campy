@@ -714,6 +714,8 @@ class Session:
 			pin, hz = self.configurator.BlinkSettings(p)
 			if pin >= 0:
 				record.update(blinkPin=pin, blinkHz=hz)
+			if str(p.get("syncPin", "None")) != "None":
+				record["syncPin"] = p["syncPin"] # the seed: trigger.json and sync.json, once it started
 		record["cameraTriggers"] = {cam["cameraName"]: str(cam["cameraTrigger"]) for cam in self.cams}
 		return record
 

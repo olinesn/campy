@@ -114,6 +114,13 @@ or tracker.cage = ... between sets (None: no cage).
 
 Lower level: Camera (Normalize: pixels -> undistorted normalized coordinates,
 Project: 3D -> pixels), Triangulate (DLT over views), ReprojectionErrors.
+
+Faster with numba (optional: pip install numba, or campy[fast3d]): a Tracker starts
+loading campy/pose3d_numba.py's compiled loops in a thread of its own (StartFast, which
+campy-live calls as it starts, while its models load) and uses them for the lens
+undistortion and the scoring once they are ready, numpy until then. They give the
+same numbers to the last bit, so switching changes nothing but the time. CAMPY_NUMBA=0
+in the environment, or Tracker(fast=False), keeps it to numpy.
 """
 
 import ast
@@ -121,10 +128,68 @@ import json
 import math
 import os
 import re
+import threading
+import time
 import warnings
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
+
+
+# ---------------------------------------------------------------- numba (optional)
+
+_FAST = {"state": "idle", "module": None, "seconds": None, "error": None, "thread": None}
+_FAST_LOCK = threading.Lock()
+
+
+def StartFast():
+	"""Starts loading numba's compiled loops (campy/pose3d_numba.py) in a thread of its own, once,
+	and returns at once: compiling them takes seconds the first time (numba keeps them after),
+	so campy-live starts it before it needs them. CAMPY_NUMBA=0 in the environment: not at all."""
+	with _FAST_LOCK:
+		if _FAST["state"] != "idle":
+			return
+		if os.environ.get("CAMPY_NUMBA", "").strip() == "0":
+			_FAST["state"] = "off"
+			return
+		_FAST["state"] = "loading"
+		_FAST["thread"] = threading.Thread(target=_LoadFast, daemon=True, name="campy pose3d numba")
+		_FAST["thread"].start()
+
+
+def _LoadFast():
+	t0 = time.perf_counter()
+	try:
+		import importlib
+		pose3d_numba = importlib.import_module("campy.pose3d_numba")
+		pose3d_numba.WarmUp()
+	except ImportError as e:
+		_FAST.update(state="missing", error=str(e))
+		return
+	except Exception as e:                       # numba's compiler: fall back to numpy
+		_FAST.update(state="failed", error="{}: {}".format(type(e).__name__, e))
+		return
+	_FAST.update(module=pose3d_numba, seconds=time.perf_counter() - t0, state="ready")
+
+
+def Fast(wait=False):
+	"""numba's compiled loops (the campy.pose3d_numba module) once loaded, else None. wait: start
+	loading them if not yet, and wait until they are loaded or have failed."""
+	if wait:
+		StartFast()
+		thread = _FAST["thread"]
+		if thread is not None:
+			thread.join()
+	return _FAST["module"] if _FAST["state"] == "ready" else None
+
+
+def FastStatus():
+	"""How the compiled loops stand: {"state": idle, off (CAMPY_NUMBA=0), loading, ready, missing (no
+	numba) or failed, "numba": its version once ready, "seconds": how long loading them took,
+	"error": why missing or failed}."""
+	m = _FAST["module"]
+	return {"state": _FAST["state"], "numba": m.VERSION if m is not None else None,
+		"seconds": _FAST["seconds"], "error": _FAST["error"]}
 
 
 # ---------------------------------------------------------------- cameras
@@ -219,7 +284,15 @@ class _Undistorter:
 		self.p1x2, self.p2x2 = 2 * self.p1, 2 * self.p2
 		self.one, self.two = np.ones(self.fx.size), np.full(self.fx.size, 2.0)
 
-	def __call__(self, xy):
+	def __call__(self, xy, fast=None):
+		# fast: campy.pose3d_numba (Fast()), to do it in its compiled loop
+		if fast is not None:
+			out = np.empty((self.fx.size, 2))
+			fast.Undistort(np.ascontiguousarray(xy[..., 0], dtype=float).ravel(),
+				np.ascontiguousarray(xy[..., 1], dtype=float).ravel(), self.cx, self.cy, self.fx, self.fy,
+				self.k1, self.k2, self.p1, self.p2, self.k3, self.p1x2, self.p2x2, self.iterations, self.check_px,
+				self.distorted, out)
+			return out.reshape(self.shape + (2,))
 		x0 = (xy[..., 0].ravel() - self.cx) / self.fx
 		y0 = (xy[..., 1].ravel() - self.cy) / self.fy
 		x, y = x0, y0
@@ -627,12 +700,14 @@ class Tracker:
 	                    views agree within it; a node over it loses its worst view (down to 2), then is dropped
 	                    (0: off, as LUC3D; 20 here: see the module docstring)
 	cage                a Cage, or None: an animal whose 3D lands outside it is not found (see the module docstring)
+	fast                use numba's compiled loops once they are loaded (StartFast; the same numbers), or False:
+	                    numpy only
 	"""
 
 	def __init__(self, cameras, n_animals, corr2d=1.0, corr3d=6.0, velocity_threshold=10.0,
 			distance_threshold=25.0, time_penalty=0.1, stale=60, node_weights=None, min_nodes=0,
 			min_score=0.0, weighted=False, reproj_threshold=50.0, birth_threshold=0.0,
-			max_penalty=4.0, match_reproj=20.0, cage=None):
+			max_penalty=4.0, match_reproj=20.0, cage=None, fast=True):
 		self.cameras = list(cameras)
 		self.n_animals = int(n_animals)
 		self.corr2d, self.corr3d = float(corr2d), float(corr3d)
@@ -651,6 +726,9 @@ class Tracker:
 		self._c = np.array([c.c for c in self.cameras])[:, None, None]
 		self._dist = np.array([c.dist for c in self.cameras])[:, None, None]
 		self._undistort = None                                              # _Undistorter for the sets' shape
+		self.fast = bool(fast)
+		if self.fast:
+			StartFast()
 		# Essential matrices between camera pairs, for births: E[a][b] maps a's point to b's line
 		self.E = {}
 		for a, ca in enumerate(self.cameras):
@@ -695,7 +773,8 @@ class Tracker:
 		# Every detection, undistorted and normalized
 		if self._undistort is None or self._undistort.shape != (C, I, N):
 			self._undistort = _Undistorter(self._f, self._c, self._dist, (C, I, N), check_px=1.0)
-		xy = self._undistort(keypoints)
+		fast = Fast() if self.fast else None
+		xy = self._undistort(keypoints, fast)
 		w = np.ones((C, I, N)) if scores is None or not self.weighted else np.nan_to_num(np.asarray(scores, float))
 		if scores is not None and self.min_score > 0:
 			xy[np.asarray(scores) < self.min_score] = np.nan
@@ -722,7 +801,7 @@ class Tracker:
 		# With every animal's target made, none is born this set: X0 is what every camera is
 		# matched against, so all of them are scored at once. Each camera's detection slots
 		# are scored, then its present ones taken.
-		every = self._ScoreCameras(range(C), X0, mean_frame, f, xy) if T and T >= self.n_animals else None
+		every = self._ScoreCameras(range(C), X0, mean_frame, f, xy, fast) if T and T >= self.n_animals else None
 		for c in range(C):
 			dets = np.nonzero(present[c])[0]
 			taken = np.zeros(len(dets), bool)
@@ -814,13 +893,16 @@ class Tracker:
 
 	def _Score(self, c, X, mean_frame, f, dxy):
 		# LUC3D's adjacency (higher = better match): targets (T) x detections (D) of camera c
-		return self._ScoreCameras([c], X, mean_frame, f, dxy[None])[0]
+		return self._ScoreCameras([c], X, mean_frame, f, dxy[None], Fast() if self.fast else None)[0]
 
-	def _ScoreCameras(self, cams, X, mean_frame, f, dxy):
+	def _ScoreCameras(self, cams, X, mean_frame, f, dxy, fast=None):
 		# _Score of several cameras at once, (len(cams), T, D): dxy (len(cams), D, N, 2). One
 		# call does what one per camera would, each number by the same arithmetic; numpy's
 		# time per operation, not the arithmetic, is most of the cost at these sizes.
+		# fast: campy.pose3d_numba, to do what follows the matrix products in its compiled loop
 		nw = np.ones(dxy.shape[-2]) if self.node_weights is None else self.node_weights
+		if fast is not None:
+			return self._ScoreCamerasFast(fast, list(cams), X, mean_frame, f, dxy, nw)
 		with np.errstate(invalid="ignore", divide="ignore"):
 			# 2D: the target's 3D projected into this camera vs the detection, normalized units
 			cams = list(cams)
@@ -848,6 +930,29 @@ class Tracker:
 			s3 = self.corr3d * s3
 		s = np.where(np.isfinite(s2), s2, 0.0) + np.where(np.isfinite(s3), s3, 0.0)
 		return (s * nw).sum(-1)
+
+	def _ScoreCamerasFast(self, fast, cams, X, mean_frame, f, dxy, nw):
+		# _ScoreCameras with pose3d_numba.Score: numpy makes the same intermediate arrays as there
+		# (its matrix products, exp and norms), the compiled loop the rest, in the same order
+		with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
+			RT, t, _ = self.frame_of_cameras.Stacked()
+			R = RT.transpose(0, 2, 1)[cams]
+			p = np.matmul(X[None], R.transpose(0, 2, 1)[:, None]) + t[cams][:, None, None]
+			proj = p[..., :2] / p[..., 2:3]
+			dt = f - mean_frame
+			vf = self.vel * (1 + dt)
+			E = np.exp(-self.time_penalty * dt)
+			h = np.concatenate([dxy, np.ones(dxy.shape[:-1] + (1,))], -1)
+			rays = np.matmul(h, R[:, None])
+			rays /= np.linalg.norm(rays, axis=-1, keepdims=True)
+			centre = np.array([self.cameras[c].center for c in cams])
+			v = X[None] - centre[:, None, None]
+		out = np.empty((len(cams), X.shape[0], dxy.shape[1]))
+		c64 = np.ascontiguousarray
+		fast.Score(c64(proj), c64(dxy, dtype=float), c64(vf, dtype=float), c64(E, dtype=float), c64(v), c64(rays),
+			c64(nw, dtype=float), self.corr2d, self.corr3d, self.dist_thr,
+			0.0 if self.max_penalty is None else self.max_penalty, self.max_penalty is not None, out)
+		return out
 
 	def _Births(self, leftovers, xy, w, f):
 		# LUC3D's births: the last two cameras (so far this set) with leftover detections,
