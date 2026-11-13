@@ -47,7 +47,7 @@ The rig checks, the same as the EVO-X2's, with campy-live's defaults:
 | smoke1, on the Orin's encoder | 1,800, 0 skipped | 3.9 / 4.1 ms | | 1,800 |
 | smoke3, on the Orin's encoder | 3,600, 0 skipped | 10.2 / 10.6 ms | 14.6 / 16.2 (22.4) ms | 3 × 3,600 |
 
-The replay tracked as the other machines do: against the offline SLEAP predictions, 2D median 3.8 px, 3D median 4.2 mm, 99.93% the same identity, 2 identity switches (the EVO-X2: 3.8 px, 4.2 mm, 2 switches). The EVO-X2 takes about half the time (inference 5.5 / 5.6 ms in the same replay). The 3D step alone took 2.8 ms here against about 1.1 ms there: it runs on the CPU (2.3 ms here since pull request 420: [The CPU's share](#the-cpus-share-which-cores-and-numpys-threads-12-november)). While smoke3 ran, the CPU was about half busy, the three libx264 encoders included. Recorded on the Orin's encoder instead, tracking took the same time; the CPU was about 38% busy at mid-run (one sample, `top`), most of it the emulated cameras decoding their clips.
+The replay tracked as the other machines do: against the offline SLEAP predictions, 2D median 3.8 px, 3D median 4.2 mm, 99.93% the same identity, 2 identity switches (the EVO-X2: 3.8 px, 4.2 mm, 2 switches). The EVO-X2 takes about half the time (inference 5.5 / 5.6 ms in the same replay). The 3D step alone took 2.8 ms here against about 1.1 ms there: it runs on the CPU (2.3 ms here since pull request 420, 1.9 ms with numba since 421: [The CPU's share](#the-cpus-share-which-cores-and-numpys-threads-12-november)). While smoke3 ran, the CPU was about half busy, the three libx264 encoders included. Recorded on the Orin's encoder instead, tracking took the same time; the CPU was about 38% busy at mid-run (one sample, `top`), most of it the emulated cameras decoding their clips.
 
 Since 11 November the rig check records on the Orin's encoder, as a recording on the Orin would: smoke1 and smoke3 use `gpuMake: "jetson"`, H.265 at quality 21 (`ENC=cpu` still runs the CPU path, libx264 `ultrafast`). Its first run, the three rows from "Since 11 November", came after the Orin's campy moved to dev `5b3aefb` (the Jetson writer, pull request 403): the replay tracked as before (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches), each recorded video held every frame (4.1–5.0 Mbit/s per camera in smoke3), and the CPU was about 39% busy at smoke3's mid-run (one sample).
 
@@ -91,7 +91,45 @@ The GPU results matched numpy's: identical points missing, and the 3D within 3 �
 | Orin, offline (all 3,600 sets, four passes each) | 2.12 / 3.14 ms | **1.65 / 2.59 ms** |
 | EVO-X2, offline (the same) | 0.58 / 0.85 ms | **0.44 / 0.67 ms** |
 
-The replay's accuracy didn't change (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches). Inside `campy-live` the step gains less than offline because it shares Python with the thread running the models. What is left is mostly numpy's eigenvalue solver (the 3D solve) and the undistortion's ten rounds; going further would take compiled code.
+The replay's accuracy didn't change (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches). Inside `campy-live` the step is slower than offline, and gains less. Python's lock, shared with the thread running the models, is only a small part of why (below).
+
+**numba's compiled loops took more off** (pull request 421, when numba is installed). The undistortion and the scoring, the two busiest loops left, run compiled; numpy keeps the matrix products, `exp` and the eigenvalue solver, whose numba versions can differ in the last bit (numba's eigenvalue solver did, on the Orin, and it was no faster: LAPACK's own time, about 1.5 µs a matrix here, is most of it). With no reordering of the arithmetic, and the scores' sum over the nodes done in numpy's own order, the results were again identical to the last bit, on the Orin and the EVO-X2. The loops run without Python's lock, so the thread running the models isn't held up by them. Times per set, p50 / p99, all `RIG_CLEAN` (12 November):
+
+| | numpy (dev before pull request 420) | numpy (pull request 420) | numba (pull request 421) |
+|---|---|---|---|
+| Orin, 3D step inside `campy-live` (the replay check) | 2.76–2.79 / 3.84–3.90 ms | 2.27–2.30 / 3.32–3.38 ms | **1.88–1.90 / 2.92–2.97 ms** |
+| Orin, frame to 3D in the same runs | 14.5 / 15.7 ms | 14.0 / 15.1–15.3 ms | **13.6 / 14.8 ms** |
+| Orin, offline (3,600 sets, four passes) | 2.12 / 3.14 ms | 1.65 / 2.59 ms | **1.30 / 2.24 ms** |
+| EVO-X2, offline | 0.58 / 0.85 ms | 0.44 / 0.67 ms | **0.32 / 0.55 ms** |
+
+Loading the compiled loops took 0.8–1.4 s on the Orin and compiling them the first time 1.8 s (0.6 s on the EVO-X2); numba keeps them after. In the first try, `campy-live` started loading them only once its models were ready, and in two of three replay checks the loading, finished as the feed came, held up the first sets: 1 and 3 sets skipped, one stall of 45–55 ms. Started as `campy-live` starts, while its models load, as since, they were ready before the feed in each of three runs, and every set was tracked. Since 13 November numba 0.68.1 is installed in the Orin's tracking environment (`~/venvs/sleap/bin/pip install numba`, which added only numba and llvmlite 0.50.0; numpy stayed 2.5.4). The rig check on dev `a21e0f6`, which doesn't use numba yet, gave the same as before it (replay3: 3D step 2.79 / 3.90 ms, frame to 3D 14.5 / 15.8 ms, 3.8 px, 4.2 mm, 2 switches; smoke1 inference 4.0 / 4.1 ms; smoke3 frame to 3D 14.6 / 16.1 ms; every set tracked, `RIG_CLEAN`). Two replay checks with this pull request's code and the installed numba: loaded in 1.4 s, 3D step 1.81–1.84 / 2.87–2.89 ms, frame to 3D 13.5 / 14.7–14.8 ms, every set tracked, the same 3.8 px, 4.2 mm and 2 switches. This pull request's tests passed there too (23, the bit-for-bit one among them).
+
+**A process of its own for the 3D step didn't help** (tried 13 November, not in campy). The step ran in a Python process of its own, so it had Python's lock to itself, with `campy-live`'s 3D thread handing it each set through a pipe; the poses were the same. In three replay checks against two on the usual thread, alternating, all with numba:
+
+| | On a thread (as now) | In a process of its own |
+|---|---|---|
+| The 3D step itself | 1.83–1.86 / 2.85–2.89 ms | 1.75–1.76 / 2.71–2.73 ms |
+| With the handing over (what `campy-live` waits for) | the same | 2.19–2.24 / 3.16–3.20 ms |
+| Frame to 3D | 13.5 / 14.7–14.8 ms | 13.9 / 15.0–15.1 ms |
+
+The lock cost only about 0.1 ms, and handing each set over (pickling it, the pipe, waking the other process, and back) cost about 0.45 ms, so the 3D poses came about 0.4 ms later. The gap to offline (1.30 ms) isn't the time between sets either. Offline, one set every 1/60 s, as the cameras give them, took 1.31–1.32 ms against 1.27–1.29 ms back to back, and the same pinned to one cluster of cores (`taskset -c 4-7`). What is left is the replay check's feeder, measured next.
+
+**What slows the 3D step during the replay check: its feeder, on the same cores** (13 November). Each part of the step was timed set by set (the undistortion, the scoring, the matching, the triangulations), offline at one set every 1/60 s beside each of the replay check's loads in turn, and inside `campy-live`. Every part slowed by about the same share, as when a core and its cache are shared. The feeder is the replay check's own stand-in for the cameras: Python with three `ffmpeg` processes decoding the recorded videos on the CPU. The Orin's 12 cores are in three clusters of four (0–3, 4–7, 8–11), each with its own cache. The 3D step, p50 / p99 per set (with the timing itself, which adds about 0.04 ms), with numba:
+
+| Where the step ran, and what ran beside it | 3D step | Frame to 3D |
+|---|---|---|
+| Offline, alone (any core, or cores 4–7) | 1.34–1.36 / 2.28–2.33 ms | |
+| Offline, beside a GPU-only load (about 9 ms of work every 1/60 s) | 1.40 / 2.36 ms | |
+| Offline on cores 4–7, the feeder on 8–11 or on 0–3 | 1.37–1.38 / 2.35–2.37 ms | |
+| Offline on cores 4–7, the feeder on the same cores | 1.89 / 2.87 ms | |
+| Offline, the feeder on any core | 1.81–1.88 / 2.80–2.91 ms | |
+| Offline, beside the whole replay tracked in 2D (feeder and models) | 1.97 / 2.98 ms | |
+| `campy-live`, nothing pinned (as the rig check runs) | 1.87–1.90 / 2.86–2.96 ms | 13.6 ms |
+| `campy-live` on any core, the feeder on 8–11 | 1.67 / 2.77 ms | 13.2 ms |
+| `campy-live --cpus 4-7`, the feeder on 8–11 | 1.69 / 2.76 ms | 13.3 ms |
+| The 3D thread alone on 4–7, the rest of `campy-live` on 0–3, the feeder on 8–11 | **1.51–1.52 / 2.62–2.68 ms** | **13.1 ms** |
+
+So the GPU, which shares the CPU's memory on the Orin, costs the step almost nothing; the feeder does, when it shares the step's cluster, and left to itself it spreads over all of them. Inside `campy-live` the 3D step also shares its cluster with `campy-live`'s other threads unless it has one of its own. With its own cluster it ran within about 0.15 ms of offline, about what Python's lock was found to cost above. Nothing in campy pins the 3D thread on its own yet: the last row used a test-only hook. Each layout ran once or twice, one after another. Two runs in which the models' thread could share the 3D thread's cluster (`--cpus 4-7`, and the 3D thread on 4–7 with the rest of `campy-live` on any core, 1.67 ms) each skipped one set; the others skipped none. A real recording has no feeder: campy's own recording process takes its place, with frames from the cameras and the encoder in hardware; how much it slows the step wasn't measured.
 
 ### Recording
 
@@ -286,6 +324,7 @@ python3 -m venv --system-site-packages ~/venvs/sleap
 ~/venvs/sleap/bin/pip install sleap-nn==0.3.5 "torch==2.15.0" "torchvision==0.29.2" --extra-index-url https://download.pytorch.org/whl/cu132
 ~/venvs/sleap/bin/pip install -e ~/campy onnx
 ~/venvs/sleap/bin/pip install --ignore-installed matplotlib contourpy kiwisolver pandas pillow fonttools pyparsing cycler python-dateutil pytz six packaging
+~/venvs/sleap/bin/pip install numba    # optional: the 3D step's loops compiled (pull request 421)
 ```
 
 PyTorch's own CUDA 13.2 wheels for Arm64 work on the Orin: they carry no kernels built for its compute capability 8.7, but their 8.0 kernels run on it. Pinning torch when installing sleap-nn keeps pip from replacing it. `onnx` is what campy's TensorRT engines need besides `tensorrt`, which the venv sees from JetPack's system Python packages.

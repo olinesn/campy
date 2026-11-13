@@ -21,6 +21,9 @@ setup(
 					'opencv-python-headless',
 					],
 	extras_require={
+		# campy-live's 3D step (campy/pose3d.py) in numba's compiled loops: the same numbers,
+		# faster; without it, numpy
+		"fast3d": ["numba"],
 		# RatCam (cameraMake "ratcam"): the host package of nir-eye-cam
 		"ratcam": ["nireyecam @ git+https://github.com/olinesn/nir-eye-cam.git#subdirectory=host"],
 	},

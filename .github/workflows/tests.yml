@@ -71,6 +71,11 @@ jobs:
         # so on 3.9 those tests are skipped
         if: matrix.python != '3.9'
         run: python -m pip install sleap-io
+      - name: Install numba (the 3D step's compiled loops, campy[fast3d])
+        # So the tests run campy/pose3d.py both ways: numba's loops, which must give numpy's
+        # numbers to the last bit, and numpy alone (Python 3.9 has no numba wheel any more)
+        if: matrix.python != '3.9'
+        run: python -m pip install numba
       - name: Install nireyecam (RatCam support)
         if: env.NIREYECAM_TOKEN != ''
         run: python -m pip install "nireyecam @ git+https://x-access-token:${NIREYECAM_TOKEN}@github.com/olinesn/nir-eye-cam.git#subdirectory=host"
