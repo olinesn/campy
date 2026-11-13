@@ -110,16 +110,34 @@ def WaitToStart(systems, interrupted=lambda: False):
 	return True
 
 
+def SyncRecord(sync, frameRate):
+	"""
+	sync.json's settings: what campy-syncmatch needs to work out every sync
+	edge where trigger.ino made it. Board time 0 is the start of the trigger's
+	first frame period: frame k's trigger rises at k x frame_period_us +
+	frame_period_us // 2 (k from 0).
+	"""
+	from campy import syncmatch
+	record = dict(sync, frame_period_us=syncmatch.TriggerPeriodUs(frameRate),
+		hold_guard_us=syncmatch.HOLD_GUARD_US, hold_after_us=syncmatch.HOLD_AFTER_US, board="trigger.ino")
+	return record
+
+
 def StartTriggers(systems, params):
 	if "serial" not in systems:
 		return systems
 	try:
-		# Serialize pin length, IDs, frame rate and the test LED's pin and rate (trigger.ino
-		# reads them in this order; a sketch from before the test LED ignores the last two)
+		# Serialize pin length, IDs, frame rate, the test LED's pin and rate, and the sync output's pin, seed, pulse
+		# (us) and gaps (ms), if any (trigger.ino reads them in this order; a sketch from before the test LED, or
+		# the sync output, throws the rest away)
 		frameRate = configurator.TriggerFrameRate(params)
 		blinkPin, blinkHz = configurator.BlinkSettings(params)
 		pins = Pins(params)
 		serialList = [len(pins)] + pins + [frameRate, blinkPin, blinkHz]
+		sync = configurator.SyncSettings(params)
+		if sync is not None:
+			serialList += [sync["pin"], sync["seed"], sync["width_us"], sync["min_gap_ms"], sync["max_gap_ms"]]
+			systems["triggerSync"] = SyncRecord(sync, frameRate)
 		systems["serialCommand"] = serialList
 		serialString = ",".join(str(item) for item in serialList)
 
@@ -129,12 +147,14 @@ def StartTriggers(systems, params):
 		systems["serial"].write(serialString.encode())
 		systems["triggerStartedNs"] = startedNs
 
-		Say("Arduino on port {} is triggering pins {} at {} fps{}."\
+		Say("Arduino on port {} is triggering pins {} at {} fps{}{}."\
 			.format(params["serialPort"], pins, frameRate,
-				", and blinking the test LED on pin {} at {} Hz".format(blinkPin, blinkHz) if blinkPin >= 0 else ""))
+				", and blinking the test LED on pin {} at {} Hz".format(blinkPin, blinkHz) if blinkPin >= 0 else "",
+				", with sync pulses on pin {} (seed {})".format(sync["pin"], sync["seed"]) if sync else ""))
 
 	except Exception as e:
 		systems.pop("triggerStartedNs", None)
+		systems.pop("triggerSync", None)
 		systems["triggerStartError"] = "{}: {}".format(type(e).__name__, e)
 		Say("Could not start the trigger on {}: {}. No camera will get a frame: stop the recording (Ctrl-C), check "
 			"the trigger Arduino's USB cable, and start again. trigger.json says the trigger did not start.".format(
@@ -147,9 +167,11 @@ def StopTriggers(systems):
 		return
 	Say("Closing serial connection...")
 
-	# Repeat the same Pyserial command, except encode frame rate as "-1" and the test LED as off
+	# Repeat the same Pyserial command, except encode frame rate as "-1" and the test LED as off; with nothing
+	# after it, the sync output is off too
 	if "serialCommand" in systems:
-		serialList = list(systems["serialCommand"])[:-3] + [-1, -1, 0]
+		pins = list(systems["serialCommand"])
+		serialList = pins[:1 + int(pins[0])] + [-1, -1, 0]
 		serialString = ",".join(str(item) for item in serialList)
 		systems["serial"].write(serialString.encode())
 

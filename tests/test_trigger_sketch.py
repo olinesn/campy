@@ -118,3 +118,110 @@ def test_the_start_reaches_an_older_campys_sketch(old_sim, after, starts):
 	assert arduino.ANSWER.search(text_after(said, 0)) # it answers campy's check
 	assert ("Frame rate set to: 25.00" in text_after(said, answered + 1)) == starts
 	assert (len(rises(edges, 2)) > 0) == starts
+
+
+# ------------------------------------------------------------------ the sync output
+
+from campy import syncmatch
+
+SYNC = dict(seed=123456789, width_us=10000, min_gap_ms=200, max_gap_ms=1000)
+
+
+def sync_command(fps, seed=SYNC["seed"], pins=(2, 3), blink=(13, 43), sync_pin=7, width=10000, gaps=(200, 1000)):
+	return ",".join(str(x) for x in [len(pins), *pins, fps, *blink, sync_pin, seed, width, *gaps])
+
+
+def time_zero(edges, fps):
+	# The trigger's time 0 (the start of its first frame period): half a period before the first camera rise
+	period = syncmatch.TriggerPeriodUs(fps)
+	return rises(edges, 2)[0] - period // 2, period
+
+
+@pytest.mark.parametrize("fps", [100, 25, 333])
+def test_the_sync_output_follows_its_seed(sim, fps):
+	said = []
+	edges = run(sim, 40, sync_command(fps), said=said)
+	assert "Sync output on pin 7, seed 123456789, 10000 us pulses, gaps 200 to 1000 ms." in text_after(said, 0)
+	t0, period = time_zero(edges, fps)
+	up = rises(edges, 7) - t0
+	down = np.array([t for t, level in edges[7] if level == 0], float)[1:] - t0 # the first: set low at the command
+	want_up, want_down = syncmatch.SyncEdges(dict(SYNC, frame_period_us=period), up[-1] + 1)
+	assert len(up) >= 30 and len(up) == len(want_up)
+	# Each edge where campy-syncmatch says it is, to the loop's few microseconds
+	assert np.abs(up - want_up).max() <= 4
+	assert np.abs(down[:len(want_down)] - want_down[:len(down)]).max() <= 4
+	# The cameras: every frame period as without the sync output (test_trigger_and_test_led), and the pins together
+	for pin in (2, 3):
+		assert np.all(np.abs(np.diff(rises(edges, pin)) - period) <= 3)
+	assert np.max(np.abs(rises(edges, 2) - rises(edges, 3))) <= 2
+
+
+def test_camera_edges_stay_put_with_the_sync_output(sim):
+	# The same trigger with and without the sync output: every camera edge at the same time to within the loop's
+	# step, the sync edges near camera edges held clear of them
+	fps = 100
+	with_sync = run(sim, 30, sync_command(fps))
+	without = run(sim, 30, ",".join(str(x) for x in [2, 2, 3, fps, 13, 43]))
+	for pin in (2, 3):
+		a, b = np.array(with_sync[pin], float), np.array(without[pin], float)
+		n = min(len(a), len(b))
+		assert n > 2000 and np.array_equal(a[:n, 1], b[:n, 1])
+		assert np.abs(a[:n, 0] - b[:n, 0]).max() <= 3
+	# No sync edge within the guard before a camera edge, and many that would have been without the hold
+	t0, period = time_zero(with_sync, fps)
+	sync_t = np.array([t for t, _ in with_sync[7][1:]], float)
+	camera_t = np.array([t for t, _ in with_sync[2]], float)
+	k = np.searchsorted(camera_t, sync_t)
+	ahead = camera_t[np.minimum(k, len(camera_t) - 1)] - sync_t
+	assert np.all(ahead[k < len(camera_t)] > syncmatch.HOLD_GUARD_US - 5)
+	planned = syncmatch.PlannedRises(SYNC["seed"], 200, 1000, sync_t[-1] - t0)
+	assert (syncmatch.Hold(planned, period) > 0).sum() > 5
+
+
+def test_a_command_without_the_sync_output_leaves_it_off(sim):
+	# campy before the sync output: nothing after the test LED's Hz, and no extra wait for numbers that never come
+	said = []
+	edges = run(sim, 9, "2,2,3,25,13,43", said=said)
+	assert 7 not in edges
+	assert "Sync output off." in text_after(said, 0)
+	# 0.5 s at power-up, 1 s for one more digit, 4 s of the sketch's wait, then half a period: as before it
+	assert rises(edges, 2)[0] <= 5.5e6 + 20000 + 10
+
+
+@pytest.mark.parametrize("command, why", [
+	(sync_command(25, sync_pin=3), "pin triggers a camera"),
+	(sync_command(25, sync_pin=13), "pin is the test LED's"),
+	(sync_command(25, width=250000), "pulse too short, or too long"),
+	(sync_command(25, gaps=(500, 200)), "gaps must be 1-60000 ms"),
+	(sync_command(-1), "no trigger"),
+])
+def test_the_sketch_refuses_a_sync_output_it_cannot_make(sim, command, why):
+	said = []
+	edges = run(sim, 8, command, said=said)
+	assert "Sync output off: " + why in text_after(said, 0)
+	assert len([t for t, level in edges.get(7, []) if level == 1]) == 0
+
+
+def test_stop_turns_the_sync_output_off(sim):
+	edges = run(sim, 16, sync_command(100), (9, "2,2,3,-1,-1,0"))
+	assert rises(edges, 7).max() < 9.1e6
+	assert edges[7][-1][1] == 0
+
+
+def test_the_sync_output_across_micros_wrap(sim):
+	# micros() wraps every 71.6 minutes on the boards (32 bits): the sync edges' times wrap with it. The simulated
+	# clock is 64 bits, so start it just before 2**32 and check that nothing jumps there
+	import os
+	start = 2 ** 32 - 8_000_000
+	env = dict(os.environ, SIM_START_US=str(start))
+	out = subprocess.run([sim, str(start + 20_000_000), sync_command(100)], capture_output=True, text=True,
+		check=True, timeout=60, env=env).stdout
+	edges = {}
+	for line in out.splitlines():
+		if not line.startswith("serial "):
+			t, pin, level = map(int, line.split())
+			edges.setdefault(pin, []).append((t, level))
+	t0, period = time_zero(edges, 100)
+	up = rises(edges, 7) - t0
+	want, _ = syncmatch.SyncEdges(dict(SYNC, frame_period_us=period), up[-1] + 1)
+	assert len(up) == len(want) >= 10 and np.abs(up - want).max() <= 4

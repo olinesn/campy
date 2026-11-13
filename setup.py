@@ -36,6 +36,7 @@ setup(
 			"campy-align = campy.align:Main",
 			"campy-calibrate = campy.calibrate:Main",
 			"campy-synctest = campy.synctest:Main",
+			"campy-syncmatch = campy.syncmatch:Main",
 			"campy-flir-reset = campy.flirreset:Main",
 			"campy-live = campy.live:Main",
 			"campy-live-view = campy.liveview:Main",

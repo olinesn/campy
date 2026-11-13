@@ -57,6 +57,17 @@ jobs:
             platforms: |
               - name: teensy:avr
                 source-url: https://www.pjrc.com/teensy/package_teensy_index.json
+          # The board campy's hardware list names for trigger.ino, and the Uno R4 some rigs had
+          - name: Nano ESP32 (trigger)
+            fqbn: arduino:esp32:nano_nora
+            sketch: campy/trigger
+            platforms: |
+              - name: arduino:esp32
+          - name: Uno R4 Minima
+            fqbn: arduino:renesas_uno:minima
+            sketch: campy/trigger
+            platforms: |
+              - name: arduino:renesas_uno
           - name: Nano ESP32 (outputs board)
             fqbn: arduino:esp32:nano_nora
             sketch: campy/outputs_board/campy_outputs
