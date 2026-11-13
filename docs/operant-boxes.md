@@ -7,7 +7,7 @@ It is the [outputs board](closed-loop.md#the-board) grown by a few features, not
 **What exists today, and what comes next.**
 
 1. **The board** (pull request 449): inputs, servos, links, the safe state; tested on a simulated board.
-2. **`campy-box`** (pull request NNN): runs a task from a YAML file (states such as *wait for a poke, open the door, give a reward*), and logs every event with the board's time, the computer's time and the camera frame. [Running a task](#running-a-task-campy-box) below.
+2. **`campy-box`** (pull request 451): runs a task from a YAML file (states such as *wait for a poke, open the door, give a reward*), and logs every event with the board's time, the computer's time and the camera frame. [Running a task](#running-a-task-campy-box) below.
 3. **Recordings** (next): `campy-session` starts the task with the recording and keeps its log in the recording's folder; the panel shows the counts. Until then, start `campy-box` by hand before the recording.
 4. **Poses in the task** (after that): `campy-rules`' conditions (an animal in a region, two animals close) usable in a task, and the box's inputs usable in `campy-rules`.
 
