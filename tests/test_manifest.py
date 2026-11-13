@@ -540,7 +540,10 @@ def test_campy_live_tracks_from_the_first_frame_while_its_session_is_written(tmp
 	assert test_livefeed.run_live(test_livefeed.name(), out, ["--model", "none", "--report-sec", "0",
 		"--wait-sec", "30", "--frame-shape", "16x20x1"], frames=120, rate=60, delay=0.1) == 0
 	rows = np.load(out + ".npy")
-	assert rows["frame"][0] <= 3 and rows["frame"][-1] == 120
+	# Waited for, the 1.5 s write would put the first set near frame 90 at 60
+	# fps. A busy CI runner can be a few frames late to the first set without
+	# it (frame 5 on GitHub's Windows runner), so up to 0.25 s (15 frames) passes.
+	assert rows["frame"][0] <= 15 and rows["frame"][-1] == 120
 	# The file is the same as when written before the first set
 	data = strict_json(open(out + ".session.json").read())
 	assert data["options"]["--wait-sec"] == {"value": 30.0, "source": "command line"}
