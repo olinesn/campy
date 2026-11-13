@@ -225,3 +225,34 @@ def test_the_sync_output_across_micros_wrap(sim):
 	up = rises(edges, 7) - t0
 	want, _ = syncmatch.SyncEdges(dict(SYNC, frame_period_us=period), up[-1] + 1)
 	assert len(up) == len(want) >= 10 and np.abs(up - want).max() <= 4
+
+
+# ------------------------------------------------------------------ upstream campy (github.com/ksseverson57/campy)
+
+def test_upstream_campys_commands_drive_this_sketch(sim, upstream_sim):
+	# Upstream campy's arduino.py sends pin count, pins and frame rate, nothing more, and stops with frame rate -1.
+	# This sketch triggers the same pins at the same rate, from the same moment as upstream's own sketch, and stops
+	# at once; no other pin moves
+	for board in (sim, upstream_sim):
+		edges = run(board, 20, "2,2,3,25", (12, "2,2,3,-1"))
+		assert set(edges) == {2, 3}
+		for pin in (2, 3):
+			up = rises(edges, pin)
+			assert np.all(np.abs(np.diff(up) - 40000) <= 3)
+			assert 5.5e6 <= up[0] <= 5.5e6 + 20000 + 10 # 0.5 s at power-up, 1 s for one more digit, 4 s, half a period
+			assert up.max() < 12.05e6
+		assert edges[2][-1][1] == 0
+	assert np.array_equal(rises(run(sim, 20, "2,2,3,25", (12, "2,2,3,-1")), 2),
+		rises(run(upstream_sim, 20, "2,2,3,25", (12, "2,2,3,-1")), 2))
+
+
+def test_this_campy_drives_upstreams_sketch(upstream_sim):
+	# This campy's check, start (with the test LED and the sync output, which that sketch hasn't got) and stop
+	said = []
+	edges = run(upstream_sim, 30, "2,2,3,-1,-1,0", (9, "2,2,3,25,13,43,7,42,10000,200,1000"), (20, "2,2,3,-1,-1,0"),
+		said=said)
+	assert arduino.ANSWER.search(text_after(said, 0))
+	assert "Test LED" not in text_after(said, 0) and "Sync output" not in text_after(said, 0) # how campy tells
+	assert set(edges) == {2, 3}
+	up = rises(edges, 2)
+	assert len(up) > 100 and np.all(np.abs(np.diff(up) - 40000) <= 3) and up.max() < 20.05e6

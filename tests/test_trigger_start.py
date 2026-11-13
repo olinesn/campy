@@ -252,6 +252,47 @@ def test_the_sync_output_in_the_start_command_and_the_recording(tmp_path, capsys
 	assert systems["serial"].written == b"2,2,3,-1,-1,0"
 
 
+class Talking(Port):
+	# A port on which the sketch has said something since the check: Listen reads it
+	def __init__(self, text):
+		super().__init__()
+		self.pending = text.encode()
+
+	@property
+	def in_waiting(self):
+		return len(self.pending)
+
+	def read(self, n=256):
+		data, self.pending = self.pending[:n], self.pending[n:]
+		return data
+
+
+@pytest.mark.parametrize("sketch", ["current", "upstream"])
+def test_a_sketch_without_the_sync_output_gets_no_sync_json(tmp_path, capsys, sketch):
+	# An older trigger.ino, or upstream campy's, says neither "Test LED off." nor "Sync output off." after its answer
+	# to the check: campy then says so, and records no sync.json, rather than claim pulses nobody makes
+	answer = "\r\nFrame rate set to: 0.00 fps.\r\nFrame period set to: 4294967295 microseconds."
+	rest = "\r\nTest LED off.\r\nSync output off." if sketch == "current" else ""
+	p = params(n=1)
+	p.update(digitalPins=[2, 3], frameRate=100, syncPin=7, syncSeed=42, blinkPin=13, blinkHz=43,
+		videoFolder=str(tmp_path / "rec"))
+	systems = {"serial": Talking(rest), "triggerCheckedAt": time.monotonic() - arduino.START_AFTER_CHECK_S,
+		"triggerSaid": answer}
+	assert arduino.WaitToStart(systems)
+	systems = arduino.StartTriggers(systems, p)
+	out = capsys.readouterr().out
+	if sketch == "current":
+		assert systems["serial"].written == b"2,2,3,100,13,43,7,42,10000,200,1000"
+		assert "triggerSync" in systems and "with sync pulses on pin 7" in out and "without the" not in out
+	else:
+		assert systems["serial"].written == b"2,2,3,100,13,43" # no sync settings for a sketch without it
+		assert "triggerSync" not in systems
+		assert "runs a sketch without the sync output" in out and "runs a sketch without the test LED" in out
+		assert "with sync pulses" not in out and "blinking the test LED" not in out
+		trigger.SaveStart(p, ["Camera0"], {}, systems["triggerStartedNs"], None, systems.get("triggerSync"))
+		assert not (tmp_path / "rec" / "sync.json").exists()
+
+
 def test_a_new_seed_for_each_recording():
 	p = params(n=1)
 	p.update(syncPin=7)
