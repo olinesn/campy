@@ -41,6 +41,8 @@ import argparse, csv, json, os, sys
 
 import numpy as np
 
+from campy import strictjson
+
 GAMMA = np.uint64(0x9E3779B97F4A7C15)
 RUN = 4 # gaps in a row that place a stretch of pulses in the plan
 GAP_TOLERANCE_MS = 0.3 # how far from a whole millisecond a gap may read
@@ -468,7 +470,7 @@ def Main(argv=None):
 			for k in range(args.frames):
 				w.writerow([k, round(board_us[k] / 1e6, 6), round(float(rec[k]), 7)])
 	with open(stem + "_syncmatch.json", "w") as f:
-		json.dump(summary, f, indent=1)
+		strictjson.dump(summary, f, indent=1)
 	print("Written to {}_syncmatch.csv and .json{}".format(stem, ", and _frames.csv" if args.frames else ""))
 	return summary, rows
 
