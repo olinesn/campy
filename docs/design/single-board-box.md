@@ -1,6 +1,6 @@
 # One Nano ESP32 for the cameras and the box: design
 
-> **Status: agreed on 2026-11-13; being built.** Piece 1, the sketch (version 4), is pull request NNN, tested on the
+> **Status: agreed on 2026-11-13; being built.** Piece 1, the sketch (version 4), is pull request 459, tested on the
 > simulated board and compiled for the Nano ESP32; nothing in it has run on a real board yet. Pieces 2 to 4 are to
 > come. It adds a mode beside the two-board setup, which stays: each rig picks one.
 
