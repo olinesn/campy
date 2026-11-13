@@ -4,7 +4,8 @@
 #
 # Unless the script already runs inside the rig's current job (started by rig.py run, or by a
 # script that took the rig), this re-runs it under rig.py: it waits for the rig, runs holding it,
-# and leaves <tag>.rig.log beside the script, ending RIG_CLEAN or RIG_CONTAMINATED. The script
+# and leaves <tag>.rig.log beside the script, ending RIG_CLEAN, RIG_CLEAN_BACKGROUND (only the machine's
+# listed background load, background.json) or RIG_CONTAMINATED. The script
 # then ends with the run's exit code, which the guard leaves in $RigExit: `exit` inside a
 # dot-sourced file ends only that file, hence the second half of the line. (When the script is
 # its PowerShell's own, as with powershell -File, the guard ends that PowerShell itself, so a
@@ -13,6 +14,7 @@
 #   RIG_OWNER   who runs it (the session's name); "unnamed" otherwise
 #   RIG_TAG     the run's name; otherwise the script's first argument, or the script's name
 #   RIG_NOWAIT=1  exit 75 at once if the rig is busy, instead of waiting
+#   RIG_STRICT=1  every look with load outside the run contaminates it, background.json or not
 #   RIG_PYTHON  the python.exe that runs rig.py; otherwise python on the PATH
 #   RIG_ROOT    the folder of gpu.lock; otherwise C:\campy_data\live
 # rig_guard.sh does the same for bash scripts on Linux.
