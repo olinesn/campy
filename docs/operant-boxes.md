@@ -107,10 +107,12 @@ box:
 | A0 to A7 | Inputs 0 to 7: beam breaks, nose pokes, lick or touch sensors | Suggested; any free pin works |
 | D11, D12 (D13, D0, D1 if needed) | Servos 0 to 3: the servo's signal wire | Suggested; D13 also lights the board's LED |
 | D2 to D9 | Outputs (channels 0 to 7): valves, pumps, cue lights, tone generators, event marks | The sketch's defaults |
-| D10 | Camera trigger in | The sketch's default |
+| D10 | Camera trigger in: a wire from the trigger board's camera output | The sketch's default |
 | GND | Shared with the trigger, every sensor, every servo supply and every driver | |
 
 The host sets every pin when it starts (`in`, `servo`, `pin`, `trig`), so other pins work too. No pin can be both an input or a servo and anything else; the board refuses such a command.
+
+**Two Nano ESP32s.** A rig with a box has two: one runs `trigger.ino` and pulses the cameras (campy-acquire drives it), the other runs this sketch for the box ([hardware list](hardware.md)). The trigger board's pulse is 3.3 V too, so its camera output goes straight to the box board's D10, with the two boards' grounds joined. A 5 V trigger board (an Uno) needs a divider there instead.
 
 **3.3 V logic.** The ESP32's pins take at most 3.3 V.
 
