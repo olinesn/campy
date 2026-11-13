@@ -205,6 +205,19 @@ the CPU that took them is left out, and the startup line and
 campy-live-session.json (cpus) say which. python -m campy.cpus --gpu N says
 it for any GPU.
 
+On Linux and Windows --pose3d-cpus puts the 3D step's thread alone on the
+CPUs given and keeps the rest of campy-live off them (on Windows by the
+process's default CPU sets, cpus.KeepOff). On the Jetson AGX Orin, whose cores
+are in three clusters of four with a cache each, the 3D step ran a quarter
+slower when the replay check's feeder shared its cluster; with the feeder on
+8-11, campy-live on 0-3 and the 3D step alone on 4-7, it took 1.48 ms
+instead of 1.64. In a recording (campy-acquire and its encoders instead of
+the feeder) the step gained as much, but frame to 3D only 0.2 ms at the
+median, and lost 0.4-0.5 ms at p99: the models and campy-acquire share
+fewer cores. On the EVO-X2, the Precision 7875 and the Dell Pro Tower Plus
+the step got slower, and on the Dell Pro Max Slim nothing changed. So it is off by default
+(docs/jetson.md, docs/live-tracking.md).
+
 --cuda-graphs records each model's GPU work once per input shape and then
 replays it in one go (a CUDA graph), instead of launching its hundred or so
 GPU operations one by one, each costing the CPU some microseconds: the
@@ -2796,12 +2809,22 @@ class Pose3DThread:
 	by the next Put, or by Close.
 	"""
 
-	def __init__(self, tracker, log, queued=8):
+	def __init__(self, tracker, log, queued=8, cpus=None):
 		self.tracker, self.log = tracker, log # tracker: a Pose3D, or anything with Update
 		self.sets = queue.Queue(maxsize=queued) # (row, frames, inference ns); None stops it
 		self.error = None
+		self.cpus = cpus # --pose3d-cpus: this thread alone on these CPUs (Linux), or None
 		self.thread = threading.Thread(target=self.Run, daemon=True, name="campy-live 3D")
 		self.thread.start()
+
+	def Place(self):
+		# This thread onto --pose3d-cpus (cpus.PinThread); the rest of campy-live was kept off them (PlaceSelf)
+		if not self.cpus:
+			return
+		try:
+			cpus.PinThread(self.cpus)
+		except OSError as e:
+			Say("Could not pin the 3D step to CPUs {} (--pose3d-cpus): {}".format(cpus.Text(self.cpus), e))
 
 	def Put(self, row, frames, inference):
 		# Waits only if the 3D is that many sets behind
@@ -2810,6 +2833,7 @@ class Pose3DThread:
 		self.sets.put((row, frames, inference))
 
 	def Run(self):
+		self.Place()
 		while True:
 			item = self.sets.get()
 			if item is None:
@@ -3035,7 +3059,8 @@ def Run(args):
 	# campy-live without a console (campy-session)
 	stopWatch = stopfile.Watch(os.path.abspath(args.stop_file), lambda level: stopping.append(level)).Start() \
 		if args.stop_file else None
-	placed, interrupts = PlaceSelf(args)
+	threeD = Pose3DCpus(args)
+	placed, interrupts = PlaceSelf(args, threeD)
 	if args.nice:
 		try:
 			os.nice(args.nice)
@@ -3089,8 +3114,10 @@ def Run(args):
 		if clock is not None and clock.FeedCame():
 			Say("The feed took over {:g} minutes to come, so the GPU's clock wasn't held: without a trigger, "
 				"the first sets may be slow.".format(GpuClock.WAITING_MOST_S / 60))
-		if placed:
-			moved = PlaceCampy(args, cameras.readers)
+		# PlaceCampy decides for itself: auto moves campy-acquire only when campy-live went on the performance
+		# cores; a list given moves it even where campy-live wasn't placed (the Jetson AGX Orin's --campy-cpus 8-11
+		# moved nothing before)
+		moved = PlaceCampy(args, cameras.readers)
 		shape, dtype = cameras.readers[0].shape, cameras.readers[0].dtype
 		frameRate = cameras.readers[0].Info("frameRate")
 		if (shape, dtype) != expected:
@@ -3114,7 +3141,7 @@ def Run(args):
 			tracker.animals if tracker else 0)
 		if args.results_feed == "on":
 			log.results = Publish(args, log, names, cameras, model, tracker, frameRate, interrupts)
-		worker = Pose3DThread(tracker, log) if tracker else None
+		worker = Pose3DThread(tracker, log, cpus=threeD) if tracker else None
 		Say("Logging to {}.npy.".format(out))
 		reported, since = time.monotonic(), 0
 		while True:
@@ -3344,13 +3371,42 @@ def Publish(args, log, names, cameras, model, tracker, frameRate, interrupts=Non
 	return results
 
 
-def PlaceSelf(args):
+def Pose3DCpus(args):
+	"""
+	--pose3d-cpus as a list of CPUs, or None (none asked, no --calibration so
+	no 3D step, or neither Linux nor Windows). On Linux each thread has CPUs
+	of its own, and a thread starts on its starter's; on Windows a new thread
+	takes the process's affinity mask, so the rest of campy-live is kept off
+	by the process's default CPU sets instead (cpus.KeepOff), which threads
+	started later take too.
+	"""
+	text = (getattr(args, "pose3d_cpus", "") or "none").strip().lower()
+	if text == "none":
+		return None
+	if not getattr(args, "calibration", ""):
+		Say("--pose3d-cpus without --calibration: there is no 3D step to pin.")
+		return None
+	if not (sys.platform.startswith("linux") or sys.platform == "win32"):
+		Say("--pose3d-cpus: pinning the 3D step's thread alone is done only on Linux and Windows; left as it is.")
+		return None
+	try:
+		chosen = cpus.Resolve(args.pose3d_cpus)
+	except ValueError as e:
+		raise SystemExit("--pose3d-cpus {}: {}".format(args.pose3d_cpus, e))
+	if not chosen:
+		raise SystemExit("--pose3d-cpus {}: no CPUs".format(args.pose3d_cpus))
+	return chosen
+
+
+def PlaceSelf(args, keep_off=None):
 	"""
 	campy-live onto --cpus at --priority. auto: on a CPU with performance and
 	efficiency cores, the performance ones, at high priority; elsewhere as it
 	is. On Windows auto also leaves out the CPU that handles the GPU's
-	interrupts (GpuInterrupts). Returns what it did, as text, or None, and
-	what GpuInterrupts found (or None).
+	interrupts (GpuInterrupts). keep_off: CPUs kept for the 3D step's thread
+	(--pose3d-cpus, Pose3DCpus), which the rest of campy-live is kept off:
+	the threads it starts from now take its CPUs. Returns what it did, as
+	text, or None, and what GpuInterrupts found (or None).
 	"""
 	choice, priority = args.cpus.strip().lower(), args.priority
 	cores = interrupts = None
@@ -3378,10 +3434,31 @@ def PlaceSelf(args):
 	if priority == "auto":
 		# High on the performance cores or the CPUs given; all but an interrupt CPU is still everywhere: normal
 		priority = "high" if chosen is not None and (choice != "auto" or cores is not None) else "normal"
+	if keep_off:
+		# The rest of campy-live off the 3D step's CPUs: the 3D thread alone on 4-7 and the rest on 0-3 (the
+		# replay feeder on 8-11) took the Jetson AGX Orin's step from 1.67 to 1.51 ms; alone on 4-7 with the
+		# rest free to join it, 1.67 ms, and a set skipped (docs/jetson.md)
+		base = chosen or cpus.All()
+		rest = [c for c in base if c not in set(keep_off)]
+		if not rest:
+			raise SystemExit("--pose3d-cpus {} leaves campy-live's other threads no CPU of --cpus {} ({})".format(
+				cpus.Text(keep_off), args.cpus, cpus.Text(base)))
+		if rest != base:
+			chosen = rest
+			if why:
+				why = why[:-1] + ", less the 3D step's)"
+			else:
+				why = " (all but the 3D step's)" if choice in ("auto", "none", "all") else " (less the 3D step's)"
 	done = []
 	if chosen is not None:
 		try:
-			cpus.Pin(chosen)
+			if keep_off and sys.platform == "win32":
+				# A Windows thread can't leave its process's affinity mask, and a new one takes it: the mask
+				# takes the 3D step's CPUs in too, and the process's default CPU sets keep the rest off them
+				cpus.Pin(sorted(set(chosen) | set(keep_off)))
+				cpus.KeepOff(chosen)
+			else:
+				cpus.Pin(chosen)
 			done.append("CPUs {}".format(cpus.Text(chosen)) + why)
 		except OSError as e:
 			Say("Could not pin campy-live to CPUs {} (--cpus): {}".format(cpus.Text(chosen), e))
@@ -3391,10 +3468,13 @@ def PlaceSelf(args):
 			done.append("{} priority".format(priority.replace("_", " ")))
 		except OSError as e:
 			Say("Could not give campy-live {} priority (--priority): {}".format(priority, e))
-	if not done:
+	text = " at ".join(done)
+	if keep_off:
+		text = "; ".join(t for t in (text, "the 3D step alone on CPUs {}".format(cpus.Text(keep_off))) if t)
+	if not text:
 		return None, interrupts
-	Say("campy-live on {}.".format(" at ".join(done)))
-	return " at ".join(done), interrupts
+	Say("campy-live on {}.".format(text))
+	return text, interrupts
 
 
 def GpuInterrupts(args):
@@ -3634,6 +3714,10 @@ def Parser():
 		efficiency cores, the performance cores; elsewhere all; on Windows less the CPU that handles the GPU's \
 		interrupts), performance, efficiency, all, none (as it is started), or a list such as 0,1,10-13. python -m \
 		campy.cpus says which are which, and python -m campy.cpus --gpu N which CPU handles GPU N's interrupts.")
+	p.add_argument("--pose3d-cpus", default="none", help="Linux and Windows, with --calibration: the 3D step's thread alone on \
+		these CPUs (a list such as 4-7), and the rest of campy-live kept off them; keep campy-acquire off them \
+		too with --campy-cpus. On the Jetson AGX Orin it helped the replay check but not a recording, and on the \
+		EVO-X2 and the Windows PCs tried it gained nothing or was slower (docs/live-tracking.md). none (the default): as --cpus puts it.")
 	p.add_argument("--priority", default="auto", choices=("auto",) + cpus.PRIORITIES, help="campy-live's priority: \
 		auto is high when --cpus auto put it on the performance cores, else normal. Above normal needs root on Linux.")
 	p.add_argument("--campy-cpus", default="auto", help="The CPUs campy-acquire (its camera processes and \

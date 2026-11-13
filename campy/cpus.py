@@ -156,17 +156,20 @@ def _ByClass(cores):
 		"efficiency": sorted(cpu for c, cpus in cores if c != best for cpu in cpus)}
 
 
-def _LinuxCores():
+def _LinuxCores(sys_devices="/sys/devices"):
 	def Read(path):
 		try:
-			with open(path) as f:
+			with open(os.path.join(sys_devices, path)) as f:
 				return ParseList(f.read().strip())
 		except (OSError, ValueError):
 			return None
-	performance, efficiency = Read("/sys/devices/cpu_core/cpus"), Read("/sys/devices/cpu_atom/cpus")
+	performance, efficiency = Read("cpu_core/cpus"), Read("cpu_atom/cpus")
 	if performance and efficiency:
 		return {"performance": performance, "efficiency": efficiency}
-	return {"performance": sorted(os.sched_getaffinity(0)), "efficiency": []}
+	# A CPU of one kind: every CPU online. Not this process's own CPUs (sched_getaffinity): the answer is kept for
+	# the program's life, and asked after campy-live pinned itself (--cpus 0-3), 'all' was those 4 (--campy-cpus
+	# all put campy-acquire beside campy-live on the Jetson AGX Orin: 92-104 sets skipped a minute)
+	return {"performance": Read("system/cpu/online") or list(range(os.cpu_count() or 1)), "efficiency": []}
 
 
 def All():
@@ -375,6 +378,89 @@ def Affinity(pid=None):
 	if hasattr(os, "sched_getaffinity"):
 		return sorted(os.sched_getaffinity(0 if pid is None else int(pid)))
 	raise OSError("CPU affinity isn't supported on {}".format(sys.platform))
+
+
+# ---------------------------------------------------------------- one thread apart from the rest
+
+def _ParseCpuSets(data):
+	"""
+	{logical CPU: CPU set id} from GetSystemCpuSetInformation's entries
+	(SYSTEM_CPU_SET_INFORMATION: Size, Type, then for Type 0 the CPU set:
+	Id, Group, LogicalProcessorIndex, ...)
+	"""
+	offset, ids = 0, {}
+	while offset + 8 <= len(data):
+		size, kind = struct.unpack_from("<II", data, offset)
+		if size <= 0:
+			break
+		if kind == 0 and offset + 15 <= len(data): # CpuSetInformation
+			cid, group, index = struct.unpack_from("<IHB", data, offset + 8)
+			ids[64 * group + index] = cid
+		offset += size
+	return ids
+
+
+def _CpuSetIds(cpus):
+	ctypes, kernel32 = _Windows()
+	kernel32.GetSystemCpuSetInformation.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong),
+		ctypes.c_void_p, ctypes.c_ulong]
+	length = ctypes.c_ulong(0)
+	kernel32.GetSystemCpuSetInformation(None, 0, ctypes.byref(length), None, 0)
+	buffer = ctypes.create_string_buffer(length.value)
+	if not kernel32.GetSystemCpuSetInformation(buffer, length, ctypes.byref(length), None, 0):
+		raise ctypes.WinError(ctypes.get_last_error())
+	ids = _ParseCpuSets(buffer.raw[:length.value])
+	missing = [c for c in cpus if c not in ids]
+	if missing:
+		raise OSError("no CPU set for CPU {}".format(Text(missing)))
+	return (ctypes.c_ulong * len(cpus))(*[ids[c] for c in cpus])
+
+
+def PinThread(cpus):
+	"""
+	The calling thread onto these CPUs, apart from the rest of its process.
+	Linux: each thread has its own CPUs. Windows: its affinity mask (within
+	the process's) and its CPU sets, which beat the process's default ones
+	(KeepOff).
+	"""
+	cpus = sorted(set(cpus))
+	if sys.platform == "win32":
+		if max(cpus) >= 64:
+			raise OSError("CPUs past 63 are in another processor group, which this can't pin to")
+		ctypes, kernel32 = _Windows()
+		kernel32.GetCurrentThread.restype = ctypes.c_void_p
+		kernel32.SetThreadAffinityMask.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+		kernel32.SetThreadAffinityMask.restype = ctypes.c_size_t
+		kernel32.SetThreadSelectedCpuSets.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong]
+		thread = kernel32.GetCurrentThread()
+		ids = _CpuSetIds(cpus)
+		if not kernel32.SetThreadSelectedCpuSets(thread, ids, len(cpus)):
+			raise ctypes.WinError(ctypes.get_last_error())
+		if not kernel32.SetThreadAffinityMask(thread, sum(1 << c for c in cpus)):
+			raise ctypes.WinError(ctypes.get_last_error())
+	elif hasattr(os, "sched_setaffinity"):
+		import threading
+		os.sched_setaffinity(threading.get_native_id(), cpus)
+	else:
+		raise OSError("pinning a thread to CPUs isn't supported on {}".format(sys.platform))
+
+
+def KeepOff(rest):
+	"""
+	Windows: this process's threads onto these CPUs, by default: its default
+	CPU sets, which every thread without CPU sets of its own takes, those
+	started later too (unlike an affinity mask, which a new thread takes from
+	the process, not from the thread that starts it). Its affinity mask stays
+	wider, so one thread can go apart (PinThread).
+	"""
+	if sys.platform != "win32":
+		raise OSError("default CPU sets are Windows'")
+	ctypes, kernel32 = _Windows()
+	kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+	kernel32.SetProcessDefaultCpuSets.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong]
+	rest = sorted(set(rest))
+	if not kernel32.SetProcessDefaultCpuSets(kernel32.GetCurrentProcess(), _CpuSetIds(rest), len(rest)):
+		raise ctypes.WinError(ctypes.get_last_error())
 
 
 def SetPriority(name, pid=None):

@@ -70,7 +70,7 @@ The Orin's cores are at their fastest already (MAXN, 2.2 GHz held), and each is 
 - **Keeping `campy-live` on one cluster and what feeds it on another helps a little**: about 0.25 ms off the 3D step and 0.4 ms off frame to 3D at the median (about 3%), 0.3 ms at p99. Every set was tracked in every run, and the accuracy didn't change at all (2D median 3.8 px, 3D median 4.2 mm, 2 identity switches, in each of the ten).
 - **numpy's thread count doesn't matter.** numpy's OpenBLAS starts 12 threads, but the 3D step's matrices are too small for it to use them: one thread gave the same times.
 - **The desktop costs nothing measurable.** GNOME, X and the VNC server used 80–150 ms of CPU over each 70 s run, about 0.2% of one core, so turning the desktop off while tracking (which needs `sudo`) wasn't tried.
-- **For a recording**, the same split would be `campy-live --cpus 4-7 --campy-cpus 8-11`, which moves `campy-acquire`, its camera processes and their encoders onto the third cluster when the feed comes. Not measured with cameras.
+- **For a recording**, the same split would be `campy-live --cpus 4-7 --campy-cpus 8-11`, which moves `campy-acquire`, its camera processes and their encoders onto the third cluster when the feed comes. Until pull request 442, `--campy-cpus` moved nothing on the Orin unless `--cpus` was given too. What pinning does in a recording is measured further down (`--pose3d-cpus`).
 - The worst set of each run (the max, 21–31 ms frame to 3D) moved about as much from run to run as between settings.
 
 **The GPU doesn't help, as the step is written.** The same 3,600 sets, run offline through `campy/pose3d.py`'s tracker on the Orin's CPU, reproduced the run's 3D exactly (the same missing points, within the log's float32 rounding), at 2.15 / 3.20 ms per set (p50 / p99), under the rig lock. That is 0.6 ms less than inside `campy-live`, where it shares Python with the thread running the models. Its time is spread over hundreds of small numpy operations on 3 × 5 × 12 points: undistorting the keypoints 0.50 ms a set, scoring each camera's detections against the animals 0.59, the solves 1.1. The arithmetic itself is tiny; most of the time is the cost of starting each operation. On the GPU, through PyTorch, starting one operation cost 25 µs of CPU time, and one with its result read back 77 µs. So each piece took longer there, timed with its result back on the CPU:
@@ -129,7 +129,28 @@ The lock cost only about 0.1 ms, and handing each set over (pickling it, the pip
 | `campy-live --cpus 4-7`, the feeder on 8–11 | 1.69 / 2.76 ms | 13.3 ms |
 | The 3D thread alone on 4–7, the rest of `campy-live` on 0–3, the feeder on 8–11 | **1.51–1.52 / 2.62–2.68 ms** | **13.1 ms** |
 
-So the GPU, which shares the CPU's memory on the Orin, costs the step almost nothing; the feeder does, when it shares the step's cluster, and left to itself it spreads over all of them. Inside `campy-live` the 3D step also shares its cluster with `campy-live`'s other threads unless it has one of its own. With its own cluster it ran within about 0.15 ms of offline, about what Python's lock was found to cost above. Nothing in campy pins the 3D thread on its own yet: the last row used a test-only hook. Each layout ran once or twice, one after another. Two runs in which the models' thread could share the 3D thread's cluster (`--cpus 4-7`, and the 3D thread on 4–7 with the rest of `campy-live` on any core, 1.67 ms) each skipped one set; the others skipped none. A real recording has no feeder: campy's own recording process takes its place, with frames from the cameras and the encoder in hardware; how much it slows the step wasn't measured.
+So the GPU, which shares the CPU's memory on the Orin, costs the step almost nothing; the feeder does, when it shares the step's cluster, and left to itself it spreads over all of them. Inside `campy-live` the 3D step also shares its cluster with `campy-live`'s other threads unless it has one of its own. With its own cluster it ran within about 0.15 ms of offline, about what Python's lock was found to cost above. The last row used a test-only hook; `--pose3d-cpus` (below) does the same in `campy-live`. Each layout ran once or twice, one after another. Two runs in which the models' thread could share the 3D thread's cluster (`--cpus 4-7`, and the 3D thread on 4–7 with the rest of `campy-live` on any core, 1.67 ms) each skipped one set; the others skipped none. A real recording has no feeder: campy's own recording process takes its place, with frames from the cameras and the encoder in hardware; how much it slows the step wasn't measured.
+
+**`--pose3d-cpus`: the 3D step on cores of its own, in a replay and in a recording** (pull request 442, 13 November). `campy-live --pose3d-cpus 4-7` puts the 3D step's thread alone on CPUs 4–7 and keeps the rest of `campy-live` off them (Linux and Windows). It helps the replay check, but in a recording it helps only at the median. The recording test was `campy-acquire` recording 3 emulated cameras at 60 fps with the Orin's encoder (H.265), tracked with 3D, 60 s; the emulated cameras decode their clips on the CPU, which real cameras don't. All under the rig lock, `RIG_CLEAN`, with numba, every thread's CPUs checked during each run. Times in ms, p50 (p99 for frame to 3D):
+
+| Layout | 3D step | Frame to 3D | Sets skipped / misaligned |
+|---|---|---|---|
+| Replay, nothing pinned | 1.86 | 13.6 (14.7) | 0 / 0 |
+| Replay, the feeder on 8–11 | 1.64 | 13.2 (14.4) | 1 / 0 |
+| Replay, `--cpus 0-3 --pose3d-cpus 4-7`, the feeder on 8–11 (2 runs) | **1.48** | **13.0 (14.3)** | 0 / 0 |
+| Recording, nothing pinned (3 runs) | 2.01–2.03 | 13.5–13.6 (14.8–15.0) | 0 / 0 |
+| Recording, `--cpus 0-3 --pose3d-cpus 4-7 --campy-cpus 8-11` (2 runs) | 1.48–1.50 | 12.9 (15.0–15.3) | 0–1 / 8–15 |
+| Recording, `--cpus 0-3 --pose3d-cpus 4-7 --campy-cpus 0-3,8-11` (2 runs) | 1.61–1.63 | 13.3–13.4 (15.5) | 0 / 0 |
+| Recording, `--pose3d-cpus 4-7 --campy-cpus 0-3,8-11` (2 runs) | 1.62 | 13.4 (15.3–15.4) | 0 / 0 |
+| Recording, `--cpus 0-3 --pose3d-cpus 4-7 --campy-cpus all` (`campy-acquire` on every core, with this pull request's fix) | 1.99 | 13.5 (14.9) | 0 / 0 |
+| Recording, `--campy-cpus 8-11` alone (with this pull request's fix) | 1.71 | 13.2 (15.9) | 1 / 21 |
+
+- **In the replay check** it takes 0.4 ms off the step and 0.6 ms off frame to 3D, and every set was tracked.
+- **In a recording, the step still gains 0.4 ms, but frame to 3D gains only 0.2 ms at the median, and loses 0.4–0.5 ms at p99**: `campy-live`'s models and `campy-acquire` then share 8 cores instead of 12 (inference p99 10.9–11.1 ms against 10.5).
+- **`campy-acquire` on one cluster of 4 cores is too little**: a camera's frame came late (misaligned, more than half a frame apart) in 8–21 sets a minute, and two of the three runs skipped a set.
+- **`campy-acquire` sharing the 3D step's cores undoes it** (`--campy-cpus all`: 1.99 ms).
+- So it stays off by default, and isn't recommended for recordings on the Orin. On the EVO-X2 and three Windows PCs it gained nothing or made the step slower ([Live tracking](live-tracking.md)). With real cameras, which decode nothing, `campy-acquire` needs less, and the balance may differ; that wasn't measured.
+- Two bugs these runs found, fixed in the same pull request: `--campy-cpus` moved nothing unless `campy-live` had placed itself (`--cpus`), and on a CPU with one kind of core `--campy-cpus all` meant the CPUs `campy-live` had pinned itself to (with `--cpus 0-3`, 0–3: 92–104 sets skipped a minute).
 
 ### Recording
 
