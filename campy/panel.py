@@ -95,6 +95,7 @@ PORT = 8765
 THUMB_WIDTH = 192 # px, each camera's thumbnail
 SAMPLE_S = 0.25 # how often the rings' slots are read (campy-live-view: about 20 times a second)
 THUMB_S = 1.0 # and a frame of each camera, for its thumbnail
+LOST_AFTER_S = 2.0 # one camera's feed ended this long while the others' have not: CAMERA LOST (campy-live-view's)
 STATUS_FRESH_S = 20 # recording.json older than this is not the recording's now
 WARN_FRACTION = 0.8 # the disk check warns when a length needs more than this share of the free space (as the launch
 # check's, campy/preflight.py)
@@ -412,6 +413,8 @@ class Health:
 		self.rig = livehealth.Rig([r.cameraName or n for r, n in zip(readers, self.names)], self.frameRate,
 			readers[0].slots, self.pause_s, self.stop_s)
 		self.thumbs, self.lastRow = {}, 0
+		self.endedAt = {} # camera: when its feed was first seen ended, while the others' had not
+		self.lostFrame = {} # camera lost: its newest frame then (one waited for comes back past it)
 		return True
 
 	def Detach(self):
@@ -429,6 +432,22 @@ class Health:
 			self.Detach() # the next recording's rings
 			return
 		ended = all(r.Ended() for r in self.readers)
+		now = time.monotonic()
+		for c, r in enumerate(self.readers):
+			# A camera whose feed ended while the others record on (unplugged): CAMERA LOST, as campy-live-view says;
+			# at once when campy waits for it (cameraReconnect), and no longer once it is back
+			waited = not r.Ended() and r.Lost()
+			if not ended and not r.Ended() and not waited:
+				if c in self.rig.gone and r.Latest() > self.lostFrame.get(c, 0):
+					self.rig.gone.pop(c)
+					self.endedAt.pop(c, None)
+				continue
+			if not ended and c not in self.rig.gone and (waited or now - self.endedAt.setdefault(c, now) >= LOST_AFTER_S):
+				self.lostFrame[c] = r.Latest()
+				self.rig.gone[c] = "{}: camera lost, {} its frame {:,} while the other cameras record on ({})".format(
+					r.cameraName or self.names[c], "gone after" if waited else "its live feed ended at", r.Latest(),
+					"unplugged: campy waits for it to be plugged back in" if waited else
+					"unplugged, or its camera stopped")
 		self.rig.Sample(self.readers)
 		status = self.rig.Status()
 		cameras = []
