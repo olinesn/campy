@@ -844,6 +844,8 @@ Notes on the measurements:
 
   The Windows 11 VM's recording checks (2:17–2:19 PM) were both `RIG_CLEAN` and kept every frame: 1,200 from 1 camera, then 3 × 3,600 from 3.
 
+- At 2:41–2:44 PM on 13 November all six machines moved on to dev `f563862` from `1b244fb`, and spock's campy copy with them, each under its lock and `RIG_CLEAN`. It brings two pull requests: 445, a camera plugged back in reads its first frame's timestamp once, so its clock carries on across the gap exactly (`cameraReconnect`); and 447, the panel takes its port exclusively on Windows, so a second panel moves to the next free port. `setup.py` didn't change, so no environment was reinstalled. The Pro Tower Plus's first try was stopped before it started, because its on-screen test banner didn't show within 15 s; the try a minute later showed it and ran. The Windows 11 VM's update waited half a minute in the lock's queue for another program to leave its GPU. No rig checks were run on `f563862`.
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
