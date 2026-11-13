@@ -830,7 +830,7 @@ Notes on the measurements:
 
   The Windows 11 VM's recording checks kept every frame: 1,200 from 1 camera, then 3 × 3,600 from 3.
 
-- At 2:06–2:07 PM on 13 November five machines moved to dev `1b244fb` from `865f783`: the Pro Max Slim, Precision 7875, Pro Tower Plus, EVO-X2 and Jetson AGX Orin, and spock's campy copy with them. Each was idle and updated under its lock: `RIG_CLEAN`, or on the Precision 7875 `RIG_CLEAN_BACKGROUND` from one look of the security agent. The Windows 11 VM waited: another program (not under the lock) had its GPU, so its update was queued behind it. The update brings pull request 419: the ChronicRecord Pico's optional sync train to the OneBox (`picoSync`, off by default; `chronic_timer` version 3) and `chronicrecord/sync_match.py`. `setup.py` didn't change, so no environment was reinstalled; both environments on each machine read the new code. Nothing on the path of `campy-live` or of a recording's frames changed (a new setting, and the panel's Pico steps). The Pro Max Slim's Pico still runs `chronic_timer` version 2, which runs every session as before while `picoSync` is off.
+- At 2:06–2:07 PM on 13 November five machines moved to dev `1b244fb` from `865f783`: the Pro Max Slim, Precision 7875, Pro Tower Plus, EVO-X2 and Jetson AGX Orin, and spock's campy copy with them; the Windows 11 VM followed at 2:17 PM. Each was idle and updated under its lock: `RIG_CLEAN`, or on the Precision 7875 `RIG_CLEAN_BACKGROUND` from one look of the security agent. The Windows 11 VM's update waited 9 minutes in the lock's queue, until another program (not under the lock) left its GPU. The update brings pull request 419: the ChronicRecord Pico's optional sync train to the OneBox (`picoSync`, off by default; `chronic_timer` version 3) and `chronicrecord/sync_match.py`. `setup.py` didn't change, so no environment was reinstalled; both environments on each machine read the new code. Nothing on the path of `campy-live` or of a recording's frames changed (a new setting, and the panel's Pico steps). The Pro Max Slim's Pico still runs `chronic_timer` version 2, which runs every session as before while `picoSync` is off.
 
   At 2:10–2:13 PM the five ran their rig checks on `1b244fb`, under their locks. Every run was `RIG_CLEAN`, but the Precision 7875's 3-camera run and replay, `RIG_CLEAN_BACKGROUND` from one look each of the security agent. Nothing was skipped or misaligned, and every camera kept all its frames. Every set was tracked from frame 1, but the replays on the Precision 7875 and the Pro Tower Plus from frame 2, as before; the Pro Max Slim's replay was tracked from frame 1 this time (1,800 sets). The times matched `865f783`'s to within 0.1 ms at the median; the largest change at p99 was the Pro Tower Plus's replay to 3D, 12.0 → 12.2 ms. Replay against offline SLEAP on the EVO-X2 and the Jetson AGX Orin: 2D median 3.8 px, 3D 4.2 mm, the same identity pairing in 99.93% of sets, 2 switches, as before.
 
@@ -842,7 +842,7 @@ Notes on the measurements:
   | Pro Tower Plus (RTX A2000) | 1,200 / 2.7 / 2.9 | 3,600 / 6.8 / 7.1 / 8.9 / 10.0 | 1,799 / 6.9 / 7.2 / 11.0 / 12.2 |
   | Jetson AGX Orin | 1,800 / 3.9 / 4.1 | 3,600 / 10.1 / 10.6 / 13.6 / 14.9 | 3,600 / 10.0 / 10.3 / 13.5 / 14.7 |
 
-  The Windows 11 VM's update and checks follow once that program has left its GPU.
+  The Windows 11 VM's recording checks (2:17–2:19 PM) were both `RIG_CLEAN` and kept every frame: 1,200 from 1 camera, then 3 × 3,600 from 3.
 
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
