@@ -19,7 +19,19 @@ The recording and the inference run in separate environments, because one needs 
   pip install --no-deps -e <campy folder>
   ```
   `campy-live` imports only numpy and campy's own feed modules, besides torch and sleap-nn.
-- **Optionally numba** in the inference environment (`pip install numba`, or campy's `fast3d` extra), with 3D tracking (`--calibration`): `campy-live` then runs the 3D step's two busiest loops compiled, with the same numbers to the last bit, and says so in its log ("3D: in numba ...'s compiled loops"). The 3D step took about a third less time on the Jetson AGX Orin and almost half less on the EVO-X2 (pull request 421, [Jetson AGX Orin](jetson.md#the-cpus-share-which-cores-and-numpys-threads-12-november)). Without numba, or with `CAMPY_NUMBA=0` set, it runs in numpy. Loading the compiled loops takes about a second (a few the first time, while numba compiles them); `campy-live` starts it as it starts, while its models load.
+- **Optionally numba** in the inference environment (`pip install numba`, or campy's `fast3d` extra), with 3D tracking (`--calibration`): `campy-live` then runs the 3D step's two busiest loops compiled, with the same numbers to the last bit, and says so in its log ("3D: in numba ...'s compiled loops"). Inside `campy-live` the 3D step took a quarter to two-fifths less time on every rig (table below; offline, on the step alone, a third less on the Jetson AGX Orin and almost half less on the EVO-X2: pull request 421, [Jetson AGX Orin](jetson.md#the-cpus-share-which-cores-and-numpys-threads-12-november)). Without numba, or with `CAMPY_NUMBA=0` set, it runs in numpy. Loading the compiled loops takes about a second (a few the first time, while numba compiles them); `campy-live` starts it as it starts, while its models load.
+
+numba 0.68.1 went into the inference environment of all five rigs on 13 November. pip added only numba and llvmlite, and left numpy as it was. The rig checks run afterwards on dev, which doesn't use numba yet, matched the ones before within 0.1 ms (on the Windows machines the security agent's file scanning flagged some of them for CPU load, as at earlier updates). Then two replay checks on each rig ran pull request 421's code, which does use it; every set was tracked and each job ended `RIG_CLEAN`. The model's inference time didn't change: numba speeds up only the 3D step, which runs on the CPU. The replay check's 3D step, p50 / p99 per set, and the frame to 3D pose, p50 (the EVO-X2's and the Orin's replays are 60 s, the Windows machines' 30 s):
+
+| | 3D step, numpy | 3D step, numba | frame to 3D, numpy → numba |
+|---|---|---|---|
+| Jetson AGX Orin 64GB | 2.79 / 3.90 ms | 1.81–1.84 / 2.87–2.89 ms | 14.5 → 13.5 ms |
+| EVO-X2 | 0.89 / 1.66 ms | 0.66–0.67 / 1.28–1.30 ms | 7.2 → 7.0 ms |
+| Precision 7875 | 1.32 / 2.05 ms | 0.81–0.82 / 1.48 ms | 4.6 → 4.2 ms |
+| Dell Pro Max Slim FCS1250 | 0.95 / 1.44 ms | 0.66–0.67 / 1.08–1.09 ms | 8.8 → 8.5–8.6 ms |
+| Dell Pro Tower Plus | 1.01 / 1.90 ms | 0.69–0.70 / 1.69–1.71 ms | 11.3 → 10.8–10.9 ms |
+
+The Windows virtual machine in the fleet has no inference environment (its checks record only), so it has no numba.
 
 Which torch build:
 - **Linux, AMD GPU (ROCm)**: a ROCm build for your GPU. The EVO-X2's Radeon 8060S (gfx1151) used AMD's own torch wheels (torch 2.14.0+rocm10.1.0).
