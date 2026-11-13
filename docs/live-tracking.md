@@ -794,6 +794,14 @@ Notes on the measurements:
 
   Replay against offline SLEAP on the Jetson AGX Orin: 2D median 3.8 px, 2 identity switches, as before. The Windows 11 VM's recording checks kept every frame: 1,200 from 1 camera, then 3 × 3,600 from 3.
 
+- At 1:15–1:16 PM on 13 November all six machines moved to dev `865f783` from `5490252`, and spock's campy copy with them. Each was idle and updated under its lock: `RIG_CLEAN`, or on the Precision 7875 `RIG_CLEAN_BACKGROUND` from one look of the security agent. The update brings four pull requests:
+  - 421: `campy-live`'s 3D step in numba's compiled loops, where numba is installed (it is on every machine);
+  - 442: `--pose3d-cpus`, off by default;
+  - 441: the trigger sketch's optional sync output to other recorders, and `campy-syncmatch`;
+  - 443: the trigger sketch started as quickly by upstream campy's commands as by its own sketch, and campy telling a sketch without the sync output.
+
+  `setup.py` gained the `campy-syncmatch` command, so both environments on each machine were reinstalled (`--no-deps -e`); each reads the new code and has the command. The EVO-X2's trigger Arduino (a Nano ESP32) runs `865f783`'s `trigger.ino` since 1:11 PM; no other machine's trigger board was flashed. No rig checks on `865f783` yet.
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
