@@ -117,9 +117,13 @@
 //   camwatch <ms>                     stop them after that long without a word from the host (0: never, the default)
 //   camstatus                         -> ok camstatus running=.. frames=.. planned=.. hw=.. t0=.. period=..
 //   linkwatch <ms>                    re-attach USB after that long without a byte from the host (200-60000; 0 off,
-//                                     the default: the host turns it off before it closes the port)
+//                                     the default: the host turns it off before it closes the port). A build for the
+//                                     chip's own USB serial (USBMode=hwcdc) has nothing to re-attach -> ok linkwatch 0
 //   quiet <every> <trains>            say a frame's line for frame 1 and every <every>-th frame (1: each, the default);
 //                                     trains 0: no line for a train's pulses (1: each, the default)
+//   bootloader                        outputs off, then restart into the Nano ESP32's recovery firmware, which takes
+//                                     the next sketch by DFU, as a double tap of reset does -> ok bootloader. Refused
+//                                     while the camera pulses run
 // Pins: 0-48, or 100-107 for A0-A7.
 // What it says on its own (t_us: the board's clock, microseconds since power-up):
 //   ready campy_outputs <version>     at power-up
@@ -354,6 +358,10 @@ int64_t Now() {
 
 
 void setup() {
+#if defined(ESP32) && defined(ARDUINO_USB_MODE) && ARDUINO_USB_MODE == 1
+  Serial.setRxBufferSize(1024); // the chip's own USB serial: its 256-byte defaults are small for a busy box
+  Serial.setTxBufferSize(1024);
+#endif
   Serial.begin(115200);
 #if defined(ESP32)
   Serial.setTxTimeoutMs(0); // never wait for a host that isn't reading
@@ -1198,23 +1206,58 @@ void CamCheck(int64_t now) {
 
 // ---------------------------------------------------------------- the USB link (linkwatch)
 
-#if defined(ESP32)
+#if defined(ESP32) && (!defined(ARDUINO_USB_MODE) || ARDUINO_USB_MODE == 0)
+// TinyUSB (the Nano ESP32's default USB mode, "Normal mode"): its USB serial can stall, so linkwatch can re-attach it
 extern "C" bool tud_disconnect(void);
 extern "C" bool tud_connect(void);
+const bool USB_REATTACH = true;
 bool UsbDetach() { return tud_disconnect(); }
 bool UsbAttach() { return tud_connect(); }
+#elif defined(ESP32)
+// The chip's own USB serial (USB mode "Hardware CDC", built with USBMode=hwcdc): no TinyUSB, nothing to re-attach
+const bool USB_REATTACH = false;
+bool UsbDetach() { return false; }
+bool UsbAttach() { return false; }
 #elif defined(ARDUINO_SIM)
+const bool USB_REATTACH = true;
 bool UsbDetach() { SimUsbDetach(); return true; }
 bool UsbAttach() { SimUsbAttach(); return true; }
 #else
+const bool USB_REATTACH = false;
 bool UsbDetach() { return false; }
 bool UsbAttach() { return false; }
+#endif
+
+
+// bootloader: restart into the Nano ESP32's recovery firmware (its factory partition), which takes the next sketch
+// by DFU (dfu-util), as a double tap of its reset button does (the core's variant.cpp, NANO_ESP32_enter_bootloader).
+// The way to flash another sketch onto a board built for the chip's own USB serial, which has no DFU of its own.
+#if defined(ESP32) && defined(ARDUINO_NANO_ESP32)
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
+extern "C" void double_tap_mark(void);
+bool CanEnterBootloader() {
+  return esp_ota_get_next_update_partition(NULL) != NULL &&
+    esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL) != NULL;
+}
+void EnterBootloader() {
+  const esp_partition_t* ota_part = esp_ota_get_next_update_partition(NULL);
+  const esp_partition_t* fact_part = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
+  double_tap_mark();                            // the recovery firmware's sign that it was asked for (it then waits for DFU)
+  esp_partition_erase_range(ota_part, 0, 4096); // the other sketch slot's older sketch can't start instead
+  esp_ota_set_boot_partition(fact_part);
+  esp_restart();
+}
+#else
+bool CanEnterBootloader() { return false; }
+void EnterBootloader() {}
 #endif
 
 
 void LinkCheck(int64_t now) {
   // linkwatch: nothing from the host for that long, the link is dropped and attached again 200 ms later; once per
   // silence (a byte re-arms it). Never in the timing loops: from the serial branch only
+  if (!USB_REATTACH) { return; }
   if (link_down) {
     if (now < link_at) { return; }
     link_down = false;
@@ -1591,8 +1634,20 @@ void Command(char* text) {
     Say("ok simstall");
   }
 #endif
+  else if (strcmp(word, "bootloader") == 0) {
+    if (cam_running) { Say("err the camera pulses are running: camstop first"); return; }
+    if (!CanEnterBootloader()) { Say("err no recovery firmware on this board"); return; }
+    AllOff();
+    SafeBox();
+    Say("ok bootloader");
+    int64_t until = Now() + 200000; // the answer out first
+    while (q_len > 0 && Now() < until) { SendSome(); delay(1); }
+    delay(50);
+    EnterBootloader();
+  }
   else if (strcmp(word, "linkwatch") == 0) {
     if (n != 1 || (a[0] != 0 && (a[0] < 200 || a[0] > 60000))) { Say("err linkwatch <ms 200-60000, 0 off>"); return; }
+    if (!USB_REATTACH && a[0] != 0) { Say("ok linkwatch 0 (this board's USB serial has nothing to re-attach)"); return; }
     linkwatch_us = a[0] * 1000;
     last_rx = now;
     link_armed = true;

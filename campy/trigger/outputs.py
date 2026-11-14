@@ -397,14 +397,21 @@ class Board:
 		if kind in ("ok", "err"):
 			# The oldest command's answer. An "ok" names its command: commands
 			# before it whose answers never came (a line the board couldn't send)
-			# get none, so no answer is ever given to the wrong command.
+			# get none, so no answer is ever given to the wrong command. An "ok"
+			# naming no command waiting is left over from before this connection
+			# (a board on the chip's own USB serial keeps what nobody read, and
+			# the next program to open the port hears it first): ignored.
 			skipped = []
 			with self.lock:
-				answer = self.pending.popleft() if self.pending else None
 				if kind == "ok" and len(words) > 1:
-					while answer is not None and Expected(answer.command) != words[1] and self.pending:
-						skipped.append(answer)
+					names = [Expected(waiting.command) for waiting in self.pending]
+					answer = None
+					if words[1] in names:
+						for _ in range(names.index(words[1])):
+							skipped.append(self.pending.popleft())
 						answer = self.pending.popleft()
+				else:
+					answer = self.pending.popleft() if self.pending else None
 			for lost in skipped:
 				lost.line, lost.heard_ns = "err no answer (the board's line was lost)", heard_ns
 				lost.done.set()

@@ -690,3 +690,14 @@ def test_quiet_says_fewer_lines_and_pulses_the_same(outputs_sim):
 	p = [l.split() for _, l in lines(said, "p")]
 	assert [w[1] for w in p] == ["3"] # only the asked-for pulse
 	assert [l for _, l in said if l.startswith("ok quiet")] == ["ok quiet 10 0"]
+
+
+def test_bootloader_is_refused_while_the_cameras_run_and_without_a_recovery_firmware(outputs_sim):
+	# The simulated board has no recovery firmware: refused, and nothing turned off. On a Nano ESP32 it turns the
+	# outputs off and restarts into the recovery firmware (tested on the real board only)
+	commands = ["cam {} {}".format(CAM_P, CAMS[0]), "camgo 0", "bootloader", "on 3"]
+	edges, said = run(outputs_sim, 0.3, commands, (0.2, ["camstop"]), (0.25, ["bootloader"]), *heartbeats(0.3),
+		inputs="")
+	answers = [l for _, l in said if l.startswith(("ok boot", "err"))]
+	assert answers == ["err the camera pulses are running: camstop first", "err no recovery firmware on this board"]
+	assert edges[5] == [(edges[5][0][0], 1)] # channel 3 (pin 5) on, and still on: the refusals changed nothing

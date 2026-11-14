@@ -638,6 +638,26 @@ def test_a_lost_answer_never_goes_to_the_wrong_command():
 		board.Close(off=False)
 
 
+def test_an_answer_left_over_from_before_the_port_opened_is_ignored():
+	# A board on the chip's own USB serial keeps what the last program didn't read; the next one hears it first. An
+	# "ok" naming no command waiting answers nothing: id still gets its own answer
+	class LeftOver(FakePort):
+		def write(self, data):
+			if data.decode().strip() == "id":
+				with self.lock:
+					self.incoming.append(b"ok alloff\r\nt 4 123456\r\nok linkwatch 0\r\n")
+			super().write(data)
+	port = LeftOver()
+	board = outputs.Board(connection=port, port="fake", heartbeat=0, sync=0)
+	try:
+		a = board.Command("on 2")
+		port.Say("ok alloff") # an answer to nothing waiting
+		port.Say("ok on 2 100 -1")
+		assert a.Wait(1) == "ok on 2 100 -1"
+	finally:
+		board.Close(off=False)
+
+
 def test_frame_match_reads_only_the_last_rises_and_keeps_its_delays_bounded(monkeypatch):
 	# Period: the median gap of the last 8 trigger rises, without copying all 4096 kept (~60 us a row before);
 	# the delays for the summary in bounded memory (campy/runstats.py)
