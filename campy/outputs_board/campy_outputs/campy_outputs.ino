@@ -700,8 +700,10 @@ void WaitTrigger(int64_t until) {
 // ---------------------------------------------------------------- an operant box: inputs, servos, links
 
 int PinOf(long long value) {
-  // A command's pin: 0-48, or 100-107 for A0-A7; -2 if neither
-#if defined(A7)
+  // A command's pin: 0-48, or 100-107 for A0-A7; -2 if neither. A0-A7 are constants on the Nano ESP32's core (and on
+  // most cores), not macros: #if defined(A7) was false on the real board, which then refused every A0-A7 input
+  // (found on the board, 14 November 2026); the simulated board declares them as the cores do
+#if defined(ESP32) || defined(ARDUINO_SIM)
   static const int analog[8] = {A0, A1, A2, A3, A4, A5, A6, A7};
   if (value >= 100 && value <= 107) { return analog[value - 100]; }
 #endif
