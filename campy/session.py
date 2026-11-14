@@ -1218,7 +1218,8 @@ class Session:
 		box, paths = self.config.box, self.BoxPaths()
 		command = [Python(), "-m", "campy.box", box["task"], "--out", paths["out"], "--ready-file", paths["ready"],
 			"--stop-file", paths["stop"], "--status-file", paths["status"], "--start-with-frames",
-			"--recording-folder", self.folder, "--launcher-pid", str(os.getpid())]
+			"--recording-folder", self.folder, "--launcher-pid", str(os.getpid()),
+			"--live-name", str(self.config.Value("liveFeedName", "campy-live"))] # for a task's poses
 		if box["port"]:
 			command += ["--port", box["port"]]
 		command += [str(a) for a in box["args"]]

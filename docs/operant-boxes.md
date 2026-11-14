@@ -10,7 +10,7 @@ It is the [outputs board](closed-loop.md#the-board) grown by a few features, not
 2. **`campy-box`** (pull request 451): runs a task from a YAML file (states such as *wait for a poke, open the door, give a reward*), and logs every event with the board's time, the computer's time and the camera frame. [Running a task](#running-a-task-campy-box) below.
 3. **Recordings** (pull request 454): a `box:` section in the config makes `campy-session` (and the panel) start the task with the recording, keep its logs in the recording's folder, and show its trial and counts. [With a recording](#with-a-recording-the-box-section) below.
 4. **The box's sensors in `campy-rules`** (pull request 455): an `input:` condition, alone or with a pose, such as a reward only when mouse 2 is the one at the port ([Closed-loop outputs](closed-loop.md#conditions)). `campy-rules` and `campy-box` can't share a board: a box runs one or the other.
-5. **Poses in the task** (next): `campy-rules`' conditions (an animal in a region, two animals close) usable in a `campy-box` task's states.
+5. **Poses in the task** (pull request 457): `campy-rules`' conditions (an animal in a region, two animals close) as named *poses* in a `campy-box` task: a state moves when one starts or stops holding, and an input's move can depend on one. [Poses in a task](#poses-in-a-task) below.
 
 ## How the work is divided
 
@@ -81,6 +81,40 @@ task:
 - `<out>.events.jsonl`, a line per event: every input edge (`kind: input`, with `board_us`, `host_ns` on campy's host clock as in `hosttimes.npy`, `frame` and `after_us`), every link firing, each state entered (with what caused it: the input and its times, or the timer), each pulse with its edges, levels switched by the board, servo arrivals, every command and its answer, trigger pauses and the watchdog;
 - `<out>.board.txt`, every line to and from the board;
 - `<out>.json`, the summary: trials, why it ended, counts per input, link and state, the seed and the board-to-host clock map.
+
+## Poses in a task
+
+With `campy-live` tracking the animals, a task can use their live poses: the same conditions as `campy-rules`' ([Closed-loop outputs](closed-loop.md#conditions)), named under `poses:`, with their own `regions:`:
+
+```yaml
+live: {stale_ms: 200}       # no set from campy-live this long: no pose holds
+regions:
+  port: {sphere: {center: [200, 40, 20], radius: 25}}       # in the calibration's mm
+poses:
+  m2_at_port: {when: {inside: {region: port, animal: 2, node: nose}}, enter_ms: 50, exit_ms: 100}
+task:
+  states:
+    ready:
+      on: {m2_at_port: at_port}                # mouse 2 comes to the port
+    at_port:
+      on:
+        poke_left: {to: reward, if: m2_at_port, else: wrong_mouse}
+        m2_at_port: {to: ready, edge: inactive}  # it left without poking
+    reward:
+      do: [{output: valve}]
+      after_s: 2
+      next: ready
+    wrong_mouse:
+      after_s: 5
+      next: ready
+```
+
+- A pose **holds** once its condition has been true for `enter_ms`, and lets go once it has been false for `exit_ms`. A missing animal (seen by fewer than 2 cameras) keeps its last value for `missing_ms` (100 by default), then counts as false, so missing data never starts a pose.
+- In a state, `on:` takes a pose as it takes an input: the state moves when the pose starts holding, or with `edge: inactive` when it lets go. A pose is a level, so a state also moves at once if, as it is entered, its pose already holds (or, for `edge: inactive`, already doesn't).
+- `if:` (or `unless:`) makes an input's move depend on a pose; `else:` is where to go when the pose says no. Without `else:`, such an edge is ignored.
+- **A reward that depends on a pose is the task's**, an action in a state as above, not a link: the board fires links on its own, without the poses. Poses come with `campy-live`'s sets, a few tens of milliseconds after their frame ([Latency](closed-loop.md#latency-what-is-exact-and-what-is-bounded)), so the reward follows the poke by about that much.
+- `campy-box` reads `campy-live`'s results feed by its name: `--live-name`, else `live: name:` in the task file, else `campy-live`. With a recording, `campy-session` gives it the config's `liveFeedName`. The conditions are checked against `campy-live`'s cameras, nodes and animals when its results first come; one that doesn't fit stops the task and says why. If `campy-live` stops or restarts, no pose holds until its results come again.
+- Each pose's start and end is logged (`kind: pose`, with the set's frame and host time, or `why: stale` when the sets stopped), and a move a pose caused says so (`why: pose`), as does an input's move with its guard (`guard`, `guard_holds`).
 
 ## With a recording: the box: section
 
@@ -183,5 +217,6 @@ An armed link and a servo sent away from its safe position count as active, so t
 - **On a simulated board** (`tests/test_outputs_sketch.py`, run in CI on Linux (x86 and Arm) and Windows, and on a Mac): input edges stamped within 3 µs of the change and in the right frame, also while the board watches for a trigger and while a train's pulse is due; pull-up beam breaks; bouncing contacts as one press; a pulse shorter than the lockout keeping both edges; licks at 7 Hz beside two photometry trains, whose pulses stay exact to the microsecond; a link firing once; a servo moving at its speed in 20 ms steps; the watchdog and `alloff` disarming links and sending servos back; pins never shared. The sketch's earlier tests all pass unchanged, so nothing `campy-rules` relies on moved.
 - **Compiled for the Nano ESP32** (Arduino ESP32 core 2.0.18, as in CI). The simulated board stands in for the ESP32's input registers and PWM hardware, so the real board's timing is not measured yet.
 - **`campy-box`** (`tests/test_box.py`): the file's checks, a task run against a scripted board (pokes, trials, the end after N trials, a fixed ratio, the watchdog, the seed), and the whole path on the board's sketch running in real time on a pseudo-terminal: pokes every 0.4 s on a pull-up input, each rewarded by the board's link in the right frame, three trials, the door servo's PWM.
+- **Poses** (`tests/test_box.py`): a task reading a real results feed written by the test, with mouse 2's nose in and out of the port: the task moves on the pose, a poke rewarded while it holds, a pose that already holds moving a state at once, `else:` for a poke without mouse 2, a pose letting go when the sets stop, and the conditions checked against `campy-live`'s nodes.
 - **Recordings** (`tests/test_session.py`): `campy-session` with emulated cameras and the board's sketch in real time: the task started before the cameras, ended with the recording, its logs in the recording's folder and its status in `launcher.json`; a task ending the recording (`end_recording`); a board that can't be set up, with `required` true and false. The emulated cameras don't take the simulated board's trigger, so there the task starts as soon as the board is set up; on a rig, its frame 1 is the cameras' first.
 - **Not yet on a real board, sensor or servo.** That needs a spare Nano ESP32: every one on the test machines today is a camera trigger.
