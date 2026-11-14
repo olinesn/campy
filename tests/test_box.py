@@ -746,9 +746,16 @@ def test_one_board_makes_the_cameras_pulses_and_runs_the_box(tmp_path, outputs_s
 	assert [e for e in ev if e["kind"] == "state"][0]["first_frame"] in (1, 2)
 	pokes = [e for e in ev if e["kind"] == "input" and e["active"] == 1 and e["frame"]]
 	assert pokes
+	late = []
 	for e in pokes:
 		k = e["frame"]
-		assert t0 + (k - 1) * period + period // 2 <= e["board_us"] < t0 + k * period + period // 2, e
+		# Always after its frame rose; before the next one rose too, unless the simulated board's process was held up
+		# (real time: once ~270 ms on GitHub's runner, 14 November), when the first edge it then sees gets the frame
+		# it saw last
+		assert t0 + (k - 1) * period + period // 2 <= e["board_us"], e
+		if e["board_us"] >= t0 + k * period + period // 2:
+			late.append(e)
+	assert len(late) <= max(1, len(pokes) // 5), late
 	assert [e["frames"] for e in ev if e["kind"] == "cameras_end"] == [120]
 	# The sync output from the same time 0, where campy-syncmatch puts it. In real time the simulated board makes its
 	# own changes as soon as its process runs: tens of us late, and on a busy test computer now and then much later
