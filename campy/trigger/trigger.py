@@ -8,7 +8,8 @@ from campy.utils.utils import Say
 from campy.trigger.arduino import TriggerError, TriggerInterrupted
 
 def ImportTrigger(params):
-	# The config check takes arduino and None, in either case, and pico (never started here: it needs startArduino False)
+	# The config check takes arduino and None, in either case, and pico and box (never started here: they need
+	# startArduino False)
 	if str(params["triggerController"]).lower() in ("arduino", "none"):
 		import campy.trigger.arduino as trigger
 	else:

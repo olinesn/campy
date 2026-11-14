@@ -585,11 +585,12 @@ def SerialPorts():
 		return None
 
 
-def TriggerCheck(params, pico, ports=SerialPorts):
+def TriggerCheck(params, pico, ports=SerialPorts, box=None):
 	"""
 	The check line for the cameras' trigger board, or None (no trigger): the Arduino campy starts must be on its
-	serialPort, and a config whose rig the Pico pulses (triggerController: pico) needs a pico: section to start it.
-	Either missing stops the start: campy-acquire would stop 2 s in (no Arduino), or wait for pulses nobody makes.
+	serialPort, a config whose rig the Pico pulses (triggerController: pico) needs a pico: section to start it, and
+	one whose operant box's board pulses them (triggerController: box) a box: section (campy-box runs the board).
+	Any missing stops the start: campy-acquire would stop 2 s in (no Arduino), or wait for pulses nobody makes.
 	"""
 	from campy import configurator
 	triggers = params.get("cameraTrigger", "None")
@@ -614,6 +615,12 @@ def TriggerCheck(params, pico, ports=SerialPorts):
 				"no pico: section to start it: the cameras would wait for pulses nobody makes. Add one (a camera-only "
 				"session: pico: {set: {CAMERA_ONLY: <seconds>, CAMERA_FPS: <frameRate>}})")
 		return ("ok", "Trigger: the Pico")
+	if board == "box" and triggered:
+		if box is None:
+			return ("block", "Trigger: the operant box's board pulses this rig's cameras (triggerController: box), but "
+				"this config has no box: section to run it: the cameras would wait for pulses nobody makes. Add one "
+				"(box: {task: <the task file>})")
+		return ("ok", "Trigger: the operant box's board (campy-box)")
 	return None
 
 
@@ -1053,7 +1060,8 @@ class Panel:
 			checks += self.picker.Checks()
 		if live is not None and live.get("calibration"):
 			checks.append(CalibrationCheck(live["calibration"]))
-		trigger = TriggerCheck(self.config.acquire, self.devices.pico if self.devices is not None else None)
+		trigger = TriggerCheck(self.config.acquire, self.devices.pico if self.devices is not None else None,
+			box=self.config.box)
 		if trigger is not None:
 			checks.append(trigger)
 		calibrate_check = CalibrateCheck(self.config)

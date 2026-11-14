@@ -312,6 +312,16 @@ class Config:
 			if not os.path.isfile(task):
 				raise SessionError("box.task: {} is not a file.".format(task))
 			self.box["task"] = os.path.abspath(task)
+		from campy import configurator
+		if configurator.Board(self.acquire.get("triggerController", "arduino")) == "box":
+			# The box's board makes the camera pulses: no recording without it
+			if self.box is None:
+				raise SessionError("triggerController: box: the operant box's board makes this rig's camera pulses, and "
+					"campy-box runs it, but this config has no box: section: the cameras would wait for pulses nobody "
+					"makes. Add one (box: {task: <the task file>}).")
+			if not self.box["required"]:
+				raise SessionError("box.required: false, but the box's board makes this rig's camera pulses "
+					"(triggerController: box): there is no recording without it. Leave box.required out (true).")
 		if self.post["remux"] not in (True, False, "keep"):
 			raise SessionError("post.remux: {!r} is not true, false or keep.".format(self.post["remux"]))
 		if isinstance(self.post["copy"], str):
@@ -1222,6 +1232,7 @@ class Session:
 			"--live-name", str(self.config.Value("liveFeedName", "campy-live"))] # for a task's poses
 		if box["port"]:
 			command += ["--port", box["port"]]
+		command += self.CameraArgs()
 		command += [str(a) for a in box["args"]]
 		env = dict(os.environ, PYTHONUNBUFFERED="1")
 		env.pop(newfiles.SESSION_ENV, None)
@@ -1246,6 +1257,30 @@ class Session:
 			box["ready_timeout_s"], part.log))
 		self.EndBox()
 		return False
+
+	def CameraArgs(self):
+		"""
+		campy-box's options when its board makes the camera pulses (triggerController: box): the settings
+		campy-acquire would give its Arduino. As many pulses as campy-acquire takes frames (recTimeInSec x frameRate,
+		rounded as campy/cameras/unicam.py does), started once every camera is ready.
+		"""
+		from campy import configurator
+		v = self.config.Value
+		if configurator.Board(v("triggerController", "arduino")) != "box":
+			return []
+		pins = v("digitalPins", [])
+		pins = pins if isinstance(pins, (list, tuple)) else [pins]
+		args = ["--camera-fps", str(float(v("frameRate"))), "--camera-frames",
+			str(int(round(float(v("recTimeInSec")) * float(v("frameRate"))))),
+			"--camera-pins", ",".join(str(p) for p in pins), "--cameras-when-ready"]
+		if str(v("syncPin", "None")) != "None":
+			gaps = v("syncGapMs", [200, 1000])
+			gaps = gaps if isinstance(gaps, (list, tuple)) else [gaps]
+			args += ["--sync-pin", str(v("syncPin")), "--sync-pulse-ms", str(v("syncPulseMs", 10)),
+				"--sync-gap-ms", ",".join(str(g) for g in gaps)]
+			if str(v("syncSeed", "None")) != "None":
+				args += ["--sync-seed", str(v("syncSeed"))]
+		return args
 
 	def BoxSummary(self):
 		try:
