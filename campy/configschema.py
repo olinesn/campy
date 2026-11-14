@@ -338,10 +338,13 @@ SETTINGS = [
 
 	# Trigger
 	Setting("triggerController", "arduino", str, section=TRIGGER, per_camera=ONE,
-		choices=("arduino", "Arduino", "pico", "Pico", "None", "none"),
+		choices=("arduino", "Arduino", "pico", "Pico", "box", "Box", "None", "none"),
 		help="The board that makes the cameras' trigger pulses. 'arduino': campy's Arduino, which campy starts \
 			itself with startArduino True. 'pico': the ChronicRecord Pico (campy-session's pico: section, or \
-			chronic_control.py), never started by campy-acquire: startArduino must be False. 'None' (or 'none'): \
+			chronic_control.py), never started by campy-acquire: startArduino must be False. 'box': an operant \
+			box's board, which campy-box (campy-session's box: section) runs, makes them too: one Nano ESP32 for \
+			the cameras and the box (docs/design/single-board-box.md); digitalPins are the cameras' pins on it and \
+			syncPin its sync output; never started by campy-acquire: startArduino must be False. 'None' (or 'none'): \
 			campy starts no trigger, even with startArduino True. One board per rig: set it in the rig profile, \
 			and a config that extends the profile can't name the other board (only None), nor start the \
 			Arduino or have a pico: section when the profile names the other one."),

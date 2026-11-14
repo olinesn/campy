@@ -493,9 +493,11 @@ def GammaFromDisableGamma(values, where, notes=None):
 
 
 def DrivesTrigger(params):
-	# campy starts the trigger itself (startArduino), with a controller:
-	# triggerController "None" or "none" means none, whatever its case
-	return bool(params.get("startArduino")) and str(params.get("triggerController", "arduino")).lower() != "none"
+	# campy starts the trigger itself (startArduino), with its Arduino: triggerController "None" or "none" means
+	# none, whatever its case, and the Pico and an operant box's board are never campy-acquire's (refused with
+	# startArduino True: ValidateTriggerBoard)
+	return bool(params.get("startArduino")) and str(params.get("triggerController", "arduino")).lower() not in (
+		"none", "pico", "box")
 
 
 def TriggerFrameRate(params):
@@ -885,7 +887,7 @@ def YamlValue(text):
 
 
 def Board(value):
-	# triggerController as a board: "arduino", "pico", or None (no trigger), whatever its case
+	# triggerController as a board: "arduino", "pico", "box", or None (no trigger), whatever its case
 	board = str(value).lower()
 	return None if board == "none" else board
 
@@ -921,6 +923,14 @@ def ValidateTriggerBoard(params, sources, chain, sections=None, section_sources=
 		raise ValueError("triggerController: pico ({}): the Pico makes this rig's camera pulses, and campy starts no "
 			"Arduino, but startArduino is True ({}). Set startArduino: False.".format(where("triggerController"),
 			where("startArduino")))
+	if board == "box" and params.get("startArduino"):
+		raise ValueError("triggerController: box ({}): the operant box's board makes this rig's camera pulses (campy-box "
+			"runs it), and campy starts no Arduino, but startArduino is True ({}). Set startArduino: False.".format(
+			where("triggerController"), where("startArduino")))
+	if pico and board == "box":
+		raise ValueError("A pico: section ({}) on a rig whose operant box's board makes the camera pulses "
+			"(triggerController: box, {}): the Pico and the box's board would both pulse the cameras. Leave the pico: "
+			"section out.".format(pico_where, where("triggerController")))
 	if pico and DrivesTrigger(params):
 		raise ValueError("A pico: section ({}) and startArduino: True ({}): the Pico and the Arduino would both pulse "
 			"the cameras. One board makes a rig's camera pulses: set startArduino: False (and triggerController: pico "
