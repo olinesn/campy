@@ -232,7 +232,7 @@ campy-box task.yaml --port COM7 --camera-fps 60 --camera-frames 36000 --camera-p
 
 ## The USB link
 
-Under heavy two-way traffic the Nano ESP32's USB serial link now and then stops: it passes no data either way while the sketch runs on, as if nothing were wrong. That is the Arduino core's USB driver (2.0.18), found on a real board on 14 November (below). Since version 5 (pull request NNN), the board and the programs that drive it recover:
+Under heavy two-way traffic the Nano ESP32's USB serial link now and then stops: it passes no data either way while the sketch runs on, as if nothing were wrong. That is the Arduino core's USB driver (2.0.18), found on a real board on 14 November (below). Since version 5 (pull request 463), the board and the programs that drive it recover:
 
 - **`linkwatch <ms>`**: when nothing has come from the computer for that long, the board drops off USB and attaches again, without restarting: its settings, its task's links and the camera pulses go on. Once per silence: a byte arms it again. `campy-box` and `campy-rules` turn it on (2 s; they send a heartbeat every 50 ms) and off again before they close the port, so a board nobody talks to stays on USB.
 - **They open the port again** when a write times out or the port fails, for up to 10 s, and check that the board answers as before and that its clock went on: a board that really restarted (its clock went back) has lost what it was told, and is reported lost, as before. While the link is down, commands are answered `err link down` at once.
