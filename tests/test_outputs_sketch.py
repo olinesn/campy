@@ -43,6 +43,10 @@ def run(sim, end_s, commands, *later, inputs=None, start_us=0, usb=USB):
 				said.append((text_t, first))
 				text_t = None if not text else int(t)
 			continue
+		if line.startswith("usb "):
+			_, t, what = line.split()
+			edges.setdefault("usb", []).append((int(t), what))
+			continue
 		if line.startswith("pwm "):
 			_, t, pin, duty, _freq, _bits = line.split()
 			edges.setdefault(("pwm", int(pin)), []).append((int(t), int(duty)))
@@ -83,8 +87,8 @@ def heartbeats(until_s, every_s=0.1):
 
 def test_frames_are_counted_from_the_trigger(outputs_sim):
 	edges, said = run(outputs_sim, 0.6, ["id"])
-	assert said[0][1] == "ready campy_outputs 4"
-	assert ("ok campy_outputs 4" in [line for _, line in said])
+	assert said[0][1] == "ready campy_outputs 5"
+	assert ("ok campy_outputs 5" in [line for _, line in said])
 	rises = [(int(l.split()[1]), int(l.split()[2])) for _, l in lines(said, "t")]
 	assert [k for k, _ in rises] == list(range(1, 31))
 	for k, t in rises:
@@ -651,3 +655,38 @@ def test_camera_commands_are_checked(outputs_sim):
 	assert answers[8] == "err that pin is taken" and answers[9].startswith("err camsync")
 	assert answers[10] == "err the camera pulses aren't running" and answers[11] == "ok cam 0"
 	assert answers[12] == "err no camera pulses set (cam)"
+
+
+# ---------------------------------------------------------------- the USB link (version 5): linkwatch and quiet
+
+def test_linkwatch_reattaches_the_link_once_per_silence(outputs_sim):
+	# Heartbeats until 0.2 s, then nothing: 500 ms on the link is dropped, attached again 200 ms later (said); not
+	# again in that silence; a byte at 1.5 s arms it again, and the next silence drops it once more
+	commands = ["linkwatch 500"]
+	later = [(t, HB) for t in (0.05, 0.1, 0.15, 0.2)] + [(1.5, HB)]
+	edges, said = run(outputs_sim, 2.4, commands, *later, inputs="")
+	usb = edges.get("usb", [])
+	assert [w for _, w in usb] == ["detach", "attach", "detach", "attach"], usb
+	assert 700000 <= usb[0][0] <= 702000 and 199000 <= usb[1][0] - usb[0][0] <= 201000
+	assert 2000000 <= usb[2][0] <= 2002000
+	said_links = [l.split() for _, l in lines(said, "link")]
+	assert [w[2:] for w in said_links] == [["reattached", "1"], ["reattached", "2"]]
+
+
+def test_linkwatch_is_off_by_default_and_checked(outputs_sim):
+	edges, said = run(outputs_sim, 1.0, ["id", "linkwatch 100", "linkwatch 70000", "linkwatch 0"], inputs="")
+	assert not edges.get("usb")
+	assert [l for _, l in said if l.startswith(("ok link", "err link"))] == ["err linkwatch <ms 200-60000, 0 off>"] * 2 + \
+		["ok linkwatch 0"]
+
+
+def test_quiet_says_fewer_lines_and_pulses_the_same(outputs_sim):
+	# A frame's line for frame 1 and every 10th, no line per train pulse, a line still for a pulse asked for; the
+	# train's pin pulses on every frame as before
+	commands = ["quiet 10 0", "train 0 1 0 0 3000", "run 0 -1"]
+	edges, said = run(outputs_sim, 0.65, commands, (0.3, ["pulse 3 1000"]), *heartbeats(0.65))
+	assert [int(l.split()[1]) for _, l in lines(said, "t")] == [1, 10, 20, 30]
+	assert len(pulses(edges, 2)) == 33 # the train: every frame
+	p = [l.split() for _, l in lines(said, "p")]
+	assert [w[1] for w in p] == ["3"] # only the asked-for pulse
+	assert [l for _, l in said if l.startswith("ok quiet")] == ["ok quiet 10 0"]
