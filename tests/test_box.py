@@ -390,6 +390,16 @@ def test_pokes_on_the_simulated_board(tmp_path, outputs_sim):
 
 # ---------------------------------------------------------------- with a recording (campy-session's box: section)
 
+def read_status(path):
+	# The status file as a reader sees it: campy-box replaces it whole every second, and on Windows a file being
+	# replaced can't be opened for that moment (PermissionError), as campy-session's BoxStatus also allows
+	try:
+		with open(path) as f:
+			return json.load(f)
+	except (OSError, ValueError):
+		return {}
+
+
 def test_with_a_recording_it_waits_for_the_first_frame_and_ends_with_the_stop_file(tmp_path):
 	port = FakeBoard()
 	paths = {k: str(tmp_path / ("box." + k)) for k in ("ready", "stop", "status")}
@@ -406,11 +416,11 @@ def test_with_a_recording_it_waits_for_the_first_frame_and_ends_with_the_stop_fi
 		assert until(lambda: os.path.exists(paths["ready"]))
 		time.sleep(0.3)
 		assert runner.state is None # no camera frame yet
-		assert until(lambda: os.path.exists(paths["status"]) and json.load(open(paths["status"]))["waiting"])
+		assert until(lambda: read_status(paths["status"]).get("waiting"))
 		port.Say("i 0 1 500 0 -1") # a poke before the task: logged, nothing moves
 		port.Say("t 1 1000")
 		assert until(lambda: runner.state == "ready")
-		assert until(lambda: json.load(open(paths["status"]))["trial"] == 1)
+		assert until(lambda: read_status(paths["status"]).get("trial") == 1)
 		open(paths["stop"], "w").write("stop\n")
 		thread.join(5)
 	finally:
@@ -423,7 +433,7 @@ def test_with_a_recording_it_waits_for_the_first_frame_and_ends_with_the_stop_fi
 	assert [e["state"] for e in ev if e["kind"] == "input"] == [None]
 	summary = json.load(open(str(tmp_path / "box.json")))
 	assert summary["ended"] == "stop file" and not summary["task_ended"]
-	status = json.load(open(paths["status"]))
+	status = read_status(paths["status"])
 	assert status["ended"] == "stop file" and not status["waiting"]
 	assert any("starts at the first camera frame" in s for s in said)
 
