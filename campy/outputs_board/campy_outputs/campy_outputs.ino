@@ -155,6 +155,10 @@
 #if defined(ESP32)
 #include "soc/gpio_struct.h"
 #endif
+#if defined(ESP32) && defined(ARDUINO_USB_MODE) && ARDUINO_USB_MODE == 1
+#include "soc/rtc_cntl_struct.h"
+#include "soc/usb_serial_jtag_struct.h"
+#endif
 // The camera timer: the ESP32-S3's MCPWM, register by register (Arduino-ESP32 2's IDF), or the simulated board's
 // stand-in (tests/arduino_sim). Not on other boards, nor yet on Arduino-ESP32 3.
 #if defined(ESP32) && !(defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3)
@@ -359,7 +363,17 @@ int64_t Now() {
 
 void setup() {
 #if defined(ESP32) && defined(ARDUINO_USB_MODE) && ARDUINO_USB_MODE == 1
-  Serial.setRxBufferSize(1024); // the chip's own USB serial: its 256-byte defaults are small for a busy box
+  // The chip's own USB serial. The USB pins' PHY goes to it: a TinyUSB sketch gave it to the USB-OTG controller, in
+  // an RTC register that a software restart (the DFU upload's, bootloader's) keeps, and the core's HWCDC (2.0.18)
+  // doesn't take it back: without this, a board flashed by DFU runs with nothing on USB until a reset button press
+  // (the IDF's usb_phy_ll_int_jtag_enable, whose header is C only)
+  USB_SERIAL_JTAG.conf0.phy_sel = 0;
+  USB_SERIAL_JTAG.conf0.pad_pull_override = 0;
+  USB_SERIAL_JTAG.conf0.dp_pullup = 1;
+  USB_SERIAL_JTAG.conf0.usb_pad_enable = 1;
+  RTCCNTL.usb_conf.sw_hw_usb_phy_sel = 1;
+  RTCCNTL.usb_conf.sw_usb_phy_sel = 0;
+  Serial.setRxBufferSize(1024); // its 256-byte defaults are small for a busy box
   Serial.setTxBufferSize(1024);
 #endif
   Serial.begin(115200);
