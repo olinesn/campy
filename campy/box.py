@@ -98,6 +98,18 @@ ended, so the task ends with the recording even if campy-session is gone; --laun
 first frame when campy-session has ended. --ready-file is written once the board is set up, --status-file every
 second (the state, the trial, the counts), for campy-session and its panel.
 
+One board for the cameras and the box (docs/design/single-board-box.md): with --camera-fps, the board makes the
+camera pulses itself (sketch version 4), and its frames come from them. --camera-pins are the cameras' pins on the
+board (campy's digitalPins), --camera-frames how many pulses (recTimeInSec x frameRate; 0 until stopped), and
+--sync-pin (with --sync-seed, --sync-pulse-ms, --sync-gap-ms: campy's syncPin, syncSeed, syncPulseMs, syncGapMs) the
+sync output for other recorders. The pulses start at once, or with --cameras-when-ready once every camera of the
+recording (--recording-folder's session.json) is waiting for them. campy-box then keeps the board's pulses going to
+the end of the recording, the task's own end aside: the cameras stop at their count, or at a period's end when the
+recording ends (the stop file, the recording's watch, Ctrl-C). If campy-box itself fails, they go on to their count
+(the board's own watchdog never stops them; --camera-watch-ms, after that long a silence, does). It writes
+<out>.cameras.json (time 0 on the board's and the host's clocks, the period, the count) and sync.json (into the
+recording's folder, else <out>.sync.json) for campy-syncmatch: frame k (from 0) rose at time 0 + k x P + P / 2.
+
 Output (--out, default campy-box_<date_time>):
   <out>.events.jsonl  every event: input edges, link firings, state changes, trials, pulses, levels, servo
                       arrivals, commands and their answers, trigger pauses, the watchdog
@@ -152,6 +164,8 @@ def Pin(value, where):
 			return value
 	elif isinstance(value, str):
 		v = value.strip().upper()
+		if v.isdigit() and int(v) <= 48:
+			return int(v)
 		if v[:1] in ("A", "D") and v[1:].isdigit():
 			n = int(v[1:])
 			if v[0] == "A" and n <= 7:
@@ -487,6 +501,59 @@ class PoseRule(rulesmod.Rule):
 		self.Reset()
 
 
+class Cameras:
+	"""
+	The camera pulses the board makes, when one board is the cameras' trigger and the box's (sketch version 4): from
+	campy's frameRate (trigger.ino's period: floor(1e6 / int(fps)) us), the number of pulses, the cameras' pins and
+	the sync output (campy's syncPin, syncSeed, syncPulseMs, syncGapMs).
+	"""
+
+	def __init__(self, fps, frames, pins, sync_pin=None, sync_seed=None, sync_pulse_ms=10.0, sync_gap_ms=(200, 1000),
+			when_ready=False, watch_ms=0):
+		from campy import syncmatch
+		self.fps = float(fps)
+		self.period = syncmatch.TriggerPeriodUs(self.fps)
+		if not self.period or not 100 <= self.period <= 65535:
+			raise BoxError("cameras: {:g} fps is a period of {} us; the board's timer takes 100 to 65,535 us (16 fps or "
+				"more)".format(self.fps, self.period))
+		self.frames = int(frames)
+		if self.frames < 0:
+			raise BoxError("cameras: the number of frames must be 0 (until stopped) or more")
+		self.pins = [Pin(p, "camera pins") for p in pins]
+		if not 1 <= len(self.pins) <= 4 or len(set(self.pins)) != len(self.pins):
+			raise BoxError("cameras: 1 to 4 camera pins, each once")
+		self.sync = None
+		if sync_pin is not None and str(sync_pin) != "None":
+			gaps = [int(g) for g in sync_gap_ms]
+			width_us = int(round(float(sync_pulse_ms) * 1000))
+			if len(gaps) != 2 or not 1 <= gaps[0] <= gaps[1] or width_us < 1 or width_us + 3000 > gaps[0] * 1000:
+				raise BoxError("sync: a pulse of {:g} ms and gaps of {} ms: the gaps' shortest and longest, and the pulse "
+					"ending at least 3 ms before the next one".format(width_us / 1000, gaps))
+			if sync_seed is None or str(sync_seed) == "None":
+				import secrets
+				sync_seed = secrets.randbelow(2 ** 31)
+			self.sync = dict(pin=Pin(sync_pin, "sync pin"), seed=int(sync_seed), width_us=width_us,
+				min_gap_ms=gaps[0], max_gap_ms=gaps[1])
+		self.when_ready = bool(when_ready)
+		self.watch_ms = int(watch_ms)
+
+	def Pins(self):
+		return [("camera pin", p) for p in self.pins] + ([("the sync output", self.sync["pin"])] if self.sync else [])
+
+	def Commands(self):
+		out = ["cam {} {}".format(self.period, " ".join(str(p) for p in self.pins))]
+		s = self.sync
+		out.append("camsync {} {} {} {} {}".format(s["pin"], s["seed"], s["width_us"], s["min_gap_ms"], s["max_gap_ms"])
+			if s else "camsync -1")
+		out.append("camwatch {}".format(self.watch_ms))
+		return out
+
+	def SyncRecord(self, t0_board_us, t0_host_ns):
+		# sync.json, as campy-syncmatch reads it: trigger.ino's, with no holds (the camera edges are the timer's)
+		return dict(self.sync, frame_period_us=self.period, hold_guard_us=0, hold_after_us=0, board="campy_outputs",
+			t0_board_us=t0_board_us, t0_host_ns=t0_host_ns)
+
+
 class Box:
 	"""The whole task file, checked: Setup() gives the board's commands."""
 
@@ -536,14 +603,8 @@ class Box:
 		trigger = self.board.get("trigger_pin", 10)
 		self.trigger_pin = None if trigger is None or str(trigger).lower() == "none" else Pin(trigger, "board: "
 			"trigger_pin")
-		pins = {}
-		for what, pin in ([("the camera trigger", self.trigger_pin)] if self.trigger_pin is not None else []) + \
-				[("input " + n, i.pin) for n, i in self.inputs.items()] + \
-				[("output " + n, o.pin) for n, o in self.outputs.items()] + \
-				[("servo " + n, s.pin) for n, s in self.servos.items()]:
-			if pin in pins:
-				raise BoxError("{} and {} are both on {}".format(pins[pin], what, PinName(pin)))
-			pins[pin] = what
+		self.cameras = None
+		self.CheckPins()
 		links = Mapping(config.get("links"), "links")
 		if len(links) > MAX_LINK:
 			raise BoxError("links: at most {}".format(MAX_LINK))
@@ -585,6 +646,23 @@ class Box:
 		self.by_servo = {s.index: s for s in self.servos.values()}
 		self.by_link = {l.number: l for l in self.links.values()}
 
+	def CheckPins(self):
+		# No pin is two things': the camera trigger in (or the camera pulses out), the inputs, outputs and servos
+		pins = {}
+		for what, pin in ([("the camera trigger", self.trigger_pin)] if self.trigger_pin is not None else []) + \
+				(self.cameras.Pins() if self.cameras is not None else []) + \
+				[("input " + n, i.pin) for n, i in self.inputs.items()] + \
+				[("output " + n, o.pin) for n, o in self.outputs.items()] + \
+				[("servo " + n, s.pin) for n, s in self.servos.items()]:
+			if pin in pins:
+				raise BoxError("{} and {} are both on {}".format(pins[pin], what, PinName(pin)))
+			pins[pin] = what
+
+	def UseCameras(self, cameras):
+		"""The board makes the camera pulses (Cameras): no trigger pin in, the frames come from them."""
+		self.cameras, self.trigger_pin = cameras, None
+		self.CheckPins()
+
 	def Poses(self, d):
 		"""The poses bound to campy-live's results (rules.Description d): PoseRules, by name. RulesError if one
 		doesn't fit them (a node, a camera, an animal campy-live doesn't have)."""
@@ -595,7 +673,8 @@ class Box:
 		"""The board's commands: everything else freed, then this box's outputs, inputs, servos and links."""
 		# All of them first, whatever the board was told before (another task's pins): a pin is freed before
 		# anything else takes it
-		out = ["alloff"]
+		# (cam 0 is refused while a board's camera pulses run: another recording's, which this won't stop)
+		out = ["alloff", "cam 0", "camsync -1"]
 		out += ["link {} -1".format(n) for n in range(MAX_LINK)]
 		out += ["in {} -1".format(n) for n in range(MAX_IN)]
 		out += ["servo {} -1".format(n) for n in range(MAX_SERVO)]
@@ -613,6 +692,8 @@ class Box:
 		out += [i.Command() for i in self.inputs.values()]
 		out += [s.Command() for s in self.servos.values()]
 		out += [l.Command() for l in self.links.values()]
+		if self.cameras is not None:
+			out += self.cameras.Commands()
 		return out
 
 	def SessionStarts(self):
@@ -681,6 +762,11 @@ class Runner:
 		self.counts["poses"] = {name: 0 for name in box.poses}
 		self.counts.update(live_sets=0, live_gone=0)
 		self.live_name = getattr(args, "live_name", "") or box.live.get("name") or "campy-live"
+		# The camera pulses the board makes (box.cameras): started, running, ended, their time 0
+		self.cams = dict(started=False, running=False, ended=None, t0_board_us=None, t0_host_ns=None, frames=None,
+			stop_asked=False)
+		self.task_done = False   # the task ended, the camera pulses going on to the recording's end
+		self.cams_stop_by = None # campy-box ends by this time (time.monotonic) once it asked the pulses to stop
 
 	def Alive(self):
 		return self.beat is None or time.monotonic() - self.beat < LOOP_ALIVE_S
@@ -800,6 +886,17 @@ class Runner:
 				self.Send(command)
 			if self.state is not None:
 				self.Enter(box.after_watchdog, dict(why="watchdog"))
+		elif kind == "camend":
+			frames, t = (int(x) for x in fields[:2])
+			self.cams.update(running=False, ended=dict(frames=frames, board_us=t, host_ns=self.HostNs(t)))
+			self.Event(dict(kind="cameras_end", frames=frames, board_us=t, host_ns=self.HostNs(t), heard_ns=heard_ns))
+			self.say("campy-box: the camera pulses ended: {} frames.".format(frames))
+			if self.task_done or self.cams["stop_asked"]:
+				self.stop.set()
+		elif kind in ("camwd", "camerr"):
+			self.Event(dict(kind=kind, line=line, heard_ns=heard_ns))
+			self.say("campy-box: the board said {!r}: {}".format(line, "camwatch stopped the camera pulses" if kind ==
+				"camwd" else "its timer's count and its frames differ"))
 		elif kind == "pose":
 			name, holds, frame, row_ns, read_ns, why = fields
 			self.holding[name] = holds
@@ -828,13 +925,14 @@ class Runner:
 		elif kind == "ready":
 			# The board started again (a reset, power): it knows nothing of the box any more
 			self.say("campy-box: the board restarted ({}). Stopping: everything it was told is gone.".format(line))
+			self.cams["running"] = False # its camera pulses too
 			self.end_why = "board restarted"
 			self.stop.set()
 
 	def Edge(self, inp, active, record, pose=None):
 		# An input's edge (inp), or a pose starting or ending (pose: its name): the state's move on it, if any
-		if self.state is None:
-			return # the task hasn't started (waiting for the first frame)
+		if self.state is None or self.task_done:
+			return # the task hasn't started (waiting for the first frame), or has ended
 		state = self.box.states[self.state]
 		name = pose if pose is not None else inp.name
 		for tr in state.on:
@@ -994,16 +1092,75 @@ class Runner:
 			results.Close()
 
 	def Finish(self, why, cause):
+		"""
+		The end: the task's own (its trials or minutes, an end state), or from outside (the stop file, the
+		recording's end, campy-session gone, --duration-s). With the camera pulses running, the task's own end leaves
+		them going to the recording's end (campy-box goes on for them); one from outside stops them at a period's end
+		first.
+		"""
 		if self.end_why is None:
 			self.end_why = why
 			self.Event(dict(kind="end", why=why, state=self.state, trial=self.trial, host_ns=clock.HostNs()))
 		self.deadline = None
+		if self.cams["running"]:
+			if why in TASK_ENDS or why.startswith("state ") or why.endswith(" trials"):
+				if not self.task_done:
+					self.task_done = True
+					self.say("campy-box: the task ended ({}); the camera pulses go on.".format(why))
+				return
+			self.StopCameras()
+			return
 		self.stop.set()
+
+	def StopCameras(self):
+		# At a period's end (camstop); campy-box ends once the board says they ended, or a second after
+		if self.cams["stop_asked"] or not self.cams["running"]:
+			return
+		self.cams["stop_asked"] = True
+		self.Send("camstop")
+		self.cams_stop_by = time.monotonic() + 1.0 + 2 * self.box.cameras.period / 1e6
+
+	def CamerasReady(self):
+		# Every camera of the recording waiting for its pulses (session.json's recording.cameras[].ready, as the panel
+		# reads it for the Pico); without a recording folder, at once
+		folder = getattr(self.args, "recording_folder", "")
+		if not folder or not self.box.cameras.when_ready:
+			return True
+		try:
+			with open(os.path.join(folder, "session.json"), encoding="utf-8") as f:
+				record = strictjson.load(f).get("recording")
+		except (OSError, ValueError, AttributeError, TypeError):
+			return False
+		cams = (record or {}).get("cameras") or []
+		return bool(cams) and all(c.get("ready") for c in cams)
+
+	def StartCameras(self, out):
+		"""camgo: the pulses from now; their time 0 into <out>.cameras.json, and sync.json."""
+		cams = self.box.cameras
+		words = self.board.Command("camgo {}".format(cams.frames)).Ok().split()
+		t0, period = int(words[3]), int(words[4])
+		t0_ns = self.HostNs(t0)
+		self.cams.update(started=True, running=True, t0_board_us=t0, t0_host_ns=t0_ns, frames=cams.frames)
+		record = dict(board="campy_outputs", fps=cams.fps, period_us=period, frames=cams.frames, pins=cams.pins,
+			t0_board_us=t0, t0_host_ns=t0_ns, rises="frame k (from 0) at t0 + k * period_us + period_us // 2",
+			sync=cams.SyncRecord(t0, t0_ns) if cams.sync else None)
+		WriteJson(out + ".cameras.json", record)
+		if cams.sync:
+			folder = getattr(self.args, "recording_folder", "")
+			if folder:
+				from campy import newfiles
+				with newfiles.Open(os.path.join(folder, newfiles.SYNC_FILE), "w") as f:
+					strictjson.dump(cams.SyncRecord(t0, t0_ns), f, indent=2)
+			else:
+				WriteJson(out + ".sync.json", cams.SyncRecord(t0, t0_ns))
+		self.Event(dict(kind="cameras_start", **record))
+		self.say("campy-box: the camera pulses started: {:g} fps ({} us), {}.".format(cams.fps, period,
+			"{} frames".format(cams.frames) if cams.frames else "until stopped"))
 
 	def Waiting(self):
 		# --start-with-frames: no camera frame yet
-		return bool(getattr(self.args, "start_with_frames", False)) and self.box.trigger_pin is not None and \
-			self.board is not None and not self.board.rises
+		return bool(getattr(self.args, "start_with_frames", False)) and (self.box.trigger_pin is not None or
+			self.box.cameras is not None) and self.board is not None and not self.board.rises
 
 	def Look(self):
 		"""The stop file, the recording's end, campy-session: whether to end, and why."""
@@ -1023,21 +1180,24 @@ class Runner:
 				return "campy-session ended before the recording started"
 		return None
 
-	def Loop(self):
+	def Loop(self, out=""):
 		box = self.box
 		self.beat = time.monotonic()
-		looked = status_at = 0.0
-		end_at = None
+		looked = status_at = ready_at = 0.0
+		end_at = run_end = None
+		if self.args.duration_s:
+			run_end = self.beat + self.args.duration_s
 		while not self.stop.is_set():
 			self.beat = now = time.monotonic()
+			if box.cameras is not None and not self.cams["started"] and now - ready_at >= 0.2:
+				ready_at = now
+				if self.CamerasReady():
+					self.StartCameras(out)
 			if self.state is None and not self.Waiting():
 				# The start: now, or at the first camera frame
 				self.started = now
 				if box.end_minutes is not None:
 					end_at = self.started + box.end_minutes * 60
-				if self.args.duration_s:
-					d = self.started + self.args.duration_s
-					end_at = d if end_at is None else min(end_at, d)
 				self.Enter(box.start, dict(why="start", first_frame=self.LastFrame() or None))
 				if self.stop.is_set():
 					break
@@ -1056,9 +1216,14 @@ class Runner:
 			if self.deadline is not None and now >= self.deadline:
 				self.deadline = None
 				self.Enter(self.next, dict(why="timer"))
-			if end_at is not None and now >= end_at and not self.stop.is_set():
+			if end_at is not None and now >= end_at and not self.stop.is_set() and not self.task_done:
 				self.Finish("time", dict(why="time"))
-			if now - looked >= LOOK_S and not self.stop.is_set():
+			if run_end is not None and now >= run_end and not self.stop.is_set():
+				self.Finish("duration", dict(why="duration"))
+				run_end = None
+			if self.cams_stop_by is not None and now >= self.cams_stop_by:
+				self.stop.set()
+			if now - looked >= LOOK_S and not self.stop.is_set() and not self.cams["stop_asked"]:
 				looked = now
 				why = self.Look()
 				if why is not None:
@@ -1077,7 +1242,7 @@ class Runner:
 			.startswith("state ") or (self.end_why or "").endswith(" trials"),
 			seconds=round(time.monotonic() - self.started, 1) if self.started else 0, last_frame=self.LastFrame(),
 			inputs=self.counts["inputs"], links=self.counts["links"], watchdog=self.counts["watchdog"],
-			errors=self.counts["errors"])
+			errors=self.counts["errors"], cameras=dict(self.cams) if self.box.cameras is not None else None)
 
 	def WriteStatus(self):
 		path = getattr(self.args, "status_file", "")
@@ -1125,7 +1290,8 @@ class Runner:
 				self.say("campy-box: the board is set up; the task starts at the first camera frame.")
 			if box.poses:
 				threading.Thread(target=self.ReadPoses, name="campy-box poses", daemon=True).start()
-			self.Loop()
+			self.Loop(out)
+			self.EndCameras()
 		except (BoxError, RulesError) as e:
 			self.say("campy-box: {}".format(e))
 			code = 2
@@ -1152,11 +1318,26 @@ class Runner:
 			self.say("campy-box: {} trials; ended: {}. Summary in {}.json.".format(self.trial, self.end_why, out))
 		return code
 
+	def EndCameras(self):
+		# Leaving with the camera pulses running (Ctrl-C): stopped at a period's end first, their end heard. Not after an
+		# error: then they go on to their count, as when campy-box crashes
+		if not self.cams["running"] or self.board is None or self.board.lost:
+			return
+		self.StopCameras()
+		deadline = self.cams_stop_by or time.monotonic() + 1.0
+		while self.cams["running"] and time.monotonic() < deadline:
+			self.beat = time.monotonic()
+			try:
+				item = self.queue.get(timeout=LOOP_S)
+			except queue.Empty:
+				continue
+			self.Handle(*item)
+
 	def Summary(self, out):
 		board = self.board
 		return dict(task=os.path.abspath(self.args.task) if getattr(self.args, "task", None) else None,
 			out=os.path.abspath(out), seed=self.seed, trials=self.trial, ended=self.end_why,
-			task_ended=self.StatusDict()["task_ended"], last_state=self.state,
+			task_ended=self.StatusDict()["task_ended"], last_state=self.state, cameras=self.StatusDict()["cameras"],
 			seconds=round(time.monotonic() - self.started, 3) if self.started else 0, counts=self.counts,
 			last_frame=self.LastFrame(), clock=dict(
 				round_trip_ms=board.clock.RoundTrip() / 1e6 if board is not None and board.clock.RoundTrip() else None,
@@ -1221,6 +1402,20 @@ def Main(argv=None):
 	p.add_argument("--recording-folder", default="", help="end when campy-acquire's watch says this recording ended")
 	p.add_argument("--launcher-pid", type=int, default=0, help="campy-session: stop waiting for the first frame if it "
 		"has ended")
+	p.add_argument("--camera-fps", type=float, default=0.0, help="the board makes the camera pulses at this frame rate "
+		"(campy's frameRate; one board for the cameras and the box)")
+	p.add_argument("--camera-frames", type=int, default=0, help="that many pulses (recTimeInSec x frameRate); 0: until "
+		"stopped")
+	p.add_argument("--camera-pins", default="", help="the cameras' pins on the board, comma-separated (campy's "
+		"digitalPins)")
+	p.add_argument("--cameras-when-ready", action="store_true", help="start the pulses once every camera of the "
+		"recording (--recording-folder) is waiting for them")
+	p.add_argument("--camera-watch-ms", type=int, default=0, help="the board stops the pulses after that long without a "
+		"word from campy-box (0: never)")
+	p.add_argument("--sync-pin", default=None, help="the sync output's pin (campy's syncPin)")
+	p.add_argument("--sync-seed", default=None, help="its seed (campy's syncSeed; default: a new one)")
+	p.add_argument("--sync-pulse-ms", type=float, default=10.0, help="its pulse (syncPulseMs)")
+	p.add_argument("--sync-gap-ms", default="200,1000", help="its shortest and longest gap (syncGapMs)")
 	p.add_argument("--live-name", default="", help="campy-live's liveFeedName, for the poses (default: live: name: in "
 		"the task file, else campy-live)")
 	p.add_argument("--ready-file", default="", help="written once the board is set up")
@@ -1228,6 +1423,11 @@ def Main(argv=None):
 	args = p.parse_args(argv)
 	try:
 		box = Box(Load(args.task))
+		if args.camera_fps:
+			box.UseCameras(Cameras(args.camera_fps, args.camera_frames, [p for p in args.camera_pins.split(",") if p],
+				sync_pin=args.sync_pin, sync_seed=args.sync_seed, sync_pulse_ms=args.sync_pulse_ms,
+				sync_gap_ms=[g for g in args.sync_gap_ms.split(",") if g], when_ready=args.cameras_when_ready,
+				watch_ms=args.camera_watch_ms))
 	except (BoxError, RulesError, OSError) as e:
 		print("campy-box: {}".format(e))
 		return 2

@@ -672,9 +672,11 @@ class Rules:
 		return bool(self.holders[(o.name, kind)])
 
 	def Free(self):
-		# Before anything else: what another program (campy-box) left on the board, its inputs, servos and links, freed
+		# Before anything else: what another program (campy-box) left on the board, its camera pulses' settings, inputs,
+		# servos and links, freed
 		# (alloff has disarmed the links and sent the servos home already). Only for a board with inputs: version 3
-		out = ["link {} -1".format(n) for n in range(8)] + ["in {} -1".format(n) for n in range(8)]
+		# (cam 0 is refused while the board makes camera pulses for another recording, which campy-rules won't stop)
+		out = ["cam 0", "camsync -1"] + ["link {} -1".format(n) for n in range(8)] + ["in {} -1".format(n) for n in range(8)]
 		out += ["servo {} -1".format(n) for n in range(4)]
 		if self.inputs:
 			# A channel the rules don't use keeps no pin: its default (D2-D9) can't be an input's
