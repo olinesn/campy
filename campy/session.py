@@ -59,6 +59,14 @@ The recording comes first:
 - campy-live-view is only a display: it is tied to campy-session
   (campy/children.py) and dies with it.
 
+An operant box (a box: section, docs/operant-boxes.md): campy-box runs its task on the outputs board. It is started
+before the view and the cameras, once campy-live is ready, and waits until it has set the board up (box.ready_timeout_s;
+without it, no recording when box.required). Its task starts with the first camera frame, so its frame 1 is the
+recording's. It is apart from the console's Ctrl-C, not tied to campy-session, and ends with the recording: its stop
+file when campy-acquire has ended, or by itself when the recording's watch says it ended. If its task ends first
+(its trials or minutes), the recording stops too with box.end_recording, else goes on; if it fails, an alert. Its logs
+go to <folder>/box/, its live status (state, trial, counts) into launcher.json and the panel.
+
 Finding campy-live's environment (its python): live.python in the config,
 else the CAMPY_LIVE_PYTHON environment variable, else the one registered
 with `campy-session register-live` run in that environment (written to
@@ -147,6 +155,16 @@ PANEL = {
 		"before a Pico's session: an estimate on the high side (0.6: 60 fps H.265 of mice in a lit cage; a still, "
 		"empty cage writes far less)"),
 	}
+BOX = {
+	"task": ((str,), "", "campy-box's task file (campy/box.py, docs/operant-boxes.md); a relative path is from the "
+		"folder of the config that names it"),
+	"port": ((str,), "", "the outputs board's port (default: the task file's board: port:)"),
+	"required": ((bool,), True, "true: no recording if campy-box can't set the board up; false: record without the task"),
+	"ready_timeout_s": ((int, float), 30, "how long to wait for campy-box to set the board up"),
+	"end_recording": ((bool,), False, "when the task ends by itself (its end: trials or minutes, or an end: true "
+		"state), stop the recording too; false: the recording goes on to its own end"),
+	"args": ((list,), [], "more campy-box options, as a list"),
+	}
 VIEW["python"] = ((str,), "", "the python that runs campy-live-view (default: campy-live's, when the config has a "
 	"live: section or campy-live's environment is registered; else this one)")
 POST_DEFAULTS = {key: default for key, (kinds, default, _) in POST.items()}
@@ -171,6 +189,7 @@ def TestSeconds(name, default):
 RESTART_AFTER_S = TestSeconds("CAMPY_TEST_LIVE_RESTART_S", (10, 60, 300)) # campy-live started again after these,
 # then every 300 s
 RESTARTS_PER_HOUR = 5
+BOX_END_S = TestSeconds("CAMPY_TEST_BOX_END_S", 15) # once campy-box's stop file is written, it has this long to end
 LIVE_END_S = 60 # once the recording has ended, campy-live has this long to finish, then its stop file
 WATCH_END_S = 5 # and campy-watch this long (it sees the feed end within a second), then its stop file
 LIVE_STOP_S = TestSeconds("CAMPY_TEST_LIVE_STOP_S", 30) # ... and this long after it, then it is ended
@@ -280,6 +299,19 @@ class Config:
 			self.view["show"] = self.live is not None or self.DisplayRate() > 0
 		self.post = Section("post", sections.get("post"), POST)
 		self.panel = Section("panel", sections.get("panel"), PANEL)
+		self.box = Section("box", sections["box"], BOX) if "box" in sections else None
+		if self.box is not None:
+			if not self.box["task"]:
+				raise SessionError("box: needs task: (campy-box's task file).")
+			# From the folder of the file that names it (a rig profile's, for a profile's), as panel.models
+			source = self.resolved.section_sources.get("box", {}).get("task")
+			here = os.path.dirname(source.path) if getattr(source, "path", None) else os.path.dirname(self.path)
+			task = os.path.expanduser(self.box["task"])
+			if not os.path.isabs(task):
+				task = os.path.join(here, task)
+			if not os.path.isfile(task):
+				raise SessionError("box.task: {} is not a file.".format(task))
+			self.box["task"] = os.path.abspath(task)
 		if self.post["remux"] not in (True, False, "keep"):
 			raise SessionError("post.remux: {!r} is not true, false or keep.".format(self.post["remux"]))
 		if isinstance(self.post["copy"], str):
@@ -970,6 +1002,16 @@ class Session:
 			self.StartWatch()
 		if self.presses:
 			return self.StoppedBeforeRecording()
+		if config.box is not None and not self.StartBox():
+			if config.box["required"]:
+				self.state = "failed"
+				self.Problem("No recording: campy-box did not set the board up, and box.required is true.")
+				self.EndLive()
+				self.EndWatch()
+				self.Status()
+				return 1
+		if self.presses:
+			return self.StoppedBeforeRecording()
 
 		if config.view["show"]:
 			self.StartView()
@@ -1002,6 +1044,7 @@ class Session:
 			self.Problem("campy-acquire ended with exit code {}: see {}.".format(code, acquire.log))
 			self.AcquireEnded(acquire)
 		self.Status()
+		self.EndBox()
 		if self.devices is not None:
 			self.devices.After(self, code)
 			self.Status()
@@ -1138,6 +1181,8 @@ class Session:
 					self.LiveDied(part)
 				elif name == "view":
 					Say("campy-live-view closed (exit code {}).".format(part.code))
+				elif name == "box":
+					self.BoxEnded(part)
 				elif name == "watch" and part.code not in (0, None):
 					text = "campy-watch stopped ({}): see {}. The recording goes on, without its alerts about the " \
 						"live tracking, and without telling when campy-live hangs.".format(
@@ -1158,6 +1203,113 @@ class Session:
 			self.StartLive(n)
 		if time.monotonic() - self.status_at >= STATUS_EVERY_S:
 			self.Status()
+
+	def BoxPaths(self):
+		return dict(out=os.path.join(self.folder, "box", "campy-box"), ready=os.path.join(self.logs, "campy-box.ready"),
+			stop=os.path.join(self.logs, "campy-box.stop"), status=os.path.join(self.logs, "campy-box.status.json"))
+
+	def StartBox(self):
+		"""
+		campy-box (campy/box.py), before the cameras: it sets the board up and starts the task at the first camera
+		frame, so its frame 1 is the recording's. Apart from this console's Ctrl-C and not tied to campy-session: it
+		ends with the recording (its stop file, or the recording's end, which it watches itself). True once it says
+		the board is set up.
+		"""
+		box, paths = self.config.box, self.BoxPaths()
+		command = [Python(), "-m", "campy.box", box["task"], "--out", paths["out"], "--ready-file", paths["ready"],
+			"--stop-file", paths["stop"], "--status-file", paths["status"], "--start-with-frames",
+			"--recording-folder", self.folder, "--launcher-pid", str(os.getpid())]
+		if box["port"]:
+			command += ["--port", box["port"]]
+		command += [str(a) for a in box["args"]]
+		env = dict(os.environ, PYTHONUNBUFFERED="1")
+		env.pop(newfiles.SESSION_ENV, None)
+		part = Part("box", command, os.path.join(self.logs, "campy-box.log"), env=env, cwd=self.folder,
+			apart="console" if self.detached else True)
+		self.parts["box"] = part.Start()
+		Say("Starting campy-box ({}): the board is set up, and the task starts with the first camera frame.".format(
+			os.path.basename(box["task"])))
+		deadline = time.monotonic() + box["ready_timeout_s"]
+		while time.monotonic() < deadline and not self.presses:
+			if os.path.exists(paths["ready"]):
+				Say("campy-box is ready.")
+				return True
+			if part.Check():
+				self.Problem("campy-box ended before the board was set up (exit code {}): see {}.".format(part.code,
+					part.log))
+				return False
+			time.sleep(0.1)
+		if self.presses:
+			return True # StoppedBeforeRecording ends it
+		self.Problem("campy-box did not set the board up within {:g} s (box.ready_timeout_s): see {}.".format(
+			box["ready_timeout_s"], part.log))
+		self.EndBox()
+		return False
+
+	def BoxSummary(self):
+		try:
+			with open(self.BoxPaths()["out"] + ".json", encoding="utf-8") as f:
+				return strictjson.load(f)
+		except (OSError, ValueError):
+			return {}
+
+	def BoxEnded(self, part):
+		# campy-box ended while the cameras record: the task ended by itself, or it failed (the board makes the box safe
+		# by itself either way)
+		summary = self.BoxSummary()
+		if part.code == 0 and summary.get("task_ended"):
+			ended = str(summary.get("ended"))
+			text = "campy-box: the task ended {}.".format("after its " + ended if ended.endswith(" trials") else
+				"in its end " + ended if ended.startswith("state ") else "(its time was up), after {} trials".format(
+				summary.get("trials")))
+			if self.config.box["end_recording"]:
+				Say(text + " Stopping the recording (box.end_recording).")
+				self.RequestStop(1)
+			else:
+				Say(text + " The recording goes on to its own end.")
+			return
+		if part.code == 0 and summary.get("ended") in ("stop file", "the recording ended"):
+			return
+		text = "campy-box stopped during the recording ({}{}): see {}. The board made the box safe; the recording goes " \
+			"on without the task.".format(ExitCodeText(part.code), ", " + summary["ended"] if summary.get("ended") else "",
+			part.log)
+		self.Problem(text)
+		Alert("session/campy-box", text)
+
+	def EndBox(self):
+		# campy-box's stop file; it ends the task and makes the box safe (alloff), then it is ended
+		box = self.parts.get("box")
+		if box is None:
+			return
+		if not box.Running():
+			box.Check()
+			return
+		try:
+			stopfile.Write(self.BoxPaths()["stop"])
+		except OSError as e:
+			Say("Could not write campy-box's stop file: {}".format(e))
+		deadline = time.monotonic() + BOX_END_S
+		while not box.Check() and time.monotonic() < deadline:
+			box.tail.Read()
+			time.sleep(0.1)
+		if box.Running():
+			self.Problem("campy-box did not end within {:g} s of its stop file: ended. Its board makes the box safe "
+				"once it hears nothing (its watchdog).".format(BOX_END_S))
+			box.End()
+		summary = self.BoxSummary()
+		if summary:
+			Say("campy-box: {} trials; ended: {}.".format(summary.get("trials"), summary.get("ended")))
+
+	def BoxStatus(self):
+		if self.config.box is None or self.folder is None:
+			return None
+		try:
+			with open(self.BoxPaths()["status"], encoding="utf-8") as f:
+				status = strictjson.load(f)
+		except (OSError, ValueError):
+			status = {}
+		status["task"] = os.path.basename(self.config.box["task"])
+		return status
 
 	def StartWatch(self):
 		# campy-watch (campy/livewatch.py), beside campy-live: what campy-live-view shows in red, sent as alerts once
@@ -1248,6 +1400,7 @@ class Session:
 		# view, and the devices' runs (SpikeGLX's; before, a Ctrl-C while campy-live started left it running)
 		self.state = "stopped"
 		self.Problem("Stopped (Ctrl-C) before the recording started: nothing was recorded.")
+		self.EndBox()
 		self.EndLive()
 		self.EndWatch()
 		view = self.parts.get("view")
@@ -1384,6 +1537,7 @@ class Session:
 			"post": self.PostStatus(),
 			"post_plan": self.post_plan,
 			"devices": self.devices.Status() if self.devices is not None else None,
+			"box": self.BoxStatus(),
 			"recording": {"started": Stamp(started), "elapsed_s": round((ended or time.time()) - started, 1) if started else
 				None, "planned_s": planned, "stop_asked": self.stop_written}}
 

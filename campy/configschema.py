@@ -416,6 +416,10 @@ SETTINGS = [
 		help="campy-session: a Raspberry Pi Pico that makes the trigger and the experiment's TTLs \
 			(chronicrecord/chronic_control.py): its session's lengths, port, settings. The panel starts it once every \
 			camera is ready. campy-acquire passes it by."),
+	Setting("box", None, SECTION, section=PROGRAMS, per_camera=ONE,
+		help="campy-session: an operant box's task (campy-box, campy/box.py) on the outputs board, started before \
+			the cameras so that it begins with the first frame, and ended with the recording: its task file, port, \
+			whether the recording needs it. campy-acquire passes it by."),
 	Setting("spikeglx", None, SECTION, section=PROGRAMS, per_camera=ONE,
 		help="campy-session: SpikeGLX's run, started into the recording's folder before the cameras and stopped \
 			after them, through its command server and SDK. campy-acquire passes it by."),

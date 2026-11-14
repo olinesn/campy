@@ -75,16 +75,24 @@ campy's), and how long after that frame's trigger. campy-box maps board times to
 (campy/clock.py, as hosttimes.npy), to within about 0.2 ms. A state change caused by an input carries that
 input's times; one by a timer, the host time and the last frame the computer had heard of.
 
+With a recording (campy-session's box: section starts it so): --start-with-frames starts the task at the first
+camera frame (the board set up and waiting until then, its always-armed links and session trains already on);
+--stop-file ends it when the file appears, and --recording-folder when campy-acquire's watch says that recording
+ended, so the task ends with the recording even if campy-session is gone; --launcher-pid gives up waiting for the
+first frame when campy-session has ended. --ready-file is written once the board is set up, --status-file every
+second (the state, the trial, the counts), for campy-session and its panel.
+
 Output (--out, default campy-box_<date_time>):
   <out>.events.jsonl  every event: input edges, link firings, state changes, trials, pulses, levels, servo
                       arrivals, commands and their answers, trigger pauses, the watchdog
   <out>.board.txt     every line to and from the board, with host times
   <out>.json          the summary: counts per input, link and state, trials, the clock map
+  <out>.task.yaml     the task file, as it was
 
 Needs pyyaml and pyserial (campy's own requirements).
 """
 
-import argparse, os, queue, random, signal, sys, threading, time
+import argparse, os, queue, random, shutil, signal, sys, threading, time
 from datetime import datetime
 
 from campy import clock, strictjson
@@ -94,6 +102,11 @@ from campy.rules import Output, RulesError
 LOOP_ALIVE_S = 0.1 # the board's heartbeat goes only while the task's loop has gone round this recently
 LOOP_S = 0.02      # the loop's longest sleep: timers are kept to about this
 IMMEDIATE_MAX = 100 # states that move on at once, one after another: more is a loop in the task
+LOOK_S = 0.5       # how often to look at the stop file, the recording's state and campy-session
+STATUS_S = 1.0     # how often the status file is written
+# How the task ended by itself, as the summary's "ended" says it (not stopped from outside), besides "<n> trials"
+# and "state <name>"
+TASK_ENDS = ("time",)
 MAX_IN, MAX_SERVO, MAX_LINK, MAX_CH = 8, 4, 8, 8
 LINK_WHAT = {"pulse": 1, "on": 2, "off": 3, "move": 4, "train": 5}
 
@@ -538,6 +551,16 @@ class Box:
 
 # ---------------------------------------------------------------- running it
 
+def WriteJson(path, value):
+	# Whole or not at all: a reader never sees half of it
+	folder = os.path.dirname(os.path.abspath(path))
+	os.makedirs(folder, exist_ok=True)
+	part = path + ".part"
+	with open(part, "w") as f:
+		strictjson.dump(value, f)
+	os.replace(part, path)
+
+
 class LogFile:
 	# The board log as the board writes it (Board's log.write), its writes on campy-box's writer thread
 	def __init__(self, runner, f):
@@ -580,6 +603,7 @@ class Runner:
 			states={n: 0 for n in box.states}, pulses=0, servo_moves=0, commands=0, errors=0, watchdog=0, gaps=0,
 			clash=0)
 		self.said = set()
+		self.created = time.time()
 
 	def Alive(self):
 		return self.beat is None or time.monotonic() - self.beat < LOOP_ALIVE_S
@@ -697,7 +721,8 @@ class Runner:
 			self.armed = set() # the board disarmed them
 			for command in box.SessionStarts():
 				self.Send(command)
-			self.Enter(box.after_watchdog, dict(why="watchdog"))
+			if self.state is not None:
+				self.Enter(box.after_watchdog, dict(why="watchdog"))
 		elif kind == "lost":
 			self.say("campy-box: {}. The board makes the box safe by itself (its watchdog). Stopping.".format(
 				fields[0]))
@@ -710,6 +735,8 @@ class Runner:
 			self.stop.set()
 
 	def Edge(self, inp, active, record):
+		if self.state is None:
+			return # the task hasn't started (waiting for the first frame)
 		state = self.box.states[self.state]
 		for tr in state.on:
 			if tr.input is not inp or tr.active != active:
@@ -773,19 +800,47 @@ class Runner:
 		self.deadline = None
 		self.stop.set()
 
+	def Waiting(self):
+		# --start-with-frames: no camera frame yet
+		return bool(getattr(self.args, "start_with_frames", False)) and self.box.trigger_pin is not None and \
+			self.board is not None and not self.board.rises
+
+	def Look(self):
+		"""The stop file, the recording's end, campy-session: whether to end, and why."""
+		args = self.args
+		stop_file = getattr(args, "stop_file", "")
+		if stop_file and os.path.exists(stop_file):
+			return "stop file"
+		folder = getattr(args, "recording_folder", "")
+		if folder:
+			from campy import session
+			if session.WatchState(folder, self.created) in ("ended", "failed"):
+				return "the recording ended"
+		pid = getattr(args, "launcher_pid", 0)
+		if pid and self.state is None:
+			from campy import session
+			if not session.Alive(pid):
+				return "campy-session ended before the recording started"
+		return None
+
 	def Loop(self):
 		box = self.box
-		self.started = time.monotonic()
-		end_at = None
-		if box.end_minutes is not None:
-			end_at = self.started + box.end_minutes * 60
-		if self.args.duration_s:
-			d = self.started + self.args.duration_s
-			end_at = d if end_at is None else min(end_at, d)
 		self.beat = time.monotonic()
-		self.Enter(box.start, dict(why="start"))
+		looked = status_at = 0.0
+		end_at = None
 		while not self.stop.is_set():
 			self.beat = now = time.monotonic()
+			if self.state is None and not self.Waiting():
+				# The start: now, or at the first camera frame
+				self.started = now
+				if box.end_minutes is not None:
+					end_at = self.started + box.end_minutes * 60
+				if self.args.duration_s:
+					d = self.started + self.args.duration_s
+					end_at = d if end_at is None else min(end_at, d)
+				self.Enter(box.start, dict(why="start", first_frame=self.LastFrame() or None))
+				if self.stop.is_set():
+					break
 			wait = LOOP_S
 			if self.deadline is not None:
 				wait = max(0.0, min(wait, self.deadline - now))
@@ -803,17 +858,49 @@ class Runner:
 				self.Enter(self.next, dict(why="timer"))
 			if end_at is not None and now >= end_at and not self.stop.is_set():
 				self.Finish("time", dict(why="time"))
+			if now - looked >= LOOK_S and not self.stop.is_set():
+				looked = now
+				why = self.Look()
+				if why is not None:
+					self.Finish(why, dict(why=why))
+			if now - status_at >= STATUS_S:
+				status_at = now
+				self.WriteStatus()
 		if self.end_why is None:
 			self.end_why = "stopped"
 			self.Event(dict(kind="end", why="stopped", state=self.state, trial=self.trial, host_ns=clock.HostNs()))
+
+	def StatusDict(self):
+		return dict(updated_ns=clock.HostNs(), pid=os.getpid(), state=self.state, trial=self.trial,
+			trials=self.box.end_trials, started=self.started is not None, waiting=self.state is None and
+			self.end_why is None, ended=self.end_why, task_ended=self.end_why in TASK_ENDS or (self.end_why or "")
+			.startswith("state ") or (self.end_why or "").endswith(" trials"),
+			seconds=round(time.monotonic() - self.started, 1) if self.started else 0, last_frame=self.LastFrame(),
+			inputs=self.counts["inputs"], links=self.counts["links"], watchdog=self.counts["watchdog"],
+			errors=self.counts["errors"])
+
+	def WriteStatus(self):
+		path = getattr(self.args, "status_file", "")
+		if not path:
+			return
+		try:
+			WriteJson(path, self.StatusDict())
+		except OSError:
+			pass
 
 	def Run(self):
 		args, box = self.args, self.box
 		out = args.out or "campy-box_{}".format(datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 		folder = os.path.dirname(os.path.abspath(out))
 		os.makedirs(folder, exist_ok=True)
+		self.created = time.time()
 		self.events = open(out + ".events.jsonl", "x")
 		self.writer = Writer("campy-box logs", out + "'s logs")
+		if getattr(args, "task", None):
+			try:
+				shutil.copyfile(args.task, out + ".task.yaml")
+			except OSError as e:
+				self.say("campy-box: could not keep a copy of the task file: {}".format(e))
 		boardlog = None
 		code = 0
 		try:
@@ -832,6 +919,10 @@ class Runner:
 				setup=box.Setup() + box.SessionStarts()))
 			self.say("campy-box: {} inputs, {} outputs, {} servos, {} links, {} states, board on {}; seed {}.".format(
 				len(box.inputs), len(box.outputs), len(box.servos), len(box.links), len(box.states), port, self.seed))
+			if getattr(args, "ready_file", ""):
+				WriteJson(args.ready_file, dict(pid=os.getpid(), seed=self.seed, port=port))
+			if self.Waiting():
+				self.say("campy-box: the board is set up; the task starts at the first camera frame.")
 			self.Loop()
 		except (BoxError, RulesError) as e:
 			self.say("campy-box: {}".format(e))
@@ -855,13 +946,15 @@ class Runner:
 				boardlog.close()
 			with open(out + ".json", "x") as f:
 				strictjson.dump(summary, f, indent=2)
+			self.WriteStatus()
 			self.say("campy-box: {} trials; ended: {}. Summary in {}.json.".format(self.trial, self.end_why, out))
 		return code
 
 	def Summary(self, out):
 		board = self.board
 		return dict(task=os.path.abspath(self.args.task) if getattr(self.args, "task", None) else None,
-			out=os.path.abspath(out), seed=self.seed, trials=self.trial, ended=self.end_why, last_state=self.state,
+			out=os.path.abspath(out), seed=self.seed, trials=self.trial, ended=self.end_why,
+			task_ended=self.StatusDict()["task_ended"], last_state=self.state,
 			seconds=round(time.monotonic() - self.started, 3) if self.started else 0, counts=self.counts,
 			last_frame=self.LastFrame(), clock=dict(
 				round_trip_ms=board.clock.RoundTrip() / 1e6 if board is not None and board.clock.RoundTrip() else None,
@@ -913,6 +1006,13 @@ def Main(argv=None):
 	p.add_argument("--check", action="store_true", help="check the file and show the board's setup and the states; "
 		"no board")
 	p.add_argument("--duration-s", type=float, default=0.0, help="stop after this long (0: when the task ends)")
+	p.add_argument("--start-with-frames", action="store_true", help="start the task at the first camera frame")
+	p.add_argument("--stop-file", default="", help="end when this file appears")
+	p.add_argument("--recording-folder", default="", help="end when campy-acquire's watch says this recording ended")
+	p.add_argument("--launcher-pid", type=int, default=0, help="campy-session: stop waiting for the first frame if it "
+		"has ended")
+	p.add_argument("--ready-file", default="", help="written once the board is set up")
+	p.add_argument("--status-file", default="", help="the state, trial and counts, written every second")
 	args = p.parse_args(argv)
 	try:
 		box = Box(Load(args.task))

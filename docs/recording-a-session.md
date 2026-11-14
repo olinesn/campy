@@ -69,6 +69,7 @@ Press **Start recording**. Within about a minute, depending on the rig, the page
   *(An example, with made-up numbers.)*
 - **Tracked in 3D**: how many animals the live tracking sees, for example `5 of 5`.
 - **Programs**: each should say **running**.
+- **Operant box**, on a rig whose experiment runs an [operant box](operant-boxes.md) task: the trial (for example `Trial 12 of 100`), the task's state, and how many times each sensor went active (`poke_left 31 · poke_right 7`). Before the first camera frame it says **Waiting**: the task starts with the recording.
 - The time recorded so far, out of the recording's length.
 
 ## 4. While it records

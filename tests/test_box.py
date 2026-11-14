@@ -378,3 +378,65 @@ def test_pokes_on_the_simulated_board(tmp_path, outputs_sim):
 	assert {e["position"] for e in moves} == {"open", "closed"}
 	sim_log = log_path.read_text()
 	assert "pwm" in sim_log # the door's PWM
+
+
+# ---------------------------------------------------------------- with a recording (campy-session's box: section)
+
+def test_with_a_recording_it_waits_for_the_first_frame_and_ends_with_the_stop_file(tmp_path):
+	port = FakeBoard()
+	paths = {k: str(tmp_path / ("box." + k)) for k in ("ready", "stop", "status")}
+	args = argparse.Namespace(task=None, port="", out=str(tmp_path / "box"), check=False, duration_s=0,
+		start_with_frames=True, stop_file=paths["stop"], recording_folder="", launcher_pid=0,
+		ready_file=paths["ready"], status_file=paths["status"])
+	runner = box.Runner(args, box.Box(Task()), connection=port)
+	said = []
+	runner.say = said.append
+	result = {}
+	thread = threading.Thread(target=lambda: result.setdefault("code", runner.Run()), daemon=True)
+	thread.start()
+	try:
+		assert until(lambda: os.path.exists(paths["ready"]))
+		time.sleep(0.3)
+		assert runner.state is None # no camera frame yet
+		assert until(lambda: os.path.exists(paths["status"]) and json.load(open(paths["status"]))["waiting"])
+		port.Say("i 0 1 500 0 -1") # a poke before the task: logged, nothing moves
+		port.Say("t 1 1000")
+		assert until(lambda: runner.state == "ready")
+		assert until(lambda: json.load(open(paths["status"]))["trial"] == 1)
+		open(paths["stop"], "w").write("stop\n")
+		thread.join(5)
+	finally:
+		runner.stop.set()
+		thread.join(5)
+	assert result["code"] == 0, said
+	ev = events(tmp_path)
+	first = [e for e in ev if e["kind"] == "state"][0]
+	assert first["why"] == "start" and first["first_frame"] == 1
+	assert [e["state"] for e in ev if e["kind"] == "input"] == [None]
+	summary = json.load(open(str(tmp_path / "box.json")))
+	assert summary["ended"] == "stop file" and not summary["task_ended"]
+	status = json.load(open(paths["status"]))
+	assert status["ended"] == "stop file" and not status["waiting"]
+	assert any("starts at the first camera frame" in s for s in said)
+
+
+def test_it_stops_waiting_when_campy_session_is_gone(tmp_path):
+	gone = subprocess.Popen([sys.executable, "-c", "pass"])
+	gone.wait()
+	args = argparse.Namespace(task=None, port="", out=str(tmp_path / "box"), check=False, duration_s=0,
+		start_with_frames=True, stop_file="", recording_folder="", launcher_pid=gone.pid, ready_file="",
+		status_file="")
+	runner = box.Runner(args, box.Box(Task()), connection=FakeBoard())
+	runner.say = lambda text: None
+	assert runner.Run() == 0
+	assert json.load(open(str(tmp_path / "box.json")))["ended"] == "campy-session ended before the recording started"
+
+
+def test_the_task_file_is_kept_beside_the_logs(tmp_path):
+	path = tmp_path / "task.yaml"
+	path.write_text(TASK)
+	args = argparse.Namespace(task=str(path), port="", out=str(tmp_path / "out" / "box"), check=False, duration_s=0.3)
+	runner = box.Runner(args, box.Box(Task()), connection=FakeBoard())
+	runner.say = lambda text: None
+	assert runner.Run() == 0
+	assert (tmp_path / "out" / "box.task.yaml").read_text() == TASK

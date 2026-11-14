@@ -157,6 +157,7 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
     <div class="tile"><label>Tracked in 3D</label><div class="big" id="good3d">-</div><div class="muted">animals, last second</div><div class="muted mono" id="usedmodels"></div></div>
     <div class="tile"><label>Programs</label><div id="programs"></div></div>
     <div class="tile"><label>Bookmarks</label><div class="big" id="nmarks">0</div><div class="muted" id="lastmark"></div></div>
+    <div class="tile" id="boxtile" hidden><label>Operant box</label><div class="big" id="boxtrial">-</div><div class="muted" id="boxstate"></div><div class="muted" id="boxcounts"></div></div>
   </div>
   <div class="cams" id="cams" style="margin-bottom:12px"></div>
   <div class="two">
@@ -385,6 +386,13 @@ function render(s){
   renderDrives(D_);
   const T = H.tracking; $("good3d").textContent = T && T.good3d!=null ? T.good3d+" of "+T.animals : "-";
   const parts = Object.assign({}, L.parts||{}); if((L.live||[]).length) parts["campy-live"] = L.live[L.live.length-1];
+  // campy-box's task (the config's box: section): its trial, its state and each sensor's count, from its status file
+  const BX = L.box; $("boxtile").hidden = !BX;
+  if(BX){
+    $("boxtrial").textContent = BX.waiting ? "Waiting" : "Trial "+(BX.trial||0)+(BX.trials ? " of "+BX.trials : "");
+    $("boxstate").textContent = (BX.task ? BX.task+": " : "") + (BX.ended ? "ended ("+BX.ended+")" : BX.waiting ? "starts with the first camera frame" : "state "+(BX.state||"-"));
+    $("boxcounts").textContent = Object.entries(BX.inputs||{}).map(([n,c]) => n+" "+c).join(" · ") + (BX.watchdog ? " · watchdog "+BX.watchdog : "");
+  }
   $("programs").innerHTML = Object.entries(parts).map(([n,p]) => tag(p.state, p.state=="running"?"ok":p.exit_code?"bad":"warn")+" "+esc(PROGRAMS[n] || n)).join("<br>") || "-";
   const R = s.recording || {}, counters = {}; (R.cameras||[]).forEach(c => counters[c.name] = c);
   const cams = H.cameras || [];
@@ -441,6 +449,7 @@ function render(s){
 }
 let typeSig = "", listSig = "", choosing = false, refill = false;
 const PROGRAMS = {acquire: "Cameras and video files (campy-acquire)", view: "Viewer window", watch: "Alerts (campy-watch)",
+  box: "Operant box (campy-box)",
   "campy-live": "Live tracking (campy-live)"};
 const STEPS = {remux: "Video files", join: "Joined video files", align: "Cameras on the trigger's timeline", calibrate: "Calibration (calibrat3)",
   export: "Tracking files for LUC3D", copy: "Copy", run: "Extra commands"};
