@@ -6,7 +6,7 @@
 > three FLIR cameras, the box idle: every frame, steadier than `trigger.ino` at 60 fps and as steady at 100 fps, a stop
 > and a crash as designed ([results](../operant-boxes.md#what-has-been-tested)). With the box busy, the camera pulses
 > were unchanged and went on alone when the board's USB serial link stopped under the box's traffic (its Arduino
-> core's driver, found on 14 November); avoiding or recovering from that stop is next. It adds a mode beside the two-board setup, which stays: each rig picks one.
+> core's driver, found on 14 November); pull request NNN recovers from it (the board re-attaches its USB, campy-box opens the port again), to be tried on the real board. It adds a mode beside the two-board setup, which stays: each rig picks one.
 
 Today a rig with an [operant box](../operant-boxes.md) has two Arduino Nano ESP32s. One runs `trigger.ino` and pulses
 the cameras; campy-acquire drives it. The other runs `campy_outputs` for the box; `campy-box` (or `campy-rules`) drives

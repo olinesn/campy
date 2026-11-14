@@ -69,7 +69,7 @@ def test_the_board_is_set_up_from_a_clean_slate():
 	assert setup[23:] == ["pin 3 -1", "pin 4 -1", "pin 5 -1", "pin 6 -1", "pin 7 -1", "trig 10", "watchdog 250",
 		"pin 0 2", "group 0 0", "max 0 0", "pin 1 3", "group 1 0", "max 1 60000000", "pin 2 4", "group 2 0", "max 2 0",
 		"in 0 100 1 0 1000", "in 1 101 1 0 1000", "in 2 102 2 1 5000", "servo 0 11 1000 2000 1000 2000",
-		"link 0 0 1 1 2 5000", "link 1 0 1 1 0 40000"]
+		"link 0 0 1 1 2 5000", "link 1 0 1 1 0 40000", "linkwatch 2000", "quiet 60 0"]
 	assert b.SessionStarts() == ["arm 0 -1"]
 
 
@@ -614,7 +614,7 @@ def test_the_board_s_cameras_are_set_up_with_the_box():
 	b.UseCameras(box.Cameras(59.94, 0, ["12", "D13"], sync_pin=9, sync_seed=7, sync_gap_ms=["200", "1000"]))
 	setup = b.Setup()
 	assert "trig -1" in setup and not any(c.startswith("trig 10") for c in setup) # the frames come from the pulses
-	assert setup[-3:] == ["cam 16949 12 13", "camsync 9 7 10000 200 1000", "camwatch 0"] # trigger.ino's 59 fps
+	assert setup[-5:-2] == ["cam 16949 12 13", "camsync 9 7 10000 200 1000", "camwatch 0"] # trigger.ino's 59 fps
 	with pytest.raises(box.BoxError, match=r"10 fps is a period of 100000 us"):
 		box.Cameras(10, 0, [11])
 	with pytest.raises(box.BoxError, match=r"camera pin and input poke_left are both on A0|input poke_left and camera"):
@@ -758,3 +758,70 @@ def test_one_board_makes_the_cameras_pulses_and_runs_the_box(tmp_path, outputs_s
 	late = [g - p for g, p in zip(got, planned)]
 	assert len(got) == len(planned) and all(0 <= d < 100000 for d in late) and sorted(late)[len(late) // 2] < 5000, \
 		(got, list(planned))
+
+
+# ---------------------------------------------------------------- the USB link stalling (relink)
+
+class StallingBoard(FakeBoard):
+	"""A FakeBoard whose link stalls when told: every write then times out, as the Nano ESP32's USB did."""
+
+	def __init__(self, time_us=None):
+		super().__init__()
+		self.stalled = False
+		self.time_us = time_us # what it answers to time, if given (a board that restarted: an earlier clock)
+
+	def write(self, data):
+		if self.stalled:
+			import serial
+			raise serial.SerialTimeoutException("Write timeout")
+		if self.time_us is not None and data.decode().strip() == "time":
+			with self.lock:
+				self.written.append("time")
+				self.incoming.append("ok time {} 0 -1\r\n".format(self.time_us).encode())
+			return
+		super().write(data)
+
+
+def test_a_stalled_link_is_opened_again_and_the_task_goes_on(tmp_path):
+	first, second = StallingBoard(), StallingBoard()
+	args = argparse.Namespace(task=None, port="", out=str(tmp_path / "box"), check=False, duration_s=0)
+	runner = box.Runner(args, box.Box(Task()), connection=first, opener=lambda: second)
+	said = []
+	runner.say = said.append
+	result = {}
+	thread = threading.Thread(target=lambda: result.setdefault("code", runner.Run()), daemon=True)
+	thread.start()
+	try:
+		assert until(lambda: runner.state == "ready")
+		first.stalled = True # the next write (a heartbeat within 50 ms) times out
+		assert until(lambda: runner.counts.get("relinks") == 1), said
+		# Back on the new connection: the always-armed link armed again, the task from after_watchdog (its start)
+		assert until(lambda: "arm 0 -1" in second.Sent() and "move 0 1000" in second.Sent())
+		assert until(lambda: runner.state == "ready") # and on from there
+	finally:
+		runner.stop.set()
+		thread.join(5)
+	assert result["code"] == 0, said
+	ev = events(tmp_path)
+	assert [e["what"] for e in ev if e["kind"] == "relink"] == ["down", "back"]
+	assert any(e["kind"] == "state" and e["why"] == "relink" for e in ev)
+	assert second.Sent()[-2:] == ["linkwatch 0", "alloff"] # its clean end: no re-attach once nobody talks to it
+	assert any("link is back" in s for s in said)
+
+
+def test_a_board_that_restarted_is_lost_not_relinked(tmp_path):
+	first, second = StallingBoard(), StallingBoard(time_us=5) # its clock went back: it restarted
+	args = argparse.Namespace(task=None, port="", out=str(tmp_path / "box"), check=False, duration_s=0)
+	runner = box.Runner(args, box.Box(Task()), connection=first, opener=lambda: second)
+	runner.say = lambda text: None
+	result = {}
+	thread = threading.Thread(target=lambda: result.setdefault("code", runner.Run()), daemon=True)
+	thread.start()
+	try:
+		assert until(lambda: runner.state == "ready")
+		first.stalled = True
+		thread.join(15)
+	finally:
+		runner.stop.set()
+		thread.join(5)
+	assert json.load(open(str(tmp_path / "box.json")))["ended"] == "board lost"

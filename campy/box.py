@@ -132,6 +132,8 @@ LOOP_ALIVE_S = 0.1 # the board's heartbeat goes only while the task's loop has g
 LOOP_S = 0.02      # the loop's longest sleep: timers are kept to about this
 IMMEDIATE_MAX = 100 # states that move on at once, one after another: more is a loop in the task
 LOOK_S = 0.5       # how often to look at the stop file, the recording's state and campy-session
+LINKWATCH_MS = 2000 # the board re-attaches its USB link after this long without a byte (a heartbeat goes every 50 ms)
+RELINK_S = 10.0    # campy-box opens a failed link again for this long (the board is back on USB within about 2.5 s)
 STATUS_S = 1.0     # how often the status file is written
 # How the task ended by itself, as the summary's "ended" says it (not stopped from outside), besides "<n> trials"
 # and "state <name>"
@@ -694,6 +696,10 @@ class Box:
 		out += [l.Command() for l in self.links.values()]
 		if self.cameras is not None:
 			out += self.cameras.Commands()
+		# The USB link: re-attached by the board if it goes quiet 2 s (campy-box sends a heartbeat every 50 ms), and
+		# fewer lines: a frame's line once a second (frame 1 always), none per train pulse (they are the train's,
+		# frame-locked: the trains' settings say where each one was)
+		out += ["linkwatch {}".format(LINKWATCH_MS), "quiet 60 0"]
 		return out
 
 	def SessionStarts(self):
@@ -730,9 +736,10 @@ class Runner:
 	them, moves the task from state to state, and keeps its timers.
 	"""
 
-	def __init__(self, args, box, connection=None):
+	def __init__(self, args, box, connection=None, opener=None):
 		self.args, self.box = args, box
 		self.connection = connection # tests: a port of their own
+		self.opener = opener         # tests: a new one, for a relink
 		self.stop = threading.Event()
 		self.say = lambda text: print(text, flush=True)
 		self.lock = threading.Lock()
@@ -890,6 +897,25 @@ class Runner:
 				self.Send(command)
 			if self.state is not None:
 				self.Enter(box.after_watchdog, dict(why="watchdog"))
+		elif kind == "relink":
+			what = fields[0]
+			self.counts["relinks" if what == "back" else "link_down"] = self.counts.get(
+				"relinks" if what == "back" else "link_down", 0) + 1
+			self.Event(dict(kind="relink", what=what, detail=fields[1], heard_ns=heard_ns, state=self.state,
+				trial=self.trial))
+			if what == "down":
+				self.say("campy-box: the board's USB link stalled ({}): opening it again.".format(fields[1]))
+			else:
+				# Gone over the board's watchdog (250 ms): it made the box safe, as after "wd", so the same again here
+				self.say("campy-box: the board's link is back after {:.1f} s; the task goes on from {}.".format(fields[1],
+					box.after_watchdog))
+				self.armed = set()
+				for command in box.SessionStarts():
+					self.Send(command)
+				if self.state is not None and not self.task_done:
+					self.Enter(box.after_watchdog, dict(why="relink"))
+		elif kind == "link":
+			self.Event(dict(kind="link_reattached", line=line, heard_ns=heard_ns))
 		elif kind == "camend":
 			frames, t = (int(x) for x in fields[:2])
 			self.cams.update(running=False, ended=dict(frames=frames, board_us=t, host_ns=self.HostNs(t)))
@@ -1279,7 +1305,7 @@ class Runner:
 				raise BoxError("no port for the board: --port, or board: port: in the task file")
 			boardlog = open(out + ".board.txt", "x", buffering=1)
 			self.board = outputs.Board(port, connection=self.connection, log=LogFile(self, boardlog),
-				listener=self.Listen, say=self.say, alive=self.Alive)
+				listener=self.Listen, say=self.say, alive=self.Alive, relink=RELINK_S, opener=self.opener)
 			for command in box.Setup():
 				self.board.Command(command).Ok()
 			for command in box.SessionStarts():

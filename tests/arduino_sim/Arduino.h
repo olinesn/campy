@@ -35,6 +35,9 @@ bool ledcDetach(uint8_t pin);
 unsigned long SimCamStart(const int* pins, int npins, unsigned long period_us, void (*on_rise)());
 void SimCamStopAtZero();
 void SimCamHold();
+// The USB link dropped and attached again (campy_outputs' linkwatch): printed as "usb <microseconds> detach|attach"
+void SimUsbDetach();
+void SimUsbAttach();
 void noInterrupts();
 void interrupts();
 // A PIO state machine's queue (chronic_timer.ino, compiled with SIM_PIO): see sim.cpp

@@ -56,6 +56,14 @@
 // the board's own timed changes. Neither the watchdog nor alloff stops the cameras; camwatch can, after a long
 // silence.
 //
+// The USB link (version 5). Under heavy two-way traffic (hundreds of lines a second out, tens of commands in) the
+// Nano ESP32's USB serial driver (Arduino-ESP32 2.0.18's TinyUSB) now and then stops passing data both ways, the
+// sketch running on as if nothing were wrong (found on a real board, 14 November 2026). linkwatch: when nothing has
+// come from the host for that long, the board drops off USB and attaches again, without restarting: its state and
+// the camera pulses go on, and the host opens the port again. Once per silence: it waits for a byte before it would
+// do it again. quiet makes the board say less: a frame's line only every n frames (and the first), and no line for
+// each train pulse.
+//
 // Commands, one per line (\n or \r), each answered at once with a line
 // starting "ok" or "err" (k: a frame number, optional; ch: channel 0-7). A
 // command refused because its frame was too long ago is answered
@@ -108,6 +116,10 @@
 //   camstop                           stop at a period's end, no pulse cut or added -> ok camstop <frames>
 //   camwatch <ms>                     stop them after that long without a word from the host (0: never, the default)
 //   camstatus                         -> ok camstatus running=.. frames=.. planned=.. hw=.. t0=.. period=..
+//   linkwatch <ms>                    re-attach USB after that long without a byte from the host (200-60000; 0 off,
+//                                     the default: the host turns it off before it closes the port)
+//   quiet <every> <trains>            say a frame's line for frame 1 and every <every>-th frame (1: each, the default);
+//                                     trains 0: no line for a train's pulses (1: each, the default)
 // Pins: 0-48, or 100-107 for A0-A7.
 // What it says on its own (t_us: the board's clock, microseconds since power-up):
 //   ready campy_outputs <version>     at power-up
@@ -125,6 +137,7 @@
 //   camend <frames> <t_us>            the camera pulses ended (t_us: the last one's period's end)
 //   camwd <t_us>                      camwatch stopped them (the host said nothing for that long)
 //   camerr hw=<n> frames=<n>          the timer's count and the frames said differ
+//   link <t_us> reattached <n>        the USB link was dropped and attached again (n: how many times since power-up)
 // Every line waits its turn in a queue and goes out as USB takes it, in pieces if need be, between the board's
 // timed changes: never waited for. The Nano ESP32's USB serial buffer holds 64 bytes, so a line that didn't fit
 // at once used to be dropped (status, about 110 characters, always was). Lines are dropped, and counted in
@@ -154,8 +167,9 @@
 #define CAM_TIMER 0
 #endif
 
-#define VERSION 4           // 2: counts on through trigger pauses, says gap, takes reset (pull request 304);
-                            // 3: inputs, servos and links, for operant boxes; 4: the camera pulses themselves
+#define VERSION 5           // 2: counts on through trigger pauses, says gap, takes reset (pull request 304);
+                            // 3: inputs, servos and links, for operant boxes; 4: the camera pulses themselves;
+                            // 5: linkwatch (its USB link re-attached when it goes quiet) and quiet (fewer lines)
 #define MAX_CH 8
 #define MAX_IN 8
 #define MAX_SERVO 4
@@ -189,6 +203,7 @@ struct Channel {
   int64_t fall_at;          // a pulse's end, NONE: no pulse
   int64_t pulse_rise;
   int64_t pulse_k;
+  bool train_pulse;         // the pulse is its train's (quiet may leave its line out)
   uint32_t every, phase;    // its train
   int64_t offset, width;    // 0 width: none
   int64_t remaining;        // pulses left to make: -1 until stopped, 0 stopped
@@ -247,6 +262,7 @@ void StepServos(int64_t now);
 void ServoWrite(int s);
 void SafeBox();
 bool CamPin(int pin);
+void LinkCheck(int64_t now);
 int64_t CamNextRise();
 void WaitRise(int64_t t);
 void CamCheck(int64_t now);
@@ -268,6 +284,15 @@ volatile uint32_t cam_planned = 0;  // pulses in all, 0: until stopped
 volatile uint32_t cam_hw_rises = 0;
 int64_t camwatch_us = 0;
 bool camwd_fired = false;
+// The USB link: linkwatch, and quiet
+int64_t linkwatch_us = 0;
+int64_t last_rx = 0;        // the last byte from the host
+bool link_armed = true;     // may re-attach (a byte has come since the last time)
+bool link_down = false;     // dropped off USB, attaching again at link_at
+int64_t link_at = 0;
+uint32_t reattaches = 0;
+int64_t t_every = 1;        // a frame's line every this many frames (and frame 1)
+bool say_trains = true;     // a line for each train pulse
 // The sync output: trigger.ino's train, from the cameras' time 0
 int sync_pin = -1;
 uint64_t sync_seed = 0;
@@ -336,7 +361,7 @@ void setup() {
   for (int ch = 0; ch < MAX_CH; ch++) {
     Channel& c = chans[ch];
     c.pin = -1; c.group = 0; c.high = false; c.level = false; c.level_since = 0; c.max_us = 0;
-    c.fall_at = NONE; c.pulse_rise = 0; c.pulse_k = -1;
+    c.fall_at = NONE; c.pulse_rise = 0; c.pulse_k = -1; c.train_pulse = false;
     c.every = 1; c.phase = 0; c.offset = 0; c.width = 0; c.remaining = 0; c.next_rise = NONE; c.next_k = -1;
   }
   for (int i = 0; i < MAX_IN; i++) { inputs[i].pin = -1; }
@@ -562,14 +587,17 @@ void Rose(int64_t t) {
       Channel& c = chans[ch];
       c.pulse_rise = now;
       c.pulse_k = frame;
+      c.train_pulse = true;
       c.fall_at = now + c.width;
       if (c.remaining > 0) { c.remaining--; }
       if (now - t > late_max) { late_max = now - t; }
     }
   }
   char text[48];
-  snprintf(text, sizeof text, "t %lld %lld", (long long) frame, (long long) t);
-  Queue(text);
+  if (t_every <= 1 || frame == 1 || frame % t_every == 0) {
+    snprintf(text, sizeof text, "t %lld %lld", (long long) frame, (long long) t);
+    Queue(text);
+  }
 }
 
 
@@ -663,15 +691,18 @@ void Apply(int64_t t) {
     if (level[ch] == 1) {
       c.pulse_rise = now;
       c.pulse_k = c.next_k;
+      c.train_pulse = true;
       c.fall_at = c.pulse_rise + c.width;
       c.next_rise = NONE;
       if (c.remaining > 0) { c.remaining--; }
     }
     else if (c.fall_at == t) {
-      char text[64];
-      snprintf(text, sizeof text, "p %d %lld %lld %lld", ch, (long long) c.pulse_k, (long long) c.pulse_rise,
-        (long long) now);
-      Queue(text);
+      if (say_trains || !c.train_pulse) {
+        char text[64];
+        snprintf(text, sizeof text, "p %d %lld %lld %lld", ch, (long long) c.pulse_k, (long long) c.pulse_rise,
+          (long long) now);
+        Queue(text);
+      }
       c.fall_at = NONE;
     }
     if (said[ch][0]) { Queue(said[ch]); }
@@ -819,6 +850,7 @@ bool Fire(const Link& link, int64_t t) {
     FrameAt(t, &k, &after);
     c.pulse_rise = now;
     c.pulse_k = k > 0 ? k : -1;
+    c.train_pulse = false;
     c.fall_at = now + link.b;
   }
   else if (!c.level) {
@@ -1164,6 +1196,46 @@ void CamCheck(int64_t now) {
 }
 
 
+// ---------------------------------------------------------------- the USB link (linkwatch)
+
+#if defined(ESP32)
+extern "C" bool tud_disconnect(void);
+extern "C" bool tud_connect(void);
+bool UsbDetach() { return tud_disconnect(); }
+bool UsbAttach() { return tud_connect(); }
+#elif defined(ARDUINO_SIM)
+bool UsbDetach() { SimUsbDetach(); return true; }
+bool UsbAttach() { SimUsbAttach(); return true; }
+#else
+bool UsbDetach() { return false; }
+bool UsbAttach() { return false; }
+#endif
+
+
+void LinkCheck(int64_t now) {
+  // linkwatch: nothing from the host for that long, the link is dropped and attached again 200 ms later; once per
+  // silence (a byte re-arms it). Never in the timing loops: from the serial branch only
+  if (link_down) {
+    if (now < link_at) { return; }
+    link_down = false;
+    UsbAttach();
+    last_rx = now;
+    char text[48];
+    snprintf(text, sizeof text, "link %lld reattached %lu", (long long) now, (unsigned long) reattaches);
+    Queue(text);
+    return;
+  }
+  if (linkwatch_us > 0 && link_armed && now - last_rx > linkwatch_us) {
+    link_armed = false;
+    reattaches++;
+    if (UsbDetach()) {
+      link_down = true;
+      link_at = now + 200000;
+    }
+  }
+}
+
+
 bool CamPin(int pin) {
   for (int i = 0; i < cam_npins; i++) { if (cam_pins[i] == pin) { return true; } }
   return pin >= 0 && pin == sync_pin;
@@ -1350,6 +1422,7 @@ void Command(char* text) {
     if (pulse) {
       c.pulse_rise = t;
       c.pulse_k = k;
+      c.train_pulse = false;
       c.fall_at = t + a[1];
     }
     else if (!c.level) {
@@ -1518,6 +1591,24 @@ void Command(char* text) {
     Say("ok simstall");
   }
 #endif
+  else if (strcmp(word, "linkwatch") == 0) {
+    if (n != 1 || (a[0] != 0 && (a[0] < 200 || a[0] > 60000))) { Say("err linkwatch <ms 200-60000, 0 off>"); return; }
+    linkwatch_us = a[0] * 1000;
+    last_rx = now;
+    link_armed = true;
+    snprintf(reply, sizeof reply, "ok linkwatch %lld", a[0]);
+    Say(reply);
+  }
+  else if (strcmp(word, "quiet") == 0) {
+    if (n != 2 || a[0] < 1 || a[0] > 100000 || a[1] < 0 || a[1] > 1) {
+      Say("err quiet <a frame's line every n frames, 1 each> <trains' pulse lines 1, or 0 none>");
+      return;
+    }
+    t_every = a[0];
+    say_trains = a[1] == 1;
+    snprintf(reply, sizeof reply, "ok quiet %lld %lld", a[0], a[1]);
+    Say(reply);
+  }
   else if (strcmp(word, "in") == 0) {
     int i = n >= 1 && a[0] >= 0 && a[0] < MAX_IN ? (int) a[0] : -1;
     if (i >= 0 && n == 2 && a[1] == -1) {
@@ -1677,9 +1768,12 @@ void Command(char* text) {
 
 void ReadSerial(int64_t until) {
   // A command, if it came; reading stops when it's time for the next change
-  while (Now() < until && Serial.available() > 0) {
+  int64_t t;
+  while ((t = Now()) < until && Serial.available() > 0) {
     int c = Serial.read();
     if (c < 0) { return; }
+    last_rx = t; // (the loop's own clock read: one more would move the simulated board's timing)
+    link_armed = true;
     if (c == '\n' || c == '\r') {
       line[line_len] = 0;
       bool empty = line_len == 0;
@@ -1711,6 +1805,7 @@ void loop() {
   if (soon == NONE || soon - now > SERIAL_US) {
     int64_t until = soon == NONE ? NONE : soon - CRITICAL_US;
     if (soon == NONE) { until = now + SERIAL_US; } // still look at the trigger often
+    LinkCheck(now);
     StepServos(now);
     FlushQueue(until);
     ReadSerial(until);
