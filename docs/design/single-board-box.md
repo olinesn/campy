@@ -2,7 +2,7 @@
 
 > **Status: agreed on 2026-11-13; being built.** Piece 1, the sketch (version 4), is pull request 459, tested on the
 > simulated board and compiled for the Nano ESP32; piece 2, `campy-box` driving it, is pull request 460; piece 3,
-> `triggerController: box`, is pull request NNN. Nothing has run on a real board yet: piece 4 is to come, run by run
+> `triggerController: box`, is pull request 461. Nothing has run on a real board yet: piece 4 is to come, run by run
 > with the user's OK. It adds a mode beside the two-board setup, which stays: each rig picks one.
 
 Today a rig with an [operant box](../operant-boxes.md) has two Arduino Nano ESP32s. One runs `trigger.ino` and pulses
