@@ -115,7 +115,7 @@ def test_mistakes_in_the_file_are_said(changes, message):
 # ---------------------------------------------------------------- a run, on a scripted board
 
 class FakeBoard:
-	"""A serial port whose board answers every command as campy_outputs 3 does, and says what the test says."""
+	"""A serial port whose board answers every command as campy_outputs 4 does, and says what the test says."""
 
 	def __init__(self):
 		self.written, self.incoming = [], []
@@ -297,7 +297,7 @@ def test_a_board_that_restarts_stops_the_task(tmp_path):
 	runner, thread, result, said = start(Task(), tmp_path, port)
 	try:
 		assert until(lambda: runner.state == "ready")
-		port.Say("ready campy_outputs 3")
+		port.Say("ready campy_outputs 4")
 		thread.join(5)
 	finally:
 		runner.stop.set()

@@ -13,6 +13,10 @@
 // "<pin>:<start_us>:<period_us>:<high_us>:<count>", several separated by ";"
 // (digitalRead: HIGH during a pulse, or LOW on a pin the sketch set INPUT_PULLUP: a sensor pulling it
 // down, as an open-collector beam break does). In live mode, times from the start.
+// The camera timer (SimCamStart, as campy_outputs uses the ESP32's MCPWM): from time 0, each period P is low for
+// its first half and high for its second; its edges are printed with their exact times as the clock passes them,
+// and the sketch's on_rise is called at each rise, as the timer's interrupt. SimCamStopAtZero stops it at its next
+// zero (a period's end; at a rise, the end of that period), SimCamHold at once, its pins low.
 // PWM (ledcAttach, ledcWrite, ledcDetach) is printed as "pwm <microseconds> <pin> <duty> <freq> <bits>",
 // duty -1 once detached.
 //
@@ -66,12 +70,17 @@ static void Sleep(unsigned long long us) {
 #endif
 }
 
+static void CamAdvance(unsigned long long now);
+
 unsigned long micros() {
 	if (live) {
 		Sleep(50); // not a whole core for the sketch's waits
+		CamAdvance(Now());
 		return (unsigned long) Now();
 	}
-	return (unsigned long) (++now_us); // each call takes a microsecond
+	++now_us; // each call takes a microsecond
+	CamAdvance(now_us);
+	return (unsigned long) now_us;
 }
 
 void delay(unsigned long ms) {
@@ -92,6 +101,65 @@ int digitalRead(int pin) {
 		if (k < p.count && t - p.start - k * p.period < p.high) return idle == HIGH ? LOW : HIGH;
 	}
 	return idle;
+}
+
+static void PrintEdge(unsigned long long t, int pin, int value) {
+	if (level.count(pin) && level[pin] == value) return;
+	level[pin] = value;
+	std::fprintf(live ? stderr : stdout, "%llu %d %d\n", t, pin, value);
+}
+
+static struct Cam {
+	bool on;
+	std::vector<int> pins;
+	unsigned long long t0, period, stop_at, next; // stop_at: the period it stops before (0: none); next: 2m rise, 2m+1 fall
+	void (*on_rise)();
+	bool in_rise;
+	unsigned long long rise_t;
+} cam = {false, std::vector<int>(), 0, 0, 0, 0, 0, false, 0};
+
+static void CamAdvance(unsigned long long now) {
+	// The timer's edges up to now, in order, each at its own time; the interrupt at each rise
+	while (cam.on) {
+		unsigned long long m = cam.next / 2;
+		bool rise = cam.next % 2 == 0;
+		if (rise && cam.stop_at && m >= cam.stop_at) { cam.on = false; break; }
+		unsigned long long t = cam.t0 + m * cam.period + (rise ? cam.period / 2 : cam.period);
+		if (t > now) break;
+		for (int pin : cam.pins) PrintEdge(t, pin, rise ? 1 : 0);
+		cam.next++;
+		if (rise && cam.on_rise) {
+			cam.in_rise = true;
+			cam.rise_t = t;
+			cam.on_rise();
+			cam.in_rise = false;
+		}
+	}
+}
+
+unsigned long SimCamStart(const int* pins, int npins, unsigned long period_us, void (*on_rise)()) {
+	cam.pins.assign(pins, pins + npins);
+	cam.t0 = Now();
+	cam.period = period_us;
+	cam.stop_at = 0;
+	cam.next = 0;
+	cam.on_rise = on_rise;
+	cam.on = true;
+	return (unsigned long) cam.t0;
+}
+
+void SimCamStopAtZero() {
+	// At its next zero: the end of the period it is in (from a rise's interrupt, that rise's period)
+	if (!cam.on) return;
+	unsigned long long t = cam.in_rise ? cam.rise_t : Now();
+	unsigned long long m = t < cam.t0 ? 1 : (t - cam.t0) / cam.period + 1;
+	if (!cam.stop_at || m < cam.stop_at) cam.stop_at = m;
+}
+
+void SimCamHold() {
+	CamAdvance(Now());
+	cam.on = false;
+	for (int pin : cam.pins) PrintEdge(Now(), pin, 0);
 }
 
 static std::map<int, std::pair<unsigned, unsigned> > pwm; // pin -> its frequency and bits
@@ -383,5 +451,6 @@ int main(int argc, char** argv) {
 		loop();
 		now_us++; // a real clock runs whether or not the sketch reads it
 	}
+	CamAdvance(end);
 	return 0;
 }

@@ -29,12 +29,15 @@ HEARTBEAT_S = 0.05
 SYNC_S = 1.0
 ANSWER_TIMEOUT_S = 2.0
 SKETCH = "campy_outputs"
-VERSION = 3 # the sketch's VERSION: 2 counts on through trigger pauses (pull request 304); 3 inputs, servos and links
+VERSION = 4 # the sketch's VERSION: 2 counts on through trigger pauses (pull request 304); 3 inputs, servos and links;
+# 4 the camera pulses themselves (one board for the cameras and the box)
 # What each older version lacks, for the message that refuses it
 OLDER = {
 	1: "it counts the camera's frames from 1 again after a pause in the trigger, as between two bouts, while campy "
 		"doesn't, so trains would land on the wrong frames",
 	2: "it has no inputs, servos or links (an operant box's), and campy only works with the sketch it ships",
+	3: "it can't make the camera pulses itself (one board for the cameras and the box), and campy only works with the "
+		"sketch it ships",
 	}
 RISES = 4096 # trigger rises kept (68 s at 60 fps)
 
