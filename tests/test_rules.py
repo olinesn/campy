@@ -611,17 +611,19 @@ class FakePort:
 
 def test_board_refuses_an_older_or_newer_sketch():
 	# A board still running the sketch from before pull request 304 answers id with version 1, one from before the
-	# operant box's inputs and servos 2, one from before the camera pulses 3: campy-rules says to upload the new one,
-	# and why
-	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 1\).*needs version 4.*frames.*Upload"):
+	# operant box's inputs and servos 2, one from before the camera pulses 3, one from before linkwatch 4: campy-rules
+	# says to upload the new one, and why
+	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 1\).*needs version 5.*frames.*Upload"):
 		outputs.Board(connection=FakePort(version=1), port="fake", heartbeat=0, sync=0)
-	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 2\).*needs version 4.*servos.*Upload"):
+	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 2\).*needs version 5.*servos.*Upload"):
 		outputs.Board(connection=FakePort(version=2), port="fake", heartbeat=0, sync=0)
-	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 3\).*needs version 4.*camera pulses.*Upload"):
+	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 3\).*needs version 5.*camera pulses.*Upload"):
 		outputs.Board(connection=FakePort(version=3), port="fake", heartbeat=0, sync=0)
-	with pytest.raises(outputs.BoardError, match=r"newer campy_outputs \(version 5\).*Update campy"):
-		outputs.Board(connection=FakePort(version=5), port="fake", heartbeat=0, sync=0)
-	assert "not campy_outputs version 4" in outputs.Mismatch("fake", "ok something 2")
+	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 4\).*needs version 5.*USB link.*Upload"):
+		outputs.Board(connection=FakePort(version=4), port="fake", heartbeat=0, sync=0)
+	with pytest.raises(outputs.BoardError, match=r"newer campy_outputs \(version 6\).*Update campy"):
+		outputs.Board(connection=FakePort(version=6), port="fake", heartbeat=0, sync=0)
+	assert "not campy_outputs version 5" in outputs.Mismatch("fake", "ok something 2")
 
 
 def test_a_lost_answer_never_goes_to_the_wrong_command():
@@ -632,6 +634,26 @@ def test_a_lost_answer_never_goes_to_the_wrong_command():
 		port.Say("ok pulse 3 100 -1 -1") # the answer to "on 2" was lost
 		assert b.Wait(1) == "ok pulse 3 100 -1 -1"
 		assert a.Wait(1).startswith("err no answer")
+	finally:
+		board.Close(off=False)
+
+
+def test_an_answer_left_over_from_before_the_port_opened_is_ignored():
+	# A board on the chip's own USB serial keeps what the last program didn't read; the next one hears it first. An
+	# "ok" naming no command waiting answers nothing: id still gets its own answer
+	class LeftOver(FakePort):
+		def write(self, data):
+			if data.decode().strip() == "id":
+				with self.lock:
+					self.incoming.append(b"ok alloff\r\nt 4 123456\r\nok linkwatch 0\r\n")
+			super().write(data)
+	port = LeftOver()
+	board = outputs.Board(connection=port, port="fake", heartbeat=0, sync=0)
+	try:
+		a = board.Command("on 2")
+		port.Say("ok alloff") # an answer to nothing waiting
+		port.Say("ok on 2 100 -1")
+		assert a.Wait(1) == "ok on 2 100 -1"
 	finally:
 		board.Close(off=False)
 

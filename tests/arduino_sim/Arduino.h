@@ -11,15 +11,16 @@
 #define INPUT_PULLDOWN 9
 #define INPUT_PULLUP 5
 #define ARDUINO_SIM 1
-// The analog pins as digital pins (any numbers no sketch uses otherwise)
-#define A0 30
-#define A1 31
-#define A2 32
-#define A3 33
-#define A4 34
-#define A5 35
-#define A6 36
-#define A7 37
+// The analog pins as digital pins (any numbers no sketch uses otherwise), declared as the cores do: constants, not
+// macros (the Nano ESP32's core: static constexpr uint8_t A0 = 17), so that #if defined(A0) is false here too
+static constexpr uint8_t A0 = 30;
+static constexpr uint8_t A1 = 31;
+static constexpr uint8_t A2 = 32;
+static constexpr uint8_t A3 = 33;
+static constexpr uint8_t A4 = 34;
+static constexpr uint8_t A5 = 35;
+static constexpr uint8_t A6 = 36;
+static constexpr uint8_t A7 = 37;
 
 unsigned long micros();
 void delay(unsigned long ms);
@@ -34,6 +35,9 @@ bool ledcDetach(uint8_t pin);
 unsigned long SimCamStart(const int* pins, int npins, unsigned long period_us, void (*on_rise)());
 void SimCamStopAtZero();
 void SimCamHold();
+// The USB link dropped and attached again (campy_outputs' linkwatch): printed as "usb <microseconds> detach|attach"
+void SimUsbDetach();
+void SimUsbAttach();
 void noInterrupts();
 void interrupts();
 // A PIO state machine's queue (chronic_timer.ino, compiled with SIM_PIO): see sim.cpp

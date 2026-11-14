@@ -1,8 +1,12 @@
 # One Nano ESP32 for the cameras and the box: design
 
 > **Status: agreed on 2026-11-13; being built.** Piece 1, the sketch (version 4), is pull request 459, tested on the
-> simulated board and compiled for the Nano ESP32; piece 2, `campy-box` driving it, is pull request 460. Nothing has
-> run on a real board yet. Pieces 3 and 4 are to come. It adds a mode beside the two-board setup, which stays: each rig picks one.
+> simulated board and compiled for the Nano ESP32; piece 2, `campy-box` driving it, is pull request 460; piece 3,
+> `triggerController: box`, is pull request 461. Piece 4 ran on 14 November 2026 on the EVO-X2's Nano ESP32 with its
+> three FLIR cameras, the box idle: every frame, steadier than `trigger.ino` at 60 fps and as steady at 100 fps, a stop
+> and a crash as designed ([results](../operant-boxes.md#what-has-been-tested)). With the box busy, the camera pulses
+> were unchanged and went on alone when the board's USB serial link stopped under the box's traffic (its Arduino
+> core's driver, found on 14 November); pull request 463 recovers from it 3 times out of 4 on the real board (the board re-attaches its USB, campy-box opens the port again); the 4th needed a USB port reset from the computer's side, so it isn't solved yet. Pull request 464 builds the sketch on the chip's own USB serial instead of that driver ([The USB link](../operant-boxes.md#the-chips-own-usb-serial-being-tested)), not yet tried on a real board. It adds a mode beside the two-board setup, which stays: each rig picks one.
 
 Today a rig with an [operant box](../operant-boxes.md) has two Arduino Nano ESP32s. One runs `trigger.ino` and pulses
 the cameras; campy-acquire drives it. The other runs `campy_outputs` for the box; `campy-box` (or `campy-rules`) drives

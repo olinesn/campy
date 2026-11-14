@@ -69,8 +69,10 @@ def test_the_board_is_set_up_from_a_clean_slate():
 	assert setup[23:] == ["pin 3 -1", "pin 4 -1", "pin 5 -1", "pin 6 -1", "pin 7 -1", "trig 10", "watchdog 250",
 		"pin 0 2", "group 0 0", "max 0 0", "pin 1 3", "group 1 0", "max 1 60000000", "pin 2 4", "group 2 0", "max 2 0",
 		"in 0 100 1 0 1000", "in 1 101 1 0 1000", "in 2 102 2 1 5000", "servo 0 11 1000 2000 1000 2000",
-		"link 0 0 1 1 2 5000", "link 1 0 1 1 0 40000"]
+		"link 0 0 1 1 2 5000", "link 1 0 1 1 0 40000", "linkwatch 2000", "quiet 60 0"]
 	assert b.SessionStarts() == ["arm 0 -1"]
+	b.all_lines = True # --all-lines
+	assert b.Setup()[-1] == "quiet 1 1"
 
 
 def test_check_shows_the_states():
@@ -614,7 +616,7 @@ def test_the_board_s_cameras_are_set_up_with_the_box():
 	b.UseCameras(box.Cameras(59.94, 0, ["12", "D13"], sync_pin=9, sync_seed=7, sync_gap_ms=["200", "1000"]))
 	setup = b.Setup()
 	assert "trig -1" in setup and not any(c.startswith("trig 10") for c in setup) # the frames come from the pulses
-	assert setup[-3:] == ["cam 16949 12 13", "camsync 9 7 10000 200 1000", "camwatch 0"] # trigger.ino's 59 fps
+	assert setup[-5:-2] == ["cam 16949 12 13", "camsync 9 7 10000 200 1000", "camwatch 0"] # trigger.ino's 59 fps
 	with pytest.raises(box.BoxError, match=r"10 fps is a period of 100000 us"):
 		box.Cameras(10, 0, [11])
 	with pytest.raises(box.BoxError, match=r"camera pin and input poke_left are both on A0|input poke_left and camera"):
@@ -740,17 +742,95 @@ def test_one_board_makes_the_cameras_pulses_and_runs_the_box(tmp_path, outputs_s
 		rises = [t for t, level in edges[pin] if level == 1]
 		assert rises == [t0 + k * period + period // 2 for k in range(120)], pin # to the microsecond: the timer's
 	ev = events(tmp_path)
-	assert [e for e in ev if e["kind"] == "state"][0]["first_frame"] == 1
+	# The task starts with the first pulse: the loop wakes with it (frame 2 on a very busy test computer)
+	assert [e for e in ev if e["kind"] == "state"][0]["first_frame"] in (1, 2)
 	pokes = [e for e in ev if e["kind"] == "input" and e["active"] == 1 and e["frame"]]
 	assert pokes
+	late = []
 	for e in pokes:
 		k = e["frame"]
-		assert t0 + (k - 1) * period + period // 2 <= e["board_us"] < t0 + k * period + period // 2, e
+		# Always after its frame rose; before the next one rose too, unless the simulated board's process was held up
+		# (real time: once ~270 ms on GitHub's runner, 14 November), when the first edge it then sees gets the frame
+		# it saw last
+		assert t0 + (k - 1) * period + period // 2 <= e["board_us"], e
+		if e["board_us"] >= t0 + k * period + period // 2:
+			late.append(e)
+	assert len(late) <= max(1, len(pokes) // 5), late
 	assert [e["frames"] for e in ev if e["kind"] == "cameras_end"] == [120]
-	# The sync output from the same time 0, where campy-syncmatch puts it (in real time the simulated board's own
-	# changes come late by up to its clock's steps; tests/test_outputs_sketch.py checks them to the microsecond)
+	# The sync output from the same time 0, where campy-syncmatch puts it. In real time the simulated board makes its
+	# own changes as soon as its process runs: tens of us late, and on a busy test computer now and then much later
+	# (GitHub's Linux runner, 14 November: past 5 ms). tests/test_outputs_sketch.py checks them to the microsecond
 	from campy import syncmatch
 	sync = json.load(open(str(tmp_path / "box.sync.json")))
 	planned, _ = syncmatch.SyncEdges(sync, 120 * period - 20000)
 	got = [t - t0 for t, level in edges.get(9, []) if level == 1]
-	assert len(got) == len(planned) and all(0 <= g - p < 5000 for g, p in zip(got, planned)), (got, list(planned))
+	late = [g - p for g, p in zip(got, planned)]
+	assert len(got) == len(planned) and all(0 <= d < 100000 for d in late) and sorted(late)[len(late) // 2] < 5000, \
+		(got, list(planned))
+
+
+# ---------------------------------------------------------------- the USB link stalling (relink)
+
+class StallingBoard(FakeBoard):
+	"""A FakeBoard whose link stalls when told: every write then times out, as the Nano ESP32's USB did."""
+
+	def __init__(self, time_us=None):
+		super().__init__()
+		self.stalled = False
+		self.time_us = time_us # what it answers to time, if given (a board that restarted: an earlier clock)
+
+	def write(self, data):
+		if self.stalled:
+			import serial
+			raise serial.SerialTimeoutException("Write timeout")
+		if self.time_us is not None and data.decode().strip() == "time":
+			with self.lock:
+				self.written.append("time")
+				self.incoming.append("ok time {} 0 -1\r\n".format(self.time_us).encode())
+			return
+		super().write(data)
+
+
+def test_a_stalled_link_is_opened_again_and_the_task_goes_on(tmp_path):
+	first, second = StallingBoard(), StallingBoard()
+	args = argparse.Namespace(task=None, port="", out=str(tmp_path / "box"), check=False, duration_s=0)
+	runner = box.Runner(args, box.Box(Task()), connection=first, opener=lambda: second)
+	said = []
+	runner.say = said.append
+	result = {}
+	thread = threading.Thread(target=lambda: result.setdefault("code", runner.Run()), daemon=True)
+	thread.start()
+	try:
+		assert until(lambda: runner.state == "ready")
+		first.stalled = True # the next write (a heartbeat within 50 ms) times out
+		assert until(lambda: runner.counts.get("relinks") == 1), said
+		# Back on the new connection: the always-armed link armed again, the task from after_watchdog (its start)
+		assert until(lambda: "arm 0 -1" in second.Sent() and "move 0 1000" in second.Sent())
+		assert until(lambda: runner.state == "ready") # and on from there
+	finally:
+		runner.stop.set()
+		thread.join(5)
+	assert result["code"] == 0, said
+	ev = events(tmp_path)
+	assert [e["what"] for e in ev if e["kind"] == "relink"] == ["down", "back"]
+	assert any(e["kind"] == "state" and e["why"] == "relink" for e in ev)
+	assert second.Sent()[-2:] == ["linkwatch 0", "alloff"] # its clean end: no re-attach once nobody talks to it
+	assert any("link is back" in s for s in said)
+
+
+def test_a_board_that_restarted_is_lost_not_relinked(tmp_path):
+	first, second = StallingBoard(), StallingBoard(time_us=5) # its clock went back: it restarted
+	args = argparse.Namespace(task=None, port="", out=str(tmp_path / "box"), check=False, duration_s=0)
+	runner = box.Runner(args, box.Box(Task()), connection=first, opener=lambda: second)
+	runner.say = lambda text: None
+	result = {}
+	thread = threading.Thread(target=lambda: result.setdefault("code", runner.Run()), daemon=True)
+	thread.start()
+	try:
+		assert until(lambda: runner.state == "ready")
+		first.stalled = True
+		thread.join(15)
+	finally:
+		runner.stop.set()
+		thread.join(5)
+	assert json.load(open(str(tmp_path / "box.json")))["ended"] == "board lost"
