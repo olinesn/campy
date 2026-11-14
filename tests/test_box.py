@@ -64,9 +64,9 @@ def test_the_board_is_set_up_from_a_clean_slate():
 	b = box.Box(Task())
 	setup = b.Setup()
 	# Everything freed first, whatever another task left on the board, then this box
-	assert setup[:21] == ["alloff"] + ["link {} -1".format(n) for n in range(8)] + \
+	assert setup[:23] == ["alloff", "cam 0", "camsync -1"] + ["link {} -1".format(n) for n in range(8)] + \
 		["in {} -1".format(n) for n in range(8)] + ["servo {} -1".format(n) for n in range(4)]
-	assert setup[21:] == ["pin 3 -1", "pin 4 -1", "pin 5 -1", "pin 6 -1", "pin 7 -1", "trig 10", "watchdog 250",
+	assert setup[23:] == ["pin 3 -1", "pin 4 -1", "pin 5 -1", "pin 6 -1", "pin 7 -1", "trig 10", "watchdog 250",
 		"pin 0 2", "group 0 0", "max 0 0", "pin 1 3", "group 1 0", "max 1 60000000", "pin 2 4", "group 2 0", "max 2 0",
 		"in 0 100 1 0 1000", "in 1 101 1 0 1000", "in 2 102 2 1 5000", "servo 0 11 1000 2000 1000 2000",
 		"link 0 0 1 1 2 5000", "link 1 0 1 1 0 40000"]
@@ -139,6 +139,14 @@ class FakeBoard:
 				reply = "ok off {} {}".format(words[1], now)
 			elif words[0] == "move":
 				reply = "ok move {} {} {} -1 -1".format(words[1], words[2], now)
+			elif words[0] == "cam" and len(words) > 2:
+				self.period = int(words[1])
+				reply = "ok cam {} {}".format(words[1], len(words) - 2)
+			elif words[0] == "camgo":
+				self.t0 = now
+				reply = "ok camgo {} {} {}".format(words[1], now, self.period)
+			elif words[0] == "camstop":
+				reply = "ok camstop 42"
 			else:
 				reply = "ok " + command
 			self.incoming.append((reply + "\r\n").encode())
@@ -574,3 +582,175 @@ def test_a_pose_that_already_holds_moves_the_state_at_once():
 	runner.holding["m2_at_port"] = False
 	runner.Enter("at_port", dict(why="test"))
 	assert runner.state == "ready" # entered without mouse 2 there: its lets-go move at once
+
+
+# ---------------------------------------------------------------- one board for the cameras and the box
+
+def camera_runner(tmp_path, config=None, port=None, frames=600, when_ready=True, folder=None, sync=True, **args):
+	b = box.Box(config or Task())
+	b.UseCameras(box.Cameras(60, frames, [12, 13], sync_pin=9 if sync else None, sync_seed=4242,
+		when_ready=when_ready))
+	ns = argparse.Namespace(task=None, port="", out=str(tmp_path / "box"), check=False, duration_s=0,
+		start_with_frames=True, stop_file=str(tmp_path / "box.stop"), recording_folder=str(folder or ""),
+		launcher_pid=0, ready_file="", status_file="")
+	for k, v in args.items():
+		setattr(ns, k, v)
+	runner = box.Runner(ns, b, connection=port)
+	said = []
+	runner.say = said.append
+	result = {}
+	thread = threading.Thread(target=lambda: result.setdefault("code", runner.Run()), daemon=True)
+	thread.start()
+	return runner, thread, result, said
+
+
+def session_json(folder, ready):
+	(folder / "session.json").write_text(json.dumps({"recording": {"cameras": [{"name": "Camera0", "ready": ready[0]},
+		{"name": "Camera1", "ready": ready[1]}]}}))
+
+
+def test_the_board_s_cameras_are_set_up_with_the_box():
+	b = box.Box(Task())
+	b.UseCameras(box.Cameras(59.94, 0, ["12", "D13"], sync_pin=9, sync_seed=7, sync_gap_ms=["200", "1000"]))
+	setup = b.Setup()
+	assert "trig -1" in setup and not any(c.startswith("trig 10") for c in setup) # the frames come from the pulses
+	assert setup[-3:] == ["cam 16949 12 13", "camsync 9 7 10000 200 1000", "camwatch 0"] # trigger.ino's 59 fps
+	with pytest.raises(box.BoxError, match=r"10 fps is a period of 100000 us"):
+		box.Cameras(10, 0, [11])
+	with pytest.raises(box.BoxError, match=r"camera pin and input poke_left are both on A0|input poke_left and camera"):
+		box.Box(Task()).UseCameras(box.Cameras(60, 0, ["A0"]))
+	with pytest.raises(box.BoxError, match=r"ending at least 3 ms before"):
+		box.Cameras(60, 0, [11], sync_pin=9, sync_pulse_ms=199, sync_gap_ms=[200, 1000])
+	# With the board's cameras, D10 is free: the trigger pin in is no more
+	assert box.Box(Task()).trigger_pin == 10
+	b.UseCameras(box.Cameras(60, 0, [10]))
+
+
+def test_the_cameras_start_once_every_camera_is_ready(tmp_path):
+	folder = tmp_path / "rec"
+	folder.mkdir()
+	session_json(folder, [True, False])
+	port = FakeBoard()
+	runner, thread, result, said = camera_runner(tmp_path, port=port, folder=folder)
+	try:
+		assert until(lambda: "camwatch 0" in port.Sent())
+		time.sleep(0.5)
+		assert "camgo 600" not in port.Sent() and runner.state is None # one camera not ready: no pulses, no task
+		session_json(folder, [True, True])
+		assert until(lambda: "camgo 600" in port.Sent())
+		assert until(lambda: os.path.exists(str(tmp_path / "box.cameras.json")))
+		assert runner.state is None # the task waits for the first frame
+		port.Say("t 1 {}".format(port.t0 + 16666 // 2))
+		assert until(lambda: runner.state == "iti")
+	finally:
+		runner.stop.set()
+		thread.join(5)
+	cams = json.load(open(str(tmp_path / "box.cameras.json")))
+	assert (cams["period_us"], cams["frames"], cams["pins"], cams["t0_board_us"]) == (16666, 600, [12, 13], port.t0)
+	sync = json.load(open(str(folder / "sync.json")))
+	assert (sync["seed"], sync["pin"], sync["frame_period_us"], sync["hold_guard_us"], sync["hold_after_us"],
+		sync["board"]) == (4242, 9, 16666, 0, 0, "campy_outputs")
+	first = [e for e in events(tmp_path) if e["kind"] == "state"][0]
+	assert first["first_frame"] == 1
+	# Stopped from here (Ctrl-C): the pulses stopped at a period's end first
+	assert "camstop" in port.Sent()
+
+
+def test_the_task_ending_leaves_the_cameras_running_to_the_recording_s_end(tmp_path):
+	port = FakeBoard()
+	config = Task(task__end={"trials": 1})
+	runner, thread, result, said = camera_runner(tmp_path, config=config, port=port, when_ready=False)
+	try:
+		assert until(lambda: "camgo 600" in port.Sent())
+		port.Say("t 1 {}".format(port.t0 + 8333))
+		assert until(lambda: runner.state == "ready")
+		port.Say("i 0 1 {} 1 100".format(port.t0 + 9000))
+		assert until(lambda: runner.task_done) # the task's end: its trials
+		time.sleep(0.5)
+		assert thread.is_alive() and "camstop" not in port.Sent() # campy-box goes on for the cameras
+		port.Say("camend 600 {}".format(port.t0 + 600 * 16666))
+		thread.join(5)
+		assert not thread.is_alive()
+	finally:
+		runner.stop.set()
+		thread.join(5)
+	summary = json.load(open(str(tmp_path / "box.json")))
+	assert summary["ended"] == "1 trials" and summary["task_ended"]
+	assert summary["cameras"]["ended"]["frames"] == 600 and not summary["cameras"]["stop_asked"]
+	assert any("the camera pulses go on" in s for s in said)
+
+
+def test_the_recording_s_end_stops_the_cameras_at_a_period_end(tmp_path):
+	port = FakeBoard()
+	runner, thread, result, said = camera_runner(tmp_path, port=port, when_ready=False, frames=0)
+	try:
+		assert until(lambda: "camgo 0" in port.Sent())
+		port.Say("t 1 {}".format(port.t0 + 8333))
+		assert until(lambda: runner.state is not None)
+		(tmp_path / "box.stop").write_text("stop\n")
+		assert until(lambda: "camstop" in port.Sent())
+		port.Say("camend 42 {}".format(port.t0 + 42 * 16666))
+		thread.join(5)
+	finally:
+		runner.stop.set()
+		thread.join(5)
+	summary = json.load(open(str(tmp_path / "box.json")))
+	assert summary["ended"] == "stop file" and summary["cameras"]["ended"]["frames"] == 42
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal for the simulated board")
+def test_one_board_makes_the_cameras_pulses_and_runs_the_box(tmp_path, outputs_sim):
+	"""
+	The whole path in real time: campy-box sets the sketch up with the camera pulses (60 fps, 120 frames, two pins,
+	the sync output) and a poke every 0.4 s; the task starts with the first pulse the board made, every poke stamped
+	with a frame of those pulses, and the pulses are where trigger.ino puts them from the time 0 campy-box kept.
+	"""
+	pokes = "30:500000:400000:30000:1000"
+	env = dict(os.environ, SIM_INPUT=pokes) # no trigger in: the board makes it
+	master, slave = pty()
+	log_path = tmp_path / "sim.log"
+	with open(str(log_path), "w") as log:
+		sim = subprocess.Popen([outputs_sim, "live"], stdin=master, stdout=master, stderr=log, env=env)
+	try:
+		assert until(lambda: sim.poll() is not None or "ready campy_outputs" in log_path.read_text(), 60)
+		b = box.Box(Task(task__states__iti__after_s=0.1))
+		b.UseCameras(box.Cameras(60, 120, [12, 13], sync_pin=9, sync_seed=42, sync_gap_ms=[100, 300]))
+		args = argparse.Namespace(task=None, port=os.ttyname(slave), out=str(tmp_path / "box"), check=False,
+			duration_s=3.5, start_with_frames=True, stop_file="", recording_folder="", launcher_pid=0, ready_file="",
+			status_file="")
+		runner = box.Runner(args, b)
+		said = []
+		runner.say = said.append
+		code = runner.Run()
+	finally:
+		sim.terminate()
+		sim.wait()
+		os.close(slave)
+		os.close(master)
+	assert code == 0, said
+	cams = json.load(open(str(tmp_path / "box.cameras.json")))
+	t0, period = cams["t0_board_us"], cams["period_us"]
+	assert period == 16666
+	edges = {}
+	for line in log_path.read_text().splitlines():
+		words = line.split()
+		if len(words) == 3 and words[0].isdigit():
+			edges.setdefault(int(words[1]), []).append((int(words[0]), int(words[2])))
+	for pin in (12, 13):
+		rises = [t for t, level in edges[pin] if level == 1]
+		assert rises == [t0 + k * period + period // 2 for k in range(120)], pin # to the microsecond: the timer's
+	ev = events(tmp_path)
+	assert [e for e in ev if e["kind"] == "state"][0]["first_frame"] == 1
+	pokes = [e for e in ev if e["kind"] == "input" and e["active"] == 1 and e["frame"]]
+	assert pokes
+	for e in pokes:
+		k = e["frame"]
+		assert t0 + (k - 1) * period + period // 2 <= e["board_us"] < t0 + k * period + period // 2, e
+	assert [e["frames"] for e in ev if e["kind"] == "cameras_end"] == [120]
+	# The sync output from the same time 0, where campy-syncmatch puts it (in real time the simulated board's own
+	# changes come late by up to its clock's steps; tests/test_outputs_sketch.py checks them to the microsecond)
+	from campy import syncmatch
+	sync = json.load(open(str(tmp_path / "box.sync.json")))
+	planned, _ = syncmatch.SyncEdges(sync, 120 * period - 20000)
+	got = [t - t0 for t, level in edges.get(9, []) if level == 1]
+	assert len(got) == len(planned) and all(0 <= g - p < 5000 for g, p in zip(got, planned)), (got, list(planned))

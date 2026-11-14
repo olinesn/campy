@@ -204,7 +204,7 @@ arm 0 1                  once
 
 ## The camera pulses (one board for both)
 
-Since version 4 the board can also make the camera pulses, so that one Nano ESP32 can be a rig's trigger and its box's board ([the design](design/single-board-box.md); `campy-box` and the config don't use it yet). The pulses come from one of the ESP32-S3's hardware PWM units, with `trigger.ino`'s timing: a period of P µs, low for its first half and high for its second, so frame k (from 0) rises at k·P + P/2 after time 0. The sketch's own work can't move an edge. The board's frames then come from these pulses, not from D10, each with its exact time.
+Since version 4 the board can also make the camera pulses, so that one Nano ESP32 can be a rig's trigger and its box's board ([the design](design/single-board-box.md); `campy-box` drives it, below; the config and `campy-session` don't use it yet). The pulses come from one of the ESP32-S3's hardware PWM units, with `trigger.ino`'s timing: a period of P µs, low for its first half and high for its second, so frame k (from 0) rises at k·P + P/2 after time 0. The sketch's own work can't move an edge. The board's frames then come from these pulses, not from D10, each with its exact time.
 
 | Command | What it does |
 |---|---|
@@ -216,6 +216,19 @@ Since version 4 the board can also make the camera pulses, so that one Nano ESP3
 | `camstatus` | `ok camstatus running=… frames=… planned=… hw=… t0=… period=…` |
 
 The board says `camend <frames> <t_us>` when the pulses have ended, `camwd <t_us>` when `camwatch` stopped them, and `camerr …` if the count of rises the timer's interrupt made ever differs from the frames it said. Neither the box's watchdog nor `alloff` stops the camera pulses: a `campy-box` that crashes leaves the cameras running to their count.
+
+**From `campy-box`.** With `--camera-fps`, `campy-box` owns the camera pulses too. It takes the same settings campy-acquire would send `trigger.ino`: the frame rate, the number of frames (recTimeInSec × frameRate, or 0 until stopped), the cameras' pins on the board (`digitalPins`) and the sync output (`syncPin`, `syncSeed`, `syncPulseMs`, `syncGapMs`):
+
+```
+campy-box task.yaml --port COM7 --camera-fps 60 --camera-frames 36000 --camera-pins 12,13 --sync-pin 9 --start-with-frames
+```
+
+- With `--cameras-when-ready` (and `--recording-folder`), the pulses start once every camera of the recording is waiting for them (its `session.json`); without it, at once. With `--start-with-frames`, the task starts with the first pulse.
+- It writes `<out>.cameras.json` (time 0 on the board's clock and the host's, the period, the count, the pins) and `sync.json` (into the recording's folder, else `<out>.sync.json`) for `campy-syncmatch`, with no holds.
+- **The cameras outlive the task.** If the task ends by itself (its trials or minutes), `campy-box` goes on for the pulses until they end. The recording's end (the stop file, its watch), `--duration-s` or Ctrl-C stops them at a period's end first. If `campy-box` fails, they go on to their count; `--camera-watch-ms` makes the board stop them after that long a silence.
+- The cameras' pins can't be anything else's: an input, an output, a servo or the sync output. The trigger pin in (D10) is free, as the frames come from the pulses.
+
+`campy-session` and the config (`triggerController: box`) come next ([the design](design/single-board-box.md), piece 3).
 
 ## Safety
 
@@ -235,4 +248,5 @@ An armed link and a servo sent away from its safe position count as active, so t
 - **Poses** (`tests/test_box.py`): a task reading a real results feed written by the test, with mouse 2's nose in and out of the port: the task moves on the pose, a poke rewarded while it holds, a pose that already holds moving a state at once, `else:` for a poke without mouse 2, a pose letting go when the sets stop, and the conditions checked against `campy-live`'s nodes.
 - **Recordings** (`tests/test_session.py`): `campy-session` with emulated cameras and the board's sketch in real time: the task started before the cameras, ended with the recording, its logs in the recording's folder and its status in `launcher.json`; a task ending the recording (`end_recording`); a board that can't be set up, with `required` true and false. The emulated cameras don't take the simulated board's trigger, so there the task starts as soon as the board is set up; on a rig, its frame 1 is the cameras' first.
 - **The camera pulses** (`tests/test_outputs_sketch.py`, on the simulated board, whose stand-in for the timer makes its edges and interrupts as the real one is set up to): every rise at exactly k·P + P/2 from time 0 on two pins; the frames said with those times; a stop in a period's first half, its second half and under 50 µs from its end, each ending with no pulse cut or added; the timer stopping itself at its count with the sketch stalled across the end (a test-only command), and after a stop with the sketch stalled right after; the sync output's edges exactly where `campy-syncmatch` works them out with no hold; frame-locked trains and sensor stamps on the generated frames; servo moves, an input at 500 Hz and serial commands moving no camera edge; the box's watchdog never stopping the cameras, `camwatch` stopping them. Compiled for the Nano ESP32 (core 2.0.18); the timer's own behaviour on the real chip is not tested yet.
+- **`campy-box` with the camera pulses** (`tests/test_box.py`): the board's setup (the period as `trigger.ino` rounds it, 59.94 fps as 59), the settings' checks; the pulses starting only once every camera is ready, `cameras.json` and `sync.json`, the task waiting for the first pulse; the task's end leaving the pulses running to their end; the stop file stopping them at a period's end. And the whole path in real time on the sketch: 120 frames at 60 fps on two pins, every rise exactly where `trigger.ino` puts it from the time 0 `campy-box` kept, every poke stamped with a frame of those pulses, the sync output where `campy-syncmatch` puts it (within the real-time simulation's few milliseconds).
 - **Not yet on a real board, sensor or servo.** That needs a spare Nano ESP32: every one on the test machines today is a camera trigger.
