@@ -740,17 +740,21 @@ def test_one_board_makes_the_cameras_pulses_and_runs_the_box(tmp_path, outputs_s
 		rises = [t for t, level in edges[pin] if level == 1]
 		assert rises == [t0 + k * period + period // 2 for k in range(120)], pin # to the microsecond: the timer's
 	ev = events(tmp_path)
-	assert [e for e in ev if e["kind"] == "state"][0]["first_frame"] == 1
+	# The task starts with the first pulse: the loop wakes with it (frame 2 on a very busy test computer)
+	assert [e for e in ev if e["kind"] == "state"][0]["first_frame"] in (1, 2)
 	pokes = [e for e in ev if e["kind"] == "input" and e["active"] == 1 and e["frame"]]
 	assert pokes
 	for e in pokes:
 		k = e["frame"]
 		assert t0 + (k - 1) * period + period // 2 <= e["board_us"] < t0 + k * period + period // 2, e
 	assert [e["frames"] for e in ev if e["kind"] == "cameras_end"] == [120]
-	# The sync output from the same time 0, where campy-syncmatch puts it (in real time the simulated board's own
-	# changes come late by up to its clock's steps; tests/test_outputs_sketch.py checks them to the microsecond)
+	# The sync output from the same time 0, where campy-syncmatch puts it. In real time the simulated board makes its
+	# own changes as soon as its process runs: tens of us late, and on a busy test computer now and then much later
+	# (GitHub's Linux runner, 14 November: past 5 ms). tests/test_outputs_sketch.py checks them to the microsecond
 	from campy import syncmatch
 	sync = json.load(open(str(tmp_path / "box.sync.json")))
 	planned, _ = syncmatch.SyncEdges(sync, 120 * period - 20000)
 	got = [t - t0 for t, level in edges.get(9, []) if level == 1]
-	assert len(got) == len(planned) and all(0 <= g - p < 5000 for g, p in zip(got, planned)), (got, list(planned))
+	late = [g - p for g, p in zip(got, planned)]
+	assert len(got) == len(planned) and all(0 <= d < 100000 for d in late) and sorted(late)[len(late) // 2] < 5000, \
+		(got, list(planned))
