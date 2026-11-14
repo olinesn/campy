@@ -71,6 +71,8 @@ def test_the_board_is_set_up_from_a_clean_slate():
 		"in 0 100 1 0 1000", "in 1 101 1 0 1000", "in 2 102 2 1 5000", "servo 0 11 1000 2000 1000 2000",
 		"link 0 0 1 1 2 5000", "link 1 0 1 1 0 40000", "linkwatch 2000", "quiet 60 0"]
 	assert b.SessionStarts() == ["arm 0 -1"]
+	b.all_lines = True # --all-lines
+	assert b.Setup()[-1] == "quiet 1 1"
 
 
 def test_check_shows_the_states():

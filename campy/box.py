@@ -606,6 +606,7 @@ class Box:
 		self.trigger_pin = None if trigger is None or str(trigger).lower() == "none" else Pin(trigger, "board: "
 			"trigger_pin")
 		self.cameras = None
+		self.all_lines = False # --all-lines: the board says every frame's line and every train pulse (quiet off)
 		self.CheckPins()
 		links = Mapping(config.get("links"), "links")
 		if len(links) > MAX_LINK:
@@ -699,7 +700,7 @@ class Box:
 		# The USB link: re-attached by the board if it goes quiet 2 s (campy-box sends a heartbeat every 50 ms), and
 		# fewer lines: a frame's line once a second (frame 1 always), none per train pulse (they are the train's,
 		# frame-locked: the trains' settings say where each one was)
-		out += ["linkwatch {}".format(LINKWATCH_MS), "quiet 60 0"]
+		out += ["linkwatch {}".format(LINKWATCH_MS), "quiet 1 1" if self.all_lines else "quiet 60 0"]
 		return out
 
 	def SessionStarts(self):
@@ -1446,6 +1447,9 @@ def Main(argv=None):
 	p.add_argument("--sync-seed", default=None, help="its seed (campy's syncSeed; default: a new one)")
 	p.add_argument("--sync-pulse-ms", type=float, default=10.0, help="its pulse (syncPulseMs)")
 	p.add_argument("--sync-gap-ms", default="200,1000", help="its shortest and longest gap (syncGapMs)")
+	p.add_argument("--all-lines", action="store_true", help="the board says every frame's line and every train pulse "
+		"(logged), not a frame's line a second and none per train pulse: more USB traffic, which its link stalls "
+		"under now and then (recovered: docs/operant-boxes.md, The USB link)")
 	p.add_argument("--live-name", default="", help="campy-live's liveFeedName, for the poses (default: live: name: in "
 		"the task file, else campy-live)")
 	p.add_argument("--ready-file", default="", help="written once the board is set up")
@@ -1453,6 +1457,7 @@ def Main(argv=None):
 	args = p.parse_args(argv)
 	try:
 		box = Box(Load(args.task))
+		box.all_lines = args.all_lines
 		if args.camera_fps:
 			box.UseCameras(Cameras(args.camera_fps, args.camera_frames, [p for p in args.camera_pins.split(",") if p],
 				sync_pin=args.sync_pin, sync_seed=args.sync_seed, sync_pulse_ms=args.sync_pulse_ms,
