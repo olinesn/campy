@@ -4,20 +4,82 @@ campy can run an operant box's hardware: read its sensors (IR beam breaks, nose 
 
 It is the [outputs board](closed-loop.md#the-board) grown by a few features, not a new board. The same Arduino Nano ESP32 and the same sketch, `campy/outputs_board/campy_outputs` (version 3), already count the camera's frames, make exact pulses, and switch everything off when the computer goes away. Version 3 adds inputs, servos and *links* (reflexes on the board). One board per box does all of it, so a rule can combine a poke with the animals' live poses.
 
-**What exists today, and what comes next.** This page describes the board (pull request 449). The programs that use it come in the next pull requests:
+**What exists today, and what comes next.**
 
-1. **The board** (this one): inputs, servos, links, the safe state; tested on a simulated board.
-2. **`campy-box`**: runs a task from a YAML file (states such as *wait for a poke, open the door, give a reward*), and logs every event with the board's time, the computer's time and the camera frame.
-3. **Recordings**: `campy-session` starts the task with the recording and keeps its log in the recording's folder; the panel shows the counts.
-4. **Poses in the task**: `campy-rules`' conditions (an animal in a region, two animals close) usable in a task, and the box's inputs usable in `campy-rules`.
-
-Until those exist, the board can be driven by hand from a serial terminal (115200 baud) with the commands below.
+1. **The board** (pull request 449): inputs, servos, links, the safe state; tested on a simulated board.
+2. **`campy-box`** (pull request 451): runs a task from a YAML file (states such as *wait for a poke, open the door, give a reward*), and logs every event with the board's time, the computer's time and the camera frame. [Running a task](#running-a-task-campy-box) below.
+3. **Recordings** (next): `campy-session` starts the task with the recording and keeps its log in the recording's folder; the panel shows the counts. Until then, start `campy-box` by hand before the recording.
+4. **Poses in the task** (after that): `campy-rules`' conditions (an animal in a region, two animals close) usable in a task, and the box's inputs usable in `campy-rules`.
 
 ## How the work is divided
 
 - **The board** reads the sensors and times everything to the microsecond on its own clock. *Links* react to a sensor on the board itself, in microseconds: a poke opens the reward valve, a beam break moves a door. The computer only arms and disarms them.
 - **The computer** runs the task: which state the box is in, what is armed, when a trial ends. Its decisions take a few milliseconds over USB, which is fine for task logic but not for a reward that must follow a poke at once. That is what links are for.
 - **The camera trigger** goes into the board too (as for `campy-rules`). The board counts its pulses as frames 1, 2, 3, … and says, for each sensor edge, which frame it fell in and how long after that frame's trigger.
+
+## Running a task: campy-box
+
+`campy-box` sets the board up from a task file, runs the task's states, and logs everything. Start it before the recording, so that the board's frame 1 is the recording's first frame:
+
+```
+campy-box task.yaml --port COM7          # /dev/ttyACM1 or similar on Linux
+campy-box task.yaml --check              # check the file, show the board's setup and the states; no board
+```
+
+A task file names the box's parts, the reflexes, and the states. For example, a door that opens for each trial and a reward for a poke in the left port:
+
+```yaml
+board:
+  port: COM7
+  trigger_pin: 10           # the camera trigger; none: no camera
+  watchdog_ms: 250          # the board makes the box safe if campy-box goes quiet this long
+inputs:
+  poke_left:  {input: 0, pin: A0, pull: up}          # pull-up: active low, as most beam breaks
+  poke_right: {input: 1, pin: A1, pull: up}
+  lick:       {input: 2, pin: A2, pull: down, debounce_ms: 0.5}
+outputs:
+  valve: {channel: 0, pin: D2, pulse_ms: 40}
+  cue:   {channel: 1, pin: D3, max_on_s: 60}
+  mark:  {channel: 2, pin: D4, pulse_ms: 5}           # event marks to the recording system
+servos:
+  door: {servo: 0, pin: D11, positions: {closed: 1000, open: 2000}, safe: closed, speed_us_per_s: 2000}
+links:
+  mark_pokes:  {when: poke_left, do: {output: mark}, armed: always}
+  reward_left: {when: poke_left, do: {output: valve}}     # armed by the states that name it
+task:
+  start: iti
+  end: {trials: 100, minutes: 60}
+  states:
+    iti:
+      do: [{servo: door, to: closed}, {output: cue, action: off}]
+      after_s: [8, 12]      # a random time between the two
+      next: ready
+    ready:
+      trial: true           # entering it starts a trial
+      do: [{servo: door, to: open}, {output: cue, action: on}]
+      arm: {reward_left: 1} # armed while in this state, for one firing
+      on: {poke_left: reward, poke_right: iti}
+      after_s: 30
+      next: iti
+    reward:
+      do: [{output: cue, action: off}]
+      after_s: 2
+      next: iti
+```
+
+- **States** do their actions on entering, arm their links while they last, and move on when an input has an edge (`on`) or when their time is up (`after_s`, then `next`). `on` can wait for an inactive edge or for the n-th edge (`{lever: {to: reward, count: 5}}`, a fixed ratio of 5). `next` can be a random choice (`[left_trial, right_trial]`, or with weights `{left_trial: 3, right_trial: 1}`). `after_s: [8, 12]` is a random time. `trial: true` starts a trial; `end: true` ends the task. `python -m pydoc campy.box` describes every key.
+- **The reward is the board's.** The poke rewards through a link, which the board fires within microseconds of the poke. The task's move to `reward` comes a few milliseconds later, when the computer hears of the poke. Leaving `ready` disarms the link.
+- **Outputs and servos stay as they are** until a state changes them: `iti` closes the door and switches the cue off itself.
+- **Random times and choices** come from a seed, which is logged; `seed:` under `task:` makes a run repeat the same ones.
+- **The task ends** after `end: trials` (instead of starting one more), after `end: minutes`, in a state with `end: true`, on Ctrl-C, or with `--duration-s`. Then, and if campy-box fails, the box is made safe.
+- **The watchdog.** If campy-box is held up long enough for the board's watchdog to make the box safe, campy-box says so, arms its always-armed links again and goes on from `task: after_watchdog` (default: the start state).
+- `on` and `off` can go without quotes: YAML reads them as true and false, and `campy-box` takes them back as the words.
+
+**What it logs** (`--out`, default `campy-box_<date_time>`):
+
+- `<out>.events.jsonl`, a line per event: every input edge (`kind: input`, with `board_us`, `host_ns` on campy's host clock as in `hosttimes.npy`, `frame` and `after_us`), every link firing, each state entered (with what caused it: the input and its times, or the timer), each pulse with its edges, levels switched by the board, servo arrivals, every command and its answer, trigger pauses and the watchdog;
+- `<out>.board.txt`, every line to and from the board;
+- `<out>.json`, the summary: trials, why it ended, counts per input, link and state, the seed and the board-to-host clock map.
 
 ## Wiring (Arduino Nano ESP32)
 
@@ -101,4 +163,5 @@ An armed link and a servo sent away from its safe position count as active, so t
 
 - **On a simulated board** (`tests/test_outputs_sketch.py`, run in CI on Linux (x86 and Arm) and Windows, and on a Mac): input edges stamped within 3 µs of the change and in the right frame, also while the board watches for a trigger and while a train's pulse is due; pull-up beam breaks; bouncing contacts as one press; a pulse shorter than the lockout keeping both edges; licks at 7 Hz beside two photometry trains, whose pulses stay exact to the microsecond; a link firing once; a servo moving at its speed in 20 ms steps; the watchdog and `alloff` disarming links and sending servos back; pins never shared. The sketch's earlier tests all pass unchanged, so nothing `campy-rules` relies on moved.
 - **Compiled for the Nano ESP32** (Arduino ESP32 core 2.0.18, as in CI). The simulated board stands in for the ESP32's input registers and PWM hardware, so the real board's timing is not measured yet.
+- **`campy-box`** (`tests/test_box.py`): the file's checks, a task run against a scripted board (pokes, trials, the end after N trials, a fixed ratio, the watchdog, the seed), and the whole path on the board's sketch running in real time on a pseudo-terminal: pokes every 0.4 s on a pull-up input, each rewarded by the board's link in the right frame, three trials, the door servo's PWM.
 - **Not yet on a real board, sensor or servo.** That needs a spare Nano ESP32: every one on the test machines today is a camera trigger.
