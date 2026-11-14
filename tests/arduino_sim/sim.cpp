@@ -11,7 +11,10 @@
 // doesn't fit waits for it, the clock running, as the real one does. Unset: no limit. Simulated clock only.
 // SIM_INPUT makes an input pin a pulse train, as a camera trigger:
 // "<pin>:<start_us>:<period_us>:<high_us>:<count>", several separated by ";"
-// (digitalRead: HIGH during a pulse). In live mode, times from the start.
+// (digitalRead: HIGH during a pulse, or LOW on a pin the sketch set INPUT_PULLUP: a sensor pulling it
+// down, as an open-collector beam break does). In live mode, times from the start.
+// PWM (ledcAttach, ledcWrite, ledcDetach) is printed as "pwm <microseconds> <pin> <duty> <freq> <bits>",
+// duty -1 once detached.
 //
 //   sim live
 // Runs it in real time instead, as a serial device: it reads its commands
@@ -76,16 +79,40 @@ void delay(unsigned long ms) {
 	else now_us += 1000ULL * ms;
 }
 
-void pinMode(int, int) {}
+static std::map<int, int> modes;
+
+void pinMode(int pin, int mode) { modes[pin] = mode; }
 
 int digitalRead(int pin) {
 	unsigned long long t = Now();
+	int idle = modes.count(pin) && modes[pin] == INPUT_PULLUP ? HIGH : LOW;
 	for (const Pulses& p : inputs) {
 		if (p.pin != pin || t < p.start || p.period == 0) continue;
 		unsigned long long k = (t - p.start) / p.period;
-		if (k < p.count && t - p.start - k * p.period < p.high) return HIGH;
+		if (k < p.count && t - p.start - k * p.period < p.high) return idle == HIGH ? LOW : HIGH;
 	}
-	return LOW;
+	return idle;
+}
+
+static std::map<int, std::pair<unsigned, unsigned> > pwm; // pin -> its frequency and bits
+
+bool ledcAttach(uint8_t pin, uint32_t freq, uint8_t resolution) {
+	pwm[pin] = std::make_pair((unsigned) freq, (unsigned) resolution);
+	return true;
+}
+
+bool ledcWrite(uint8_t pin, uint32_t duty) {
+	if (!pwm.count(pin)) return false;
+	std::fprintf(live ? stderr : stdout, "pwm %llu %d %u %u %u\n", Now(), (int) pin, duty, pwm[pin].first,
+		pwm[pin].second);
+	return true;
+}
+
+bool ledcDetach(uint8_t pin) {
+	if (!pwm.count(pin)) return false;
+	pwm.erase(pin);
+	std::fprintf(live ? stderr : stdout, "pwm %llu %d -1 0 0\n", Now(), (int) pin);
+	return true;
 }
 
 static void ReadInputs() {

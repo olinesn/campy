@@ -6,7 +6,7 @@ It works on top of [live tracking](live-tracking.md):
 
 - **`campy-live`** puts each set's poses in shared memory, the *results feed*.
 - **`campy-rules`** reads that feed and checks each set against your rules. It is a program of its own: `campy-live` never waits for it, so it can't slow tracking down.
-- **An Arduino Nano ESP32**, the *outputs board*, makes the TTL pulses on up to 8 outputs. It runs the sketch `campy/outputs_board/campy_outputs`. It watches the camera trigger, so it knows exactly when each frame was taken.
+- **An Arduino Nano ESP32**, the *outputs board*, makes the TTL pulses on up to 8 outputs. It runs the sketch `campy/outputs_board/campy_outputs`, which can also read an [operant box](operant-boxes.md)'s sensors and move its servos. It watches the camera trigger, so it knows exactly when each frame was taken.
 
 How it divides the work: `campy-rules` decides *whether* an output should be on, and the board decides *when* each edge happens, on its own crystal clock. A 3 ms photometry pulse can't be timed precisely over USB, where a message can land anywhere in a 1 ms window. So the board makes every pulse itself, to the microsecond, and `campy-rules` only starts and stops it.
 
@@ -38,9 +38,9 @@ Use the Arduino IDE (board: Arduino Nano ESP32) or arduino-cli:
 arduino-cli compile --fqbn arduino:esp32:nano_nora campy/outputs_board/campy_outputs
 arduino-cli upload --fqbn arduino:esp32:nano_nora -p <port> campy/outputs_board/campy_outputs
 ```
-The port is `/dev/ttyACM1` or similar on Linux, `COM5` or similar on Windows. The board answers `ok campy_outputs 2` to `id` at 115200 baud.
+The port is `/dev/ttyACM1` or similar on Linux, `COM5` or similar on Windows. The board answers `ok campy_outputs 3` to `id` at 115200 baud.
 
-Upload it again after each campy update that changes the sketch. `campy-rules` checks the version when it starts and refuses a board that runs another one, saying which it found. Version 2 came with pull request 304: a board that still answers `ok campy_outputs 1` restarts its frame count after a pause in the trigger (see *Order matters* below), so `campy-rules` won't start with it. Pull request 430 changed the sketch but not its version, since nothing it says changed: a board flashed before it drops any line that doesn't fit its 64-byte USB buffer at once (`status` every time, and now and then a line when several come together). Upload it again to get every line.
+Upload it again after each campy update that changes the sketch. `campy-rules` checks the version when it starts and refuses a board that runs another one, saying which it found. Version 2 came with pull request 304: a board that still answers `ok campy_outputs 1` restarts its frame count after a pause in the trigger (see *Order matters* below), so `campy-rules` won't start with it. Pull request 430 changed the sketch but not its version, since nothing it says changed: a board flashed before it drops any line that doesn't fit its 64-byte USB buffer at once (`status` every time, and now and then a line when several come together). Upload it again to get every line. Version 3 (pull request 449) added inputs, servos and links for [operant boxes](operant-boxes.md); everything `campy-rules` uses works as in version 2, but `campy-rules` refuses a version 2 board, so upload the sketch again.
 
 ## The rules file
 

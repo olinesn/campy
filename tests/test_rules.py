@@ -611,12 +611,15 @@ class FakePort:
 
 def test_board_refuses_an_older_or_newer_sketch():
 	# A board still running the sketch from before pull request 304 answers
-	# id with version 1: campy-rules says to upload the new one, and why
-	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 1\).*needs version 2.*Upload"):
+	# id with version 1, one from before the operant box's inputs and servos 2: campy-rules says to upload the new
+	# one, and why
+	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 1\).*needs version 3.*frames.*Upload"):
 		outputs.Board(connection=FakePort(version=1), port="fake", heartbeat=0, sync=0)
-	with pytest.raises(outputs.BoardError, match=r"newer campy_outputs \(version 3\).*Update campy"):
-		outputs.Board(connection=FakePort(version=3), port="fake", heartbeat=0, sync=0)
-	assert "not campy_outputs version 2" in outputs.Mismatch("fake", "ok something 2")
+	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 2\).*needs version 3.*servos.*Upload"):
+		outputs.Board(connection=FakePort(version=2), port="fake", heartbeat=0, sync=0)
+	with pytest.raises(outputs.BoardError, match=r"newer campy_outputs \(version 4\).*Update campy"):
+		outputs.Board(connection=FakePort(version=4), port="fake", heartbeat=0, sync=0)
+	assert "not campy_outputs version 3" in outputs.Mismatch("fake", "ok something 2")
 
 
 def test_a_lost_answer_never_goes_to_the_wrong_command():
