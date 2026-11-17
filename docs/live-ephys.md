@@ -28,7 +28,7 @@ Each piece of samples, as it arrives (`campy/ephyslive.py`):
    - **The noise** is the channel's median absolute value / 0.6745, measured every half second and followed over about 10 s.
    - **Why 1.5 ms before.** Filtered forwards, a spike swings below zero again about 1 ms after its trough, a third as deep or more. A large unit's swing would count as a second spike.
    - **What it loses.** A smaller spike within 1.5 ms after a larger one nearby is lost; telling those apart is a sorter's work.
-5. **Keep each spike's waveform** on its 12 nearest sites (its own first) in Kilosort 4's window: 61 samples, the trough at sample 20.
+5. **Keep each spike's waveform** on its 12 nearest sites on its shank (its own first; up to about 60 µm away on a Neuropixels 1.0 or 2.0 probe), in Kilosort 4's window: 61 samples, the trough at sample 20.
 6. **Give each spike its unit.** For now none: every spike is −1, a threshold crossing.
 7. **Keep what a view shows:**
    - each millisecond's lowest and highest value of a few channels, for the last 5 s;
@@ -67,6 +67,16 @@ It runs at below-normal priority unless told otherwise (`--priority normal`).
 
 On the synthetic recordings of the tests (4 units on 96 sites, 8 µV noise, 180 µV spikes), every spike planted after the first half second was found, within 4 samples and 40 µm. Beyond them it found only noise crossing the threshold, fewer than 0.3 a second per channel.
 
+**A real recording:** Kilosort 4's sample data, 45 s from a Neuropixels 1.0 probe recorded by the International Brain Laboratory (public; the file of Kilosort 4's tutorial). It was replayed as fast as it could, in 50 ms pieces, on one core of a cluster node's CPU.
+
+| | |
+|---|---|
+| Spikes found | 91,406: about 2,000 a second across the probe; 345 of the 384 sites more than once a second |
+| Noise (median absolute value / 0.6745) | 13 µV median (11.7 to 14.9 µV, 10th to 90th percentile of sites) |
+| A spike's trough | −70 µV median |
+| Filter and spike finder | 57% of one core per second of samples (more spikes than the synthetic recording, and a slower core) |
+| Samples skipped, gaps | none |
+
 **Not measured yet:**
 - what reading costs SpikeGLX, and how long a read takes from a running SpikeGLX: on a Windows computer with SpikeGLX's simulated probe playing a saved recording first, then on the ChronicRecord rig with no recording running;
 - the filter and spike finder on the rig's own processor.
@@ -91,3 +101,5 @@ That is exact to the frame unless a camera dropped frames. The exact timeline st
   - Trained on that recording replayed through this engine, so that the templates have the live filter's shape.
   - Checked against the Kilosort sort before it is used live.
   - It won't follow the probe's drift between sorts, and it finds only units the earlier sort found.
+- **Accuracy first, then speed.** Speed work waits until the live output matches an automated sort made after the recording (Kilosort 4) in precision and accuracy. After that come tests of how many probes one PC can follow live at once, and only then speedups.
+- **Later, on top of live-sorted units:** each neuron's activity plotted live against the population's low-dimensional space and against the behaviour campy-live tracks: keypoint-MoSeq syllables, a PCA or UMAP space of the poses, or another map that describes the behaviour better.

@@ -29,8 +29,9 @@ The pieces, in the order the data goes through them:
   more: a big unit's would count as a second spike. A smaller spike within
   1.5 ms after a bigger one nearby is lost with it: a live sorter, matching
   templates, can tell them apart.)
-  Each spike keeps its waveform on its nearest sites (NEIGHBORS, its own
-  first), in Kilosort 4's window: 61 samples, the trough at sample 20.
+  Each spike keeps its waveform on its NEIGHBORS nearest sites on its shank,
+  however far (its own first; up to about 60 um on a Neuropixels 1.0 or 2.0
+  probe), in Kilosort 4's window: 61 samples, the trough at sample 20.
 - A sorter gives each spike its unit. Unsorted, for now, leaves every unit
   at -1 (a threshold crossing). A live sorter takes its place later, with the
   same two methods: templates from a Kilosort 4 run, curated in phy, matched
@@ -417,7 +418,8 @@ class Detector:
 		self.stream = stream
 		self.threshold = np.broadcast_to(np.asarray(threshold, np.float32), (len(stream.uv),)).copy()
 		self.threshold[~stream.geometry.used] = np.inf
-		self.neighbors = stream.geometry.Neighbors(radius_um)
+		self.neighbors = stream.geometry.Neighbors(radius_um) # one spike among these
+		self.sites = stream.geometry.Neighbors(np.inf) # its waveform on these
 		self.pre = max(1, int(round(stream.rate * before_ms / 1000))) # a deeper sample this long before: not a spike
 		self.post = max(1, int(round(stream.rate * after_ms / 1000))) # or this long after
 		self.block = max(NOISE_STEP, int(round(stream.rate * NOISE_BLOCK_S)) // NOISE_STEP * NOISE_STEP)
@@ -503,7 +505,8 @@ class Detector:
 		window = buf[rows[:, :, None], np.maximum(nb, 0)[:, None, :]] # [n, pre+post+1, K]
 		window = np.where(nb[:, None, :] >= 0, window, np.inf)
 		keep = buf[t, c] <= window.min(axis=(1, 2))
-		t, c, nb = t[keep], c[keep], nb[keep]
+		t, c = t[keep], c[keep]
+		nb = self.sites[c]
 		rows = t[:, None] + np.arange(-BEFORE, AFTER)[None, :]
 		waves = buf[rows[:, :, None], np.maximum(nb, 0)[:, None, :]]
 		waves = np.where(nb[:, None, :] >= 0, waves, 0.0).astype(np.float32)

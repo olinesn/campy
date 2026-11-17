@@ -131,10 +131,11 @@ def test_waveforms_in_kilosorts_window(recording):
 	mean = spikes.waveforms[:, :, 0].mean(axis=0)
 	assert int(np.argmin(mean)) == el.BEFORE
 	assert np.allclose(spikes.waveforms[np.arange(len(spikes)), el.BEFORE, 0], spikes.amplitude)
-	# The neighbors are sites within 50 um, nearest first
+	# Its 12 nearest sites, nearest first, all of them (a Neuropixels 2.0 probe's: within 90 um)
 	nb = spikes.neighbors[0]
-	d = np.hypot(geometry.x[nb[nb >= 0]] - geometry.x[nb[0]], geometry.z[nb[nb >= 0]] - geometry.z[nb[0]])
-	assert d[0] == 0 and (np.diff(d) >= 0).all() and d.max() <= 50
+	assert (nb >= 0).all()
+	d = np.hypot(geometry.x[nb] - geometry.x[nb[0]], geometry.z[nb] - geometry.z[nb[0]])
+	assert d[0] == 0 and (np.diff(d) >= 0).all() and d.max() <= 90
 
 
 def test_threshold_per_channel(recording):
