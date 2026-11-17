@@ -1542,3 +1542,71 @@ def test_the_panel_says_a_camera_unplugged_and_shows_the_others(monkeypatch):
 		for w in writers:
 			w.Close()
 		health.Detach()
+
+
+# ------------------------------------------------------------------ the Ephys section (campy/ephyslive.py)
+
+def test_the_ephys_section_reads_spikeglx_in_a_process_of_its_own(tmp_path, monkeypatch):
+	# The page opens the section: the panel starts campy-ephys serve, which reads the stand-in SpikeGLX (a run going,
+	# a probe of 32 channels) with read-only calls; the page's requests go through the panel with the page's key, and
+	# on to the process with its own. Closing the section ends the process, and so does a page that stops asking
+	from test_ephyslive import FakeState, Synthetic
+	data, geometry, truth = Synthetic(seconds=2.0, n=32)
+	state = FakeState(tmp_path, data)
+	monkeypatch.setenv("FAKE_SGLX_STATE", str(state))
+	monkeypatch.setattr(panel, "EPHYS_IDLE_S", 3)
+	p, calls = stub_panel(SERVE_PORT + 60)
+	p.ephys = panel.EphysView({"sdk": FAKE_SDK, "host": "127.0.0.1", "port": 4142})
+	key = "?t=" + p.token
+	post = lambda path, body: raw(p, "POST", path + key, {"Content-Type": "application/json"}, json.dumps(body))
+	try:
+		code, said = raw(p, "GET", "/ephys.json" + key)
+		assert code == 200 and said["open"] is False and said["status"]["open"] is False
+		assert raw(p, "GET", "/ephys.json?t=wrong")[0] == 403
+		assert post("/ephys", {"open": True})[0] == 200
+		deadline, said = time.monotonic() + 60, {}
+		while time.monotonic() < deadline:
+			code, said = raw(p, "GET", "/ephys.json" + key + "&stream=1&snippets=0")
+			if code == 200 and said.get("live") and said["live"]["spikes"]["sample"] and said.get("stream"):
+				break
+			time.sleep(0.3)
+		assert said["status"]["open"] and said["health"]["reading"], said
+		assert len(said["stream"]["x"]) == 32 and said["stream"]["threshold"] == [4.5] * 32
+		assert said["live"]["scope"]["channels"] and len(said["live"]["rates"]["channel"]) == 32
+		# The page's scope and threshold, on to the process
+		assert post("/ephys-scope", {"channels": [3, 4, 5, 6]}) == (200, {"ok": True})
+		assert post("/ephys-threshold", {"k": 6, "channel": 3}) == (200, {"ok": True})
+		code, said = post("/ephys-threshold", {"k": 50})
+		assert code == 409 and "2 to 20" in said["error"]
+		time.sleep(0.5)
+		code, said = raw(p, "GET", "/ephys.json" + key + "&stream=1")
+		assert said["live"]["scope"]["channels"] == [3, 4, 5, 6] and said["stream"]["threshold"][3] == 6.0
+		# Only reads: nothing set, started or stopped in SpikeGLX
+		assert set(json.loads(state.read_text())["calls"]) == {"fetch"}
+		# Closing the section ends the process
+		child = p.ephys.child
+		assert post("/ephys", {"open": False})[0] == 200
+		assert child.poll() is not None and p.ephys.Status()["open"] is False
+		# A page that stops asking (its tab closed): the process ends by itself
+		post("/ephys", {"open": True})
+		deadline = time.monotonic() + 60
+		while not p.ephys.Running() and time.monotonic() < deadline:
+			time.sleep(0.2)
+		child = p.ephys.child
+		assert child.wait(timeout=30) == 0
+	finally:
+		p.ephys.Shutdown()
+		p.server.shutdown()
+		p.server.server_close()
+
+
+def test_no_ephys_section_without_spikeglx():
+	p, calls = stub_panel(SERVE_PORT + 61)
+	p.ephys = None
+	try:
+		key = "?t=" + p.token
+		assert raw(p, "GET", "/ephys.json" + key)[0] == 404
+		assert raw(p, "POST", "/ephys" + key, {"Content-Type": "application/json"}, "{}")[0] == 404
+	finally:
+		p.server.shutdown()
+		p.server.server_close()
