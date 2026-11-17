@@ -106,7 +106,12 @@ def test_trained_on_the_first_seconds_it_sorts_the_rest(sorted_recording, capsys
 		# Overall: also what the spike finder missed (unit 1's broad trough is small once high-passed, and one site
 		# from unit 0's)
 		assert per[u]["sensitivity"] >= 0.75, per[u]
+		# Unit by unit (its Kilosort spikes and those given to it, paired one to one): no more than either count,
+		# and here about as above (one unit's spike at a time)
+		assert per[u]["own_paired"] <= min(per[u]["kilosort_spikes"], per[u]["given"])
+		assert abs(per[u]["own_sensitivity"] - per[u]["sensitivity"]) <= 0.05, per[u]
 	assert summary["sensitivity_median"] >= 0.9 and summary["precision_median"] >= 0.95
+	assert summary["own_sensitivity_median"] >= 0.9 and summary["own_precision_median"] >= 0.95
 	assert summary["live_spikes_of_a_unit_given_it"] >= 0.9
 	# The noise unit's spikes (phy says noise): left unsorted, not taken for a kept unit
 	assert summary["live_spikes_of_no_unit_given_one"] <= 0.1
