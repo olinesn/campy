@@ -1332,7 +1332,10 @@ def test_live_rules_reward_pokes_from_the_board(tmp_path, outputs_sim):
 	assert len(pokes) >= 4, events
 	for e in pokes:
 		# (seen in real time: later than the edge on a busy computer)
-		assert e["input"] == "poke" and (e["board_us"] - 500000) % 250000 < 50000 and e["board_frame"] >= 1, e
+		# (or a little before it: the sketch stamps an edge with the time it read just before looking at the pins,
+		# and the edge can come in between; seen 1 us early on GitHub's runner)
+		off = (e["board_us"] - 500000) % 250000
+		assert e["input"] == "poke" and (off < 50000 or off > 250000 - 5000) and e["board_frame"] >= 1, e
 	pulses = [e for e in events if e["kind"] == "command" and e["command"].startswith("pulse 3 2000")]
 	# Each poke rewarded once (a poke lasts 40 ms: two or three sets, one start of the rule), within a few sets
 	assert abs(len(pulses) - len(pokes)) <= 1, (pokes, pulses)
