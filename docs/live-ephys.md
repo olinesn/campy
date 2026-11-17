@@ -1,10 +1,10 @@
 # Live electrophysiology from SpikeGLX
 
-*Being built. What exists so far: the engine (`campy/ephyslive.py`), `campy-ephys bench`, which measures what it costs, and the campy-session panel's **Live ephys** card, which shows it ([below](#in-the-panel-the-live-ephys-card)).*
+*Being built. What exists so far: the engine (`campy/ephyslive.py`), `campy-ephys bench`, which measures what it costs, the campy-session panel's **Live ephys** card, which shows it ([below](#in-the-panel-the-live-ephys-card)), and a live sorter trained on a Kilosort 4 sort ([below](#a-live-sorter-from-a-kilosort-4-sort)).*
 
 A Neuropixels probe recorded by SpikeGLX can be watched live: a few channels scrolling like an oscilloscope, and its spikes, found by a threshold on every channel, as snippets, firing rates and a map of the probe. campy reads the probe's samples from SpikeGLX while SpikeGLX records them, and changes nothing in SpikeGLX.
 
-It is built for live-sorted single units later. Spikes keep their waveforms in Kilosort 4's window, each spike has a unit (none yet), and a recording replayed through it gives exactly the spikes the live view showed. So a live sorter can be trained on a saved recording against its Kilosort 4 sort, curated in phy, and then run live.
+It sorts spikes into units live, with templates trained on a Kilosort 4 sort of an earlier recording of the same probe (curated in phy or not). Spikes keep their waveforms in Kilosort 4's window, and a recording replayed through it gives exactly the spikes the live view showed, which is how the sorter is trained and checked.
 
 ## How SpikeGLX gives its samples
 
@@ -29,7 +29,7 @@ Each piece of samples, as it arrives (`campy/ephyslive.py`):
    - **Why 1.5 ms before.** Filtered forwards, a spike swings below zero again about 1 ms after its trough, a third as deep or more. A large unit's swing would count as a second spike.
    - **What it loses.** A smaller spike within 1.5 ms after a larger one nearby is lost; telling those apart is a sorter's work.
 5. **Keep each spike's waveform** on its 12 nearest sites on its shank (its own first; up to about 60 µm away on a Neuropixels 1.0 or 2.0 probe), in Kilosort 4's window: 61 samples, the trough at sample 20.
-6. **Give each spike its unit.** For now none: every spike is −1, a threshold crossing.
+6. **Give each spike its unit:** with templates from a Kilosort 4 sort ([below](#a-live-sorter-from-a-kilosort-4-sort)), the unit it matches; otherwise, or when it matches none, −1 (a threshold crossing).
 7. **Keep what a view shows:**
    - each millisecond's lowest and highest value of a few channels, for the last 5 s;
    - the last 10 s of spikes;
@@ -121,7 +121,16 @@ SpikeGLX takes the probe's part number from the file's `.meta`, so the `.meta` o
 | campy's reader (reading, filtering, finding spikes) | 38% of one core |
 | Written to disk | nothing: SpikeGLX was not saving before or after, and its data folder stayed empty |
 
-**Not measured yet:** reading while SpikeGLX writes (the gate open, in a recording), and alongside the cameras, their encoders and campy-live.
+**With everything running** (17 November 2026, the ChronicRecord rig): a 15-minute gate test (3 bouts, 4 cameras at 60 fps, the Pico, SpikeGLX recording its bouts) from the panel's *ChronicRecord session + live 3D (test)* experiment, which adds campy-live 3D tracking to the rig's session (3 animals, a 4-camera calibration) and draws the camera view with its 3D tile. The Live ephys card was open throughout.
+
+| | |
+|---|---|
+| Cameras | 15,600 frames each: every one of the Pico's pulses (the Pico: 0 late, 0 lost, 0 stalls) |
+| campy-live | every one of the 15,600 frame sets tracked, 0 skipped, 0 misaligned: 60 a second through each bout; frame to 3D 9.0 ms median, 11.4 ms at the 99th percentile, 13.1 ms at most (inference 5.3 ms) |
+| The camera view | drew every result (about 60 a second); before, the session's view drew 15 frames a second with no 3D |
+| The Live ephys card | 16 reads a second, 15 ms behind SpikeGLX, its reader 45% of one core; the camera frame it showed matched the view's |
+
+Over Remote Desktop the view and the card show at most Remote Desktop's own frame rate (usually 30 a second).
 
 ## In the panel: the Live ephys card
 
@@ -167,11 +176,46 @@ Checked in the tests with the stand-in SpikeGLX's OneBox (camera pulses in bouts
 
 Not yet tried with the rig's own OneBox and Pico.
 
+## A live sorter from a Kilosort 4 sort
+
+`campy/ephyssort.py`. Templates are trained on a recording of the same probe that Kilosort 4 sorted, then each live spike is matched to them.
+
+```bash
+campy-ephys train --replay <run>_g0_t0.imec0.ap.bin --phy <Kilosort's output folder> --out templates.npz [--span 0:600]
+campy-ephys evaluate --replay <run>_g0_t0.imec0.ap.bin --phy <Kilosort's output folder> --templates templates.npz --span 600:900
+```
+
+**Training.** The recording is replayed through the live filter and spike finder, exactly as live.
+1. **Labels:** each live spike near a spike of a kept unit (within 10 samples, on a site within 60 µm of the unit's peak site) takes that unit. The kept units are those labelled `good` or `mua`: phy's labels if the sort was curated (`cluster_group.tsv`), else Kilosort's (`cluster_KSLabel.tsv`); `--labels` changes them.
+2. **Templates:** each unit's template is the median of its live spikes' waveforms on its 12 nearest sites, as the live filter shapes them. Kilosort's own templates are whitened and filtered forwards and backwards, so they are not what the live view sees.
+3. **Acceptance:** each unit gets how far its own spikes fall from its template: the 99th percentile of their distances (`--accept-q`).
+
+**Sorting live.** Each spike is compared with the units whose sites include its channel, on the sites they share. The template is scaled to the spike (0.5 to 2 times), and the distance is the residual per sample, divided by each site's noise. The spike takes the closest unit if it is within that unit's acceptance, and stays unsorted (−1) otherwise.
+
+**Using it on the card:** give the config's `spikeglx:` section `templates: <the .npz>`. The card then colours each spike by its unit, lists the busiest units with their rates (a click shows a unit's last 30 spikes), and says what share of spikes it sorted. A `mua` unit is listed as such.
+
+**Checked on Kilosort 4's sample recording** (45 s, Neuropixels 1.0; Kilosort 4.1.7, its labels, not curated). Trained on the first 30 s, evaluated on the last 15 s against Kilosort's sort there, for its good units:
+
+| | Templates for good units only | Good and mua units (the default) |
+|---|---|---|
+| Units with a template | 129 of 135 good | 255 of 281 (124 good ones reported) |
+| A unit's Kilosort spikes found live and given to it (median per unit) | 68% (25th to 75th percentile: 31% to 91%) | 62% (28% to 88%) |
+| The spikes given to a unit that are its (median per unit) | 61% (39% to 89%) | 87% (70% to 97%) |
+| Live spikes of a good unit given that unit | 91% | 88% (4% left unsorted) |
+| Live spikes of no good unit given one anyway | 42% | 8% |
+| Time to sort, per spike (one core of a cluster node) | 151 µs | 279 µs |
+
+So the mua units' templates are what keeps their spikes, and noise crossings, from being taken for good units. With the 95th percentile as acceptance instead of the 99th, the spikes given to a unit that are its rose to 89%, and the share of its spikes found and given to it fell to 59%. On synthetic units in the tests (pairs on nearly the same sites, told apart by shape or footprint), nearly every spike the spike finder found went to its unit.
+
+**What limits it:**
+- **What the spike finder misses.** It finds 85% of good units' spikes (above), and few of the units near its threshold, where Kilosort's template matching still finds them: the lower quartile of units is under 30%.
+- **No drift correction.** Train again on a recent recording when the probe has moved.
+- **Only the sort's units.** Units the sort didn't keep stay unsorted.
+- **Collisions.** Two spikes within 1.5 ms of each other nearby are one live spike, sorted as the bigger.
+- **Speed.** At about 280 µs a spike, 2,000 spikes a second would take about half a core. Speed work comes after accuracy (below).
+
 ## Next
 
-- **A live sorter:** templates from a Kilosort 4 sort of an earlier recording of the same probe, curated in phy, matched to each spike's waveforms.
-  - Trained on that recording replayed through this engine, so that the templates have the live filter's shape.
-  - Checked against the Kilosort sort before it is used live.
-  - It won't follow the probe's drift between sorts, and it finds only units the earlier sort found.
+- **A better sorter:** matching the templates to find spikes below the threshold too, as Kilosort does, and following the probe's drift.
 - **Accuracy first, then speed.** Speed work waits until the live output matches an automated sort made after the recording (Kilosort 4) in precision and accuracy. After that come tests of how many probes one PC can follow live at once, and only then speedups.
 - **Later, on top of live-sorted units:** each neuron's activity plotted live against the population's low-dimensional space and against the behaviour campy-live tracks: keypoint-MoSeq syllables, a PCA or UMAP space of the poses, or another map that describes the behaviour better.
