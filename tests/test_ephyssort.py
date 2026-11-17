@@ -89,7 +89,8 @@ def test_trained_on_the_first_seconds_it_sorts_the_rest(sorted_recording, capsys
 	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":5"]) == 0
 	sorter = es.TemplateSorter(out)
 	assert sorted(sorter.units.tolist()) == [0, 1, 2, 3, 4] # not the unit phy calls noise
-	assert sorter.templates.shape[1:] == (61, el.NEIGHBORS)
+	assert sorter.templates.shape[1:] == (61, es.TEMPLATE_SITES) # a spike's whole footprint, for the matcher
+	assert (sorter.near_sites == sorter.sites[:, :el.NEIGHBORS]).all() # the threshold's spikes: the nearest 12
 	assert [int(np.argmin(t[:, 0])) for t in sorter.templates] == [el.BEFORE] * 5 # each trough at 20, on its peak site
 	assert {int(u): int(p) for u, p in zip(sorter.units, sorter.peaks)} == {0: 12, 1: 14, 2: 40, 3: 47, 4: 70}
 	report = tmp / "evaluate.json"
