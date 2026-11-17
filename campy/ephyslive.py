@@ -161,15 +161,18 @@ def ReadMeta(path):
 
 
 def MetaUv(meta, n):
-	"""uV per int16 count of each AP channel, from a probe's .meta: imAiRangeMax / imMaxInt / the AP gain (each
-	channel's from imroTbl on a Neuropixels 1.0 probe, 80 on a 2.0)."""
+	"""uV per int16 count of each AP channel, from a probe's .meta: imAiRangeMax / imMaxInt / the AP gain. The gain:
+	each channel's from imroTbl where it has one (Neuropixels 1.0: chan bank ref apgain lfgain apfilt), else
+	imChan0apGain (a probe whose channels share one gain: 100 on an NP2013, 2048 counts), else 80 (the first
+	Neuropixels 2.0 probes, 8192 counts)."""
 	import re
 	volts = float(meta.get("imAiRangeMax", 0.62)) / float(meta.get("imMaxInt", 8192))
+	shared = float(meta.get("imChan0apGain", 80))
 	gains = []
 	for e in re.findall(r"\(([^)]*)\)", meta.get("imroTbl", ""))[1:]:
 		fields = e.split()
-		gains.append(float(fields[3]) if len(fields) == 6 else 80.0) # NP 1.0: chan bank ref apgain lfgain apfilt
-	gains = (gains + [80.0] * n)[:n]
+		gains.append(float(fields[3]) if len(fields) == 6 else shared)
+	gains = (gains + [shared] * n)[:n]
 	return np.array([volts / g * 1e6 for g in gains], np.float32)
 
 
