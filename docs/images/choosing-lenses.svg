@@ -1,0 +1,226 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 790" width="900" height="790" role="img" aria-label="A behaviour box, 45 by 30 cm, inside an enclosure 100 by 80 cm and 90 cm high, seen from the front right. An 8 mm lens fits looking down from the ceiling, a 6 mm lens from a back corner, and a 4 mm lens from the side wall. A 12 mm lens would have to be 124 cm away, outside the enclosure; from inside it, the box is cut off."><style>
+svg{--bg:#fbfaf7;--fg:#1f2328;--muted:#5f666e;--line:#b9b4a9;--floor:#ebe7de;--wall1:#e1ddd3;--wall2:#d6d1c6;
+--boxfloor:#fbfaf6;--grid:#cdc7ba;--glass:#9fc4d8;--body:#3b3f46;--lens:#16181b;--c1:#1f6feb;--c2:#0b8a63;--c3:#8250df;--warn:#c2410c;
+color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+@media (prefers-color-scheme: dark){svg{--bg:#16181c;--fg:#e6e4df;--muted:#a3a9b1;--line:#555a63;--floor:#24272d;
+--wall1:#2b2e35;--wall2:#32353d;--boxfloor:#1a1d22;--grid:#40444c;--glass:#5d8aa3;--body:#a5abb4;--lens:#6d737c;--c1:#6ea8ff;--c2:#3fcf9f;
+--c3:#b69cff;--warn:#ff9a66}}
+.bg{fill:var(--bg)}
+.floor{fill:var(--floor);stroke:var(--line);stroke-width:1}
+.wall1{fill:var(--wall1);stroke:var(--line);stroke-width:1}
+.wall2{fill:var(--wall2);stroke:var(--line);stroke-width:1}
+.cut{fill:none;stroke:var(--line);stroke-width:1.2;stroke-dasharray:5 4}
+.boxfloor{fill:var(--boxfloor);stroke:var(--fg);stroke-width:1.1}
+.grid{stroke:var(--grid);stroke-width:.7;fill:none}
+.glass{fill:var(--glass);fill-opacity:.16;stroke:var(--fg);stroke-opacity:.7;stroke-width:1}
+.body{fill:var(--body)}
+.lensc{fill:var(--lens)}
+.mount{stroke:var(--muted);stroke-width:2.2;stroke-linecap:round}
+.beam{stroke-width:1;stroke-opacity:.85;fill-opacity:.13}
+.c1{fill:var(--c1);stroke:var(--c1)}.c2{fill:var(--c2);stroke:var(--c2)}.c3{fill:var(--c3);stroke:var(--c3)}
+.warn{fill:var(--warn);stroke:var(--warn)}
+.ghost{fill:none;stroke:var(--warn);stroke-width:1.3;stroke-dasharray:3 2}
+text{fill:var(--fg);font-size:13px}
+.t-muted{fill:var(--muted)}
+.t-small{font-size:12px}
+.t-b{font-weight:600}
+.t-c1{fill:var(--c1)}.t-c2{fill:var(--c2)}.t-c3{fill:var(--c3)}.t-warn{fill:var(--warn)}
+.frame{fill:var(--bg);stroke:var(--fg);stroke-width:1.2}
+.frame.warn{stroke:var(--warn);stroke-width:1.6;fill:var(--bg)}
+.margin{fill:none;stroke:var(--muted);stroke-width:.8;stroke-dasharray:3 3}
+.lead{fill:none;stroke:var(--muted);stroke-width:.8}
+</style>
+<rect class="bg" width="900" height="790"/>
+<polygon class="wall1" points="473.1,303.2 820.8,391.6 820.8,54.5 473.1,-33.9"/>
+<polygon class="wall2" points="299.2,416.4 473.1,303.2 473.1,-33.9 299.2,79.3"/>
+<polygon class="floor" points="299.2,416.4 646.9,504.8 820.8,391.6 473.1,303.2"/>
+<polygon class="beam c1" points="449.2,405.3 560.0,104.4 670.8,402.7 605.6,445.1"/>
+<polygon class="beam c2" points="449.2,405.3 483.5,138.1 670.8,402.7 605.6,445.1"/>
+<polygon class="beam c3" points="449.2,405.3 514.4,362.9 672.5,366.2 670.8,402.7 605.6,445.1"/>
+<polygon class="beam warn" points="167.3,194.8 670.8,402.7 605.6,445.1 449.2,405.3" stroke-dasharray="5 4"/>
+<polygon class="boxfloor" points="449.2,405.3 605.6,445.1 670.8,402.7 514.4,362.9"/>
+<line class="grid" x1="466.6" y1="409.7" x2="531.7" y2="367.3"/>
+<line class="grid" x1="483.9" y1="414.2" x2="549.1" y2="371.7"/>
+<line class="grid" x1="501.3" y1="418.6" x2="566.5" y2="376.2"/>
+<line class="grid" x1="518.7" y1="423.0" x2="583.9" y2="380.6"/>
+<line class="grid" x1="536.1" y1="427.4" x2="601.3" y2="385.0"/>
+<line class="grid" x1="553.5" y1="431.8" x2="618.7" y2="389.4"/>
+<line class="grid" x1="570.9" y1="436.3" x2="636.1" y2="393.8"/>
+<line class="grid" x1="588.3" y1="440.7" x2="653.4" y2="398.3"/>
+<line class="grid" x1="460.0" y1="398.3" x2="616.5" y2="438.0"/>
+<line class="grid" x1="470.9" y1="391.2" x2="627.4" y2="431.0"/>
+<line class="grid" x1="481.8" y1="384.1" x2="638.2" y2="423.9"/>
+<line class="grid" x1="492.6" y1="377.0" x2="649.1" y2="416.8"/>
+<line class="grid" x1="503.5" y1="370.0" x2="660.0" y2="409.7"/>
+<polygon class="glass" points="670.8,402.7 514.4,362.9 514.4,288.0 670.8,327.8"/>
+<polygon class="glass" points="514.4,362.9 449.2,405.3 449.2,330.4 514.4,288.0"/>
+<polygon class="glass" points="605.6,445.1 670.8,402.7 670.8,327.8 605.6,370.2"/>
+<polygon class="glass" points="449.2,405.3 605.6,445.1 605.6,370.2 449.2,330.4"/>
+<line class="cut" x1="646.9" y1="504.8" x2="646.9" y2="167.7"/>
+<line class="cut" x1="299.2" y1="79.3" x2="646.9" y2="167.7"/>
+<line class="cut" x1="646.9" y1="167.7" x2="820.8" y2="54.5"/>
+<line class="cut" x1="820.8" y1="391.6" x2="646.9" y2="504.8"/>
+<line class="cut" x1="299.2" y1="416.4" x2="646.9" y2="504.8"/>
+<line class="mount" x1="471.5" y1="96.5" x2="473.1" y2="98.3"/>
+<polygon class="body" points="458.7,103.0 463.4,93.0 469.0,112.5 464.3,122.5" stroke="none"/>
+<polygon class="body" points="485.2,119.5 464.3,122.5 469.0,112.5 489.9,109.5" stroke="none"/>
+<polygon class="body" points="484.3,90.0 489.9,109.5 469.0,112.5 463.4,93.0" stroke="none"/>
+<polygon class="lensc" points="467.3,121.0 470.9,113.3 477.3,135.4 473.6,143.1" stroke="none"/>
+<polygon class="c2" points="489.7,140.8 473.6,143.1 477.3,135.4 493.3,133.1" stroke="none"/>
+<polygon class="lensc" points="486.9,111.0 493.3,133.1 477.3,135.4 470.9,113.3" stroke="none"/>
+<line class="mount" x1="560.0" y1="61.2" x2="560.0" y2="66.9"/>
+<polygon class="lensc" points="548.3,82.5 562.7,86.2 571.7,80.3 557.3,76.7" stroke="none"/>
+<polygon class="lensc" points="562.7,86.2 571.7,80.3 571.7,103.3 562.7,109.1" stroke="none"/>
+<polygon class="lensc" points="548.3,82.5 548.3,105.5 562.7,109.1 562.7,86.2" stroke="none"/>
+<polygon class="body" points="544.7,62.6 563.5,67.4 575.3,59.8 556.5,55.0" stroke="none"/>
+<polygon class="body" points="563.5,67.4 575.3,59.8 575.3,80.0 563.5,87.6" stroke="none"/>
+<polygon class="body" points="544.7,62.6 544.7,82.9 563.5,87.6 563.5,67.4" stroke="none"/>
+<line class="mount" x1="697.6" y1="357.7" x2="693.3" y2="356.6"/>
+<polygon class="lensc" points="681.8,371.9 668.4,376.4 681.8,372.2 695.1,367.7" stroke="none"/>
+<polygon class="lensc" points="681.8,371.9 676.5,355.8 663.1,360.3 668.4,376.4" stroke="none"/>
+<polygon class="lensc" points="681.8,371.9 695.1,367.7 689.9,351.5 676.5,355.8" stroke="none"/>
+<polygon class="body" points="692.3,371.0 680.5,375.0 698.0,369.5 709.8,365.5" stroke="none"/>
+<polygon class="body" points="692.3,371.0 685.5,350.0 673.7,353.9 680.5,375.0" stroke="none"/>
+<polygon class="body" points="692.3,371.0 709.8,365.5 702.9,344.4 685.5,350.0" stroke="none"/>
+<polygon class="ghost" points="149.6,174.2 169.0,184.5 174.8,191.0 155.4,180.7"/>
+<polygon class="ghost" points="140.5,188.3 146.3,194.8 155.4,180.7 149.6,174.2"/>
+<polygon class="ghost" points="146.3,194.8 155.4,180.7 174.8,191.0 165.6,205.1"/>
+<polygon class="ghost" points="133.1,162.0 150.1,171.1 157.7,179.6 140.7,170.5"/>
+<polygon class="ghost" points="121.2,180.4 128.7,188.8 140.7,170.5 133.1,162.0"/>
+<polygon class="ghost" points="128.7,188.8 140.7,170.5 157.7,179.6 145.8,197.9"/>
+<line class="lead" x1="560.0" y1="104.4" x2="630.0" y2="82.4"/>
+<text x="630.0" y="86.4" class="t-b t-c1" text-anchor="start">8 mm lens, looking down</text>
+<text x="630.0" y="102.4" class="t-small" text-anchor="start">80 cm above the floor</text>
+<text x="630.0" y="118.4" class="t-small t-muted" text-anchor="start">it fits from 75 cm</text>
+<line class="lead" x1="483.5" y1="138.1" x2="443.5" y2="88.1"/>
+<text x="443.5" y="92.1" class="t-b t-c2" text-anchor="end">6 mm lens, in a back corner</text>
+<text x="443.5" y="108.1" class="t-small" text-anchor="end">74 cm from the floor's middle</text>
+<text x="443.5" y="124.1" class="t-small t-muted" text-anchor="end">it fits from 69 cm</text>
+<line class="lead" x1="672.5" y1="366.2" x2="718.5" y2="398.2"/>
+<text x="718.5" y="402.2" class="t-b t-c3" text-anchor="start">4 mm lens, on the side wall</text>
+<text x="718.5" y="418.2" class="t-small" text-anchor="start">51 cm from the floor's middle</text>
+<text x="718.5" y="434.2" class="t-small t-muted" text-anchor="start">it fits from 50 cm</text>
+<line class="lead" x1="167.3" y1="194.8" x2="157.3" y2="254.8"/>
+<text x="157.3" y="258.8" class="t-b t-warn" text-anchor="start">✕ 12 mm lens, in a front corner</text>
+<text x="157.3" y="274.8" class="t-small" text-anchor="start">it fits only from 124 cm: outside the</text>
+<text x="157.3" y="290.8" class="t-small" text-anchor="start">enclosure, whose wall is 62 cm away</text>
+<text x="24" y="28" class="t-small t-muted">To scale, but for the cameras (drawn larger).</text>
+<text x="24" y="44" class="t-small t-muted">Camera: FLIR Blackfly S, 1/2" sensor, 1280 × 1024.</text>
+<text x="24" y="60" class="t-small t-muted">Each lens is the longest that fits from its spot.</text>
+<text x="24" y="76" class="t-small t-muted">Distances: from the lens to the middle of the box&#8217;s floor.</text>
+<text x="453.1" y="494.6" class="t-small t-muted" text-anchor="middle">Enclosure, inside: 100 × 80 cm, 90 cm high</text>
+<text x="613.6" y="461.1" class="t-small t-muted">Box: 45 × 30 cm floor</text>
+<text x="24" y="560" class="t-b">What each camera sees (without lens distortion). Dashed: the middle 90% of the frame, where the box should sit</text>
+<clipPath id="clip-top-8"><rect x="24" y="612" width="192.0" height="153.6"/></clipPath>
+<rect class="frame" x="24" y="612" width="192.0" height="153.6"/>
+<polygon class="wall1" points="-36.3,563.8 276.2,563.8 12620.0,-9311.2 -12380.0,-9311.2" clip-path="url(#clip-top-8)"/>
+<polygon class="wall2" points="-36.3,813.8 -36.3,563.8 -12380.0,-9311.2 -12380.0,10688.8" clip-path="url(#clip-top-8)"/>
+<polygon class="wall2" points="276.2,813.8 276.2,563.8 12620.0,-9311.2 12620.0,10688.8" clip-path="url(#clip-top-8)"/>
+<polygon class="floor" points="-36.3,813.8 276.2,813.8 276.2,563.8 -36.3,563.8" clip-path="url(#clip-top-8)"/>
+<polygon class="boxfloor" points="49.7,735.7 190.3,735.7 190.3,641.9 49.7,641.9" clip-path="url(#clip-top-8)"/>
+<line class="grid" x1="65.3" y1="735.7" x2="65.3" y2="641.9" clip-path="url(#clip-top-8)"/>
+<line class="grid" x1="80.9" y1="735.7" x2="80.9" y2="641.9" clip-path="url(#clip-top-8)"/>
+<line class="grid" x1="96.6" y1="735.7" x2="96.6" y2="641.9" clip-path="url(#clip-top-8)"/>
+<line class="grid" x1="112.2" y1="735.7" x2="112.2" y2="641.9" clip-path="url(#clip-top-8)"/>
+<line class="grid" x1="127.8" y1="735.7" x2="127.8" y2="641.9" clip-path="url(#clip-top-8)"/>
+<line class="grid" x1="143.4" y1="735.7" x2="143.4" y2="641.9" clip-path="url(#clip-top-8)"/>
+<line class="grid" x1="159.1" y1="735.7" x2="159.1" y2="641.9" clip-path="url(#clip-top-8)"/>
+<line class="grid" x1="174.7" y1="735.7" x2="174.7" y2="641.9" clip-path="url(#clip-top-8)"/>
+<line class="grid" x1="49.7" y1="720.1" x2="190.3" y2="720.1" clip-path="url(#clip-top-8)"/>
+<line class="grid" x1="49.7" y1="704.4" x2="190.3" y2="704.4" clip-path="url(#clip-top-8)"/>
+<line class="grid" x1="49.7" y1="688.8" x2="190.3" y2="688.8" clip-path="url(#clip-top-8)"/>
+<line class="grid" x1="49.7" y1="673.2" x2="190.3" y2="673.2" clip-path="url(#clip-top-8)"/>
+<line class="grid" x1="49.7" y1="657.5" x2="190.3" y2="657.5" clip-path="url(#clip-top-8)"/>
+<polygon class="glass" points="49.7,735.7 190.3,735.7 213.8,751.3 26.2,751.3" clip-path="url(#clip-top-8)"/>
+<polygon class="glass" points="49.7,641.9 49.7,735.7 26.2,751.3 26.2,626.3" clip-path="url(#clip-top-8)"/>
+<polygon class="glass" points="190.3,735.7 190.3,641.9 213.8,626.3 213.8,751.3" clip-path="url(#clip-top-8)"/>
+<polygon class="glass" points="190.3,641.9 49.7,641.9 26.2,626.3 213.8,626.3" clip-path="url(#clip-top-8)"/>
+<rect class="margin" x="33.6" y="619.7" width="172.8" height="138.2"/>
+<rect class="frame" x="24" y="612" width="192.0" height="153.6" fill="none" style="fill:none"/>
+<text x="24" y="590" class="t-b t-c1">Top, 8 mm</text>
+<text x="24" y="605" class="t-small t-muted">from 80 cm</text>
+<clipPath id="clip-corner-6"><rect x="240" y="612" width="192.0" height="153.6"/></clipPath>
+<rect class="frame" x="240" y="612" width="192.0" height="153.6"/>
+<polygon class="wall1" points="336.0,1003.3 197.1,668.7 -106.0,137.1 -6383.3,-9919.8 336.0,3146.9" clip-path="url(#clip-corner-6)"/>
+<polygon class="wall2" points="522.5,715.8 336.0,1003.3 336.0,3146.9 10834.9,-9919.8 2693.4,-1572.0" clip-path="url(#clip-corner-6)"/>
+<polygon class="wall2" points="336.0,625.9 197.1,668.7 -106.0,137.1 336.0,370.1" clip-path="url(#clip-corner-6)"/>
+<polygon class="floor" points="522.5,715.8 336.0,625.9 197.1,668.7 336.0,1003.3" clip-path="url(#clip-corner-6)"/>
+<polygon class="boxfloor" points="407.8,703.5 331.3,654.3 275.5,676.4 344.3,750.1" clip-path="url(#clip-corner-6)"/>
+<line class="grid" x1="396.4" y1="696.2" x2="333.4" y2="738.4" clip-path="url(#clip-corner-6)"/>
+<line class="grid" x1="385.9" y1="689.4" x2="323.6" y2="727.9" clip-path="url(#clip-corner-6)"/>
+<line class="grid" x1="376.3" y1="683.2" x2="314.7" y2="718.4" clip-path="url(#clip-corner-6)"/>
+<line class="grid" x1="367.4" y1="677.5" x2="306.7" y2="709.8" clip-path="url(#clip-corner-6)"/>
+<line class="grid" x1="359.1" y1="672.2" x2="299.3" y2="702.0" clip-path="url(#clip-corner-6)"/>
+<line class="grid" x1="351.5" y1="667.3" x2="292.6" y2="694.8" clip-path="url(#clip-corner-6)"/>
+<line class="grid" x1="344.3" y1="662.7" x2="286.5" y2="688.2" clip-path="url(#clip-corner-6)"/>
+<line class="grid" x1="337.6" y1="658.4" x2="280.8" y2="682.1" clip-path="url(#clip-corner-6)"/>
+<line class="grid" x1="399.2" y1="709.8" x2="323.2" y2="657.5" clip-path="url(#clip-corner-6)"/>
+<line class="grid" x1="389.9" y1="716.6" x2="314.7" y2="660.9" clip-path="url(#clip-corner-6)"/>
+<line class="grid" x1="379.8" y1="724.0" x2="305.7" y2="664.5" clip-path="url(#clip-corner-6)"/>
+<line class="grid" x1="369.0" y1="732.0" x2="296.2" y2="668.2" clip-path="url(#clip-corner-6)"/>
+<line class="grid" x1="357.2" y1="740.7" x2="286.2" y2="672.2" clip-path="url(#clip-corner-6)"/>
+<polygon class="glass" points="331.3,654.3 275.5,676.4 263.9,631.2 330.6,613.6" clip-path="url(#clip-corner-6)"/>
+<polygon class="glass" points="407.8,703.5 331.3,654.3 330.6,613.6 424.7,654.2" clip-path="url(#clip-corner-6)"/>
+<polygon class="glass" points="275.5,676.4 344.3,750.1 347.0,698.1 263.9,631.2" clip-path="url(#clip-corner-6)"/>
+<polygon class="glass" points="344.3,750.1 407.8,703.5 424.7,654.2 347.0,698.1" clip-path="url(#clip-corner-6)"/>
+<rect class="margin" x="249.6" y="619.7" width="172.8" height="138.2"/>
+<rect class="frame" x="240" y="612" width="192.0" height="153.6" fill="none" style="fill:none"/>
+<text x="240" y="590" class="t-b t-c2">Back corner, 6 mm</text>
+<text x="240" y="605" class="t-small t-muted">from 74 cm</text>
+<clipPath id="clip-side-4"><rect x="456" y="612" width="192.0" height="153.6"/></clipPath>
+<rect class="frame" x="456" y="612" width="192.0" height="153.6"/>
+<polygon class="wall1" points="576.6,652.3 854.5,780.9 7388.1,-1905.9 6158.7,-8661.4 595.4,459.3" clip-path="url(#clip-side-4)"/>
+<polygon class="wall2" points="466.8,662.9 576.6,652.3 595.4,459.3 358.2,353.7" clip-path="url(#clip-side-4)"/>
+<polygon class="wall2" points="-1177.1,4329.0 854.5,780.9 7388.1,-1905.9" clip-path="url(#clip-side-4)"/>
+<polygon class="floor" points="466.8,662.9 -2119.0,4329.0 -1177.1,4329.0 854.5,780.9 576.6,652.3" clip-path="url(#clip-side-4)"/>
+<polygon class="boxfloor" points="510.3,673.5 524.1,746.0 624.5,715.4 562.8,666.7" clip-path="url(#clip-side-4)"/>
+<line class="grid" x1="511.0" y1="677.3" x2="566.5" y2="669.6" clip-path="url(#clip-side-4)"/>
+<line class="grid" x1="511.8" y1="681.6" x2="570.6" y2="672.8" clip-path="url(#clip-side-4)"/>
+<line class="grid" x1="512.8" y1="686.5" x2="575.3" y2="676.5" clip-path="url(#clip-side-4)"/>
+<line class="grid" x1="513.9" y1="692.3" x2="580.6" y2="680.7" clip-path="url(#clip-side-4)"/>
+<line class="grid" x1="515.2" y1="699.2" x2="586.7" y2="685.6" clip-path="url(#clip-side-4)"/>
+<line class="grid" x1="516.8" y1="707.4" x2="593.8" y2="691.2" clip-path="url(#clip-side-4)"/>
+<line class="grid" x1="518.7" y1="717.4" x2="602.2" y2="697.8" clip-path="url(#clip-side-4)"/>
+<line class="grid" x1="521.1" y1="730.0" x2="612.3" y2="705.8" clip-path="url(#clip-side-4)"/>
+<line class="grid" x1="520.0" y1="672.2" x2="544.9" y2="739.7" clip-path="url(#clip-side-4)"/>
+<line class="grid" x1="529.3" y1="671.0" x2="563.8" y2="733.9" clip-path="url(#clip-side-4)"/>
+<line class="grid" x1="538.2" y1="669.9" x2="581.0" y2="728.7" clip-path="url(#clip-side-4)"/>
+<line class="grid" x1="546.7" y1="668.7" x2="596.8" y2="723.9" clip-path="url(#clip-side-4)"/>
+<line class="grid" x1="554.9" y1="667.7" x2="611.2" y2="719.5" clip-path="url(#clip-side-4)"/>
+<polygon class="glass" points="562.8,666.7 510.3,673.5 502.8,631.6 564.5,629.5" clip-path="url(#clip-side-4)"/>
+<polygon class="glass" points="624.5,715.4 562.8,666.7 564.5,629.5 650.8,646.6" clip-path="url(#clip-side-4)"/>
+<polygon class="glass" points="510.3,673.5 524.1,746.0 509.2,660.8 502.8,631.6" clip-path="url(#clip-side-4)"/>
+<polygon class="glass" points="524.1,746.0 624.5,715.4 650.8,646.6 509.2,660.8" clip-path="url(#clip-side-4)"/>
+<rect class="margin" x="465.6" y="619.7" width="172.8" height="138.2"/>
+<rect class="frame" x="456" y="612" width="192.0" height="153.6" fill="none" style="fill:none"/>
+<text x="456" y="590" class="t-b t-c3">Side wall, 4 mm</text>
+<text x="456" y="605" class="t-small t-muted">from 51 cm</text>
+<clipPath id="clip-ghost-12"><rect x="672" y="612" width="192.0" height="153.6"/></clipPath>
+<rect class="frame warn" x="672" y="612" width="192.0" height="153.6"/>
+<polygon class="wall1" points="311.3,685.8 821.8,558.7 875.8,-110.1 -23212.6,-27129.4 -23242.1,-27089.2" clip-path="url(#clip-ghost-12)"/>
+<polygon class="wall2" points="-4796.8,14071.7 311.3,685.8 -23242.1,-27089.2" clip-path="url(#clip-ghost-12)"/>
+<polygon class="wall2" points="1235.5,691.9 821.8,558.7 875.8,-110.1 24328.0,-27129.4 24778.1,-26125.0" clip-path="url(#clip-ghost-12)"/>
+<polygon class="floor" points="-4732.1,14071.7 1235.5,691.9 821.8,558.7 311.3,685.8 -4796.8,14071.7" clip-path="url(#clip-ghost-12)"/>
+<polygon class="boxfloor" points="665.0,867.3 956.5,680.6 811.6,613.2 567.0,697.5" clip-path="url(#clip-ghost-12)"/>
+<line class="grid" x1="716.9" y1="834.0" x2="604.5" y2="684.5" clip-path="url(#clip-ghost-12)"/>
+<line class="grid" x1="761.6" y1="805.5" x2="638.7" y2="672.8" clip-path="url(#clip-ghost-12)"/>
+<line class="grid" x1="800.4" y1="780.6" x2="669.9" y2="662.0" clip-path="url(#clip-ghost-12)"/>
+<line class="grid" x1="834.4" y1="758.8" x2="698.4" y2="652.2" clip-path="url(#clip-ghost-12)"/>
+<line class="grid" x1="864.5" y1="739.6" x2="724.7" y2="643.1" clip-path="url(#clip-ghost-12)"/>
+<line class="grid" x1="891.3" y1="722.4" x2="748.9" y2="634.8" clip-path="url(#clip-ghost-12)"/>
+<line class="grid" x1="915.3" y1="707.1" x2="771.4" y2="627.0" clip-path="url(#clip-ghost-12)"/>
+<line class="grid" x1="936.9" y1="693.2" x2="792.2" y2="619.8" clip-path="url(#clip-ghost-12)"/>
+<line class="grid" x1="641.0" y1="825.6" x2="925.5" y2="666.2" clip-path="url(#clip-ghost-12)"/>
+<line class="grid" x1="621.1" y1="791.1" x2="897.9" y2="653.3" clip-path="url(#clip-ghost-12)"/>
+<line class="grid" x1="604.3" y1="762.2" x2="873.0" y2="641.7" clip-path="url(#clip-ghost-12)"/>
+<line class="grid" x1="590.0" y1="737.4" x2="850.6" y2="631.3" clip-path="url(#clip-ghost-12)"/>
+<line class="grid" x1="577.7" y1="716.1" x2="830.2" y2="621.8" clip-path="url(#clip-ghost-12)"/>
+<polygon class="glass" points="956.5,680.6 811.6,613.2 819.8,499.2 1007.8,532.7" clip-path="url(#clip-ghost-12)"/>
+<polygon class="glass" points="811.6,613.2 567.0,697.5 507.6,541.8 819.8,499.2" clip-path="url(#clip-ghost-12)"/>
+<polygon class="glass" points="665.0,867.3 956.5,680.6 1007.8,532.7 604.3,656.9" clip-path="url(#clip-ghost-12)"/>
+<polygon class="glass" points="567.0,697.5 665.0,867.3 604.3,656.9 507.6,541.8" clip-path="url(#clip-ghost-12)"/>
+<rect class="margin" x="681.6" y="619.7" width="172.8" height="138.2"/>
+<rect class="frame warn" x="672" y="612" width="192.0" height="153.6" fill="none" style="fill:none"/>
+<text x="672" y="590" class="t-b t-warn">Front corner, 12 mm</text>
+<text x="672" y="605" class="t-small t-muted">from 52 cm, inside: the box is cut off</text>
+</svg>
