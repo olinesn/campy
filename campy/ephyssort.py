@@ -239,6 +239,8 @@ SCALE_ALONE_MAX = 4.0 # a peak's size fitted alone may be up to this before the 
 # template takes in the others' spikes); after it, each size must be within SCALE
 REACH = 2 * (el.BEFORE + el.AFTER) + 4 * MATCH_W # samples a pass's decisions reach (a subtraction, and its neighbors')
 BLOCK = 2048 # samples a transform: the scores are worked out this many (less 60) at a time
+JUDGE = 3000 # samples (0.1 s): the template spikes are judged once at least this many more can be (each judgment
+# works its margins out again: fewer, longer judgments cost less; the card plays 0.3 s behind)
 
 
 def Cat(parts):
@@ -312,6 +314,9 @@ class TemplateMatcher:
 		self.norm2 = np.maximum((self.Tn.astype(np.float64) ** 2).sum(axis=(1, 2)), 1e-12) # its energy
 		self.root = np.sqrt(self.norm2)
 		self.near = [np.flatnonzero(np.isin(self.peaks, s)) for s in self.sites] # units near each: their peak among its sites
+		self.nearmat = np.zeros((U, U), bool) # [u, v]: v near u
+		for u, v in enumerate(self.near):
+			self.nearmat[u, v] = True
 		# The units whose sites each unit's share, and their templates' cross-correlations: K[u][i, d + 60] is unit
 		# over[u][i]'s score at t + d lowered by a spike of u at t, of size 1, taken away
 		channels = max(len(self.noise), int(self.cols.max()) + 1 if self.cols.size else 0)
@@ -320,24 +325,26 @@ class TemplateMatcher:
 		self.over = [np.flatnonzero(member[:, self.sites[u][ok[u]]].any(axis=1)) for u in range(U)]
 		n = 1 << int(np.ceil(np.log2(2 * L - 1)))
 		F = np.fft.rfft(self.Tn.astype(np.float64), n=n, axis=1).transpose(0, 2, 1) # [units, sites, freq]
-		self.cross, self.pos = [], []
+		self.cross, self.pos = [], -np.ones((U, U), np.int32) # pos[u, v]: v's row in cross[u] (-1: none)
 		for u in range(U):
 			mine = np.zeros((channels, F.shape[2]), complex)
 			np.add.at(mine, self.cols[u], F[u])
 			V = self.over[u]
 			c = np.fft.irfft((mine[self.cols[V]] * np.conj(F[V])).sum(axis=1), n=n, axis=1) # sum_n Tn_u[n+d] Tn_v[n]
 			self.cross.append(np.concatenate([c[:, n - (L - 1):], c[:, :L]], axis=1).astype(np.float32))
-			self.pos.append({int(v): i for i, v in enumerate(V)})
+			self.pos[u, V] = np.arange(len(V))
 		self.filters = {}
 		self.passes = PASSES
+		self.judge = JUDGE
 		self.Reset()
 
 	def Reset(self):
 		self.tail, self.tail_first, self.next = None, None, None
 		self.S, self.s_first = None, None
 
-	def Feed(self, first, x):
-		"""Template spikes judged with the samples given (filtered uV); as Detector.Feed."""
+	def Feed(self, first, x, last=False):
+		"""Template spikes judged with the samples given (filtered uV); as Detector.Feed. last: judge all that can be,
+		however few (the end of a replay)."""
 		if self.tail is not None and first != self.tail_first + len(self.tail):
 			self.Reset()
 		if self.tail is None:
@@ -358,14 +365,23 @@ class TemplateMatcher:
 		margin_lo, margin_hi = el.BEFORE + reach, el.AFTER + reach
 		lo = max(self.next - bfirst, margin_lo)
 		hi = len(buf) - margin_hi
-		found = self.Judge(buf, bfirst, lo, hi) if hi > lo else el.Spikes()
-		self.next = bfirst + max(hi, lo)
+		if hi - lo >= (1 if last else self.judge):
+			found = self.Judge(buf, bfirst, lo, hi)
+			self.next = bfirst + hi
+		else:
+			found = el.Spikes()
 		keep = max(0, self.next - bfirst - margin_lo)
 		self.tail, self.tail_first = buf[keep:], bfirst + keep
 		if self.S is not None and self.tail_first + el.BEFORE > self.s_first:
 			drop = self.tail_first + el.BEFORE - self.s_first
 			self.S, self.s_first = self.S[:, drop:], self.s_first + drop
 		return found
+
+	def Flush(self):
+		"""The template spikes of all that can be judged, however few samples (the end of a replay)."""
+		if self.tail is None:
+			return el.Spikes()
+		return self.Feed(self.tail_first + len(self.tail), self.tail[:0], last=True)
 
 	def Filters(self, n):
 		"""Each unit's matched filter on its sites, transformed for blocks of n samples: [units, sites, n // 2 + 1]."""
@@ -404,38 +420,45 @@ class TemplateMatcher:
 
 	def Candidates(self, z, scale, c0, c1, taken):
 		"""Pass's spikes among samples [c0, c1) (the scores' first is c0): (sample, unit) of each, judged where all
-		it needs is known ([c0 + 2 MATCH_W, c1 - 2 MATCH_W)); none for a unit within MATCH_W of one it has (taken)."""
+		it needs is known ([c0 + 2 MATCH_W, c1 - 2 MATCH_W)); none for a unit within MATCH_W of one it has (taken).
+		Also all units' peaks, by sample (cand: their samples and units), for Group."""
 		from scipy.ndimage import maximum_filter1d
 		w = MATCH_W
-		peak = (z >= maximum_filter1d(z, 2 * w + 1, axis=1, mode="nearest")) & (z > self.z) & (scale >= SCALE[0]) & \
-			(scale <= SCALE_ALONE_MAX)
-		cand = []
-		for u in range(len(self.units)):
-			ts = np.flatnonzero(peak[u])
-			mine = taken.get(u)
-			if mine is not None and len(ts): # not a second spike of a unit within MATCH_W of one it has: what is
-				# left of another unit's spike under its template doesn't count, nor hide that unit's
-				ts = ts[np.abs((c0 + ts)[:, None] - mine[None, :]).min(axis=1) > w]
-			cand.append(ts)
-		out = []
-		for u, ts in enumerate(cand):
-			for t in ts:
-				if not 2 * w <= t < c1 - c0 - 2 * w:
-					continue
-				best = True
-				for v in self.near[u]:
-					if v == u:
-						continue
-					c = cand[v]
-					close = c[np.abs(c - t) <= w]
-					if len(close) and (z[v, close].max() > z[u, t] or (z[v, close].max() == z[u, t] and v < u)):
-						best = False
-						break
-				if best:
-					out.append((c0 + t, u, float(scale[u, t])))
-		return out, cand
+		above = (z > self.z) & (scale >= SCALE[0]) & (scale <= SCALE_ALONE_MAX)
+		rows = np.flatnonzero(above.any(axis=1))
+		peak = np.zeros_like(above)
+		if len(rows):
+			zr = z[rows]
+			peak[rows] = above[rows] & (zr >= maximum_filter1d(zr, 2 * w + 1, axis=1, mode="nearest"))
+		us, ts = np.nonzero(peak) # by unit, then sample
+		keep = np.ones(len(ts), bool)
+		for u, mine in taken.items(): # not a second spike of a unit within MATCH_W of one it has: what is left of
+			# another unit's spike under its template doesn't count, nor hide that unit's
+			i, j = np.searchsorted(us, [u, u + 1])
+			if j > i:
+				keep[i:j] = np.abs((c0 + ts[i:j])[:, None] - mine[None, :]).min(axis=1) > w
+		us, ts = us[keep], ts[keep]
+		# Not the best near it: a unit near it (its peak among its sites) peaks higher within MATCH_W (the lower unit
+		# number, if as high)
+		zs = z[us, ts]
+		order = np.argsort(ts, kind="stable")
+		t_o, u_o, z_o = ts[order], us[order], zs[order]
+		lose = np.zeros(len(ts), bool)
+		for k in range(1, len(ts)):
+			i = np.flatnonzero(t_o[k:] - t_o[:-k] <= w)
+			if not len(i):
+				break
+			j = i + k
+			ui, uj, zi, zj = u_o[i], u_o[j], z_o[i], z_o[j]
+			other = ui != uj
+			lose[i[other & self.nearmat[ui, uj] & ((zj > zi) | ((zj == zi) & (uj < ui)))]] = True
+			lose[j[other & self.nearmat[uj, ui] & ((zi > zj) | ((zi == zj) & (ui < uj)))]] = True
+		best = np.zeros(len(ts), bool)
+		best[order] = ~lose
+		ok = best & (ts >= 2 * w) & (ts < c1 - c0 - 2 * w)
+		return [(c0 + int(t), int(u), float(scale[u, t])) for u, t in zip(us[ok], ts[ok])], (c0 + t_o, u_o)
 
-	def Group(self, R, a0, t, u, c0, cand, paired, accepted):
+	def Group(self, R, a0, t, u, cand, paired, accepted):
 		"""Other units' spikes at once with unit u's at t: units near the group (their peak among a member's sites)
 		peaking within MATCH_W of t (this pass's candidates, not accepted on their own) are added one at a time, the
 		one that adds most first, at the lag near its peak that fits best, with all the group's templates' sizes
@@ -444,45 +467,82 @@ class TemplateMatcher:
 		a group of two or more; None for u alone."""
 		w = MATCH_W
 		group = [(t, u)]
-		fit = self.JointFit(R, a0, group)
-		if fit is None:
-			return None
+		alone = R[u, t - a0] / self.norm2[u]
+		fit = (np.array([alone]), alone * R[u, t - a0])
 		explained = fit[1]
+		peaks_t, peaks_u = cand
+		i, j = np.searchsorted(peaks_t, [t - w, t + w + 1])
+		peaks_t, peaks_u = peaks_t[i:j], peaks_u[i:j] # this pass's peaks within MATCH_W of t
 		while len(group) < GROUP:
-			best = None
-			members = {m for _, m in group}
-			tried = set()
-			for _, m in group:
-				for v in self.near[m]:
-					if v in members or v in tried:
-						continue
-					tried.add(v)
-					for peak in cand[v]:
-						peak = c0 + int(peak)
-						if abs(peak - t) > w or (peak, v) in accepted:
-							continue
-						# Its own score's peak is pulled by the others' spikes: the lag that fits best, near it
-						for tv in range(max(t - w, peak - PAIR_SEARCH), min(t + w, peak + PAIR_SEARCH) + 1):
-							if (tv, v) in paired:
-								continue
-							trial = self.JointFit(R, a0, group + [(tv, v)])
-							if trial is None:
-								continue
-							sizes, together = trial
-							gain = together - explained
-							if gain > self.z ** 2 and np.all((sizes >= SCALE[0]) & (sizes <= SCALE[1])) and \
-									(best is None or gain > best[0]):
-								best = (gain, (tv, v), sizes, together)
-			if best is None:
+			members = [m for _, m in group]
+			near = self.nearmat[members][:, peaks_u].any(axis=0)
+			for m in members:
+				near &= peaks_u != m
+			trials = []
+			for peak, v in zip(peaks_t[near].tolist(), peaks_u[near].tolist()):
+				if (peak, v) in accepted:
+					continue
+				# Its own score's peak is pulled by the others' spikes: the lag that fits best, near it
+				for tv in range(max(t - w, peak - PAIR_SEARCH), min(t + w, peak + PAIR_SEARCH) + 1):
+					if (tv, v) not in paired:
+						trials.append((tv, v))
+			if not trials:
 				break
-			group.append(best[1])
-			explained = best[3]
-			fit = (best[2], best[3])
+			sizes, together = self.JointFits(R, a0, group, trials)
+			gain = together - explained
+			ok = (gain > self.z ** 2) & np.all((sizes >= SCALE[0]) & (sizes <= SCALE[1]), axis=1)
+			if not ok.any():
+				break
+			k = int(np.argmax(np.where(ok, gain, -np.inf))) # the first of the best, as tried in turn
+			group.append(trials[k])
+			explained = together[k]
+			fit = (sizes[k], together[k])
 		if len(group) == 1:
 			return None
 		for tv, v in group[1:]:
 			paired.add((tv, v))
 		return [(tt, uu, float(a)) for (tt, uu), a in zip(group, fit[0])]
+
+	def JointFits(self, R, a0, group, trials):
+		"""JointFit of the group with each trial ([(sample, unit), ...]) added, all at once: (sizes [trials, len(group)
+		+ 1], what they explain [trials]); a trial whose templates can't be told apart explains -inf."""
+		L = el.BEFORE + el.AFTER
+		k, n = len(group) + 1, len(trials)
+		M, b = np.zeros((n, k, k)), np.zeros((n, k))
+		for i, (ti, ui) in enumerate(group):
+			b[:, i] = R[ui, ti - a0]
+			M[:, i, i] = self.norm2[ui]
+			for j in range(i + 1, k - 1):
+				tj, uj = group[j]
+				p = self.pos[ui, uj]
+				if p >= 0 and abs(tj - ti) < L:
+					M[:, i, j] = M[:, j, i] = self.cross[ui][p, tj - ti + L - 1]
+		tv = np.array([tt for tt, _ in trials])
+		v = np.array([uu for _, uu in trials])
+		b[:, k - 1] = R[v, tv - a0]
+		M[:, k - 1, k - 1] = self.norm2[v]
+		for i, (ti, ui) in enumerate(group):
+			p = self.pos[ui, v]
+			has = (p >= 0) & (np.abs(tv - ti) < L)
+			c = np.zeros(n)
+			c[has] = self.cross[ui][p[has], (tv - ti + L - 1)[has]]
+			M[:, i, k - 1] = M[:, k - 1, i] = c
+		if k == 2: # two templates: in closed form (most groups)
+			m00, m01, m11 = M[:, 0, 0], M[:, 0, 1], M[:, 1, 1]
+			det = m00 * m11 - m01 * m01
+			half = 0.5 * (m00 + m11)
+			root = np.sqrt(np.maximum(half * half - det, 0.0))
+			small = half - root # the eigenvalues: cond = big / small
+			bad = ~(small > 0) | ((half + root) > 1e6 * small)
+			det = np.where(bad, 1.0, det)
+			a = np.stack([(m11 * b[:, 0] - m01 * b[:, 1]) / det, (m00 * b[:, 1] - m01 * b[:, 0]) / det], axis=1)
+		else:
+			bad = np.linalg.cond(M) > 1e6
+			M[bad] = np.eye(k)
+			a = np.linalg.solve(M, b[:, :, None])[:, :, 0]
+		together = (a * b).sum(axis=1)
+		together[bad] = -np.inf
+		return a, together
 
 	def JointFit(self, R, a0, members):
 		"""Units' templates at their samples ([(sample, unit), ...]) fitted together (least squares, each site divided
@@ -497,8 +557,8 @@ class TemplateMatcher:
 			M[i, i] = self.norm2[ui]
 			for j in range(i + 1, k):
 				tj, uj = members[j]
-				p = self.pos[ui].get(uj)
-				if p is not None and abs(tj - ti) < L:
+				p = self.pos[ui, uj]
+				if p >= 0 and abs(tj - ti) < L:
 					M[i, j] = M[j, i] = self.cross[ui][p, tj - ti + L - 1]
 		if np.linalg.cond(M) > 1e6:
 			return None
@@ -526,7 +586,7 @@ class TemplateMatcher:
 			for t, u, a in new:
 				# Units near it peaking at once: their templates fitted together (alone, the first one's fit takes in
 				# the others' spikes, and leaves too little of them to be found)
-				group = self.Group(R, a0, t, u, c0, cand, paired, accepted)
+				group = self.Group(R, a0, t, u, cand, paired, accepted)
 				if group is None and a > SCALE[1]:
 					continue # too big for one spike of it, and no other unit's spike at once explains the rest
 				fits = [(t, u, a)] if group is None else group
@@ -589,6 +649,7 @@ class MatchingSorter(TemplateSorter):
 
 	def Flush(self):
 		"""What is left, at the end of a replay."""
+		self.pending = Cat([self.pending, self.matcher.Flush()])
 		return self.Release(np.iinfo(np.int64).max)
 
 
