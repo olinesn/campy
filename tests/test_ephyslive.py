@@ -246,8 +246,10 @@ def test_replay_of_a_saved_recording(tmp_path, recording):
 		firsts.append(piece[0])
 		got.append(piece[1])
 	assert firsts[0] == 1234 and np.array_equal(np.concatenate(got), data[:15000])
-	# A Neuropixels 1.0 probe's gain (500) from its imroTbl
-	path = WriteBin(str(tmp_path), data[:3000], geometry, imro_np1=True)
+	# A Neuropixels 1.0 probe's gain (500) from its imroTbl (in a folder of its own: Windows won't rewrite a file
+	# still mapped)
+	(tmp_path / "np1").mkdir()
+	path = WriteBin(str(tmp_path / "np1"), data[:3000], geometry, imro_np1=True)
 	assert np.allclose(el.ReplaySource(path).Open().uv, 0.62 / 8192 / 500 * 1e6)
 	# An NP2013 (Neuropixels 2.0, 4 shanks): one gain for all (imChan0apGain 100), 2048 counts: 3.03 uV a count
 	meta = path[:-4] + ".meta"
