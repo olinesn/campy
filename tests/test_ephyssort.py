@@ -158,3 +158,152 @@ def test_serve_sorts_with_the_templates_and_says_its_units(sorted_recording):
 	finally:
 		proc.terminate()
 		proc.wait(timeout=10)
+
+
+def test_the_templates_find_a_unit_below_the_threshold(tmp_path):
+	# A small unit (45 uV, about 25 uV once filtered: under the threshold's 4.5 x 8 uV) beside the others: the
+	# threshold's spikes miss most of it, the templates matched find it
+	global UNITS
+	saved = UNITS
+	UNITS = saved[:5] + [(88, 45, 0.15, 0.30, "good")]
+	try:
+		data, geometry, times, clusters = Recording(seconds=12.0)
+	finally:
+		UNITS = saved
+	bin_path = WriteBin(str(tmp_path), data, geometry, first_sample=0)
+	phy = WritePhy(str(tmp_path / "kilosort4"), geometry, times, clusters)
+	with open(os.path.join(phy, "cluster_group.tsv"), "w") as f:
+		f.write("cluster_id\tgroup\n" + "".join("{}\tgood\n".format(u) for u in range(6)))
+	out = str(tmp_path / "templates.npz")
+	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":8"]) == 0
+	assert 5 in es.TemplateSorter(out).units.tolist() # a template for it too, from Kilosort's times
+	results = {}
+	for name, extra in (("threshold", []), ("matched", ["--match", "7"])):
+		report = tmp_path / "{}.json".format(name)
+		assert el.Main(["evaluate", "--replay", bin_path, "--phy", phy, "--templates", out, "--span", "8:", "--json",
+			str(report)] + extra) == 0
+		results[name] = {r["unit"]: r for r in json.loads(report.read_text())["per_unit"]}
+	small_thr, small = results["threshold"][5], results["matched"][5]
+	assert small_thr["sensitivity"] < 0.5, small_thr # mostly under the threshold
+	assert small["sensitivity"] >= 0.8 and small["precision"] >= 0.9, small
+	for u in range(5): # and the others as well as before
+		assert results["matched"][u]["sensitivity"] >= 0.85 and results["matched"][u]["precision"] >= 0.9, results["matched"][u]
+
+
+def test_the_templates_matched_give_the_same_spikes_however_the_samples_come(sorted_recording):
+	tmp, bin_path, phy, times, clusters = sorted_recording
+	out = str(tmp / "templates_pieces.npz")
+	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":5"]) == 0
+	source = el.ReplaySource(bin_path, speed=0)
+	runs = []
+	for piece in (0.1, 0.037, 0.5):
+		spikes, _ = es.ReplayMatched(source.data, source.stream, 0, len(source.data), es.MatchingSorter(out, 7), piece)
+		runs.append(sorted(zip(spikes.sample.tolist(), spikes.unit.tolist(), spikes.channel.tolist())))
+	assert runs[0] and any(u >= 0 for _, u, _ in runs[0])
+	assert runs[1] == runs[0] and runs[2] == runs[0]
+
+
+def test_two_units_at_once_on_shared_sites_are_both_found(tmp_path):
+	# Units 0 and 1 a site apart (10 of their 12 sites shared), with a third of unit 1's spikes at one of unit 0's,
+	# 0 to 3 samples after it. A nearby unit peaking at once is fitted together with the first (both templates'
+	# sizes by least squares, at the lag that fits best), and both are taken away: both units' spikes at once are
+	# found and named. Fitted alone, the first unit's template takes in the second's spike
+	rng = np.random.default_rng(11)
+	geometry = el.Geometry.Linear(96)
+	T = int(12.0 * RATE)
+	x = rng.normal(0, 8.0, (T, 96)).astype(np.float32)
+	pair = [(40, 200, 0.12, 0.35), (42, 150, 0.25, 0.15)]
+	spread = [np.exp(-np.hypot(geometry.x - geometry.x[ch], geometry.z - geometry.z[ch]) / 35.0).astype(np.float32)
+		for ch, _, _, _ in pair]
+	t0 = np.cumsum(rng.integers(int(0.03 * RATE), int(0.12 * RATE), 200))
+	t0 = t0[t0 < T - 100]
+	alone1 = np.cumsum(rng.integers(int(0.05 * RATE), int(0.2 * RATE), 120)) + 7
+	together = t0[::3] + rng.integers(0, 4, len(t0[::3])) # a third of unit 1's spikes at unit 0's
+	t1 = np.sort(np.concatenate([alone1[alone1 < T - 100], together]))
+	t1 = t1[np.concatenate([[True], np.diff(t1) > 60])] # no unit 1 spike within 2 ms of its last
+	for (ch, amp, width, bump), sp, ts in zip(pair, spread, (t0, t1)):
+		shape = Shape(width, bump)
+		for at in ts:
+			x[at - 20:at + 41] += amp * shape[:, None] * sp[None, :]
+	data = np.clip(np.round(x / UV), -32768, 32767).astype(np.int16)
+	times = np.concatenate([t0, t1])
+	clusters = np.concatenate([np.zeros(len(t0), int), np.ones(len(t1), int)])
+	order = np.argsort(times)
+	bin_path = WriteBin(str(tmp_path), data, geometry, first_sample=0)
+	phy = WritePhy(str(tmp_path / "kilosort4"), geometry, times[order], clusters[order])
+	with open(os.path.join(phy, "cluster_group.tsv"), "w") as f:
+		f.write("cluster_id\tgroup\n0\tgood\n1\tgood\n")
+	out = str(tmp_path / "templates.npz")
+	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":8"]) == 0
+	source = el.ReplaySource(bin_path, speed=0)
+	start = int(8 * RATE)
+	both = together[(together > start + 1000) & (together < T - 1000)]
+	assert len(both) > 15
+	got = {}
+	for passes in (1, es.PASSES):
+		sorter = es.MatchingSorter(out, 7)
+		sorter.matcher.passes = passes
+		spikes, _ = es.ReplayMatched(source.data, source.stream, start - int(RATE), T, sorter)
+		s0, s1 = spikes.sample[spikes.unit == 0], spikes.sample[spikes.unit == 1]
+		# (a unit's live trough comes up to a few samples before Kilosort's time: more for a broad one)
+		found_both = sum(1 for t in both if len(s0) and len(s1) and np.abs(s0 - t).min() <= 8 and
+			np.abs(s1 - t).min() <= 8)
+		got[passes] = found_both / len(both)
+	assert got[es.PASSES] >= 0.9, got # both units' spikes, at once, nearly always
+	# Without fitting the two together, the first unit's fit takes in the second's spike and leaves too little of it
+	sorter = es.MatchingSorter(out, 7)
+	sorter.matcher.Group = lambda *a: None
+	spikes, _ = es.ReplayMatched(source.data, source.stream, start - int(RATE), T, sorter)
+	s0, s1 = spikes.sample[spikes.unit == 0], spikes.sample[spikes.unit == 1]
+	alone = sum(1 for t in both if len(s1) and np.abs(s0 - t).min() <= 8 and np.abs(s1 - t).min() <= 8) / len(both)
+	assert alone <= 0.3, alone
+
+
+def test_three_units_at_once_on_shared_sites_are_all_found(tmp_path):
+	# Units 0, 1 and 2 on neighbouring sites (peaks 15 um apart, each among the others' 12 sites), with 40 moments
+	# where all three spike within 3 samples. The three are fitted together: all three found and named nearly
+	# always. With pairs only, the third is mostly lost
+	rng = np.random.default_rng(23)
+	geometry = el.Geometry.Linear(96)
+	T = int(14.0 * RATE)
+	x = rng.normal(0, 8.0, (T, 96)).astype(np.float32)
+	trio = [(40, 200, 0.12, 0.35), (42, 160, 0.25, 0.15), (44, 180, 0.10, 0.55)]
+	own = [np.cumsum(rng.integers(int(0.06 * RATE), int(0.2 * RATE), 140)) + 31 * k for k in range(3)]
+	moments = np.sort(rng.choice(np.arange(int(8.5 * RATE), T - 2000, 900), 40, replace=False))
+	ts = []
+	for k in range(3):
+		t = np.concatenate([own[k][own[k] < T - 100], moments + rng.integers(0, 4, len(moments))])
+		t = np.sort(t)
+		keep = np.concatenate([[True], np.diff(t) > 90]) # no spike of a unit within 3 ms of its last
+		ts.append(t[keep])
+	for (ch, amp, width, bump), t in zip(trio, ts):
+		sp = np.exp(-np.hypot(geometry.x - geometry.x[ch], geometry.z - geometry.z[ch]) / 35.0).astype(np.float32)
+		shape = Shape(width, bump)
+		for at in t:
+			x[at - 20:at + 41] += amp * shape[:, None] * sp[None, :]
+	data = np.clip(np.round(x / UV), -32768, 32767).astype(np.int16)
+	times = np.concatenate(ts)
+	clusters = np.concatenate([np.full(len(t), k) for k, t in enumerate(ts)])
+	order = np.argsort(times)
+	bin_path = WriteBin(str(tmp_path), data, geometry, first_sample=0)
+	phy = WritePhy(str(tmp_path / "kilosort4"), geometry, times[order], clusters[order])
+	with open(os.path.join(phy, "cluster_group.tsv"), "w") as f:
+		f.write("cluster_id\tgroup\n0\tgood\n1\tgood\n2\tgood\n")
+	out = str(tmp_path / "templates.npz")
+	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":8"]) == 0
+	source = el.ReplaySource(bin_path, speed=0)
+	# The moments where all three really spiked (none dropped by its unit's 3 ms rule)
+	sets = [m for m in moments if all(np.abs(t - m).min() <= 3 for t in ts)]
+	assert len(sets) >= 30
+	got = {}
+	for group in (3, 2):
+		saved = es.GROUP
+		es.GROUP = group
+		try:
+			spikes, _ = es.ReplayMatched(source.data, source.stream, int(7.5 * RATE), T, es.MatchingSorter(out, 7))
+		finally:
+			es.GROUP = saved
+		mine = [spikes.sample[spikes.unit == k] for k in range(3)]
+		got[group] = sum(1 for m in sets if all(len(s) and np.abs(s - m).min() <= 8 for s in mine)) / len(sets)
+	assert got[3] >= 0.85, got
+	assert got[2] <= got[3] - 0.3, got
