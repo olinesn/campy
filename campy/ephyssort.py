@@ -587,8 +587,9 @@ def Train(data, stream, phy, out, span=None, labels=LABELS, say=print, accept_q=
 	summary = {"units": len(rows), "kept_units": len(sort["kept"]), "trained_spikes": int(sum(r[6] for r in rows)),
 		"live_spikes": len(spikes), "matched_live_spikes": int((unit_of >= 0).sum()), "seconds": round(
 		time.monotonic() - t0, 1), "out": out}
-	say("Templates for {} of {} kept units, from {:,} of the {:,} live spikes: {}".format(summary["units"],
-		summary["kept_units"], summary["trained_spikes"], summary["live_spikes"], out))
+	say("Templates for {} of {} kept units, from {:,} of their Kilosort spikes ({:,} of the {:,} live spikes "
+		"theirs): {}".format(summary["units"], summary["kept_units"], summary["trained_spikes"],
+		summary["matched_live_spikes"], summary["live_spikes"], out))
 	return summary
 
 
