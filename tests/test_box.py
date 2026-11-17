@@ -768,32 +768,17 @@ def test_one_board_makes_the_cameras_pulses_and_runs_the_box(tmp_path, outputs_s
 		rises = [t for t, level in edges[pin] if level == 1]
 		assert rises == [t0 + k * period + period // 2 for k in range(120)], pin # to the microsecond: the timer's
 	ev = events(tmp_path)
-	# The task waits for the first pulse and starts at the loop's next look (every box.LOOP_S, 20 ms: longer than a
-	# frame at 60 fps), with the last frame heard then: frame 1 or 2 (it started 13-18 ms after frame 1 on a Mac, 17
-	# November: frame 2 in half the runs), a few more only on a busy computer (under 50 ms late, as the sync edges below)
-	first = [e for e in ev if e["kind"] == "state"][0]["first_frame"]
-	assert first is not None and 1 <= first and (first - 1) * period < box.LOOP_S * 1e6 + 50000, first
+	assert [e for e in ev if e["kind"] == "state"][0]["first_frame"] == 1
 	pokes = [e for e in ev if e["kind"] == "input" and e["active"] == 1 and e["frame"]]
 	assert pokes
 	for e in pokes:
-		# In frame k's period, from its rise to the next one's. The last frame (120) has no next one: the board stamps a
-		# poke after the pulses' end with it too, which campy-box logs if it has not stopped yet (it stops as it hears
-		# of their end: later on a busy computer, as once here on a Mac running four at once, 17 November)
 		k = e["frame"]
-		assert t0 + (k - 1) * period + period // 2 <= e["board_us"], e
-		assert k == 120 or e["board_us"] < t0 + k * period + period // 2, e
+		assert t0 + (k - 1) * period + period // 2 <= e["board_us"] < t0 + k * period + period // 2, e
 	assert [e["frames"] for e in ev if e["kind"] == "cameras_end"] == [120]
-	# The sync output from the same time 0, where campy-syncmatch puts it. The board changes it from its loop, at the
-	# first clock read past the planned time (tests/test_outputs_sketch.py checks that to the microsecond, on a
-	# simulated clock). In real time each clock read of the simulated board sleeps 50 us, and a busy computer keeps the
-	# process waiting longer now and then: on GitHub's Python 3.12 runner (17 November) one edge of 12 came 16 ms late,
-	# the others within 0.2 ms. So every edge is never early and under 50 ms late, as test_pokes_on_the_simulated_board
-	# allows its pokes (still well before the next edge, 100 ms or more later), and the middle one within 1 ms: a time 0
-	# or a train off by even 1 ms would move them all.
+	# The sync output from the same time 0, where campy-syncmatch puts it (in real time the simulated board's own
+	# changes come late by up to its clock's steps; tests/test_outputs_sketch.py checks them to the microsecond)
 	from campy import syncmatch
 	sync = json.load(open(str(tmp_path / "box.sync.json")))
 	planned, _ = syncmatch.SyncEdges(sync, 120 * period - 20000)
 	got = [t - t0 for t, level in edges.get(9, []) if level == 1]
-	late = sorted(g - p for g, p in zip(got, planned))
-	assert len(got) == len(planned) and 0 <= late[0] and late[-1] < 50000 and late[len(late) // 2] < 1000, \
-		(got, list(planned))
+	assert len(got) == len(planned) and all(0 <= g - p < 5000 for g, p in zip(got, planned)), (got, list(planned))
