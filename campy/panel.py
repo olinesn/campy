@@ -963,6 +963,12 @@ class EphysView:
 		cmd = [sys.executable, "-m", "campy.ephyslive", "serve", "--sdk", str(self.section["sdk"]), "--host",
 			str(self.section["host"]), "--port", str(self.section["port"]), "--parent", str(os.getpid()),
 			"--idle-s", str(EPHYS_IDLE_S)]
+		# The live sorter: templates from a Kilosort 4 sort (spikeglx.templates, campy-ephys train)
+		templates = str(self.section.get("templates") or "")
+		if templates and os.path.isfile(templates):
+			cmd += ["--templates", templates]
+		elif templates:
+			self.log.append("spikeglx.templates: {} isn't there: threshold crossings only".format(templates))
 		# Each spike's camera frame: the camera pulses on the OneBox that has the gate's TTL (spikeglx.stream: js 1),
 		# numbered from the Pico's count of pulses so far
 		js, ip = (list(self.section.get("stream") or []) + [None, None])[:2]
