@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 580" width="1000" height="580" font-family="Helvetica, Arial, sans-serif" font-size="13">
+<rect width="1000" height="580" fill="#ffffff"/>
+<text x="24" y="32" font-size="15" fill="#334155" text-anchor="start" font-weight="bold">One input of the input board, drawn in full: there are eight (IN 0–7, each to its own A pin)</text>
+<circle cx="80" cy="170" r="22" fill="#e2e8f0" stroke="#334155" stroke-width="2.5"/>
+<circle cx="80" cy="170" r="8" fill="#fff" stroke="#334155" stroke-width="1.5"/>
+<circle cx="80" cy="170" r="3" fill="#15803d"/>
+<text x="80" y="136" font-size="13" fill="#15803d" text-anchor="middle" font-weight="bold">IN n (BNC)</text>
+<polyline points="80,192 80,230" fill="none" stroke="#111111" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="80" y1="230" x2="80" y2="238" stroke="#111111" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="66" y1="238" x2="94" y2="238" stroke="#111111" stroke-width="2" stroke-linecap="round"/>
+<line x1="71" y1="243" x2="89" y2="243" stroke="#111111" stroke-width="2" stroke-linecap="round"/>
+<line x1="76" y1="248" x2="84" y2="248" stroke="#111111" stroke-width="2" stroke-linecap="round"/>
+<text x="80" y="278" font-size="11.5" fill="#475569" text-anchor="middle" font-weight="normal">shell to the</text>
+<text x="80" y="292" font-size="11.5" fill="#475569" text-anchor="middle" font-weight="normal">ground bus</text>
+<line x1="88" y1="170" x2="157.0" y2="170" stroke="#15803d" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="157.0" y="162" width="44" height="16" rx="2" fill="#fff" stroke="#15803d" stroke-width="2"/>
+<line x1="201.0" y1="170" x2="270" y2="170" stroke="#15803d" stroke-width="2.2" stroke-linecap="round"/>
+<text x="179.0" y="156" font-size="13" fill="#111" text-anchor="middle" font-weight="bold">1 kΩ</text>
+<circle cx="270" cy="170" r="4" fill="#15803d"/>
+<line x1="270" y1="170" x2="270" y2="208.0" stroke="#15803d" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="262" y="208.0" width="16" height="44" rx="2" fill="#fff" stroke="#15803d" stroke-width="2"/>
+<line x1="270" y1="252.0" x2="270" y2="290" stroke="#15803d" stroke-width="2.2" stroke-linecap="round"/>
+<text x="254" y="235.0" font-size="13" fill="#111" text-anchor="end" font-weight="bold">100 kΩ</text>
+<line x1="270" y1="290" x2="270" y2="298" stroke="#111111" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="256" y1="298" x2="284" y2="298" stroke="#111111" stroke-width="2" stroke-linecap="round"/>
+<line x1="261" y1="303" x2="279" y2="303" stroke="#111111" stroke-width="2" stroke-linecap="round"/>
+<line x1="266" y1="308" x2="274" y2="308" stroke="#111111" stroke-width="2" stroke-linecap="round"/>
+<text x="270" y="335" font-size="11.5" fill="#475569" text-anchor="middle" font-weight="normal">an unplugged jack reads low</text>
+<line x1="270" y1="170" x2="340" y2="170" stroke="#15803d" stroke-width="2.2" stroke-linecap="round"/>
+<polygon points="340,136 420,170 340,204" fill="#ecfeff" stroke="#0f6e74" stroke-width="2.4"/>
+<text x="348" y="175" font-size="12" fill="#0f6e74" text-anchor="start" font-weight="bold">A</text>
+<text x="426" y="162" font-size="12" fill="#0f6e74" text-anchor="start" font-weight="bold">Y</text>
+<text x="380.0" y="122" font-size="13" fill="#0f6e74" text-anchor="middle" font-weight="bold">¼ SN74AHC125</text>
+<text x="380.0" y="106" font-size="11.5" fill="#475569" text-anchor="middle" font-weight="normal">a buffer with its own enable</text>
+<circle cx="380.0" cy="193" r="5" fill="#fff" stroke="#0f6e74" stroke-width="2"/>
+<text x="390.0" y="217" font-size="11.5" fill="#0f6e74" text-anchor="start" font-weight="bold">OE (active low)</text>
+<line x1="380.0" y1="198" x2="380.0" y2="330" stroke="#0f6e74" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="380.0" cy="330" r="4" fill="#0f6e74"/>
+<polyline points="380.0,330 470.0,330" fill="none" stroke="#0f6e74" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="470.0" y1="270" x2="470.0" y2="278.0" stroke="#0f6e74" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="462.0" y="278.0" width="16" height="44" rx="2" fill="#fff" stroke="#0f6e74" stroke-width="2"/>
+<line x1="470.0" y1="322.0" x2="470.0" y2="330" stroke="#0f6e74" stroke-width="2.2" stroke-linecap="round"/>
+<text x="486.0" y="305.0" font-size="13" fill="#111" text-anchor="start" font-weight="bold">10 kΩ</text>
+<line x1="470.0" y1="270" x2="470.0" y2="260" stroke="#dc2626" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="460.0" y1="260" x2="480.0" y2="260" stroke="#dc2626" stroke-width="2.4" stroke-linecap="round"/>
+<text x="470.0" y="252" font-size="12.5" fill="#dc2626" text-anchor="middle" font-weight="bold">3.3 V</text>
+<line x1="380.0" y1="330" x2="380.0" y2="360" stroke="#0f6e74" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="380.0" cy="360" r="3.5" fill="#fff" stroke="#111111" stroke-width="2"/>
+<circle cx="380.0" cy="410" r="3.5" fill="#fff" stroke="#111111" stroke-width="2"/>
+<line x1="380.0" y1="364" x2="402.0" y2="396" stroke="#111111" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="380.0" y1="414" x2="380.0" y2="426" stroke="#111111" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="380.0" y1="426" x2="380.0" y2="434" stroke="#111111" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="366.0" y1="434" x2="394.0" y2="434" stroke="#111111" stroke-width="2" stroke-linecap="round"/>
+<line x1="371.0" y1="439" x2="389.0" y2="439" stroke="#111111" stroke-width="2" stroke-linecap="round"/>
+<line x1="376.0" y1="444" x2="384.0" y2="444" stroke="#111111" stroke-width="2" stroke-linecap="round"/>
+<text x="364.0" y="390.0" font-size="13" fill="#111" text-anchor="end" font-weight="bold">DIP switch n</text>
+<rect x="20" y="452" width="440" height="104" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+<text x="36" y="478" font-size="12.5" fill="#111" text-anchor="start" font-weight="normal">ON: OE is low, the buffer drives the pin: the input is its BNC.</text>
+<text x="36" y="498" font-size="12.5" fill="#111" text-anchor="start" font-weight="normal">OFF: the 10 kΩ holds OE high, the buffer lets go of the pin</text>
+<text x="36" y="518" font-size="12.5" fill="#111" text-anchor="start" font-weight="normal">(high impedance): the input is its screw terminal, as on a</text>
+<text x="36" y="538" font-size="12.5" fill="#111" text-anchor="start" font-weight="normal">board with no input board.</text>
+<line x1="420" y1="170" x2="488.0" y2="170" stroke="#15803d" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="488.0" y="162" width="44" height="16" rx="2" fill="#fff" stroke="#15803d" stroke-width="2"/>
+<line x1="532.0" y1="170" x2="600" y2="170" stroke="#15803d" stroke-width="2.2" stroke-linecap="round"/>
+<text x="510.0" y="156" font-size="13" fill="#111" text-anchor="middle" font-weight="bold">1 kΩ</text>
+<circle cx="600" cy="170" r="4" fill="#15803d"/>
+<line x1="600" y1="170" x2="860" y2="170" stroke="#15803d" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="860" y="154" width="70" height="32" rx="4" fill="#fff" stroke="#15803d" stroke-width="2"/>
+<text x="895" y="175" font-size="13" fill="#15803d" text-anchor="middle" font-weight="bold">A n</text>
+<text x="895" y="142" font-size="11.5" fill="#475569" text-anchor="middle" font-weight="normal">the adapter's</text>
+<text x="895" y="208" font-size="11.5" fill="#475569" text-anchor="middle" font-weight="normal">terminal (one wire)</text>
+<line x1="600" y1="170" x2="600" y2="300" stroke="#15803d" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="584" y="300" width="32" height="30" rx="3" fill="#fff" stroke="#15803d" stroke-width="2"/>
+<text x="600" y="321" font-size="14" fill="#15803d" text-anchor="middle" font-weight="bold">S</text>
+<rect x="624" y="300" width="32" height="30" rx="3" fill="#fff" stroke="#dc2626" stroke-width="2"/>
+<text x="640" y="321" font-size="14" fill="#dc2626" text-anchor="middle" font-weight="bold">+</text>
+<rect x="664" y="300" width="32" height="30" rx="3" fill="#fff" stroke="#111111" stroke-width="2"/>
+<text x="680" y="321" font-size="14" fill="#111111" text-anchor="middle" font-weight="bold">−</text>
+<line x1="640" y1="330" x2="640" y2="356" stroke="#dc2626" stroke-width="2.2" stroke-linecap="round"/>
+<text x="640" y="372" font-size="12.5" fill="#dc2626" text-anchor="middle" font-weight="bold">5 V</text>
+<line x1="680" y1="330" x2="680" y2="350" stroke="#111111" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="680" y1="350" x2="680" y2="358" stroke="#111111" stroke-width="2.2" stroke-linecap="round"/>
+<line x1="666" y1="358" x2="694" y2="358" stroke="#111111" stroke-width="2" stroke-linecap="round"/>
+<line x1="671" y1="363" x2="689" y2="363" stroke="#111111" stroke-width="2" stroke-linecap="round"/>
+<line x1="676" y1="368" x2="684" y2="368" stroke="#111111" stroke-width="2" stroke-linecap="round"/>
+<text x="640" y="412" font-size="12" fill="#475569" text-anchor="middle" font-weight="normal">sensor n's terminal block (signal, power, ground):</text>
+<text x="640" y="428" font-size="12" fill="#475569" text-anchor="middle" font-weight="normal">beam breaks, nose pokes, lick sensors, with DIP switch n OFF</text>
+<rect x="480" y="452" width="500" height="104" rx="8" fill="#f0fdf4" stroke="#86efac"/>
+<text x="496" y="478" font-size="12.5" fill="#14532d" text-anchor="start" font-weight="normal">BNC inputs take logic levels from 0 to 5.5 V: 3.3 V or 5 V TTL.</text>
+<text x="496" y="498" font-size="12.5" fill="#14532d" text-anchor="start" font-weight="normal">High above 2.1 V, low below 0.9 V; an edge must change faster</text>
+<text x="496" y="518" font-size="12.5" fill="#14532d" text-anchor="start" font-weight="normal">than 100 ns per volt (any logic output does). Delay under</text>
+<text x="496" y="538" font-size="12.5" fill="#14532d" text-anchor="start" font-weight="normal">10 ns. Each buffer chip: 3.3 V on pin 14, ground on 7, 100 nF.</text>
+</svg>

@@ -151,7 +151,7 @@ The host sets every pin when it starts (`in`, `servo`, `pin`, `trig`), so other 
 **3.3 V logic.** The ESP32's pins take at most 3.3 V.
 
 - *Beam breaks and nose pokes* with an open-collector output (most IR break-beam receivers): set the input to pull-up and active low. The board's own pull-up (about 45 kΩ) holds the line at 3.3 V and the sensor pulls it down when the beam is broken. For long cables, add a 10 kΩ pull-up to 3.3 V at the board.
-- *Sensors with a 5 V push-pull output* need a divider (for example 10 kΩ over 20 kΩ) or a level shifter before the pin.
+- *Sensors with a 5 V push-pull output* need a divider (for example 10 kΩ over 20 kΩ) or a level shifter before the pin. The [BNC breakout](bnc-breakout.md#the-inputs-bnc-or-screw-terminal)'s BNC inputs take 5 V logic as they are.
 - *Touch or lick sensors (capacitance)*: use a module that does the sensing and gives a digital line (a lickometer, or a TTP223-type touch board), wired like any other input. The board doesn't read capacitance itself.
 
 **Servos.** Power hobby servos from their own 5–6 V supply, never from the board's 5 V pin, and join that supply's ground to the board's. Most hobby servos take the 3.3 V signal directly.
