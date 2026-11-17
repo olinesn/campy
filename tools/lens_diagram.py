@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
-"""Draw docs/images/choosing-lenses.svg: which lenses fit a behaviour box in an enclosure.
+"""Draw the hardware guide's lens drawings: which lenses fit a box in an enclosure.
 
-Every number in the drawing is worked out here, for the FLIR Blackfly S
+Two examples, each written to docs/images/:
+  choosing-lenses.svg          a 45 x 30 cm box in an enclosure 100 x 80 cm, 90 cm high inside
+  choosing-lenses-cubicle.svg  a mouse operant box in a sound-attenuating cubicle
+
+Every number in the drawings is worked out here, for the FLIR Blackfly S
 BFS-U3-13Y3M (1280 x 1024 pixels of 4.8 um, a 1/2" sensor) and a pinhole lens
-(no distortion). A lens "fits" from a spot when the box's floor, and the space
-10 cm above it where a mouse rears, lie inside the middle 90% of the frame, both
-across and up and down, with the camera aimed at the middle of the floor and its
-picture level.
+(no distortion). A lens "fits" from a spot when the whole box, from its floor to
+the top of its walls (and at least 10 cm up, where a mouse rears), lies inside
+the middle 80% of the frame, both across and up and down, with the camera aimed
+at the middle of the floor and its picture level. The margin is for tracking: an
+animal climbing or rearing at a wall stays wholly in view, the calibration board
+can be seen near the box's edges, and the frame's corners, where a lens distorts
+most, stay empty. (On the rigs LUC3D was tested on, the arena's floor took about
+half to three quarters of each frame's width.) Each camera's spot is 10 cm in
+from the wall or ceiling behind it (room for the camera, the lens and a mount),
+along the line it looks.
 
-    python3 tools/lens_diagram.py            # writes docs/images/choosing-lenses.svg
+    python3 tools/lens_diagram.py            # writes both drawings
     python3 tools/lens_diagram.py --table    # prints the distances only
 
+To check your own rig, change a scenario's `box` and `enclosure` below.
 Standard library only.
 """
 import math
@@ -18,10 +29,8 @@ import os
 import sys
 
 SENSOR_W, SENSOR_H = 1280 * 0.0048, 1024 * 0.0048  # mm
-FILL = 0.9  # what the camera must see sits in the middle 90% of the frame
-BOX = (45.0, 30.0, 20.0)  # box: floor length, floor width, wall height (cm)
-REAR = 10.0  # the camera must see this far above the floor (a rearing mouse)
-ENC = (100.0, 80.0, 90.0)  # enclosure, inside: width, depth, height (cm)
+FILL = 0.8  # the whole box sits in the middle 80% of the frame
+REAR = 10.0  # and the camera sees at least this far above the floor (a rearing mouse)
 MOUNT = 10.0  # the lens's front sits this far in from a wall: camera, lens, mount
 LENSES = [3.5, 4, 5, 6, 8, 12, 16]
 
@@ -43,7 +52,15 @@ def direction(azimuth, elevation):
     return (math.cos(e) * math.cos(a), math.cos(e) * math.sin(a), math.sin(e))
 
 
-def camera_axes(position, target, right_hint=(1.0, 0.0, 0.0)):
+def corner_azimuth(enclosure, sx, sy):
+    """Azimuth from the floor's middle to one of the enclosure's vertical corner edges."""
+    return math.degrees(math.atan2(sy * enclosure[1] / 2, sx * enclosure[0] / 2))
+
+
+TARGET = (0.0, 0.0, 0.0)  # every camera aims at the middle of the box's floor
+
+
+def camera_axes(position, target=TARGET, right_hint=(1.0, 0.0, 0.0)):
     """Right, up and forward unit vectors of a level camera aimed at target."""
     w = unit(sub(target, position))
     r = cross(w, (0.0, 0.0, 1.0))
@@ -61,59 +78,109 @@ def to_sensor(point, position, axes, f):
     return f * dot(d, r) / z, f * dot(d, v) / z, z
 
 
-BOX_FLOOR = [(sx * BOX[0] / 2, sy * BOX[1] / 2, 0.0) for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
-MUST_SEE = BOX_FLOOR + [(x, y, REAR) for x, y, _ in BOX_FLOOR]
-TARGET = (0.0, 0.0, 0.0)
+# --- the two examples --------------------------------------------------------
+# box: floor length, floor width, wall height (cm); enclosure, inside: width,
+# depth, height (cm). Cameras: one looking down and two looking in from opposite
+# corners at 40 degrees, as docs/calibration.md recommends, and a corner where an
+# 8 mm lens is tried ("lens" given). Callouts are label offsets in the drawing.
+
+ENCLOSURE = dict(
+    file="choosing-lenses.svg",
+    name="enclosure", box_name="Box",
+    box=(45.0, 30.0, 20.0), enclosure=(100.0, 80.0, 90.0),
+    view=dict(azimuth=-58, elevation=24, scale=4.1, origin=(560, 404)),
+    size=(900, 790), thumbs_y=612, camera_scale=1.8,
+    enclosure_label=(-20, 34), box_label=(8, 16),
+    cameras=[
+        dict(key="top", where="looking down", title="Top", u=(0.0, 0.0, 1.0), cls="c1", callout=(70, -18, "start")),
+        dict(key="back", where="in a back corner", title="Back corner", az=("corner", -1, 1), el=40, cls="c2",
+             callout=(-40, -46, "end")),
+        dict(key="front", where="in a front corner", title="Front corner", az=("corner", 1, -1), el=40, cls="c3",
+             callout=(40, 40, "start")),
+        dict(key="ghost", where="in the other front corner", title="Front left", az=("corner", -1, -1), el=40,
+             cls="warn", lens=8, callout=(-10, 64, "start")),
+    ],
+)
+
+CUBICLE = dict(
+    file="choosing-lenses-cubicle.svg",
+    name="cubicle", box_name="Operant box",
+    box=(22.0, 18.0, 13.0), enclosure=(55.0, 40.0, 45.0),
+    view=dict(azimuth=-58, elevation=24, scale=7.0, origin=(570, 452)),
+    size=(900, 830), thumbs_y=652, camera_scale=1.0,
+    enclosure_label=(-30, 34), box_label=(8, 16),
+    cameras=[
+        dict(key="top", where="looking down", title="Top", u=(0.0, 0.0, 1.0), cls="c1", callout=(64, -22, "start")),
+        dict(key="back", where="in a back corner", title="Back corner", az=("corner", -1, 1), el=40, cls="c2",
+             callout=(-34, -52, "end")),
+        dict(key="front", where="in a front corner", title="Front corner", az=("corner", 1, -1), el=40, cls="c3",
+             callout=(40, 40, "start")),
+        dict(key="ghost", where="in the other front corner", title="Front left", az=("corner", -1, -1), el=40,
+             cls="warn", lens=8, callout=(-6, 118, "start")),
+    ],
+)
+
+SCENARIOS = [ENCLOSURE, CUBICLE]
 
 
-def fits(position, f):
-    axes = camera_axes(position, TARGET)
-    for p in MUST_SEE:
+def must_see(sc):
+    L, W = sc["box"][0] / 2, sc["box"][1] / 2
+    floor = [(sx * L, sy * W, 0.0) for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+    top = max(sc["box"][2], REAR)
+    return floor, floor + [(x, y, top) for x, y, _ in floor]
+
+
+def fits(sc, position, f):
+    axes = camera_axes(position)
+    for p in must_see(sc)[1]:
         x, y, z = to_sensor(p, position, axes, f)
         if z <= 0 or abs(x) > FILL * SENSOR_W / 2 or abs(y) > FILL * SENSOR_H / 2:
             return False
     return True
 
 
-def distance_needed(u, f):
+def distance_needed(sc, u, f):
     """Shortest distance from the floor's middle, along u, from which f fits."""
     lo, hi = 1.0, 5000.0
     for _ in range(60):
         mid = (lo + hi) / 2
-        if fits(mul(u, mid), f):
+        if fits(sc, mul(u, mid), f):
             hi = mid
         else:
             lo = mid
     return hi
 
 
-def wall_distance(u):
+def wall_distance(sc, u):
     """Distance from the floor's middle, along u, to the enclosure's inside."""
-    hx, hy, h = ENC[0] / 2, ENC[1] / 2, ENC[2]
+    hx, hy, h = sc["enclosure"][0] / 2, sc["enclosure"][1] / 2, sc["enclosure"][2]
     t = [hx / abs(u[0])] if abs(u[0]) > 1e-9 else []
     t += [hy / abs(u[1])] if abs(u[1]) > 1e-9 else []
     t += [h / u[2]] if u[2] > 1e-9 else []
     return min(t)
 
 
-# The cameras: one looking down and two looking in at an angle, as
-# docs/calibration.md recommends, and one spot where a 12 mm lens is tried.
-CAMERAS = [
-    dict(key="top", u=(0.0, 0.0, 1.0), cls="c1"),
-    dict(key="corner", u=direction(141.34, 40), cls="c2"),
-    dict(key="side", u=direction(-20, 30), cls="c3"),
-    dict(key="ghost", u=direction(-128, 35), cls="warn", lens=12),
-]
-for cam in CAMERAS:
-    cam["wall"] = wall_distance(cam["u"])
-    cam["spot"] = cam["wall"] - MOUNT
-    cam["needs"] = {f: distance_needed(cam["u"], f) for f in LENSES}
-    if "lens" not in cam:
-        cam["lens"] = max(f for f in LENSES if cam["needs"][f] <= cam["spot"])
-        cam["dist"] = cam["spot"]
-    else:  # drawn where it would have to be
-        cam["dist"] = cam["needs"][cam["lens"]]
-    cam["pos"] = mul(cam["u"], cam["dist"])
+def place_cameras(sc):
+    for cam in sc["cameras"]:
+        if "u" not in cam:
+            az = cam["az"]
+            if isinstance(az, tuple):  # aimed along a vertical corner edge
+                az = corner_azimuth(sc["enclosure"], az[1], az[2])
+            cam["u"] = direction(az, cam["el"])
+        cam["wall"] = wall_distance(sc, cam["u"])
+        cam["spot"] = cam["wall"] - MOUNT
+        cam["needs"] = {f: distance_needed(sc, cam["u"], f) for f in LENSES}
+        cam["too_long"] = "lens" in cam
+        if cam["too_long"]:  # drawn where it would have to be
+            cam["dist"] = cam["needs"][cam["lens"]]
+        else:
+            cam["lens"] = max(f for f in LENSES if cam["needs"][f] <= cam["spot"])
+            cam["dist"] = cam["spot"]
+        cam["pos"] = mul(cam["u"], cam["dist"])
+
+
+for _sc in SCENARIOS:
+    place_cameras(_sc)
 
 
 def fmt_mm(f):
@@ -121,12 +188,15 @@ def fmt_mm(f):
 
 
 def table():
-    print(f"Box {BOX[0]:g} x {BOX[1]:g} cm, enclosure {ENC[0]:g} x {ENC[1]:g} x {ENC[2]:g} cm inside")
-    print("cm from the floor's middle each lens needs:")
-    print("            " + "".join(f"{fmt_mm(f):>8}" for f in LENSES) + "    wall  spot  lens")
-    for cam in CAMERAS:
-        print(f"{cam['key']:<12}" + "".join(f"{cam['needs'][f]:8.0f}" for f in LENSES)
-              + f"  {cam['wall']:6.0f}{cam['spot']:6.0f}  {fmt_mm(cam['lens'])}")
+    for sc in SCENARIOS:
+        b, e = sc["box"], sc["enclosure"]
+        print(f"{sc['box_name']} {b[0]:g} x {b[1]:g} cm, {sc['name']} {e[0]:g} x {e[1]:g} x {e[2]:g} cm inside")
+        print("cm from the floor's middle each lens needs:")
+        print("            " + "".join(f"{fmt_mm(f):>8}" for f in LENSES) + "    wall  spot  lens")
+        for cam in sc["cameras"]:
+            print(f"{cam['key']:<12}" + "".join(f"{cam['needs'][f]:8.0f}" for f in LENSES)
+                  + f"  {cam['wall']:6.0f}{cam['spot']:6.0f}  {fmt_mm(cam['lens'])}")
+        print()
 
 
 # --- drawing ---------------------------------------------------------------
@@ -169,6 +239,10 @@ def pts(points):
     return " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
 
 
+def line(a, b, klass, extra=""):
+    return f'<line class="{klass}" x1="{a[0]:.1f}" y1="{a[1]:.1f}" x2="{b[0]:.1f}" y2="{b[1]:.1f}"{extra}/>'
+
+
 def hull(points):
     p = sorted(set((round(x, 2), round(y, 2)) for x, y in points))
     if len(p) < 3:
@@ -202,19 +276,23 @@ class View:
         return dot(p, self.V)
 
 
-def floor_grid(step=5.0):
-    """Lines every 5 cm on the box's floor."""
-    L, W = BOX[0] / 2, BOX[1] / 2
+def floor_grid(sc, step=5.0):
+    """Lines every 5 cm on the box's floor, from its middle out."""
+    L, W = sc["box"][0] / 2, sc["box"][1] / 2
     lines = []
-    x = -L + step
-    while x < L - 1e-6:
-        lines.append(((x, -W, 0.0), (x, W, 0.0)))
-        x += step
-    y = -W + step
-    while y < W - 1e-6:
-        lines.append(((-L, y, 0.0), (L, y, 0.0)))
-        y += step
+    for half, other, along_x in ((L, W, True), (W, L, False)):
+        k = 0.0
+        while k < half - 1e-6:
+            for c in ({k, -k} if k else {0.0}):
+                lines.append(((c, -other, 0.0), (c, other, 0.0)) if along_x else ((-other, c, 0.0), (other, c, 0.0)))
+            k += step
     return lines
+
+
+def box_walls(sc):
+    floor = must_see(sc)[0]
+    top = [(x, y, sc["box"][2]) for x, y, _ in floor]
+    return floor, [[floor[i], floor[(i + 1) % 4], top[(i + 1) % 4], top[i]] for i in range(4)]
 
 
 def cuboid_faces(center, axes, half):
@@ -235,103 +313,78 @@ def cuboid_faces(center, axes, half):
     return faces
 
 
-CAMERA_SCALE = 1.8  # cameras are drawn this much larger than life
-LENS_LEN, BODY_LEN = 3.4 * CAMERA_SCALE, 3.0 * CAMERA_SCALE
-
-
-def camera_back(cam):
-    """The middle of the back of a camera's body."""
-    return sub(cam["pos"], mul(camera_axes(cam["pos"], TARGET)[2], LENS_LEN + BODY_LEN))
-
-
-def draw_camera(out, view, cam):
-    """A Blackfly S (about a 3 cm cube) with its lens, aimed at the floor's middle."""
-    axes = camera_axes(cam["pos"], TARGET)
-    r, v, w = axes
-    scale, lens_len, body_len = CAMERA_SCALE, LENS_LEN, BODY_LEN
+def camera_parts(cam, scale):
+    """A Blackfly S (about a 3 cm cube) and its lens, aimed at the floor's middle."""
+    w = camera_axes(cam["pos"])[2]
+    lens_len, body_len = 3.4 * scale, 3.0 * scale
     lens_c = sub(cam["pos"], mul(w, lens_len / 2))
     body_c = sub(cam["pos"], mul(w, lens_len + body_len / 2))
-    parts = [(body_c, (1.5 * scale, 1.5 * scale, body_len / 2), "body"),
-             (lens_c, (1.15 * scale, 1.15 * scale, lens_len / 2), "lensc")]
-    ghost = cam["cls"] == "warn"
+    back = sub(cam["pos"], mul(w, lens_len + body_len))
+    return [(body_c, (1.5 * scale, 1.5 * scale, body_len / 2), "body"),
+            (lens_c, (1.15 * scale, 1.15 * scale, lens_len / 2), "lensc")], back
+
+
+def draw_camera(out, view, cam, scale):
+    axes = camera_axes(cam["pos"])
+    parts, _ = camera_parts(cam, scale)
     polys = []
     for center, half, cls in parts:
         for quad, normal, front in cuboid_faces(center, axes, half):
             if dot(normal, view.V) <= 0:
                 continue
-            fc = cls
-            if cls == "lensc" and front:
-                fc = cam["cls"]
+            fc = cam["cls"] if cls == "lensc" and front else cls
             polys.append((view.depth(center) + dot(normal, view.V), quad, fc))
     for _, quad, fc in sorted(polys, key=lambda t: t[0]):
-        p2 = [view(q) for q in quad]
-        if ghost:
-            out.append(f'<polygon class="ghost" points="{pts(p2)}"/>')
+        p2 = pts([view(q) for q in quad])
+        if cam["too_long"]:
+            out.append(f'<polygon class="ghost" points="{p2}"/>')
         else:
-            out.append(f'<polygon class="{fc}" points="{pts(p2)}" stroke="none"/>')
+            out.append(f'<polygon class="{fc}" points="{p2}" stroke="none"/>')
 
 
-def main_view(out, view):
-    W, D, H = ENC
+def main_view(sc, out, view):
+    W, D, H = sc["enclosure"]
     hx, hy = W / 2, D / 2
     P = lambda x, y, z: view((x, y, z))
-    floor = [P(-hx, -hy, 0), P(hx, -hy, 0), P(hx, hy, 0), P(-hx, hy, 0)]
-    back = [P(-hx, hy, 0), P(hx, hy, 0), P(hx, hy, H), P(-hx, hy, H)]
-    left = [P(-hx, -hy, 0), P(-hx, hy, 0), P(-hx, hy, H), P(-hx, -hy, H)]
-    out.append(f'<polygon class="wall1" points="{pts(back)}"/>')
-    out.append(f'<polygon class="wall2" points="{pts(left)}"/>')
-    out.append(f'<polygon class="floor" points="{pts(floor)}"/>')
+    out.append(f'<polygon class="wall1" points="{pts([P(-hx, hy, 0), P(hx, hy, 0), P(hx, hy, H), P(-hx, hy, H)])}"/>')
+    out.append(f'<polygon class="wall2" points="{pts([P(-hx, -hy, 0), P(-hx, hy, 0), P(-hx, hy, H), P(-hx, -hy, H)])}"/>')
+    out.append(f'<polygon class="floor" points="{pts([P(-hx, -hy, 0), P(hx, -hy, 0), P(hx, hy, 0), P(-hx, hy, 0)])}"/>')
 
-    # the box: floor, then its clear walls
-    bf = [(x, y, 0.0) for x, y, _ in BOX_FLOOR]
-    bt = [(x, y, BOX[2]) for x, y, _ in BOX_FLOOR]
-    # lines of sight from each camera to the box's floor corners
-    for cam in CAMERAS:
-        c2 = view(cam["pos"])
-        shape = hull([c2] + [view(p) for p in bf])
-        extra = ' stroke-dasharray="5 4"' if cam["cls"] == "warn" else ""
+    # lines of sight from each camera to the box's floor corners, then the box
+    floor, walls = box_walls(sc)
+    for cam in sc["cameras"]:
+        shape = hull([view(cam["pos"])] + [view(p) for p in floor])
+        extra = ' stroke-dasharray="5 4"' if cam["too_long"] else ""
         out.append(f'<polygon class="beam {cam["cls"]}" points="{pts(shape)}"{extra}/>')
-    out.append(f'<polygon class="boxfloor" points="{pts([view(p) for p in bf])}"/>')
-    for a, b in floor_grid():
-        a, b = view(a), view(b)
-        out.append(f'<line class="grid" x1="{a[0]:.1f}" y1="{a[1]:.1f}" x2="{b[0]:.1f}" y2="{b[1]:.1f}"/>')
-
-    walls = []
-    for i in range(4):
-        a, b = i, (i + 1) % 4
-        quad = [bf[a], bf[b], bt[b], bt[a]]
-        mid = mul(add(add(quad[0], quad[1]), add(quad[2], quad[3])), 0.25)
-        walls.append((view.depth(mid), quad))
-    for _, quad in sorted(walls):
+    out.append(f'<polygon class="boxfloor" points="{pts([view(p) for p in floor])}"/>')
+    for a, b in floor_grid(sc):
+        out.append(line(view(a), view(b), "grid"))
+    for quad in sorted(walls, key=lambda q: view.depth(mul(add(q[0], q[2]), 0.5))):
         out.append(f'<polygon class="glass" points="{pts([view(p) for p in quad])}"/>')
 
-    # the cut-away walls and ceiling, as outlines
-    for seg in [((hx, -hy, 0), (hx, -hy, H)), ((-hx, -hy, H), (hx, -hy, H)), ((hx, -hy, H), (hx, hy, H)),
-                ((hx, hy, 0), (hx, -hy, 0)), ((-hx, -hy, 0), (hx, -hy, 0))]:
-        a, b = view(seg[0]), view(seg[1])
-        out.append(f'<line class="cut" x1="{a[0]:.1f}" y1="{a[1]:.1f}" x2="{b[0]:.1f}" y2="{b[1]:.1f}"/>')
+    # the cut-away front and right walls and the ceiling, as outlines
+    for a, b in [((hx, -hy, 0), (hx, -hy, H)), ((-hx, -hy, H), (hx, -hy, H)), ((hx, -hy, H), (hx, hy, H)),
+                 ((hx, hy, 0), (hx, -hy, 0)), ((-hx, -hy, 0), (hx, -hy, 0))]:
+        out.append(line(view(a), view(b), "cut"))
 
-    # cameras, back to front, each with its mount to the wall or ceiling
+    # cameras, back to front, each on a mount to the wall, corner or ceiling behind it
     anchors = {}
-    for cam in sorted(CAMERAS, key=lambda c: view.depth(c["pos"])):
-        back_pt = camera_back(cam)
-        mount_to = {"top": (back_pt[0], back_pt[1], H), "corner": (-hx, hy, back_pt[2]),
-                    "side": (hx, back_pt[1], back_pt[2])}.get(cam["key"])
-        if mount_to:
-            a, b = view(back_pt), view(mount_to)
-            out.append(f'<line class="mount" x1="{a[0]:.1f}" y1="{a[1]:.1f}" x2="{b[0]:.1f}" y2="{b[1]:.1f}"/>')
-        draw_camera(out, view, cam)
+    for cam in sorted(sc["cameras"], key=lambda c: view.depth(c["pos"])):
+        if not cam["too_long"]:
+            _, back = camera_parts(cam, sc["camera_scale"])
+            out.append(line(view(back), view(mul(cam["u"], cam["wall"])), "mount"))
+        draw_camera(out, view, cam, sc["camera_scale"])
         anchors[cam["key"]] = view(cam["pos"])
     return anchors
 
 
-def thumbnail(out, x0, y0, width, cam, f, dist, title, note, cls):
+def thumbnail(sc, out, x0, y0, width, cam, f, dist, title, note):
     height = width * SENSOR_H / SENSOR_W
     pos = mul(cam["u"], dist)
-    axes = camera_axes(pos, TARGET)
-    clip = f"clip-{cam['key']}-{str(f).replace('.', '_')}"
+    axes = camera_axes(pos)
+    clip = f"clip-{sc['name']}-{cam['key']}"
     out.append(f'<clipPath id="{clip}"><rect x="{x0}" y="{y0}" width="{width:.1f}" height="{height:.1f}"/></clipPath>')
-    frame_cls = "frame warn" if cls == "warn" else "frame"
+    frame_cls = "frame warn" if cam["too_long"] else "frame"
     out.append(f'<rect class="{frame_cls}" x="{x0}" y="{y0}" width="{width:.1f}" height="{height:.1f}"/>')
 
     def to_px(p):
@@ -340,129 +393,114 @@ def thumbnail(out, x0, y0, width, cam, f, dist, title, note, cls):
 
     def poly(points3d, klass):
         # keep only what is in front of the camera
-        near = 1.0
-        kept = []
-        n = len(points3d)
-        for i in range(n):
-            a, b = points3d[i], points3d[(i + 1) % n]
+        near, kept = 1.0, []
+        for i in range(len(points3d)):
+            a, b = points3d[i], points3d[(i + 1) % len(points3d)]
             za, zb = to_sensor(a, pos, axes, f)[2], to_sensor(b, pos, axes, f)[2]
             if za > near:
                 kept.append(a)
             if (za > near) != (zb > near):
-                t = (near - za) / (zb - za)
-                kept.append(add(a, mul(sub(b, a), t)))
+                kept.append(add(a, mul(sub(b, a), (near - za) / (zb - za))))
         if len(kept) >= 3:
             out.append(f'<polygon class="{klass}" points="{pts([to_px(p) for p in kept])}" clip-path="url(#{clip})"/>')
 
-    W, D, H = ENC
+    W, D, H = sc["enclosure"]
     hx, hy = W / 2, D / 2
     poly([(-hx, hy, 0), (hx, hy, 0), (hx, hy, H), (-hx, hy, H)], "wall1")
     poly([(-hx, -hy, 0), (-hx, hy, 0), (-hx, hy, H), (-hx, -hy, H)], "wall2")
     poly([(hx, -hy, 0), (hx, hy, 0), (hx, hy, H), (hx, -hy, H)], "wall2")
     poly([(-hx, -hy, 0), (hx, -hy, 0), (hx, hy, 0), (-hx, hy, 0)], "floor")
-    bf = [(x, y, 0.0) for x, y, _ in BOX_FLOOR]
-    bt = [(x, y, BOX[2]) for x, y, _ in BOX_FLOOR]
-    poly(bf, "boxfloor")
-    for a, b in floor_grid():
-        a, b = to_px(a), to_px(b)
-        out.append(f'<line class="grid" x1="{a[0]:.1f}" y1="{a[1]:.1f}" x2="{b[0]:.1f}" y2="{b[1]:.1f}" clip-path="url(#{clip})"/>')
-    walls = []
-    for i in range(4):
-        a, b = i, (i + 1) % 4
-        quad = [bf[a], bf[b], bt[b], bt[a]]
-        mid = mul(add(add(quad[0], quad[1]), add(quad[2], quad[3])), 0.25)
-        walls.append((-dot(sub(mid, pos), axes[2]), quad))
-    for _, quad in sorted(walls):
+    floor, walls = box_walls(sc)
+    poly(floor, "boxfloor")
+    for a, b in floor_grid(sc):
+        out.append(line(to_px(a), to_px(b), "grid", f' clip-path="url(#{clip})"'))
+    for quad in sorted(walls, key=lambda q: -dot(sub(mul(add(q[0], q[2]), 0.5), pos), axes[2])):
         poly(quad, "glass")
     mx, my = width * (1 - FILL) / 2, height * (1 - FILL) / 2
     out.append(f'<rect class="margin" x="{x0 + mx:.1f}" y="{y0 + my:.1f}" width="{width * FILL:.1f}" height="{height * FILL:.1f}"/>')
-    out.append(f'<rect class="{frame_cls}" x="{x0}" y="{y0}" width="{width:.1f}" height="{height:.1f}" fill="none" style="fill:none"/>')
-    tcls = {"c1": "t-c1", "c2": "t-c2", "c3": "t-c3", "warn": "t-warn"}[cls]
-    out.append(f'<text x="{x0}" y="{y0 - 22}" class="t-b {tcls}">{title}</text>')
+    out.append(f'<rect class="{frame_cls}" x="{x0}" y="{y0}" width="{width:.1f}" height="{height:.1f}" style="fill:none"/>')
+    out.append(f'<text x="{x0}" y="{y0 - 22}" class="t-b t-{cam["cls"]}">{title}</text>')
     out.append(f'<text x="{x0}" y="{y0 - 7}" class="t-small t-muted">{note}</text>')
-    return height
 
 
-def svg():
-    Wd, Hd = 900, 790
-    view = View(azimuth=-58, elevation=24, scale=4.1, origin=(560, 404))
+def a_lens(f):
+    return ("an " if str(f).startswith(("8", "11", "18")) else "a ") + fmt_mm(f) + " lens"
+
+
+def svg(sc):
+    Wd, Hd = sc["size"]
+    view = View(**sc["view"])
     out = [f'<rect class="bg" width="{Wd}" height="{Hd}"/>']
-    anchors = main_view(out, view)
+    anchors = main_view(sc, out, view)
+    W, D, H = sc["enclosure"]
+    name = sc["name"]
 
-    cams = {c["key"]: c for c in CAMERAS}
-
-    def callout(key, dx, dy, lines, anchor="start"):
-        ax, ay = anchors[key]
+    for cam in sc["cameras"]:
+        ax, ay = anchors[cam["key"]]
+        dx, dy, anchor = cam["callout"]
         tx, ty = ax + dx, ay + dy
-        out.append(f'<line class="lead" x1="{ax:.1f}" y1="{ay:.1f}" x2="{tx:.1f}" y2="{ty - 4:.1f}"/>')
-        cls = {"c1": "t-c1", "c2": "t-c2", "c3": "t-c3", "warn": "t-warn"}[cams[key]["cls"]]
+        out.append(line((ax, ay), (tx, ty - 4), "lead"))
+        if cam["too_long"]:
+            lines = [(f"✕ {fmt_mm(cam['lens'])} lens, {cam['where']}", "head"),
+                     (f"it fits only from {cam['dist']:.0f} cm: outside the", "body"),
+                     (f"{name}, whose wall is {cam['wall']:.0f} cm away", "body")]
+        else:
+            where = "above the floor" if cam["key"] == "top" else "from the floor's middle"
+            lines = [(f"{fmt_mm(cam['lens'])} lens, {cam['where']}", "head"),
+                     (f"{cam['dist']:.0f} cm {where}", "body"),
+                     (f"it fits from {cam['needs'][cam['lens']]:.0f} cm", "muted")]
         for i, (text, kind) in enumerate(lines):
-            k = {"head": f"t-b {cls}", "body": "t-small", "muted": "t-small t-muted"}[kind]
+            k = {"head": f"t-b t-{cam['cls']}", "body": "t-small", "muted": "t-small t-muted"}[kind]
             out.append(f'<text x="{tx:.1f}" y="{ty + i * 16:.1f}" class="{k}" text-anchor="{anchor}">{text}</text>')
 
-    t, c, s, g = cams["top"], cams["corner"], cams["side"], cams["ghost"]
-    callout("top", 70, -18, [(f"{fmt_mm(t['lens'])} lens, looking down", "head"),
-                             (f"{t['dist']:.0f} cm above the floor", "body"),
-                             (f"it fits from {t['needs'][t['lens']]:.0f} cm", "muted")])
-    callout("corner", -40, -46, [(f"{fmt_mm(c['lens'])} lens, in a back corner", "head"),
-                                 (f"{c['dist']:.0f} cm from the floor's middle", "body"),
-                                 (f"it fits from {c['needs'][c['lens']]:.0f} cm", "muted")], anchor="end")
-    callout("side", 46, 36, [(f"{fmt_mm(s['lens'])} lens, on the side wall", "head"),
-                             (f"{s['dist']:.0f} cm from the floor's middle", "body"),
-                             (f"it fits from {s['needs'][s['lens']]:.0f} cm", "muted")])
-    callout("ghost", -10, 64, [(f"✕ {fmt_mm(g['lens'])} lens, in a front corner", "head"),
-                               (f"it fits only from {g['dist']:.0f} cm: outside the", "body"),
-                               (f"enclosure, whose wall is {g['wall']:.0f} cm away", "body")])
-
-    notes = ["To scale, but for the cameras (drawn larger).",
+    notes = ["To scale." if sc["camera_scale"] == 1 else "To scale, but for the cameras (drawn larger).",
              "Camera: FLIR Blackfly S, 1/2\" sensor, 1280 × 1024.",
              "Each lens is the longest that fits from its spot.",
              "Distances: from the lens to the middle of the box&#8217;s floor."]
-    for i, line in enumerate(notes):
-        out.append(f'<text x="24" y="{28 + 16 * i}" class="t-small t-muted">{line}</text>')
+    for i, text in enumerate(notes):
+        out.append(f'<text x="24" y="{28 + 16 * i}" class="t-small t-muted">{text}</text>')
 
     # labels for the enclosure and the box
-    W, D, H = ENC
-    a = view((-W / 2, -D / 2, 0))
-    b = view((W / 2, -D / 2, 0))
-    out.append(f'<text x="{(a[0] + b[0]) / 2 - 20:.1f}" y="{(a[1] + b[1]) / 2 + 34:.1f}" class="t-small t-muted" text-anchor="middle">'
-               f'Enclosure, inside: {W:g} × {D:g} cm, {H:g} cm high</text>')
-    bx = view((BOX[0] / 2, -BOX[1] / 2, 0))
-    out.append(f'<text x="{bx[0] + 8:.1f}" y="{bx[1] + 16:.1f}" class="t-small t-muted">Box: {BOX[0]:g} × {BOX[1]:g} cm floor</text>')
+    a, b = view((-W / 2, -D / 2, 0)), view((W / 2, -D / 2, 0))
+    dx, dy = sc["enclosure_label"]
+    out.append(f'<text x="{(a[0] + b[0]) / 2 + dx:.1f}" y="{(a[1] + b[1]) / 2 + dy:.1f}" class="t-small t-muted" '
+               f'text-anchor="middle">{name.capitalize()}, inside: {W:g} × {D:g} cm, {H:g} cm high</text>')
+    bx = view((sc["box"][0] / 2, -sc["box"][1] / 2, 0))
+    dx, dy = sc["box_label"]
+    out.append(f'<text x="{bx[0] + dx:.1f}" y="{bx[1] + dy:.1f}" class="t-small t-muted">'
+               f'{sc["box_name"]}: {sc["box"][0]:g} × {sc["box"][1]:g} cm floor, {sc["box"][2]:g} cm high</text>')
 
     # what each camera sees
-    y0 = 612
-    wt, gap = 192, 24
-    x = 24
-    out.append(f'<text x="24" y="{y0 - 52}" class="t-b">What each camera sees (without lens distortion). Dashed: the middle 90% of the frame, where the box should sit</text>')
-    for cam, f, dist, title, note in [
-        (t, t["lens"], t["dist"], f"Top, {fmt_mm(t['lens'])}", f"from {t['dist']:.0f} cm"),
-        (c, c["lens"], c["dist"], f"Back corner, {fmt_mm(c['lens'])}", f"from {c['dist']:.0f} cm"),
-        (s, s["lens"], s["dist"], f"Side wall, {fmt_mm(s['lens'])}", f"from {s['dist']:.0f} cm"),
-        (g, g["lens"], g["spot"], f"Front corner, {fmt_mm(g['lens'])}", f"from {g['spot']:.0f} cm, inside: the box is cut off"),
-    ]:
-        thumbnail(out, x, y0, wt, cam, f, dist, title, note, cam["cls"])
+    y0, wt, gap, x = sc["thumbs_y"], 192, 24, 24
+    out.append(f'<text x="24" y="{y0 - 52}" class="t-b">What each camera sees (without lens distortion). '
+               'Dashed: the middle 80% of the frame, where the whole box should sit</text>')
+    for cam in sc["cameras"]:
+        title = f"{cam['title']}, {fmt_mm(cam['lens'])}"
+        if cam["too_long"]:
+            note = f"from {cam['spot']:.0f} cm, inside: the box is cut off"
+            thumbnail(sc, out, x, y0, wt, cam, cam["lens"], cam["spot"], title, note)
+        else:
+            thumbnail(sc, out, x, y0, wt, cam, cam["lens"], cam["dist"], title, f"from {cam['dist']:.0f} cm")
         x += wt + gap
 
-    def a_lens(f):
-        return ("an " if str(f).startswith(("8", "11", "18")) else "a ") + fmt_mm(f) + " lens"
-    aria = (f"A behaviour box, {BOX[0]:g} by {BOX[1]:g} cm, inside an enclosure {W:g} by {D:g} cm and {H:g} cm high, "
-            f"seen from the front right. {a_lens(t['lens']).capitalize()} fits looking down from the ceiling, "
-            f"{a_lens(c['lens'])} from a back corner, and {a_lens(s['lens'])} from the side wall. "
-            f"{a_lens(g['lens']).capitalize()} would have to be {g['dist']:.0f} cm away, outside the enclosure; "
-            f"from inside it, the box is cut off.")
+    fit = [c for c in sc["cameras"] if not c["too_long"]]
+    ghost = [c for c in sc["cameras"] if c["too_long"]][0]
+    fit_text = ", ".join(f"{a_lens(c['lens'])} {c['where']}" for c in fit[:-1]) + f" and {a_lens(fit[-1]['lens'])} {fit[-1]['where']}"
+    aria = (f"{sc['box_name']}, {sc['box'][0]:g} by {sc['box'][1]:g} cm, inside a{'n' if name[0] in 'aeiou' else ''} {name} "
+            f"{W:g} by {D:g} cm and {H:g} cm high, seen from the front right. Lenses that fit: {fit_text}. "
+            f"{a_lens(ghost['lens']).capitalize()} {ghost['where']} would have to be {ghost['dist']:.0f} cm away, "
+            f"outside the {name}; from inside it, the box is cut off.")
     body = "\n".join(out)
     return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {Wd} {Hd}" width="{Wd}" height="{Hd}" '
             f'role="img" aria-label="{aria}"><style>{STYLE}</style>\n{body}\n</svg>\n')
 
 
 if __name__ == "__main__":
-    if "--table" in sys.argv:
-        table()
-    else:
+    table()
+    if "--table" not in sys.argv:
         here = os.path.dirname(os.path.abspath(__file__))
-        path = os.path.join(here, "..", "docs", "images", "choosing-lenses.svg")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(svg())
-        table()
-        print("wrote", os.path.normpath(path))
+        for sc in SCENARIOS:
+            path = os.path.normpath(os.path.join(here, "..", "docs", "images", sc["file"]))
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(svg(sc))
+            print("wrote", path)
