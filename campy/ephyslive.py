@@ -978,7 +978,11 @@ def Serve(args, out=print):
 		source = SpikeGLXSource(args.sdk, args.host, args.port, args.ip, filtered=args.spikeglx_filter)
 	frames = CameraFrames(source, args.obx_ip, args.camera_bit, args.pico_status) if args.sdk and args.obx_ip >= 0 \
 		else None
-	engine = Engine(source, args.threshold, frames=frames)
+	sorter = None
+	if args.templates: # a live sorter: templates from a Kilosort 4 sort (campy-ephys train)
+		from campy import ephyssort
+		sorter = ephyssort.TemplateSorter(args.templates)
+	engine = Engine(source, args.threshold, sorter=sorter, frames=frames)
 	key = os.environ.get("CAMPY_EPHYS_KEY", "")
 	state = {"asked": time.monotonic(), "health": {}, "stop": False}
 	lock = threading.Lock() # the engine's settings, between the reading thread and the requests
@@ -1033,6 +1037,7 @@ def Serve(args, out=print):
 						(len(engine.stream.uv),)), 2).tolist()
 					st["channels"] = engine.stream.channels.tolist()
 					st["sorter"] = engine.sorter.name
+					st["units"] = engine.sorter.Units()
 					out["stream"] = st
 			self.Send(200, out)
 
@@ -1156,7 +1161,44 @@ def Main(argv=None):
 		"rig)")
 	v.add_argument("--pico-status", help="chronic_control.py's status.json: the Pico's camera pulses so far, each "
 		"bout's first frame")
+	v.add_argument("--templates", help="a live sorter: the templates campy-ephys train made from a Kilosort 4 sort")
+	t = sub.add_parser("train", help="a live sorter's templates from a Kilosort 4 sort (its phy folder), the recording "
+		"replayed as live (campy/ephyssort.py)")
+	t.add_argument("--replay", required=True, help="the sorted recording's .ap.bin (its .meta beside it)")
+	t.add_argument("--phy", required=True, help="Kilosort's output folder (as Kilosort left it, or curated in phy)")
+	t.add_argument("--out", required=True, help="the templates file to write (.npz)")
+	t.add_argument("--span", default=":", help="the seconds of the recording to train on, a:b (default: all)")
+	t.add_argument("--labels", default="good,mua", help="the units to keep, by label (phy's, else Kilosort's); with "
+		"mua, their templates take their own spikes, rather than leave them to the good units'")
+	t.add_argument("--accept-q", type=float, default=0.99, help="a unit's acceptance: this quantile of its own "
+		"training spikes' distances to its template")
+	e = sub.add_parser("evaluate", help="a live sorter's templates against Kilosort's sort, on a span of the recording "
+		"replayed as live")
+	e.add_argument("--replay", required=True)
+	e.add_argument("--phy", required=True)
+	e.add_argument("--templates", required=True)
+	e.add_argument("--span", default=":", help="the seconds to evaluate on, a:b (not the training span)")
+	e.add_argument("--json", help="write the summary and each unit's numbers here")
+	e.add_argument("--report", default="good", help="report the units with these labels only (default good; \"\" "
+		"for all): the others' templates still compete for the spikes")
 	args = parser.parse_args(argv)
+	if args.command in ("train", "evaluate"):
+		from campy import ephyssort, strictjson
+		source = ReplaySource(args.replay, speed=0)
+		try:
+			if args.command == "train":
+				ephyssort.Train(source.data, source.stream, args.phy, args.out, args.span,
+					tuple(l.strip() for l in args.labels.split(",") if l.strip()), accept_q=args.accept_q)
+			else:
+				summary = ephyssort.Evaluate(source.data, source.stream, args.phy, args.templates, args.span,
+					report=tuple(l.strip() for l in args.report.split(",") if l.strip()) or None)
+				if args.json:
+					with open(args.json, "w") as f:
+						strictjson.dump(summary, f, indent=1)
+		except (EphysError, OSError, KeyError, ValueError) as e:
+			print("campy-ephys {}: {}".format(args.command, e), file=sys.stderr)
+			return 1
+		return 0
 	if args.command == "serve":
 		try:
 			return Serve(args)

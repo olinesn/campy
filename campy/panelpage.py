@@ -154,7 +154,8 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
 <div id="ephys" class="card eph" hidden><div class="row"><h2 class="grow" style="margin:0">Live ephys</h2>
   <button id="ephysbtn">Show the probe live</button></div>
   <div class="muted note">The probe read from SpikeGLX while it runs, read-only: it never changes SpikeGLX or what it records.
-    Read by a program of its own at low priority, only while this is shown. Spikes: threshold crossings (not sorted).</div>
+    Read by a program of its own at low priority, only while this is shown. Spikes: threshold crossings, sorted into units when the
+    config gives templates from a Kilosort sort (spikeglx.templates).</div>
   <div id="ephysstate" class="muted" style="margin-top:.25rem"></div>
   <div id="ephysbody" hidden>
     <label style="margin-top:.5rem">Oscilloscope: the site picked on the probe map and its 3 nearest, filtered (300 Hz high-pass, median across the probe taken off), last 2 s. Ticks along the top: the camera's frames, while it records.
@@ -166,7 +167,9 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
       <div><label id="ephsniplab">Its last 30 spikes, and their mean</label><canvas id="ephsnip" height="300"></canvas>
         <div class="row" style="margin-top:.375rem"><span class="muted">Threshold</span><input id="ephk" class="k" type="number" min="2" max="20" step="0.5">
           <span class="muted">&times; noise</span><button id="ephkall">All sites</button><button id="ephkone">This site</button></div>
-        <div id="epherr" class="err"></div></div>
+        <div id="epherr" class="err"></div>
+        <div id="ephunitbox" hidden style="margin-top:.5rem"><label>Units, by spikes a second (click one: its spikes above; its site on the map)</label>
+          <div id="ephunits" class="mono" style="line-height:1.6"></div></div></div>
     </div>
   </div>
 </div>
@@ -896,7 +899,7 @@ $("stoporphan").onclick = async () => { const e = await post("/stop-orphan", {no
   if(e) alert(e); else if(!orphanArmed){ orphanArmed = 1; $("stoporphan").textContent = "Stop now, without closing"; setTimeout(() => { orphanArmed = 0; $("stoporphan").textContent = "Stop that recording"; }, 5000); } tick(); };
 $("viewer").onclick = async () => { const e = await post("/viewer"); if(e) alert(e); };
 // ---- Live ephys (campy/ephyslive.py, through the panel): polled 5 times a second while shown
-const EPH = {open:false, timer:null, sinceSample:null, sinceBin:null, b0:null, lo:[], hi:[], chans:[], spikes:[], rates:null, cam:[], binN:30,
+const EPH = {selUnit:null, units:[], unitRates:{}, open:false, timer:null, sinceSample:null, sinceBin:null, b0:null, lo:[], hi:[], chans:[], spikes:[], rates:null, cam:[], binN:30,
   stream:null, streamAt:0, sel:null, snips:[], scale:150, newest:null, rate:30000, health:null, busy:false};
 const SCOPE_BINS = 2000, SCOPE_KEEP = 3000, RASTER_S = 10, PLAY_DELAY_S = 0.3, POLL_MS = 100, DRAW_MS = 33;
 // The traces scroll smoothly: drawn up to 30 times a second at a playhead that moves at the samples' own rate, kept
@@ -917,7 +920,8 @@ function ephysText(){
     (H.lag_s!=null ? Math.round(1000*H.lag_s)+" ms behind" : "")+" · "+Math.round(H.spikes_per_s||0).toLocaleString()+" spikes/s · reader "+
     Math.round(H.cpu||0)+"% of a core"+(H.skipped - (H.unavailable||0) > 0 ? " · "+Number(H.skipped - (H.unavailable||0)).toLocaleString()+" samples skipped (the reader fell behind)" : "")+
     (H.unavailable ? " · "+Number(H.unavailable).toLocaleString()+" samples SpikeGLX didn't have (its run starting, or the reader late)" : "")+
-    (H.gaps ? " · "+H.gaps+" gaps" : "") + ephysCamText(H.camera);
+    (H.gaps ? " · "+H.gaps+" gaps" : "") + ephysCamText(H.camera) +
+    ((EPH.units||[]).length ? " · sorted into "+EPH.units.length+" units: "+Math.round(100*(EPH.sortedShare||0))+"% of spikes" : "");
 }
 function ephysCamText(C){ // the camera's frame, from the OneBox's camera pulses and the Pico's count
   if(!C) return "";
@@ -951,7 +955,7 @@ async function ephysTick(){
   try {
     const wantStream = !EPH.stream || Date.now() - EPH.streamAt > 2000;
     const qs = new URLSearchParams(); if(EPH.sinceSample!=null) qs.set("since_sample", EPH.sinceSample);
-    if(EPH.sinceBin!=null) qs.set("since_bin", EPH.sinceBin); if(EPH.sel!=null) qs.set("snippets", EPH.sel); if(wantStream) qs.set("stream", "1");
+    if(EPH.sinceBin!=null) qs.set("since_bin", EPH.sinceBin); if(EPH.sel!=null) qs.set("snippets", EPH.sel); if(EPH.selUnit!=null) qs.set("units", EPH.selUnit); if(wantStream) qs.set("stream", "1");
     const r = await fetch(q("/ephys.json?"+qs.toString())); const j = await r.json();
     if(!r.ok){ $("epherr").textContent = j.error || ("error "+r.status); return; }
     $("epherr").textContent = "";
@@ -978,8 +982,10 @@ async function ephysTick(){
     for(let i=0;i<P.sample.length;i++) EPH.spikes.push([P.sample[i], P.channel[i], P.amplitude[i], P.unit[i]]);
     if(P.sample.length) EPH.sinceSample = P.sample[P.sample.length-1];
     const keep = (EPH.newest||0) - (RASTER_S+1)*EPH.rate; let k = 0; while(k < EPH.spikes.length && EPH.spikes[k][0] < keep) k++; if(k) EPH.spikes.splice(0, k);
-    EPH.rates = L.rates.channel;
-    const sn = (L.snippets.channel||{})[EPH.sel]; if(sn) EPH.snips = sn;
+    EPH.rates = L.rates.channel; EPH.unitRates = L.rates.unit || {};
+    if(EPH.stream && EPH.stream.units) EPH.units = EPH.stream.units;
+    const sn = EPH.selUnit!=null ? (L.snippets.unit||{})[EPH.selUnit] : (L.snippets.channel||{})[EPH.sel]; if(sn) EPH.snips = sn;
+    ephysUnits(P);
     ephysDrawSlow();
   } catch(e) { $("epherr").textContent = "The panel didn't answer: " + e; }
   finally { EPH.busy = false; }
@@ -989,8 +995,24 @@ function ephysNearest(c, n){ // the n sites nearest c (itself first), on its sha
   const d = G.x.map((x,i) => [Math.hypot(x-G.x[c], G.z[i]-G.z[c]) + (G.used[i]?0:1e9), i]); d.sort((a,b) => a[0]-b[0]);
   return d.slice(0, n).map(v => v[1]);
 }
-async function ephysPick(c, quiet){
-  EPH.sel = c; EPH.snips = []; $("ephsniplab").textContent = "Site "+c+": its last 30 spikes, and their mean";
+function unitColor(u){ return "hsl("+((u*137.508)%360)+",65%,55%)"; } // each unit its own hue
+function ephysUnits(P){ // the sorter's units, busiest first, and how many of the new spikes it sorted
+  const U = EPH.units || []; $("ephunitbox").hidden = !U.length; if(!U.length) return;
+  const by = {}; for(const u of U) by[u.unit] = u;
+  const rows = Object.entries(EPH.unitRates).map(([u, r]) => [Number(u), r]).filter(x => by[x[0]]).sort((a,b) => b[1]-a[1]).slice(0, 16);
+  $("ephunits").innerHTML = rows.length ? rows.map(([u, r]) => '<span class="unit" data-u="'+u+'" style="cursor:pointer;margin-right:.75rem;white-space:nowrap;display:inline-block;'+
+    (u===EPH.selUnit ? 'text-decoration:underline;' : '')+'"><span style="color:'+unitColor(u)+'">&#9632;</span> '+u+(by[u].label!="good" ? " ("+esc(by[u].label)+")" : "")+
+    " "+r.toFixed(1)+"/s</span>").join("") : '<span class="muted">no spike sorted in the last 2 s</span>';
+  for(const el of $("ephunits").querySelectorAll(".unit")) el.onclick = () => ephysPickUnit(Number(el.dataset.u));
+  if(P && P.unit.length){ const sorted = P.unit.filter(u => u >= 0).length; EPH.sortedShare = 0.8*(EPH.sortedShare||0) + 0.2*sorted/P.unit.length; }
+}
+function ephysPickUnit(u){
+  const info = (EPH.units||[]).find(x => x.unit === u); EPH.selUnit = u; EPH.snips = [];
+  $("ephsniplab").textContent = "Unit "+u+(info ? " ("+info.label+", site "+info.channel+")" : "")+": its last 30 spikes, and their mean (back to a site: click the map)";
+  if(info) ephysPick(info.channel, true, true);
+}
+async function ephysPick(c, quiet, keepUnit){
+  EPH.sel = c; EPH.snips = []; if(!keepUnit){ EPH.selUnit = null; $("ephsniplab").textContent = "Site "+c+": its last 30 spikes, and their mean"; }
   const T = EPH.stream && EPH.stream.threshold; if(T) $("ephk").value = T[c];
   const r = await postFull("/ephys-scope", {channels: ephysNearest(c, 4)}); if(r.error && !quiet) $("epherr").textContent = r.error;
 }
@@ -1044,9 +1066,9 @@ function ephysDrawFast(){ // the oscilloscope, the camera's frames and the raste
   const G = EPH.stream, zmin = Math.min(...G.z), zmax = Math.max(...G.z) || 1;
   [g, W, H] = ephysCanvas("ephraster"); const pad = 8, zy = z => H - pad - (z - zmin)/(zmax - zmin || 1)*(H - 2*pad);
   const t1 = EPH.play, tx = s => W - (t1 - s)/(RASTER_S*EPH.rate)*W;
-  for(const [smp, ch, amp] of EPH.spikes){
+  for(const [smp, ch, amp, u] of EPH.spikes){
     if(smp > t1) break;
-    g.fillStyle = ink; g.globalAlpha = Math.min(1, Math.max(0.15, -amp/150)); g.fillRect(tx(smp), zy(G.z[ch])-1, 2, 2);
+    g.fillStyle = u >= 0 ? unitColor(u) : ink; g.globalAlpha = Math.min(1, Math.max(0.15, -amp/150)); g.fillRect(tx(smp), zy(G.z[ch])-1, 2, 2);
   }
   g.globalAlpha = 1; g.fillStyle = muted; g.textBaseline = "top"; g.fillText(zmax.toFixed(0)+" µm", 4, 2); g.textBaseline = "bottom"; g.fillText(zmin.toFixed(0)+" µm", 4, H-2);
 }
@@ -1080,7 +1102,7 @@ function ephysDrawSlow(){ // the probe map and the picked site's snippets, at ea
   for(const w of EPH.snips){ g.beginPath(); w.forEach((v,i) => i ? g.lineTo(sxp(i), sy(v)) : g.moveTo(sxp(i), sy(v))); g.stroke(); }
   g.globalAlpha = 1;
   if(EPH.snips.length){ const m = EPH.snips[0].map((_,i) => EPH.snips.reduce((a,w) => a + w[i], 0)/EPH.snips.length);
-    g.strokeStyle = accent; g.lineWidth = 2; g.beginPath(); m.forEach((v,i) => i ? g.lineTo(sxp(i), sy(v)) : g.moveTo(sxp(i), sy(v))); g.stroke(); g.lineWidth = 1; }
+    g.strokeStyle = EPH.selUnit!=null ? unitColor(EPH.selUnit) : accent; g.lineWidth = 2; g.beginPath(); m.forEach((v,i) => i ? g.lineTo(sxp(i), sy(v)) : g.moveTo(sxp(i), sy(v))); g.stroke(); g.lineWidth = 1; }
   g.fillStyle = muted; g.textBaseline = "bottom";
   g.fillText((EPH.snips.length||0)+" spikes"+(T!=null ? " · threshold "+T.toFixed(0)+" µV" : "")+" · 2 ms", 6, H-4);
 }

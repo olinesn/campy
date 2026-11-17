@@ -42,7 +42,7 @@ Each run records into a new folder inside the config's `videoFolder`, named by t
 | `campy-infer` | SLEAP predictions on recorded videos, about 10 times faster than `sleap-nn track`, as ordinary `.slp` files | [Offline inference](docs/offline-inference.md#poses-from-recorded-videos-campy-infer) |
 | `campy-rules` | Switch TTL outputs from the live poses (an animal in a region, two animals close), for closed-loop experiments | [Closed-loop outputs](docs/closed-loop.md) |
 | `campy-box` | Run an operant box's task (states, timers, trials) on the outputs board: sensors in, servos and valves out, every event stamped with the camera frame | [Operant boxes](docs/operant-boxes.md) |
-| `campy-ephys` | Read a Neuropixels probe live from SpikeGLX (read-only), filter it and find its spikes; `bench` measures what that costs | [Live electrophysiology](docs/live-ephys.md) |
+| `campy-ephys` | Read a Neuropixels probe live from SpikeGLX (read-only), filter it and find its spikes; `bench` measures what that costs; `train` and `evaluate` make and check a live sorter from a Kilosort 4 sort | [Live electrophysiology](docs/live-ephys.md) |
 
 ## Documentation
 
