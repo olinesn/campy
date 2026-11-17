@@ -898,7 +898,10 @@ $("viewer").onclick = async () => { const e = await post("/viewer"); if(e) alert
 // ---- Live ephys (campy/ephyslive.py, through the panel): polled 5 times a second while shown
 const EPH = {open:false, timer:null, sinceSample:null, sinceBin:null, b0:null, lo:[], hi:[], chans:[], spikes:[], rates:null, cam:[], binN:30,
   stream:null, streamAt:0, sel:null, snips:[], scale:150, newest:null, rate:30000, health:null, busy:false};
-const SCOPE_BINS = 2000, RASTER_S = 10;
+const SCOPE_BINS = 2000, SCOPE_KEEP = 3000, RASTER_S = 10, PLAY_DELAY_S = 0.3, POLL_MS = 100, DRAW_MS = 33;
+// The traces scroll smoothly: drawn up to 30 times a second at a playhead that moves at the samples' own rate, kept
+// PLAY_DELAY_S behind the newest sample (the reader reads about every 60 ms and the page asks every POLL_MS, so there
+// is always something to scroll into)
 function renderEphys(E){
   $("ephys").hidden = !E; if(!E) return;
   $("ephysbtn").textContent = EPH.open ? "Hide" : "Show the probe live";
@@ -912,7 +915,8 @@ function ephysText(){
   if(!H.reading){ $("ephysstate").innerHTML = tag("waiting","warn")+" "+esc(H.state||"")+" — the view starts with SpikeGLX's run (Start)."; return; }
   $("ephysstate").innerHTML = tag("live","ok")+" "+esc(H.state)+" · "+(H.reads_per_s||0)+" reads/s, "+(H.fetch_ms||0)+" ms each · "+
     (H.lag_s!=null ? Math.round(1000*H.lag_s)+" ms behind" : "")+" · "+Math.round(H.spikes_per_s||0).toLocaleString()+" spikes/s · reader "+
-    Math.round(H.cpu||0)+"% of a core"+(H.skipped ? " · "+Number(H.skipped).toLocaleString()+" samples skipped (it fell behind)" : "")+
+    Math.round(H.cpu||0)+"% of a core"+(H.skipped - (H.unavailable||0) > 0 ? " · "+Number(H.skipped - (H.unavailable||0)).toLocaleString()+" samples skipped (the reader fell behind)" : "")+
+    (H.unavailable ? " · "+Number(H.unavailable).toLocaleString()+" samples SpikeGLX didn't have (its run starting, or the reader late)" : "")+
     (H.gaps ? " · "+H.gaps+" gaps" : "") + ephysCamText(H.camera);
 }
 function ephysCamText(C){ // the camera's frame, from the OneBox's camera pulses and the Pico's count
@@ -925,10 +929,23 @@ $("ephysbtn").onclick = async () => {
   EPH.open = !EPH.open; $("epherr").textContent = "";
   const e = await post("/ephys", {open: EPH.open}); if(e){ $("epherr").textContent = e; EPH.open = false; }
   clearInterval(EPH.timer); EPH.timer = null;
-  if(EPH.open){ ephysReset(); EPH.timer = setInterval(ephysTick, 200); }
+  if(EPH.open){ ephysReset(); EPH.timer = setInterval(ephysTick, POLL_MS); requestAnimationFrame(ephysFrame); }
   renderEphys((last||{}).ephys);
 };
-function ephysReset(){ Object.assign(EPH, {sinceSample:null, sinceBin:null, b0:null, lo:[], hi:[], spikes:[], snips:[], cam:[], newest:null}); }
+function ephysReset(){ Object.assign(EPH, {sinceSample:null, sinceBin:null, b0:null, lo:[], hi:[], spikes:[], snips:[], cam:[], newest:null, play:null, playAt:null}); }
+function ephysFrame(now){ // the playhead, and the traces at it
+  if(!EPH.open) return;
+  requestAnimationFrame(ephysFrame);
+  if(EPH.drawnAt && now - EPH.drawnAt < DRAW_MS) return;
+  if(EPH.newest!=null){
+    const target = EPH.newest - PLAY_DELAY_S*EPH.rate;
+    if(EPH.play==null || Math.abs(target - EPH.play) > 0.5*EPH.rate) EPH.play = target; // the start, or far off: jump
+    else EPH.play += (now - EPH.playAt)/1000*EPH.rate + (target - EPH.play)*0.05; // on at its rate, eased to the target
+    EPH.play = Math.min(EPH.play, EPH.newest);
+  }
+  EPH.playAt = now; EPH.drawnAt = now;
+  ephysDrawFast();
+}
 async function ephysTick(){
   if(EPH.busy || !EPH.open) return; EPH.busy = true;
   try {
@@ -950,20 +967,20 @@ async function ephysTick(){
       if(EPH.b0==null || S.first_bin != EPH.b0 + EPH.lo[0].length || String(S.channels) != String(EPH.chans)){
         EPH.b0 = S.first_bin; EPH.lo = S.min.map(a => a.slice()); EPH.hi = S.max.map(a => a.slice()); EPH.chans = S.channels;
       } else { S.min.forEach((a,i) => EPH.lo[i].push(...a)); S.max.forEach((a,i) => EPH.hi[i].push(...a)); }
-      const cut = EPH.lo[0].length - SCOPE_BINS; if(cut > 0){ EPH.lo = EPH.lo.map(a => a.slice(cut)); EPH.hi = EPH.hi.map(a => a.slice(cut)); EPH.b0 += cut; }
+      const cut = EPH.lo[0].length - SCOPE_KEEP; if(cut > 0){ EPH.lo = EPH.lo.map(a => a.slice(cut)); EPH.hi = EPH.hi.map(a => a.slice(cut)); EPH.b0 += cut; }
       EPH.sinceBin = EPH.b0 + EPH.lo[0].length - 1;
     }
     EPH.binN = S.bin_samples || EPH.binN;
     const C = L.camera || {sample:[], frame:[]};
     for(let i=0;i<C.sample.length;i++) EPH.cam.push([C.sample[i], C.frame[i]]);
-    const camKeep = (EPH.newest||0) - 3*EPH.rate; let kc = 0; while(kc < EPH.cam.length && EPH.cam[kc][0] < camKeep) kc++; if(kc) EPH.cam.splice(0, kc);
+    const camKeep = (EPH.newest||0) - 4*EPH.rate; let kc = 0; while(kc < EPH.cam.length && EPH.cam[kc][0] < camKeep) kc++; if(kc) EPH.cam.splice(0, kc);
     const P = L.spikes;
     for(let i=0;i<P.sample.length;i++) EPH.spikes.push([P.sample[i], P.channel[i], P.amplitude[i], P.unit[i]]);
     if(P.sample.length) EPH.sinceSample = P.sample[P.sample.length-1];
-    const keep = (EPH.newest||0) - RASTER_S*EPH.rate; let k = 0; while(k < EPH.spikes.length && EPH.spikes[k][0] < keep) k++; if(k) EPH.spikes.splice(0, k);
+    const keep = (EPH.newest||0) - (RASTER_S+1)*EPH.rate; let k = 0; while(k < EPH.spikes.length && EPH.spikes[k][0] < keep) k++; if(k) EPH.spikes.splice(0, k);
     EPH.rates = L.rates.channel;
     const sn = (L.snippets.channel||{})[EPH.sel]; if(sn) EPH.snips = sn;
-    ephysDraw();
+    ephysDrawSlow();
   } catch(e) { $("epherr").textContent = "The panel didn't answer: " + e; }
   finally { EPH.busy = false; }
 }
@@ -992,20 +1009,21 @@ function ephysCanvas(id){ // a canvas sized to its box on screen, for sharp line
   const g = c.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,r.width,h); return [g, r.width, h];
 }
 function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
-function ephysDraw(){
-  if(!EPH.open || !EPH.stream) return;
-  const ink = cssVar("--text"), muted = cssVar("--muted"), accent = cssVar("--accent"), line = cssVar("--line"), bad = cssVar("--bad");
-  $("ephscale").textContent = "±"+EPH.scale+" µV";
-  // Oscilloscope: each pixel column the lowest and highest of its bins
+function ephysDraw(){ ephysDrawFast(); ephysDrawSlow(); }
+function ephysDrawFast(){ // the oscilloscope, the camera's frames and the raster, at the playhead
+  if(!EPH.open || !EPH.stream || EPH.play==null || EPH.b0==null) return;
+  const ink = cssVar("--text"), muted = cssVar("--muted"), accent = cssVar("--accent"), line = cssVar("--line");
+  // Oscilloscope: each pixel column the lowest and highest of its bins, the window ending at the playhead
   let [g, W, H] = ephysCanvas("ephscope"); const n = EPH.lo.length, rowH = H / Math.max(1, n), left = 64;
+  const endBin = EPH.play / EPH.binN, firstBin = endBin - SCOPE_BINS, per = SCOPE_BINS / (W-left);
   g.font = "12px system-ui"; g.textBaseline = "middle";
   for(let r=0;r<n;r++){
-    const mid = rowH*(r+0.5), lo = EPH.lo[r], hi = EPH.hi[r], per = SCOPE_BINS / (W-left);
+    const mid = rowH*(r+0.5), lo = EPH.lo[r], hi = EPH.hi[r];
     g.fillStyle = muted; g.fillText("site "+EPH.chans[r], 6, mid); g.strokeStyle = line; g.beginPath(); g.moveTo(left, mid); g.lineTo(W, mid); g.stroke();
     g.strokeStyle = r==0 ? accent : ink; g.beginPath();
-    const off = SCOPE_BINS - lo.length;
+    const off = Math.floor(firstBin) - EPH.b0; // the index in lo of the window's first bin
     for(let x=left; x<W; x++){
-      const a = Math.floor((x-left)*per) - off, b = Math.floor((x-left+1)*per) - off; if(b <= 0 || a >= lo.length) continue;
+      const a = Math.floor((x-left)*per) + off, b = Math.floor((x-left+1)*per) + off; if(b <= 0 || a >= lo.length) continue;
       let mn = Infinity, mx = -Infinity; for(let i=Math.max(0,a); i<Math.min(lo.length, Math.max(a+1,b)); i++){ if(lo[i]<mn) mn = lo[i]; if(hi[i]>mx) mx = hi[i]; }
       const y1 = mid - mx/EPH.scale*rowH/2, y2 = mid - mn/EPH.scale*rowH/2; g.moveTo(x+.5, Math.max(mid-rowH/2, y1)); g.lineTo(x+.5, Math.min(mid+rowH/2, y2)+1);
     }
@@ -1013,7 +1031,7 @@ function ephysDraw(){
   }
   // The camera's pulses along the top: a tick each frame, its number now and then (-1: not numbered yet)
   if(EPH.cam.length && EPH.b0!=null){
-    const firstBin = EPH.b0 + EPH.lo[0].length - SCOPE_BINS, per = SCOPE_BINS / (W-left); let lastLabel = -1;
+    let lastLabel = -1;
     g.strokeStyle = cssVar("--gate") || accent; g.fillStyle = muted; g.textBaseline = "top";
     for(const [smp, fr] of EPH.cam){
       const x = left + (smp/EPH.binN - firstBin)/per; if(x < left || x > W) continue;
@@ -1025,13 +1043,21 @@ function ephysDraw(){
   // Raster: time against depth
   const G = EPH.stream, zmin = Math.min(...G.z), zmax = Math.max(...G.z) || 1;
   [g, W, H] = ephysCanvas("ephraster"); const pad = 8, zy = z => H - pad - (z - zmin)/(zmax - zmin || 1)*(H - 2*pad);
-  const t1 = EPH.newest || 0, tx = s => W - (t1 - s)/(RASTER_S*EPH.rate)*W;
+  const t1 = EPH.play, tx = s => W - (t1 - s)/(RASTER_S*EPH.rate)*W;
   for(const [smp, ch, amp] of EPH.spikes){
+    if(smp > t1) break;
     g.fillStyle = ink; g.globalAlpha = Math.min(1, Math.max(0.15, -amp/150)); g.fillRect(tx(smp), zy(G.z[ch])-1, 2, 2);
   }
   g.globalAlpha = 1; g.fillStyle = muted; g.textBaseline = "top"; g.fillText(zmax.toFixed(0)+" µm", 4, 2); g.textBaseline = "bottom"; g.fillText(zmin.toFixed(0)+" µm", 4, H-2);
+}
+function ephysDrawSlow(){ // the probe map and the picked site's snippets, at each answer
+  if(!EPH.open || !EPH.stream) return;
+  const muted = cssVar("--muted"), accent = cssVar("--accent"), line = cssVar("--line"), bad = cssVar("--bad");
+  $("ephscale").textContent = "±"+EPH.scale+" µV";
+  const G = EPH.stream, zmin = Math.min(...G.z), zmax = Math.max(...G.z) || 1;
   // Probe map: sites colored by their rate
-  [g, W, H] = ephysCanvas("ephprobe"); const xmin = Math.min(...G.x), xmax = Math.max(...G.x);
+  let [g, W, H] = ephysCanvas("ephprobe"); const pad = 8, zy = z => H - pad - (z - zmin)/(zmax - zmin || 1)*(H - 2*pad);
+  const xmin = Math.min(...G.x), xmax = Math.max(...G.x);
   // Across: at most 2 px a um, centred (a single shank's two columns stay close; four shanks fill the width)
   const sx = Math.min(2, (W-24)/Math.max(1, xmax - xmin)), px = x => W/2 + (x - (xmin+xmax)/2)*sx, R = EPH.rates || [], rmax = Math.max(5, ...R);
   for(let i=0;i<G.x.length;i++){
