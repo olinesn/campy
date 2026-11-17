@@ -139,7 +139,7 @@ box:
 | Board pin | What | Notes |
 |---|---|---|
 | A0 to A7 | Inputs 0 to 7: beam breaks, nose pokes, lick or touch sensors | Suggested; any free pin works |
-| D11, D12 (D13, D0, D1 if needed) | Servos 0 to 3: the servo's signal wire | Suggested; D13 also lights the board's LED |
+| D11, D12 (D13, or a free A pin, if needed) | Servos 0 to 3: the servo's signal wire | Suggested; D13 also lights the board's LED. Not D1: it is the chip's serial output, which may carry its boot messages at a reset ([pins left empty](bnc-breakout.md#pins-left-empty)) |
 | D2 to D9 | Outputs (channels 0 to 7): valves, pumps, cue lights, tone generators, event marks | The sketch's defaults |
 | D10 | Camera trigger in: a wire from the trigger board's camera output | The sketch's default |
 | GND | Shared with the trigger, every sensor, every servo supply and every driver | |
@@ -158,7 +158,7 @@ The host sets every pin when it starts (`in`, `servo`, `pin`, `trig`), so other 
 
 **Valves and pumps.** Never drive a solenoid from a pin. Use a driver (a logic-level MOSFET module or a valve driver board) with a flyback diode across the coil, and its own supply.
 
-**Pull-downs on outputs.** As for `campy-rules`, a 10 kΩ resistor from each output to ground keeps a valve or laser driver off while the board resets.
+**Pull-downs on outputs.** As for `campy-rules`, a 10 kΩ resistor from each output to ground keeps a valve or laser driver off while the board resets. The [BNC breakout](bnc-breakout.md) builds them into a box, with a BNC jack per output.
 
 ## Inputs
 
