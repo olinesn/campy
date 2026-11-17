@@ -97,8 +97,17 @@ Reading as soon as samples come (about 400 small reads a second) took SpikeGLX a
 
 SpikeGLX takes the probe's part number from the file's `.meta`, so the `.meta` of a real recording with its size, length and checksum changed is enough.
 
-**Not measured yet:**
-- the filter and spike finder on the rig's own processor, and what reading costs SpikeGLX there while it records a real probe and a OneBox: a read-only run on the ChronicRecord rig with no recording, only with the user's OK.
+**On the ChronicRecord rig** (Dell Pro Max Slim, Intel Core Ultra 9 285), 17 November 2026: SpikeGLX v20260826 running a run by hand with its real Neuropixels 2.0 probe (NP2013) and OneBox. Its trigger was on TTL with the gate low, so nothing was written. campy read it for 2 minutes, read-only, in a `bench/rig.py` job that came out clean (`RIG_CLEAN`).
+
+| | |
+|---|---|
+| Read | 118 s of all 384 channels at 30 kHz; no gap, nothing skipped, at most 35 ms behind SpikeGLX |
+| One read (about 67 ms of samples) | 5.7 ms on average |
+| SpikeGLX's CPU | 17.1% of one core running with no reader; 22.0% while campy read it, so about 5% of a core for the reading |
+| campy's reader (reading, filtering, finding spikes) | 38% of one core |
+| Written to disk | nothing: SpikeGLX was not saving before or after, and its data folder stayed empty |
+
+**Not measured yet:** reading while SpikeGLX writes (the gate open, in a recording), and alongside the cameras, their encoders and campy-live.
 
 ## Lining spikes up with camera frames
 

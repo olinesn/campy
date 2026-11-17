@@ -69,7 +69,7 @@ READ_ONLY = frozenset(( # the only SpikeGLX calls SpikeGLXSource makes
 	"c_sglx_createHandle", "c_sglx_destroyHandle", "c_sglx_connect", "c_sglx_close", "c_sglx_getError",
 	"c_sglx_isRunning", "c_sglx_getStreamSampleRate", "c_sglx_getStreamSampleCount", "c_sglx_getStreamAcqChans",
 	"c_sglx_getint", "c_sglx_getstr", "c_sglx_getStreamI16ToVolts", "c_sglx_getGeomMap", "c_sglx_fetch",
-	"c_sglx_fetchLatest", "c_sglx_mapSample"))
+	"c_sglx_fetchLatest", "c_sglx_mapSample", "c_sglx_isSaving", "c_sglx_getDataDir", "c_sglx_getVersion"))
 
 
 class EphysError(Exception):
