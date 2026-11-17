@@ -52,6 +52,9 @@ MAX_SPIKES = 500 # a template is the median of at most this many spikes
 ACCEPT_Q = 0.99 # a unit's acceptance: this quantile of its own training spikes' distances
 SCALE = (0.5, 2.0) # the template scaled to a spike within these
 MIN_SITES = 6 # sites a spike and a unit must share to be compared
+TEMPLATE_SITES = 32 # sites a template covers, nearest first: a spike's whole footprint, so the matcher takes all of a
+# spike away (12 sites leave its edges, which a small unit's template there then matches). The threshold's spikes are
+# compared with a template's first el.NEIGHBORS sites, those a spike keeps
 
 
 # ---------------------------------------------------------------- Kilosort's output (phy's folder)
@@ -192,15 +195,17 @@ class TemplateSorter:
 		self.units = f["units"]
 		self.labels = f["labels"]
 		self.peaks = f["peaks"]
-		self.sites = f["sites"] # [units, NEIGHBORS]
-		self.templates = f["templates"] # [units, 61, NEIGHBORS]
+		self.sites = f["sites"] # [units, TEMPLATE_SITES]: its peak's nearest sites, nearest first
+		self.templates = f["templates"] # [units, 61, TEMPLATE_SITES]
+		self.near_sites = self.sites[:, :el.NEIGHBORS] # those a threshold's spike is compared on
+		self.near_templates = self.templates[:, :, :el.NEIGHBORS]
 		self.accept = f["accept"]
 		self.noise = f["noise"] # uV, each channel's
 		self.trained = int(f["trained_spikes"].sum()) if "trained_spikes" in f else None
 		self.n_train = f["trained_spikes"] if "trained_spikes" in f else np.zeros(len(self.units), int)
 		n = int(self.sites.max()) + 1 if self.sites.size else 0
 		self.by_channel = [[] for _ in range(max(n, len(self.noise)))]
-		for k, s in enumerate(self.sites):
+		for k, s in enumerate(self.near_sites):
 			for ch in s[s >= 0]:
 				self.by_channel[ch].append(k)
 		self.name = "Kilosort 4 templates ({} units)".format(len(self.units))
@@ -213,7 +218,8 @@ class TemplateSorter:
 				continue
 			best, best_k = None, None
 			for k in self.by_channel[ch]:
-				d, a = Distance(spikes.waveforms[i], spikes.neighbors[i], self.templates[k], self.sites[k], self.noise)
+				d, a = Distance(spikes.waveforms[i], spikes.neighbors[i], self.near_templates[k], self.near_sites[k],
+					self.noise)
 				if d is not None and (best is None or d < best):
 					best, best_k = d, k
 			if best is not None and best <= self.accept[best_k]:
@@ -313,7 +319,8 @@ class TemplateMatcher:
 		self.Tn = np.einsum("tk,sk,usj->utj", W, W, Tn).astype(np.float32) # each template as its shapes give it
 		self.norm2 = np.maximum((self.Tn.astype(np.float64) ** 2).sum(axis=(1, 2)), 1e-12) # its energy
 		self.root = np.sqrt(self.norm2)
-		self.near = [np.flatnonzero(np.isin(self.peaks, s)) for s in self.sites] # units near each: their peak among its sites
+		self.near = [np.flatnonzero(np.isin(self.peaks, s)) for s in sorter.near_sites] # units near each: their peak
+		# among its NEIGHBORS nearest sites
 		self.nearmat = np.zeros((U, U), bool) # [u, v]: v near u
 		for u, v in enumerate(self.near):
 			self.nearmat[u, v] = True
@@ -611,7 +618,7 @@ class TemplateMatcher:
 		u = np.array([f[1] for f in found])
 		order = np.lexsort((u, t))
 		t, u = t[order], u[order]
-		sites = self.sites[u]
+		sites = self.sites[u][:, :el.NEIGHBORS]
 		rows = t[:, None] + np.arange(-el.BEFORE, el.AFTER)[None, :]
 		waves = buf[rows[:, :, None], np.maximum(sites, 0)[:, None, :]].astype(np.float32)
 		return el.Spikes(bfirst + t, self.peaks[u], buf[t, self.peaks[u]], self.units[u], waves, sites.astype(np.int32))
@@ -689,7 +696,7 @@ def Train(data, stream, phy, out, span=None, labels=LABELS, say=print, accept_q=
 	keep = np.isin(clusters, list(peaks))
 	unit_of, _ = Match(spikes, stream.geometry, times[keep], clusters[keep], peaks)
 	noise = np.median(np.abs(filtered[::8]), axis=0) / 0.6745
-	sites_all = stream.geometry.Neighbors(np.inf)
+	sites_all = stream.geometry.Neighbors(1e9, TEMPLATE_SITES)
 	rows = []
 	for u in sort["kept"]:
 		if u not in peaks:
@@ -704,15 +711,17 @@ def Train(data, stream, phy, out, span=None, labels=LABELS, say=print, accept_q=
 		ks = ks + shift
 		ks = ks[(ks >= el.BEFORE) & (ks < len(filtered) - el.AFTER)]
 		pick = ks[np.linspace(0, len(ks) - 1, min(MAX_SPIKES, len(ks))).astype(int)]
-		waves = np.stack([filtered[i - el.BEFORE:i + el.AFTER][:, sites] for i in pick])
+		waves = np.stack([filtered[i - el.BEFORE:i + el.AFTER][:, np.maximum(sites, 0)] for i in pick])
+		waves[:, :, sites < 0] = 0 # a probe with fewer sites
 		template = np.median(waves, axis=0).astype(np.float32)
 		# Its acceptance: its own spikes' distances, as the live sorter will measure them (the threshold's spikes of
-		# it; for a unit with too few, its spikes at Kilosort's times)
+		# it, on the sites a spike keeps; for a unit with too few, its spikes at Kilosort's times)
+		near, near_template = sites[:el.NEIGHBORS], template[:, :el.NEIGHBORS]
 		mine = np.flatnonzero(unit_of == u)
 		if len(mine) >= MIN_SPIKES:
-			d = [Distance(spikes.waveforms[i], spikes.neighbors[i], template, sites, noise)[0] for i in mine]
+			d = [Distance(spikes.waveforms[i], spikes.neighbors[i], near_template, near, noise)[0] for i in mine]
 		else:
-			d = [Distance(w, sites, template, sites, noise)[0] for w in waves]
+			d = [Distance(w[:, :el.NEIGHBORS], near, near_template, near, noise)[0] for w in waves]
 		d = np.array([v for v in d if v is not None])
 		if len(d) < MIN_SPIKES // 2:
 			continue
