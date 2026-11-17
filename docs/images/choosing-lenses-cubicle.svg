@@ -101,11 +101,11 @@ text{fill:var(--fg);font-size:13px}
 <text x="162.2" y="304.7" class="t-small" text-anchor="start">cubicle, whose wall is 44 cm away</text>
 <text x="24" y="28" class="t-small t-muted">To scale.</text>
 <text x="24" y="44" class="t-small t-muted">Camera: FLIR Blackfly S, 1/2" sensor, 1280 × 1024.</text>
-<text x="24" y="60" class="t-small t-muted">Each lens is the longest that fits from its spot.</text>
+<text x="24" y="60" class="t-small t-muted">Each lens: the longest that keeps the whole box in the middle 80%.</text>
 <text x="24" y="76" class="t-small t-muted">Distances: from the lens to the middle of the box&#8217;s floor.</text>
 <text x="465.8" y="534.3" class="t-small t-muted" text-anchor="middle">Cubicle, inside: 55 × 40 cm, 45 cm high</text>
 <text x="609.9" y="506.3" class="t-small t-muted">Operant box: 22 × 18 cm floor, 13 cm high</text>
-<text x="24" y="600" class="t-b">What each camera sees (without lens distortion). Dashed: the middle 80% of the frame, where the whole box should sit</text>
+<text x="24" y="600" class="t-b">What each camera sees (without lens distortion). Dashed: the middle 80% of the frame, where the whole box must sit</text>
 <clipPath id="clip-cubicle-top"><rect x="24" y="652" width="192.0" height="153.6"/></clipPath>
 <rect class="frame" x="24" y="652" width="192.0" height="153.6"/>
 <polygon class="wall1" points="21.8,657.4 218.2,657.4 3557.5,-1771.2 -3317.5,-1771.2" clip-path="url(#clip-cubicle-top)"/>

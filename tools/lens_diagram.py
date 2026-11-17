@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Draw the hardware guide's lens drawings: which lenses fit a box in an enclosure.
+"""Draw the hardware guide's lens drawings: which lenses fit around the box the animals are in.
 
 Two examples, each written to docs/images/:
-  choosing-lenses.svg          a 45 x 30 cm box in an enclosure 100 x 80 cm, 90 cm high inside
+  choosing-lenses.svg          a 45 x 30 cm box in a cabinet 100 x 80 cm, 90 cm high inside
   choosing-lenses-cubicle.svg  a mouse operant box in a sound-attenuating cubicle
 
 Every number in the drawings is worked out here, for the FLIR Blackfly S
@@ -21,7 +21,7 @@ along the line it looks.
     python3 tools/lens_diagram.py            # writes both drawings
     python3 tools/lens_diagram.py --table    # prints the distances only
 
-To check your own rig, change a scenario's `box` and `enclosure` below.
+To check your own rig, change a scenario's `box` and `outer` below.
 Standard library only.
 """
 import math
@@ -52,9 +52,9 @@ def direction(azimuth, elevation):
     return (math.cos(e) * math.cos(a), math.cos(e) * math.sin(a), math.sin(e))
 
 
-def corner_azimuth(enclosure, sx, sy):
-    """Azimuth from the floor's middle to one of the enclosure's vertical corner edges."""
-    return math.degrees(math.atan2(sy * enclosure[1] / 2, sx * enclosure[0] / 2))
+def corner_azimuth(outer, sx, sy):
+    """Azimuth from the floor's middle to one of the outer cabinet's vertical corner edges."""
+    return math.degrees(math.atan2(sy * outer[1] / 2, sx * outer[0] / 2))
 
 
 TARGET = (0.0, 0.0, 0.0)  # every camera aims at the middle of the box's floor
@@ -79,18 +79,19 @@ def to_sensor(point, position, axes, f):
 
 
 # --- the two examples --------------------------------------------------------
-# box: floor length, floor width, wall height (cm); enclosure, inside: width,
+# box: the box the animals are in: floor length, floor width, wall height (cm);
+# outer: the cabinet or cubicle around it, inside: width,
 # depth, height (cm). Cameras: one looking down and two looking in from opposite
 # corners at 40 degrees, as docs/calibration.md recommends, and a corner where an
 # 8 mm lens is tried ("lens" given). Callouts are label offsets in the drawing.
 
-ENCLOSURE = dict(
+CABINET = dict(
     file="choosing-lenses.svg",
-    name="enclosure", box_name="Box",
-    box=(45.0, 30.0, 20.0), enclosure=(100.0, 80.0, 90.0),
+    name="cabinet", box_name="Box",
+    box=(45.0, 30.0, 20.0), outer=(100.0, 80.0, 90.0),
     view=dict(azimuth=-58, elevation=24, scale=4.1, origin=(560, 404)),
     size=(900, 790), thumbs_y=612, camera_scale=1.8,
-    enclosure_label=(-20, 34), box_label=(8, 16),
+    outer_label=(-20, 34), box_label=(8, 16),
     cameras=[
         dict(key="top", where="looking down", title="Top", u=(0.0, 0.0, 1.0), cls="c1", callout=(70, -18, "start")),
         dict(key="back", where="in a back corner", title="Back corner", az=("corner", -1, 1), el=40, cls="c2",
@@ -105,10 +106,10 @@ ENCLOSURE = dict(
 CUBICLE = dict(
     file="choosing-lenses-cubicle.svg",
     name="cubicle", box_name="Operant box",
-    box=(22.0, 18.0, 13.0), enclosure=(55.0, 40.0, 45.0),
+    box=(22.0, 18.0, 13.0), outer=(55.0, 40.0, 45.0),
     view=dict(azimuth=-58, elevation=24, scale=7.0, origin=(570, 452)),
     size=(900, 830), thumbs_y=652, camera_scale=1.0,
-    enclosure_label=(-30, 34), box_label=(8, 16),
+    outer_label=(-30, 34), box_label=(8, 16),
     cameras=[
         dict(key="top", where="looking down", title="Top", u=(0.0, 0.0, 1.0), cls="c1", callout=(64, -22, "start")),
         dict(key="back", where="in a back corner", title="Back corner", az=("corner", -1, 1), el=40, cls="c2",
@@ -120,7 +121,7 @@ CUBICLE = dict(
     ],
 )
 
-SCENARIOS = [ENCLOSURE, CUBICLE]
+SCENARIOS = [CABINET, CUBICLE]
 
 
 def must_see(sc):
@@ -152,8 +153,8 @@ def distance_needed(sc, u, f):
 
 
 def wall_distance(sc, u):
-    """Distance from the floor's middle, along u, to the enclosure's inside."""
-    hx, hy, h = sc["enclosure"][0] / 2, sc["enclosure"][1] / 2, sc["enclosure"][2]
+    """Distance from the floor's middle, along u, to the inside of the cabinet or cubicle."""
+    hx, hy, h = sc["outer"][0] / 2, sc["outer"][1] / 2, sc["outer"][2]
     t = [hx / abs(u[0])] if abs(u[0]) > 1e-9 else []
     t += [hy / abs(u[1])] if abs(u[1]) > 1e-9 else []
     t += [h / u[2]] if u[2] > 1e-9 else []
@@ -165,7 +166,7 @@ def place_cameras(sc):
         if "u" not in cam:
             az = cam["az"]
             if isinstance(az, tuple):  # aimed along a vertical corner edge
-                az = corner_azimuth(sc["enclosure"], az[1], az[2])
+                az = corner_azimuth(sc["outer"], az[1], az[2])
             cam["u"] = direction(az, cam["el"])
         cam["wall"] = wall_distance(sc, cam["u"])
         cam["spot"] = cam["wall"] - MOUNT
@@ -177,6 +178,8 @@ def place_cameras(sc):
             cam["lens"] = max(f for f in LENSES if cam["needs"][f] <= cam["spot"])
             cam["dist"] = cam["spot"]
         cam["pos"] = mul(cam["u"], cam["dist"])
+        # every camera drawn as fitting holds the whole box in the middle of its frame
+        assert cam["too_long"] or fits(sc, cam["pos"], cam["lens"]), cam["key"]
 
 
 for _sc in SCENARIOS:
@@ -189,7 +192,7 @@ def fmt_mm(f):
 
 def table():
     for sc in SCENARIOS:
-        b, e = sc["box"], sc["enclosure"]
+        b, e = sc["box"], sc["outer"]
         print(f"{sc['box_name']} {b[0]:g} x {b[1]:g} cm, {sc['name']} {e[0]:g} x {e[1]:g} x {e[2]:g} cm inside")
         print("cm from the floor's middle each lens needs:")
         print("            " + "".join(f"{fmt_mm(f):>8}" for f in LENSES) + "    wall  spot  lens")
@@ -261,7 +264,7 @@ def hull(points):
 
 
 class View:
-    """Parallel projection of the enclosure seen from the front right, above."""
+    """Parallel projection of the cabinet or cubicle seen from the front right, above."""
 
     def __init__(self, azimuth, elevation, scale, origin):
         self.V = direction(azimuth, elevation)
@@ -343,7 +346,7 @@ def draw_camera(out, view, cam, scale):
 
 
 def main_view(sc, out, view):
-    W, D, H = sc["enclosure"]
+    W, D, H = sc["outer"]
     hx, hy = W / 2, D / 2
     P = lambda x, y, z: view((x, y, z))
     out.append(f'<polygon class="wall1" points="{pts([P(-hx, hy, 0), P(hx, hy, 0), P(hx, hy, H), P(-hx, hy, H)])}"/>')
@@ -404,7 +407,7 @@ def thumbnail(sc, out, x0, y0, width, cam, f, dist, title, note):
         if len(kept) >= 3:
             out.append(f'<polygon class="{klass}" points="{pts([to_px(p) for p in kept])}" clip-path="url(#{clip})"/>')
 
-    W, D, H = sc["enclosure"]
+    W, D, H = sc["outer"]
     hx, hy = W / 2, D / 2
     poly([(-hx, hy, 0), (hx, hy, 0), (hx, hy, H), (-hx, hy, H)], "wall1")
     poly([(-hx, -hy, 0), (-hx, hy, 0), (-hx, hy, H), (-hx, -hy, H)], "wall2")
@@ -432,7 +435,7 @@ def svg(sc):
     view = View(**sc["view"])
     out = [f'<rect class="bg" width="{Wd}" height="{Hd}"/>']
     anchors = main_view(sc, out, view)
-    W, D, H = sc["enclosure"]
+    W, D, H = sc["outer"]
     name = sc["name"]
 
     for cam in sc["cameras"]:
@@ -455,14 +458,14 @@ def svg(sc):
 
     notes = ["To scale." if sc["camera_scale"] == 1 else "To scale, but for the cameras (drawn larger).",
              "Camera: FLIR Blackfly S, 1/2\" sensor, 1280 × 1024.",
-             "Each lens is the longest that fits from its spot.",
+             "Each lens: the longest that keeps the whole box in the middle 80%.",
              "Distances: from the lens to the middle of the box&#8217;s floor."]
     for i, text in enumerate(notes):
         out.append(f'<text x="24" y="{28 + 16 * i}" class="t-small t-muted">{text}</text>')
 
-    # labels for the enclosure and the box
+    # labels for the cabinet or cubicle and the box
     a, b = view((-W / 2, -D / 2, 0)), view((W / 2, -D / 2, 0))
-    dx, dy = sc["enclosure_label"]
+    dx, dy = sc["outer_label"]
     out.append(f'<text x="{(a[0] + b[0]) / 2 + dx:.1f}" y="{(a[1] + b[1]) / 2 + dy:.1f}" class="t-small t-muted" '
                f'text-anchor="middle">{name.capitalize()}, inside: {W:g} × {D:g} cm, {H:g} cm high</text>')
     bx = view((sc["box"][0] / 2, -sc["box"][1] / 2, 0))
@@ -473,7 +476,7 @@ def svg(sc):
     # what each camera sees
     y0, wt, gap, x = sc["thumbs_y"], 192, 24, 24
     out.append(f'<text x="24" y="{y0 - 52}" class="t-b">What each camera sees (without lens distortion). '
-               'Dashed: the middle 80% of the frame, where the whole box should sit</text>')
+               'Dashed: the middle 80% of the frame, where the whole box must sit</text>')
     for cam in sc["cameras"]:
         title = f"{cam['title']}, {fmt_mm(cam['lens'])}"
         if cam["too_long"]:
