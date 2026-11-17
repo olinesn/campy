@@ -1,6 +1,6 @@
 # Live electrophysiology from SpikeGLX
 
-*Being built. This page says what exists so far: the engine (`campy/ephyslive.py`) and `campy-ephys bench`, which measures what it costs. The campy-session panel's Ephys section, which will show it, comes next.*
+*Being built. What exists so far: the engine (`campy/ephyslive.py`), `campy-ephys bench`, which measures what it costs, and the campy-session panel's **Live ephys** card, which shows it ([below](#in-the-panel-the-live-ephys-card)).*
 
 A Neuropixels probe recorded by SpikeGLX can be watched live: a few channels scrolling like an oscilloscope, and its spikes, found by a threshold on every channel, as snippets, firing rates and a map of the probe. campy reads the probe's samples from SpikeGLX while SpikeGLX records them, and changes nothing in SpikeGLX.
 
@@ -109,22 +109,36 @@ SpikeGLX takes the probe's part number from the file's `.meta`, so the `.meta` o
 
 **Not measured yet:** reading while SpikeGLX writes (the gate open, in a recording), and alongside the cameras, their encoders and campy-live.
 
+## In the panel: the Live ephys card
+
+With a `spikeglx:` section in its config (the ChronicRecord rig's), the campy-session panel's page has a **Live ephys** card. **Show the probe live** opens it:
+
+- an oscilloscope of the picked site and its 3 nearest, the last 2 s (each millisecond's lowest and highest);
+- the last 10 s of spikes, by depth on the probe;
+- a probe map of each site's spikes a second; a click picks a site;
+- the picked site's last 30 spikes, their mean and its threshold, and the threshold to set, for every site or the picked one (2 to 20 × noise).
+
+**How it runs:**
+- **A process of its own.** Showing the card starts `campy-ephys serve` at below-normal priority: the engine above, answering on a port of its own on 127.0.0.1, only with a key the panel gives it.
+- **The panel passes the page's requests on to it** (`/ephys.json`, `/ephys-scope`, `/ephys-threshold`), with the page's own key and its checks.
+- **It reads only.** It opens its own connection to SpikeGLX and uses only the read calls, so it can't start, stop or change anything, nor get in the way of the panel's own steps with SpikeGLX.
+- **It stops** when **Hide** is pressed, when the page hasn't asked for 30 s (its tab closed), or when the panel ends. On Windows it is in the panel's job object, so it ends with it whatever happens.
+- **The page asks 5 times a second** for what came since its last ask: the scope's new bins, the new spikes, the rates, and the picked site's snippets; every 2 s also the probe's sites, noise and thresholds. That is a few kB to some tens of kB a second, drawn on canvases. Nothing else is fetched: the page works on a rig with no internet.
+- **Before SpikeGLX runs** (or between runs) the card says it is waiting. A new run starts the view again.
+
+Checked in the tests (`tests/test_panel.py`) with a stand-in SpikeGLX: the card's data comes through the panel, the scope and threshold reach the process, only read calls reach SpikeGLX, and the process ends with **Hide** and when the page stops asking.
+
 ## Lining spikes up with camera frames
 
 On the ChronicRecord rig the Pico's camera pulses are recorded by the OneBox (XD0), so live a spike's frame is:
 1. its probe sample, turned into a OneBox sample with `mapSample`;
 2. then the camera pulses counted up to it.
 
-That is exact to the frame unless a camera dropped frames. The exact timeline stays the job of `chronicrecord/sync_match.py` and `campy-align` after the recording. This part comes with the panel's Ephys section.
+That is exact to the frame unless a camera dropped frames. The exact timeline stays the job of `chronicrecord/sync_match.py` and `campy-align` after the recording. Not built yet: it comes next on the Live ephys card.
 
 ## Next
 
-- **The panel's Ephys section:**
-  - the engine in its own process, at below-normal priority, only while the section is open;
-  - a scrolling oscilloscope of a few channels;
-  - spike snippets per channel, rates, and a heatmap of the probe;
-  - per-channel thresholds;
-  - each spike's camera frame.
+- **Each spike's camera frame** on the Live ephys card (the OneBox's camera pulses, counted live).
 - **A live sorter:** templates from a Kilosort 4 sort of an earlier recording of the same probe, curated in phy, matched to each spike's waveforms.
   - Trained on that recording replayed through this engine, so that the templates have the live filter's shape.
   - Checked against the Kilosort sort before it is used live.

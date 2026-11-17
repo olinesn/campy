@@ -203,6 +203,7 @@ class ReplaySource:
 		self.t0, self.at0 = None, self.at
 		self.state = "replaying"
 		self.skipped = 0
+		self.every_s, self.read_at = (0.05 if self.speed > 0 else 0.0), 0.0 # as recorded: a read at most every 50 ms
 
 	def Open(self):
 		return self.stream
@@ -220,6 +221,9 @@ class ReplaySource:
 			end = min(len(self.data), self.at + self.chunk)
 		else:
 			now = time.monotonic()
+			if now - self.read_at < self.every_s:
+				return None
+			self.read_at = now
 			if self.t0 is None:
 				self.t0 = now
 			end = min(len(self.data), self.at0 + int((now - self.t0) * self.stream.rate * self.speed))
@@ -648,12 +652,29 @@ class Engine:
 		stream = self.source.Open()
 		if stream is None:
 			return False
-		if self.stream is None or len(stream.uv) != len(self.stream.uv):
+		live = getattr(self, "live", None)
+		if live is None or len(stream.uv) != len(live.stream.uv):
 			self.live = Live(stream, self.scope)
+		else: # a new run (its samples counted from 0 again): the view starts again, on the same channels
+			with live.lock:
+				live.stream = stream
+				live.Clear()
 		self.stream, self.filter = stream, Filter(stream)
 		self.detector = Detector(stream, self.threshold)
 		self.expected = None
 		return True
+
+	def SetThreshold(self, threshold, channel=None):
+		"""The spike threshold (x each channel's noise), for every channel or one; kept for the next run too."""
+		n = len(self.stream.uv) if self.stream is not None else None
+		if channel is None:
+			self.threshold = float(threshold)
+		elif n is not None:
+			t = np.broadcast_to(np.asarray(self.threshold, np.float32), (n,)).copy()
+			t[int(channel)] = threshold
+			self.threshold = t
+		if self.stream is not None:
+			self.detector.SetThreshold(threshold, channel)
 
 	def Step(self):
 		"""One read and what follows: the number of samples it brought (0: nothing new)."""
@@ -766,6 +787,171 @@ def Bench(args, out=print):
 	return summary
 
 
+def Serve(args, out=print):
+	"""
+	campy-ephys serve: the engine for a page (the campy-session panel's Ephys
+	section), in a process of its own at below-normal priority, so that
+	nothing it does slows the panel or the recording. It answers on
+	127.0.0.1, on a port it prints first ("EPHYS_PORT <port>"), only with the
+	key in its environment (CAMPY_EPHYS_KEY) in an X-Ephys-Key header:
+
+	  GET  /snapshot?since_sample=&since_bin=&snippets=3,40&units=&stream=1
+	       what came since the page's last (Live.Snapshot), the reading's
+	       health, and with stream=1 the probe's sites, each channel's noise
+	       and threshold
+	  POST /scope {"channels": [...]}         the scope's channels
+	  POST /threshold {"k": 4.5, "channel": c} every channel's, or one's
+
+	It ends when nothing has asked for idle_s seconds (the page closed), when
+	the program that started it (--parent) has ended, or at Ctrl-C.
+	"""
+	import http.server
+	from campy import strictjson
+	from urllib.parse import parse_qs, urlparse
+	LowerPriority()
+	if args.replay:
+		source = ReplaySource(args.replay, speed=args.speed or 1.0, loop=True)
+	else:
+		source = SpikeGLXSource(args.sdk, args.host, args.port, args.ip, filtered=args.spikeglx_filter)
+	engine = Engine(source, args.threshold)
+	key = os.environ.get("CAMPY_EPHYS_KEY", "")
+	state = {"asked": time.monotonic(), "health": {}, "stop": False}
+	lock = threading.Lock() # the engine's settings, between the reading thread and the requests
+
+	def Health():
+		h = dict(state["health"])
+		h.update(state=source.state, lag_s=source.Lag(), skipped=source.skipped, gaps=engine.stats["gaps"],
+			reading=engine.stream is not None)
+		return h
+
+	class Handler(http.server.BaseHTTPRequestHandler):
+		def log_message(self, *a):
+			pass
+
+		def Send(self, code, body):
+			data = strictjson.dumps(body).encode()
+			self.send_response(code)
+			self.send_header("Content-Type", "application/json")
+			self.send_header("Content-Length", str(len(data)))
+			self.end_headers()
+			self.wfile.write(data)
+
+		def Allowed(self):
+			import secrets
+			given = self.headers.get("X-Ephys-Key", "")
+			if not (key and given.isascii() and secrets.compare_digest(given, key)):
+				self.Send(403, {"error": "wrong key"})
+				return False
+			state["asked"] = time.monotonic()
+			return True
+
+		def do_GET(self):
+			if not self.Allowed():
+				return
+			url = urlparse(self.path)
+			if url.path != "/snapshot":
+				return self.Send(404, {"error": "no such page"})
+			q = {k: v[0] for k, v in parse_qs(url.query).items()}
+			Int = lambda k: int(q[k]) if q.get(k, "").lstrip("-").isdigit() else None
+			Ints = lambda k: [int(v) for v in q.get(k, "").split(",") if v.strip().lstrip("-").isdigit()]
+			out = {"health": Health(), "live": None}
+			live = getattr(engine, "live", None)
+			if live is not None and engine.stream is not None:
+				out["live"] = live.Snapshot(Int("since_sample"), Int("since_bin"), snippet_channels=Ints("snippets"),
+					snippet_units=Ints("units"))
+				if q.get("stream"):
+					st = engine.stream.Describe()
+					noise = getattr(engine.detector, "noise", None)
+					st["noise_uv"] = None if noise is None else np.round(noise, 2).tolist()
+					st["threshold"] = np.round(np.broadcast_to(np.asarray(engine.threshold, np.float32),
+						(len(engine.stream.uv),)), 2).tolist()
+					st["channels"] = engine.stream.channels.tolist()
+					st["sorter"] = engine.sorter.name
+					out["stream"] = st
+			self.Send(200, out)
+
+		def do_POST(self):
+			if not self.Allowed():
+				return
+			try:
+				body = strictjson.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+			except ValueError:
+				return self.Send(400, {"error": "not JSON"})
+			url = urlparse(self.path)
+			with lock:
+				if url.path == "/scope":
+					chans = [int(c) for c in body.get("channels", [])][:8]
+					n = len(engine.stream.uv) if engine.stream is not None else 0
+					if not chans or any(c < 0 or c >= n for c in chans):
+						return self.Send(409, {"error": "channels: 1 to 8, each from 0 to {}".format(n - 1)})
+					engine.scope = chans
+					engine.live.SetScope(chans)
+				elif url.path == "/threshold":
+					try:
+						k = float(body.get("k"))
+					except (TypeError, ValueError):
+						k = None
+					if k is None or not 2.0 <= k <= 20.0:
+						return self.Send(409, {"error": "the threshold: 2 to 20 x the channel's noise"})
+					engine.SetThreshold(k, body.get("channel"))
+				else:
+					return self.Send(404, {"error": "no such action"})
+			self.Send(200, {"ok": True})
+
+	server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+	server.daemon_threads = True
+	threading.Thread(target=server.serve_forever, daemon=True).start()
+	out("EPHYS_PORT {}".format(server.server_address[1]), flush=True)
+
+	def Read():
+		import psutil
+		me = psutil.Process()
+		me.cpu_percent(None)
+		last, last_stats = time.monotonic(), dict(engine.stats)
+		while not state["stop"]:
+			try:
+				with lock:
+					got = engine.Step()
+			except Exception as e: # SpikeGLX gone, a bad read: say so, and try again
+				source.state = "{}: {}".format(type(e).__name__, e)
+				got = 0
+				time.sleep(1.0)
+			now = time.monotonic()
+			if now - last >= 1.0:
+				d = {k: engine.stats[k] - last_stats[k] for k in engine.stats}
+				state["health"] = {"reads_per_s": round(d["reads"] / (now - last), 1), "fetch_ms": round(1000 *
+					d["fetch_s"] / max(1, d["reads"]), 2), "spikes_per_s": round(d["spikes"] / (now - last), 1),
+					"cpu": round(me.cpu_percent(None), 1)}
+				last, last_stats = now, dict(engine.stats)
+			if not got:
+				time.sleep(0.01)
+
+	threading.Thread(target=Read, daemon=True).start()
+	try:
+		while True:
+			time.sleep(0.5)
+			if time.monotonic() - state["asked"] > args.idle_s:
+				out("campy-ephys serve: nothing asked for {:g} s: ending.".format(args.idle_s), flush=True)
+				break
+			if args.parent and not ParentAlive(args.parent):
+				out("campy-ephys serve: the program that started it has ended: ending.", flush=True)
+				break
+	except KeyboardInterrupt:
+		pass
+	state["stop"] = True
+	server.shutdown()
+	source.Close()
+	return 0
+
+
+def ParentAlive(pid):
+	try:
+		import psutil
+		return psutil.pid_exists(pid)
+	except Exception:
+		return True
+
+
 def Main(argv=None):
 	parser = argparse.ArgumentParser(prog="campy-ephys", description="Live ephys from SpikeGLX (read-only): measure "
 		"what reading, filtering and finding spikes costs.")
@@ -786,7 +972,25 @@ def Main(argv=None):
 	b.add_argument("--threshold", type=float, default=4.5, help="x each channel's noise")
 	b.add_argument("--priority", choices=("low", "normal"), default="low")
 	b.add_argument("--json", help="write the summary and the lines here")
+	v = sub.add_parser("serve", help="the engine for the campy-session panel's Ephys section, in a process of its own")
+	src = v.add_mutually_exclusive_group(required=True)
+	src.add_argument("--sdk", help="the folder holding SpikeGLX's SDK (sglx_pkg): read live from SpikeGLX")
+	src.add_argument("--replay", help="a saved .ap.bin (its .meta beside it), over and over")
+	v.add_argument("--host", default="127.0.0.1")
+	v.add_argument("--port", type=int, default=4142)
+	v.add_argument("--ip", type=int, default=0)
+	v.add_argument("--spikeglx-filter", action="store_true")
+	v.add_argument("--speed", type=float, default=1.0)
+	v.add_argument("--threshold", type=float, default=4.5)
+	v.add_argument("--idle-s", type=float, default=30.0, help="end when nothing has asked for this long")
+	v.add_argument("--parent", type=int, default=0, help="end when this process has ended")
 	args = parser.parse_args(argv)
+	if args.command == "serve":
+		try:
+			return Serve(args)
+		except (EphysError, OSError, KeyError) as e:
+			print("campy-ephys serve: {}".format(e), file=sys.stderr)
+			return 1
 	try:
 		Bench(args)
 	except (EphysError, OSError, KeyError) as e:

@@ -53,6 +53,9 @@ What the page shows, once a second:
   recording's bookmarks.csv as campy-live-view writes them; each program's
   state, and a button to open the view again.
 - after it: each post-step's progress (campy/post.py).
+- with SpikeGLX in the config: the Live ephys card, shown on request, the
+  probe read live from SpikeGLX, read-only (EphysView, campy/ephyslive.py,
+  in a process of its own).
 - copies: with a folder in the page's "Copy each recording to" box, each
   recording is copied into it once it and its post-steps have ended, in the
   background, one at a time, while the next records (campy/copyqueue.py; the
@@ -100,6 +103,8 @@ STATUS_FRESH_S = 20 # recording.json older than this is not the recording's now
 WARN_FRACTION = 0.8 # the disk check warns when a length needs more than this share of the free space (as the launch
 # check's, campy/preflight.py)
 DRIVE_FRESH_S = 10 # a copy destination's drive is measured at most this often (a network share can be slow to answer)
+EPHYS_IDLE_S = 30 # campy-ephys serve ends when the page hasn't asked for this long (its tab closed)
+EPHYS_START_S = 60 # and has this long to say its port
 DiskUsage = shutil.disk_usage # (tests replace it: drives of made-up sizes)
 
 
@@ -926,6 +931,111 @@ class PanelServer(http.server.ThreadingHTTPServer):
 			super().server_bind()
 
 
+class EphysView:
+	"""
+	The page's Ephys section, with a spikeglx: section: the probe read live
+	from SpikeGLX, read-only (campy/ephyslive.py), by campy-ephys serve, a
+	process of its own at below-normal priority, started when the page opens
+	the section and ended when it closes it, when the page stops asking for
+	EPHYS_IDLE_S (its tab closed), or with the panel. The panel passes the
+	page's requests on to it, with a key of its own. One thread starts it: on
+	Linux a child dies with the thread that started it (campy/children.py),
+	and a request's thread ends with the request.
+	"""
+
+	def __init__(self, section):
+		self.section = section
+		self.key = secrets.token_urlsafe(24)
+		self.child, self.port, self.error = None, None, None
+		self.log = collections.deque(maxlen=20) # its last lines, for the page when it fails
+		self.want, self.stopping = threading.Event(), False
+		threading.Thread(target=self.Keep, name="campy panel ephys", daemon=True).start()
+
+	def Keep(self):
+		while not self.stopping:
+			if self.want.wait(0.5):
+				self.want.clear()
+				if not self.Running() and not self.stopping:
+					self.StartChild()
+
+	def StartChild(self):
+		import subprocess
+		cmd = [sys.executable, "-m", "campy.ephyslive", "serve", "--sdk", str(self.section["sdk"]), "--host",
+			str(self.section["host"]), "--port", str(self.section["port"]), "--parent", str(os.getpid()),
+			"--idle-s", str(EPHYS_IDLE_S)]
+		kwargs = {"creationflags": 0x00004000} if sys.platform == "win32" else {} # BELOW_NORMAL_PRIORITY_CLASS
+		self.error, self.port = None, None
+		# The same campy as the panel's, wherever it was installed from
+		here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+		env = dict(os.environ, CAMPY_EPHYS_KEY=self.key, PYTHONPATH=os.pathsep.join(
+			[here] + [v for v in [os.environ.get("PYTHONPATH")] if v]))
+		try:
+			child = children.Child(cmd, env=env, stdout=subprocess.PIPE,
+				stderr=subprocess.STDOUT, text=True, **kwargs)
+		except OSError as e:
+			self.error = "campy-ephys serve didn't start: {}".format(e)
+			return
+		self.child = child
+
+		def Lines():
+			for line in child.stdout:
+				line = line.rstrip()
+				if line.startswith("EPHYS_PORT "):
+					self.port = int(line.split()[1])
+				elif line:
+					self.log.append(line)
+		threading.Thread(target=Lines, name="campy panel ephys output", daemon=True).start()
+		deadline = time.monotonic() + EPHYS_START_S
+		while self.port is None and child.poll() is None and time.monotonic() < deadline:
+			time.sleep(0.05)
+		if self.port is None:
+			self.error = "campy-ephys serve didn't answer{}{}".format(" (it ended)" if child.poll() is not None else "",
+				": " + self.log[-1] if self.log else "")
+			child.Close()
+			self.child = None
+
+	def Running(self):
+		return self.child is not None and self.child.poll() is None and self.port is not None
+
+	def Open(self):
+		if not self.Running():
+			self.want.set()
+
+	def Close(self):
+		child, self.child, self.port = self.child, None, None
+		if child is not None:
+			child.Close()
+
+	def Shutdown(self):
+		self.stopping = True
+		self.Close()
+
+	def Ask(self, method, path, body=None):
+		"""(HTTP code, JSON) from campy-ephys serve."""
+		import urllib.error, urllib.request
+		if not self.Running():
+			return 200, {"open": False}
+		data = strictjson.dumps(body).encode() if body is not None else None
+		request = urllib.request.Request("http://127.0.0.1:{}{}".format(self.port, path), data=data, method=method,
+			headers={"X-Ephys-Key": self.key, "Content-Type": "application/json"})
+		try:
+			with urllib.request.urlopen(request, timeout=5) as r:
+				return r.status, strictjson.loads(r.read())
+		except urllib.error.HTTPError as e:
+			try:
+				return e.code, strictjson.loads(e.read())
+			except ValueError:
+				return e.code, {"error": str(e)}
+		except (OSError, ValueError) as e:
+			return 502, {"error": "campy-ephys serve didn't answer: {}".format(e)}
+
+	def Status(self):
+		starting = self.child is not None and self.child.poll() is None and self.port is None
+		ended = self.child is not None and self.child.poll() is not None
+		return {"open": self.Running(), "starting": starting or self.want.is_set(), "error": self.error or (
+			"campy-ephys serve ended" + (": " + self.log[-1] if self.log else "") if ended else None)}
+
+
 class Panel:
 	def __init__(self, config_path, args=(), port=PORT, browser=True, new_key=False):
 		# The copies of finished recordings (the page's "Copy each recording to"): the panel's for as long as it is
@@ -982,6 +1092,10 @@ class Panel:
 		# The model picker (campy/livemodels.py): with trained models only
 		picker = livemodels.Picker(config) if config.live is not None and config.live["model"] == "sleap" else None
 		old = self.health
+		if getattr(self, "ephys", None) is not None:
+			self.ephys.Shutdown()
+		# The page's Ephys section: with SpikeGLX in the config
+		self.ephys = EphysView(config.spikeglx) if getattr(config, "spikeglx", None) is not None else None
 		self.config_path, self.config, self.devices, self.lengths, self.picker = config.path, config, devs, lengths, picker
 		self.length = lengths[0]["seconds"] if lengths else None # the page's choice
 		self.health = health
@@ -1525,7 +1639,8 @@ class Panel:
 				"animal_ids": ", ".join(str(a) for a in (self.config.Value("animalIds", []) or [])),
 				"copy_to": self.CopyTo(), "copy_delete": self.CopyDelete(), "copy_box": self.copy_box},
 			"led_power": {"leds": self.LedNames(), "last": LedRemembered(LedPowerFile(), self.config.path)}
-				if self.LedNames() else None}
+				if self.LedNames() else None,
+			"ephys": self.ephys.Status() if getattr(self, "ephys", None) is not None else None}
 
 	def BoutStatus(self):
 		# The page's bout settings box, with a Pico's bouts (none for a camera-only session)
@@ -1671,6 +1786,13 @@ class Panel:
 					return self.Send(200, panelpage.PAGE.encode(), "text/html; charset=utf-8")
 				if url.path == "/status.json":
 					return self.Send(200, panel.Status())
+				if url.path == "/ephys.json":
+					if panel.ephys is None:
+						return self.Send(404, {"error": "no SpikeGLX in this config"})
+					ask = "&".join("{}={}".format(k, v[0]) for k, v in query.items() if k != "t" and v and
+						re.fullmatch(r"[\w,-]*", v[0]))
+					code, body = panel.ephys.Ask("GET", "/snapshot?" + ask)
+					return self.Send(code, dict(body, status=panel.ephys.Status()))
 				if url.path.startswith("/thumb/") and url.path.endswith(".png"):
 					try:
 						png = panel.health.thumbs.get(int(url.path[7:-4]))
@@ -1726,6 +1848,15 @@ class Panel:
 						return self.Send(200, {"ok": True, "waiting": len(panel.copies.Pending())})
 				elif url.path == "/stop-orphan":
 					error = panel.StopOrphan(bool(body.get("now")))
+				elif url.path in ("/ephys", "/ephys-scope", "/ephys-threshold"):
+					if panel.ephys is None:
+						return self.Send(404, {"error": "no SpikeGLX in this config"})
+					if url.path == "/ephys":
+						panel.ephys.Open() if body.get("open") else panel.ephys.Close()
+						error = None
+					else:
+						code, answer = panel.ephys.Ask("POST", "/scope" if url.path == "/ephys-scope" else "/threshold", body)
+						return self.Send(code, answer)
 				elif url.path == "/viewer":
 					error = panel.Viewer()
 				elif url.path == "/bookmark":
@@ -1808,6 +1939,8 @@ class Panel:
 					return self.Interrupted()
 		finally:
 			self.health.Stop()
+			if getattr(self, "ephys", None) is not None:
+				self.ephys.Shutdown()
 			if getattr(self, "server", None) is not None:
 				self.server.shutdown()
 			try:
