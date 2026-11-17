@@ -229,7 +229,7 @@ class TemplateSorter:
 # ---------------------------------------------------------------- spikes found by the templates (below the threshold)
 
 Z_THRESHOLD = 7.0 # a template spike: the template explains the data this many noise units (its matched filter's score)
-COMPONENTS = 8 # the templates' shared shapes in time (their SVD): the matched filter in this many convolutions a site
+COMPONENTS = 8 # the templates' shared shapes in time (their SVD): each template is kept to these (less noise)
 MATCH_W = 20 # samples (0.67 ms): one spike of a unit, and of units near it, within this many
 DEDUP_W = 10 # samples: a threshold crossing this close to a template spike (on its sites) is that spike
 PASSES = 3 # find, take the spikes' templates away, look again: up to this many times (two units' spikes at once)
@@ -238,6 +238,7 @@ GROUP = 3 # units whose spikes at once are fitted together (three units spiking 
 SCALE_ALONE_MAX = 4.0 # a peak's size fitted alone may be up to this before the group's fit (alone, the first unit's
 # template takes in the others' spikes); after it, each size must be within SCALE
 REACH = 2 * (el.BEFORE + el.AFTER) + 4 * MATCH_W # samples a pass's decisions reach (a subtraction, and its neighbors')
+BLOCK = 2048 # samples a transform: the scores are worked out this many (less 60) at a time
 
 
 def Cat(parts):
@@ -262,16 +263,17 @@ class TemplateMatcher:
 	Spikes found by the templates themselves, as Kilosort finds them: a small
 	unit whose trough never crosses the threshold still fits its template.
 
-	The filtered samples, each site's divided by its noise, are matched with
-	each unit's template (also divided by its sites' noise), through the
-	templates' COMPONENTS shared shapes in time (the matched filter: one
-	convolution a shape and a site, then each unit's weights on its sites).
-	Its score, in noise units, says how much of the data the template
-	explains at each sample, and its scale how big the spike is next to the
-	template. A spike of unit u is at a sample where u's score is above
-	z, its scale within SCALE, the highest of u's within MATCH_W samples, and
-	no unit near it (its peak site among u's sites) has a higher score within
-	MATCH_W samples.
+	Each unit's template, each site's divided by its noise and kept to the
+	templates' COMPONENTS shared shapes in time (their SVD, which also takes
+	most of the noise out of a median of few spikes), is matched with the
+	filtered samples, each site's divided by its noise (the matched filter,
+	in the frequency domain: one transform a site, then each unit's sites
+	weighted and transformed back). Its score, in noise units, says how much
+	of the data the template explains at each sample, and its scale how big
+	the spike is next to the template. A spike of unit u is at a sample where
+	u's score is above z, its scale within SCALE, the highest of u's within
+	MATCH_W samples, and no unit near it (its peak site among u's sites) has a
+	higher score within MATCH_W samples.
 
 	Units near a spike found that also peak within MATCH_W are fitted together
 	with it (all their templates' sizes at once, by least squares, at the lags
@@ -282,29 +284,57 @@ class TemplateMatcher:
 	to PASSES times. A unit has no second spike within MATCH_W samples of one
 	it already has.
 
+	Each sample's scores are worked out once, as its samples come. Taking a
+	spike away changes the scores of the units that share its sites by the
+	templates' cross-correlations (worked out once, at the start), as in
+	Kilosort, and the group fits are made from the scores and the same
+	cross-correlations; so nothing is matched twice.
+
 	Like the threshold's spike finder, a sample is judged once all the samples
 	it needs have come (each pass reaching REACH further), so the same samples
 	give the same spikes however they come in pieces.
 	"""
 
 	def __init__(self, sorter, z=Z_THRESHOLD, components=COMPONENTS):
+		import scipy.fft
+		self.fft = scipy.fft
 		self.z = z
 		self.units, self.peaks, self.sites = sorter.units, sorter.peaks, sorter.sites
 		self.noise = sorter.noise.astype(np.float32)
-		Tn = sorter.templates / self.noise[sorter.sites][:, None, :] # [units, 61, sites]
-		shapes = Tn.transpose(0, 2, 1).reshape(-1, Tn.shape[1])
+		U, L = len(self.units), el.BEFORE + el.AFTER
+		ok = self.sites >= 0
+		self.cols = np.where(ok, self.sites, 0) # a site missing (-1: a probe with fewer channels) as channel 0, weight 0
+		Tn = sorter.templates / self.noise[self.cols][:, None, :] * ok[:, None, :] # [units, 61, sites], noise units
+		shapes = Tn.transpose(0, 2, 1).reshape(-1, L)
 		_, _, vt = np.linalg.svd(shapes, full_matrices=False)
-		self.W = vt[:components].T.astype(np.float32) # [61, K]
-		self.A = np.einsum("tk,utj->ukj", self.W, Tn).astype(np.float32) # each unit's weights [units, K, sites]
-		recon = np.einsum("tk,ukj->utj", self.W, self.A)
-		self.norm2 = (recon ** 2).sum(axis=(1, 2)) # each template's energy, as the shapes give it
+		W = vt[:components].T # [61, K]
+		self.Tn = np.einsum("tk,sk,usj->utj", W, W, Tn).astype(np.float32) # each template as its shapes give it
+		self.norm2 = np.maximum((self.Tn.astype(np.float64) ** 2).sum(axis=(1, 2)), 1e-12) # its energy
+		self.root = np.sqrt(self.norm2)
 		self.near = [np.flatnonzero(np.isin(self.peaks, s)) for s in self.sites] # units near each: their peak among its sites
-		self.templates = sorter.templates # uV: what a spike found takes away
+		# The units whose sites each unit's share, and their templates' cross-correlations: K[u][i, d + 60] is unit
+		# over[u][i]'s score at t + d lowered by a spike of u at t, of size 1, taken away
+		channels = max(len(self.noise), int(self.cols.max()) + 1 if self.cols.size else 0)
+		member = np.zeros((U, channels), bool)
+		member[np.repeat(np.arange(U), ok.sum(axis=1)), self.sites[ok]] = True
+		self.over = [np.flatnonzero(member[:, self.sites[u][ok[u]]].any(axis=1)) for u in range(U)]
+		n = 1 << int(np.ceil(np.log2(2 * L - 1)))
+		F = np.fft.rfft(self.Tn.astype(np.float64), n=n, axis=1).transpose(0, 2, 1) # [units, sites, freq]
+		self.cross, self.pos = [], []
+		for u in range(U):
+			mine = np.zeros((channels, F.shape[2]), complex)
+			np.add.at(mine, self.cols[u], F[u])
+			V = self.over[u]
+			c = np.fft.irfft((mine[self.cols[V]] * np.conj(F[V])).sum(axis=1), n=n, axis=1) # sum_n Tn_u[n+d] Tn_v[n]
+			self.cross.append(np.concatenate([c[:, n - (L - 1):], c[:, :L]], axis=1).astype(np.float32))
+			self.pos.append({int(v): i for i, v in enumerate(V)})
+		self.filters = {}
 		self.passes = PASSES
 		self.Reset()
 
 	def Reset(self):
 		self.tail, self.tail_first, self.next = None, None, None
+		self.S, self.s_first = None, None
 
 	def Feed(self, first, x):
 		"""Template spikes judged with the samples given (filtered uV); as Detector.Feed."""
@@ -314,6 +344,15 @@ class TemplateMatcher:
 			buf, bfirst, self.next = x, first, first
 		else:
 			buf, bfirst = np.concatenate([self.tail, x]), self.tail_first
+		# The scores of the samples that now have all they need, once each
+		start = bfirst + el.BEFORE if self.S is None else self.s_first + self.S.shape[1]
+		end = bfirst + len(buf) - el.AFTER + 1
+		if end > start:
+			new = self.Scores(buf, start - bfirst, end - bfirst)
+			if self.S is None:
+				self.S, self.s_first = new, start
+			else:
+				self.S = np.concatenate([self.S, new], axis=1)
 		w = MATCH_W
 		reach = self.passes * REACH + 2 * w + 1
 		margin_lo, margin_hi = el.BEFORE + reach, el.AFTER + reach
@@ -323,17 +362,45 @@ class TemplateMatcher:
 		self.next = bfirst + max(hi, lo)
 		keep = max(0, self.next - bfirst - margin_lo)
 		self.tail, self.tail_first = buf[keep:], bfirst + keep
+		if self.S is not None and self.tail_first + el.BEFORE > self.s_first:
+			drop = self.tail_first + el.BEFORE - self.s_first
+			self.S, self.s_first = self.S[:, drop:], self.s_first + drop
 		return found
 
+	def Filters(self, n):
+		"""Each unit's matched filter on its sites, transformed for blocks of n samples: [units, sites, n // 2 + 1]."""
+		H = self.filters.get(n)
+		if H is None:
+			H = np.ascontiguousarray(np.conj(self.fft.rfft(self.Tn, n=n, axis=1)).transpose(0, 2, 1)).astype(np.complex64)
+			self.filters[n] = H
+		return H
+
 	def Scores(self, x, a0, b0):
-		"""Each unit's score and scale at samples [a0, b0) of x (whose samples a0 - BEFORE to b0 + AFTER - 1 must be
-		there): [units, b0 - a0] each."""
-		from scipy.signal import fftconvolve
-		seg = x[a0 - el.BEFORE:b0 + el.AFTER - 1] / self.noise
-		F = np.stack([fftconvolve(seg, self.W[::-1, k][:, None], mode="valid", axes=0) for k in range(self.W.shape[1])],
-			axis=2).astype(np.float32) # [b0 - a0, channels, K]
-		s = np.stack([np.einsum("tjk,kj->t", F[:, self.sites[u], :], self.A[u]) for u in range(len(self.units))])
-		return s / np.sqrt(self.norm2)[:, None], s / self.norm2[:, None]
+		"""Each unit's score, not yet divided by its template's energy, at samples [a0, b0) of x (filtered uV), whose
+		samples a0 - BEFORE to b0 + AFTER - 1 must be there: [units, b0 - a0]."""
+		L = el.BEFORE + el.AFTER
+		out = np.empty((len(self.units), b0 - a0), np.float32)
+		s = a0
+		while s < b0:
+			n = min(BLOCK, 1 << int(np.ceil(np.log2(b0 - s + L - 1))))
+			e = min(b0, s + n - (L - 1))
+			H = self.Filters(n)
+			X = self.fft.rfft((x[s - el.BEFORE:e + el.AFTER - 1] / self.noise).T, n=n, axis=1) # [channels, freq]
+			Y = X[self.cols[:, 0]] * H[:, 0]
+			for j in range(1, self.cols.shape[1]):
+				Y += X[self.cols[:, j]] * H[:, j]
+			out[:, s - a0:e - a0] = self.fft.irfft(Y, n=n, axis=1)[:, :e - s]
+			s = e
+		return out
+
+	def Subtract(self, R, a0, t, u, a):
+		"""Unit u's template at t, of size a, taken away: the scores R (whose first sample is a0) of the units that share
+		its sites lowered by their cross-correlations."""
+		L = el.BEFORE + el.AFTER
+		i0 = t - (L - 1) - a0
+		lo, hi = max(0, i0), min(R.shape[1], i0 + 2 * L - 1)
+		if hi > lo:
+			R[self.over[u], lo:hi] -= a * self.cross[u][:, lo - i0:hi - i0]
 
 	def Candidates(self, z, scale, c0, c1, taken):
 		"""Pass's spikes among samples [c0, c1) (the scores' first is c0): (sample, unit) of each, judged where all
@@ -368,7 +435,7 @@ class TemplateMatcher:
 					out.append((c0 + t, u, float(scale[u, t])))
 		return out, cand
 
-	def Group(self, res, A, t, u, c0, cand, paired, accepted):
+	def Group(self, R, a0, t, u, c0, cand, paired, accepted):
 		"""Other units' spikes at once with unit u's at t: units near the group (their peak among a member's sites)
 		peaking within MATCH_W of t (this pass's candidates, not accepted on their own) are added one at a time, the
 		one that adds most first, at the lag near its peak that fits best, with all the group's templates' sizes
@@ -377,7 +444,7 @@ class TemplateMatcher:
 		a group of two or more; None for u alone."""
 		w = MATCH_W
 		group = [(t, u)]
-		fit = self.JointFit(res, A, group)
+		fit = self.JointFit(R, a0, group)
 		if fit is None:
 			return None
 		explained = fit[1]
@@ -398,7 +465,7 @@ class TemplateMatcher:
 						for tv in range(max(t - w, peak - PAIR_SEARCH), min(t + w, peak + PAIR_SEARCH) + 1):
 							if (tv, v) in paired:
 								continue
-							trial = self.JointFit(res, A, group + [(tv, v)])
+							trial = self.JointFit(R, a0, group + [(tv, v)])
 							if trial is None:
 								continue
 							sizes, together = trial
@@ -417,22 +484,22 @@ class TemplateMatcher:
 			paired.add((tv, v))
 		return [(tt, uu, float(a)) for (tt, uu), a in zip(group, fit[0])]
 
-	def JointFit(self, res, A, members):
+	def JointFit(self, R, a0, members):
 		"""Units' templates at their samples ([(sample, unit), ...]) fitted together (least squares, each site divided
-		by its noise): (their sizes, what they explain together in noise units squared); None if they can't be told
-		apart (their templates too alike there)."""
-		lo_t = min(t for t, _ in members) - el.BEFORE
-		hi_t = max(t for t, _ in members) + el.AFTER
-		sites = np.unique(np.concatenate([self.sites[k] for _, k in members]))
-		D = res[lo_t - A:hi_t - A][:, sites] / self.noise[sites]
-		G = np.zeros((len(members), D.size), np.float64)
-		for i, (t, k) in enumerate(members):
-			g = np.zeros_like(D)
-			cols = np.searchsorted(sites, self.sites[k])
-			g[t - el.BEFORE - lo_t:t + el.AFTER - lo_t][:, cols] = self.templates[k] / self.noise[self.sites[k]]
-			G[i] = g.ravel()
-		M = G @ G.T
-		b = G @ D.ravel()
+		by its noise), from their scores R (whose first sample is a0) and their cross-correlations: (their sizes, what
+		they explain together in noise units squared); None if they can't be told apart (their templates too alike
+		there)."""
+		L = el.BEFORE + el.AFTER
+		k = len(members)
+		M, b = np.zeros((k, k)), np.zeros(k)
+		for i, (ti, ui) in enumerate(members):
+			b[i] = R[ui, ti - a0]
+			M[i, i] = self.norm2[ui]
+			for j in range(i + 1, k):
+				tj, uj = members[j]
+				p = self.pos[ui].get(uj)
+				if p is not None and abs(tj - ti) < L:
+					M[i, j] = M[j, i] = self.cross[ui][p, tj - ti + L - 1]
 		if np.linalg.cond(M) > 1e6:
 			return None
 		a = np.linalg.solve(M, b)
@@ -442,27 +509,29 @@ class TemplateMatcher:
 		w = MATCH_W
 		E = self.passes * REACH
 		a0, b0 = lo - E - 2 * w, hi + E + 2 * w
-		A = a0 - el.BEFORE
-		res = np.array(buf[A:b0 + el.AFTER], np.float32) # the data less each spike found, as the passes go
+		o = bfirst + a0 - self.s_first
+		R = self.S[:, o:o + b0 - a0].copy() # the scores of the data less each spike found, as the passes go
 		found, taken = [], {}
 		for p in range(self.passes):
 			c0, c1 = a0 + p * REACH, b0 - p * REACH
 			if c1 - c0 <= 4 * w:
 				break
-			z, scale = self.Scores(res, c0 - A, c1 - A)
+			s = R[:, c0 - a0:c1 - a0]
+			z, scale = s / self.root[:, None], s / self.norm2[:, None]
 			new, cand = self.Candidates(z, scale, c0, c1, taken)
 			if not new:
 				break # the rest is unchanged: a next pass would find nothing new
 			paired = set()
+			accepted = {(tt, uu) for tt, uu, _ in new}
 			for t, u, a in new:
 				# Units near it peaking at once: their templates fitted together (alone, the first one's fit takes in
 				# the others' spikes, and leaves too little of them to be found)
-				group = self.Group(res, A, t, u, c0, cand, paired, {(tt, uu) for tt, uu, _ in new})
+				group = self.Group(R, a0, t, u, c0, cand, paired, accepted)
 				if group is None and a > SCALE[1]:
 					continue # too big for one spike of it, and no other unit's spike at once explains the rest
 				fits = [(t, u, a)] if group is None else group
 				for tt, uu, aa in fits:
-					res[tt - A - el.BEFORE:tt - A + el.AFTER, self.sites[uu]] -= aa * self.templates[uu]
+					self.Subtract(R, a0, tt, uu, aa)
 					taken[uu] = np.append(taken.get(uu, np.zeros(0, np.int64)), tt)
 					found.append((tt, uu))
 		found = [(t, u) for t, u in found if lo <= t < hi]
@@ -474,7 +543,7 @@ class TemplateMatcher:
 		t, u = t[order], u[order]
 		sites = self.sites[u]
 		rows = t[:, None] + np.arange(-el.BEFORE, el.AFTER)[None, :]
-		waves = buf[rows[:, :, None], sites[:, None, :]].astype(np.float32)
+		waves = buf[rows[:, :, None], np.maximum(sites, 0)[:, None, :]].astype(np.float32)
 		return el.Spikes(bfirst + t, self.peaks[u], buf[t, self.peaks[u]], self.units[u], waves, sites.astype(np.int32))
 
 
