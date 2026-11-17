@@ -77,6 +77,20 @@ On the synthetic recordings of the tests (4 units on 96 sites, 8 µV noise, 180 
 | Filter and spike finder | 57% of one core per second of samples (more spikes than the synthetic recording, and a slower core) |
 | Samples skipped, gaps | none |
 
+**Against Kilosort 4,** on the same 45 s. Kilosort 4.1.7 sorted the recording on a cluster GPU with its default settings: 281 units, 135 of them labelled "good" by Kilosort, 138,147 spikes. A Kilosort spike counts as found live when a live spike is within 10 samples of it, on a site within 60 µm of its unit's peak site. Recall is measured for each good unit; precision is the share of live spikes (after the first half second) near any Kilosort spike.
+
+| | |
+|---|---|
+| Good units' spikes found live (median of the 135 units) | 85% (25th to 75th percentile: 59% to 97%) |
+| Units with a trough deeper than −100 µV at their peak site (47) | 98% |
+| −60 to −100 µV (48) | 80% |
+| −40 to −60 µV (36) | 40% |
+| Shallower than −40 µV (4) | 16% |
+| Live spikes near some Kilosort spike | 70% |
+| Live trough minus Kilosort's spike time | 0 samples median; −3 to +3 (5th to 95th percentile) |
+
+A unit's trough here is the median of the live-filtered signal at its peak site around Kilosort's spike times. As expected of a threshold, recall falls for units near the threshold (−4.5 × the 13 µV noise, about −58 µV), where Kilosort's template matching still finds them. These are the numbers a live sorter has to improve on: matching templates finds spikes below the threshold, and tells apart the 30% of live spikes that Kilosort doesn't place on a unit near them (noise crossings, or units Kilosort didn't keep). The same comparison is the yardstick for accuracy before any speed work.
+
 **From a running SpikeGLX (on a test VM):** SpikeGLX v20260826 (API 4.1.3), the release on the ChronicRecord rig, with no probe attached. It ran a simulated probe (below) playing the same sample recording, labelled as a Neuropixels 2.0 four-shank probe (NP2013, the rig's). The computer was a Windows 11 virtual machine with 8 cores of an Intel Core i9-14900. Numbers on the VM vary with the other VMs on its server, so take them as a first look, not the rig's numbers. 40 s of reading, in a `bench/rig.py` job that came out clean (`RIG_CLEAN`).
 
 | | |
