@@ -816,8 +816,8 @@ class Runner:
 			self.Event(record)
 			return
 		if kind == "t":
-			# A camera trigger: Board keeps it (rises), for the frames. The first one also wakes a loop that is
-			# waiting for it (--start-with-frames), so the task starts in frame 1, not up to LOOP_S later
+			# A camera trigger: Board keeps it (rises), for the frames. While the task waits for the first one, it wakes
+			# the loop, so that the task starts with it, not up to a loop's wait (LOOP_S) later, a frame or two on
 			if self.state is None:
 				self.queue.put((kind, fields, heard_ns, line))
 			return
