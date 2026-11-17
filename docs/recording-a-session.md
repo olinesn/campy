@@ -171,6 +171,7 @@ While it records, the **Pico** card shows the bout (for example `bout 212 of 172
 - **Spikes, last 10 s:** every spike found, by its depth on the probe; darker is bigger.
 - **Probe map:** each site's spikes a second. Click a site to pick it.
 - **Its last 30 spikes**, their mean, and the threshold (dashed). The threshold is in multiples of the site's noise (4.5 to start). **All sites** sets it everywhere, **This site** for the picked one only.
+- **The camera's frame** (and the Pico's bout) on the card's status line, and a tick for each frame along the top of the oscilloscope. A bout already under way when you opened the card has no frame numbers; they start with the next bout.
 
 It only reads from SpikeGLX: it never changes SpikeGLX or what it records. It runs in a program of its own at low priority, only while the card is shown, and stops when you press **Hide** or close the page. Its spikes are threshold crossings, not sorted units. How it works and what it costs: [Live electrophysiology](live-ephys.md).
 

@@ -16,6 +16,11 @@ the tests read and change. Its SpikeGLX:
               campy/ephyslive.py: its stream (js 2, ip 0) at 30,000 samples
               a second from the run's start, the file over and over; fetch
               gives the last BUFFER_S seconds of it
+  camera      the OneBox's camera pulses (js 1: XA0-11, XD0, SY0, at 30,303 a
+              second), on XD0's bit "bit": {"fps": 60, "bit": 2, "bouts":
+              [[start s from the run's start, pulses], ...]}, each pulse 3 ms
+              from the sample at or after its time; mapSample: the same
+              moment on another stream, both counted from the run's start
 """
 
 import ctypes, json, os, time
@@ -182,10 +187,40 @@ def c_sglx_getGeomMap(ref, h, ip):
 	return True
 
 
+def CameraWord(state, samples):
+	"""XD0 at these OneBox samples: the camera bit high for 3 ms from each pulse's first sample."""
+	cam = state.get("camera") or {}
+	word = np.zeros(len(samples), np.int16)
+	fps, bit = float(cam.get("fps", 60)), int(cam.get("bit", 2))
+	for start, n in cam.get("bouts", []):
+		rises = np.ceil((start + np.arange(int(n)) / fps) * RATE).astype(np.int64)
+		k = np.searchsorted(rises, samples, side="right") - 1
+		on = (k >= 0) & (samples - rises[np.maximum(k, 0)] < int(0.003 * RATE))
+		word[on] |= 1 << bit
+	return word
+
+
+def c_sglx_mapSample(h, dst_js, dst_ip, src_sample, src_js, src_ip):
+	return int(round(src_sample * Rate(dst_js) / Rate(src_js)))
+
+
 def c_sglx_fetch(data_ref, n_ref, h, js, ip, start, max_samps, channels, n_cs, downsample):
 	state = Load()
 	state["calls"].append("fetch")
 	Save(state)
+	if abs(js) == 1 and state["running"]: # the OneBox: its XD0 (channel 12) alone
+		count = c_sglx_getStreamSampleCount(h, js, ip)
+		start = max(int(start), count - int(BUFFER_S * RATE))
+		end = min(count, start + max_samps)
+		if end <= start:
+			Set(n_ref, 0)
+			return start
+		samples = np.arange(start, end)
+		cols = [CameraWord(state, samples) if c == 12 else np.zeros(len(samples), np.int16) for c in channels[:n_cs]]
+		h.block = np.ascontiguousarray(np.stack(cols, axis=1), np.int16).ravel()
+		data_ref._obj.contents = ctypes.c_short.from_buffer(h.block)
+		Set(n_ref, len(h.block))
+		return start
 	if not state["running"]:
 		h.error = b"fetch: not running"
 		return 0
