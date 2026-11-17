@@ -53,7 +53,7 @@ recording replayed through this gives the spikes the live view showed, which
 is what training a live sorter against Kilosort's spikes needs.
 """
 
-import argparse, json, os, sys, threading, time
+import argparse, os, sys, threading, time
 from collections import deque
 
 import numpy as np
@@ -754,8 +754,9 @@ def Bench(args, out=print):
 		"process_s_per_data_s"]) if summary["process_s_per_data_s"] is not None else "?", s["spikes"], s["gaps"],
 		source.skipped, source.state))
 	if args.json:
+		from campy import strictjson
 		with open(args.json, "w") as f:
-			json.dump(summary, f, indent=1)
+			strictjson.dump(summary, f, indent=1)
 	return summary
 
 
