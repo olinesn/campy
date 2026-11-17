@@ -458,9 +458,10 @@ class TemplateMatcher:
 		ok = best & (ts >= 2 * w) & (ts < c1 - c0 - 2 * w)
 		return [(c0 + int(t), int(u), float(scale[u, t])) for u, t in zip(us[ok], ts[ok])], (c0 + t_o, u_o)
 
-	def Group(self, R, a0, t, u, cand, paired, accepted):
+	def Group(self, R, a0, t, u, cand, paired, taken):
 		"""Other units' spikes at once with unit u's at t: units near the group (their peak among a member's sites)
-		peaking within MATCH_W of t (this pass's candidates, not accepted on their own) are added one at a time, the
+		peaking within MATCH_W of t (this pass's peaks, of units with no spike found within MATCH_W of it) are added
+		one at a time, the
 		one that adds most first, at the lag near its peak that fits best, with all the group's templates' sizes
 		fitted together on the sites they cover; one is added when every size stays within SCALE and it adds at least
 		the score's threshold squared to what the group explained, up to GROUP units. [(sample, unit, size), ...] for
@@ -480,7 +481,8 @@ class TemplateMatcher:
 				near &= peaks_u != m
 			trials = []
 			for peak, v in zip(peaks_t[near].tolist(), peaks_u[near].tolist()):
-				if (peak, v) in accepted:
+				mine = taken.get(v)
+				if mine is not None and np.abs(mine - peak).min() <= w:
 					continue
 				# Its own score's peak is pulled by the others' spikes: the lag that fits best, near it
 				for tv in range(max(t - w, peak - PAIR_SEARCH), min(t + w, peak + PAIR_SEARCH) + 1):
@@ -582,11 +584,19 @@ class TemplateMatcher:
 			if not new:
 				break # the rest is unchanged: a next pass would find nothing new
 			paired = set()
-			accepted = {(tt, uu) for tt, uu, _ in new}
-			for t, u, a in new:
+			# The highest first, each looked at again with the spikes found before it taken away: what they explain
+			# isn't found again (a small unit's template, sharing a few sites, matching part of a big unit's spike)
+			first = np.lexsort(([u for _, u, _ in new], [t for t, _, _ in new], [-z[u, t - c0] for t, u, _ in new]))
+			for t, u, _ in (new[i] for i in first):
+				mine = taken.get(u)
+				if mine is not None and np.abs(mine - t).min() <= w:
+					continue # found already, with another unit's spike at once
+				a = R[u, t - a0] / self.norm2[u]
+				if a * self.root[u] <= self.z or a < SCALE[0]:
+					continue # explained by the spikes found before it
 				# Units near it peaking at once: their templates fitted together (alone, the first one's fit takes in
 				# the others' spikes, and leaves too little of them to be found)
-				group = self.Group(R, a0, t, u, cand, paired, accepted)
+				group = self.Group(R, a0, t, u, cand, paired, taken)
 				if group is None and a > SCALE[1]:
 					continue # too big for one spike of it, and no other unit's spike at once explains the rest
 				fits = [(t, u, a)] if group is None else group
