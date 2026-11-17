@@ -43,6 +43,8 @@ KEYS = {
 	"write_mb_s": ((int, float), 24, "what SpikeGLX writes while the gate is open, in MB/s, for the panel's disk check "
 		"before the start (24: a Neuropixels 2.0 probe's 23.1 and a OneBox's 0.85, measured on the ChronicRecord rig)"),
 	"start_timeout_s": ((int, float), 120, "how long its run may take to start acquiring"),
+	"templates": ((str,), "", "the panel's Live ephys card sorts spikes into units with these templates (campy-ephys "
+		"train, from a Kilosort 4 sort of this probe; docs/live-ephys.md); default: none, threshold crossings only"),
 	"open_timeout_s": ((int, float), 120, "how long SpikeGLX may take to open and answer"),
 	}
 
