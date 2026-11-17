@@ -249,6 +249,12 @@ def test_replay_of_a_saved_recording(tmp_path, recording):
 	# A Neuropixels 1.0 probe's gain (500) from its imroTbl
 	path = WriteBin(str(tmp_path), data[:3000], geometry, imro_np1=True)
 	assert np.allclose(el.ReplaySource(path).Open().uv, 0.62 / 8192 / 500 * 1e6)
+	# An NP2013 (Neuropixels 2.0, 4 shanks): one gain for all (imChan0apGain 100), 2048 counts: 3.03 uV a count
+	meta = path[:-4] + ".meta"
+	text = open(meta).read().replace("imMaxInt=8192", "imMaxInt=2048") + "imChan0apGain=100\n"
+	text = text.replace("~imroTbl=(0,", "~imroTbl=(2013,").replace(" 500 250 1)", " 0)")
+	open(meta, "w").write(text)
+	assert np.allclose(el.ReplaySource(path).Open().uv, 0.62 / 2048 / 100 * 1e6)
 
 
 def test_replay_at_the_recorded_speed(tmp_path, recording):
