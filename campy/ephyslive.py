@@ -250,15 +250,18 @@ class ReadOnly:
 
 class SpikeGLXSource:
 	"""A probe's AP stream (js 2, ip), read live from SpikeGLX's command server with read-only calls: from where the
-	last read ended, up to max_s at a time. More than max_lag_s behind (this computer busy), it skips to the newest
+	last read ended, up to max_s at a time, at most every every_s (asked as soon as samples come, a reader would ask
+	about 400 times a second, each costing SpikeGLX some CPU). More than max_lag_s behind (this computer busy), it skips to the newest
 	samples and counts what it skipped, rather than falling further behind. filtered: from SpikeGLX's filtered AP
 	buffer (js -2; on only if it is turned on in SpikeGLX's IM Setup tab), so Filter skips its high-pass."""
 
-	def __init__(self, sdk_folder, host="127.0.0.1", port=4142, ip=0, filtered=False, max_s=0.5, max_lag_s=1.0):
+	def __init__(self, sdk_folder, host="127.0.0.1", port=4142, ip=0, filtered=False, max_s=0.5, max_lag_s=1.0,
+		every_s=0.05):
 		from campy import spikeglx
 		self.sdk = ReadOnly(spikeglx.Sdk(sdk_folder))
 		self.host, self.port, self.ip, self.filtered = host, port, ip, filtered
 		self.max_s, self.max_lag_s = max_s, max_lag_s
+		self.every_s, self.fetched_at = every_s, 0.0 # a read at most every every_s: SpikeGLX answers each one
 		self.conn, self.stream, self.next = None, None, None
 		self.state, self.skipped, self.lag = "not connected", 0, None
 		self.lag_at = 0.0
@@ -319,6 +322,9 @@ class SpikeGLXSource:
 		from ctypes import POINTER, byref, c_int, c_short
 		if self.stream is None and self.Open() is None:
 			return None
+		if time.monotonic() - self.fetched_at < self.every_s:
+			return None
+		self.fetched_at = time.monotonic()
 		sglx, h, rate = self.sdk, self.conn.h, self.stream.rate
 		if self.next is None: # from 1 at the least: SpikeGLX's fetch says 0 for an error, so not from sample 0
 			self.next = max(1, self.Count() - int(rate * 0.05))

@@ -77,9 +77,28 @@ On the synthetic recordings of the tests (4 units on 96 sites, 8 µV noise, 180 
 | Filter and spike finder | 57% of one core per second of samples (more spikes than the synthetic recording, and a slower core) |
 | Samples skipped, gaps | none |
 
+**From a running SpikeGLX (on a test VM):** SpikeGLX v20260826 (API 4.1.3), the release on the ChronicRecord rig, with no probe attached. It ran a simulated probe (below) playing the same sample recording, labelled as a Neuropixels 2.0 four-shank probe (NP2013, the rig's). The computer was a Windows 11 virtual machine with 8 cores of an Intel Core i9-14900. Numbers on the VM vary with the other VMs on its server, so take them as a first look, not the rig's numbers. 40 s of reading, in a `bench/rig.py` job that came out clean (`RIG_CLEAN`).
+
+| | |
+|---|---|
+| The live spikes against a replay of the same samples from the file | the same 55,997 spikes, none more on either side |
+| One read: 50 to 60 ms of all 384 channels | 2.7 ms on average; `fetchLatest` of 50 ms alone took 1.8 ms median, 2.8 ms at the 95th percentile, 26 ms at most (4 channels: 0.9 ms) |
+| Reads | about 16 a second (at most one every 50 ms); none skipped, no gap; at most 15 ms behind SpikeGLX |
+| SpikeGLX's CPU | none while it ran no run; 14.5% of one core running the simulated probe (not writing files); 24.8% while campy read it, so about 10% of a core for the reading |
+| campy's reader (reading, filtering, finding spikes) | 43% of one core |
+
+Reading as soon as samples come (about 400 small reads a second) took SpikeGLX about 14% of a core and the reader 62%. So the reader asks at most every 50 ms.
+
+**How the test ran a simulated probe,** with no hardware, by its settings files in SpikeGLX's `_Configs` folder (SpikeGLX's help: Simulated Probes):
+- `imsimprobes.ini`: `[SIMPROBES]` `naddr=1`, `addr0=40, 1, 1, 1, <the file's path without .ap.bin>`;
+- `improbetable.ini`: rows for slot 40 (a simulated slot), port 1 enabled;
+- `mainapp.ini`: `[CmdSrv]` `enabled=true` on 127.0.0.1, port 4142;
+- then `selectDevices("(40,1,1)")` and `startRun` through the API.
+
+SpikeGLX takes the probe's part number from the file's `.meta`, so the `.meta` of a real recording with its size, length and checksum changed is enough.
+
 **Not measured yet:**
-- what reading costs SpikeGLX, and how long a read takes from a running SpikeGLX: on a Windows computer with SpikeGLX's simulated probe playing a saved recording first, then on the ChronicRecord rig with no recording running;
-- the filter and spike finder on the rig's own processor.
+- the filter and spike finder on the rig's own processor, and what reading costs SpikeGLX there while it records a real probe and a OneBox: a read-only run on the ChronicRecord rig with no recording, only with the user's OK.
 
 ## Lining spikes up with camera frames
 
