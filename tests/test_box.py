@@ -192,6 +192,17 @@ def events(tmp_path):
 	return [json.loads(l) for l in open(str(tmp_path / "box.events.jsonl"))]
 
 
+def read_status(path):
+	# campy-box's status file while campy-box rewrites it every second (written beside it, then moved into place): not
+	# there yet, or on Windows not openable for the moment it is replaced (PermissionError on GitHub's Windows runner,
+	# 17 November), is "not yet", as campy-session's BoxStatus takes it
+	try:
+		with open(path) as f:
+			return json.load(f)
+	except (OSError, ValueError):
+		return {}
+
+
 def test_a_poke_rewards_and_the_task_ends_after_its_trials(tmp_path):
 	port = FakeBoard()
 	runner, thread, result, said = start(Task(), tmp_path, port)
@@ -406,11 +417,11 @@ def test_with_a_recording_it_waits_for_the_first_frame_and_ends_with_the_stop_fi
 		assert until(lambda: os.path.exists(paths["ready"]))
 		time.sleep(0.3)
 		assert runner.state is None # no camera frame yet
-		assert until(lambda: os.path.exists(paths["status"]) and json.load(open(paths["status"]))["waiting"])
+		assert until(lambda: read_status(paths["status"]).get("waiting"))
 		port.Say("i 0 1 500 0 -1") # a poke before the task: logged, nothing moves
 		port.Say("t 1 1000")
 		assert until(lambda: runner.state == "ready")
-		assert until(lambda: json.load(open(paths["status"]))["trial"] == 1)
+		assert until(lambda: read_status(paths["status"]).get("trial") == 1)
 		open(paths["stop"], "w").write("stop\n")
 		thread.join(5)
 	finally:
@@ -426,6 +437,23 @@ def test_with_a_recording_it_waits_for_the_first_frame_and_ends_with_the_stop_fi
 	status = json.load(open(paths["status"]))
 	assert status["ended"] == "stop file" and not status["waiting"]
 	assert any("starts at the first camera frame" in s for s in said)
+
+
+def test_the_last_status_waits_for_a_reader_to_let_go(tmp_path, monkeypatch):
+	# On Windows a reader that has the status file open stops it being replaced for that moment (PermissionError)
+	path = str(tmp_path / "box.status")
+	replace, refused = os.replace, []
+	def Replace(part, to):
+		if to == path and len(refused) < 3:
+			refused.append(to)
+			raise PermissionError(13, "Permission denied", to)
+		replace(part, to)
+	monkeypatch.setattr(box.os, "replace", Replace)
+	with pytest.raises(PermissionError):
+		box.WriteJson(path, {"trial": 1}) # the loop's, every second: tried once
+	assert not os.path.exists(path) and not os.path.exists(path + ".part")
+	box.WriteJson(path, {"trial": 2}, wait_s=1.0) # the last: tried again
+	assert len(refused) == 3 and read_status(path) == {"trial": 2}
 
 
 def test_it_stops_waiting_when_campy_session_is_gone(tmp_path):
@@ -740,17 +768,32 @@ def test_one_board_makes_the_cameras_pulses_and_runs_the_box(tmp_path, outputs_s
 		rises = [t for t, level in edges[pin] if level == 1]
 		assert rises == [t0 + k * period + period // 2 for k in range(120)], pin # to the microsecond: the timer's
 	ev = events(tmp_path)
-	assert [e for e in ev if e["kind"] == "state"][0]["first_frame"] == 1
+	# The task waits for the first pulse and starts at the loop's next look (every box.LOOP_S, 20 ms: longer than a
+	# frame at 60 fps), with the last frame heard then: frame 1 or 2 (it started 13-18 ms after frame 1 on a Mac, 17
+	# November: frame 2 in half the runs), a few more only on a busy computer (under 50 ms late, as the sync edges below)
+	first = [e for e in ev if e["kind"] == "state"][0]["first_frame"]
+	assert first is not None and 1 <= first and (first - 1) * period < box.LOOP_S * 1e6 + 50000, first
 	pokes = [e for e in ev if e["kind"] == "input" and e["active"] == 1 and e["frame"]]
 	assert pokes
 	for e in pokes:
+		# In frame k's period, from its rise to the next one's. The last frame (120) has no next one: the board stamps a
+		# poke after the pulses' end with it too, which campy-box logs if it has not stopped yet (it stops as it hears
+		# of their end: later on a busy computer, as once here on a Mac running four at once, 17 November)
 		k = e["frame"]
-		assert t0 + (k - 1) * period + period // 2 <= e["board_us"] < t0 + k * period + period // 2, e
+		assert t0 + (k - 1) * period + period // 2 <= e["board_us"], e
+		assert k == 120 or e["board_us"] < t0 + k * period + period // 2, e
 	assert [e["frames"] for e in ev if e["kind"] == "cameras_end"] == [120]
-	# The sync output from the same time 0, where campy-syncmatch puts it (in real time the simulated board's own
-	# changes come late by up to its clock's steps; tests/test_outputs_sketch.py checks them to the microsecond)
+	# The sync output from the same time 0, where campy-syncmatch puts it. The board changes it from its loop, at the
+	# first clock read past the planned time (tests/test_outputs_sketch.py checks that to the microsecond, on a
+	# simulated clock). In real time each clock read of the simulated board sleeps 50 us, and a busy computer keeps the
+	# process waiting longer now and then: on GitHub's Python 3.12 runner (17 November) one edge of 12 came 16 ms late,
+	# the others within 0.2 ms. So every edge is never early and under 50 ms late, as test_pokes_on_the_simulated_board
+	# allows its pokes (still well before the next edge, 100 ms or more later), and the middle one within 1 ms: a time 0
+	# or a train off by even 1 ms would move them all.
 	from campy import syncmatch
 	sync = json.load(open(str(tmp_path / "box.sync.json")))
 	planned, _ = syncmatch.SyncEdges(sync, 120 * period - 20000)
 	got = [t - t0 for t, level in edges.get(9, []) if level == 1]
-	assert len(got) == len(planned) and all(0 <= g - p < 5000 for g, p in zip(got, planned)), (got, list(planned))
+	late = sorted(g - p for g, p in zip(got, planned))
+	assert len(got) == len(planned) and 0 <= late[0] and late[-1] < 50000 and late[len(late) // 2] < 1000, \
+		(got, list(planned))

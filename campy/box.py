@@ -705,14 +705,24 @@ class Box:
 
 # ---------------------------------------------------------------- running it
 
-def WriteJson(path, value):
-	# Whole or not at all: a reader never sees half of it
+def WriteJson(path, value, wait_s=0.0):
+	# Whole or not at all: a reader never sees half of it. On Windows a reader that has the file open stops it being
+	# replaced for that moment (PermissionError): tried again for up to wait_s, as campy-session's WriteJson does
 	folder = os.path.dirname(os.path.abspath(path))
 	os.makedirs(folder, exist_ok=True)
 	part = path + ".part"
 	with open(part, "w") as f:
 		strictjson.dump(value, f)
-	os.replace(part, path)
+	deadline = time.monotonic() + wait_s
+	while True:
+		try:
+			os.replace(part, path)
+			return
+		except PermissionError:
+			if time.monotonic() >= deadline:
+				os.remove(part)
+				raise
+			time.sleep(0.02)
 
 
 class LogFile:
@@ -1244,12 +1254,14 @@ class Runner:
 			inputs=self.counts["inputs"], links=self.counts["links"], watchdog=self.counts["watchdog"],
 			errors=self.counts["errors"], cameras=dict(self.cams) if self.box.cameras is not None else None)
 
-	def WriteStatus(self):
+	def WriteStatus(self, last=False):
+		# Every second from the loop: tried once, so a reader (campy-session) never holds up the task; the next comes in
+		# a second. The last, with how it ended: tried for up to a second, as nothing comes after it
 		path = getattr(self.args, "status_file", "")
 		if not path:
 			return
 		try:
-			WriteJson(path, self.StatusDict())
+			WriteJson(path, self.StatusDict(), wait_s=1.0 if last else 0.0)
 		except OSError:
 			pass
 
@@ -1314,7 +1326,7 @@ class Runner:
 				boardlog.close()
 			with open(out + ".json", "x") as f:
 				strictjson.dump(summary, f, indent=2)
-			self.WriteStatus()
+			self.WriteStatus(last=True)
 			self.say("campy-box: {} trials; ended: {}. Summary in {}.json.".format(self.trial, self.end_why, out))
 		return code
 
