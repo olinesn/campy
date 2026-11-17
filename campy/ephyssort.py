@@ -84,18 +84,19 @@ def ReadPhy(folder, labels=LABELS):
 
 # ---------------------------------------------------------------- the live replay
 
-def Replay(data, stream, start, end, piece_s=1.0):
+def Replay(data, stream, start, end, piece_s=1.0, keep=True):
 	"""The samples [start, end) of data (int16 [samples, channels]) through the live filter and spike finder, in
-	pieces of piece_s: (filtered float32 [end-start, channels], Spikes (samples counted from 0 in data),
-	the detector)."""
+	pieces of piece_s: (filtered float32 [end-start, channels], or None without keep (minutes of a probe: tens of GB),
+	Spikes (samples counted from 0 in data), the detector)."""
 	f, d = el.Filter(stream), el.Detector(stream)
 	n = int(stream.rate * piece_s)
-	filtered = np.empty((end - start, data.shape[1]), np.float32)
+	filtered = np.empty((end - start, data.shape[1]), np.float32) if keep else None
 	found = []
 	for a in range(start, end, n):
 		b = min(end, a + n)
 		x = f.Apply(np.asarray(data[a:b]))
-		filtered[a - start:b - start] = x
+		if keep:
+			filtered[a - start:b - start] = x
 		found.append(d.Feed(a, x))
 	keys = ("sample", "channel", "amplitude")
 	spikes = el.Spikes(*(np.concatenate([getattr(s, k) for s in found]) for k in keys),
@@ -627,7 +628,7 @@ def Evaluate(data, stream, phy, templates, span=None, warm_s=1.0, say=print, rep
 		spikes = Take(spikes, spikes.sample >= start + el.BEFORE)
 		per_second = took / ((end - warm) / stream.rate)
 	else:
-		filtered, spikes, _ = Replay(data, stream, warm, end)
+		filtered, spikes, _ = Replay(data, stream, warm, end, keep=False)
 		in_span = spikes.sample >= start + el.BEFORE
 		spikes = el.Spikes(spikes.sample[in_span], spikes.channel[in_span], spikes.amplitude[in_span],
 			waveforms=spikes.waveforms[in_span], neighbors=spikes.neighbors[in_span])
