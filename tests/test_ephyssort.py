@@ -203,6 +203,42 @@ def test_the_templates_matched_give_the_same_spikes_however_the_samples_come(sor
 	assert runs[1] == runs[0] and runs[2] == runs[0]
 
 
+def test_a_spike_taken_away_changes_the_scores_by_the_cross_correlations(sorted_recording):
+	# The scores are worked out once. Taking a spike away lowers them by the templates' cross-correlations, and a
+	# group's fit comes from the scores: both as if the data less the spike were matched again, or fitted directly
+	tmp, bin_path, phy, times, clusters = sorted_recording
+	out = str(tmp / "templates_cross.npz")
+	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":5"]) == 0
+	m = es.MatchingSorter(out, 7).matcher
+	rng = np.random.default_rng(3)
+	x = rng.normal(0, 8.0, (3000, 96)).astype(np.float32)
+
+	def Put(data, t, u, a):
+		data[t - el.BEFORE:t + el.AFTER][:, m.sites[u]] += a * m.Tn[u] * m.noise[m.sites[u]]
+
+	Put(x, 1000, 0, 1.0)
+	Put(x, 1004, 1, 0.9) # units 0 and 1 a site apart, at once
+	Put(x, 1500, 2, 1.2)
+	a0, b0 = 100, 2900
+	before = m.Scores(x, a0, b0)
+	R, y = before.copy(), x.copy()
+	for t, u, a in ((1000, 0, 1.0), (1004, 1, 0.9), (1500, 2, 1.2), (1520, 3, 0.7)):
+		Put(y, t, u, -a)
+		m.Subtract(R, a0, t, u, a)
+	again = m.Scores(y, a0, b0)
+	assert np.abs(R - again).max() < 1e-4 * np.abs(before).max()
+	members = [(1000, 0), (1004, 1)]
+	sizes, explained = m.JointFit(before, a0, members)
+	G = np.zeros((len(members), x.size), np.float64)
+	for i, (t, u) in enumerate(members):
+		g = np.zeros_like(x)
+		g[t - el.BEFORE:t + el.AFTER][:, m.sites[u]] = m.Tn[u]
+		G[i] = g.ravel()
+	direct = np.linalg.lstsq(G.T, (x / m.noise).ravel(), rcond=None)[0]
+	assert np.allclose(sizes, direct, rtol=1e-3, atol=1e-3), (sizes, direct)
+	assert abs(sizes[0] - 1.0) < 0.1 and abs(sizes[1] - 0.9) < 0.1, sizes
+
+
 def test_two_units_at_once_on_shared_sites_are_both_found(tmp_path):
 	# Units 0 and 1 a site apart (10 of their 12 sites shared), with a third of unit 1's spikes at one of unit 0's,
 	# 0 to 3 samples after it. A nearby unit peaking at once is fitted together with the first (both templates'
