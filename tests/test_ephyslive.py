@@ -300,6 +300,7 @@ def test_reads_spikeglx_live_with_read_only_calls(tmp_path, monkeypatch, recordi
 	assert np.allclose(engine.stream.geometry.z, geometry.z[:32]) # from its geomMap, given in alphanumeric order
 	assert engine.stats["samples"] > 0.8 * RATE and engine.stats["gaps"] == 0 and source.skipped == 0
 	assert engine.stats["spikes"] > 0
+	assert engine.stats["reads"] <= 1.0 / 0.05 + 2 # at most a read every 50 ms, not one per 2 ms of samples
 	# Only fetches: nothing set, started or stopped
 	calls = json.loads(state.read_text())["calls"]
 	assert set(calls) == {"fetch"}
