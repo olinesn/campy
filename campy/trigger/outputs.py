@@ -22,13 +22,18 @@ two-way traffic, and the board, with linkwatch, drops off USB and attaches
 again) is opened again for up to that long: the listener hears ("relink",
 ["down", why]) then ("relink", ["back", seconds]); meanwhile commands are
 answered "err link down" at once. A board that restarted (its clock went
-back) is lost, as before: what it was told is gone.
+back) is lost, as before: what it was told is gone. A link still down RESET_AFTER_S
+after it failed gets a USB port reset from the computer's side, once (Linux only:
+USBDEVFS_RESET on the board's own USB device, as if it had been plugged in again
+while the chip runs on; the listener hears ("relink", ["reset", what happened])):
+on a real Nano ESP32 the board's own re-attach left its USB stuck once in 4
+stalls, and a port reset cleared it.
 
 Needs pyserial (campy's own requirement) only to open a real port: tests pass
 a connection of their own (and an opener for relink).
 """
 
-import collections, threading, time
+import collections, os, sys, threading, time
 
 from campy import clock
 
@@ -50,10 +55,65 @@ OLDER = {
 		"sketch it ships",
 	}
 RISES = 4096 # trigger rises kept (68 s at 60 fps)
+RESET_AFTER_S = 5.0 # relink: a link still down this long after it failed gets a USB port reset (the board's own
+# re-attach brings it back within about 3 s when it works)
+USBDEVFS_RESET = 21780 # Linux's _IO('U', 20)
 
 
 class BoardError(Exception):
 	pass
+
+
+def UsbDevice(port, sys_root="/sys"):
+	"""
+	The board's USB device behind its serial port (Linux): its folder in sysfs, which names its place on the
+	computer's USB (the same when it attaches again) and its vendor. None if there's none (not Linux, not USB).
+	"""
+	try:
+		tty = os.path.basename(os.path.realpath(port))
+		d = os.path.realpath(os.path.join(sys_root, "class", "tty", tty, "device"))
+		for _ in range(4): # the interface (ttyACM), or the usb-serial port below it (ttyUSB): up to the device
+			if os.path.isfile(os.path.join(d, "busnum")) and os.path.isfile(os.path.join(d, "idVendor")):
+				with open(os.path.join(d, "idVendor")) as f:
+					return dict(dir=d, vendor=f.read().strip())
+			d = os.path.dirname(d)
+	except Exception:
+		pass
+	return None
+
+
+def ResetUsbPort(usb, dev_root="/dev/bus/usb", ioctl=None):
+	"""
+	A USB port reset of the board (Linux's USBDEVFS_RESET on its device node): the computer starts its USB over, as
+	if it had been plugged in again, while the chip runs on (its sketch, its camera pulses). Needs write access to the
+	node, which a udev rule gives without sudo (docs/operant-boxes.md). Returns the node; BoardError if it couldn't.
+	"""
+	def Read(name):
+		with open(os.path.join(usb["dir"], name)) as f:
+			return f.read().strip()
+	try:
+		vendor = Read("idVendor")
+		node = os.path.join(dev_root, "{:03d}".format(int(Read("busnum"))), "{:03d}".format(int(Read("devnum"))))
+	except (OSError, ValueError):
+		raise BoardError("nothing on the board's USB port now")
+	if vendor != usb["vendor"]:
+		raise BoardError("another device on the board's USB port now (vendor {}, not {})".format(vendor, usb["vendor"]))
+	try:
+		fd = os.open(node, os.O_WRONLY)
+	except PermissionError:
+		raise BoardError("no permission to reset {}: a udev rule gives it (docs/operant-boxes.md)".format(node))
+	except OSError as e:
+		raise BoardError("could not open {}: {}".format(node, e))
+	try:
+		if ioctl is None:
+			import fcntl
+			ioctl = fcntl.ioctl
+		ioctl(fd, USBDEVFS_RESET, 0)
+	except OSError as e:
+		raise BoardError("the reset of {} failed: {}".format(node, e))
+	finally:
+		os.close(fd)
+	return node
 
 
 def Mismatch(port, line):
@@ -147,7 +207,7 @@ class Board:
 	"""
 
 	def __init__(self, port=None, connection=None, log=None, listener=None, say=print, heartbeat=HEARTBEAT_S,
-			sync=SYNC_S, alive=None, relink=0.0, opener=None):
+			sync=SYNC_S, alive=None, relink=0.0, opener=None, resetter=None):
 		self.port, self.say, self.listener = port, say, listener
 		self.alive = alive
 		self.log = log
@@ -168,6 +228,12 @@ class Board:
 					"in and that no other program (the Arduino IDE's Serial Monitor, another campy-rules) has it "
 					"open.".format(port, e))
 		self.connection = connection
+		# The USB port reset, if the link stays down (relink): from the port's USB device, found now while it's there
+		self.resetter, self.reset_after = resetter, RESET_AFTER_S
+		if resetter is None and self.relink and port and sys.platform.startswith("linux"):
+			usb = UsbDevice(port)
+			if usb is not None:
+				self.resetter = lambda: ResetUsbPort(usb)
 		self.lock = threading.Lock() # one writer at a time
 		self.pending = collections.deque() # Answers, in the order the commands went
 		self.clock = ClockMap()
@@ -326,7 +392,11 @@ class Board:
 		except Exception:
 			pass
 		deadline = time.monotonic() + self.relink
+		reset_at = time.monotonic() + self.reset_after if self.resetter is not None else None
 		while not self.stopping.is_set() and time.monotonic() < deadline:
+			if reset_at is not None and time.monotonic() >= reset_at:
+				reset_at = None
+				self.ResetPort()
 			time.sleep(0.2)
 			try:
 				conn = self.opener()
@@ -359,6 +429,17 @@ class Board:
 				self.listener("relink", ["back", seconds], clock.HostNs(), "")
 			return True
 		return False
+
+	def ResetPort(self):
+		# Still down: a USB port reset from the computer's side, once per relink
+		try:
+			what = "done ({})".format(self.resetter())
+		except Exception as e:
+			what = "failed: {}".format(e)
+		if self.log is not None:
+			self.log.write("{} relink: USB port reset {}\n".format(clock.HostNs(), what))
+		if self.listener is not None:
+			self.listener("relink", ["reset", what], clock.HostNs(), "")
 
 	@staticmethod
 	def Ask(conn, command, timeout=2.0):
