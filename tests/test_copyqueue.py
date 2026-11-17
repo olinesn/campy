@@ -396,6 +396,82 @@ def test_a_copys_time_left_is_estimated_from_its_rate_and_counted_down_from_its_
 	assert job.Dict(time.time())["eta_s"] is None
 
 
+def test_a_copys_speed_is_its_recent_rate_and_a_stall_says_so():
+	# speed: bytes a second over the last RATE_S or so (the counts the status looks at every LOOK_S), not the average
+	# since the start, so a slowdown shows; the time left goes by it too. Nothing copied for STALL_S: stalled_s, and no
+	# speed or time left (never a stale one)
+	job = copyqueue.Job("/rec/2026-11-17_15-08-09", "/share")
+	job.state, job.bytes = "copying", 7_700_000_000
+	job.Phase("copying", now=0.0)
+	d = job.Dict(0.0)
+	assert d["speed"] is None and d["stalled_s"] is None # just begun
+	t, done = 0.0, 0
+	for _ in range(20): # 60 s at 110 MB/s
+		t += 3.0
+		done += 330_000_000
+		job.done_bytes, job.measured_at = done, t
+		job.Sample(t)
+	assert job.Dict(t)["speed"] == pytest.approx(110e6, rel=1e-6)
+	assert job.Eta(t) == pytest.approx((7.7e9 - done) / 110e6, abs=0.1)
+	assert job.samples[-1][0] - job.samples[0][0] <= copyqueue.RATE_S + copyqueue.LOOK_S # only the last 20 s or so
+	# It slows to 30 MB/s: the speed follows within RATE_S (the average since the start would still say over 90)
+	for _ in range(8):
+		t += 3.0
+		done += 90_000_000
+		job.done_bytes, job.measured_at = done, t
+		job.Sample(t)
+	assert job.Dict(t)["speed"] == pytest.approx(30e6, rel=1e-6)
+	assert done / t > 80e6
+	assert job.Eta(t) == pytest.approx((7.7e9 - done) / 30e6, abs=0.1)
+	# Then nothing more: no speed nor time left once it has stood still for STALL_S, but how long it has
+	moved = t
+	for _ in range(4): # 12 s: not a stall yet; the recent rate falls, the time left holds by the average meanwhile
+		t += 3.0
+		job.measured_at = t
+		job.Sample(t)
+	d = job.Dict(t)
+	assert d["stalled_s"] is None and d["speed"] < 30e6 and d["eta_s"] is not None
+	t += 3.0
+	job.measured_at = t
+	job.Sample(t)
+	d = job.Dict(t)
+	assert d["stalled_s"] == round(t - moved) == 15 and d["speed"] is None and d["eta_s"] is None
+	# It goes on: no longer stalled, a speed again
+	for _ in range(3):
+		t += 3.0
+		done += 100_000_000
+		job.done_bytes, job.measured_at = done, t
+		job.Sample(t)
+	d = job.Dict(t)
+	assert d["stalled_s"] is None and d["speed"] > 0 and d["eta_s"] is not None
+	# No one looking (the page closed): nothing said from old counts, neither a speed nor a stall
+	d = job.Dict(t + 60)
+	assert d["speed"] is None and d["stalled_s"] is None
+	# All of it copied, the copy program ending: no speed, never a stall
+	job.done_bytes = job.bytes
+	for _ in range(8):
+		t += 3.0
+		job.Sample(t)
+	d = job.Dict(t)
+	assert d["speed"] is None and d["stalled_s"] is None
+
+
+def test_the_checks_read_speed_has_its_own_count():
+	# The byte-for-byte check: its read-back speed from its own count, from none at its start; finishing has none
+	job = copyqueue.Job("/rec/2026-11-17_15-08-09", "/share")
+	job.state, job.bytes, job.done_bytes = "copying", 7_700_000_000, 7_700_000_000
+	job.Phase("checking", now=100.0)
+	job.check_bytes = 7_700_000_000
+	for i in range(1, 6):
+		job.checked_bytes, job.measured_at = i * 600_000_000, 100.0 + 3 * i
+		job.Sample(100.0 + 3 * i)
+	assert job.Dict(115.0)["speed"] == pytest.approx(200e6, rel=1e-6)
+	job.Phase("finishing", now=120.0)
+	job.Sample(123.0)
+	d = job.Dict(123.0)
+	assert d["speed"] is None and d["stalled_s"] is None and d["eta_s"] is None
+
+
 def test_the_status_measures_the_copy_and_gives_its_time_left(tmp_path, monkeypatch):
 	counts = [0]
 	monkeypatch.setattr(copyqueue.psutil, "Process", FakeIo(counts))
@@ -416,5 +492,13 @@ def test_the_status_measures_the_copy_and_gives_its_time_left(tmp_path, monkeypa
 	assert status["done_bytes"] == 40_000 and job.measured_at is not None
 	ran = job.measured_at - job.phase_at
 	assert status["eta_s"] == pytest.approx((status["bytes"] - 40_000) / (40_000 / ran), abs=0.2)
+	assert status["speed"] is None # one look: no recent rate yet (the time left went by the average)
+	# Looked at again, every LOOK_S: the speed from the copy program's count
+	job.samples[0] = (job.samples[0][0] - 10, 0) # its start, further back (as the phase's)
+	job.looked = 0
+	counts[0] = 90_000
+	status = queue.Status()["jobs"][0]
+	span = job.samples[-1][0] - job.samples[0][0]
+	assert status["speed"] == pytest.approx(90_000 / span, rel=0.01) and status["stalled_s"] is None
 	release.set()
 	assert finished(queue)["jobs"][0]["eta_s"] is None

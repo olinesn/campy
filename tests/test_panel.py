@@ -1179,6 +1179,39 @@ console.log(JSON.stringify({first, pct, steady1, eased, check, none, gone}));
 	assert out["check"] == 400 and out["none"] is None and out["gone"] is None
 
 
+def test_the_copy_card_shows_the_copys_speed_or_its_stall():
+	# The row: "7.2 of 7.7 GB at 110 MB/s, 5:52, …" (the server's recent speed), "… read back at 210 MB/s" while it is
+	# checked; stalled: how long nothing was done, and no time left. The corner, under the big numbers: the speed and
+	# when it should be done, or "stalled" and for how long, counting on every second
+	_, fns = page_functions("copyText", "copyRate", "copyEta", "etaLeft", "speedText", "gb", "dur", "mss", "clockAt",
+		"followEta", "paintEta")
+	out = run_node("""
+let T = 1e12; Date.now = () => T; let bgEta = null, etaHtml = null; const el = {};
+function $(id){ return el[id] = el[id] || {}; }
+""" + fns + """
+const j = {state: "copying", phase: "copying", folder: "f", to: "/share", done_bytes: 7.2e9, bytes: 7.7e9, seconds: 352,
+  eta_s: 30, speed: 110.4e6, stalled_s: null};
+followEta(j); paintEta(); const row = copyText(j), corner = $("bgetaend").textContent, big = $("bgetanum").textContent;
+const slow = copyText(Object.assign({}, j, {speed: 4.26e6})), crawl = copyText(Object.assign({}, j, {speed: 0.5e6}));
+const unknown = copyText(Object.assign({}, j, {speed: null}));
+const check = copyText({state: "copying", phase: "checking", checked_bytes: 3.1e9, check_bytes: 7.7e9, seconds: 400,
+  speed: 210e6, stalled_s: null, eta_s: null});
+const st = Object.assign({}, j, {speed: null, eta_s: null, stalled_s: 45});
+const stalled = copyText(st); followEta(st); paintEta(); const stallBig = $("bgetanum").textContent, stall1 = $("bgetaend").textContent;
+T += 2000; followEta(Object.assign({}, st, {stalled_s: 46})); paintEta(); const stall2 = $("bgetaend").textContent;
+console.log(JSON.stringify({row, corner, big, slow, crawl, unknown, check, stalled, stallBig, stall1, stall2}));
+""")
+	assert out["row"].startswith("copying into /share: 7.2 of 7.7 GB at 110 MB/s, 5:52, under a minute left (done around ")
+	assert out["corner"].startswith("110 MB/s · done around ") and out["corner"].endswith(", then checked")
+	assert out["big"] == "0:30"
+	assert " at 4.3 MB/s, " in out["slow"] and " at 0.50 MB/s, " in out["crawl"]
+	assert out["unknown"].startswith("copying into /share: 7.2 of 7.7 GB, 5:52")
+	assert out["check"].startswith("checking the copy byte for byte: 3.1 of 7.7 GB read back at 210 MB/s, 6:40")
+	assert out["stalled"] == "copying into /share: 7.2 of 7.7 GB, nothing copied for the last 0:45, 5:52" # no time left
+	assert out["stallBig"] == "stalled" and out["stall1"] == "nothing copied for 0:45"
+	assert out["stall2"] == "nothing copied for 0:47" # counted on from the first status, not back with a poll's delay
+
+
 def test_the_pages_text_is_in_rem_and_can_be_made_larger():
 	# Sizes in rem, so the browser's own font size and the page's Text size buttons scale every text; none in px, and
 	# nothing below 15 px at the browser's default (0.9375rem)

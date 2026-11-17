@@ -46,7 +46,7 @@ label{font-size:.9375rem;color:var(--muted)}h2{font-size:1.25rem;font-weight:500
 .bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden}.bar div{height:6px;background:var(--ok)}
 .copybar{max-width:28rem;margin:4px 0 2px}.copybar div{background:var(--accent)}
 .bgcopy{border-left:4px solid var(--accent)}.copyeta{text-align:right;line-height:1.1;flex:none;min-width:9rem}
-.copyeta .big{font-size:3rem;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text)}.copyeta .big.wait{font-size:1.5rem;font-weight:500}.copyeta .gap{margin-left:1.25rem}
+.copyeta .big{font-size:3rem;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text)}.copyeta .big.wait{font-size:1.5rem;font-weight:500}.copyeta .big.stall{color:var(--warn)}.copyeta .gap{margin-left:1.25rem}
 .copyeta .lab{font-size:2.125rem;color:var(--muted)}#clock b{font-variant-numeric:tabular-nums}.bgcopy .copybar{max-width:none;height:10px}.bgcopy .copybar div{height:10px}
 .err{color:var(--bad);font-size:1rem}ul{margin:.25rem 0 0;padding-left:1.25rem}li{margin:.25rem 0}
 select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
@@ -285,22 +285,30 @@ function followEta(j){
   // How much of it is done (of the bytes to copy, or to read back), as last measured
   const done = j.phase=="checking" ? j.checked_bytes : j.done_bytes, total = j.phase=="checking" ? j.check_bytes : j.bytes;
   const pct = total ? Math.min(100, 100*(done||0)/total) : null;
-  if(j.eta_s==null){ bgEta = {folder: j.folder, phase: j.phase, end: null, pct}; return; }
+  // Its speed lately (the server's, over its last 20 s or so), or since when nothing more is done (a stall: kept from
+  // the last status, so it counts on every second, not back a second with a poll's delay)
+  const speed = j.speed, stallAt = j.stalled_s==null ? null : same && bgEta.stallAt!=null ? bgEta.stallAt : Date.now() - j.stalled_s*1000;
+  if(j.eta_s==null){ bgEta = {folder: j.folder, phase: j.phase, end: null, pct, speed, stallAt}; return; }
   const target = Date.now() + j.eta_s*1000;
-  bgEta = {folder: j.folder, phase: j.phase, pct, end: same && bgEta.end!=null ? bgEta.end + (target - bgEta.end)/3 : target};
+  bgEta = {folder: j.folder, phase: j.phase, pct, speed, stallAt, end: same && bgEta.end!=null ? bgEta.end + (target - bgEta.end)/3 : target};
 }
 function paintEta(){
   const E = bgEta; $("bgeta").hidden = !E; if(!E) return;
   // As big as the time left, in front of it: how much is done (65% copied), then the time left (2:07 left)
-  let pct = "", pctLab = "", num, lab = "", end = "", wait = false;
+  let pct = "", pctLab = "", num, lab = "", end = "", wait = false, stall = false;
+  // Under them, small: its speed lately and when it should be done (110 MB/s · done around 3:26 PM), or how long
+  // nothing more has been done
   if(E.phase!="copying" && E.phase!="checking"){ num = "finishing…"; wait = true; }
   else { if(E.pct!=null){ pct = Math.floor(E.pct)+"%"; pctLab = E.phase=="checking" ? "checked" : "copied"; }
-    if(E.end==null){ num = "estimating…"; wait = true; if(!pct) end = E.phase=="checking" ? "the time left to check" : "the time left to copy"; }
+    const at = E.speed!=null ? speedText(E.speed) : "";
+    if(E.stallAt!=null){ num = "stalled"; wait = stall = true;
+      end = (E.phase=="checking" ? "nothing read back for " : "nothing copied for ")+dur((Date.now() - E.stallAt)/1000); }
+    else if(E.end==null){ num = "estimating…"; wait = true; end = at || (pct ? "" : E.phase=="checking" ? "the time left to check" : "the time left to copy"); }
     else { num = mss(Math.max(0, (E.end - Date.now())/1000)); lab = "left";
-      end = "done around "+clockAt(E.end)+(E.phase=="checking" ? "" : ", then checked"); } }
-  const html = [pct, pctLab, num, lab, end, wait].join("|"); if(html == etaHtml) return; etaHtml = html;
+      end = (at ? at+" · " : "")+"done around "+clockAt(E.end)+(E.phase=="checking" ? "" : ", then checked"); } }
+  const html = [pct, pctLab, num, lab, end, wait, stall].join("|"); if(html == etaHtml) return; etaHtml = html;
   $("bgetapct").textContent = pct; $("bgetapctlab").textContent = pctLab;
-  $("bgetanum").textContent = num; $("bgetanum").className = "big"+(pct ? " gap" : "")+(wait ? " wait" : ""); $("bgetalab").textContent = lab; $("bgetaend").textContent = end;
+  $("bgetanum").textContent = num; $("bgetanum").className = "big"+(pct ? " gap" : "")+(wait ? " wait" : "")+(stall ? " stall" : ""); $("bgetalab").textContent = lab; $("bgetaend").textContent = end;
 }
 function paint(){ paintClock(); paintEta(); }
 function render(s){
@@ -506,11 +514,18 @@ async function chooseType(path){
 }
 function base(p){ return String(p||"").split(/[\\/]/).filter(x => x).pop() || ""; }
 function gb(b){ return b==null ? "?" : (b/1e9).toFixed(1); }
+function speedText(b){ const m = b/1e6; return (m >= 10 ? Math.round(m) : m >= 1 ? m.toFixed(1) : m.toFixed(2))+" MB/s"; }
+function copyRate(j, what){
+  // The copy's speed lately (the server's, over its last 20 s or so: a slowdown shows), or how long nothing more has
+  // been done; nothing while it can't say (just begun, or done and ending)
+  if(j.stalled_s!=null) return ", nothing "+what+" for the last "+dur(j.stalled_s);
+  return j.speed!=null ? " at "+speedText(j.speed) : "";
+}
 function copyText(j){
-  if(j.state=="copying" && j.phase=="checking") return "checking the copy byte for byte: "+gb(j.checked_bytes)+" of "+gb(j.check_bytes)+" GB read back, "+dur(j.seconds||0)+copyEta(j);
+  if(j.state=="copying" && j.phase=="checking") return "checking the copy byte for byte: "+gb(j.checked_bytes)+" of "+gb(j.check_bytes)+" GB read back"+copyRate(j, "read back")+", "+dur(j.seconds||0)+copyEta(j);
   if(j.state=="copying" && j.phase=="deleting") return "every file the same in the copy: deleting it from this computer";
   if(j.state=="copying" && j.phase=="finishing") return "every file the same in the copy: copying its logs";
-  if(j.state=="copying") return "copying into "+j.to+": "+gb(j.done_bytes)+" of "+gb(j.bytes)+" GB, "+dur(j.seconds||0)+copyEta(j);
+  if(j.state=="copying") return "copying into "+j.to+": "+gb(j.done_bytes)+" of "+gb(j.bytes)+" GB"+copyRate(j, "copied")+", "+dur(j.seconds||0)+copyEta(j);
   if(j.state=="waiting") return "waits for the copies before it, into "+j.to+(j.delete ? ", then deleted here once checked" : "");
   return j.message || j.state;
 }
@@ -523,9 +538,9 @@ function copyCheck(j){
   return t;
 }
 function copyEta(j){
-  // How long the rest of the copy (or of its check) takes at its average rate so far (the server's eta_s, once it has
-  // one), and the clock time it should end
-  const left = etaLeft(j); if(left==null) return "";
+  // How long the rest of the copy (or of its check) takes at its speed lately (the server's eta_s, once it has one),
+  // and the clock time it should end; none while it is stalled
+  const left = j.stalled_s!=null ? null : etaLeft(j); if(left==null) return "";
   const m = Math.round(left/60), end = clockAt(Date.now() + left*1000);
   return ", " + (left < 60 ? "under a minute" : m < 60 ? "about "+m+" min" : "about "+Math.floor(m/60)+" h "+(m%60)+" min") + " left (done around "+end+")";
 }
