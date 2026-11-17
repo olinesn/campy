@@ -86,6 +86,7 @@ Beam breaks, nose pokes and lick sensors need power, ground and a signal wire. A
 The Hammond 1590C is a diecast aluminium box of about 120 × 94 × 55 mm (sellers list 53 to 56 mm high). The jacks go on its lid, in two rows of five, 22 mm apart, with room for their labels. The adapter sits on the floor under them, its D2–D12 row facing the front and the Nano's USB-C toward the right wall.
 
 - **The template** above is drawn at 1:1. Open [the SVG file](images/bnc-breakout-panel.svg) on its own and print it at 100 %. Check the 50 mm scale bar with a ruler, then centre it on the lid. Its outline is the lid's nominal size.
+- **The drill jig**, if you have a 3D printer: [bnc-breakout-drill-jig.stl](cad/bnc-breakout-drill-jig.stl), made by [`tools/bnc_breakout_jig.py`](../tools/bnc_breakout_jig.py) (`uv run tools/bnc_breakout_jig.py out.stl` rebuilds it). It is a plate the size of the lid, with the jacks' labels engraved and a 12 mm guide over each jack for a 3 mm pilot drill. The lid's own four cover screws go through it and the lid into the box, so it lines up on the screw holes, not on the cast outline, and holds the lid still while you drill. Each screw head sits in a 1 mm counterbore, leaving 2 mm of jig under it, so the original ½″ screws still reach the box's thread; 6-32 × ⅝″ screws reach more. Print it flat, guides up, without supports, in PLA or PETG with 4 walls. Printed holes come out a little small, so turn the 3 mm drill through each guide by hand before you use it. Not printed or tried yet.
 - **Height.** The jacks reach about 20 mm under the lid and the Nano stands about 20 mm above the floor on 6 mm standoffs, so they clear each other. Check with your parts before drilling: hold a jack against the lid with the adapter in place.
 - **Grounds.** A ground bus wire joins every jack's ground lug, so the box doesn't have to carry the ground. If the jacks touch the metal lid, the box is at ground too. Stand it on rubber feet so that it doesn't also touch a metal table or rack.
 
@@ -112,11 +113,14 @@ For one box with ten jacks.
 | Momentary push button, recessed | 1, optional | | the reset button |
 | Labels | | a label maker, or the template printed on label paper | |
 
-Tools: a 2.5 mm flat screwdriver, a soldering iron, a wire stripper, a step drill (9.5 mm holes; 12.5 mm for a PG7 gland), an M3 drill and a multimeter.
+Tools: a 2.5 mm flat screwdriver, a soldering iron, a wire stripper, a step drill (9.5 mm holes; 12.5 mm for a PG7 gland), an M3 drill and a multimeter. For the drill jig: a 3D printer and a 3 mm drill.
 
 ## Building it
 
-1. **Drill the lid.** Print the template at 100 %, check its scale bar, tape it centred on the lid, centre-punch the ten holes and drill them to 9.5 mm. Deburr.
+1. **Drill the lid**, with the jig or the paper template.
+   - **With the jig:** put the lid on the empty box and screw the jig on top with the lid's four cover screws. Pencil a mark on the box wall under the jig's FRONT edge: the two rows aren't the same distance from the centre, so the lid only goes back on one way round. Drill the ten 3 mm pilots through the guides at a low speed, take the jig off, and open each pilot to 9.5 mm with the step drill. Blow the chips out of the box.
+   - **With the template:** print it at 100 %, check its scale bar, tape it centred on the lid, centre-punch the ten holes and drill them to 9.5 mm.
+   - Deburr the holes.
 2. **Drill the box.** A hole for the cable gland in the back wall. A slot for the USB-C plug, or a hole for the panel-mount extension, in the right wall where the Nano's USB-C will be. Four M3 holes in the floor for the adapter: mark them through the adapter, with its D2–D12 row toward the front.
 3. **Mount the jacks** on the lid, each with its ground lug under the nut and all the lugs pointing the same way.
 4. **Solder each jack the same way:**
