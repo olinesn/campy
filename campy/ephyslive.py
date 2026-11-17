@@ -374,6 +374,140 @@ class SpikeGLXSource:
 				self.conn = None
 
 
+class CameraFrames:
+	"""
+	Each spike's camera frame, live, on a rig whose camera pulses SpikeGLX
+	records beside the probe: the ChronicRecord rig, where the Pico's camera
+	line is on the OneBox's XD0 (camera_bit 2; chronicrecord/README.md).
+
+	With each read of the probe it reads the OneBox's XD0 channel alone (read
+	calls only, on the probe's connection), and finds the camera pulses'
+	rises. A rise after more than gap_s of none is a bout's first pulse; its
+	frame is the Pico's count of camera pulses so far (pico_status: its
+	chronic_control.py status.json, whose "pulses" counts every pulse of the
+	bouts already ended), and each pulse after it in the bout is one more.
+	That is campy's frame number: each camera takes one frame a pulse, from
+	the recording's first. A bout under way when the reading started (no
+	gap_s of quiet seen before it) has no frame numbers (-1): they come from
+	the next bout on. A spike's frame is that of the last pulse before it,
+	within a frame period (-1 between bouts); probe samples become OneBox ones
+	through SpikeGLX's own sync (mapSample, once a read).
+
+	This is the live view's: a camera that dropped a frame is off by one
+	from then on. The recording's exact timeline is campy-align's and
+	chronicrecord/sync_match.py's.
+	"""
+
+	def __init__(self, source, obx_ip=0, camera_bit=2, pico_status=None, gap_s=1.0):
+		self.source, self.obx_ip, self.bit, self.pico_status, self.gap_s = source, obx_ip, camera_bit, pico_status, gap_s
+		self.Reset()
+
+	def Reset(self):
+		self.chan, self.rate = None, None # the OneBox's XD0 channel and rate, once known
+		self.next = None # the OneBox sample to read from
+		self.level = 0 # the camera bit at the last sample read
+		self.watched = None # the first OneBox sample read: a bout must start gap_s after it to be counted
+		self.last_rise, self.base, self.in_bout = None, None, 0 # the last rise; its bout's first frame; pulses in it
+		self.rises = np.zeros(0, np.int64) # recent rises (OneBox samples) and their frames
+		self.frames = np.zeros(0, np.int64)
+		self.anchor = None # (probe sample, OneBox sample): the same moment
+		self.state = "not started"
+		self.bout = None
+
+	def Open(self):
+		from ctypes import byref, c_int
+		sglx, h = self.source.sdk, self.source.conn.h
+		n = c_int()
+		if not sglx.c_sglx_getStreamAcqChans(byref(n), h, 1, self.obx_ip) or n.value < 2:
+			self.state = "no OneBox stream {}".format(self.obx_ip)
+			return False
+		counts = [sglx.c_sglx_getint(h, i) for i in range(n.value)] # XA, XD (words), SY
+		if counts[1] < 1:
+			self.state = "the OneBox records no digital word (XD0)"
+			return False
+		self.chan, self.rate = counts[0], sglx.c_sglx_getStreamSampleRate(h, 1, self.obx_ip)
+		self.state = "counting camera pulses on OneBox {} XD0 bit {}".format(self.obx_ip, self.bit)
+		return self.rate > 0
+
+	def PicoPulses(self):
+		"""The Pico's camera pulses so far (its bouts already ended), or None."""
+		if not self.pico_status:
+			return None
+		try:
+			from campy import strictjson
+			with open(self.pico_status) as f:
+				status = strictjson.load(f)
+			self.bout = status.get("bout")
+			return int(status["pulses"]) if status.get("pulses") is not None else None
+		except (OSError, ValueError, KeyError, TypeError):
+			return None
+
+	def Update(self, probe_first, probe_n):
+		"""After a read of the probe's samples from probe_first: the camera pulses read with them, as (probe sample,
+		frame) arrays."""
+		from ctypes import POINTER, byref, c_int, c_short
+		none = (np.zeros(0, np.int64), np.zeros(0, np.int64))
+		if self.chan is None and not self.Open():
+			return none
+		sglx, h, ip = self.source.sdk, self.source.conn.h, self.source.ip
+		at = sglx.c_sglx_mapSample(h, 1, self.obx_ip, int(probe_first), 2, ip)
+		if at == 0:
+			return none
+		self.anchor = (int(probe_first), int(at))
+		if self.next is None or self.next > at + self.rate: # the start, or a new run
+			self.next = max(1, int(at))
+			self.watched, self.last_rise, self.level = self.next, None, 0
+		data, nd = POINTER(c_short)(), c_int()
+		chans = (c_int * 1)(self.chan)
+		head = sglx.c_sglx_fetch(byref(data), byref(nd), h, 1, self.obx_ip, self.next, int(self.rate * 2), chans, 1, 1)
+		if head == 0 or nd.value == 0:
+			return none
+		if head > self.next: # samples gone: a bout seen from its middle can't be counted
+			self.watched, self.last_rise = int(head), None
+		bits = (np.ctypeslib.as_array(data, shape=(nd.value,)).astype(np.int32) >> self.bit) & 1
+		prev = np.concatenate([[self.level], bits[:-1]])
+		rises = np.flatnonzero((bits == 1) & (prev == 0)) + int(head)
+		self.level, self.next = int(bits[-1]), int(head) + len(bits)
+		frames = np.empty(len(rises), np.int64)
+		gap = self.gap_s * self.rate
+		for i, r in enumerate(rises):
+			if r - (self.last_rise if self.last_rise is not None else self.watched) > gap: # a bout's first pulse
+				if self.last_rise is None and r - self.watched <= gap:
+					self.base = None # under way when the reading started
+				else:
+					self.base, self.in_bout = self.PicoPulses(), 0
+			frames[i] = -1 if self.base is None else self.base + self.in_bout
+			self.in_bout += 1
+			self.last_rise = int(r)
+		self.rises = np.concatenate([self.rises, rises])[-4000:]
+		self.frames = np.concatenate([self.frames, frames])[-4000:]
+		return self.ToProbe(rises), frames
+
+	def ToProbe(self, obx):
+		p, o = self.anchor
+		return (p + (np.asarray(obx, np.float64) - o) * self.source.stream.rate / self.rate).round().astype(np.int64)
+
+	def Frame(self, probe_samples):
+		"""Each probe sample's camera frame: the last pulse's before it, within a frame period; -1 otherwise."""
+		samples = np.asarray(probe_samples, np.int64)
+		if self.anchor is None or not len(self.rises) or not len(samples):
+			return -np.ones(len(samples), np.int64)
+		p, o = self.anchor
+		obx = o + (samples - p) * self.rate / self.source.stream.rate
+		i = np.searchsorted(self.rises, obx, side="right") - 1
+		# A frame lasts until the next pulse: the pulses' period within bouts (1/30 s before two have come)
+		d = np.diff(self.rises[-50:])
+		d = d[d < self.gap_s * self.rate]
+		period = (np.median(d) if len(d) else self.rate / 30.0) * 1.5
+		ok = (i >= 0) & (obx - self.rises[np.maximum(i, 0)] <= period)
+		return np.where(ok, self.frames[np.maximum(i, 0)], -1)
+
+	def Status(self):
+		latest = int(self.frames[-1]) if len(self.frames) else None
+		return {"state": self.state, "frame": latest if latest is not None and latest >= 0 else None,
+			"known": latest is not None and latest >= 0, "bout": self.bout, "pulses_seen": len(self.rises)}
+
+
 # ---------------------------------------------------------------- filtering and spikes
 
 class Filter:
@@ -407,10 +541,11 @@ class Filter:
 
 class Spikes:
 	"""Spikes found: their sample (on the probe's stream), channel, amplitude (uV, the trough: negative), unit (-1:
-	not sorted), and waveforms [spikes, 61, NEIGHBORS] on the sites in neighbors [spikes, NEIGHBORS] (-1: none,
-	its waveform zeros), the spike's own channel first."""
+	not sorted), camera frame (-1: not known, or between bouts; CameraFrames), and waveforms [spikes, 61,
+	NEIGHBORS] on the sites in neighbors [spikes, NEIGHBORS] (-1: none, its waveform zeros), the spike's own
+	channel first."""
 
-	def __init__(self, sample=(), channel=(), amplitude=(), unit=None, waveforms=None, neighbors=None):
+	def __init__(self, sample=(), channel=(), amplitude=(), unit=None, waveforms=None, neighbors=None, frame=None):
 		self.sample = np.asarray(sample, np.int64)
 		self.channel = np.asarray(channel, np.int32)
 		self.amplitude = np.asarray(amplitude, np.float32)
@@ -418,6 +553,7 @@ class Spikes:
 		self.unit = -np.ones(n, np.int32) if unit is None else np.asarray(unit, np.int32)
 		self.waveforms = np.zeros((n, BEFORE + AFTER, NEIGHBORS), np.float32) if waveforms is None else waveforms
 		self.neighbors = -np.ones((n, NEIGHBORS), np.int32) if neighbors is None else neighbors
+		self.frame = -np.ones(n, np.int64) if frame is None else np.asarray(frame, np.int64)
 
 	def __len__(self):
 		return len(self.sample)
@@ -562,6 +698,7 @@ class Live:
 		self.first_bin = None # the bin number of lo[0] (sample // bin)
 		self.pending, self.pending_first = None, None # samples of a bin not yet whole
 		self.spikes = Spikes()
+		self.camera = (np.zeros(0, np.int64), np.zeros(0, np.int64)) # camera pulses: probe sample, frame (-1: unknown)
 		self.by_channel, self.by_unit = {}, {}
 		self.newest = None # the newest sample seen
 
@@ -571,11 +708,17 @@ class Live:
 			self.lo, self.hi = np.zeros((0, len(self.scope)), np.float32), np.zeros((0, len(self.scope)), np.float32)
 			self.first_bin, self.pending = None, None
 
-	def Add(self, first, filtered, spikes):
+	def Add(self, first, filtered, spikes, camera=None):
+		"""camera: the camera pulses that came with these samples, (probe sample, frame) arrays."""
 		with self.lock:
 			self.newest = first + len(filtered)
 			self.Envelope(first, filtered[:, self.scope])
 			self.Spikes(spikes)
+			if camera is not None and len(camera[0]):
+				self.camera = (np.concatenate([self.camera[0], camera[0]]), np.concatenate([self.camera[1], camera[1]]))
+			if len(self.camera[0]) and self.camera[0][0] < self.newest - self.keep:
+				k = np.searchsorted(self.camera[0], self.newest - self.keep)
+				self.camera = (self.camera[0][k:], self.camera[1][k:])
 
 	def Envelope(self, first, x):
 		if self.pending is not None and self.pending_first + len(self.pending) == first:
@@ -599,7 +742,8 @@ class Live:
 		if len(new):
 			s = self.spikes
 			self.spikes = Spikes(np.concatenate([s.sample, new.sample]), np.concatenate([s.channel, new.channel]),
-				np.concatenate([s.amplitude, new.amplitude]), np.concatenate([s.unit, new.unit]))
+				np.concatenate([s.amplitude, new.amplitude]), np.concatenate([s.unit, new.unit]),
+				frame=np.concatenate([s.frame, new.frame]))
 			for i in range(len(new)):
 				wave = new.waveforms[i, :, 0]
 				self.by_channel.setdefault(int(new.channel[i]), deque(maxlen=self.snippets)).append(wave)
@@ -608,7 +752,7 @@ class Live:
 		if self.newest is not None and len(self.spikes) and self.spikes.sample[0] < self.newest - self.keep:
 			k = np.searchsorted(self.spikes.sample, self.newest - self.keep)
 			s = self.spikes
-			self.spikes = Spikes(s.sample[k:], s.channel[k:], s.amplitude[k:], s.unit[k:])
+			self.spikes = Spikes(s.sample[k:], s.channel[k:], s.amplitude[k:], s.unit[k:], frame=s.frame[k:])
 
 	def Snapshot(self, since_sample=None, since_bin=None, rate_s=2.0, snippet_channels=(), snippet_units=()):
 		"""For a view: the scope's bins after since_bin, the spikes after since_sample, each channel's and unit's
@@ -624,7 +768,12 @@ class Live:
 			s = self.spikes
 			k = 0 if since_sample is None else np.searchsorted(s.sample, since_sample, side="right")
 			out["spikes"] = {"sample": s.sample[k:].tolist(), "channel": s.channel[k:].tolist(),
-				"amplitude": np.round(s.amplitude[k:], 1).tolist(), "unit": s.unit[k:].tolist()}
+				"amplitude": np.round(s.amplitude[k:], 1).tolist(), "unit": s.unit[k:].tolist(),
+				"frame": s.frame[k:].tolist()}
+			# The camera's pulses (frames) since since_sample, on the probe's samples: the scope's ticks
+			c = self.camera
+			k = 0 if since_sample is None else np.searchsorted(c[0], since_sample, side="right")
+			out["camera"] = {"sample": c[0][k:].tolist(), "frame": c[1][k:].tolist()}
 			recent = s.sample > (self.newest or 0) - rate_s * self.stream.rate
 			n = len(self.stream.uv)
 			out["rates"] = {"channel": np.round(np.bincount(np.searchsorted(self.stream.channels, s.channel[recent]),
@@ -641,8 +790,9 @@ class Live:
 class Engine:
 	"""A source through the filter, the detector and the sorter into Live, piece by piece, timing each step."""
 
-	def __init__(self, source, threshold=4.5, sorter=None, scope=None):
+	def __init__(self, source, threshold=4.5, sorter=None, scope=None, frames=None):
 		self.source, self.threshold, self.sorter = source, threshold, sorter or Unsorted()
+		self.frames = frames # CameraFrames, or None
 		self.scope = scope
 		self.stream = None
 		self.stats = {"fetch_s": 0.0, "process_s": 0.0, "reads": 0, "samples": 0, "spikes": 0, "gaps": 0}
@@ -662,6 +812,8 @@ class Engine:
 		self.stream, self.filter = stream, Filter(stream)
 		self.detector = Detector(stream, self.threshold)
 		self.expected = None
+		if self.frames is not None:
+			self.frames.Reset()
 		return True
 
 	def SetThreshold(self, threshold, channel=None):
@@ -695,7 +847,14 @@ class Engine:
 		self.expected = first + len(raw)
 		filtered = self.filter.Apply(raw)
 		spikes = self.sorter.Assign(self.detector.Feed(first, filtered))
-		self.live.Add(first, filtered, spikes)
+		camera = None
+		if self.frames is not None:
+			try:
+				camera = self.frames.Update(first, len(raw))
+				spikes.frame = self.frames.Frame(spikes.sample)
+			except Exception as e: # the frames are extra: the probe's view goes on without them
+				self.frames.state = "{}: {}".format(type(e).__name__, e)
+		self.live.Add(first, filtered, spikes, camera)
 		self.stats["process_s"] += time.perf_counter() - t1
 		self.stats["reads"] += 1
 		self.stats["samples"] += len(raw)
@@ -813,7 +972,9 @@ def Serve(args, out=print):
 		source = ReplaySource(args.replay, speed=args.speed or 1.0, loop=True)
 	else:
 		source = SpikeGLXSource(args.sdk, args.host, args.port, args.ip, filtered=args.spikeglx_filter)
-	engine = Engine(source, args.threshold)
+	frames = CameraFrames(source, args.obx_ip, args.camera_bit, args.pico_status) if args.sdk and args.obx_ip >= 0 \
+		else None
+	engine = Engine(source, args.threshold, frames=frames)
 	key = os.environ.get("CAMPY_EPHYS_KEY", "")
 	state = {"asked": time.monotonic(), "health": {}, "stop": False}
 	lock = threading.Lock() # the engine's settings, between the reading thread and the requests
@@ -821,7 +982,7 @@ def Serve(args, out=print):
 	def Health():
 		h = dict(state["health"])
 		h.update(state=source.state, lag_s=source.Lag(), skipped=source.skipped, gaps=engine.stats["gaps"],
-			reading=engine.stream is not None)
+			reading=engine.stream is not None, camera=frames.Status() if frames is not None else None)
 		return h
 
 	class Handler(http.server.BaseHTTPRequestHandler):
@@ -984,6 +1145,12 @@ def Main(argv=None):
 	v.add_argument("--threshold", type=float, default=4.5)
 	v.add_argument("--idle-s", type=float, default=30.0, help="end when nothing has asked for this long")
 	v.add_argument("--parent", type=int, default=0, help="end when this process has ended")
+	v.add_argument("--obx-ip", type=int, default=-1, help="the OneBox whose XD0 has the camera pulses (-1: none): "
+		"each spike's camera frame")
+	v.add_argument("--camera-bit", type=int, default=2, help="XD0's bit for the camera pulses (2 on the ChronicRecord "
+		"rig)")
+	v.add_argument("--pico-status", help="chronic_control.py's status.json: the Pico's camera pulses so far, each "
+		"bout's first frame")
 	args = parser.parse_args(argv)
 	if args.command == "serve":
 		try:

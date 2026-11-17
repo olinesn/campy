@@ -157,7 +157,7 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
     Read by a program of its own at low priority, only while this is shown. Spikes: threshold crossings (not sorted).</div>
   <div id="ephysstate" class="muted" style="margin-top:.25rem"></div>
   <div id="ephysbody" hidden>
-    <label style="margin-top:.5rem">Oscilloscope: the site picked on the probe map and its 3 nearest, filtered (300 Hz high-pass, median across the probe taken off), last 2 s.
+    <label style="margin-top:.5rem">Oscilloscope: the site picked on the probe map and its 3 nearest, filtered (300 Hz high-pass, median across the probe taken off), last 2 s. Ticks along the top: the camera's frames, while it records.
       <button id="ephlo" title="Smaller signals">&minus;</button> <span id="ephscale" class="mono"></span> <button id="ephhi" title="Bigger signals">+</button></label>
     <canvas id="ephscope" height="260"></canvas>
     <div class="ephgrid">
@@ -896,7 +896,7 @@ $("stoporphan").onclick = async () => { const e = await post("/stop-orphan", {no
   if(e) alert(e); else if(!orphanArmed){ orphanArmed = 1; $("stoporphan").textContent = "Stop now, without closing"; setTimeout(() => { orphanArmed = 0; $("stoporphan").textContent = "Stop that recording"; }, 5000); } tick(); };
 $("viewer").onclick = async () => { const e = await post("/viewer"); if(e) alert(e); };
 // ---- Live ephys (campy/ephyslive.py, through the panel): polled 5 times a second while shown
-const EPH = {open:false, timer:null, sinceSample:null, sinceBin:null, b0:null, lo:[], hi:[], chans:[], spikes:[], rates:null,
+const EPH = {open:false, timer:null, sinceSample:null, sinceBin:null, b0:null, lo:[], hi:[], chans:[], spikes:[], rates:null, cam:[], binN:30,
   stream:null, streamAt:0, sel:null, snips:[], scale:150, newest:null, rate:30000, health:null, busy:false};
 const SCOPE_BINS = 2000, RASTER_S = 10;
 function renderEphys(E){
@@ -913,7 +913,13 @@ function ephysText(){
   $("ephysstate").innerHTML = tag("live","ok")+" "+esc(H.state)+" · "+(H.reads_per_s||0)+" reads/s, "+(H.fetch_ms||0)+" ms each · "+
     (H.lag_s!=null ? Math.round(1000*H.lag_s)+" ms behind" : "")+" · "+Math.round(H.spikes_per_s||0).toLocaleString()+" spikes/s · reader "+
     Math.round(H.cpu||0)+"% of a core"+(H.skipped ? " · "+Number(H.skipped).toLocaleString()+" samples skipped (it fell behind)" : "")+
-    (H.gaps ? " · "+H.gaps+" gaps" : "");
+    (H.gaps ? " · "+H.gaps+" gaps" : "") + ephysCamText(H.camera);
+}
+function ephysCamText(C){ // the camera's frame, from the OneBox's camera pulses and the Pico's count
+  if(!C) return "";
+  if(C.known) return " · camera frame "+Number(C.frame).toLocaleString()+(C.bout!=null ? " (bout "+C.bout+")" : "");
+  if(C.pulses_seen) return " · camera pulses seen: frame numbers from the next bout (this one was under way)";
+  return " · "+esc(C.state||"");
 }
 $("ephysbtn").onclick = async () => {
   EPH.open = !EPH.open; $("epherr").textContent = "";
@@ -922,7 +928,7 @@ $("ephysbtn").onclick = async () => {
   if(EPH.open){ ephysReset(); EPH.timer = setInterval(ephysTick, 200); }
   renderEphys((last||{}).ephys);
 };
-function ephysReset(){ Object.assign(EPH, {sinceSample:null, sinceBin:null, b0:null, lo:[], hi:[], spikes:[], snips:[], newest:null}); }
+function ephysReset(){ Object.assign(EPH, {sinceSample:null, sinceBin:null, b0:null, lo:[], hi:[], spikes:[], snips:[], cam:[], newest:null}); }
 async function ephysTick(){
   if(EPH.busy || !EPH.open) return; EPH.busy = true;
   try {
@@ -947,6 +953,10 @@ async function ephysTick(){
       const cut = EPH.lo[0].length - SCOPE_BINS; if(cut > 0){ EPH.lo = EPH.lo.map(a => a.slice(cut)); EPH.hi = EPH.hi.map(a => a.slice(cut)); EPH.b0 += cut; }
       EPH.sinceBin = EPH.b0 + EPH.lo[0].length - 1;
     }
+    EPH.binN = S.bin_samples || EPH.binN;
+    const C = L.camera || {sample:[], frame:[]};
+    for(let i=0;i<C.sample.length;i++) EPH.cam.push([C.sample[i], C.frame[i]]);
+    const camKeep = (EPH.newest||0) - 3*EPH.rate; let kc = 0; while(kc < EPH.cam.length && EPH.cam[kc][0] < camKeep) kc++; if(kc) EPH.cam.splice(0, kc);
     const P = L.spikes;
     for(let i=0;i<P.sample.length;i++) EPH.spikes.push([P.sample[i], P.channel[i], P.amplitude[i], P.unit[i]]);
     if(P.sample.length) EPH.sinceSample = P.sample[P.sample.length-1];
@@ -1000,6 +1010,17 @@ function ephysDraw(){
       const y1 = mid - mx/EPH.scale*rowH/2, y2 = mid - mn/EPH.scale*rowH/2; g.moveTo(x+.5, Math.max(mid-rowH/2, y1)); g.lineTo(x+.5, Math.min(mid+rowH/2, y2)+1);
     }
     g.stroke();
+  }
+  // The camera's pulses along the top: a tick each frame, its number now and then (-1: not numbered yet)
+  if(EPH.cam.length && EPH.b0!=null){
+    const firstBin = EPH.b0 + EPH.lo[0].length - SCOPE_BINS, per = SCOPE_BINS / (W-left); let lastLabel = -1;
+    g.strokeStyle = cssVar("--gate") || accent; g.fillStyle = muted; g.textBaseline = "top";
+    for(const [smp, fr] of EPH.cam){
+      const x = left + (smp/EPH.binN - firstBin)/per; if(x < left || x > W) continue;
+      g.beginPath(); g.moveTo(x+.5, 0); g.lineTo(x+.5, 6); g.stroke();
+      const label = (lastLabel < 0 ? "frame " : "") + fr;
+      if(fr >= 0 && x > lastLabel){ g.fillText(label, x+2, 7); lastLabel = x + g.measureText(label).width + 14; }
+    }
   }
   // Raster: time against depth
   const G = EPH.stream, zmin = Math.min(...G.z), zmax = Math.max(...G.z) || 1;
