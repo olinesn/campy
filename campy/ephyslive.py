@@ -268,6 +268,7 @@ class SpikeGLXSource:
 		self.every_s, self.fetched_at = every_s, 0.0 # a read at most every every_s: SpikeGLX answers each one
 		self.conn, self.stream, self.next = None, None, None
 		self.state, self.skipped, self.lag = "not connected", 0, None
+		self.unavailable = 0 # of those skipped: samples SpikeGLX no longer had (or didn't have yet, as its run starts)
 		self.lag_at = 0.0
 
 	def Connect(self):
@@ -347,8 +348,9 @@ class SpikeGLXSource:
 		samples = nd.value // nc
 		if samples == 0:
 			return None
-		if head > self.next: # SpikeGLX no longer had them
+		if head > self.next: # SpikeGLX no longer had them (or, as its run starts, not yet)
 			self.skipped += head - self.next
+			self.unavailable += head - self.next
 		block = np.ctypeslib.as_array(data, shape=(samples * nc,)).reshape(samples, nc).copy()
 		self.next = head + samples
 		now = time.monotonic()
@@ -981,7 +983,8 @@ def Serve(args, out=print):
 
 	def Health():
 		h = dict(state["health"])
-		h.update(state=source.state, lag_s=source.Lag(), skipped=source.skipped, gaps=engine.stats["gaps"],
+		h.update(state=source.state, lag_s=source.Lag(), skipped=source.skipped,
+			unavailable=getattr(source, "unavailable", 0), gaps=engine.stats["gaps"],
 			reading=engine.stream is not None, camera=frames.Status() if frames is not None else None)
 		return h
 
