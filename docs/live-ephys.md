@@ -116,7 +116,8 @@ With a `spikeglx:` section in its config (the ChronicRecord rig's), the campy-se
 - an oscilloscope of the picked site and its 3 nearest, the last 2 s (each millisecond's lowest and highest);
 - the last 10 s of spikes, by depth on the probe;
 - a probe map of each site's spikes a second; a click picks a site;
-- the picked site's last 30 spikes, their mean and its threshold, and the threshold to set, for every site or the picked one (2 to 20 × noise).
+- the picked site's last 30 spikes, their mean and its threshold, and the threshold to set, for every site or the picked one (2 to 20 × noise);
+- the camera's frame, and a tick for each frame along the oscilloscope's top ([below](#each-spikes-camera-frame)).
 
 **How it runs:**
 - **A process of its own.** Showing the card starts `campy-ephys serve` at below-normal priority: the engine above, answering on a port of its own on 127.0.0.1, only with a key the panel gives it.
@@ -128,17 +129,30 @@ With a `spikeglx:` section in its config (the ChronicRecord rig's), the campy-se
 
 Checked in the tests (`tests/test_panel.py`) with a stand-in SpikeGLX: the card's data comes through the panel, the scope and threshold reach the process, only read calls reach SpikeGLX, and the process ends with **Hide** and when the page stops asking.
 
-## Lining spikes up with camera frames
+## Each spike's camera frame
 
-On the ChronicRecord rig the Pico's camera pulses are recorded by the OneBox (XD0), so live a spike's frame is:
-1. its probe sample, turned into a OneBox sample with `mapSample`;
-2. then the camera pulses counted up to it.
+On the ChronicRecord rig the OneBox records the Pico's camera pulses (its XD0 word, bit 2), on the same clock as its other channels, and SpikeGLX keeps the probe and the OneBox in step with its own sync. So with each read of the probe, the reader also reads the OneBox's XD0 channel alone (read calls only) and:
 
-That is exact to the frame unless a camera dropped frames. The exact timeline stays the job of `chronicrecord/sync_match.py` and `campy-align` after the recording. Not built yet: it comes next on the Live ephys card.
+1. **Finds the camera pulses.** A pulse after more than 1 s with none is a bout's first.
+2. **Numbers them.** A bout's first pulse is frame *n*, where *n* is the Pico's count of camera pulses so far: `pulses` in `chronic_control.py`'s `status.json`, which counts every pulse of the bouts already ended. Each pulse after it in the bout is one more. That is campy's frame number, since each camera takes one frame a pulse from the recording's first.
+3. **Gives each spike its frame:** the last pulse's before it, within a frame period, or none (−1) between bouts. A probe sample becomes a OneBox sample through SpikeGLX's own sync (`mapSample`, once a read).
+
+What this means:
+- **A bout already under way** when the card was opened has no frame numbers. They come from the next bout's first pulse.
+- **The Live ephys card** shows the current frame and bout in its status line, and a tick for each frame along the top of its oscilloscope.
+- **The panel tells the reader where to look:** the OneBox is `spikeglx.stream`'s (the one with the gate's TTL), and the Pico's `status.json` is the `pico:` section's.
+- **It costs** one more read (one channel) and one `mapSample` call each read.
+- **It's approximate:** a camera that drops a frame is one off from then on, live. The recording's exact timeline stays `campy-align`'s and `chronicrecord/sync_match.py`'s.
+
+Checked in the tests with the stand-in SpikeGLX's OneBox (camera pulses in bouts) and a Pico `status.json`:
+- every spike's frame equals the frame worked out from the pulses' plan;
+- a bout under way at the start gets none, and spikes between bouts get none;
+- the panel passes the OneBox and the Pico's status on.
+
+Not yet tried with the rig's own OneBox and Pico.
 
 ## Next
 
-- **Each spike's camera frame** on the Live ephys card (the OneBox's camera pulses, counted live).
 - **A live sorter:** templates from a Kilosort 4 sort of an earlier recording of the same probe, curated in phy, matched to each spike's waveforms.
   - Trained on that recording replayed through this engine, so that the templates have the live filter's shape.
   - Checked against the Kilosort sort before it is used live.

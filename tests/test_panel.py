@@ -1550,11 +1550,16 @@ def test_the_ephys_section_reads_spikeglx_in_a_process_of_its_own(tmp_path, monk
 	# on to the process with its own. Closing the section ends the process, and so does a page that stops asking
 	from test_ephyslive import FakeState, Synthetic
 	data, geometry, truth = Synthetic(seconds=2.0, n=32)
-	state = FakeState(tmp_path, data)
+	# Camera pulses on the OneBox (spikeglx.stream [1, 0]), a bout of 120 (2 s) every 10 s from the run's 3rd second;
+	# the Pico's status says 1,200 so far: the frames are numbered from 1,200 at the first bout the reading sees start
+	state = FakeState(tmp_path, data, t_run=time.time(), camera={"fps": 60, "bit": 2, "bouts": [[3 + 10 * b, 120]
+		for b in range(6)]})
 	monkeypatch.setenv("FAKE_SGLX_STATE", str(state))
 	monkeypatch.setattr(panel, "EPHYS_IDLE_S", 3)
+	pico_status = tmp_path / "status.json"
+	pico_status.write_text(json.dumps({"pulses": 1200, "bout": 3}))
 	p, calls = stub_panel(SERVE_PORT + 60)
-	p.ephys = panel.EphysView({"sdk": FAKE_SDK, "host": "127.0.0.1", "port": 4142})
+	p.ephys = panel.EphysView({"sdk": FAKE_SDK, "host": "127.0.0.1", "port": 4142, "stream": [1, 0]}, str(pico_status))
 	key = "?t=" + p.token
 	post = lambda path, body: raw(p, "POST", path + key, {"Content-Type": "application/json"}, json.dumps(body))
 	try:
@@ -1571,6 +1576,18 @@ def test_the_ephys_section_reads_spikeglx_in_a_process_of_its_own(tmp_path, monk
 		assert said["status"]["open"] and said["health"]["reading"], said
 		assert len(said["stream"]["x"]) == 32 and said["stream"]["threshold"] == [4.5] * 32
 		assert said["live"]["scope"]["channels"] and len(said["live"]["rates"]["channel"]) == 32
+		# Each spike's camera frame: numbered from the Pico's count once a bout's start is seen
+		deadline = time.monotonic() + 30
+		while time.monotonic() < deadline:
+			code, said = raw(p, "GET", "/ephys.json" + key)
+			if (said["health"].get("camera") or {}).get("known"):
+				break
+			time.sleep(0.3)
+		assert said["health"]["camera"]["state"].startswith("counting camera pulses") and said["health"]["camera"]["known"]
+		assert 1200 <= said["health"]["camera"]["frame"] < 1320 and said["health"]["camera"]["bout"] == 3
+		code, said = raw(p, "GET", "/ephys.json" + key)
+		numbered = [f for f in said["live"]["camera"]["frame"] if f >= 0]
+		assert numbered and min(numbered) >= 1200 and all(f == -1 or f >= 1200 for f in said["live"]["camera"]["frame"])
 		# The page's scope and threshold, on to the process
 		assert post("/ephys-scope", {"channels": [3, 4, 5, 6]}) == (200, {"ok": True})
 		assert post("/ephys-threshold", {"k": 6, "channel": 3}) == (200, {"ok": True})

@@ -63,9 +63,9 @@ def RunAll(engine):
 	engine.Start()
 	add = engine.live.Add
 
-	def Keep(first, filtered, spikes):
+	def Keep(first, filtered, spikes, camera=None):
 		found.append(spikes)
-		add(first, filtered, spikes)
+		add(first, filtered, spikes, camera)
 	engine.live.Add = Keep
 	while engine.source.state != "ended":
 		engine.Step()
@@ -355,3 +355,57 @@ def test_bench_on_a_replay(tmp_path, recording, capsys):
 	summary = json.loads(out.read_text())
 	assert summary["samples"] == len(data) and summary["spikes"] > 50 and summary["gaps"] == 0
 	assert "done:" in capsys.readouterr().out
+
+
+def test_each_spike_gets_its_camera_frame(tmp_path, monkeypatch, recording):
+	# The stand-in SpikeGLX's OneBox carries camera pulses at 60 a second, in three bouts on the run's clock: the first
+	# under way when the reading starts (1.5 s into the run), so not numbered; the next two each after a quiet
+	# second and a half. The Pico's status says 210 pulses so far (bout 1), then 270 once bout 2 has ended: bout 2's
+	# frames are 210 to 269, bout 3's 270 to 329, and a spike's frame is the last pulse's before it, none between bouts
+	import threading
+	data, geometry, truth = recording
+	obx_rate, fps = 30303.0, 60.0
+	bouts = [[0.5, 210], [5.5, 60], [8.0, 60]]
+	state = FakeState(tmp_path, data[:, :32], camera={"fps": fps, "bit": 2, "bouts": bouts}, t_run=time.time() - 1.5)
+	monkeypatch.setenv("FAKE_SGLX_STATE", str(state))
+	status = tmp_path / "status.json"
+	status.write_text(json.dumps({"pulses": 210, "bout": 1}))
+	t_run = json.loads(state.read_text())["t_run"]
+	threading.Timer(t_run + 7.2 - time.time(), lambda: status.write_text(json.dumps({"pulses": 270, "bout": 2}))).start()
+	source = el.SpikeGLXSource(FAKE_SDK)
+	frames = el.CameraFrames(source, obx_ip=0, camera_bit=2, pico_status=str(status))
+	engine = el.Engine(source, frames=frames)
+	found = []
+	engine.Start()
+	add = engine.live.Add
+	engine.live.Add = lambda first, x, s, camera=None: (found.append(s), add(first, x, s, camera))
+	while time.time() - t_run < 9.6:
+		if not engine.Step():
+			time.sleep(0.01)
+	source.Close()
+	sample = np.concatenate([s.sample for s in found])
+	frame = np.concatenate([s.frame for s in found])
+	# The frames worked out from the plan: each pulse's first OneBox sample, and its number
+	rises, numbers = [], []
+	for (start, n), base in zip(bouts, (None, 210, 270)):
+		r = np.ceil((start + np.arange(n) / fps) * obx_rate).astype(np.int64)
+		rises.append(r)
+		numbers.append(-np.ones(n, np.int64) if base is None else base + np.arange(n))
+	rises, numbers = np.concatenate(rises), np.concatenate(numbers)
+	obx = np.round(sample * obx_rate / RATE).astype(np.int64)
+	k = np.searchsorted(rises, obx, side="right") - 1
+	in_frame = (k >= 0) & (obx - rises[np.maximum(k, 0)] <= 1.5 * obx_rate / fps)
+	expected = np.where(in_frame, numbers[np.maximum(k, 0)], -1)
+	clear = np.abs(obx - rises[np.maximum(k, 0)]) > 2 # not within 2 samples of a pulse's first
+	assert (frame[clear] == expected[clear]).all(), list(zip(sample[clear][frame[clear] != expected[clear]],
+		frame[clear][frame[clear] != expected[clear]], expected[clear][frame[clear] != expected[clear]]))[:5]
+	# Spikes in all three cases
+	t = sample / RATE
+	assert ((t > 5.6) & (t < 6.4) & (frame >= 210) & (frame < 270)).sum() > 10
+	assert ((t > 8.1) & (t < 8.9) & (frame >= 270) & (frame < 330)).sum() > 10
+	assert ((t > 2.2) & (t < 3.9)).sum() > 10 and (frame[(t > 2.2) & (t < 3.9)] == -1).all() # bout 1: not numbered
+	assert (frame[(t > 4.1) & (t < 5.4)] == -1).all() and (frame[(t > 6.6) & (t < 7.9)] == -1).all() # between bouts
+	# The view's camera ticks and its status
+	snap = engine.live.Snapshot()
+	assert set(range(270, 330)) <= set(snap["camera"]["frame"])
+	assert frames.Status()["known"] and frames.Status()["frame"] == 329 and frames.Status()["bout"] == 2

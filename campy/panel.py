@@ -943,8 +943,8 @@ class EphysView:
 	and a request's thread ends with the request.
 	"""
 
-	def __init__(self, section):
-		self.section = section
+	def __init__(self, section, pico_status=None):
+		self.section, self.pico_status = section, pico_status
 		self.key = secrets.token_urlsafe(24)
 		self.child, self.port, self.error = None, None, None
 		self.log = collections.deque(maxlen=20) # its last lines, for the page when it fails
@@ -963,6 +963,11 @@ class EphysView:
 		cmd = [sys.executable, "-m", "campy.ephyslive", "serve", "--sdk", str(self.section["sdk"]), "--host",
 			str(self.section["host"]), "--port", str(self.section["port"]), "--parent", str(os.getpid()),
 			"--idle-s", str(EPHYS_IDLE_S)]
+		# Each spike's camera frame: the camera pulses on the OneBox that has the gate's TTL (spikeglx.stream: js 1),
+		# numbered from the Pico's count of pulses so far
+		js, ip = (list(self.section.get("stream") or []) + [None, None])[:2]
+		if js == 1 and isinstance(ip, int):
+			cmd += ["--obx-ip", str(ip)] + (["--pico-status", self.pico_status] if self.pico_status else [])
 		kwargs = {"creationflags": 0x00004000} if sys.platform == "win32" else {} # BELOW_NORMAL_PRIORITY_CLASS
 		self.error, self.port = None, None
 		# The same campy as the panel's, wherever it was installed from
@@ -1095,7 +1100,8 @@ class Panel:
 		if getattr(self, "ephys", None) is not None:
 			self.ephys.Shutdown()
 		# The page's Ephys section: with SpikeGLX in the config
-		self.ephys = EphysView(config.spikeglx) if getattr(config, "spikeglx", None) is not None else None
+		self.ephys = EphysView(config.spikeglx, os.path.join(devs.pico.state_dir, "status.json") if devs is not None and
+			devs.pico is not None else None) if getattr(config, "spikeglx", None) is not None else None
 		self.config_path, self.config, self.devices, self.lengths, self.picker = config.path, config, devs, lengths, picker
 		self.length = lengths[0]["seconds"] if lengths else None # the page's choice
 		self.health = health
