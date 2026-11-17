@@ -1127,7 +1127,8 @@ def run_node(code):
 	node = shutil.which("node")
 	if node is None:
 		pytest.skip("no node to run the page's script")
-	r = subprocess.run([node, "-e", code], capture_output=True, text=True, timeout=60)
+	# node writes UTF-8; Windows would read it in its own code page (a "·" in the page's text then comes back garbled)
+	r = subprocess.run([node, "-e", code], capture_output=True, text=True, encoding="utf-8", timeout=60)
 	assert r.returncode == 0, r.stderr
 	return json.loads(r.stdout)
 
