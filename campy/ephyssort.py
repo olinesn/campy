@@ -672,6 +672,19 @@ class MatchingSorter(TemplateSorter):
 
 # ---------------------------------------------------------------- training and evaluation
 
+def Pair(a, b, tolerance=TOLERANCE):
+	"""How many of the sorted times a and b pair up one to one, within tolerance samples (in time order)."""
+	i = j = n = 0
+	while i < len(a) and j < len(b):
+		if abs(int(a[i]) - int(b[j])) <= tolerance:
+			n, i, j = n + 1, i + 1, j + 1
+		elif a[i] < b[j]:
+			i += 1
+		else:
+			j += 1
+	return n
+
+
 def Span(seconds, rate, n):
 	"""A span "a:b" in seconds (either end may be left out) as samples [start, end) within n."""
 	a, _, b = (seconds or ":").partition(":")
@@ -801,13 +814,21 @@ def Evaluate(data, stream, phy, templates, span=None, warm_s=1.0, say=print, rep
 		right = found.copy()
 		right[found] = spikes.unit[got[found]] == u
 		given = spikes.unit == u
+		# Unit by unit: its Kilosort spikes and the spikes given to it, paired one to one (two units' spikes at once
+		# each count for their own unit; above, a Kilosort spike pairs with one live spike near it, whoever's)
+		own = Pair(np.sort(times[ks]), np.sort(spikes.sample[given]))
 		rows.append({"unit": u, "label": sort["labels"].get(u), "peak_site": peaks[u], "kilosort_spikes": int(ks.sum()),
 			"found_live": int(found.sum()), "found_and_given": int(right.sum()), "given": int(given.sum()),
 			"given_and_its": int((given & (truth == u)).sum()),
 			"sensitivity": float(right.sum() / ks.sum()) if ks.sum() else None,
-			"precision": float((given & (truth == u)).sum() / given.sum()) if given.sum() else None})
+			"precision": float((given & (truth == u)).sum() / given.sum()) if given.sum() else None,
+			"own_paired": own, "own_sensitivity": float(own / ks.sum()) if ks.sum() else None,
+			"own_precision": float(own / given.sum()) if given.sum() else None})
 	sens = [r["sensitivity"] for r in rows if r["sensitivity"] is not None]
 	prec = [r["precision"] for r in rows if r["precision"] is not None]
+	own_sens = [r["own_sensitivity"] for r in rows if r["own_sensitivity"] is not None]
+	own_prec = [r["own_precision"] for r in rows if r["own_precision"] is not None]
+	n_ks, n_given, n_own = (sum(r[k] for r in rows) for k in ("kilosort_spikes", "given", "own_paired"))
 	matched = np.isin(truth, shown)
 	summary = {"units": len(rows), "reported_labels": list(report) if report else None,
 		"span_s": [start / stream.rate, end / stream.rate], "live_spikes": len(spikes),
@@ -821,9 +842,18 @@ def Evaluate(data, stream, phy, templates, span=None, warm_s=1.0, say=print, rep
 		"live_spikes_of_no_unit_given_one": float(np.isin(spikes.unit[~matched], shown).mean()) if (~matched).any()
 			else None,
 		"sort_us_per_spike": round(per_spike_us, 1), "sort_s_per_s": round(per_second, 3), "match_z": match or None,
-		"template_spikes": int((spikes.unit >= 0).sum()) if match else None, "per_unit": rows}
+		"template_spikes": int((spikes.unit >= 0).sum()) if match else None,
+		"own_sensitivity_median": float(np.median(own_sens)) if own_sens else None,
+		"own_sensitivity_p25_p75": [float(np.percentile(own_sens, 25)), float(np.percentile(own_sens, 75))] if own_sens
+			else None,
+		"own_precision_median": float(np.median(own_prec)) if own_prec else None,
+		"own_precision_p25_p75": [float(np.percentile(own_prec, 25)), float(np.percentile(own_prec, 75))] if own_prec
+			else None,
+		"own_pooled_sensitivity": n_own / n_ks if n_ks else None, "own_pooled_precision": n_own / n_given if n_given
+			else None, "per_unit": rows}
 	say("Sorted {:,} of {:,} live spikes in {:.1f} to {:.1f} s ({:.0f} us a spike). Per unit, median: {:.0%} of its "
-		"Kilosort spikes found live and given to it, {:.0%} of the spikes given to it are its.".format(summary["sorted"],
-		len(spikes), *summary["span_s"], per_spike_us, summary["sensitivity_median"] or 0, summary["precision_median"]
-		or 0))
+		"Kilosort spikes found live and given to it, {:.0%} of the spikes given to it are its. Unit by unit (its "
+		"Kilosort spikes and those given to it, paired): {:.0%} and {:.0%}.".format(summary["sorted"], len(spikes),
+		*summary["span_s"], per_spike_us, summary["sensitivity_median"] or 0, summary["precision_median"] or 0,
+		summary["own_sensitivity_median"] or 0, summary["own_precision_median"] or 0))
 	return summary
