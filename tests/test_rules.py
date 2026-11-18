@@ -1311,9 +1311,10 @@ def test_live_rules_reward_pokes_from_the_board(tmp_path, outputs_sim):
 	for e in pokes:
 		# (seen in real time: later than the edge on a busy computer)
 		# (or a little before it: the sketch stamps an edge with the time it read just before looking at the pins,
-		# and the edge can come in between; seen 1 us early on GitHub's runner)
+		# and the edge can come in between; seen 1 us early on GitHub's runner. On a busy computer the simulated
+		# board's process can pause between the two reads: up to 3.7 ms in 472 runs on a loaded Mac, so 10 ms)
 		off = (e["board_us"] - 500000) % 250000
-		assert e["input"] == "poke" and (off < 50000 or off > 250000 - 5000) and e["board_frame"] >= 1, e
+		assert e["input"] == "poke" and (off < 50000 or off > 250000 - 10000) and e["board_frame"] >= 1, e
 	pulses = [e for e in events if e["kind"] == "command" and e["command"].startswith("pulse 3 2000")]
 	# Each poke rewarded once (a poke lasts 40 ms: two or three sets, one start of the rule), within a few sets
 	assert abs(len(pulses) - len(pokes)) <= 1, (pokes, pulses)
