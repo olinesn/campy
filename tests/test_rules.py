@@ -1033,7 +1033,13 @@ def test_the_recording_ending_first_ends_campy_rules_with_campy_live(monkeypatch
 	assert (alloff - marks["ended"]) / 1e6 < 1000
 	assert runner.counts["live_gaps"] == 0
 	assert not [e for e in events if e["kind"] in ("live_gone", "live_back")]
-	assert any("campy-live ended, and the recording with it" in x for x in runner.said_lines), runner.said_lines
+	# How it says so: campy-live's results ending with the cameras' (seen together), or, when it looks at the cameras
+	# between the two (the test closes them a moment apart, as campy-acquire and campy-live end; a busy runner let it
+	# look in between once, GitHub's Windows runner on 18 November), the cameras' feeds ending, then the results'. Both
+	# are this test's end; "campy-live ended." alone would mean it never knew the recording's cameras
+	ends = [x for x in runner.said_lines if "ended" in x]
+	assert any("campy-live ended, and the recording with it" in x or "the recording ended (its cameras' live feeds "
+		"did), and campy-live's results stopped with it" in x for x in ends), ends
 
 
 @pytest.mark.parametrize("cameras, arg", [(False, {}), (True, {"live_wait_s": 0.0})])
