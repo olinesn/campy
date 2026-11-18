@@ -908,6 +908,104 @@ def test_one_board_makes_the_cameras_pulses_and_runs_the_box(tmp_path, outputs_s
 		(got, list(planned))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal for the simulated board")
+def test_a_camera_ready_after_the_timeout_joins_the_pulses_and_is_placed_where_it_joined(tmp_path, outputs_sim,
+		alerts):
+	"""
+	triggerController: box, with a camera that campy-acquire gave up on (readyTimeoutSec) and that came up later: the
+	board starts the pulses with the ready camera, pulses every camera pin from time 0 whichever camera listens, the
+	late camera's frames begin at a later pulse, and campy-align, reading the files campy-box left, starts the ready
+	camera at trigger 1 and places the late one from its arrival times, at the pulse it joined.
+	"""
+	import numpy as np
+	from campy import align, configurator, newfiles
+	from campy.trigger import trigger
+	frames, joined = 240, 61 # 4 s at 60 fps; Camera1's first frame is pulse 61, 1 s in
+	folder = tmp_path / "rec"
+	folder.mkdir()
+	# What campy-acquire leaves once it stops waiting (session.json's recording, and trigger.json: no trigger of its
+	# own with triggerController: box)
+	session_json(folder, [True, False])
+	params = configurator.DefaultParams()
+	params.update(videoFolder=str(folder), triggerController="box")
+	trigger.SaveStart(params, ["Camera0"], {"Camera1": NOT_READY}, None)
+	(folder / "box").mkdir()
+	out = str(folder / newfiles.BOX_LOGS)
+
+	master, slave = pty()
+	log_path = tmp_path / "sim.log"
+	with open(str(log_path), "w") as log:
+		sim = subprocess.Popen([outputs_sim, "live"], stdin=master, stdout=master, stderr=log)
+	try:
+		assert until(lambda: sim.poll() is not None or "ready campy_outputs" in log_path.read_text(), 60)
+		b = box.Box(Task(task__states__iti__after_s=0.1))
+		b.UseCameras(box.Cameras(60, frames, [12, 13], when_ready=True))
+		# Long enough for every pulse to come before --duration-s stops them, on a busy test computer too
+		args = argparse.Namespace(task=None, port=os.ttyname(slave), out=out, check=False, duration_s=6.5,
+			start_with_frames=True, stop_file="", recording_folder=str(folder), launcher_pid=0, ready_file="",
+			status_file="")
+		runner = box.Runner(args, b)
+		said = []
+		runner.say = said.append
+		code = runner.Run()
+	finally:
+		sim.terminate()
+		sim.wait()
+		os.close(slave)
+		os.close(master)
+	assert code == 0, said
+
+	# The pulses started without Camera1, once, with one alert naming it
+	cams = json.load(open(out + ".cameras.json"))
+	assert (cams["ready_before_pulses"], cams["not_ready"]) == (["Camera0"], {"Camera1": NOT_READY})
+	ev = [json.loads(l) for l in open(out + ".events.jsonl")]
+	assert len([e for e in ev if e["kind"] == "cameras_start"]) == 1
+	assert [e["frames"] for e in ev if e["kind"] == "cameras_end"] == [frames]
+	assert [key for key, _, _ in alerts] == ["session/campy-box-cameras"]
+	# The task with the first pulse, as with every camera (frame 2 on a very busy test computer)
+	assert [e for e in ev if e["kind"] == "state"][0]["first_frame"] in (1, 2)
+	# Both pins, every pulse, where trigger.ino puts them: the board doesn't know which camera listens
+	t0, period = cams["t0_board_us"], cams["period_us"]
+	rises = {12: [], 13: []}
+	for line in log_path.read_text().splitlines():
+		words = line.split()
+		if len(words) == 3 and words[0].isdigit() and int(words[1]) in rises and words[2] == "1":
+			rises[int(words[1])].append(int(words[0]))
+	for pin in (12, 13):
+		assert rises[pin] == [t0 + k * period + period // 2 for k in range(frames)], pin
+
+	# The cameras' files, from those pulses: Camera0 (pin 12) a frame for each from pulse 1, Camera1 (pin 13) from
+	# the pulse it joined at. Each camera's clock runs a little off; frames reach the computer 6 ms after their pulse
+	# and a little more now and then, on the clock campy-box mapped the board's time 0 to (t0_host_ns)
+	rng = np.random.default_rng(3)
+	truth = {}
+	for name, pin, first, ppm in (("Camera0", 12, 1, 20.0), ("Camera1", 13, joined, -35.0)):
+		cam = folder / name
+		cam.mkdir()
+		pulses = list(range(first, frames + 1))
+		board_us = np.array([rises[pin][k - 1] for k in pulses], dtype=np.int64)
+		t = (board_us - board_us[0]) / 1e6 * (1 + ppm * 1e-6)
+		np.save(str(cam / "frametimes.npy"), np.array([np.arange(1, len(pulses) + 1), t]))
+		arrive = cams["t0_host_ns"] + (board_us - t0) * 1000 + 6_000_000 + rng.exponential(1.5e6, len(pulses))
+		np.save(str(cam / "hosttimes.npy"), arrive.astype(np.int64))
+		with open(str(cam / "metadata.csv"), "w") as f:
+			for key, value in (("cameraName", name), ("cameraMake", "flir"), ("frameRate", 60),
+					("cameraTrigger", "Line0")):
+				f.write('"{}","{}"\n'.format(key, value))
+		truth[name] = {n: k for n, k in enumerate(pulses, start=1)}
+
+	text = []
+	summary = align.Run(str(folder), log=text.append)
+	assert summary["ready_before_trigger_from"] == "box/campy-box.cameras.json"
+	c0, c1 = summary["cameras"]["Camera0"], summary["cameras"]["Camera1"]
+	assert (c0["start_trigger"], c0["start_from"]) == (1, "ready before the trigger")
+	assert (c1["start_trigger"], c1["start_from"]) == (joined, "arrival times")
+	import csv
+	for name in ("Camera0", "Camera1"):
+		with open(str(folder / name / "aligned.csv")) as f:
+			assert {int(r["frame"]): int(r["trigger"]) for r in csv.DictReader(f)} == truth[name], name
+
+
 # ---------------------------------------------------------------- the USB link stalling (relink)
 
 class StallingBoard(FakeBoard):
