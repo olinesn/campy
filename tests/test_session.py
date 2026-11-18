@@ -936,3 +936,77 @@ def test_a_box_that_cannot_start_stops_the_recording_or_not(tmp_path, home):
 		else:
 			assert proc.returncode == 0, out
 		shutil.rmtree(str(clips))
+
+
+def test_a_rig_whose_box_board_makes_the_camera_pulses_needs_its_box(tmp_path):
+	(tmp_path / "t.yaml").write_text(BOX_TASK)
+	rig = {"numCams": 2, "triggerController": "box", "startArduino": False, "frameRate": 60, "recTimeInSec": 30,
+		"digitalPins": [12, 13], "syncPin": 9, "syncGapMs": [200, 1000]}
+	with pytest.raises(session.SessionError, match=r"triggerController: box: .* no box: section"):
+		session.Config(str(write_config(tmp_path / "c.yaml", rig)))
+	with pytest.raises(session.SessionError, match=r"box.required: false, but the box's board makes this rig's camera"):
+		session.Config(str(write_config(tmp_path / "c.yaml", rig, box={"task": "t.yaml", "required": False})))
+	c = session.Config(str(write_config(tmp_path / "c.yaml", rig, box={"task": "t.yaml"})))
+	s = session.Session(c, lock=False)
+	assert s.CameraArgs() == ["--camera-fps", "60.0", "--camera-frames", "1800", "--camera-pins", "12,13",
+		"--cameras-when-ready", "--sync-pin", "9", "--sync-pulse-ms", "10", "--sync-gap-ms", "200,1000"]
+	# The two-board setup (the Arduino pulses the cameras, the box's board reads them on D10): no camera options
+	two = session.Config(str(write_config(tmp_path / "c.yaml", dict(rig, triggerController="arduino",
+		startArduino=True), box={"task": "t.yaml"})))
+	assert session.Session(two, lock=False).CameraArgs() == []
+
+
+@POSIX
+def test_a_recording_whose_box_board_makes_the_camera_pulses(tmp_path, home, outputs_sim):
+	# campy-session with triggerController: box: campy-acquire opens no trigger port, campy-box starts the board's
+	# pulses once every camera is ready (as many as campy-acquire takes frames), and sync.json goes into the recording.
+	# (The emulated cameras don't take the simulated board's pulses: their frames run on their own clock.)
+	import tty
+	master, slave = os.openpty()
+	tty.setraw(slave)
+	log = tmp_path / "sim.log"
+	with open(str(log), "w") as f:
+		sim = subprocess.Popen([outputs_sim, "live"], stdin=master, stdout=master, stderr=f,
+			env=dict(os.environ, SIM_INPUT="30:400000:300000:30000:1000"))
+	try:
+		t0 = time.monotonic()
+		while "ready campy_outputs" not in log.read_text() and time.monotonic() - t0 < 60 and sim.poll() is None:
+			time.sleep(0.05)
+		task = tmp_path / "task.yaml"
+		task.write_text(BOX_TASK.replace("TRIALS", "1000"))
+		config, clips = emu_session(tmp_path, home, 3)
+		with open(str(config), "a") as f:
+			f.write(yaml.safe_dump({"triggerController": "box", "startArduino": False, "digitalPins": [12, 13],
+				"syncPin": 9, "syncSeed": 77, "syncGapMs": [100, 300], "box": {"task": str(task),
+				"port": os.ttyname(slave)}}))
+		proc, lines = start(tmp_path, home, config)
+		proc.wait(timeout=180)
+	finally:
+		sim.terminate()
+		sim.wait()
+		os.close(slave)
+		os.close(master)
+	out = "".join(lines)
+	assert proc.returncode == 0, out
+	folder = the_folder(clips)
+	assert recorded(folder) == [60, 60]
+	trigger = json.loads((folder / "trigger.json").read_text())
+	assert trigger["startedBy"] == "external" and not trigger["triggerStarted"] # campy-acquire drove no trigger
+	cams = json.loads((folder / "box" / "campy-box.cameras.json").read_text())
+	assert (cams["frames"], cams["period_us"], cams["pins"]) == (60, 50000, [12, 13]) # 3 s at 20 fps
+	sync = json.loads((folder / "sync.json").read_text())
+	assert (sync["seed"], sync["pin"], sync["t0_board_us"], sync["hold_guard_us"]) == (77, 9, cams["t0_board_us"], 0)
+	ev = [json.loads(l) for l in open(str(folder / "box" / "campy-box.events.jsonl"))]
+	started = [e for e in ev if e["kind"] == "cameras_start"]
+	assert len(started) == 1
+	# The board's pulses on both camera pins, where trigger.ino puts them from that time 0
+	rises = {}
+	for line in log.read_text().splitlines():
+		w = line.split()
+		if len(w) == 3 and w[0].isdigit() and w[2] == "1":
+			rises.setdefault(int(w[1]), []).append(int(w[0]))
+	for pin in (12, 13):
+		assert rises[pin] == [cams["t0_board_us"] + k * 50000 + 25000 for k in range(len(rises[pin]))]
+		assert len(rises[pin]) <= 60
+	status = json.loads((folder / "launcher.json").read_text())
+	assert status["parts"]["box"]["exit_code"] == 0 and status["problems"] == []
