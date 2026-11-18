@@ -21,12 +21,16 @@ What it works out, for every camera:
 - for a RatCam, each frame's fractional trigger, between the pulses around it;
 - where the camera started. When campy starts the trigger itself
   (startArduino), it waits until every camera is grabbing, and trigger.json
-  says which were: each of those starts at trigger 1. Otherwise (a camera that
-  was not ready, an external trigger, or a recording from a campy that started
-  the trigger first) a camera's first frame need not be the first trigger.
+  says which were: each of those starts at trigger 1. So does each camera
+  that box/campy-box.cameras.json names, when the operant box's board makes
+  the camera pulses (triggerController: box): campy-box starts them once every
+  camera is waiting, and says which were. Otherwise (a camera that was not
+  ready, an external trigger, or a recording from a campy that started the
+  trigger first or a campy-box that did not say) a camera's first frame need
+  not be the first trigger.
   campy saves when each frame and each RatCam pulse reached the computer, all
   on one clock (hosttimes.npy, ratcam_sync.csv), and comparing those says how
-  many triggers later each camera began. Without trigger.json, the earliest
+  many triggers later each camera began. Without either file, the earliest
   camera's first trigger is trigger 1.
 
 Writes aligned.csv in each camera folder, alignment.json in the recording
@@ -36,7 +40,7 @@ folder, and prints a summary.
 import argparse, ast, csv, json, os, sys
 import numpy as np
 
-from campy import segments, strictjson
+from campy import newfiles, segments, strictjson
 
 
 IRREGULAR = 0.25   # a step this far from a whole number of periods is not a clean trigger step
@@ -44,6 +48,10 @@ NOT_PERIODIC = 0.2 # more irregular steps than this share: not a periodic trigge
 UNSURE = 0.3       # a start offset this far from a whole number of triggers could be off by one
 FRAME_LAG = 0.2    # see Starts: frames reach the computer after their trigger's pulse does
 WINDOW = 50        # arrivals per window when fitting a clock to the computer's (ClockMap)
+# The files that say which cameras were grabbing before the trigger's first pulse (ReadStart): in the recording's
+# folder, with "/" as alignment.json's ready_before_trigger_from names them
+TRIGGER_RECORD = newfiles.TRIGGER_FILE # campy started the trigger (ReadTriggerStart)
+BOX_RECORD = (newfiles.BOX_LOGS + ".cameras.json").replace(os.sep, "/") # campy-box, the box's board's (ReadBoxStart)
 
 
 class AlignError(Exception):
@@ -166,6 +174,38 @@ def ReadTriggerStart(folder):
 	if not record.get("triggerStarted"):
 		return None
 	return set(record.get("readyBeforeTrigger") or [])
+
+
+def ReadBoxStart(folder):
+	"""
+	The cameras campy-box saw waiting before the operant box's board started
+	the camera pulses (triggerController: box), from box/campy-box.cameras.json;
+	None without it, when campy-box did not wait for the cameras (no
+	--cameras-when-ready), or from a campy-box that did not say which were.
+	"""
+	try:
+		with open(os.path.join(folder, *BOX_RECORD.split("/"))) as f:
+			record = strictjson.load(f)
+	except (OSError, ValueError):
+		return None
+	ready = record.get("ready_before_pulses") if isinstance(record, dict) else None
+	if not isinstance(ready, list):
+		return None
+	return set(str(name) for name in ready)
+
+
+def ReadStart(folder):
+	"""
+	The cameras that were grabbing before the trigger's first pulse, and the
+	file that says so (relative to folder, with "/"): trigger.json when campy
+	started the trigger, else campy-box's cameras.json when the box's board
+	did; (None, None) without either.
+	"""
+	for read, path in ((ReadTriggerStart, TRIGGER_RECORD), (ReadBoxStart, BOX_RECORD)):
+		ready = read(folder)
+		if ready is not None:
+			return ready, path
+	return None, None
 
 
 def LoadRecording(folder):
@@ -295,10 +335,11 @@ def Starts(cams, period, ready=None):
 	the same number of triggers apart, and is as sure of it.
 
 	ready: the cameras that were grabbing before campy started the trigger
-	(trigger.json). Their first frame is the trigger's first pulse, so they
-	start at trigger 1, and the earliest of them is the reference that places
-	the others. A ready camera is checked only against the earliest ready camera
-	of its own kind: cameras of one kind take about as long from pulse to
+	(trigger.json), or campy-box the box's board's camera pulses (its
+	cameras.json): ReadStart. Their first frame is the trigger's first pulse,
+	so they start at trigger 1, and the earliest of them is the reference that
+	places the others. A ready camera is checked only against the earliest ready
+	camera of its own kind: cameras of one kind take about as long from pulse to
 	arrival, so a whole period later there means pulses it missed. Across kinds
 	that delay is unknown (a frame can take most of a period, more than
 	FRAME_LAG allows), so arrival times there cannot overrule the record.
@@ -502,13 +543,14 @@ def Describe(c):
 
 def Run(folder, log=print):
 	cams = LoadRecording(folder)
-	ready = ReadTriggerStart(folder)
+	ready, ready_from = ReadStart(folder)
 	period, ref = Align(cams, ready)
 	pauses = Pauses(cams)
 	summary = {
 		"trigger_period_s": period,
 		"trigger_rate_hz": 1.0 / period,
 		"ready_before_trigger": sorted(ready) if ready is not None else None,
+		"ready_before_trigger_from": ready_from,
 		"starts_from": ref["name"] if ref else None,
 		"trigger_pauses": [{"first_trigger": a, "triggers": b - a + 1, "seconds": round((b - a + 1) * period, 6),
 			"at_s": round((a - 1) * period, 6)} for a, b in pauses],
@@ -521,8 +563,9 @@ def Run(folder, log=print):
 		strictjson.dump(summary, f, indent=2)
 
 	if any(c["usable"] and c.get("ready") for c in cams):
-		log("Trigger period {:.4f} ms ({:.4f} Hz). Trigger 1 is the trigger's first pulse: campy started it "
-			"once the cameras were grabbing.".format(period * 1e3, 1.0 / period))
+		log("Trigger period {:.4f} ms ({:.4f} Hz). Trigger 1 is the trigger's first pulse: {} started it "
+			"once the cameras were grabbing.".format(period * 1e3, 1.0 / period, "campy-box (the operant box's board)"
+			if ready_from == BOX_RECORD else "campy"))
 	elif any(c["usable"] for c in cams):
 		log("Trigger period {:.4f} ms ({:.4f} Hz). Trigger 1 is the first trigger any camera recorded{}."\
 			.format(period * 1e3, 1.0 / period, ", by arrival times" if ref else " (assumed: no arrival times)"))

@@ -994,6 +994,10 @@ def test_a_recording_whose_box_board_makes_the_camera_pulses(tmp_path, home, out
 	assert trigger["startedBy"] == "external" and not trigger["triggerStarted"] # campy-acquire drove no trigger
 	cams = json.loads((folder / "box" / "campy-box.cameras.json").read_text())
 	assert (cams["frames"], cams["period_us"], cams["pins"]) == (60, 50000, [12, 13]) # 3 s at 20 fps
+	# Every camera was waiting for the first pulse, and campy-align reads that where campy-box left it
+	assert cams["ready_before_pulses"] == list(NAMES)
+	from campy import align
+	assert align.ReadStart(str(folder)) == (set(NAMES), "box/campy-box.cameras.json")
 	sync = json.loads((folder / "sync.json").read_text())
 	assert (sync["seed"], sync["pin"], sync["t0_board_us"], sync["hold_guard_us"]) == (77, 9, cams["t0_board_us"], 0)
 	ev = [json.loads(l) for l in open(str(folder / "box" / "campy-box.events.jsonl"))]

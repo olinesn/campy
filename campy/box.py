@@ -107,7 +107,8 @@ recording (--recording-folder's session.json) is waiting for them. campy-box the
 the end of the recording, the task's own end aside: the cameras stop at their count, or at a period's end when the
 recording ends (the stop file, the recording's watch, Ctrl-C). If campy-box itself fails, they go on to their count
 (the board's own watchdog never stops them; --camera-watch-ms, after that long a silence, does). It writes
-<out>.cameras.json (time 0 on the board's and the host's clocks, the period, the count) and sync.json (into the
+<out>.cameras.json (time 0 on the board's and the host's clocks, the period, the count, and with
+--cameras-when-ready the cameras that were waiting, which campy-align starts at trigger 1) and sync.json (into the
 recording's folder, else <out>.sync.json) for campy-syncmatch: frame k (from 0) rose at time 0 + k x P + P / 2.
 
 Output (--out, default campy-box_<date_time>):
@@ -1125,21 +1126,30 @@ class Runner:
 		self.cams_stop_by = time.monotonic() + 1.0 + 2 * self.box.cameras.period / 1e6
 
 	def CamerasReady(self):
-		# Every camera of the recording waiting for its pulses (session.json's recording.cameras[].ready, as the panel
-		# reads it for the Pico); without a recording folder, at once
+		"""
+		Whether the pulses can start, and the cameras waiting for them: once every camera of the recording is
+		(session.json's recording.cameras[].ready, as the panel reads it for the Pico), with their names, which
+		cameras.json keeps for campy-align; without a recording folder or --cameras-when-ready, at once, with None
+		(nobody waited for them).
+		"""
 		folder = getattr(self.args, "recording_folder", "")
 		if not folder or not self.box.cameras.when_ready:
-			return True
+			return True, None
 		try:
 			with open(os.path.join(folder, "session.json"), encoding="utf-8") as f:
 				record = strictjson.load(f).get("recording")
 		except (OSError, ValueError, AttributeError, TypeError):
-			return False
+			return False, None
 		cams = (record or {}).get("cameras") or []
-		return bool(cams) and all(c.get("ready") for c in cams)
+		if not cams or not all(c.get("ready") for c in cams):
+			return False, None
+		return True, [str(c["name"]) for c in cams if c.get("name") is not None]
 
-	def StartCameras(self, out):
-		"""camgo: the pulses from now; their time 0 into <out>.cameras.json, and sync.json."""
+	def StartCameras(self, out, ready=None):
+		"""
+		camgo: the pulses from now; their time 0 into <out>.cameras.json, and sync.json. ready: the cameras that were
+		waiting for them (CamerasReady), kept as ready_before_pulses: campy-align starts those at trigger 1.
+		"""
 		cams = self.box.cameras
 		words = self.board.Command("camgo {}".format(cams.frames)).Ok().split()
 		t0, period = int(words[3]), int(words[4])
@@ -1147,7 +1157,8 @@ class Runner:
 		self.cams.update(started=True, running=True, t0_board_us=t0, t0_host_ns=t0_ns, frames=cams.frames)
 		record = dict(board="campy_outputs", fps=cams.fps, period_us=period, frames=cams.frames, pins=cams.pins,
 			t0_board_us=t0, t0_host_ns=t0_ns, rises="frame k (from 0) at t0 + k * period_us + period_us // 2",
-			sync=cams.SyncRecord(t0, t0_ns) if cams.sync else None)
+			sync=cams.SyncRecord(t0, t0_ns) if cams.sync else None,
+			ready_before_pulses=sorted(ready) if ready is not None else None)
 		WriteJson(out + ".cameras.json", record)
 		if cams.sync:
 			folder = getattr(self.args, "recording_folder", "")
@@ -1195,8 +1206,9 @@ class Runner:
 			self.beat = now = time.monotonic()
 			if box.cameras is not None and not self.cams["started"] and now - ready_at >= 0.2:
 				ready_at = now
-				if self.CamerasReady():
-					self.StartCameras(out)
+				ready, names = self.CamerasReady()
+				if ready:
+					self.StartCameras(out, names)
 			if self.state is None and not self.Waiting():
 				# The start: now, or at the first camera frame
 				self.started = now

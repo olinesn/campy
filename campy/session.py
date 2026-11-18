@@ -1215,7 +1215,7 @@ class Session:
 			self.Status()
 
 	def BoxPaths(self):
-		return dict(out=os.path.join(self.folder, "box", "campy-box"), ready=os.path.join(self.logs, "campy-box.ready"),
+		return dict(out=os.path.join(self.folder, newfiles.BOX_LOGS), ready=os.path.join(self.logs, "campy-box.ready"),
 			stop=os.path.join(self.logs, "campy-box.stop"), status=os.path.join(self.logs, "campy-box.status.json"))
 
 	def StartBox(self):
