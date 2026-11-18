@@ -16,11 +16,20 @@ the tests read and change. Its SpikeGLX:
               second from then; dir, run: its data folder and run name
   enabled     recording enabled; the tests' stand-in Pico writes a .bin file
               into dir at each rise of the gate while it is
+  ap_npy      a probe's AP samples (.npy, int16 [samples, channels]), for
+              campy/ephyslive.py: its stream (js 2, ip 0) at 30,000 samples
+              a second from the run's start, the file over and over; fetch
+              gives the last BUFFER_S seconds of it
 """
 
-import json, os, time
+import ctypes, json, os, time
+
+import numpy as np
 
 RATE = 30303.0
+IMEC_RATE = 30000.0
+UV = 0.62 / 8192 / 80 # volts per count: a Neuropixels 2.0 probe's
+BUFFER_S = 4.0
 DEFAULT = {"open": True, "validated": True, "trigMode": "2", "running": False, "enabled": False, "dir": "", "run": "",
 	"t_run": None, "calls": [], "devices": "(20,1,1)(20,obx)", "no_addrs": False, "stuck": False}
 
@@ -156,13 +165,70 @@ def c_sglx_startRun(h, name):
 	return True
 
 
+def Rate(js):
+	return IMEC_RATE if abs(js) == 2 else RATE
+
+
 def c_sglx_getStreamSampleRate(h, js, ip):
-	return RATE if Load()["running"] else 0.0
+	return Rate(js) if Load()["running"] else 0.0
 
 
 def c_sglx_getStreamSampleCount(h, js, ip):
 	state = Load()
-	return int(RATE * (time.time() - state["t_run"])) if state["running"] and state["t_run"] else 0
+	return int(Rate(js) * (time.time() - state["t_run"])) if state["running"] and state["t_run"] else 0
+
+
+def Ap(h):
+	if getattr(h, "ap", None) is None:
+		h.ap = np.load(Load()["ap_npy"], mmap_mode="r")
+	return h.ap
+
+
+def c_sglx_getStreamAcqChans(ref, h, js, ip):
+	h.ints = [Ap(h).shape[1], 0, 1] if abs(js) == 2 else [12, 1, 1]
+	Set(ref, len(h.ints))
+	return True
+
+
+def c_sglx_getint(h, i):
+	return h.ints[i]
+
+
+def c_sglx_getStreamI16ToVolts(ref, h, js, ip, chan):
+	Set(ref, UV)
+	return True
+
+
+def c_sglx_getGeomMap(ref, h, ip):
+	n = Ap(h).shape[1]
+	h.params = ["head_partNumber=NP2000", "head_numShanks=1", "head_shankPitch=0", "head_shankWidth=70"]
+	for i in range(n):
+		h.params += ["ch{}_s=0".format(i), "ch{}_x={}".format(i, 27 + 32 * (i % 2)), "ch{}_z={}".format(i, 15 * (i // 2)),
+			"ch{}_u=1".format(i)]
+	h.params.sort() # as SpikeGLX gives them: in ascending alphanumeric order
+	Set(ref, len(h.params))
+	return True
+
+
+def c_sglx_fetch(data_ref, n_ref, h, js, ip, start, max_samps, channels, n_cs, downsample):
+	state = Load()
+	state["calls"].append("fetch")
+	Save(state)
+	if not state["running"]:
+		h.error = b"fetch: not running"
+		return 0
+	count = c_sglx_getStreamSampleCount(h, js, ip)
+	start = max(int(start), count - int(BUFFER_S * IMEC_RATE)) # older samples are gone
+	end = min(count, start + max_samps)
+	if end <= start:
+		Set(n_ref, 0)
+		return start
+	ap = Ap(h)
+	rows = np.arange(start, end) % len(ap)
+	h.block = np.ascontiguousarray(ap[rows][:, list(channels[:n_cs])], np.int16).ravel()
+	data_ref._obj.contents = ctypes.c_short.from_buffer(h.block)
+	Set(n_ref, len(h.block))
+	return start
 
 
 def c_sglx_setRecordingEnable(h, enable):
