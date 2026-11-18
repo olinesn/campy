@@ -1243,6 +1243,7 @@ def Serve(args, out=print):
 		me = psutil.Process()
 		me.cpu_percent(None)
 		last, last_stats = time.monotonic(), dict(engine.stats)
+		last_busy = 0.0 # the matcher's busy_s at the last health
 		while not state["stop"]:
 			try:
 				with lock:
@@ -1257,6 +1258,11 @@ def Serve(args, out=print):
 				state["health"] = {"reads_per_s": round(d["reads"] / (now - last), 1), "fetch_ms": round(1000 *
 					d["fetch_s"] / max(1, d["reads"]), 2), "spikes_per_s": round(d["spikes"] / (now - last), 1),
 					"cpu": round(me.cpu_percent(None), 1)}
+				matcher = engine.SortStatus()
+				if matcher is not None: # the share of the last second its thread spent matching
+					busy = matcher["busy_s"]
+					state["health"]["matcher_busy"] = round(max(0.0, busy - last_busy) / (now - last), 2)
+					last_busy = busy
 				last, last_stats = now, dict(engine.stats)
 			if not got:
 				time.sleep(0.01)

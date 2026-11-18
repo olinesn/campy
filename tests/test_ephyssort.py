@@ -235,6 +235,30 @@ def test_serve_sorts_with_the_templates_and_says_its_units(sorted_recording):
 		assert snap["stream"]["sorter"].startswith("Kilosort 4 templates")
 		assert set(u for u in snap["live"]["spikes"]["unit"] if u >= 0) <= {0, 1, 2, 3, 4}
 		assert snap["live"]["rates"]["unit"]
+		assert snap["health"]["matcher"] is None and "matcher_busy" not in snap["health"]
+	finally:
+		proc.terminate()
+		proc.wait(timeout=10)
+	# --match learned (the panel's spikeglx.match): the templates matched too, in the matcher's thread, and the
+	# health says how it keeps up
+	proc = subprocess.Popen([sys.executable, "-m", "campy.ephyslive", "serve", "--replay", bin_path, "--speed", "1",
+		"--templates", out, "--match", "learned", "--idle-s", "20", "--parent", str(os.getpid())], env=env,
+		stdout=subprocess.PIPE, text=True)
+	try:
+		port = int(proc.stdout.readline().split()[1])
+		deadline, snap = time.monotonic() + 30, {}
+		while time.monotonic() < deadline:
+			snap = ask("/snapshot?stream=1")
+			if snap.get("live") and any(u >= 0 for u in snap["live"]["spikes"]["unit"]) and \
+					(snap["health"].get("matcher") or {}).get("pieces") and "matcher_busy" in snap["health"]:
+				break
+			time.sleep(0.3)
+		assert "matched" in snap["stream"]["sorter"] and "each unit's threshold" in snap["stream"]["sorter"]
+		assert [u["unit"] for u in snap["stream"]["units"]] == [0, 1, 2, 3, 4]
+		m = snap["health"]["matcher"]
+		assert m["pieces"] > 0 and m["error"] is None and m["behind_s"] < 2.0, m
+		assert 0 <= snap["health"]["matcher_busy"] <= 1.5
+		assert set(u for u in snap["live"]["spikes"]["unit"] if u >= 0) <= {0, 1, 2, 3, 4}
 	finally:
 		proc.terminate()
 		proc.wait(timeout=10)
