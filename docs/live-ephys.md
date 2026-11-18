@@ -247,19 +247,20 @@ For good units, each unit's Kilosort spikes and the spikes given to it are paire
 | **Matched, each unit's threshold, whitened (the default):** found / right | **95% (86–99%) / 96% (89–100%)** | **75% (45–92%) / 80% (56–95%)** |
 | Spikes given to good units a second, whitened (Kilosort's) | 1,362 (1,389) | 2,008 (1,931) |
 | One core of a cluster node, per second of recording, whitened, with numba (without) | 0.59 s (0.87 s) | 0.71 s |
+| One core of the ChronicRecord PC (Intel Core Ultra 9 285), with numba (without) | 0.49 s (0.70 s) | not timed |
 
 "Found" is the share of a unit's Kilosort spikes found and given to it; "right" is the share of the spikes given to it that are its.
 
 The curated recording is the harder one: 38% of its good units are at 80% or more on both, against 80% of those in Kilosort's sample. Small units do worst there: of the units whose trough is under 40 µV, 11% are; of those over 100 µV, 53%. Before whitening, most of the matcher's wrong spikes there fell where Kilosort had no spike nearby, and a fifth fell on another good unit's spike nearby. That hasn't been measured again since whitening.
 
 **What limits it:**
-- **Speed.** Matching takes 0.6 to 0.7 s of one core of a cluster node per second of a 384-channel probe with numba, and about 0.9 s without: faster than the samples come, but not by much. The panel's card doesn't use it yet: it hasn't been tried on the ChronicRecord PC, whose campy environment has no numba yet.
+- **Speed.** Matching takes 0.6 to 0.7 s of one core of a cluster node per second of a 384-channel probe with numba, and about 0.9 s without. On the ChronicRecord PC it took 0.49 s with numba and 0.69 s in the panel's own environment, which has no numba (18 November, Kilosort's sample, under the rig lock, the same spikes every way). The card's reader already takes about 40% of a core for reading, filtering and finding spikes, so in the same thread matching would bring it to about 0.9 s a second with numba, and over 1 s without. The panel's card doesn't use matching yet.
 - **Harder recordings.** On the curated recording, a quarter of good units have under 45% of their Kilosort spikes found, and a quarter have under 56% of what they're given right.
 - **No drift correction**, as above.
 
 ## Next
 
 - **A better sorter:** following the probe's drift.
-- **Matching on the card:** timed on the ChronicRecord PC (with numba in its campy environment), then how many probes one PC can match live at once.
+- **Matching on the card:** numba in the panel's campy environment, and the matcher in a thread of its own beside the reader (its compiled loop, matrix products and transforms let other threads run meanwhile); then how many probes one PC can match live at once.
 - **Accuracy first, then speed.** Speed work waits until the live output matches an automated sort made after the recording (Kilosort 4) in precision and accuracy. After that come tests of how many probes one PC can follow live at once, and only then speedups.
 - **Later, on top of live-sorted units:** each neuron's activity plotted live against the population's low-dimensional space and against the behaviour campy-live tracks: keypoint-MoSeq syllables, a PCA or UMAP space of the poses, or another map that describes the behaviour better.
