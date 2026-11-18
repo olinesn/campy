@@ -325,6 +325,26 @@ def test_a_pico_section_on_an_arduino_rig(tmp_path, profiles):
 	assert configurator.Resolve(flat).sections["pico"] == {"set": {}}
 
 
+def test_a_rig_whose_box_board_makes_the_camera_pulses(tmp_path, profiles):
+	# One Nano ESP32 for the cameras and the box (triggerController: box): campy-acquire starts no Arduino, and no Pico
+	# may pulse the cameras too
+	(profiles / "rig.yaml").write_text("numCams: 2\ntriggerController: box\nstartArduino: False\ncameraTrigger: Line3\n"
+		"digitalPins: [12, 13]\n")
+	ok = configurator.Resolve(write(tmp_path / "ok.yaml", "extends: rig\nbox:\n  task: t.yaml\n"))
+	assert ok.params["triggerController"] == "box" and not configurator.DrivesTrigger(ok.params)
+	with pytest.raises(configurator.ConfigError, match=r"triggerController: box \(.*rig.yaml:2\): the operant box's "
+			r"board makes this rig's camera pulses .* but startArduino is True \(.*arduino.yaml:2\)"):
+		configurator.Resolve(write(tmp_path / "arduino.yaml", "extends: rig\nstartArduino: True\n"))
+	with pytest.raises(configurator.ConfigError, match=r"A pico: section \(.*pico.yaml:2\) on a rig whose operant "
+			r"box's board makes the camera pulses"):
+		configurator.Resolve(write(tmp_path / "pico.yaml", "extends: rig\npico:\n  set: {}\n"))
+	with pytest.raises(configurator.ConfigError, match=r"triggerController: arduino .* but this rig's profile .* says box"):
+		configurator.Resolve(write(tmp_path / "other.yaml", "extends: rig\ntriggerController: arduino\n"))
+	# A box: section on an Arduino rig is the two-board setup (the box's board reads the trigger on D10): fine
+	(profiles / "two.yaml").write_text("numCams: 2\ntriggerController: arduino\nstartArduino: True\n")
+	assert configurator.Resolve(write(tmp_path / "two.yaml", "extends: two\nbox:\n  task: t.yaml\n")).sections["box"]
+
+
 def test_a_rig_that_names_no_board_is_as_before(tmp_path, profiles):
 	# Without triggerController in the profile, a Pico config only needs startArduino False (chronic_pico.yaml as it
 	# was), and the Arduino may still be started without a pico: section
