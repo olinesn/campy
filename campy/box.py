@@ -1402,6 +1402,10 @@ class Runner:
 			code = 1
 		finally:
 			if self.board is not None:
+				# The frames the board counted, to the last (its t lines come once a second): beside a trigger it
+				# doesn't make (a Pico, an Arduino), what to compare with each camera's frames
+				if not self.board.lost:
+					self.board.SafeSync()
 				self.board.Close() # alloff: outputs low, links disarmed, servos to their safe positions
 			try:
 				self.writer.Close()
@@ -1441,7 +1445,7 @@ class Runner:
 			out=os.path.abspath(out), seed=self.seed, trials=self.trial, ended=self.end_why,
 			task_ended=self.StatusDict()["task_ended"], last_state=self.state, cameras=self.StatusDict()["cameras"],
 			seconds=round(time.monotonic() - self.started, 3) if self.started else 0, counts=self.counts,
-			last_frame=self.LastFrame(), clock=dict(
+			last_frame=self.LastFrame(), board_frames=board.frames if board is not None else None, clock=dict(
 				round_trip_ms=board.clock.RoundTrip() / 1e6 if board is not None and board.clock.RoundTrip() else None,
 				fit=list(board.clock.fit) if board is not None and board.clock.fit else None))
 

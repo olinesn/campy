@@ -1498,6 +1498,8 @@ def test_trigger_check(monkeypatch):
 	assert level == "block" and "no pico: section to start it" in text
 	assert panel.TriggerCheck(pico, object(), ports=lambda: []) == ("ok", "Trigger: the Pico")
 	assert panel.TriggerCheck(dict(pico, cameraTrigger="None"), None, ports=lambda: []) is None
+	# With an operant box beside it (box:, its board counting the Pico's pulses on D10): still the Pico's
+	assert panel.TriggerCheck(pico, object(), ports=lambda: [], box={"task": "t.yaml"}) == ("ok", "Trigger: the Pico")
 	# A rig whose operant box's board pulses the cameras: the config must run the box (its box: section)
 	boxrig = {"startArduino": False, "triggerController": "box", "cameraTrigger": "Line3"}
 	level, text = panel.TriggerCheck(boxrig, None, ports=lambda: [])
