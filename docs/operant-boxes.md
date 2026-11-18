@@ -234,7 +234,7 @@ campy-box task.yaml --port COM7 --camera-fps 60 --camera-frames 36000 --camera-p
 
 ## Beside a Pico (ChronicRecord)
 
-ChronicRecord's cameras are triggered by a Raspberry Pi Pico. The Pico also times the bouts, the two photometry LEDs and the SpikeGLX gate ([the run book](chronicrecord-run-book.html)). So a box there uses two boards: the Pico stays the cameras' trigger, and a Nano ESP32 running this sketch runs the box. The Nano reads the Pico's camera pulses on D10, as it would an Arduino trigger's. Nothing of this has run on the rig yet: it was checked on the simulated board (pull request 487; [What has been tested](#what-has-been-tested)).
+ChronicRecord's cameras are triggered by a Raspberry Pi Pico. The Pico also times the bouts, the two photometry LEDs and the SpikeGLX gate ([the run book](chronicrecord-run-book.html)). So a box there uses two boards: the Pico stays the cameras' trigger, and a Nano ESP32 running this sketch runs the box. The Nano reads the Pico's camera pulses on D10, as it would an Arduino trigger's. Nothing of this has run on the rig yet: it was checked on the simulated board (pull request 489; [What has been tested](#what-has-been-tested)).
 
 - **Wiring.** The Pico's camera output (GP3, after its series resistor, the same line the cameras get) to the box board's D10, and the box board's GND to the Pico's ground. Both boards are 3.3 V, so no divider is needed.
 - **The config.** The rig's profile keeps `triggerController: pico` and its `pico:` section, and gains a `box:` section: `task:`, and `port:` (the box board's COM port; the Pico has its own). `campy-box` gets no camera options, and the panel's Trigger line still says the Pico.
