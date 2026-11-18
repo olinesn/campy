@@ -144,7 +144,7 @@ def test_a_moment_of_load_is_logged_but_does_not_count():
 
 def test_load_that_lasts_or_keeps_coming_contaminates():
 	line = verdict([QUIET] * 8 + [OTHER, OTHER])  # 2 looks in a row
-	assert line.startswith("RIG_CONTAMINATED (2 sightings: gpu 0, encoder 0, camera 0, trigger 0, desktop 0, load 2, lock 0; "
+	assert line.startswith("RIG_CONTAMINATED (2 sightings: gpu 0, encoder 0, camera 0, trigger 0, ephys 0, desktop 0, load 2, lock 0; "
 		"load outside the job in 2 of 10 looks, longest 2 looks ("), line
 	line = verdict([QUIET, OTHER] * 3 + [QUIET] * 4)  # never 2 in a row, but 3 of 10 looks: more than 20%
 	assert line.startswith("RIG_CONTAMINATED (3 sightings:") and "longest 1 look (" in line, line

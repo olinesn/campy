@@ -15,12 +15,13 @@ every test takes, and a watch over everything a test can be spoiled by.
   rig.py version                                this copy's version, and the installed one's
   rig.py install [--check] [--from <checkout>]  install this copy (a campy checkout's) as the rig's
 
-run waits until the rig is free and nothing else uses the GPU, the cameras,
-the video encoder or the trigger, and nothing else loads the CPU or the disk;
-then it runs cmd. Every 2 s while it runs, anything outside the job that uses
-one of those, or a CPU or disk load outside the job above --cpu cores or --io
-MB/s, is logged to <tag>.rig.log, whose last line says RIG_CLEAN,
-RIG_CLEAN_BACKGROUND or RIG_CONTAMINATED. One look at a device user contaminates
+run waits until the rig is free, nothing else uses the GPU, the cameras, the
+video encoder or the trigger, no ephys acquisition program (SpikeGLX, Open
+Ephys) runs, and nothing else loads the CPU or the disk; then it runs cmd.
+Every 2 s while it runs, anything outside the job that uses one of those, or a
+CPU or disk load outside the job above --cpu cores or --io MB/s, is logged to
+<tag>.rig.log, whose last line says RIG_CLEAN, RIG_CLEAN_BACKGROUND or
+RIG_CONTAMINATED. One look at a device user contaminates
 a run; load has to last (--load-looks looks in a row, 2, or more than
 --load-share of the run's looks, 0.2), and a machine's known background load
 (RIG_ROOT/background.json: an IT security agent, each program with a CPU and
@@ -47,6 +48,7 @@ On Linux (every process the user can see; other users' processes show only their
   camera   /dev/bus/usb/... of a FLIR camera (USB vendor 1e10), or libSpinnaker
            loaded (a process that can open, reset or enumerate the cameras)
   trigger  /dev/ttyACM*, /dev/ttyUSB*  the trigger Arduino
+  ephys    a process named open-ephys* or spikeglx* (RIG_EPHYS_NAMES; by /proc/<pid>/comm, any user's)
   load     the CPU (cores) and disk (MB/s) used by everything outside the job
   desktop  a desktop drawing on the GPU (gnome-shell, Xwayland, Xorg, GNOME's gsd-xsettings,
            mutter-x11-frames and portal helper xdg-desktop-portal-gnome, ...; any user,
@@ -59,6 +61,10 @@ On Windows (rig_windows.py beside this file says how each is seen):
   encoder  ffmpeg*.exe
   camera   a Spinnaker DLL loaded (PySpin, SpinView)
   trigger  a COM port open
+  ephys    SpikeGLX*.exe or open-ephys*.exe running (RIG_EPHYS_NAMES): SpikeGLX (SpikeGLX_NISIM
+           too) or the Open Ephys GUI. Running at all counts, recording or not: an unattended
+           Neuropixels recording (an imec PCIe base station, a OneBox, NI DAQ cards) opens drivers
+           rig.py can't name, so the program is what it looks for
   load     the CPU as on Linux. The disk: what all disks read and wrote (PhysicalDisk(_Total))
            less what the job's processes read and wrote, or what processes outside the job
            read and wrote if more, but never more than the disks moved (a program's reads and
@@ -69,6 +75,12 @@ On Windows (rig_windows.py beside this file says how each is seen):
            Manager, ...). Noted, not waited for; the log says when one starts or
            ends, but that doesn't contaminate the run, since Windows starts and
            ends some (WebView, search) by itself.
+
+--allow ephys (RIG_ALLOW=ephys) on run or hold: ephys acquisition programs outside the job are
+neither waited for nor counted, only logged (ALLOWED). For a real recording that pairs cameras with
+SpikeGLX, such as campy-session's panel, which sets RIG_ALLOW=ephys when it takes the rig: the
+lock still keeps tests away while it records, but SpikeGLX, started by hand beside it, mustn't keep
+the panel from opening. --allow takes any of the kinds above, comma-separated.
 
 A process belongs to the job when it carries the job's RIG_JOB in its
 environment (everything the job starts does, even with setsid or nohup), is in
@@ -95,12 +107,13 @@ uses the Windows lock on Linux too.
 On an experiment machine (RIG_ROOT/experiment.json; docs/design/rig-fleet.md, section 5), where people
 record experiments, run starts a test only when every Windows session (quser) has been idle 15+ min,
 nothing outside it uses a device, the hour is allowed ("hours", default 22:00-06:00) and RIG_ROOT/PAUSE
-isn't there (or its time has passed); otherwise it exits 75 at once, never waiting in line. On Windows the
+isn't there (or its time has passed), and no ephys acquisition program runs; otherwise it exits 75 at once, never waiting in line. On Windows the
 banner (rig_banner.ps1, started in the session by a Task Scheduler task; rig_experiment_setup.ps1 sets it
 up) must show the test first. The test ends within 2 s, every process of it, when RIG_ROOT/STOP appears
 (the banner's Stop button, the "Stop campy test" shortcut, keyboard or mouse input at the machine, an
 unlock, a Remote Desktop connect, a logon), when anything outside it starts using the GPU, a camera, the
-encoder or the trigger (campy, SpinView, a Python), or when quser shows a session in use; the log's last
+encoder or the trigger (campy, SpinView, a Python) or an ephys acquisition program starts (SpikeGLX, Open
+Ephys), or when quser shows a session in use; the log's last
 line is then RIG_STOPPED, run exits 75, and PAUSE keeps new tests away until 9 AM ("pause_until").
 
 Installing and versions. Each machine runs one installed copy, in RIG_ROOT, which every
@@ -141,7 +154,13 @@ PERIOD = float(os.environ.get("RIG_PERIOD", 2.0))  # s between looks
 # Other files to watch as one of the kinds, e.g. RIG_EXTRA="trigger=/dev/ttyS0,gpu=/dev/nvidia0"
 # (on Windows, NT device names: RIG_EXTRA="trigger=\Device\Serial0")
 EXTRA = dict(reversed(kv.split("=", 1)) for kv in os.environ.get("RIG_EXTRA", "").split(",") if "=" in kv)
-KINDS = ("gpu", "encoder", "camera", "trigger")
+KINDS = ("gpu", "encoder", "camera", "trigger", "ephys")
+# Ephys acquisition programs (the "ephys" kind), by name: on Linux /proc/<pid>/comm (its first 15
+# characters), on Windows the image name (rig_windows.EPHYS_NAMES, the same variable). Their PCIe and
+# USB acquisition hardware (an imec base station, a OneBox, NI DAQ cards) opens devices rig.py has no
+# names for, so the program running at all is what counts. RIG_EPHYS_NAMES (comma-separated
+# patterns) replaces the list on a machine
+EPHYS_NAMES = [s.strip().lower() for s in os.environ.get("RIG_EPHYS_NAMES", "spikeglx*,open-ephys*").split(",") if s.strip()]
 # Desktops drawing on the GPU, by /proc/<pid>/comm (the kernel keeps its first 15 characters). A logged-in
 # GNOME session also has two helpers that keep the GPU's render node open for as long as it runs:
 # gsd-xsettings and mutter-x11-frames (comm "mutter-x11-fram"). At the login screen they run as gdm, whose
@@ -197,6 +216,29 @@ def device_kind(path, cameras):
 		return "camera"
 	return None
 
+def is_ephys(comm):
+	"""Whether a Linux process's comm names an ephys acquisition program."""
+	comm = comm.lower()
+	return any(fnmatch.fnmatchcase(comm, pat[:15]) for pat in EPHYS_NAMES)
+
+def ephys_programs():
+	"""[(pid, name)] of every ephys acquisition program running, anyone's, found by name alone: cheap
+	enough to ask before anything else (no nvidia-smi, no handle table)."""
+	if WINDOWS:
+		return sorted((row[0], row[2]) for row in rig_windows.process_table()
+			if rig_windows.matches(row[2], rig_windows.EPHYS_NAMES))
+	out = []
+	for name in os.listdir("/proc") if os.path.isdir("/proc") else ():
+		if name.isdigit():
+			try:
+				with open("/proc/%s/comm" % name) as f:
+					comm = f.read().strip()
+			except OSError:
+				continue
+			if is_ephys(comm):
+				out.append((int(name), comm))
+	return sorted(out)
+
 def flir_cameras():
 	"""{'/dev/bus/usb/BBB/DDD': 'bus-port'} for every FLIR camera on USB."""
 	out = {}
@@ -239,7 +281,10 @@ def read_proc(pid, cameras):
 	if not p.cmd:
 		p.cmd = "[" + stat[stat.index("(") + 1:stat.rindex(")")] + "]"
 	p.kinds, p.io, p.job, p.user = set(), None, None, None
-	if stat[stat.index("(") + 1:stat.rindex(")")] in DESKTOP:
+	comm = stat[stat.index("(") + 1:stat.rindex(")")]
+	if is_ephys(comm):  # by name: seen whoever runs it, before its open files (another user's are hidden)
+		p.kinds.add("ephys")
+	if comm in DESKTOP:
 		p.kinds.add("desktop")
 		try:
 			p.user = pwd.getpwuid(os.stat("/proc/%d" % pid).st_uid).pw_name
@@ -574,9 +619,11 @@ Load = collections.namedtuple("Load", "cpu io top disks rest_cpu rest_io backgro
 class Watch:
 	"""Which processes are outside the job, and the CPU and disk they use."""
 
-	def __init__(self, job=None, sid=None, root_pid=None, background=None):
+	def __init__(self, job=None, sid=None, root_pid=None, background=None, allow=()):
 		self.job, self.sid, self.root_pid = job, sid, root_pid
 		self.background = background
+		self.allow = set(allow)  # kinds neither waited for nor counted (--allow): only noted, in self.allowed
+		self.allowed = []  # outside the job at the last sample, using only allowed kinds
 		self.me = {os.getpid()}
 		self.prev, self.prev_t, self.prev_disk = {}, None, None
 		self.desktops = {}  # (pid, start): Proc, every desktop up at the last sample
@@ -598,12 +645,17 @@ class Watch:
 			q, seen = parent, seen + 1
 		return False
 
+	def foreign(self, p):
+		"""The kinds p uses that count against a run: all but desktop and the allowed ones."""
+		return p.kinds - {"desktop"} - self.allow
+
 	def sample(self):
 		"""(foreign device users, foreign load) now: [(Proc, kinds)], (cores, MB/s, [(cores, MB/s, Proc)],
 		MB/s all disks moved or None)."""
 		t, procs = time.perf_counter(), scan(self.own_pids)  # Windows' monotonic() ticks every 15.6 ms
 		disk = disk_bytes()
 		users, load, cpu, io, own_io = [], [], 0.0, 0.0, 0.0
+		self.allowed = []
 		self.desktops = {(p.pid, p.start): p for p in procs.values() if "desktop" in p.kinds}
 		self.ancestors, q = set(), procs.get(os.getpid())
 		while q and q.ppid in procs and procs[q.ppid].start <= q.start and q.ppid not in self.ancestors:
@@ -621,8 +673,10 @@ class Watch:
 				own.add(p.pid)
 				own_io += b
 				continue
-			if p.kinds - {"desktop"}:
+			if self.foreign(p):
 				users.append(p)
+			elif p.kinds & self.allow:
+				self.allowed.append(p)
 			cpu, io = cpu + c, io + b
 			if c > 0.05 or b > 1:
 				load.append((c, b, p))
@@ -1032,8 +1086,21 @@ def background_for(args):
 	"""The machine's background list (background.json), or none with --strict."""
 	return Background() if getattr(args, "strict", False) else Background.read()
 
+def allowed_kinds(args):
+	"""The kinds --allow (RIG_ALLOW) leaves out: neither waited for nor counted."""
+	return set(getattr(args, "allow", None) or ())
+
+def parse_allow(text):
+	kinds = {k.strip().lower() for k in (text or "").split(",") if k.strip()}
+	bad = kinds - set(KINDS)
+	if bad:
+		raise argparse.ArgumentTypeError("not a kind: %s (the kinds: %s)" % (", ".join(sorted(bad)), ", ".join(KINDS)))
+	return kinds
+
 def log_rules(log, args, bg):
 	"""The log says, before the job starts, what will count against the run."""
+	if allowed_kinds(args):
+		log("allowed outside the job, not waited for and not counted (--allow): %s" % ", ".join(sorted(allowed_kinds(args))))
 	if getattr(args, "strict", False):
 		log("--strict: any look with load outside the job above %g cores or %g MB/s contaminates the run; "
 			"background.json is not used" % (args.cpu, args.io))
@@ -1094,9 +1161,13 @@ def watch(w, alive, log, args, on_signal, lock, stopper=None):
 			log("DESKTOP %s: %s" % ("started" if key in w.desktops else "ended", describe(p)))
 		before = dict(w.desktops)
 		for p in users:
-			for k in p.kinds:
+			for k in w.foreign(p):
 				counts[k] += 1
 			note(("dev", p.pid, p.start), "FOREIGN %s" % describe(p))
+		for p in w.allowed:
+			if ("allowed", p.pid, p.start) not in last:  # once each: it is no contamination
+				last[("allowed", p.pid, p.start)] = time.monotonic()
+				log("ALLOWED (--allow) %s" % describe(p))
 		if track.add(load):
 			note(("load",), "LOAD %s" % load_text(load))
 		if not lock.ours():
@@ -1661,10 +1732,15 @@ def banner_shows(job, wait=15.0):
 		time.sleep(0.25)
 	return False
 
-def experiment_blockers(cfg, banner=True, now=None):
-	"""(why a test may not start now, [] if it may; the sessions seen)."""
+def experiment_blockers(cfg, banner=True, now=None, allow=()):
+	"""(why a test may not start now, [] if it may; the sessions seen). allow: kinds --allow leaves out."""
 	now = now or datetime.datetime.now()
 	why = []
+	if "ephys" not in allow:
+		programs = ephys_programs()
+		if programs:
+			why.append("an ephys acquisition program is running (it may be recording): %s" % ", ".join(
+				"%s (pid %d)" % (name, pid) for pid, name in programs))
 	if not in_hours(cfg["hours"], now):
 		why.append("outside the hours tests may start (%s)" % cfg["hours"])
 	paused = read_pause(now)
@@ -1684,8 +1760,8 @@ def experiment_blockers(cfg, banner=True, now=None):
 class Stopper:
 	"""During a test on an experiment machine: why to stop it now (self.why), or None."""
 
-	def __init__(self, cfg, found):
-		self.cfg, self.why = cfg, None
+	def __init__(self, cfg, found, allow=()):
+		self.cfg, self.why, self.allow = cfg, None, set(allow)
 		self.base = {s["id"]: s for s in found}
 		self.next = time.monotonic() + cfg["session_every"]
 
@@ -1703,7 +1779,11 @@ class Stopper:
 		if users:
 			p = users[0]
 			name = re.split(r"[\\/]", (p.cmd or "?").split()[0].strip('"'))[-1]
-			self.why = "%s started outside the test, using the %s (pid %d)" % (name, ",".join(sorted(p.kinds - {"desktop"})), p.pid)
+			kinds = p.kinds - {"desktop"} - self.allow
+			uses = sorted(kinds - {"ephys"})
+			what = (["using the %s" % ",".join(uses)] if uses else []) + (
+				["an ephys acquisition program"] if "ephys" in kinds else [])
+			self.why = "%s started outside the test, %s (pid %d)" % (name, ", ".join(what), p.pid)
 			return True
 		if time.monotonic() >= self.next:
 			self.next = time.monotonic() + self.cfg["session_every"]
@@ -1742,7 +1822,7 @@ def cmd_run(args):
 	cfg = experiment_config()
 	if cfg:  # an experiment machine: a test starts only now or not at all, never waits in line
 		args.no_wait = True
-		why, _ = experiment_blockers(cfg)
+		why, _ = experiment_blockers(cfg, allow=allowed_kinds(args))
 		if why:
 			say("rig.py run: not now on this experiment machine: %s" % "; ".join(why))
 			sys.exit(75)
@@ -1753,9 +1833,9 @@ def cmd_run(args):
 	try:
 		lock.record(note=WAITING)
 		bg = background_for(args)
-		wait_quiet(Watch(background=bg), args)
+		wait_quiet(Watch(background=bg, allow=allowed_kinds(args)), args)
 		if cfg:  # again, now that the rig is ours; a STOP left from before is not for this run
-			why, found = experiment_blockers(cfg)
+			why, found = experiment_blockers(cfg, allow=allowed_kinds(args))
 			if why:
 				say("rig.py run: not now on this experiment machine: %s" % "; ".join(why))
 				sys.exit(75)
@@ -1783,8 +1863,8 @@ def cmd_run(args):
 		proc = start_job(args.cmd, env, log)
 		lock.record(job, proc.pid)
 		log("rig held by %s for %s (job %s, pid %d): %s" % (args.owner, args.tag, job, proc.pid, " ".join(shlex.join(args.cmd).split())))
-		w = Watch(job=job, sid=None if WINDOWS else proc.pid, root_pid=proc.pid, background=bg)
-		stopper = Stopper(cfg, found) if cfg else None
+		w = Watch(job=job, sid=None if WINDOWS else proc.pid, root_pid=proc.pid, background=bg, allow=allowed_kinds(args))
+		stopper = Stopper(cfg, found, allowed_kinds(args)) if cfg else None
 		counts = watch(w, lambda: proc.poll() is None, log, args, got, lock, stopper)
 		stopped = stopper and stopper.why
 		if stopped:
@@ -1841,7 +1921,7 @@ def cmd_hold(args):
 	try:
 		lock.record(note=WAITING)
 		bg = background_for(args)
-		wait_quiet(Watch(root_pid=args.pid, background=bg), args)
+		wait_quiet(Watch(root_pid=args.pid, background=bg, allow=allowed_kinds(args)), args)
 		if not running():
 			sys.exit("rig.py hold: pid %d ended while waiting for the rig" % args.pid)
 		p = scan().get(args.pid)
@@ -1853,7 +1933,7 @@ def cmd_hold(args):
 		lock.record(job, args.pid, " (held for a running pid)")
 		held = True
 		log("rig held by %s for %s (running pid %d): %s" % (args.owner, args.tag, args.pid, cmdline(p) if p else "?"))
-		w = Watch(job=p and p.job, sid=p and p.sid, root_pid=args.pid, background=bg)
+		w = Watch(job=p and p.job, sid=p and p.sid, root_pid=args.pid, background=bg, allow=allowed_kinds(args))
 		counts = watch(w, running, log, args, got, lock)
 		finish(counts, log, got[0] and "%s; the held pid was left running" % got[0])
 	except BaseException as e:
@@ -1903,7 +1983,8 @@ def cmd_status(args):
 	if WINDOWS:
 		ports = sorted(rig_windows.serial_devices().values())
 		names = {"gpu": "GPU (nvidia-smi%s, python*.exe)" % ("" if NVSMI else ": none"), "encoder": "video encoder (ffmpeg*.exe)",
-			"camera": "FLIR cameras (Spinnaker loaded)", "trigger": "trigger (%s)" % (" ".join(ports) or "no COM port")}
+			"camera": "FLIR cameras (Spinnaker loaded)", "trigger": "trigger (%s)" % (" ".join(ports) or "no COM port"),
+			"ephys": "ephys acquisition (%s)" % ", ".join(rig_windows.EPHYS_NAMES)}
 	else:
 		cams = flir_cameras()
 		jetson = os.path.isdir("/dev/nvgpu")  # a Jetson's integrated GPU (see device_kind)
@@ -1911,7 +1992,8 @@ def cmd_status(args):
 			"encoder": "video encoder (%s)" % ("/dev/v4l2-nvenc, /dev/dri/renderD*" if jetson else "/dev/dri/renderD*"),
 			"camera": "FLIR cameras (%d on USB: %s)" % (len(cams), " ".join(sorted(cams.values())) or "none"),
 			"trigger": "trigger (%s)" % (" ".join(sorted(
-				"/dev/" + d for d in os.listdir("/dev") if re.match(r"tty(ACM|USB)\d+$", d))) or "none plugged in")}
+				"/dev/" + d for d in os.listdir("/dev") if re.match(r"tty(ACM|USB)\d+$", d))) or "none plugged in"),
+			"ephys": "ephys acquisition (%s)" % ", ".join(EPHYS_NAMES)}
 	for k in KINDS:
 		users = [p for p in procs.values() if k in p.kinds and p.pid != os.getpid()]
 		print("%-48s %s" % (names[k] + ":", "free" if not users else ""))
@@ -1995,6 +2077,9 @@ def main(argv=None):
 		limits(p)
 		p.add_argument("--no-wait", action="store_true", default=os.environ.get("RIG_NOWAIT") == "1",
 			help="exit 75 instead of waiting when the rig is busy (or RIG_NOWAIT=1)")
+		p.add_argument("--allow", type=parse_allow, default=os.environ.get("RIG_ALLOW", ""),
+			help="kinds outside the job not waited for and not counted, only logged, comma-separated: ephys for a "
+			"recording run beside SpikeGLX (or RIG_ALLOW)")
 		p.add_argument("--log-dir", default=os.environ.get("RIG_LOGDIR"),
 			help="where <tag>.rig.log goes (default: the current folder, or RIG_LOGDIR)")
 		p.add_argument("owner", help="who runs it: the session's name")

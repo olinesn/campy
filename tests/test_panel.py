@@ -1418,6 +1418,19 @@ def test_a_folder_panel_takes_the_rig_lock_when_a_config_asks(tmp_path, home, mo
 	assert ran == [("auto", "panel-look", "configs")]
 
 
+def test_the_panel_takes_the_rig_with_ephys_allowed(tmp_path, home, monkeypatch):
+	# SpikeGLX started by hand beside the panel (ChronicRecord's OneBox) mustn't keep it waiting for the rig
+	rig = tmp_path / "rig.py"
+	rig.write_text("")
+	calls = []
+	monkeypatch.setattr(subprocess, "call", lambda cmd, env=None: calls.append((cmd, env)) or 0)
+	monkeypatch.delenv("RIG_JOB", raising=False)
+	monkeypatch.setenv("RIG_ALLOW", "trigger")
+	assert panel.UnderRig(str(rig), "panel-look", "configs", ["--no-browser"]) == 0
+	(cmd, env), = calls
+	assert cmd[1:3] == [str(rig), "run"] and env["RIG_ALLOW"] == "ephys,trigger"
+
+
 @POSIX
 def test_a_folder_panel_records_with_the_experiment_picked_on_its_page(tmp_path, home):
 	# Opened on one experiment (3 cameras that never take a frame), switched on the page to the emulated cameras'
