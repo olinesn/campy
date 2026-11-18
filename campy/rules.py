@@ -988,7 +988,8 @@ class Runner:
 		self.rules = None
 		self.results = None   # campy-live's results feed now (None while waiting for campy-live to come back)
 		self.live_gaps = []   # each time campy-live's results were gone while the recording went on (Rejoin)
-		self.writer = None    # the log files' writes, on a thread of their own (frametimes.Writer)
+		self.recording = None # whether the recording goes on, from its cameras' feeds (Recording; made by Loop)
+		self.writer = None   # the log files' writes, on a thread of their own (frametimes.Writer)
 		self.beat = None      # when the decision loop last went round (time.monotonic), None: not looping yet
 		self.watchdog_fired = threading.Event() # the board's watchdog switched everything off: Loop recovers
 		self.said = set()     # the board's errors said already (a retried command's error is said once)
@@ -1243,7 +1244,8 @@ class Runner:
 		stale = self.args.stale_ms / 1e3
 		released = True
 		end = time.monotonic() + self.args.duration_s if self.args.duration_s else None
-		recording = Recording() # whether the recording goes on, from its cameras' feeds: taken once sets come
+		# Whether the recording goes on, from its cameras' feeds: taken once sets come
+		recording = self.recording = Recording()
 		snapped = False # this results feed's camera rings taken
 		looked = 0.0 # when the recording was last looked at, while no set came
 		while not self.stop.is_set():

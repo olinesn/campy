@@ -1014,8 +1014,18 @@ def test_the_recording_ending_while_campy_live_is_gone_ends_campy_rules_with_all
 	assert any("the recording ended while campy-live was gone" in x for x in runner.said_lines)
 
 
+def knows_the_cameras(runner):
+	# campy-rules has taken the recording's cameras (Recording.Snap: at its first look between sets, once sets came)
+	return lambda: runner.recording is not None and runner.recording.Known()
+
+
 def test_the_recording_ending_first_ends_campy_rules_with_campy_live(monkeypatch, tmp_path):
-	# The usual end: the cameras stop, then campy-live ends: no waiting, everything off as before
+	# The usual end: the cameras stop, then campy-live ends: no waiting, everything off as before.
+	# The recording ends only once campy-rules has taken its cameras, as with a real one (campy-rules started before
+	# it, looking between sets 0.2 ms apart). This test's recording is 5 sets, about 150 ms, and campy-rules sets its
+	# board up (about 10 commands and their answers) after the test sees it: GitHub's Windows runner, busy, twice
+	# looked first only after the recording had ended (18 November), and so said "campy-live ended." alone (the test
+	# below makes that start late on purpose)
 	port = SketchPort()
 	marks = {}
 
@@ -1023,6 +1033,7 @@ def test_the_recording_ending_first_ends_campy_rules_with_campy_live(monkeypatch
 		for k in range(1, 6):
 			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
 			time.sleep(1 / 60)
+		assert until(knows_the_cameras(runner))
 		time.sleep(0.05)
 		marks["ended"] = clock.HostNs()
 		feed.cameras.Close()
@@ -1040,6 +1051,37 @@ def test_the_recording_ending_first_ends_campy_rules_with_campy_live(monkeypatch
 	ends = [x for x in runner.said_lines if "ended" in x]
 	assert any("campy-live ended, and the recording with it" in x or "the recording ended (its cameras' live feeds "
 		"did), and campy-live's results stopped with it" in x for x in ends), ends
+
+
+def test_a_recording_over_before_campy_rules_looks_ends_it_at_once(monkeypatch, tmp_path):
+	# campy-rules' loop starts only after the recording's cameras and campy-live's results have both ended (what a
+	# busy runner did to the test above, here on purpose): its first look finds the cameras ended, so it never knew
+	# them recording. It ends at once all the same: everything off, no wait for campy-live, no gap counted
+	port = SketchPort()
+	marks = {}
+	over = threading.Event()
+	loop = rules.Runner.Loop
+
+	def late(self, *args):
+		assert until(over.is_set)
+		return loop(self, *args)
+	monkeypatch.setattr(rules.Runner, "Loop", late)
+
+	def feed_rows(feed, runner):
+		for k in range(1, 6):
+			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
+			time.sleep(1 / 60)
+		marks["ended"] = clock.HostNs()
+		feed.cameras.Close()
+		feed.Close()
+		over.set()
+		assert until(lambda: alloff_after(port, marks["ended"]), 3)
+	runner, events = run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows, cameras=True)
+	assert (alloff_after(port, marks["ended"]) - marks["ended"]) / 1e6 < 1000
+	assert not runner.recording.Known() # the cameras had ended at its first look
+	assert runner.counts["rows"] == 5 and runner.counts["live_gaps"] == 0
+	assert not [e for e in events if e["kind"] in ("live_gone", "live_back")]
+	assert [x for x in runner.said_lines if "ended" in x] == ["campy-rules: campy-live ended."]
 
 
 @pytest.mark.parametrize("cameras, arg", [(False, {}), (True, {"live_wait_s": 0.0})])
