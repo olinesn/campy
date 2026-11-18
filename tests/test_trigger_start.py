@@ -496,7 +496,12 @@ def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path, sim):
 	from campy import syncmatch
 	want = syncmatch.PlannedRises(42, 200, 1000, 5e6) / 1e6
 	got = np.array(pin7[:4]) - (pin2[0] - 0.025) # time 0: half a period before the first camera rise
-	assert np.abs(got - want[:4]).max() < 0.005 # live, the simulated board's loop sleeps 50 us a turn
+	# Live, the simulated board's loop sleeps 50 us a turn, and on a busy test computer its process now and then runs
+	# much later (GitHub's Linux runner, 18 November: one edge of four 84 ms late, the others within 0.3 ms). So the
+	# median stays within 5 ms, and none is off by the shortest gap (200 ms) or more. tests/test_trigger_sketch.py
+	# checks the edges to the microsecond, on a simulated clock
+	off = np.abs(got - want[:4])
+	assert off.max() < 0.2 and np.median(off) < 0.005, (got, want[:4])
 
 
 @pytest.mark.parametrize("how", ["no port", "no answer"])
