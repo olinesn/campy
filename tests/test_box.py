@@ -194,6 +194,17 @@ def events(tmp_path):
 	return [json.loads(l) for l in open(str(tmp_path / "box.events.jsonl"))]
 
 
+def read_status(path):
+	# campy-box's status file while campy-box rewrites it every second (written beside it, then moved into place): not
+	# there yet, or on Windows not openable for the moment it is replaced (PermissionError on GitHub's Windows runner,
+	# 17 November), is "not yet", as campy-session's BoxStatus takes it
+	try:
+		with open(path) as f:
+			return json.load(f)
+	except (OSError, ValueError):
+		return {}
+
+
 def test_a_poke_rewards_and_the_task_ends_after_its_trials(tmp_path):
 	port = FakeBoard()
 	runner, thread, result, said = start(Task(), tmp_path, port)
@@ -441,6 +452,23 @@ def test_with_a_recording_it_waits_for_the_first_frame_and_ends_with_the_stop_fi
 	status = read_status(paths["status"])
 	assert status["ended"] == "stop file" and not status["waiting"]
 	assert any("starts at the first camera frame" in s for s in said)
+
+
+def test_the_last_status_waits_for_a_reader_to_let_go(tmp_path, monkeypatch):
+	# On Windows a reader that has the status file open stops it being replaced for that moment (PermissionError)
+	path = str(tmp_path / "box.status")
+	replace, refused = os.replace, []
+	def Replace(part, to):
+		if to == path and len(refused) < 3:
+			refused.append(to)
+			raise PermissionError(13, "Permission denied", to)
+		replace(part, to)
+	monkeypatch.setattr(box.os, "replace", Replace)
+	with pytest.raises(PermissionError):
+		box.WriteJson(path, {"trial": 1}) # the loop's, every second: tried once
+	assert not os.path.exists(path) and not os.path.exists(path + ".part")
+	box.WriteJson(path, {"trial": 2}, wait_s=1.0) # the last: tried again
+	assert len(refused) == 3 and read_status(path) == {"trial": 2}
 
 
 def test_it_stops_waiting_when_campy_session_is_gone(tmp_path):
