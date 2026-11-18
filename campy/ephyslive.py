@@ -1181,6 +1181,8 @@ def Main(argv=None):
 		"training spikes' distances to its template")
 	t.add_argument("--compete", default="noise", help="units with these labels get templates only to compete for "
 		"spikes (a curated sort's noise clusters): what they match stays unsorted")
+	t.add_argument("--no-whiten", action="store_true", help="the matcher scores the samples as filtered, not "
+		"whitened as Kilosort 4 whitens them")
 	t.add_argument("--no-learn", action="store_true", help="don't learn each unit's template-spike threshold (it "
 		"replays the training span once more, with the templates matched; --match learned then uses z 7)")
 	e = sub.add_parser("evaluate", help="a live sorter's templates against Kilosort's sort, on a span of the recording "
@@ -1203,7 +1205,8 @@ def Main(argv=None):
 			if args.command == "train":
 				ephyssort.Train(source.data, source.stream, args.phy, args.out, args.span,
 					tuple(l.strip() for l in args.labels.split(",") if l.strip()), accept_q=args.accept_q,
-					compete=tuple(l.strip() for l in args.compete.split(",") if l.strip()), learn=not args.no_learn)
+					compete=tuple(l.strip() for l in args.compete.split(",") if l.strip()), learn=not args.no_learn,
+					whiten=not args.no_whiten)
 			else:
 				summary = ephyssort.Evaluate(source.data, source.stream, args.phy, args.templates, args.span,
 					report=tuple(l.strip() for l in args.report.split(",") if l.strip()) or None, match=args.match)

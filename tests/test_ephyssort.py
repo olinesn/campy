@@ -246,7 +246,7 @@ def test_a_spike_taken_away_changes_the_scores_by_the_cross_correlations(sorted_
 	# group's fit comes from the scores: both as if the data less the spike were matched again, or fitted directly
 	tmp, bin_path, phy, times, clusters = sorted_recording
 	out = str(tmp / "templates_cross.npz")
-	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":5"]) == 0
+	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":5", "--no-whiten"]) == 0
 	m = es.MatchingSorter(out, 7).matcher
 	rng = np.random.default_rng(3)
 	x = rng.normal(0, 8.0, (3000, 96)).astype(np.float32)
@@ -363,21 +363,24 @@ def test_three_units_at_once_on_shared_sites_are_all_found(tmp_path):
 	phy = WritePhy(str(tmp_path / "kilosort4"), geometry, times[order], clusters[order])
 	with open(os.path.join(phy, "cluster_group.tsv"), "w") as f:
 		f.write("cluster_id\tgroup\n0\tgood\n1\tgood\n2\tgood\n")
-	out = str(tmp_path / "templates.npz")
-	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":8"]) == 0
+	out, white = str(tmp_path / "templates.npz"), str(tmp_path / "templates_w.npz")
+	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":8", "--no-whiten"]) == 0
+	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", white, "--span", ":8"]) == 0
 	source = el.ReplaySource(bin_path, speed=0)
 	# The moments where all three really spiked (none dropped by its unit's 3 ms rule)
 	sets = [m for m in moments if all(np.abs(t - m).min() <= 3 for t in ts)]
 	assert len(sets) >= 30
 	got = {}
-	for group in (3, 2):
+	for path, group in ((out, 3), (out, 2), (white, 3)):
 		saved = es.GROUP
 		es.GROUP = group
 		try:
-			spikes, _ = es.ReplayMatched(source.data, source.stream, int(7.5 * RATE), T, es.MatchingSorter(out, 7))
+			spikes, _ = es.ReplayMatched(source.data, source.stream, int(7.5 * RATE), T, es.MatchingSorter(path, 7))
 		finally:
 			es.GROUP = saved
 		mine = [spikes.sample[spikes.unit == k] for k in range(3)]
-		got[group] = sum(1 for m in sets if all(len(s) and np.abs(s - m).min() <= 8 for s in mine)) / len(sets)
-	assert got[3] >= 0.85, got
-	assert got[2] <= got[3] - 0.3, got
+		got[path, group] = sum(1 for m in sets if all(len(s) and np.abs(s - m).min() <= 8 for s in mine)) / len(sets)
+	assert got[out, 3] >= 0.85, got
+	assert got[out, 2] <= got[out, 3] - 0.3, got
+	# Whitened (as Kilosort whitens), the templates differ more: all three found too
+	assert got[white, 3] >= 0.85, got
