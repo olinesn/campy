@@ -155,7 +155,7 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
   <button id="ephysbtn">Show the probe live</button></div>
   <div class="muted note">The probe read from SpikeGLX while it runs, read-only: it never changes SpikeGLX or what it records.
     Read by a program of its own at low priority, only while this is shown. Spikes: threshold crossings, sorted into units when the
-    config gives templates from a Kilosort sort (spikeglx.templates).</div>
+    config gives templates from a Kilosort sort (spikeglx.templates); with spikeglx.match, the templates find spikes below the threshold too.</div>
   <div id="ephysstate" class="muted" style="margin-top:.25rem"></div>
   <div id="ephysbody" hidden>
     <label style="margin-top:.5rem">Oscilloscope: the site picked on the probe map and its 3 nearest, filtered (300 Hz high-pass, median across the probe taken off), last 2 s. Ticks along the top: the camera's frames, while it records.
@@ -918,10 +918,16 @@ function ephysText(){
   if(!H.reading){ $("ephysstate").innerHTML = tag("waiting","warn")+" "+esc(H.state||"")+" — the view starts with SpikeGLX's run (Start)."; return; }
   $("ephysstate").innerHTML = tag("live","ok")+" "+esc(H.state)+" · "+(H.reads_per_s||0)+" reads/s, "+(H.fetch_ms||0)+" ms each · "+
     (H.lag_s!=null ? Math.round(1000*H.lag_s)+" ms behind" : "")+" · "+Math.round(H.spikes_per_s||0).toLocaleString()+" spikes/s · reader "+
-    Math.round(H.cpu||0)+"% of a core"+(H.skipped - (H.unavailable||0) > 0 ? " · "+Number(H.skipped - (H.unavailable||0)).toLocaleString()+" samples skipped (the reader fell behind)" : "")+
+    (H.matcher ? "and matcher " : "")+Math.round(H.cpu||0)+"% of a core"+ephysMatchText(H)+(H.skipped - (H.unavailable||0) > 0 ? " · "+Number(H.skipped - (H.unavailable||0)).toLocaleString()+" samples skipped (the reader fell behind)" : "")+
     (H.unavailable ? " · "+Number(H.unavailable).toLocaleString()+" samples SpikeGLX didn't have (its run starting, or the reader late)" : "")+
     (H.gaps ? " · "+H.gaps+" gaps" : "") + ephysCamText(H.camera) +
     ((EPH.units||[]).length ? " · sorted into "+EPH.units.length+" units: "+Math.round(100*(EPH.sortedShare||0))+"% of spikes" : "");
+}
+function ephysMatchText(H){ // the templates matched in a thread of their own (spikeglx.match): keeping up?
+  const M = H.matcher; if(!M) return "";
+  return " · templates matched: busy "+Math.round(100*(H.matcher_busy||0))+"% of the time, "+Number(M.behind_s||0).toFixed(2)+" s behind"+
+    (M.skipped_pieces ? " · "+(M.skipped_samples/(EPH.rate||30000)).toFixed(1)+" s left unmatched (the matcher fell too far behind: their spikes went out unsorted)" : "")+
+    (M.error ? " · matcher: "+esc(M.error) : "");
 }
 function ephysCamText(C){ // the camera's frame, from the OneBox's camera pulses and the Pico's count
   if(!C) return "";
