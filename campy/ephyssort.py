@@ -208,6 +208,10 @@ class TemplateSorter:
 		self.match_z = f["match_z"].astype(np.float32) if "match_z" in f else None # each unit's template-spike
 		# threshold, learned in training (Learn)
 		self.noise = f["noise"] # uV, each channel's
+		self.whiten = f["whiten"] if "whiten" in f else None # the matcher's whitening (Whitening), and its templates
+		# and each channel's noise in the samples whitened
+		self.templates_w = f["templates_w"] if "templates_w" in f else None
+		self.noise_w = f["noise_w"] if "noise_w" in f else None
 		self.trained = int(f["trained_spikes"].sum()) if "trained_spikes" in f else None
 		self.n_train = f["trained_spikes"] if "trained_spikes" in f else np.zeros(len(self.units), int)
 		n = int(self.sites.max()) + 1 if self.sites.size else 0
@@ -253,9 +257,30 @@ SCALE_ALONE_MAX = 4.0 # a peak's size fitted alone may be up to this before the 
 # template takes in the others' spikes); after it, each size must be within SCALE
 REACH = 2 * (el.BEFORE + el.AFTER) + 4 * MATCH_W # samples a pass's decisions reach (a subtraction, and its neighbors')
 BLOCK = 2048 # samples a transform: the scores are worked out this many (less 60) at a time
+WHITEN_SITES = 32 # the matcher scores samples whitened as Kilosort 4 whitens them: each channel from the covariance
+# of its 32 nearest sites (ZCA). Activity correlated across sites (neurons further away) is then not taken for a
+# template's spike
 LEARN_Z = 6.0 # training: the template spikes each unit's threshold is learned from are those found at this z
 JUDGE = 3000 # samples (0.1 s): the template spikes are judged once at least this many more can be (each judgment
 # works its margins out again: fewer, longer judgments cost less; the card plays 0.3 s behind)
+
+
+def Whitening(filtered, geometry, count=WHITEN_SITES, step=8):
+	"""Kilosort 4's local whitening (ZCA) for the filtered samples ([samples, channels], every step-th used):
+	[channels, channels], each channel's row from the covariance of its count nearest sites (an unused site's: 0).
+	x @ W.T is the samples whitened."""
+	x = np.asarray(filtered[::step], np.float64)
+	C = x.T @ x / max(1, len(x))
+	nb = geometry.Neighbors(1e9, count)
+	W = np.zeros_like(C)
+	for c in range(len(C)):
+		if not geometry.used[c]:
+			continue
+		ix = nb[c][nb[c] >= 0]
+		E, D = np.linalg.eigh(C[np.ix_(ix, ix)])
+		E = np.maximum(E, 0) + 1e-6 * max(float(E.mean()), 1e-12)
+		W[c, ix] = (D / np.sqrt(E)) @ D[0] # its row of D diag(1 / sqrt(E)) D^T (ix's first is c)
+	return W.astype(np.float32)
 
 
 def Cat(parts):
@@ -317,6 +342,11 @@ class TemplateMatcher:
 		import scipy.fft
 		self.fft = scipy.fft
 		self.units, self.peaks, self.sites = sorter.units, sorter.peaks, sorter.sites
+		if getattr(sorter, "whiten", None) is not None: # the samples scored whitened, with templates made so
+			self.white = np.ascontiguousarray(sorter.whiten.T, np.float32)
+			templates, noise = sorter.templates_w, sorter.noise_w
+		else:
+			self.white, templates, noise = None, sorter.templates, sorter.noise
 		if z is None and sorter.match_z is not None:
 			self.zu = sorter.match_z.astype(np.float64)
 		else:
@@ -325,11 +355,11 @@ class TemplateMatcher:
 		self.give = ~sorter.compete # units whose spikes are given out (the others' only compete for them)
 		self.record = None # a list: each template spike found, (sample, unit's index, z, size, pass, in a group, the
 		# score of the data as it came (before any spike was taken away), the cosine of the data with the template)
-		self.noise = sorter.noise.astype(np.float32)
+		self.noise = np.where(noise > 0, noise, 1).astype(np.float32) # each channel's, in the samples scored
 		U, L = len(self.units), el.BEFORE + el.AFTER
 		ok = self.sites >= 0
 		self.cols = np.where(ok, self.sites, 0) # a site missing (-1: a probe with fewer channels) as channel 0, weight 0
-		Tn = sorter.templates / self.noise[self.cols][:, None, :] * ok[:, None, :] # [units, 61, sites], noise units
+		Tn = templates / self.noise[self.cols][:, None, :] * ok[:, None, :] # [units, 61, sites], noise units
 		shapes = Tn.transpose(0, 2, 1).reshape(-1, L)
 		_, _, vt = np.linalg.svd(shapes, full_matrices=False)
 		W = vt[:components].T # [61, K]
@@ -364,6 +394,7 @@ class TemplateMatcher:
 
 	def Reset(self):
 		self.tail, self.tail_first, self.next = None, None, None
+		self.tail_s = None # the tail as scored (whitened)
 		self.S, self.s_first = None, None
 
 	def Feed(self, first, x, last=False):
@@ -371,15 +402,17 @@ class TemplateMatcher:
 		however few (the end of a replay)."""
 		if self.tail is not None and first != self.tail_first + len(self.tail):
 			self.Reset()
+		xs = x if self.white is None else x @ self.white
 		if self.tail is None:
-			buf, bfirst, self.next = x, first, first
+			buf, bufs, bfirst, self.next = x, xs, first, first
 		else:
 			buf, bfirst = np.concatenate([self.tail, x]), self.tail_first
+			bufs = buf if self.white is None else np.concatenate([self.tail_s, xs])
 		# The scores of the samples that now have all they need, once each
 		start = bfirst + el.BEFORE if self.S is None else self.s_first + self.S.shape[1]
 		end = bfirst + len(buf) - el.AFTER + 1
 		if end > start:
-			new = self.Scores(buf, start - bfirst, end - bfirst)
+			new = self.Scores(bufs, start - bfirst, end - bfirst)
 			if self.S is None:
 				self.S, self.s_first = new, start
 			else:
@@ -390,12 +423,13 @@ class TemplateMatcher:
 		lo = max(self.next - bfirst, margin_lo)
 		hi = len(buf) - margin_hi
 		if hi - lo >= (1 if last else self.judge):
+			self.scored = bufs
 			found = self.Judge(buf, bfirst, lo, hi)
 			self.next = bfirst + hi
 		else:
 			found = el.Spikes()
 		keep = max(0, self.next - bfirst - margin_lo)
-		self.tail, self.tail_first = buf[keep:], bfirst + keep
+		self.tail, self.tail_s, self.tail_first = buf[keep:], bufs[keep:], bfirst + keep
 		if self.S is not None and self.tail_first + el.BEFORE > self.s_first:
 			drop = self.tail_first + el.BEFORE - self.s_first
 			self.S, self.s_first = self.S[:, drop:], self.s_first + drop
@@ -416,8 +450,8 @@ class TemplateMatcher:
 		return H
 
 	def Scores(self, x, a0, b0):
-		"""Each unit's score, not yet divided by its template's energy, at samples [a0, b0) of x (filtered uV), whose
-		samples a0 - BEFORE to b0 + AFTER - 1 must be there: [units, b0 - a0]."""
+		"""Each unit's score, not yet divided by its template's energy, at samples [a0, b0) of x (filtered uV, whitened
+		if the templates are), whose samples a0 - BEFORE to b0 + AFTER - 1 must be there: [units, b0 - a0]."""
 		L = el.BEFORE + el.AFTER
 		out = np.empty((len(self.units), b0 - a0), np.float32)
 		s = a0
@@ -633,7 +667,7 @@ class TemplateMatcher:
 		if self.record is not None:
 			for t, u, a, p, g in found:
 				ok = self.sites[u] >= 0
-				x = buf[t - el.BEFORE:t + el.AFTER][:, self.cols[u]] / self.noise[self.cols[u]] * ok
+				x = self.scored[t - el.BEFORE:t + el.AFTER][:, self.cols[u]] / self.noise[self.cols[u]] * ok
 				raw = float(self.S[u, bfirst + t - self.s_first])
 				energy = max(float((x.astype(np.float64) ** 2).sum()), 1e-12)
 				self.record.append((bfirst + t, u, a * self.root[u], a, p, g, raw / self.root[u],
@@ -777,10 +811,12 @@ def Span(seconds, rate, n):
 	return max(0, start), min(n, end)
 
 
-def Train(data, stream, phy, out, span=None, labels=LABELS, say=print, accept_q=ACCEPT_Q, compete=COMPETE, learn=True):
+def Train(data, stream, phy, out, span=None, labels=LABELS, say=print, accept_q=ACCEPT_Q, compete=COMPETE, learn=True,
+		whiten=True):
 	"""Templates for the kept units of phy's sort (and, to compete for spikes, those labelled compete), from the
-	samples in span ("a:b" seconds) of data replayed as live; with learn, each unit's template-spike threshold too
-	(Learn). Writes out (.npz) and returns its summary."""
+	samples in span ("a:b" seconds) of data replayed as live; with whiten, the matcher's whitening and templates
+	whitened (Whitening); with learn, each unit's template-spike threshold too (Learn). Writes out (.npz) and returns
+	its summary."""
 	t0 = time.monotonic()
 	sort = ReadPhy(phy, labels, compete)
 	start, end = Span(span, stream.rate, len(data))
@@ -827,7 +863,7 @@ def Train(data, stream, phy, out, span=None, labels=LABELS, say=print, accept_q=
 		if len(d) < MIN_SPIKES // 2:
 			continue
 		rows.append((u, sort["labels"][u], peaks[u], sites, template, float(np.quantile(d, accept_q)), len(ks),
-			u in rivals))
+			u in rivals, pick))
 	if not any(not r[7] for r in rows):
 		raise el.EphysError("No unit had {} live spikes in the training span: nothing to sort with.".format(MIN_SPIKES))
 	arrays = dict(units=np.array([r[0] for r in rows]), labels=np.array([r[1] for r in rows]),
@@ -837,6 +873,20 @@ def Train(data, stream, phy, out, span=None, labels=LABELS, say=print, accept_q=
 		noise=noise.astype(np.float32), rate=stream.rate,
 		span_samples=np.array([start, end]), phy=os.path.abspath(phy), label_file=sort["label_file"] or "",
 		kept_labels=",".join(labels))
+	if whiten: # the matcher's: the samples whitened (in place: minutes of a probe are GB), the templates again
+		W = Whitening(filtered, stream.geometry)
+		for a in range(0, len(filtered), 1 << 15):
+			filtered[a:a + (1 << 15)] = filtered[a:a + (1 << 15)] @ W.T
+		noise_w = np.median(np.abs(filtered[::8]), axis=0) / 0.6745
+		templates_w = []
+		for r in rows:
+			sites, pick = r[3], r[8]
+			waves = np.stack([filtered[i - el.BEFORE:i + el.AFTER][:, np.maximum(sites, 0)] for i in pick])
+			waves[:, :, sites < 0] = 0
+			templates_w.append(np.median(waves, axis=0).astype(np.float32))
+		arrays.update(whiten=W, templates_w=np.stack(templates_w), noise_w=noise_w.astype(np.float32))
+		say("Whitened as Kilosort 4 whitens (each channel from its {} nearest sites), for the matcher".format(
+			WHITEN_SITES))
 	np.savez_compressed(out, **arrays)
 	filtered = None # (minutes of a probe: GB)
 	mine = [r for r in rows if not r[7]]
