@@ -985,8 +985,7 @@ def Serve(args, out=print):
 	sorter = None
 	if args.templates: # a live sorter: templates from a Kilosort 4 sort (campy-ephys train)
 		from campy import ephyssort
-		sorter = ephyssort.MatchingSorter(args.templates, args.match) if args.match else \
-			ephyssort.TemplateSorter(args.templates)
+		sorter = ephyssort.Sorter(args.templates, args.match)
 	engine = Engine(source, args.threshold, sorter=sorter, frames=frames)
 	key = os.environ.get("CAMPY_EPHYS_KEY", "")
 	state = {"asked": time.monotonic(), "health": {}, "stop": False}
@@ -1167,8 +1166,9 @@ def Main(argv=None):
 	v.add_argument("--pico-status", help="chronic_control.py's status.json: the Pico's camera pulses so far, each "
 		"bout's first frame")
 	v.add_argument("--templates", help="a live sorter: the templates campy-ephys train made from a Kilosort 4 sort")
-	v.add_argument("--match", type=float, default=0, help="with --templates: find spikes with the templates too, "
-		"below the threshold, at this score (noise units; 0: off)")
+	v.add_argument("--match", default="0", help="with --templates: find spikes with the templates too, below the "
+		"threshold: \"learned\", each unit at its threshold learned in training; a number, every unit at that score "
+		"(noise units); 0: off")
 	t = sub.add_parser("train", help="a live sorter's templates from a Kilosort 4 sort (its phy folder), the recording "
 		"replayed as live (campy/ephyssort.py)")
 	t.add_argument("--replay", required=True, help="the sorted recording's .ap.bin (its .meta beside it)")
@@ -1179,6 +1179,10 @@ def Main(argv=None):
 		"mua, their templates take their own spikes, rather than leave them to the good units'")
 	t.add_argument("--accept-q", type=float, default=0.99, help="a unit's acceptance: this quantile of its own "
 		"training spikes' distances to its template")
+	t.add_argument("--compete", default="noise", help="units with these labels get templates only to compete for "
+		"spikes (a curated sort's noise clusters): what they match stays unsorted")
+	t.add_argument("--no-learn", action="store_true", help="don't learn each unit's template-spike threshold (it "
+		"replays the training span once more, with the templates matched; --match learned then uses z 7)")
 	e = sub.add_parser("evaluate", help="a live sorter's templates against Kilosort's sort, on a span of the recording "
 		"replayed as live")
 	e.add_argument("--replay", required=True)
@@ -1186,8 +1190,9 @@ def Main(argv=None):
 	e.add_argument("--templates", required=True)
 	e.add_argument("--span", default=":", help="the seconds to evaluate on, a:b (not the training span)")
 	e.add_argument("--json", help="write the summary and each unit's numbers here")
-	e.add_argument("--match", type=float, default=0, help="find spikes with the templates too, below the threshold, "
-		"at this score (noise units; 0: off, the threshold's spikes sorted)")
+	e.add_argument("--match", default="0", help="find spikes with the templates too, below the threshold: "
+		"\"learned\", each unit at its threshold learned in training; a number, every unit at that score (noise "
+		"units); 0: off, the threshold's spikes sorted")
 	e.add_argument("--report", default="good", help="report the units with these labels only (default good; \"\" "
 		"for all): the others' templates still compete for the spikes")
 	args = parser.parse_args(argv)
@@ -1197,7 +1202,8 @@ def Main(argv=None):
 		try:
 			if args.command == "train":
 				ephyssort.Train(source.data, source.stream, args.phy, args.out, args.span,
-					tuple(l.strip() for l in args.labels.split(",") if l.strip()), accept_q=args.accept_q)
+					tuple(l.strip() for l in args.labels.split(",") if l.strip()), accept_q=args.accept_q,
+					compete=tuple(l.strip() for l in args.compete.split(",") if l.strip()), learn=not args.no_learn)
 			else:
 				summary = ephyssort.Evaluate(source.data, source.stream, args.phy, args.templates, args.span,
 					report=tuple(l.strip() for l in args.report.split(",") if l.strip()) or None, match=args.match)
