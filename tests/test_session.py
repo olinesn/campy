@@ -959,6 +959,12 @@ def test_a_rig_whose_box_board_makes_the_camera_pulses_needs_its_box(tmp_path):
 	two = session.Config(str(write_config(tmp_path / "c.yaml", dict(rig, triggerController="arduino",
 		startArduino=True), box={"task": "t.yaml"})))
 	assert session.Session(two, lock=False).CameraArgs() == []
+	# ChronicRecord's two boards: the Pico pulses the cameras (its pico: section), the box's board reads them on D10;
+	# campy-box gets no camera options, and its task starts with the Pico's first pulse (--start-with-frames)
+	pico = session.Config(str(write_config(tmp_path / "c.yaml", dict(rig, triggerController="pico", syncPin="None"),
+		pico={"set": {"CAMERA_ONLY": 60}}, box={"task": "t.yaml"})))
+	assert pico.pico is not None and pico.box["task"] == str(tmp_path / "t.yaml")
+	assert session.Session(pico, lock=False).CameraArgs() == []
 
 
 @POSIX
