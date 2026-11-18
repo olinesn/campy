@@ -372,8 +372,11 @@ def test_pokes_on_the_simulated_board(tmp_path, outputs_sim):
 	period = 400000
 	for e in pokes:
 		# Each poke's board time is when the board saw the simulated sensor pull the pin down (in real time, as soon as
-		# the process runs: later on a busy computer), and its frame the one it fell in
-		assert (e["board_us"] - 500000) % period < 50000, e
+		# the process runs: later on a busy computer), and its frame the one it fell in. Or a little before it: the
+		# sketch stamps an edge with the time it read just before looking at the pins, and the edge can come in between
+		# (up to 10 ms, as in campy-rules' live test, tests/test_rules.py)
+		off = (e["board_us"] - 500000) % period
+		assert off < 50000 or off > period - 10000, e
 		assert e["frame"] >= 1 and 0 <= e["after_us"], e
 	valve = [e for e in ev if e["kind"] == "pulse" and e["output"] == "valve"]
 	assert len(valve) == 3
