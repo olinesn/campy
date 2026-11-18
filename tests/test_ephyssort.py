@@ -147,7 +147,9 @@ def test_the_live_engine_sorts_with_it(sorted_recording):
 
 def test_the_live_engine_matches_in_a_thread_of_its_own_with_the_same_spikes(sorted_recording):
 	# The templates matched in the engine (pieces of 50 ms, as from SpikeGLX): in a thread of their own, the same
-	# spikes as in the reader's thread, in order; the thread says how far behind it is
+	# spikes as in the reader's thread, in order; the thread says how far behind it is. (Replayed as fast as it can
+	# be read, not at the recording's pace, the reader runs ahead of the matcher: here it may, without its piece
+	# being skipped, to compare the spikes)
 	tmp, bin_path, phy, times, clusters = sorted_recording
 	out = str(tmp / "templates_thread.npz")
 	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":5"]) == 0
@@ -156,6 +158,8 @@ def test_the_live_engine_matches_in_a_thread_of_its_own_with_the_same_spikes(sor
 		source = el.ReplaySource(bin_path, speed=0, chunk_s=0.05)
 		engine = el.Engine(source, sorter=es.MatchingSorter(out), sort_thread=threaded)
 		engine.Start()
+		if threaded:
+			engine.worker.most = 1 << 60
 		while source.state != "ended":
 			engine.Step()
 		engine.Finish(timeout=60)
