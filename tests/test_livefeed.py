@@ -646,12 +646,13 @@ def test_a_ring_with_its_fields_not_written_yet_is_refused_and_waited_for(rings,
 		finish()
 
 
-def _record(prefix, cameras, frames, rate, delay, trigger=None, lose=None):
+def _record(prefix, cameras, frames, rate, delay, trigger=None, lose=None, hold=None):
 	# campy-acquire's rings, made after delay, and frames at rate from when
 	# trigger is set: campy makes its rings a few seconds before the trigger,
 	# and a campy-live already waiting attaches meanwhile. A short recording
 	# started at once could end between campy-live's looks for the feed
-	# (every 20 ms), and it would wait for the next one.
+	# (every 20 ms), and it would wait for the next one. With hold (an Event),
+	# the frames after the first wait for it, then go on at rate.
 	time.sleep(delay)
 	writers = [livefeed.RingWriter(livefeed.RingName(prefix, c), (16, 20), np.uint8, slots=4, frameRate=rate,
 		camera=c, cameraName="Camera{}".format(c)) for c in range(cameras)]
@@ -676,6 +677,9 @@ def _record(prefix, cameras, frames, rate, delay, trigger=None, lose=None):
 						w.Close() # the camera lost: its process closes its ring, the others record on
 					continue
 				w.Write(frame(n), n, host, n / rate)
+			if n == 1 and hold is not None:
+				hold.wait(60)
+				start = time.perf_counter() - 1 / rate # frame 2 a frame after the hold
 	finally:
 		for w in writers:
 			w.Close()
@@ -764,16 +768,35 @@ def test_campy_live_looks_for_the_feed_every_20_ms(monkeypatch):
 	assert len(slept) == 5 and max(slept) <= 0.02, slept
 
 
-def test_campy_live_waiting_tracks_from_the_first_frames(tmp_path):
-	# Started first, it reads the recording from its start. The first frame it
-	# reads is the newest when its setup after attaching is done: frame 1 on a
-	# Mac (setup 3-19 ms), 7 and 10 on a CI runner so busy it skipped 24 of 54
-	# sets with no model. How often it looks is checked above, without timing
+def test_campy_live_waiting_tracks_from_the_first_frames(tmp_path, monkeypatch):
+	# Started first, it reads the recording from its start: nothing slow comes between finding the feed and the
+	# first set. campy-live-session.json did (git, nvidia-smi, PowerShell, the models' SHA-256s: about 1 s, and
+	# frame 68 the first tracked at 60 fps). Checked without timing: that file is held until the first set is read
+	# (had the first set waited for it, both would wait 30 s), and the recording after its first frame, so the
+	# first set is frame 1 however long the rest of the setup takes. By the clock the first frame was 1 on a Mac,
+	# 7 and 10 on busy CI runners, and 60, this 1 s recording's last, on a Windows runner whose setup took about
+	# a second. How often it looks for the feed is checked above, also without timing
+	first, held = threading.Event(), []
+	next_set, write = live.Cameras.NextSet, live.SessionFile.Run
+
+	def NextSet(cameras, *a, **k):
+		got = next_set(cameras, *a, **k)
+		if got is not None:
+			first.set()
+		return got
+
+	def Run(session, *a, **k):
+		held.append(first.wait(30))
+		return write(session, *a, **k)
+	monkeypatch.setattr(live.Cameras, "NextSet", NextSet)
+	monkeypatch.setattr(live.SessionFile, "Run", Run)
 	out = str(tmp_path / "live")
 	assert run_live(name(), out, ["--model", "none", "--report-sec", "0", "--wait-sec", "30"], frames=60, rate=60,
-		delay=0.5, triggered=False) == 0
+		delay=0.5, triggered=False, hold=first) == 0
 	rows = np.load(out + ".npy")
-	assert rows["frame"][0] <= 30 and rows["frame"][-1] == 60
+	assert held == [True], "the first set waited for campy-live-session.json"
+	assert rows["frame"][0] == 1 and rows["frame"][-1] == 60, rows["frame"]
+	assert os.path.exists(out + ".session.json") # written once the first set was read
 
 
 def log_sets(log, first, count):
@@ -877,13 +900,14 @@ def seeing(tmp_path, monkeypatch):
 	return args, truth, order
 
 
-def run_live(prefix, out, args, frames=60, rate=200, delay=0.3, triggered=True, lose=None):
+def run_live(prefix, out, args, frames=60, rate=200, delay=0.3, triggered=True, lose=None, hold=None):
 	# campy-live on a recording of 3 cameras' frames, from a thread: its rings
 	# made after delay, its frames from when campy-live has attached to them
 	# (triggered), or else from when the rings are made, as cameras without a
-	# trigger send them
+	# trigger send them; with hold, the frames after the first wait for it
 	trigger = threading.Event()
-	t = threading.Thread(target=_record, args=(prefix, 3, frames, rate, delay, trigger if triggered else None, lose))
+	t = threading.Thread(target=_record, args=(prefix, 3, frames, rate, delay, trigger if triggered else None, lose,
+		hold))
 	attach = live.Cameras.Attach
 
 	def Attach(cameras, *a, **k):
@@ -900,6 +924,8 @@ def run_live(prefix, out, args, frames=60, rate=200, delay=0.3, triggered=True, 
 			return live.Run(live.ParseArgs(["--cameras", "3", "--name", prefix, "--out", out, "--cpus", "none"] + args))
 	finally:
 		trigger.set()
+		if hold is not None:
+			hold.set() # campy-live over (or failed) before its first set: the recording goes on, and ends
 		t.join()
 
 

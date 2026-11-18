@@ -392,12 +392,20 @@ def test_pokes_on_the_simulated_board(tmp_path, outputs_sim):
 	valve = [e for e in ev if e["kind"] == "pulse" and e["output"] == "valve"]
 	assert len(valve) == 3
 	for r, p in zip(rewards, valve):
-		# Never shorter than 40 ms. In real time the simulated board ends a pulse at its first clock read past it, and
-		# each read sleeps 50 us: on a busy computer the process wakes later (42.3 ms once on GitHub's Python 3.9
-		# runner, 13 November; campy-rules' live test saw 54 ms). The exact timing is tests/test_outputs_sketch.py's,
-		# on a simulated clock
-		assert 0 <= p["rise_us"] - r["board_us"] < 50000 and 40000 <= p["fall_us"] - p["rise_us"] < 100000, (r, p)
+		# Each pulse rises after its poke, lasts at least its 40 ms, and is over before the next poke (400 ms after
+		# this one): a pulse that never ended, or one still on at the next poke, fails
+		assert r["board_us"] <= p["rise_us"] and p["rise_us"] + 40000 <= p["fall_us"] < r["board_us"] + period, (r, p)
 		assert p["frame"] == r["frame"]
+	# How late each rose and how long it lasted, by the middle one of the three: within 50 ms of its poke and under
+	# 100 ms. Not each one: in real time the simulated board ends a pulse at its first clock read past it, and each
+	# read sleeps 50 us, so on a busy computer the process wakes later and the pulse is longer (42.3 ms once on
+	# GitHub's Python 3.9 runner, 13 November, and 102.3 ms there on 18 November; campy-rules' live test saw 54 ms;
+	# the simulated board once held up ~270 ms, in the one-board test below). A hold-up between seeing the poke and
+	# the rise makes the rise late the same way. On a Mac, 40 runs 4 at a time beside 48 busy loops: at most 7.1 ms
+	# late and 46.7 ms long. The exact timing is tests/test_outputs_sketch.py's, on a simulated clock
+	late = sorted(p["rise_us"] - r["board_us"] for r, p in zip(rewards, valve))
+	widths = sorted(p["fall_us"] - p["rise_us"] for p in valve)
+	assert late[len(late) // 2] < 50000 and widths[len(widths) // 2] < 100000, (late, widths, valve)
 	moves = [e for e in ev if e["kind"] == "servo"]
 	assert {e["position"] for e in moves} == {"open", "closed"}
 	sim_log = log_path.read_text()
