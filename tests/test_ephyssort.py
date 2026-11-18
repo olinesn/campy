@@ -88,11 +88,18 @@ def test_trained_on_the_first_seconds_it_sorts_the_rest(sorted_recording, capsys
 	out = str(tmp / "templates.npz")
 	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":5"]) == 0
 	sorter = es.TemplateSorter(out)
-	assert sorted(sorter.units.tolist()) == [0, 1, 2, 3, 4] # not the unit phy calls noise
+	# The unit phy calls noise has a template only to compete for its spikes: none is given to it, and the card
+	# doesn't list it
+	assert sorted(sorter.units.tolist()) == [0, 1, 2, 3, 4, 5]
+	assert sorter.units[sorter.compete].tolist() == [5] and sorter.given == 5
+	assert [u["unit"] for u in sorter.Units()] == [0, 1, 2, 3, 4]
 	assert sorter.templates.shape[1:] == (61, es.TEMPLATE_SITES) # a spike's whole footprint, for the matcher
 	assert (sorter.near_sites == sorter.sites[:, :el.NEIGHBORS]).all() # the threshold's spikes: the nearest 12
-	assert [int(np.argmin(t[:, 0])) for t in sorter.templates] == [el.BEFORE] * 5 # each trough at 20, on its peak site
-	assert {int(u): int(p) for u, p in zip(sorter.units, sorter.peaks)} == {0: 12, 1: 14, 2: 40, 3: 47, 4: 70}
+	kept = ~sorter.compete
+	assert [int(np.argmin(t[:, 0])) for t in sorter.templates[kept]] == [el.BEFORE] * 5 # each trough at 20, on its
+	# peak site
+	assert {int(u): int(p) for u, p in zip(sorter.units[kept], sorter.peaks[kept])} == {0: 12, 1: 14, 2: 40, 3: 47,
+		4: 70}
 	report = tmp / "evaluate.json"
 	assert el.Main(["evaluate", "--replay", bin_path, "--phy", phy, "--templates", out, "--span", "5:",
 		"--json", str(report)]) == 0
@@ -113,8 +120,9 @@ def test_trained_on_the_first_seconds_it_sorts_the_rest(sorted_recording, capsys
 	assert summary["sensitivity_median"] >= 0.9 and summary["precision_median"] >= 0.95
 	assert summary["own_sensitivity_median"] >= 0.9 and summary["own_precision_median"] >= 0.95
 	assert summary["live_spikes_of_a_unit_given_it"] >= 0.9
-	# The noise unit's spikes (phy says noise): left unsorted, not taken for a kept unit
+	# The noise unit's spikes (phy says noise): left unsorted, not taken for a kept unit (nor given to it)
 	assert summary["live_spikes_of_no_unit_given_one"] <= 0.1
+	assert 5 not in per and summary["units"] == 5
 	assert "Sorted" in capsys.readouterr().out
 
 
@@ -182,9 +190,14 @@ def test_the_templates_find_a_unit_below_the_threshold(tmp_path):
 		f.write("cluster_id\tgroup\n" + "".join("{}\tgood\n".format(u) for u in range(6)))
 	out = str(tmp_path / "templates.npz")
 	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":8"]) == 0
-	assert 5 in es.TemplateSorter(out).units.tolist() # a template for it too, from Kilosort's times
+	trained = es.TemplateSorter(out)
+	assert 5 in trained.units.tolist() # a template for it too, from Kilosort's times
+	# Each unit's threshold, learned in training: from LEARN_Z, halfway between its smallest spikes and the false ones
+	# under them (a big unit's high, the small unit's lowest)
+	assert trained.match_z is not None and np.isfinite(trained.match_z).all(), trained.match_z
+	assert (trained.match_z >= es.LEARN_Z).all() and np.argmin(trained.match_z) == list(trained.units).index(5)
 	results = {}
-	for name, extra in (("threshold", []), ("matched", ["--match", "7"])):
+	for name, extra in (("threshold", []), ("matched", ["--match", "7"]), ("learned", ["--match", "learned"])):
 		report = tmp_path / "{}.json".format(name)
 		assert el.Main(["evaluate", "--replay", bin_path, "--phy", phy, "--templates", out, "--span", "8:", "--json",
 			str(report)] + extra) == 0
@@ -194,6 +207,25 @@ def test_the_templates_find_a_unit_below_the_threshold(tmp_path):
 	assert small["sensitivity"] >= 0.8 and small["precision"] >= 0.9, small
 	for u in range(5): # and the others as well as before
 		assert results["matched"][u]["sensitivity"] >= 0.85 and results["matched"][u]["precision"] >= 0.9, results["matched"][u]
+	for u in range(6): # each unit at its own threshold: as well
+		r = results["learned"][u]
+		assert r["sensitivity"] >= 0.8 and r["precision"] >= 0.9, r
+
+
+def test_each_unit_s_threshold_is_where_its_template_spikes_best_match_kilosort_s():
+	# Unit 0: its own spikes score 10 to 19, false ones 6 to 8.5: the threshold between. Unit 1: none of its template
+	# spikes is its: never. Unit 2: all are its: the floor
+	ks = {0: np.arange(10) * 1000, 1: np.arange(5) * 1000 + 300, 2: np.arange(4) * 1000 + 600}
+	t = np.concatenate([ks[0] + 2, np.arange(6) * 1000 + 500, np.arange(5) * 1000 + 800, ks[2]])
+	u = np.array([0] * 10 + [0] * 6 + [1] * 5 + [2] * 4)
+	z = np.concatenate([10.0 + np.arange(10), 6.0 + 0.5 * np.arange(6), [30.0] * 5, [6.5, 7, 8, 9]])
+	times = np.concatenate([ks[0], ks[1], ks[2]])
+	clusters = np.array([0] * 10 + [1] * 5 + [2] * 4)
+	th = es.Thresholds(t, u, z, times, clusters, np.array([0, 1, 2]), 6.0)
+	assert 8.5 < th[0] < 10, th
+	assert th[1] == np.inf
+	assert th[2] <= 6.5, th
+	assert es.PairMask(np.array([0, 5, 30, 100]), np.array([3, 4, 104])).tolist() == [True, True, False, True]
 
 
 def test_the_templates_matched_give_the_same_spikes_however_the_samples_come(sorted_recording):
