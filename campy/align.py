@@ -23,8 +23,9 @@ What it works out, for every camera:
   (startArduino), it waits until every camera is grabbing, and trigger.json
   says which were: each of those starts at trigger 1. So does each camera
   that box/campy-box.cameras.json names, when the operant box's board makes
-  the camera pulses (triggerController: box): campy-box starts them once every
-  camera is waiting, and says which were. Otherwise (a camera that was not
+  the camera pulses (triggerController: box): campy-box starts them once campy
+  stops waiting for the cameras, as campy starts its own trigger, and says
+  which were grabbing. Otherwise (a camera that was not
   ready, an external trigger, or a recording from a campy that started the
   trigger first or a campy-box that did not say) a camera's first frame need
   not be the first trigger.

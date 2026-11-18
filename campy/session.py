@@ -163,6 +163,9 @@ BOX = {
 	"ready_timeout_s": ((int, float), 30, "how long to wait for campy-box to set the board up"),
 	"end_recording": ((bool,), False, "when the task ends by itself (its end: trials or minutes, or an end: true "
 		"state), stop the recording too; false: the recording goes on to its own end"),
+	"all_cameras": ((bool,), False, "with triggerController: box: true: the board's camera pulses start only if every "
+		"camera is ready, else the recording gets no frames (and an alert says so); false: once campy-acquire stops "
+		"waiting for the cameras (readyTimeoutSec), with those that are ready, the others named in a critical alert"),
 	"args": ((list,), [], "more campy-box options, as a list"),
 	}
 VIEW["python"] = ((str,), "", "the python that runs campy-live-view (default: campy-live's, when the config has a "
@@ -1262,7 +1265,8 @@ class Session:
 		"""
 		campy-box's options when its board makes the camera pulses (triggerController: box): the settings
 		campy-acquire would give its Arduino. As many pulses as campy-acquire takes frames (recTimeInSec x frameRate,
-		rounded as campy/cameras/unicam.py does), started once every camera is ready.
+		rounded as campy/cameras/unicam.py does), started once campy-acquire has stopped waiting for the cameras: with
+		those that are ready, as it starts its own trigger, or only with every one (box.all_cameras).
 		"""
 		from campy import configurator
 		v = self.config.Value
@@ -1273,6 +1277,8 @@ class Session:
 		args = ["--camera-fps", str(float(v("frameRate"))), "--camera-frames",
 			str(int(round(float(v("recTimeInSec")) * float(v("frameRate"))))),
 			"--camera-pins", ",".join(str(p) for p in pins), "--cameras-when-ready"]
+		if self.config.box["all_cameras"]:
+			args.append("--all-cameras")
 		if str(v("syncPin", "None")) != "None":
 			gaps = v("syncGapMs", [200, 1000])
 			gaps = gaps if isinstance(gaps, (list, tuple)) else [gaps]

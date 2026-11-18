@@ -834,6 +834,7 @@ def test_the_box_section_is_checked(tmp_path):
 	(tmp_path / "exp.yaml").write_text("extends: rig/profile.yaml\n")
 	assert session.Config(str(tmp_path / "exp.yaml")).box["task"] == str(tmp_path / "rig" / "t.yaml")
 	assert c.box["required"] is True and c.box["end_recording"] is False and c.box["ready_timeout_s"] == 30
+	assert c.box["all_cameras"] is False
 	for box, message in [({"required": False}, r"box: needs task:"), ({"task": "nope.yaml"}, r"box\.task: .*nope\.yaml is not a file"),
 			({"task": "tasks/t.yaml", "reqired": True}, r'Did you mean "required"')]:
 		config = write_config(tmp_path / "c.yaml", {"numCams": 1}, box=box)
@@ -950,6 +951,10 @@ def test_a_rig_whose_box_board_makes_the_camera_pulses_needs_its_box(tmp_path):
 	s = session.Session(c, lock=False)
 	assert s.CameraArgs() == ["--camera-fps", "60.0", "--camera-frames", "1800", "--camera-pins", "12,13",
 		"--cameras-when-ready", "--sync-pin", "9", "--sync-pulse-ms", "10", "--sync-gap-ms", "200,1000"]
+	# box.all_cameras: the pulses only with every camera ready
+	every = session.Config(str(write_config(tmp_path / "c.yaml", rig, box={"task": "t.yaml", "all_cameras": True})))
+	assert session.Session(every, lock=False).CameraArgs()[:8] == ["--camera-fps", "60.0", "--camera-frames", "1800",
+		"--camera-pins", "12,13", "--cameras-when-ready", "--all-cameras"]
 	# The two-board setup (the Arduino pulses the cameras, the box's board reads them on D10): no camera options
 	two = session.Config(str(write_config(tmp_path / "c.yaml", dict(rig, triggerController="arduino",
 		startArduino=True), box={"task": "t.yaml"})))
