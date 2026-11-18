@@ -84,7 +84,7 @@ box:
 - It writes `sync.json` into the recording's folder. `campy-syncmatch` reads it as `trigger.ino`'s, with no holds, since the camera edges come from the timer.
 - `campy-align` aligns the cameras from their arrival times, as for the Pico (`trigger.json` says `startedBy: external`).
 - The period is at most 65,535 µs (16 fps or more), and at most 4 cameras' pins.
-- Nothing of it has run on a real board yet.
+- On a real board (14 November 2026, the EVO-X2's Nano ESP32 with three FLIR Blackfly S cameras): every frame at 60 and 100 fps, as steady as `trigger.ino` or steadier, and the camera pulses unchanged with the box busy ([results](operant-boxes.md#what-has-been-tested)).
 
 Why: on 10 November 2026 every calibration from the ChronicRecord rig's panel stopped 2 s in. The Pico had pulsed the rig's cameras since 5 November, and the bout sessions' configs said so. But the rig profile, which the calibration, look and live-tracking configs extend, still started the Arduino on COM9, which had not been plugged in since 2 November.
 
