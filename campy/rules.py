@@ -1073,6 +1073,16 @@ class Runner:
 			self.counts["gaps"] += 1
 			k, gap_us = (int(x) for x in fields[:2])
 			self.Event(dict(kind="gap", board_frame=k, gap_ms=gap_us / 1e3, heard_ns=heard_ns, line=line))
+		elif kind == "relink":
+			self.Event(dict(kind="relink", what=fields[0], detail=fields[1], heard_ns=heard_ns))
+			if fields[0] == "down":
+				self.say("campy-rules: the board's USB link stalled ({}): opening it again.".format(fields[1]))
+			else:
+				# Over the board's watchdog: it switched everything off; the rules start over, as after "wd"
+				self.say("campy-rules: the board's link is back after {:.1f} s: the rules start over and the session's "
+					"trains start again.".format(fields[1]))
+				self.counts["relinks"] = self.counts.get("relinks", 0) + 1
+				self.watchdog_fired.set()
 		elif kind == "lost":
 			self.say("campy-rules: {}. The board switches its outputs off by itself (its watchdog). "
 				"Stopping.".format(fields[0]))
@@ -1159,10 +1169,10 @@ class Runner:
 					raise RulesError("no port for the outputs board: --port, or board: port: in the rules")
 				boardlog = open(out + ".board.txt", "x", buffering=1)
 				self.board = outputs.Board(port, log=LogFile(self, boardlog), listener=self.Listen, say=self.say,
-					alive=self.Alive)
+					alive=self.Alive, relink=10.0) # the board's USB link, if it stalls, opened again (linkwatch)
 				for command in ["alloff"] + rules.Free() + ["trig {}".format(int(board_cfg.get("trigger_pin", 10))),
 						"watchdog {}".format(int(board_cfg.get("watchdog_ms", 250))),
-						"bound {}".format(int(self.bound_ms * 1000))] + rules.Setup():
+						"bound {}".format(int(self.bound_ms * 1000)), "linkwatch 2000"] + rules.Setup():
 					words = self.board.Command(command).Ok().split()
 					if words[:2] == ["ok", "in"] and len(words) == 5 and int(words[2]) in rules.by_input:
 						rules.by_input[int(words[2])].Set(words[4] == "1") # its level now

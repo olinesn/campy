@@ -43,7 +43,7 @@ The folder a page last copied into is remembered for each config, as the
 bout settings are (campy/pico.py): RememberFile(), keyed by the config's path.
 """
 
-import itertools, os, sys, threading, time
+import collections, itertools, os, sys, threading, time
 from datetime import datetime
 
 import psutil
@@ -52,6 +52,11 @@ REMEMBER = "panel_copy.json"
 KEEP = 30 # finished copies the page lists
 LOOK_S = 3.0 # how often a copy's progress is looked at (a network share is slow to list)
 ETA_AFTER_S = 5.0 # a phase's time left is only estimated once it has run this long (its rate means something then)
+FRESH_S = 2 * LOOK_S + 1 # a count looked at longer ago than this is old: no speed, no stall from it
+RATE_S = 20.0 # the copy's speed (and its time left): its rate over about this long, so a slowdown or a stall shows
+RATE_MIN_S = 6.0 # ... once its counts span this long (two looks): before, the time left goes by the phase's average
+PLOT_POINTS = 120 # the page's speed plot: at most this many points for a phase, evenly spread over all of it
+STALL_S = 15.0 # nothing copied (or read back) for this long: the page says so instead of a speed and a time left
 SAME_TIME_S = 2.0 # a copied file's modification time is its original's to within this (FAT keeps it to 2 s)
 
 
@@ -271,6 +276,12 @@ class Job:
 		# When the phase began, and when its count (done_bytes, checked_bytes) was last measured: what eta_s is
 		# estimated from (Eta)
 		self.phase_at, self.measured_at = None, None
+		# The phase's count as looked at (Sample), the last RATE_S of it: its recent speed (Rate); and when it last
+		# grew (Stalled)
+		self.samples, self.moved_at = collections.deque(), None
+		# The phase's count at points plot_step apart (every look at first, the step doubled each time they fill up):
+		# the page's speed plot (Speeds)
+		self.checkpoints, self.plot_step = [], 0.0
 		self.verified, self.mismatched = None, None # files the same in the copy, and not, once checked
 		self.local = None # what became of the folder here: deleted, kept (why) or here
 		self.copier = None # the copy program (robocopy, rsync), a psutil.Process, while it runs (Progress)
@@ -287,23 +298,110 @@ class Job:
 		if self.started:
 			d["seconds"] = round((self.ended or now) - self.started, 1)
 		d["eta_s"] = self.Eta(now)
+		rate, stalled = self.Rate(now), self.Stalled(now)
+		d["speed"] = None if rate is None or stalled is not None else round(rate) # bytes a second, recently
+		d["stalled_s"] = stalled
+		d["speeds"] = self.Speeds() if self.state == "copying" and self.Count()[0] is not None else []
 		return d
 
 	def Phase(self, phase, now=None):
 		if phase != self.phase:
 			self.phase_at = time.time() if now is None else now
 			self.measured_at = None
+			# A new count, from none (a deque of its own: Status may be reading the old one)
+			self.samples, self.moved_at = collections.deque([(self.phase_at, 0)]), self.phase_at
+			self.checkpoints, self.plot_step = [(self.phase_at, 0)], 0.0
 		self.phase = phase
+
+	def Count(self):
+		# What the phase counts, and of how many: bytes copied, or read back by the check; (None, None) in a phase that
+		# counts none
+		if self.phase == "copying":
+			return self.done_bytes, self.bytes
+		if self.phase == "checking":
+			return self.checked_bytes, self.check_bytes
+		return None, None
+
+	def Counting(self):
+		# A phase with a count still to go: one that can have a speed, or stall (all of it done: the copy program
+		# ending, the check about to say so; not a stall)
+		count, total = self.Count()
+		return self.state == "copying" and count is not None and not (total and count >= total)
+
+	def Sample(self, now):
+		"""The phase's count now, for its recent speed (Rate): Status takes one every LOOK_S."""
+		count, samples = self.Count()[0], self.samples
+		if count is None or self.state != "copying":
+			return
+		if not samples or count > samples[-1][1]:
+			self.moved_at = now
+		samples.append((now, count))
+		while len(samples) > 2 and samples[1][0] <= now - RATE_S:
+			samples.popleft() # the oldest kept is the last one at least RATE_S old: the rate spans RATE_S once it can
+		if self.Counting():
+			self.Checkpoint(now, count)
+
+	def Checkpoint(self, now, count):
+		"""
+		The count onto the plot's points (checkpoints): a new point once the last is plot_step past the one before,
+		else the last one moved up to now. Over PLOT_POINTS: every other one dropped (the first and last kept) and the
+		step doubled, so the whole phase stays on the plot, evenly, however long it runs (days), and each speed on it
+		is the exact mean between two points (a pause of a few seconds early on drops to 0).
+		"""
+		points = list(self.checkpoints) or [(now, count)]
+		if len(points) >= 2 and points[-1][0] - points[-2][0] < self.plot_step:
+			points[-1] = (now, count)
+		elif now > points[-1][0]:
+			points.append((now, count))
+		if len(points) > PLOT_POINTS + 1:
+			points = points[:-1:2] + [points[-1]]
+			self.plot_step = max(LOOK_S, 2 * self.plot_step) if self.plot_step else 2 * LOOK_S
+		self.checkpoints = points # a new list: Status may be reading the old one
+
+	def Speeds(self):
+		"""The page's plot: [seconds into the phase, bytes/s between the point before and this one]."""
+		points = list(self.checkpoints)
+		if self.phase_at is None:
+			return []
+		return [[round(t1 - self.phase_at, 1), round(max(0.0, (c1 - c0) / (t1 - t0)))]
+			for (t0, c0), (t1, c1) in zip(points, points[1:]) if t1 > t0]
+
+	def Rate(self, now):
+		"""
+		Bytes a second over the last RATE_S or so of the phase (from its counts, Sample), not its average since it
+		began: a slowdown or a stall shows within seconds. None while the counts span under RATE_MIN_S, when the
+		newest is old (no one has looked for a while: the page closed), in a phase with no count, or once all of it
+		is done.
+		"""
+		samples = list(self.samples)
+		if not self.Counting() or len(samples) < 2:
+			return None
+		(t0, c0), (t1, c1) = samples[0], samples[-1]
+		if t1 - t0 < RATE_MIN_S or now - t1 > FRESH_S:
+			return None
+		return max(0.0, (c1 - c0) / (t1 - t0))
+
+	def Stalled(self, now):
+		"""
+		Seconds since the phase's count last grew, once that is STALL_S or more; else None. Only from counts looked at
+		lately (Sample): a count no one has looked at for a while is not known to have stalled.
+		"""
+		samples = self.samples
+		if not self.Counting() or self.moved_at is None or not samples or now - samples[-1][0] > FRESH_S:
+			return None
+		quiet = now - self.moved_at
+		return round(quiet) if quiet >= STALL_S else None
 
 	def Eta(self, now):
 		"""
-		Seconds left (from now) in what the copy does now: copying, at the
-		phase's average rate so far, or the byte-for-byte check, at its own.
-		The rate is the one when the count was last measured (every LOOK_S
-		for the copy), counted down from that moment, so it doesn't creep up
-		between measurements. None while it can't be estimated yet (under
-		ETA_AFTER_S into the phase, nothing done) or the phase has none
-		(finishing, deleting).
+		Seconds left (from now) in what the copy does now: copying, or the
+		byte-for-byte check. At the phase's recent rate (Rate, the speed the
+		page shows) once there is one, else at its average so far; counted
+		down from when the count was last measured (every LOOK_S for the
+		copy), so it doesn't creep up between measurements. None while it
+		can't be estimated yet (under ETA_AFTER_S into the phase, nothing
+		done), while it is stalled (Stalled: no end to say), or the phase has
+		none (finishing, deleting).
 		"""
 		if self.state != "copying" or self.phase_at is None or self.measured_at is None:
 			return None
@@ -314,9 +412,12 @@ class Job:
 		else:
 			return None
 		ran = self.measured_at - self.phase_at
-		if not total or not done or ran < ETA_AFTER_S:
+		if not total or not done or ran < ETA_AFTER_S or self.Stalled(now) is not None:
 			return None
-		left = (total - done) / (done / ran) - (now - self.measured_at)
+		rate = self.Rate(now)
+		if not rate: # none yet, or nothing done lately but not a stall yet: the average holds it meanwhile
+			rate = done / ran
+		left = (total - done) / rate - (now - self.measured_at)
 		return round(max(0.0, left), 1)
 
 
@@ -533,6 +634,7 @@ class CopyQueue:
 				job.done_bytes = self.Progress(job)
 				if job.phase == "copying":
 					job.measured_at = now
+				job.Sample(now) # bytes copied, or read back by the check: the copy's recent speed
 		shown = [j for j in jobs if j.state in ("waiting", "copying")] + \
 			[j for j in jobs if j.state not in ("waiting", "copying")][-KEEP:]
 		return {"pending": sum(j.state in ("waiting", "copying") for j in jobs),
