@@ -13,7 +13,11 @@ spikeglx.exe says where it is), runs no run, and its trigger is TTL
 (trigMode 2), so that it writes files only while the gate is high, not all
 the time. A SpikeGLX freshly opened has settings "never validated": its
 devices (spikeglx.devices) are then detected and verified, as Configure >
-Detect > Verify | Save does.
+Detect > Verify | Save does. At each Start, a SpikeGLX whose devices aren't
+the config's (its probes and OneBoxes) is given the config's the same way:
+an experiment's config decides whether the probe is recorded, whatever
+SpikeGLX was last set to (the OneBox alone, "(20,obx)", for fiber photometry
+without a probe).
 
 At the start: its data folder is <recording>/spikeglx, its run name
 <run_prefix><date_time> (as the recording's folder), the run starts, and
@@ -31,8 +35,9 @@ KEYS = {
 	"exe": ((str,), "", "SpikeGLX's program, opened if SpikeGLX isn't running (default: SpikeGLX must be open)"),
 	"host": ((str,), "127.0.0.1", "SpikeGLX's command server"),
 	"port": ((int,), 4142, "its port"),
-	"devices": ((str,), "", "SpikeGLX's devices, by physical address, for a SpikeGLX freshly opened "
-		"(selectDevices): \"(20,1,1)(20,obx)\""),
+	"devices": ((str,), "", "SpikeGLX's devices, by physical address (selectDevices): \"(20,1,1)(20,obx)\" the "
+		"probe and the OneBox, \"(20,obx)\" the OneBox alone; given to a SpikeGLX freshly opened, and at each Start to "
+		"one whose probes and OneBoxes differ"),
 	"stream": ((list,), [1, 0], "the stream the gate's TTL is on, [js, ip] (1, 0: the first OneBox)"),
 	"run_prefix": ((str,), "", "the run's name before the recording's date_time: \"chronic_\""),
 	"write_mb_s": ((int, float), 24, "what SpikeGLX writes while the gate is open, in MB/s, for the panel's disk check "
@@ -52,6 +57,35 @@ FOLDER = "spikeglx" # in the recording's folder
 
 class SpikeGLXError(Exception):
 	pass
+
+
+def Entries(text):
+	"""The parenthesized entries of a SpikeGLX devices string, each split at its commas: [[str, ...]]."""
+	import re
+	return [[v.strip() for v in e.split(",")] for e in re.findall(r"\(([^()]*)\)", text or "") if e.strip()]
+
+
+def Wanted(devices):
+	"""
+	A spikeglx.devices string's probes {(slot, port, dock)} and OneBoxes
+	{slot}, or None when it names anything else (an NI-DAQ, a passive probe),
+	which campy leaves to SpikeGLX as it is.
+	"""
+	probes, boxes = set(), set()
+	for e in Entries(devices):
+		if len(e) == 2 and e[0].isdigit() and e[1].lower() == "obx":
+			boxes.add(int(e[0]))
+		elif len(e) == 3 and all(v.isdigit() for v in e):
+			probes.add(tuple(int(v) for v in e))
+		else:
+			return None
+	return probes, boxes
+
+
+def Shown(probes, boxes):
+	"""Probes and OneBoxes as a devices string: "(20,1,1)(20,obx)", "()" for none."""
+	text = "".join("({},{},{})".format(*p) for p in sorted(probes)) + "".join("({},obx)".format(b) for b in sorted(boxes))
+	return text or "()"
 
 
 def Match(section):
@@ -140,10 +174,54 @@ class Connection:
 		self.Ok(self.sglx.c_sglx_getDataDir(byref(d), self.h, 0), "getDataDir")
 		return d.value.decode(errors="replace") if d.value else ""
 
+	def Text(self, fn, what):
+		from ctypes import byref, c_char_p
+		d = c_char_p()
+		self.Ok(fn(byref(d), self.h), what)
+		return d.value.decode(errors="replace") if d.value else ""
+
+	def Selected(self):
+		"""
+		SpikeGLX's devices as last verified: probes {(slot, port, dock)} (its
+		getProbeAddrs, "(probeID,slot,port,dock)...") and OneBoxes {slot}
+		(getOneBoxAddrs, "(OneBoxID,slot)..."); None when its answers can't be read.
+		"""
+		try:
+			probes = {tuple(int(v) for v in e[1:4]) for e in Entries(self.Text(self.sglx.c_sglx_getProbeAddrs,
+				"getProbeAddrs"))}
+			boxes = {int(e[1]) for e in Entries(self.Text(self.sglx.c_sglx_getOneBoxAddrs, "getOneBoxAddrs"))}
+		except (SpikeGLXError, AttributeError, ValueError, IndexError):
+			return None # an SDK without these calls, or answers in another form: SpikeGLX's devices left as they are
+		return probes, boxes
+
+	def Differs(self, devices):
+		"""SpikeGLX's devices as a string when they aren't devices' probes and OneBoxes, else None."""
+		wanted = Wanted(devices)
+		now = self.Selected() if wanted is not None else None
+		if wanted is None or now is None or now == wanted:
+			return None
+		return Shown(*now)
+
+	def Select(self, devices, say=print):
+		"""Detect and verify devices, as Configure > Detect > Verify | Save does."""
+		# Verify refuses a run name already used in the data folder (the last session's): a fresh pair first
+		fresh = os.path.join(tempfile.gettempdir(), "sglx_verify")
+		os.makedirs(fresh, exist_ok=True)
+		if not self.sglx.c_sglx_setDataDir(self.h, 0, fresh.encode()):
+			say("SpikeGLX: setDataDir before verifying: {} (going on)".format(self.Error()))
+		if not self.sglx.c_sglx_setRunName(self.h, "verify_{}".format(int(time.time())).encode()):
+			say("SpikeGLX: setRunName before verifying: {} (going on)".format(self.Error()))
+		self.Ok(self.sglx.c_sglx_selectDevices(self.h, devices.encode(), 1), "selectDevices {}".format(devices))
+
 	def Samples(self, js, ip):
 		return self.sglx.c_sglx_getStreamSampleRate(self.h, js, ip), self.sglx.c_sglx_getStreamSampleCount(self.h, js, ip)
 
-	def Params(self, devices="", say=print):
+	def Params(self, devices="", say=print, select=False):
+		"""
+		SpikeGLX's run parameters {key: value}. Freshly opened (never verified),
+		devices are detected and verified first; with select, also when SpikeGLX's
+		probes and OneBoxes aren't devices'.
+		"""
 		from ctypes import byref, c_int
 		n = c_int()
 		if not self.sglx.c_sglx_getParams(byref(n), self.h):
@@ -152,17 +230,20 @@ class Connection:
 			if not devices:
 				raise SpikeGLXError("SpikeGLX's settings haven't been validated since it opened: in SpikeGLX, Configure > "
 					"Detect > Verify | Save (or give spikeglx.devices in the config, to do it from here).")
-			# Freshly opened: detect and verify the devices, as Configure > Detect > Verify | Save does. Verify refuses
-			# a run name already used in the data folder (the last session's): a fresh pair first
 			say("SpikeGLX: its settings haven't been validated since it opened: detecting {} and verifying.".format(devices))
-			fresh = os.path.join(tempfile.gettempdir(), "sglx_verify")
-			os.makedirs(fresh, exist_ok=True)
-			if not self.sglx.c_sglx_setDataDir(self.h, 0, fresh.encode()):
-				say("SpikeGLX: setDataDir before verifying: {} (going on)".format(self.Error()))
-			if not self.sglx.c_sglx_setRunName(self.h, "verify_{}".format(int(time.time())).encode()):
-				say("SpikeGLX: setRunName before verifying: {} (going on)".format(self.Error()))
-			self.Ok(self.sglx.c_sglx_selectDevices(self.h, devices.encode(), 1), "selectDevices {}".format(devices))
+			self.Select(devices, say)
 			self.Ok(self.sglx.c_sglx_getParams(byref(n), self.h), "getParams")
+		elif select and devices:
+			now = self.Differs(devices)
+			if now is not None:
+				say("SpikeGLX: its devices are {}, the config's {} (spikeglx.devices): detecting those and verifying."
+					.format(now, devices))
+				self.Select(devices, say)
+				self.Ok(self.sglx.c_sglx_getParams(byref(n), self.h), "getParams")
+				after = self.Differs(devices)
+				if after is not None:
+					raise SpikeGLXError("SpikeGLX: after selecting {} (spikeglx.devices), its devices are {}: in SpikeGLX, "
+						"Configure > Devices, tick those and Detect > Verify | Save.".format(devices, after))
 		out = {}
 		for i in range(n.value):
 			length = c_int()
@@ -195,21 +276,32 @@ class SpikeGLX:
 		except SpikeGLXError:
 			return False
 
-	def Check(self, conn=None):
-		"""SpikeGLX answers, runs no run, and its trigger is TTL: a line saying so. SpikeGLXError otherwise."""
+	def Check(self, conn=None, select=False):
+		"""
+		SpikeGLX answers, runs no run, and its trigger is TTL: a line saying so.
+		SpikeGLXError otherwise. With select (at Start), devices that aren't the
+		config's are selected; without, the line says they will be.
+		"""
 		if conn is None:
 			with self.lock, self.Connect() as conn:
-				return self.Check(conn)
+				return self.Check(conn, select)
 		if conn.Running():
 			raise SpikeGLXError("SpikeGLX is running a run already: stop it in SpikeGLX (campy-session starts its own, "
 				"into the recording's folder).")
-		p = conn.Params(self.section["devices"], self.say)
+		devices = self.section["devices"]
+		p = conn.Params(devices, self.say, select)
 		if p.get("trigMode") != TTL_TRIGGER:
 			raise SpikeGLXError("SpikeGLX's trigger isn't TTL (trigMode={}): it would record all the time, not only while "
 				"the gate is high. Set its trigger to TTL in SpikeGLX and check again.".format(p.get("trigMode")))
 		self.margin = float(p.get("trgTTLMarginS") or 1)
-		return "SpikeGLX: idle, TTL trigger (stream {}, bit {}, margin {} s, {})".format(p.get("trgTTLStream"),
+		line = "SpikeGLX: idle, TTL trigger (stream {}, bit {}, margin {} s, {})".format(p.get("trgTTLStream"),
 			p.get("trgTTLBit"), p.get("trgTTLMarginS"), p.get("trgTTLMode"))
+		now = conn.Differs(devices) if devices else None
+		if now is not None:
+			line += "; its devices are {}: Start selects the config's, {}".format(now, devices)
+		elif devices and Wanted(devices) is not None:
+			line += "; devices {}".format(devices)
+		return line
 
 	def Open(self):
 		"""Open SpikeGLX (spikeglx.exe) if it doesn't answer, and wait until it does: True when it answers."""
@@ -239,7 +331,7 @@ class SpikeGLX:
 		"""Its run, into folder (made if missing), named run; once it acquires, recording enabled."""
 		js, ip = self.section["stream"]
 		with self.lock, self.Connect() as conn:
-			self.Check(conn)
+			self.Check(conn, select=True)
 			os.makedirs(folder, exist_ok=True)
 			conn.Ok(conn.sglx.c_sglx_setDataDir(conn.h, 0, os.path.abspath(folder).encode()), "setDataDir")
 			conn.Ok(conn.sglx.c_sglx_setRunName(conn.h, run.encode()), "setRunName")
