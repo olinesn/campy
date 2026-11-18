@@ -45,6 +45,8 @@ from campy import ephyslive as el
 LABELS = ("good", "mua") # the units kept by default (phy's or Kilosort's label): mua units' templates take their own
 # spikes, which good units' would otherwise take (on Kilosort's sample: 8% of the spikes of no good unit given one,
 # against 42% with good units' templates alone)
+COMPETE = ("noise",) # units with these labels (phy's: a curated sort's noise clusters) get templates only to compete
+# for spikes: what they match isn't given out (a threshold spike stays unsorted), so it isn't given to a unit either
 TOLERANCE = 10 # samples: a live spike this close to a Kilosort spike is that spike
 RADIUS_UM = 60.0 # and on a site this close to its unit's peak site
 MIN_SPIKES = 20 # a unit with fewer live spikes in the training span has no template
@@ -59,10 +61,10 @@ TEMPLATE_SITES = 32 # sites a template covers, nearest first: a spike's whole fo
 
 # ---------------------------------------------------------------- Kilosort's output (phy's folder)
 
-def ReadPhy(folder, labels=LABELS):
+def ReadPhy(folder, labels=LABELS, compete=()):
 	"""Kilosort's spikes (times in the recording's samples, from 0) and units, with each unit's label (phy's
 	cluster_group.tsv if there is one, else cluster_KSLabel.tsv): {"times", "clusters", "labels": {unit: label},
-	"kept": [units with a label in labels], "label_file"}."""
+	"kept": [units with a label in labels], "compete": [units with a label in compete], "label_file"}."""
 	times = np.load(os.path.join(folder, "spike_times.npy")).ravel().astype(np.int64)
 	clusters = np.load(os.path.join(folder, "spike_clusters.npy")).ravel().astype(np.int64)
 	found = {}
@@ -81,8 +83,9 @@ def ReadPhy(folder, labels=LABELS):
 		label_file = None
 	units = np.unique(clusters)
 	kept = [int(u) for u in units if found.get(int(u), "unsorted") in labels]
+	rivals = [int(u) for u in units if found.get(int(u), "unsorted") in compete and int(u) not in kept]
 	return {"times": times, "clusters": clusters, "labels": {int(u): found.get(int(u), "unsorted") for u in units},
-		"kept": kept, "label_file": label_file}
+		"kept": kept, "compete": rivals, "label_file": label_file}
 
 
 # ---------------------------------------------------------------- the live replay
@@ -200,6 +203,10 @@ class TemplateSorter:
 		self.near_sites = self.sites[:, :el.NEIGHBORS] # those a threshold's spike is compared on
 		self.near_templates = self.templates[:, :, :el.NEIGHBORS]
 		self.accept = f["accept"]
+		self.compete = f["compete"].astype(bool) if "compete" in f else np.zeros(len(self.units), bool) # templates
+		# that only compete for spikes (COMPETE): what they match stays unsorted
+		self.match_z = f["match_z"].astype(np.float32) if "match_z" in f else None # each unit's template-spike
+		# threshold, learned in training (Learn)
 		self.noise = f["noise"] # uV, each channel's
 		self.trained = int(f["trained_spikes"].sum()) if "trained_spikes" in f else None
 		self.n_train = f["trained_spikes"] if "trained_spikes" in f else np.zeros(len(self.units), int)
@@ -208,7 +215,8 @@ class TemplateSorter:
 		for k, s in enumerate(self.near_sites):
 			for ch in s[s >= 0]:
 				self.by_channel[ch].append(k)
-		self.name = "Kilosort 4 templates ({} units)".format(len(self.units))
+		self.given = int((~self.compete).sum())
+		self.name = "Kilosort 4 templates ({} units)".format(self.given)
 
 	def Assign(self, spikes):
 		unit = -np.ones(len(spikes), np.int32)
@@ -222,14 +230,14 @@ class TemplateSorter:
 					self.noise)
 				if d is not None and (best is None or d < best):
 					best, best_k = d, k
-			if best is not None and best <= self.accept[best_k]:
+			if best is not None and best <= self.accept[best_k] and not self.compete[best_k]:
 				unit[i] = self.units[best_k]
 		spikes.unit = unit
 		return spikes
 
 	def Units(self):
-		return [{"unit": int(u), "channel": int(p), "label": str(l), "trained_spikes": int(n)} for u, p, l, n in
-			zip(self.units, self.peaks, self.labels, self.n_train)]
+		return [{"unit": int(u), "channel": int(p), "label": str(l), "trained_spikes": int(n)} for u, p, l, n, c in
+			zip(self.units, self.peaks, self.labels, self.n_train, self.compete) if not c]
 
 
 # ---------------------------------------------------------------- spikes found by the templates (below the threshold)
@@ -245,6 +253,7 @@ SCALE_ALONE_MAX = 4.0 # a peak's size fitted alone may be up to this before the 
 # template takes in the others' spikes); after it, each size must be within SCALE
 REACH = 2 * (el.BEFORE + el.AFTER) + 4 * MATCH_W # samples a pass's decisions reach (a subtraction, and its neighbors')
 BLOCK = 2048 # samples a transform: the scores are worked out this many (less 60) at a time
+LEARN_Z = 6.0 # training: the template spikes each unit's threshold is learned from are those found at this z
 JUDGE = 3000 # samples (0.1 s): the template spikes are judged once at least this many more can be (each judgment
 # works its margins out again: fewer, longer judgments cost less; the card plays 0.3 s behind)
 
@@ -303,11 +312,19 @@ class TemplateMatcher:
 	give the same spikes however they come in pieces.
 	"""
 
-	def __init__(self, sorter, z=Z_THRESHOLD, components=COMPONENTS):
+	def __init__(self, sorter, z=None, components=COMPONENTS):
+		"""z: every unit's threshold; None: each unit's learned in training (sorter.match_z), else Z_THRESHOLD."""
 		import scipy.fft
 		self.fft = scipy.fft
-		self.z = z
 		self.units, self.peaks, self.sites = sorter.units, sorter.peaks, sorter.sites
+		if z is None and sorter.match_z is not None:
+			self.zu = sorter.match_z.astype(np.float64)
+		else:
+			self.zu = np.full(len(self.units), Z_THRESHOLD if z is None else float(z))
+		self.z = float(self.zu.min()) if len(self.zu) else Z_THRESHOLD
+		self.give = ~sorter.compete # units whose spikes are given out (the others' only compete for them)
+		self.record = None # a list: each template spike found, (sample, unit's index, z, size, pass, in a group, the
+		# score of the data as it came (before any spike was taken away), the cosine of the data with the template)
 		self.noise = sorter.noise.astype(np.float32)
 		U, L = len(self.units), el.BEFORE + el.AFTER
 		ok = self.sites >= 0
@@ -431,7 +448,7 @@ class TemplateMatcher:
 		Also all units' peaks, by sample (cand: their samples and units), for Group."""
 		from scipy.ndimage import maximum_filter1d
 		w = MATCH_W
-		above = (z > self.z) & (scale >= SCALE[0]) & (scale <= SCALE_ALONE_MAX)
+		above = (z > self.zu[:, None]) & (scale >= SCALE[0]) & (scale <= SCALE_ALONE_MAX)
 		rows = np.flatnonzero(above.any(axis=1))
 		peak = np.zeros_like(above)
 		if len(rows):
@@ -471,7 +488,7 @@ class TemplateMatcher:
 		one at a time, the
 		one that adds most first, at the lag near its peak that fits best, with all the group's templates' sizes
 		fitted together on the sites they cover; one is added when every size stays within SCALE and it adds at least
-		the score's threshold squared to what the group explained, up to GROUP units. [(sample, unit, size), ...] for
+		its unit's threshold squared to what the group explained, up to GROUP units. [(sample, unit, size), ...] for
 		a group of two or more; None for u alone."""
 		w = MATCH_W
 		group = [(t, u)]
@@ -499,7 +516,8 @@ class TemplateMatcher:
 				break
 			sizes, together = self.JointFits(R, a0, group, trials)
 			gain = together - explained
-			ok = (gain > self.z ** 2) & np.all((sizes >= SCALE[0]) & (sizes <= SCALE[1]), axis=1)
+			ok = (gain > self.zu[[v for _, v in trials]] ** 2) & np.all((sizes >= SCALE[0]) & (sizes <= SCALE[1]),
+				axis=1)
 			if not ok.any():
 				break
 			k = int(np.argmax(np.where(ok, gain, -np.inf))) # the first of the best, as tried in turn
@@ -599,7 +617,7 @@ class TemplateMatcher:
 				if mine is not None and np.abs(mine - t).min() <= w:
 					continue # found already, with another unit's spike at once
 				a = R[u, t - a0] / self.norm2[u]
-				if a * self.root[u] <= self.z or a < SCALE[0]:
+				if a * self.root[u] <= self.zu[u] or a < SCALE[0]:
 					continue # explained by the spikes found before it
 				# Units near it peaking at once: their templates fitted together (alone, the first one's fit takes in
 				# the others' spikes, and leaves too little of them to be found)
@@ -610,8 +628,17 @@ class TemplateMatcher:
 				for tt, uu, aa in fits:
 					self.Subtract(R, a0, tt, uu, aa)
 					taken[uu] = np.append(taken.get(uu, np.zeros(0, np.int64)), tt)
-					found.append((tt, uu))
-		found = [(t, u) for t, u in found if lo <= t < hi]
+					found.append((tt, uu, aa, p, group is not None))
+		found = [f for f in found if lo <= f[0] < hi]
+		if self.record is not None:
+			for t, u, a, p, g in found:
+				ok = self.sites[u] >= 0
+				x = buf[t - el.BEFORE:t + el.AFTER][:, self.cols[u]] / self.noise[self.cols[u]] * ok
+				raw = float(self.S[u, bfirst + t - self.s_first])
+				energy = max(float((x.astype(np.float64) ** 2).sum()), 1e-12)
+				self.record.append((bfirst + t, u, a * self.root[u], a, p, g, raw / self.root[u],
+					raw / (self.root[u] * np.sqrt(energy))))
+		found = [(t, u) for t, u, *_ in found if self.give[u]] # competitors' spikes aren't given out
 		if not found:
 			return el.Spikes()
 		t = np.array([f[0] for f in found])
@@ -633,10 +660,13 @@ class MatchingSorter(TemplateSorter):
 	both finders have judged them.
 	"""
 
-	def __init__(self, path, z=Z_THRESHOLD):
+	def __init__(self, path, z=None):
+		"""z: every unit's template-spike threshold; None: each unit's learned in training (Z_THRESHOLD for a file
+		without them)."""
 		super().__init__(path)
 		self.matcher = TemplateMatcher(self, z)
-		self.name = "Kilosort 4 templates, matched ({} units, z {:g})".format(len(self.units), z)
+		self.name = "Kilosort 4 templates, matched ({} units, {})".format(self.given, "z {:g}".format(z) if z is not
+			None else "each unit's threshold" if self.match_z is not None else "z {:g}".format(Z_THRESHOLD))
 		self.pending = el.Spikes()
 		self.recent = el.Spikes() # template spikes given out, the last few samples: for the next threshold spikes
 
@@ -670,6 +700,19 @@ class MatchingSorter(TemplateSorter):
 		return self.Release(np.iinfo(np.int64).max)
 
 
+def Sorter(path, match=None):
+	"""The live sorter from a templates file: match None, "" or 0: the threshold's spikes sorted (TemplateSorter);
+	"learned": spikes found by the templates too, each unit at its threshold learned in training (MatchingSorter); a
+	number: every unit at that z."""
+	if match in (None, "", 0, "0", "off"):
+		return TemplateSorter(path)
+	try:
+		z = None if match == "learned" else float(match)
+	except ValueError:
+		raise el.EphysError("--match: \"learned\", a number or 0, not {!r}".format(match))
+	return MatchingSorter(path, z)
+
+
 # ---------------------------------------------------------------- training and evaluation
 
 def Pair(a, b, tolerance=TOLERANCE):
@@ -685,6 +728,47 @@ def Pair(a, b, tolerance=TOLERANCE):
 	return n
 
 
+def PairMask(a, b, tolerance=TOLERANCE):
+	"""Which of the sorted times a pair up one to one with b's, within tolerance samples (as Pair)."""
+	paired = np.zeros(len(a), bool)
+	i = j = 0
+	while i < len(a) and j < len(b):
+		d = int(a[i]) - int(b[j])
+		if abs(d) <= tolerance:
+			paired[i], i, j = True, i + 1, j + 1
+		elif d < 0:
+			i += 1
+		else:
+			j += 1
+	return paired
+
+
+def Thresholds(found_t, found_u, found_z, times, clusters, units, floor):
+	"""Each unit's template-spike threshold (z), learned against Kilosort: of its template spikes (found_t, their
+	units' indices found_u, their z found_z), those above the threshold are paired one to one with its Kilosort spikes
+	(times, clusters); the threshold is where F1 (twice those paired, over its Kilosort spikes and its template spikes
+	above it) is highest; floor (the z they were found at) when that is all of them. inf for a unit none of whose
+	template spikes is its."""
+	z_of = np.full(len(units), np.inf)
+	for k, u in enumerate(units):
+		mine = found_u == k
+		t, z = found_t[mine], found_z[mine]
+		order = np.argsort(t, kind="stable")
+		t, z = t[order], z[order]
+		ks = np.sort(times[clusters == u])
+		if not len(t) or not len(ks):
+			continue
+		paired = PairMask(t, ks)
+		by_z = np.argsort(-z, kind="stable")
+		f1 = 2 * np.cumsum(paired[by_z]) / (len(ks) + np.arange(1, len(t) + 1))
+		best = int(np.argmax(f1))
+		if f1[best] > 0: # under the last spike kept (z > threshold), halfway to the next one
+			kept = z[by_z][best]
+			lower = z[by_z][best + 1] if best + 1 < len(t) else floor
+			z_of[k] = 0.5 * (kept + lower) if lower < kept else max(floor, kept - 1e-3)
+	return z_of
+
+
 def Span(seconds, rate, n):
 	"""A span "a:b" in seconds (either end may be left out) as samples [start, end) within n."""
 	a, _, b = (seconds or ":").partition(":")
@@ -693,25 +777,29 @@ def Span(seconds, rate, n):
 	return max(0, start), min(n, end)
 
 
-def Train(data, stream, phy, out, span=None, labels=LABELS, say=print, accept_q=ACCEPT_Q):
-	"""Templates for the kept units of phy's sort, from the samples in span ("a:b" seconds) of data replayed as live.
-	Writes out (.npz) and returns its summary."""
+def Train(data, stream, phy, out, span=None, labels=LABELS, say=print, accept_q=ACCEPT_Q, compete=COMPETE, learn=True):
+	"""Templates for the kept units of phy's sort (and, to compete for spikes, those labelled compete), from the
+	samples in span ("a:b" seconds) of data replayed as live; with learn, each unit's template-spike threshold too
+	(Learn). Writes out (.npz) and returns its summary."""
 	t0 = time.monotonic()
-	sort = ReadPhy(phy, labels)
+	sort = ReadPhy(phy, labels, compete)
 	start, end = Span(span, stream.rate, len(data))
-	say("Kilosort's sort: {} units, {} kept ({}: {}); training on {:.1f} s to {:.1f} s".format(len(sort["labels"]),
-		len(sort["kept"]), sort["label_file"] or "no labels", "/".join(labels), start / stream.rate, end / stream.rate))
+	say("Kilosort's sort: {} units, {} kept ({}: {}){}; training on {:.1f} s to {:.1f} s".format(len(sort["labels"]),
+		len(sort["kept"]), sort["label_file"] or "no labels", "/".join(labels), ", {} to compete ({})".format(
+		len(sort["compete"]), "/".join(compete)) if sort["compete"] else "", start / stream.rate, end / stream.rate))
 	filtered, spikes, detector = Replay(data, stream, start, end)
 	say("Replayed as live: {:,} spikes ({:.0f} s)".format(len(spikes), time.monotonic() - t0))
-	inside = (sort["times"] >= start + el.BEFORE) & (sort["times"] < end - el.AFTER) & np.isin(sort["clusters"], sort["kept"])
+	every = sort["kept"] + sort["compete"]
+	inside = (sort["times"] >= start + el.BEFORE) & (sort["times"] < end - el.AFTER) & np.isin(sort["clusters"], every)
 	times, clusters = sort["times"][inside], sort["clusters"][inside]
-	peaks = PeakSites(filtered, stream.geometry, times, clusters, sort["kept"], start)
+	peaks = PeakSites(filtered, stream.geometry, times, clusters, every, start)
 	keep = np.isin(clusters, list(peaks))
 	unit_of, _ = Match(spikes, stream.geometry, times[keep], clusters[keep], peaks)
 	noise = np.median(np.abs(filtered[::8]), axis=0) / 0.6745
 	sites_all = stream.geometry.Neighbors(1e9, TEMPLATE_SITES)
 	rows = []
-	for u in sort["kept"]:
+	rivals = set(sort["compete"])
+	for u in every:
 		if u not in peaks:
 			continue
 		sites = sites_all[peaks[u]]
@@ -738,22 +826,60 @@ def Train(data, stream, phy, out, span=None, labels=LABELS, say=print, accept_q=
 		d = np.array([v for v in d if v is not None])
 		if len(d) < MIN_SPIKES // 2:
 			continue
-		rows.append((u, sort["labels"][u], peaks[u], sites, template, float(np.quantile(d, accept_q)), len(ks)))
-	if not rows:
+		rows.append((u, sort["labels"][u], peaks[u], sites, template, float(np.quantile(d, accept_q)), len(ks),
+			u in rivals))
+	if not any(not r[7] for r in rows):
 		raise el.EphysError("No unit had {} live spikes in the training span: nothing to sort with.".format(MIN_SPIKES))
-	np.savez_compressed(out, units=np.array([r[0] for r in rows]), labels=np.array([r[1] for r in rows]),
+	arrays = dict(units=np.array([r[0] for r in rows]), labels=np.array([r[1] for r in rows]),
 		peaks=np.array([r[2] for r in rows]), sites=np.stack([r[3] for r in rows]),
 		templates=np.stack([r[4] for r in rows]), accept=np.array([r[5] for r in rows], np.float32),
-		trained_spikes=np.array([r[6] for r in rows]), noise=noise.astype(np.float32), rate=stream.rate,
+		trained_spikes=np.array([r[6] for r in rows]), compete=np.array([r[7] for r in rows], bool),
+		noise=noise.astype(np.float32), rate=stream.rate,
 		span_samples=np.array([start, end]), phy=os.path.abspath(phy), label_file=sort["label_file"] or "",
 		kept_labels=",".join(labels))
-	summary = {"units": len(rows), "kept_units": len(sort["kept"]), "trained_spikes": int(sum(r[6] for r in rows)),
-		"live_spikes": len(spikes), "matched_live_spikes": int((unit_of >= 0).sum()), "seconds": round(
+	np.savez_compressed(out, **arrays)
+	filtered = None # (minutes of a probe: GB)
+	mine = [r for r in rows if not r[7]]
+	summary = {"units": len(mine), "kept_units": len(sort["kept"]), "competing_units": len(rows) - len(mine),
+		"trained_spikes": int(sum(r[6] for r in mine)), "live_spikes": len(spikes),
+		"matched_live_spikes": int(np.isin(unit_of, [r[0] for r in mine]).sum()), "seconds": round(
 		time.monotonic() - t0, 1), "out": out}
-	say("Templates for {} of {} kept units, from {:,} of their Kilosort spikes ({:,} of the {:,} live spikes "
-		"theirs): {}".format(summary["units"], summary["kept_units"], summary["trained_spikes"],
+	say("Templates for {} of {} kept units{}, from {:,} of their Kilosort spikes ({:,} of the {:,} live spikes "
+		"theirs): {}".format(summary["units"], summary["kept_units"], ", and {} to compete".format(
+		summary["competing_units"]) if summary["competing_units"] else "", summary["trained_spikes"],
 		summary["matched_live_spikes"], summary["live_spikes"], out))
+	if learn:
+		arrays["match_z"] = Learn(data, stream, out, times, clusters, start, end, say)
+		np.savez_compressed(out, **arrays)
+		z = arrays["match_z"][~arrays["compete"]]
+		summary["match_z_median"] = float(np.median(z[np.isfinite(z)])) if np.isfinite(z).any() else None
+		summary["units_never_matched"] = int((~np.isfinite(z)).sum())
+		summary["seconds"] = round(time.monotonic() - t0, 1)
 	return summary
+
+
+def Learn(data, stream, path, times, clusters, start, end, say=print):
+	"""Each unit's template-spike threshold, learned against Kilosort's sort (Thresholds): the samples [start, end)
+	replayed through the matching sorter with the templates in path, every unit's spikes looked at from LEARN_Z, and
+	paired with Kilosort's (times, clusters) from a second in (as live, the filter settles first)."""
+	t0 = time.monotonic()
+	sorter = MatchingSorter(path, LEARN_Z)
+	sorter.matcher.record = []
+	ReplayMatched(data, stream, start, end, sorter)
+	rec = np.array(sorter.matcher.record, np.float64).reshape(-1, 8)
+	first = start + int(stream.rate)
+	rec = rec[rec[:, 0] >= first]
+	inside = (times >= first) & (times < end - el.AFTER)
+	z = Thresholds(rec[:, 0].astype(np.int64), rec[:, 1].astype(np.int64), rec[:, 2], times[inside],
+		clusters[inside], sorter.units, LEARN_Z)
+	given = ~sorter.compete
+	finite = np.isfinite(z) & given
+	say("Each unit's template-spike threshold, learned from its {:,} template spikes at z {:g} or more against "
+		"Kilosort's ({:.0f} s): median z {:.1f} (a quarter of units under {:.1f}, a quarter over {:.1f}){}".format(
+		len(rec), LEARN_Z, time.monotonic() - t0, *(np.percentile(z[finite], [50, 25, 75]) if finite.any() else
+		(np.nan,) * 3), "; {} units none of whose template spikes were theirs".format(int((given & ~finite).sum()))
+		if (given & ~finite).any() else ""))
+	return z.astype(np.float32)
 
 
 def ReplayMatched(data, stream, start, end, sorter, piece_s=0.1):
@@ -774,14 +900,15 @@ def ReplayMatched(data, stream, start, end, sorter, piece_s=0.1):
 	return Cat(out), took
 
 
-def Evaluate(data, stream, phy, templates, span=None, warm_s=1.0, say=print, report=None, match=0):
+def Evaluate(data, stream, phy, templates, span=None, warm_s=1.0, say=print, report=None, match=None):
 	"""The templates' sort of the samples in span against Kilosort's there: per unit (the templates' units with a
 	label in report; default all) the share of its Kilosort spikes found live and given to it (sensitivity), and the
 	share of the live spikes given to it that are its (precision); the live spikes the templates left unsorted; the
 	time a spike took to sort. Every unit with a template competes for the spikes (mua units' templates take their
 	own spikes from the good units'), and a live spike is a unit's when it matches one of that unit's Kilosort
-	spikes."""
-	sorter = MatchingSorter(templates, match) if match else TemplateSorter(templates)
+	spikes. match: as Sorter's."""
+	sorter = Sorter(templates, match)
+	match = isinstance(sorter, MatchingSorter) and match
 	sort = ReadPhy(phy, tuple(set(str(l) for l in sorter.labels)))
 	start, end = Span(span, stream.rate, len(data))
 	warm = max(0, start - int(warm_s * stream.rate)) # the noise measured before the span, as live would have
@@ -841,7 +968,10 @@ def Evaluate(data, stream, phy, templates, span=None, warm_s=1.0, say=print, rep
 		"live_spikes_of_a_unit_left_unsorted": float((spikes.unit[matched] < 0).mean()) if matched.any() else None,
 		"live_spikes_of_no_unit_given_one": float(np.isin(spikes.unit[~matched], shown).mean()) if (~matched).any()
 			else None,
-		"sort_us_per_spike": round(per_spike_us, 1), "sort_s_per_s": round(per_second, 3), "match_z": match or None,
+		"sort_us_per_spike": round(per_spike_us, 1), "sort_s_per_s": round(per_second, 3),
+		"match_z": (match if match == "learned" else float(match)) if match else None,
+		"given_per_s": round(float(np.isin(spikes.unit, [u for u, c in zip(units, sorter.compete) if not c]).sum()) /
+			((end - start) / stream.rate), 1),
 		"template_spikes": int((spikes.unit >= 0).sum()) if match else None,
 		"own_sensitivity_median": float(np.median(own_sens)) if own_sens else None,
 		"own_sensitivity_p25_p75": [float(np.percentile(own_sens, 25)), float(np.percentile(own_sens, 75))] if own_sens
