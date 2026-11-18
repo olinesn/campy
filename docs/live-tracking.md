@@ -856,6 +856,8 @@ Notes on the measurements:
   | Pro Tower Plus (RTX A2000) | 1,200 / 2.7 / 2.9 | 3,600 / 6.8 / 7.1 / 9.0 / 10.0 | 1,799 / 6.9 / 7.2 / 11.0 / 12.1 |
   | Jetson AGX Orin | 1,800 / 3.9 / 4.1 | 3,600 / 10.1 / 10.6 / 13.6 / 15.0 | 3,600 / 10.0 / 10.3 / 13.5 / 14.8 |
 
+- At 11:16 PM on 17 November the Pro Max Slim (the ChronicRecord PC) moved on to dev `3013041`, through pull request 472, under its lock and `RIG_CLEAN`. That was a fast-forward of 71 commits from `f563862`: the operant boxes' `campy-box` (a new command, so campy was reinstalled in both of its environments) and the copy card's speed, stall line and speed plot (472). It had been on a test branch for the panel's Live ephys card since that afternoon, and leaves it for dev until that card's pull requests are merged. Its rig lock (`rig.py`) was already dev's. No rig checks were run on `3013041` yet.
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
