@@ -934,6 +934,11 @@ class MatchingSorter(TemplateSorter):
 		self.pending = el.Spikes()
 		self.recent = el.Spikes() # template spikes given out, the last few samples: for the next threshold spikes
 
+	def Reset(self):
+		"""Forget the samples so far (a new run: its samples counted from 0 again)."""
+		self.matcher.Reset()
+		self.pending, self.recent = el.Spikes(), el.Spikes()
+
 	def Feed(self, first, filtered, spikes, detector_next):
 		"""The spikes for the samples given: the template spikes, and the threshold's spikes (spikes) they don't
 		explain, up to what both finders have judged."""
