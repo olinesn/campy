@@ -412,6 +412,89 @@ def test_pokes_on_the_simulated_board(tmp_path, outputs_sim):
 	assert "pwm" in sim_log # the door's PWM
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal for the simulated board")
+def test_beside_a_pico_the_box_goes_on_between_its_bouts(tmp_path, outputs_sim):
+	"""
+	ChronicRecord's two boards: the Pico pulses the cameras in bouts with the cameras off between them, and the box's
+	board counts those pulses on D10. Here, on the sketch in real time: two bouts of 90 pulses at 60 Hz (3 ms wide, as
+	the Pico's), 1.2 s apart, and a poke every 0.4 s through both and the pause. The task starts with the first pulse
+	and goes on through the pause; a poke there is rewarded at once (the board's links don't wait for a frame), with
+	the last frame before the pause and how long after it; the count goes on with the next bout, which the board says
+	came after a pause (gap); and a train locked to the frames makes no pulse while there are none.
+	"""
+	period = 16667
+	b1, b2, n = 1500000, 4200000, 90 # the bouts' first pulses, and pulses in each
+	b1_end, b2_end = b1 + (n - 1) * period, b2 + (n - 1) * period
+	pokes = "30:1700000:400000:30000:12" # A0: 30 ms pokes every 0.4 s from 1.7 s: three in the pause (3.3, 3.7, 4.1 s)
+	env = dict(os.environ, SIM_INPUT="10:{}:{}:3000:{};10:{}:{}:3000:{};{}".format(b1, period, n, b2, period, n, pokes))
+	master, slave = pty()
+	log_path = tmp_path / "sim.log"
+	with open(str(log_path), "w") as log:
+		sim = subprocess.Popen([outputs_sim, "live"], stdin=master, stdout=master, stderr=log, env=env)
+	try:
+		assert until(lambda: sim.poll() is not None or "ready campy_outputs" in log_path.read_text(), 60)
+		config = Task(task__end={"trials": 1000}, task__states__iti__after_s=0.02, servos__door__speed_us_per_s=0)
+		config["outputs"]["strobe"] = {"channel": 3, "pin": "D5", "run": "session",
+			"train": {"every": 1, "phase": 0, "offset_us": 0, "width_us": 2000}}
+		args = argparse.Namespace(task=None, port=os.ttyname(slave), out=str(tmp_path / "box"), check=False,
+			duration_s=6.5, start_with_frames=True, stop_file="", recording_folder="", launcher_pid=0, ready_file="",
+			status_file="")
+		runner = box.Runner(args, box.Box(config))
+		said = []
+		runner.say = said.append
+		code = runner.Run()
+	finally:
+		sim.terminate()
+		sim.wait()
+		os.close(slave)
+		os.close(master)
+	assert code == 0, said
+	ev = events(tmp_path)
+	# The task started with the first pulse (the loop wakes with it: frame 2 on a very busy test computer)
+	assert [e for e in ev if e["kind"] == "state"][0]["first_frame"] in (1, 2)
+	# The second bout's first pulse, said to come after a pause: 1.22 s after the first bout's last (later on a busy
+	# computer, if the simulated board's process wakes late)
+	gap, = [e for e in ev if e["kind"] == "gap"]
+	assert 1150 < gap["gap_ms"] < 1500, gap
+	k = gap["frame"] # the second bout's first frame; k - 1 the first bout's last, as the board counted
+	# Every pulse of the first bout (90), unless the busy computer held the simulated board's process up past a 3 ms
+	# pulse: it then misses that pulse, as a real board wouldn't (86 of 90 once on GitHub's Linux runner, 18 November).
+	# What follows is checked against the board's own count
+	assert n // 2 < k <= n + 1
+
+	pokes = [e for e in ev if e["kind"] == "input" and e["input"] == "poke_left" and e["active"] == 1]
+	in_pause = [e for e in pokes if b1_end + 50000 < e["board_us"] < b2 - 50000]
+	assert len(in_pause) == 3, pokes
+	for e in in_pause:
+		# Stamped with the first bout's last frame and the time since it (0.3 s and more), not a frame of its own
+		assert e["frame"] == k - 1 and e["after_us"] > 250000, e
+	for e in pokes:
+		# In a bout: a frame of that bout, within a few periods of its pulse (more than one if the board missed some)
+		if b1 + 20000 < e["board_us"] < b1_end:
+			assert 1 <= e["frame"] < k and 0 <= e["after_us"] < 100000, e
+		elif b2 + 20000 < e["board_us"] < b2_end:
+			assert e["frame"] >= k and 0 <= e["after_us"] < 100000, e
+	# Each poke in the pause rewarded and marked at once, by the board's links, with no frame to wait for
+	pulses = [e for e in ev if e["kind"] == "pulse"]
+	for e in in_pause:
+		for name in ("valve", "mark"):
+			got = [p for p in pulses if p["output"] == name and 0 <= p["rise_us"] - e["board_us"] < 50000]
+			assert got and got[0]["frame"] == k - 1, (name, e)
+	rewarded = [e for e in ev if e["kind"] == "link" and e["link"] == "reward_left" and e["done"]]
+	assert sum(1 for r in rewarded if b1_end < r["board_us"] < b2) == 3
+
+	# The strobe's train, locked to the frames: a pulse on each frame the board counted in both bouts, none in the pause
+	rises = [int(w[0]) for w in (l.split() for l in log_path.read_text().splitlines())
+		if len(w) == 3 and w[0].isdigit() and w[1] == "5" and w[2] == "1"]
+	assert sum(1 for t in rises if b1 <= t <= b1_end + 10000) == k - 1
+	assert sum(1 for t in rises if b2 <= t <= b2_end + 10000) > n // 2
+	assert not [t for t in rises if b1_end + 10000 < t < b2], rises
+	# The summary: the frames the board counted to the last (its t lines come once a second, so last_frame can be
+	# behind), what to compare with each camera's frames after a recording
+	summary = json.load(open(str(tmp_path / "box.json")))
+	assert summary["board_frames"] == k - 1 + sum(1 for t in rises if b2 <= t <= b2_end + 10000), summary
+
+
 # ---------------------------------------------------------------- with a recording (campy-session's box: section)
 
 def read_status(path):
