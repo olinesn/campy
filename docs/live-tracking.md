@@ -907,6 +907,8 @@ Notes on the measurements:
 
   The times are `e8c3247`'s to within 0.2 ms at p50. The Pro Max Slim's four 3-camera runs, with the installed code this time, kept every set: before pull request 481, 4 of 6 had paused for 140–152 ms and skipped 7–8. The EVO-X2's and the Jetson's replays still match the offline tracking: 3.8 px in 2D and 4.2 mm in 3D at the median, 2 identity switches.
 
+- At 2:55 PM on 18 November the Pro Max Slim (the ChronicRecord PC) alone moved on to dev `6635bd6` from `a8598ba`, for its photometry-only experiment (pull request 493: SpikeGLX records the OneBox without the probe), with pull requests 486–489, 494 and 496. Nothing in the tracking path changed (`campy/box.py`, `campy/panel.py`, `campy/spikeglx.py`, `campy/trigger/outputs.py` and tests), so it had no rig checks; the other machines stay on `a8598ba`.
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
