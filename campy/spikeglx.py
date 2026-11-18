@@ -28,7 +28,7 @@ flow, and a gate edge then would open no file.) At the end: the run stops,
 which closes its files.
 """
 
-import glob, os, subprocess, sys, tempfile, threading, time
+import glob, math, os, subprocess, sys, tempfile, threading, time
 
 KEYS = {
 	"sdk": ((str,), "", "the folder holding SpikeGLX's SDK (sglx_pkg, from SpikeGLX-CPP-SDK)"),
@@ -43,7 +43,12 @@ KEYS = {
 	"write_mb_s": ((int, float), 24, "what SpikeGLX writes while the gate is open, in MB/s, for the panel's disk check "
 		"before the start (24: a Neuropixels 2.0 probe's 23.1 and a OneBox's 0.85, measured on the ChronicRecord rig)"),
 	"start_timeout_s": ((int, float), 120, "how long its run may take to start acquiring"),
-	"open_timeout_s": ((int, float), 120, "how long SpikeGLX may take to open and answer"),
+	"templates": ((str,), "", "the panel's Live ephys card sorts spikes into units with these templates (campy-ephys "
+		"train, from a Kilosort 4 sort of this probe; docs/live-ephys.md); default: none, threshold crossings only"),
+	"match": ((str, int, float), "", "with templates: the card finds spikes with them too, below the threshold, in a "
+		"thread of its own: \"learned\", each unit at the threshold learned in training; a number, every unit at that "
+		"score; default: off, the threshold's spikes sorted"),
+	"open_timeout_s":((int, float), 120, "how long SpikeGLX may take to open and answer"),
 	}
 
 TTL_TRIGGER = "2" # [DAQSettings] trigMode: 0 immediate, 1 timed, 2 TTL, ...
@@ -81,6 +86,25 @@ def Shown(probes, boxes):
 	"""Probes and OneBoxes as a devices string: "(20,1,1)(20,obx)", "()" for none."""
 	text = "".join("({},{},{})".format(*p) for p in sorted(probes)) + "".join("({},obx)".format(b) for b in sorted(boxes))
 	return text or "()"
+
+
+def Match(section):
+	"""spikeglx.match as campy-ephys serve's --match: "learned", a score above 0, or None (off: "", 0)."""
+	value = section.get("match", "")
+	if isinstance(value, str):
+		value = value.strip()
+		if value.lower() in ("", "0", "off", "none"):
+			return None
+		if value.lower() == "learned":
+			return "learned"
+		try:
+			value = float(value)
+		except ValueError:
+			value = None
+	if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
+		return "{:g}".format(value) if value else None
+	raise SpikeGLXError("spikeglx.match: \"learned\" (each unit at the threshold learned in training), a score above "
+		"0 (every unit at it), or 0 (off); not {!r}.".format(section.get("match")))
 
 
 _sdk = {}
@@ -239,6 +263,7 @@ class SpikeGLX:
 		if len(stream) != 2 or not all(isinstance(v, int) and not isinstance(v, bool) for v in stream):
 			raise SpikeGLXError("spikeglx.stream: [js, ip], two whole numbers ([1, 0]: the first OneBox); not {!r}."
 				.format(stream))
+		Match(section) # the card's, checked with the rest
 		self.lock = threading.Lock() # one connection at a time: the panel's status, and the session's steps
 
 	def Connect(self):

@@ -24,7 +24,7 @@ import zlib
 import numpy as np
 import pytest
 
-from campy import bookmarks, panel
+from campy import bookmarks, panel, session
 from test_session import NAMES, emu_session, frames, home, recorded, the_folder # noqa: F401 (home: a fixture)
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1617,6 +1617,41 @@ def test_the_ephys_section_reads_spikeglx_in_a_process_of_its_own(tmp_path, monk
 		p.ephys.Shutdown()
 		p.server.shutdown()
 		p.server.server_close()
+
+
+def test_spikeglx_match_starts_the_reader_matching_with_the_templates(tmp_path):
+	# spikeglx.match: campy-ephys serve gets --match with the templates, and only with them; off by default
+	from campy import spikeglx as sglx
+	templates = tmp_path / "templates.npz"
+	templates.write_bytes(b"")
+	base = {"sdk": FAKE_SDK, "host": "127.0.0.1", "port": 4142, "stream": [1, 0], "templates": str(templates)}
+
+	def Command(**given):
+		view = panel.EphysView(session.Section("spikeglx", dict(base, **given), sglx.KEYS))
+		try:
+			cmd = view.Command()
+			return cmd[cmd.index("--templates") + 1:cmd.index("--obx-ip")] if "--templates" in cmd else None, \
+				list(view.log)
+		finally:
+			view.Shutdown()
+
+	assert Command() == ([str(templates)], [])
+	assert Command(match="learned") == ([str(templates), "--match", "learned"], [])
+	assert Command(match=" Learned ") == ([str(templates), "--match", "learned"], [])
+	assert Command(match=8) == ([str(templates), "--match", "8"], [])
+	assert Command(match=8.5) == ([str(templates), "--match", "8.5"], [])
+	assert Command(match="9") == ([str(templates), "--match", "9"], [])
+	for off in ("", 0, "0", "off"):
+		assert Command(match=off) == ([str(templates)], [])
+	# No templates: nothing to match, and the panel says so
+	cmd, log = Command(match="learned", templates="")
+	assert cmd is None and log == ["spikeglx.match: no templates to match (spikeglx.templates): threshold crossings only"]
+	# A value it can't use stops the config at the start, with what it takes (YAML's off is False: not a match)
+	for bad in ("fast", -1, float("nan"), float("inf")):
+		with pytest.raises(sglx.SpikeGLXError, match="spikeglx.match: \"learned\""):
+			sglx.SpikeGLX(session.Section("spikeglx", dict(base, match=bad), sglx.KEYS))
+	with pytest.raises(session.SessionError, match="spikeglx.match: False is not text or a whole number or a number"):
+		session.Section("spikeglx", dict(base, match=False), sglx.KEYS)
 
 
 def test_no_ephys_section_without_spikeglx():

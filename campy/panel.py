@@ -958,16 +958,36 @@ class EphysView:
 				if not self.Running() and not self.stopping:
 					self.StartChild()
 
-	def StartChild(self):
-		import subprocess
+	def Command(self):
+		"""campy-ephys serve's command line, from the spikeglx: section."""
+		from campy import spikeglx as sglxmod
 		cmd = [sys.executable, "-m", "campy.ephyslive", "serve", "--sdk", str(self.section["sdk"]), "--host",
 			str(self.section["host"]), "--port", str(self.section["port"]), "--parent", str(os.getpid()),
 			"--idle-s", str(EPHYS_IDLE_S)]
+		# The live sorter: templates from a Kilosort 4 sort (spikeglx.templates, campy-ephys train), and with
+		# spikeglx.match, spikes found by them too, below the threshold (in a thread of its own)
+		templates = str(self.section.get("templates") or "")
+		try:
+			match = sglxmod.Match(self.section)
+		except sglxmod.SpikeGLXError as e:
+			match = None
+			self.log.append("{}: the threshold's spikes sorted only".format(e))
+		if templates and os.path.isfile(templates):
+			cmd += ["--templates", templates] + (["--match", match] if match else [])
+		elif templates:
+			self.log.append("spikeglx.templates: {} isn't there: threshold crossings only".format(templates))
+		elif match:
+			self.log.append("spikeglx.match: no templates to match (spikeglx.templates): threshold crossings only")
 		# Each spike's camera frame: the camera pulses on the OneBox that has the gate's TTL (spikeglx.stream: js 1),
 		# numbered from the Pico's count of pulses so far
 		js, ip = (list(self.section.get("stream") or []) + [None, None])[:2]
 		if js == 1 and isinstance(ip, int):
 			cmd += ["--obx-ip", str(ip)] + (["--pico-status", self.pico_status] if self.pico_status else [])
+		return cmd
+
+	def StartChild(self):
+		import subprocess
+		cmd = self.Command()
 		kwargs = {"creationflags": 0x00004000} if sys.platform == "win32" else {} # BELOW_NORMAL_PRIORITY_CLASS
 		self.error, self.port = None, None
 		# The same campy as the panel's, wherever it was installed from
