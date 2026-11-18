@@ -611,17 +611,19 @@ class FakePort:
 
 def test_board_refuses_an_older_or_newer_sketch():
 	# A board still running the sketch from before pull request 304 answers id with version 1, one from before the
-	# operant box's inputs and servos 2, one from before the camera pulses 3: campy-rules says to upload the new one,
-	# and why
-	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 1\).*needs version 4.*frames.*Upload"):
+	# operant box's inputs and servos 2, one from before the camera pulses 3, one from before linkwatch 4: campy-rules
+	# says to upload the new one, and why
+	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 1\).*needs version 5.*frames.*Upload"):
 		outputs.Board(connection=FakePort(version=1), port="fake", heartbeat=0, sync=0)
-	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 2\).*needs version 4.*servos.*Upload"):
+	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 2\).*needs version 5.*servos.*Upload"):
 		outputs.Board(connection=FakePort(version=2), port="fake", heartbeat=0, sync=0)
-	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 3\).*needs version 4.*camera pulses.*Upload"):
+	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 3\).*needs version 5.*camera pulses.*Upload"):
 		outputs.Board(connection=FakePort(version=3), port="fake", heartbeat=0, sync=0)
-	with pytest.raises(outputs.BoardError, match=r"newer campy_outputs \(version 5\).*Update campy"):
-		outputs.Board(connection=FakePort(version=5), port="fake", heartbeat=0, sync=0)
-	assert "not campy_outputs version 4" in outputs.Mismatch("fake", "ok something 2")
+	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 4\).*needs version 5.*USB link.*Upload"):
+		outputs.Board(connection=FakePort(version=4), port="fake", heartbeat=0, sync=0)
+	with pytest.raises(outputs.BoardError, match=r"newer campy_outputs \(version 6\).*Update campy"):
+		outputs.Board(connection=FakePort(version=6), port="fake", heartbeat=0, sync=0)
+	assert "not campy_outputs version 5" in outputs.Mismatch("fake", "ok something 2")
 
 
 def test_a_lost_answer_never_goes_to_the_wrong_command():

@@ -162,6 +162,9 @@ void SimCamHold() {
 	for (int pin : cam.pins) PrintEdge(Now(), pin, 0);
 }
 
+void SimUsbDetach() { std::fprintf(live ? stderr : stdout, "usb %llu detach\n", Now()); }
+void SimUsbAttach() { std::fprintf(live ? stderr : stdout, "usb %llu attach\n", Now()); }
+
 static std::map<int, std::pair<unsigned, unsigned> > pwm; // pin -> its frequency and bits
 
 bool ledcAttach(uint8_t pin, uint32_t freq, uint8_t resolution) {
