@@ -505,7 +505,30 @@ class TemplateMatcher:
 	def Reset(self):
 		self.tail, self.tail_first, self.next = None, None, None
 		self.tail_s = None # the tail as scored (whitened)
-		self.S, self.s_first = None, None
+		self.s_first = None # the scores so far: S (Sbuf's columns [S_lo, S_hi)), from sample s_first
+		if not hasattr(self, "Sbuf"):
+			self.Sbuf = None
+		self.S_lo = self.S_hi = 0
+
+	@property
+	def S(self):
+		return None if self.s_first is None else self.Sbuf[:, self.S_lo:self.S_hi]
+
+	def Room(self, n):
+		"""Where the next n samples' scores go: n columns after the scores so far (the buffer moves them to its start,
+		or grows, when full; so the scores aren't all copied at each piece)."""
+		if self.Sbuf is None or self.S_hi + n > self.Sbuf.shape[1]:
+			live = self.S_hi - self.S_lo
+			if self.Sbuf is None or live + n > self.Sbuf.shape[1] // 2:
+				grown = np.empty((len(self.units), max(2 * (live + n), 4 * BLOCK)), np.float32)
+				if live:
+					grown[:, :live] = self.Sbuf[:, self.S_lo:self.S_hi]
+				self.Sbuf = grown
+			elif live:
+				self.Sbuf[:, :live] = self.Sbuf[:, self.S_lo:self.S_hi].copy()
+			self.S_lo, self.S_hi = 0, live
+		self.S_hi += n
+		return self.Sbuf[:, self.S_hi - n:self.S_hi]
 
 	def Feed(self, first, x, last=False):
 		"""Template spikes judged with the samples given (filtered uV); as Detector.Feed. last: judge all that can be,
@@ -519,24 +542,22 @@ class TemplateMatcher:
 			buf, bfirst = np.concatenate([self.tail, x]), self.tail_first
 			bufs = buf if self.white is None else np.concatenate([self.tail_s, xs])
 		# The scores of the samples that now have all they need, once each, in whole blocks (the rest, at the end)
-		start = bfirst + el.BEFORE if self.S is None else self.s_first + self.S.shape[1]
+		start = bfirst + el.BEFORE if self.s_first is None else self.s_first + (self.S_hi - self.S_lo)
 		end = bfirst + len(buf) - el.AFTER + 1
 		step = BLOCK - (el.BEFORE + el.AFTER - 1)
 		if not last:
 			end = start + max(0, end - start) // step * step
 		if end > start:
-			new = self.Scores(bufs, start - bfirst, end - bfirst)
-			if self.S is None:
-				self.S, self.s_first = new, start
-			else:
-				self.S = np.concatenate([self.S, new], axis=1)
+			if self.s_first is None:
+				self.s_first, self.S_lo, self.S_hi = start, 0, 0
+			self.Scores(bufs, start - bfirst, end - bfirst, out=self.Room(end - start))
 		w = MATCH_W
 		reach = self.passes * REACH + 2 * w + 1
 		margin_lo, margin_hi = el.BEFORE + reach, el.AFTER + reach
 		lo = max(self.next - bfirst, margin_lo)
 		hi = len(buf) - margin_hi
-		if self.S is not None: # what the scores reach
-			hi = min(hi, self.s_first + self.S.shape[1] - bfirst - self.passes * REACH - 2 * w)
+		if self.s_first is not None: # what the scores reach
+			hi = min(hi, self.s_first + (self.S_hi - self.S_lo) - bfirst - self.passes * REACH - 2 * w)
 		if hi - lo >= (1 if last else self.judge):
 			self.scored = bufs
 			found = self.Judge(buf, bfirst, lo, hi)
@@ -545,9 +566,9 @@ class TemplateMatcher:
 			found = el.Spikes()
 		keep = max(0, self.next - bfirst - margin_lo)
 		self.tail, self.tail_s, self.tail_first = buf[keep:], bufs[keep:], bfirst + keep
-		if self.S is not None and self.tail_first + el.BEFORE > self.s_first:
+		if self.s_first is not None and self.tail_first + el.BEFORE > self.s_first:
 			drop = self.tail_first + el.BEFORE - self.s_first
-			self.S, self.s_first = self.S[:, drop:], self.s_first + drop
+			self.S_lo, self.s_first = min(self.S_lo + drop, self.S_hi), self.s_first + drop
 		return found
 
 	def Flush(self):
@@ -587,13 +608,14 @@ class TemplateMatcher:
 			groups.append((g, chans, A.reshape(len(g) * K, len(chans)).astype(np.float32)))
 		return groups
 
-	def Scores(self, x, a0, b0):
+	def Scores(self, x, a0, b0, out=None):
 		"""Each unit's score, not yet divided by its template's energy, at samples [a0, b0) of x (filtered uV, whitened
 		if the templates are), whose samples a0 - BEFORE to b0 + AFTER - 1 must be there: [units, b0 - a0]. In blocks of
 		BLOCK samples (BLOCK - 60 scores each) from a0: each channel's transform once, then per group of units, their
 		shapes' weights times their channels' transforms (one matrix product), each shape's filter, and back."""
 		L = el.BEFORE + el.AFTER
-		out = np.empty((len(self.units), b0 - a0), np.float32)
+		if out is None:
+			out = np.empty((len(self.units), b0 - a0), np.float32)
 		n = BLOCK
 		s = a0
 		while s < b0:
