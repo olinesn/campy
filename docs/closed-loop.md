@@ -241,7 +241,7 @@ All host times are on campy's host clock (`hosttimes.npy`'s), so everything line
   - a camera feed left by a killed recording, or made again by the next one, counts as ended;
   - `refractory_s` counts across the restart.
 
-  For inputs, it checks a poke rewarded only with mouse 2 at the port, an input shorter than a frame counted once, an input that is unknown without a board, the board's setup, and the whole path in real time: pokes on the simulated board's A0, each rewarded once.
+  For inputs, it checks a poke rewarded only with mouse 2 at the port, an input shorter than a frame counted once, an input that is unknown without a board, the board's setup, and the whole path in real time: pokes on the simulated board's A0, each rewarded once. Each poke's stamp must be within 50 ms after its rise or 10 ms before it: the sketch reads its clock just before its pins, on a real board too, so a rise between the two reads gets the earlier time (1 µs early, now and then, on the test computers), and a busy test computer can pause the simulated board between the two reads for a few milliseconds.
 
   One of these runs the sketch in real time with a 60 Hz trigger: `campy-live` gone for 2 s, the session train's pin kept pulsing (20 pulses or more during the gap) and the board's watchdog never fired. That test sets the watchdog to 500 ms, not 250, because a 250 ms hold-up of the simulated board or of `campy-rules` on a busy test computer could fire it. It also checks the heartbeat's pace from what `campy-rules` sent. Slowing the waiting loop to 300 ms makes that test and the heartbeat check fail. And it runs the whole path in real time: a results feed, `campy-rules`, and the sketch on a simulated serial port with a 60 Hz trigger.
 
