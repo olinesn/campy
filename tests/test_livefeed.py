@@ -703,7 +703,7 @@ def test_campy_live_reads_a_recording_to_its_end(tmp_path, capsys):
 
 
 def test_campy_live_sets_its_start_up_objects_aside_from_garbage_collection(tmp_path, capsys):
-	# Just before the first set campy-live collects once and freezes what is left (gc.freeze), so Python's full
+	# Before the feed campy-live collects once and freezes what is left (gc.freeze), so Python's full
 	# collection during the sets, which went through every object from start-up (140-152 ms in one set's 3D step
 	# on the Dell Pro Max Slim), goes only through what the run made. Given back when it ends: Run can run in
 	# another program's process (here, the tests')
@@ -721,8 +721,8 @@ def test_campy_live_sets_its_start_up_objects_aside_from_garbage_collection(tmp_
 	text = capsys.readouterr().out
 	said = re.search(r"Garbage collection: the ([\d,]+) objects from start-up set aside \((\d+) ms\)", text)
 	assert said and int(said.group(1).replace(",", "")) > 1000, text
-	# Said before the first set: right after "Logging to", before the summary
-	assert text.index("Logging to") < said.start() < text.index("Done, the recording ended")
+	# Done before the feed, so no frames wait on the collection; what was made after it frozen before the first set
+	assert said.start() < text.index("Live feed:") < text.index("Logging to")
 	assert frozen == [before] # one collection, before campy-live froze anything
 	assert gc.get_freeze_count() <= before # given back
 

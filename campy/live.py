@@ -220,12 +220,14 @@ the step got slower, and on the Dell Pro Max Slim nothing changed. So it is off 
 
 Garbage collection: Python's full collection, which comes every so often as
 a run makes and keeps objects, goes through every object campy-live holds,
-hundreds of thousands from start-up (torch, sleap-nn, the models, numba).
-On the Dell Pro Max Slim it held up one set's 3D step 140-152 ms about 40 s
-after start, and 7-8 sets were skipped (in 4 of 6 three-camera checks on
-17 November 2026). So just before the first set campy-live collects once
-and freezes what is left (gc.freeze; numba's loops too, if they load later):
-a collection during the sets then goes only through what the run made.
+about 600,000 from start-up (torch, sleap-nn, the models, numba). On the
+Dell Pro Max Slim it held up one set's 3D step 140-152 ms about 40 s after
+start, and 7-8 sets were skipped (in 4 of 6 three-camera checks on 17
+November 2026). So once the models are warm, before the feed, campy-live
+collects once and freezes what is left (gc.freeze, about 0.17 s there), and
+freezes again just before the first set what was made since (numba's loops
+too, if they load later): a collection during the sets then goes only
+through what the run made.
 
 --cuda-graphs records each model's GPU work once per input shape and then
 replays it in one go (a CUDA graph), instead of launching its hundred or so
@@ -3110,6 +3112,14 @@ def Run(args):
 			clock = GpuClock(model.device, args.hold_gpu_clock_blocks,
 				memory=os.path.join(FixedEngine.CacheDir(getattr(args, "engine_cache", "")), "gpu_clock.json"))
 			clock.Start()
+		# Python's garbage collection, done here once, before the feed (no frames waiting on it), and what is
+		# left frozen: start-up's objects are then out of its way, and a full collection during the sets no longer
+		# goes through all of them (SetAsideGarbage). What is made from here to the first set (the log, the 3D
+		# step, numba's loops once loaded) is frozen just before it
+		frozen = True
+		kept, took = SetAsideGarbage()
+		Say("Garbage collection: the {:,} objects from start-up set aside ({:.0f} ms), so a collection during the "
+			"sets doesn't go through them.".format(kept, took * 1e3))
 		if args.ready_file:
 			Ready(args.ready_file)
 		# A program that started campy-live first (campy-session) and then
@@ -3153,13 +3163,9 @@ def Run(args):
 			log.results = Publish(args, log, names, cameras, model, tracker, frameRate, interrupts)
 		worker = Pose3DThread(tracker, log, cpus=threeD) if tracker else None
 		Say("Logging to {}.npy.".format(out))
-		# Python's garbage collection, done here once, before the first set: the objects start-up left are then
-		# out of its way, and a full collection during the sets no longer goes through all of them
-		# (SetAsideGarbage). numba's loops, when they load after this, are set aside once they have
-		frozen = True
-		kept, took = SetAsideGarbage()
-		Say("Garbage collection: the {:,} objects from start-up set aside ({:.0f} ms), so a collection during the "
-			"sets doesn't go through them.".format(kept, took * 1e3))
+		# What was made since SetAsideGarbage frozen too (no collection: µs); numba's loops, if still loading,
+		# once they have
+		gc.freeze()
 		numbaLoading = tracker is not None and pose3d.FastStatus()["state"] == "loading"
 		reported, since = time.monotonic(), 0
 		while True:
