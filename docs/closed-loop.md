@@ -167,7 +167,7 @@ Options:
 - It looks every half second while it waits, so the recording's end reaches the board within about a second.
 - It looks the same way whenever no set has come for `--stale-ms`. So a hung `campy-live` whose feed never ends doesn't keep `campy-rules` running after the recording.
 - A pause in the trigger, such as the pause between two bouts, is not an end: the cameras' feeds stay open through it.
-- When it can't tell, `campy-rules` ends with `campy-live`, as before: if no set came before the results ended, or if `campy-live` is too old to name its camera feeds.
+- When it can't tell, `campy-rules` ends with `campy-live`, as before: if no set came before the results ended, if `campy-live` is too old to name its camera feeds, or if every camera feed had already ended by its first look (a `campy-rules` that got going only as the recording ended). It then says only `campy-live ended.`
 
 The events log has a `live_gone` line when the results end and a `live_back` line when they come back, or when `campy-rules` stopped waiting. That one has `gap_s`, `back`, and `why` (for example "the recording ended"). The summary lists the same under `live_gaps`. Pose rules were off from one to the other.
 
