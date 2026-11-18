@@ -86,7 +86,7 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
 <div id="gone" class="card gone" hidden><h2 id="gonetitle"></h2><p id="gonetext" class="muted"></p></div>
 <div id="bgcopy" class="card bgcopy" hidden><div class="row" style="align-items:flex-start"><div class="grow"><b id="bgcopytitle">Copying in the background</b>
   <div id="bgcopyok" style="font-weight:500"></div>
-  <div class="muted">Leave the computer on, and the panel's black window open, until it is done.</div></div>
+  <div class="muted">Leave the computer on until it is done, and don't close the panel's command window (the black window full of text that opened with the panel): the copy runs in it.</div></div>
   <div id="bgeta" class="copyeta" hidden><div><span id="bgetapct" class="big"></span> <span id="bgetapctlab" class="lab"></span><span id="bgetanum" class="big gap"></span> <span id="bgetalab" class="lab"></span></div><div id="bgetaend" class="muted"></div><div id="bgetaplot" class="copyplot" hidden></div></div></div>
   <div id="bgcopytext" style="margin-top:6px"></div></div>
 
