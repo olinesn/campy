@@ -983,7 +983,7 @@ def Serve(args, out=print):
 	sorter = None
 	if args.templates: # a live sorter: templates from a Kilosort 4 sort (campy-ephys train)
 		from campy import ephyssort
-		sorter = ephyssort.Sorter(args.templates, args.match)
+		sorter = ephyssort.Sorter(args.templates, args.match, args.threads)
 	engine = Engine(source, args.threshold, sorter=sorter, frames=frames)
 	key = os.environ.get("CAMPY_EPHYS_KEY", "")
 	state = {"asked": time.monotonic(), "health": {}, "stop": False}
@@ -1167,6 +1167,8 @@ def Main(argv=None):
 	v.add_argument("--match", default="0", help="with --templates: find spikes with the templates too, below the "
 		"threshold: \"learned\", each unit at its threshold learned in training; a number, every unit at that score "
 		"(noise units); 0: off")
+	v.add_argument("--threads", type=int, default=1, help="with --match: work the templates' scores out in this many "
+		"threads (the same spikes)")
 	t = sub.add_parser("train", help="a live sorter's templates from a Kilosort 4 sort (its phy folder), the recording "
 		"replayed as live (campy/ephyssort.py)")
 	t.add_argument("--replay", required=True, help="the sorted recording's .ap.bin (its .meta beside it)")
@@ -1193,6 +1195,8 @@ def Main(argv=None):
 	e.add_argument("--match", default="0", help="find spikes with the templates too, below the threshold: "
 		"\"learned\", each unit at its threshold learned in training; a number, every unit at that score (noise "
 		"units); 0: off, the threshold's spikes sorted")
+	e.add_argument("--threads", type=int, default=1, help="with --match: work the templates' scores out in this many "
+		"threads (the same spikes)")
 	e.add_argument("--report", default="good", help="report the units with these labels only (default good; \"\" "
 		"for all): the others' templates still compete for the spikes")
 	args = parser.parse_args(argv)
@@ -1207,7 +1211,8 @@ def Main(argv=None):
 					whiten=not args.no_whiten)
 			else:
 				summary = ephyssort.Evaluate(source.data, source.stream, args.phy, args.templates, args.span,
-					report=tuple(l.strip() for l in args.report.split(",") if l.strip()) or None, match=args.match)
+					report=tuple(l.strip() for l in args.report.split(",") if l.strip()) or None, match=args.match,
+					threads=args.threads)
 				if args.json:
 					with open(args.json, "w") as f:
 						strictjson.dump(summary, f, indent=1)

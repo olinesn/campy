@@ -326,6 +326,7 @@ def test_two_units_at_once_on_shared_sites_are_both_found(tmp_path):
 	assert got[es.PASSES] >= 0.9, got # both units' spikes, at once, nearly always
 	# Without fitting the two together, the first unit's fit takes in the second's spike and leaves too little of it
 	sorter = es.MatchingSorter(out, 7)
+	sorter.matcher.fast = False # (numba's loop groups on its own)
 	sorter.matcher.Group = lambda *a: None
 	spikes, _ = es.ReplayMatched(source.data, source.stream, start - int(RATE), T, sorter)
 	s0, s1 = spikes.sample[spikes.unit == 0], spikes.sample[spikes.unit == 1]
@@ -384,3 +385,60 @@ def test_three_units_at_once_on_shared_sites_are_all_found(tmp_path):
 	assert got[out, 2] <= got[out, 3] - 0.3, got
 	# Whitened (as Kilosort whitens), the templates differ more: all three found too
 	assert got[white, 3] >= 0.85, got
+	# numba's loop (when numba is installed): the same spikes, sizes and scores as numpy's, groups of three included
+	if es.Fast(wait=True) is not None:
+		for path in (out, white):
+			a, ra = Matched(path, source, int(7.5 * RATE), T, True, 7)
+			b, rb = Matched(path, source, int(7.5 * RATE), T, False, 7)
+			assert ra == rb and any(r[5] for r in ra)
+			assert np.array_equal(a.sample, b.sample) and np.array_equal(a.unit, b.unit)
+
+
+# numba's compiled loop (campy/ephyssort_numba.py, when numba is installed): the same as numpy's, to the last bit
+
+def Matched(path, source, start, end, fast, z=None):
+	"""The matching sorter's spikes over samples [start, end), with numba's loop or numpy's, and each template spike's
+	record (sample, unit, z, size, pass, in a group, score, cosine)."""
+	sorter = es.MatchingSorter(path, z)
+	sorter.matcher.fast = fast
+	sorter.matcher.record = []
+	spikes, _ = es.ReplayMatched(source.data, source.stream, start, end, sorter)
+	return spikes, sorter.matcher.record
+
+
+def test_numba_loop_gives_numpys_spikes_to_the_last_bit(sorted_recording):
+	pytest.importorskip("numba")
+	assert es.Fast(wait=True) is not None, es.FastStatus()
+	tmp, bin_path, phy, times, clusters = sorted_recording
+	out = str(tmp / "templates_numba.npz")
+	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":5"]) == 0
+	source = el.ReplaySource(bin_path, speed=0)
+	for z in (None, 6.0): # each unit's learned threshold, and a low one for all (more spikes, more groups)
+		a, ra = Matched(out, source, 0, len(source.data), True, z)
+		b, rb = Matched(out, source, 0, len(source.data), False, z)
+		assert len(ra) > 100 and ra == rb # every spike's sample, unit, size and z, to the last bit
+		assert np.array_equal(a.sample, b.sample) and np.array_equal(a.unit, b.unit)
+
+
+def test_numba_off_or_missing_leaves_numpy(monkeypatch, sorted_recording):
+	import sys
+	tmp, bin_path, phy, times, clusters = sorted_recording
+	out = str(tmp / "templates_numba_off.npz")
+	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":5", "--no-learn"]) == 0
+	source = el.ReplaySource(bin_path, speed=0)
+	want, _ = Matched(out, source, 0, int(3 * RATE), False, 7)
+	idle = {"state": "idle", "module": None, "seconds": None, "error": None, "thread": None}
+	# CAMPY_NUMBA=0: not loaded at all
+	monkeypatch.setattr(es, "_FAST", dict(idle))
+	monkeypatch.setenv("CAMPY_NUMBA", "0")
+	got, _ = Matched(out, source, 0, int(3 * RATE), True, 7)
+	assert es.FastStatus()["state"] == "off" and es.Fast(wait=True) is None
+	assert np.array_equal(got.sample, want.sample) and np.array_equal(got.unit, want.unit)
+	# No numba: said so, and numpy
+	monkeypatch.setattr(es, "_FAST", dict(idle))
+	monkeypatch.delenv("CAMPY_NUMBA")
+	monkeypatch.setitem(sys.modules, "numba", None)
+	monkeypatch.delitem(sys.modules, "campy.ephyssort_numba", raising=False)
+	got, _ = Matched(out, source, 0, int(3 * RATE), True, 7)
+	assert es.Fast(wait=True) is None and es.FastStatus()["state"] == "missing"
+	assert np.array_equal(got.sample, want.sample) and np.array_equal(got.unit, want.unit)
