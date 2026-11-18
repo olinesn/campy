@@ -864,6 +864,8 @@ Notes on the measurements:
   | `3013041`, 3 cameras again | | 3,600 / 5.6 / 5.8 / 7.6 / 8.4 | |
   | `f563862` | 1,200 / 2.3 / 2.5 | 3,600 / 5.6 / 5.8 / 7.6 / 8.4 | 1,800 / 5.6 / 5.7 / 8.5 / 9.4 |
 
+- At 11:37–11:39 PM on 17 November the other five machines (EVO-X2, Precision 7875, Pro Tower Plus, Jetson AGX Orin and the Windows 11 VM) moved on to dev `e8c3247` from `f563862`, with spock's campy copy, and the Pro Max Slim from `3013041` (`e8c3247` adds only docs to it). This brings `campy-box` and the copy card's speed, stalled line and speed plot (pull request 472). `campy-box` is a new command, so campy was reinstalled in each machine's environments. Every update ran under its machine's lock and ended `RIG_CLEAN`, except on the Windows 11 VM. There it ran outside the lock, which its image-generation queue held at the time; the update only changed git and pip. Every experiment config on the Windows machines passes `campy-config check`, and every machine's rig lock (`rig.py`) was already dev's. No rig checks were run on `e8c3247`; the Pro Max Slim's on `3013041` (above) cover the same code.
+
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
 A fourth FLIR camera joined the Pro Max Slim's three, on the same trigger. `campy-session` recorded the four at 30 fps for 10 minutes, twice with 3 mice in the cage and four times with 5, while `campy-live` tracked them in 3D with a new 4-camera calibration and `campy-live-view` showed it. Defaults of 2.2.0rc1 (fixed crops, CUDA graphs, TensorRT); every camera kept all 18,000 of its frames each time. Times in ms, median / p99:
