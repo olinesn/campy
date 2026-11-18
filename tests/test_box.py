@@ -579,7 +579,10 @@ def test_a_poke_rewarded_only_while_mouse_2_is_at_the_port(tmp_path):
 		assert until(lambda: runner.state == "at_port"), (runner.state, said)
 		port.Say("i 0 1 5000000 300 100") # a poke while mouse 2 is there: rewarded
 		assert until(lambda: runner.state == "reward")
-		assert until(lambda: runner.state == "ready", 5)
+		# Back in ready once the pose let go (no set for stale_ms). Not ready alone: as the reward's iti ends, ready is
+		# entered with the pose still held and moves on to at_port at once, and a test that catches that moment and
+		# writes sets again before stale_ms keeps the pose held (hold 2 never comes; Windows CI, 18 November)
+		assert until(lambda: runner.state == "ready" and not runner.holding["m2_at_port"], 5), (runner.state, said)
 		sets(inside, 0.3)
 		assert until(lambda: runner.state == "at_port")
 		sets(outside, 0.1)
@@ -599,8 +602,8 @@ def test_a_poke_rewarded_only_while_mouse_2_is_at_the_port(tmp_path):
 	reward = [e for e in ev if e["kind"] == "state" and e["state"] == "reward"][0]
 	assert reward["guard"] == "m2_at_port" and reward["guard_holds"] is True
 	poses = [(e["holds"], e["why"]) for e in ev if e["kind"] == "pose"]
-	# Held three times: let go when the sets stopped (stale: while the task rewarded, and at the end) and when mouse
-	# 2 left. (A test computer busy enough to hold the sets up past stale_ms adds a let-go and a hold: allowed)
+	# Held three times: let go when the sets stopped (stale: after the reward, and at the end) and when mouse 2 left.
+	# (A test computer busy enough to hold the sets up past stale_ms adds a let-go and a hold: allowed)
 	assert poses[0] == (True, None) and (False, None) in poses and poses[-1] == (False, "stale"), poses
 	assert all(a[0] != b[0] for a, b in zip(poses, poses[1:])), poses # holds and lets go in turn
 	assert json.load(open(str(tmp_path / "box.json")))["counts"]["poses"]["m2_at_port"] == len(poses) // 2 >= 3

@@ -8,6 +8,10 @@ the tests read and change. Its SpikeGLX:
   validated   its settings verified (else getParams fails "never validated"
               until selectDevices)
   trigMode    "2": TTL
+  devices     the devices it last verified ("(20,1,1)(20,obx)": a probe and a
+              OneBox in slot 20), which getProbeAddrs and getOneBoxAddrs give
+              and selectDevices sets; no_addrs: those two calls fail (an SDK
+              without them); stuck: selectDevices leaves devices as they are
   running     a run started (startRun), its OneBox stream at 30,303 samples a
               second from then; dir, run: its data folder and run name
   enabled     recording enabled; the tests' stand-in Pico writes a .bin file
@@ -32,7 +36,7 @@ IMEC_RATE = 30000.0
 UV = 0.62 / 8192 / 80 # volts per count: a Neuropixels 2.0 probe's
 BUFFER_S = 4.0
 DEFAULT = {"open": True, "validated": True, "trigMode": "2", "running": False, "enabled": False, "dir": "", "run": "",
-	"t_run": None, "calls": []}
+	"t_run": None, "calls": [], "devices": "(20,1,1)(20,obx)", "no_addrs": False, "stuck": False}
 
 
 def Path():
@@ -123,7 +127,31 @@ def c_sglx_getstr(ref, h, i):
 
 
 def c_sglx_selectDevices(h, devices, verify):
-	Call("selectDevices " + devices.decode(), validated=True)
+	stuck = Load()["stuck"]
+	Call("selectDevices " + devices.decode(), validated=True, **({} if stuck else {"devices": devices.decode()}))
+	return True
+
+
+def Entries():
+	import re
+	return [e.split(",") for e in re.findall(r"\(([^()]*)\)", Load()["devices"])]
+
+
+def c_sglx_getProbeAddrs(ref, h):
+	if Load()["no_addrs"]:
+		h.error = b"getProbeAddrs: unknown command"
+		return False
+	probes = [e for e in Entries() if len(e) == 3]
+	Set(ref, ("".join("({},{})".format(i, ",".join(e)) for i, e in enumerate(probes)) or "()").encode())
+	return True
+
+
+def c_sglx_getOneBoxAddrs(ref, h):
+	if Load()["no_addrs"]:
+		h.error = b"getOneBoxAddrs: unknown command"
+		return False
+	boxes = [e for e in Entries() if len(e) == 2 and e[1] == "obx"]
+	Set(ref, ("".join("({},{})".format(i, e[0]) for i, e in enumerate(boxes)) or "()").encode())
 	return True
 
 

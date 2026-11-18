@@ -1,0 +1,17 @@
+# ChronicRecord bout sessions with fiber photometry only: everything as chronic_session.yaml (the cameras, the Pico's
+# bouts, the LEDs' snapshot pattern, the page's LED powers), but SpikeGLX records the OneBox alone, without the
+# Neuropixels probe. For an animal with a fiber and no probe: the probe's 385 channels are most of what SpikeGLX writes
+# (23.1 MB/s of its 24 while the gate is open), and none of the photometry, gate, camera or sync lines are on it.
+# On the rig it lives in C:\campy_data\configs next to chronic_session.yaml, which it extends; it is one more
+# experiment on the rig's panel (star it on the page's Experiment list).
+extends: chronic_session.yaml
+
+spikeglx:
+  # The OneBox alone (slot 20). At each Start the panel gives SpikeGLX these devices if it was last set to others (the
+  # daily config's probe and OneBox, say), and the daily config puts the probe back at its own Start.
+  devices: "(20,obx)"
+  # The panel's disk check: the OneBox writes 0.85 MB/s while the gate is open (14 channels x 2 bytes x 30,303 a second)
+  write_mb_s: 1
+
+panel:
+  title: "ChronicRecord photometry only (OneBox, no probe)"

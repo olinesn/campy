@@ -284,6 +284,56 @@ def test_spikeglx_is_checked_started_and_stopped(tmp_path, sglx_state):
 		s.Open() # and no spikeglx.exe to open it with
 
 
+
+def test_start_selects_the_configs_devices(tmp_path, sglx_state):
+	# SpikeGLX last verified with the probe and the OneBox; the experiment's config wants the OneBox alone (fiber
+	# photometry with no probe implanted): the page's check says so, and Start selects them before the run
+	s = a_sglx(devices="(20,obx)")
+	line = s.Check()
+	assert line.startswith("SpikeGLX: idle, TTL trigger")
+	assert "its devices are (20,1,1)(20,obx): Start selects the config's, (20,obx)" in line
+	assert not any(c.startswith("selectDevices") for c in state(sglx_state).get("calls", [])) # the check changes nothing
+	s.Start(str(tmp_path / "rec" / "spikeglx"), "chronic_2026-11-18_14-00-00")
+	now = state(sglx_state)
+	assert now["devices"] == "(20,obx)"
+	calls = now["calls"]
+	assert calls.index("selectDevices (20,obx)") < calls.index("startRun")
+	assert now["dir"] == str(tmp_path / "rec" / "spikeglx") # the run's folder set after the verify's own
+	assert s.Stop() == "SpikeGLX: run stopped, its files closed."
+	# the daily config, with the probe, puts it back at its Start
+	daily = a_sglx(devices="(20,1,1)(20,obx)")
+	daily.Start(str(tmp_path / "rec2" / "spikeglx"), "chronic_2026-11-18_15-00-00")
+	assert state(sglx_state)["devices"] == "(20,1,1)(20,obx)"
+	daily.Stop()
+
+
+def test_devices_already_right_or_not_comparable_are_left_alone(tmp_path, sglx_state):
+	s = a_sglx(devices="(20, 1, 1)(20,OBX)") # the same devices, written another way
+	assert s.Check().endswith("; devices (20, 1, 1)(20,OBX)")
+	s.Start(str(tmp_path / "a"), "chronic_a")
+	s.Stop()
+	a_sglx(devices="(20,obx)(nidq)").Start(str(tmp_path / "b"), "chronic_b") # an NI-DAQ: not compared
+	a_sglx().Stop()
+	set_state(sglx_state, no_addrs=True) # an SDK without getProbeAddrs / getOneBoxAddrs
+	a_sglx(devices="(20,obx)").Start(str(tmp_path / "c"), "chronic_c")
+	a_sglx().Stop()
+	assert not any(c.startswith("selectDevices") for c in state(sglx_state)["calls"])
+	assert state(sglx_state).get("devices", "(20,1,1)(20,obx)") == "(20,1,1)(20,obx)" # the fake's default, never set
+
+
+def test_devices_that_dont_take_stop_the_start(tmp_path, sglx_state):
+	set_state(sglx_state, stuck=True) # SpikeGLX keeps the probe (its Detect still finds and ticks it, say)
+	with pytest.raises(spikeglx.SpikeGLXError, match=r"after selecting \(20,obx\).*its devices are \(20,1,1\)\(20,obx\)"):
+		a_sglx(devices="(20,obx)").Start(str(tmp_path / "rec"), "chronic_x")
+	assert "startRun" not in state(sglx_state)["calls"]
+
+
+def test_devices_strings():
+	assert spikeglx.Wanted("(20,1,1)(20,obx)") == ({(20, 1, 1)}, {20})
+	assert spikeglx.Wanted("(20,obx)") == (set(), {20})
+	assert spikeglx.Wanted("(2,1,NP1200,12709120122)") is None and spikeglx.Wanted("(nidq)") is None
+	assert spikeglx.Shown(set(), {20}) == "(20,obx)" and spikeglx.Shown(set(), set()) == "()"
+
 # ------------------------------------------------------------------ whole sessions from the page
 
 class GateBoard(FakeBoard):
