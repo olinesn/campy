@@ -811,11 +811,13 @@ class Engine:
 			with live.lock:
 				live.stream = stream
 				live.Clear()
-		self.stream, self.filter = stream, Filter(stream)
-		self.detector = Detector(stream, self.threshold)
+		self.filter, self.detector = Filter(stream), Detector(stream, self.threshold)
 		self.expected = None
 		if self.frames is not None:
 			self.frames.Reset()
+		# The stream last: campy-ephys serve answers requests in threads of their own, and one that sees a stream
+		# takes all that goes with it as ready (one between the two found no spike finder)
+		self.stream = stream
 		return True
 
 	def SetThreshold(self, threshold, channel=None):
