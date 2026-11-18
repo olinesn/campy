@@ -2096,8 +2096,11 @@ def UnderRig(rig_lock, owner, name, argv):
 		"does nothing in this window: close the panel from its page.".format(rig))
 	IgnoreCtrlC()
 	import subprocess
+	# SpikeGLX (or Open Ephys) started by hand beside the panel is part of the recording, not someone
+	# else's: rig.py neither waits for it nor counts it (RIG_ALLOW; a rig.py from before it ignores this)
+	allow = {k for k in os.environ.get("RIG_ALLOW", "").split(",") if k.strip()} | {"ephys"}
 	return subprocess.call([session.Python(), rig, "run", "--log-dir", logs, owner or "panel", tag, "--",
-		session.Python(), "-m", "campy.session", "panel"] + list(argv))
+		session.Python(), "-m", "campy.session", "panel"] + list(argv), env=dict(os.environ, RIG_ALLOW=",".join(sorted(allow))))
 
 
 def Main(argv=None):
