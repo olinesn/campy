@@ -942,3 +942,120 @@ def test_a_board_that_restarted_is_lost_not_relinked(tmp_path):
 		runner.stop.set()
 		thread.join(5)
 	assert json.load(open(str(tmp_path / "box.json")))["ended"] == "board lost"
+
+
+def test_a_link_still_down_gets_a_usb_port_reset_and_comes_back(tmp_path, monkeypatch):
+	# The board's own re-attach left its USB stuck (once in 4 stalls on a real Nano ESP32): no port to open until the
+	# computer resets the board's USB port, then the board answers as before, its clock gone on
+	monkeypatch.setattr(outputs, "RESET_AFTER_S", 0.5)
+	first, second = StallingBoard(), StallingBoard()
+	resets = []
+
+	def opener():
+		if not resets:
+			raise OSError("[Errno 2] could not open port /dev/ttyACM0")
+		return second
+
+	def resetter():
+		resets.append(time.monotonic())
+		return "/dev/bus/usb/003/007"
+
+	args = argparse.Namespace(task=None, port="", out=str(tmp_path / "box"), check=False, duration_s=0)
+	runner = box.Runner(args, box.Box(Task()), connection=first, opener=opener, resetter=resetter)
+	said = []
+	runner.say = said.append
+	result = {}
+	thread = threading.Thread(target=lambda: result.setdefault("code", runner.Run()), daemon=True)
+	thread.start()
+	try:
+		assert until(lambda: runner.state == "ready")
+		first.stalled = True
+		assert until(lambda: runner.counts.get("relinks") == 1, 10), said
+		assert until(lambda: "arm 0 -1" in second.Sent() and runner.state == "ready")
+	finally:
+		runner.stop.set()
+		thread.join(5)
+	assert result["code"] == 0, said
+	assert len(resets) == 1 and runner.counts["usb_resets"] == 1
+	ev = events(tmp_path)
+	relinks = [e for e in ev if e["kind"] == "relink"]
+	assert [e["what"] for e in relinks] == ["down", "reset", "back"]
+	assert relinks[1]["detail"] == "done (/dev/bus/usb/003/007)"
+	# Not before RESET_AFTER_S: the board's own re-attach gets its chance first
+	assert relinks[1]["heard_ns"] - relinks[0]["heard_ns"] >= 0.5e9
+	assert any("USB port reset from the computer, done" in s for s in said)
+	assert "relink: USB port reset done (/dev/bus/usb/003/007)" in open(str(tmp_path / "box.board.txt")).read()
+
+
+def test_a_usb_port_reset_that_fails_is_said_and_the_board_is_lost(tmp_path, monkeypatch):
+	monkeypatch.setattr(outputs, "RESET_AFTER_S", 0.3)
+	monkeypatch.setattr(box, "RELINK_S", 1.5)
+	first = StallingBoard()
+
+	def opener():
+		raise OSError("[Errno 2] could not open port /dev/ttyACM0")
+
+	def resetter():
+		raise outputs.BoardError("no permission to reset /dev/bus/usb/003/007: a udev rule gives it")
+
+	args = argparse.Namespace(task=None, port="", out=str(tmp_path / "box"), check=False, duration_s=0)
+	runner = box.Runner(args, box.Box(Task()), connection=first, opener=opener, resetter=resetter)
+	said = []
+	runner.say = said.append
+	result = {}
+	thread = threading.Thread(target=lambda: result.setdefault("code", runner.Run()), daemon=True)
+	thread.start()
+	try:
+		assert until(lambda: runner.state == "ready")
+		first.stalled = True
+		thread.join(15)
+	finally:
+		runner.stop.set()
+		thread.join(5)
+	assert json.load(open(str(tmp_path / "box.json")))["ended"] == "board lost"
+	relinks = [e for e in events(tmp_path) if e["kind"] == "relink"]
+	assert [e["what"] for e in relinks] == ["down", "reset"]
+	assert relinks[1]["detail"].startswith("failed: no permission to reset")
+	assert any("a udev rule gives it" in s for s in said)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux's sysfs, with symlinks")
+def test_the_boards_usb_device_is_found_from_its_port_and_reset(tmp_path):
+	# A sysfs of our own: the board's port (a by-id link to ttyACM0) -> its tty's interface -> its USB device, whose
+	# bus and device numbers name its node in /dev/bus/usb
+	sys_root, dev = tmp_path / "sys", tmp_path / "dev"
+	device = sys_root / "devices" / "pci0000:00" / "usb3" / "3-3"
+	(device / "3-3:1.1").mkdir(parents=True)
+	for name, value in (("busnum", "3"), ("devnum", "7"), ("idVendor", "2341")):
+		(device / name).write_text(value + "\n")
+	(sys_root / "class" / "tty" / "ttyACM0").mkdir(parents=True)
+	os.symlink(str(device / "3-3:1.1"), str(sys_root / "class" / "tty" / "ttyACM0" / "device"))
+	(dev / "serial" / "by-id").mkdir(parents=True)
+	(dev / "ttyACM0").write_text("")
+	port = dev / "serial" / "by-id" / "usb-Arduino_Nano_ESP32_744DBDA0BA6C-if01"
+	os.symlink(str(dev / "ttyACM0"), str(port))
+	usb = outputs.UsbDevice(str(port), sys_root=str(sys_root))
+	assert usb == dict(dir=os.path.realpath(str(device)), vendor="2341")
+	assert outputs.UsbDevice(str(dev / "ttyS0"), sys_root=str(sys_root)) is None # not a USB port
+	(dev / "bus" / "usb" / "003").mkdir(parents=True)
+	(dev / "bus" / "usb" / "003" / "007").write_text("")
+	calls = []
+	node = outputs.ResetUsbPort(usb, dev_root=str(dev / "bus" / "usb"), ioctl=lambda fd, op, arg: calls.append(op))
+	assert node == str(dev / "bus" / "usb" / "003" / "007") and calls == [outputs.USBDEVFS_RESET] == [21780]
+	# Attached again: a new device number, the same place
+	(device / "devnum").write_text("9\n")
+	(dev / "bus" / "usb" / "003" / "009").write_text("")
+	assert outputs.ResetUsbPort(usb, dev_root=str(dev / "bus" / "usb"), ioctl=lambda *a: None).endswith("003/009")
+	# No write access to the node (no udev rule): said, with where the rule is
+	if os.geteuid() != 0:
+		os.chmod(str(dev / "bus" / "usb" / "003" / "009"), 0o444)
+		with pytest.raises(outputs.BoardError, match=r"no permission to reset .*003/009: a udev rule gives it"):
+			outputs.ResetUsbPort(usb, dev_root=str(dev / "bus" / "usb"), ioctl=lambda *a: None)
+	# Something else on that port now, or nothing: no reset
+	(device / "idVendor").write_text("303a\n")
+	with pytest.raises(outputs.BoardError, match="another device"):
+		outputs.ResetUsbPort(usb, dev_root=str(dev / "bus" / "usb"), ioctl=lambda *a: None)
+	for name in ("busnum", "devnum", "idVendor"):
+		(device / name).unlink()
+	with pytest.raises(outputs.BoardError, match="nothing on the board's USB port"):
+		outputs.ResetUsbPort(usb, dev_root=str(dev / "bus" / "usb"), ioctl=lambda *a: None)
