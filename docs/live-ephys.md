@@ -219,7 +219,20 @@ campy-ephys templates --session <recording folder> --out <folder> --kilosort-pyt
 
 It writes only in `--out`: the joined file, `kilosort4/`, `templates.npz` and `templates.json` (what it did), then prints the lines for the panel's config. A step whose output is already there is skipped, so a run that stopped goes on from where it was; delete `--out` to start again. Run it when nothing records: Kilosort holds the GPU for minutes. To curate the units first, open `kilosort4/` in phy, then run `campy-ephys train` on the joined file, as above.
 
-**Kilosort 4 on the ChronicRecord PC:** a conda environment of its own, `kilosort4` (Python 3.11, Kilosort 4.1.7, torch 2.11.0 with CUDA 12.8, the build campy-live's environment runs on its RTX 2000 Ada).
+**Kilosort 4 on the ChronicRecord PC:** a conda environment of its own, `kilosort4` (Python 3.11, Kilosort 4.1.7, torch 2.11.0 with CUDA 12.8, the build campy-live's environment runs on its RTX 2000 Ada). Installed on 18 November, under the rig lock.
+
+**Run on that PC (18 November), on a session recorded with its probe on a bench, not implanted:** 4 bouts (2.5 s, 257 s, 27 s and 27 s) of its Neuropixels 2.0 four-shank probe (384 channels), under the rig lock, with nothing recording:
+
+| Step | Time | Note |
+|---|---|---|
+| Joining the 4 bouts (7.2 GB, 313 s) | 26 s | |
+| Kilosort 4 | 5.8 min | 17.9 GB of memory, 2.6 GB on the GPU; drift correction and spike detection take 80% of it |
+| Training on the last 240 s | 6.2 min | the replay 1.6 min, learning the thresholds 3.9 min |
+| All of it | 12.2 min | |
+
+Kilosort's time grows with the minutes joined (20 by default); the training's doesn't (its 240 s).
+
+- **A probe that isn't in a brain still gives "units".** Kilosort found 119 in the bench recording (29 it labelled good, 90 mua; 237,047 spikes, about 760 a second), and the training made templates for 117 of them. They are noise and interference, not neurons. So make templates only from sessions with the probe implanted, and look at Kilosort's units in phy before training (`campy-ephys train --phy` on the curated folder): Kilosort's "good" label alone doesn't tell a neuron from noise.
 
 **Checked on Kilosort 4's sample recording** (45 s, Neuropixels 1.0; Kilosort 4.1.7, its labels, not curated). Trained on the first 30 s, evaluated on the last 15 s against Kilosort's sort there, for its good units:
 
