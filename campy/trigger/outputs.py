@@ -215,6 +215,7 @@ class Board:
 		self.relink = float(relink or 0.0)
 		self.relinking = False
 		self.board_us = 0 # the board's clock, the latest seen: a board that restarted shows an earlier one
+		self.frames = None # the frames the board had counted at its last time answer (every rise, unlike its t lines)
 		if opener is None:
 			def opener():
 				import serial
@@ -317,6 +318,8 @@ class Board:
 		line = answer.Ok()
 		words = line.split()
 		self.board_us = max(self.board_us, int(words[2]))
+		if len(words) > 3:
+			self.frames = int(words[3])
 		self.clock.Add(answer.sent_ns, answer.heard_ns, int(words[2]))
 
 	# --------------------------------------------------------- reading
