@@ -182,6 +182,24 @@ def test_a_sorter_s_units_reach_the_view(recording):
 		assert len(waves[0]) == 61
 
 
+def test_a_request_that_sees_the_stream_sees_its_spike_finder(monkeypatch, recording):
+	# campy-ephys serve answers the page's requests in threads of their own while the reading thread starts the
+	# engine: the stream is set last, so a request that sees it finds the filter and spike finder made (one in
+	# between found none, GitHub's Python 3.9 runner on 18 November)
+	data, geometry, _ = recording
+	source = el.ReplaySource.FromArray(data[:6000], RATE, np.full(data.shape[1], UV, np.float32), geometry, speed=0)
+	engine = el.Engine(source)
+	seen = []
+	Real = el.Detector
+
+	def Spy(*a, **k):
+		seen.append(engine.stream)
+		return Real(*a, **k)
+	monkeypatch.setattr(el, "Detector", Spy)
+	assert engine.Start()
+	assert seen == [None] and engine.stream is not None and engine.detector is not None and engine.filter is not None
+
+
 def test_the_view_s_envelope_and_spikes_since(recording):
 	"""A view asking for what came since its last snapshot gets every millisecond bin and every spike once."""
 	data, geometry, _ = recording
