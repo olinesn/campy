@@ -789,16 +789,154 @@ class Live:
 
 # ---------------------------------------------------------------- running it
 
-class Engine:
-	"""A source through the filter, the detector and the sorter into Live, piece by piece, timing each step."""
+SORT_BEHIND_S = 2.0 # the matcher in its thread may fall this far behind the reader; past it, a piece's threshold
+# spikes go out unsorted, unmatched, and the matcher starts again after the gap
 
-	def __init__(self, source, threshold=4.5, sorter=None, scope=None, frames=None):
+
+class SortWorker:
+	"""
+	A sorter that finds spikes itself too (ephyssort.MatchingSorter: the
+	templates matched) in a thread of its own, so the reader never waits
+	for it: pieces go in, in order; its spikes come out, in order, as it
+	gives them. Its matrix products, transforms and numba's loop let the
+	reader's thread run meanwhile, so the two use two cores.
+
+	It never holds the reader up: a piece that would put it more than
+	behind_s behind is left unmatched (its threshold spikes go out
+	unsorted, in their place), and the matcher starts again after the gap.
+	"""
+
+	def __init__(self, sorter, rate, behind_s=SORT_BEHIND_S):
+		import collections
+		self.sorter, self.rate = sorter, float(rate)
+		self.most = int(behind_s * rate)
+		self.cv = threading.Condition()
+		self.todo, self.done = collections.deque(), []
+		self.queued = 0 # samples waiting to be matched
+		self.generation = 0 # a Clear's: what was being matched before it is dropped
+		self.busy = False
+		self.stats = {"busy_s": 0.0, "pieces": 0, "skipped_pieces": 0, "skipped_samples": 0}
+		self.error = None
+		self.stop = False
+		self.thread = threading.Thread(target=self.Run, daemon=True, name="campy ephys matcher")
+		self.thread.start()
+
+	def Put(self, first, filtered, spikes, detector_next):
+		with self.cv:
+			if self.queued + len(filtered) > self.most: # too far behind: these threshold spikes go out as they are
+				self.todo.append(("skip", first, spikes))
+				self.stats["skipped_pieces"] += 1
+				self.stats["skipped_samples"] += len(filtered)
+			else:
+				self.todo.append(("match", first, filtered, spikes, detector_next))
+				self.queued += len(filtered)
+			self.cv.notify()
+
+	def Take(self):
+		"""The spikes it has given since the last Take, in order of their samples."""
+		with self.cv:
+			out, self.done = self.done, []
+		return Cat(out)
+
+	def Run(self):
+		while True:
+			with self.cv:
+				while not self.todo and not self.stop:
+					self.cv.wait()
+				if self.stop:
+					return
+				item, generation, self.busy = self.todo.popleft(), self.generation, True
+			t0 = time.perf_counter()
+			try:
+				if item[0] == "match":
+					out = self.sorter.Feed(*item[1:])
+				elif item[0] == "skip": # what was judged before the gap, then this piece's threshold spikes
+					out = Cat([self.sorter.Flush(), item[2]])
+				elif item[0] == "flush":
+					out = self.sorter.Flush()
+				else: # "reset"
+					self.sorter.Reset()
+					out = None
+			except Exception as e: # the matcher failed: this piece's threshold spikes, unsorted, and say so
+				self.error = "{}: {}".format(type(e).__name__, e)
+				out = item[3] if item[0] == "match" else None
+			with self.cv:
+				self.stats["busy_s"] += time.perf_counter() - t0
+				if generation == self.generation: # (a Clear meanwhile: a new run's count)
+					if item[0] == "match":
+						self.queued -= len(item[2])
+						self.stats["pieces"] += 1
+					if out is not None and len(out):
+						self.done.append(out)
+				self.busy = False
+				self.cv.notify_all()
+
+	def Flush(self, timeout=None):
+		"""Match all that is left, however few samples (the end of a replay), and wait for it: the spikes not taken
+		yet."""
+		with self.cv:
+			self.todo.append(("flush",))
+			self.cv.notify()
+		self.Wait(timeout)
+		return self.Take()
+
+	def Wait(self, timeout=None):
+		"""Wait until all that was put has been matched (True), or timeout seconds."""
+		with self.cv:
+			return self.cv.wait_for(lambda: not self.todo and not self.busy, timeout)
+
+	def Clear(self):
+		"""A new run: what is waiting is dropped, and the sorter forgets the samples so far."""
+		with self.cv:
+			self.todo.clear()
+			self.queued, self.done = 0, []
+			self.generation += 1
+			self.todo.append(("reset",))
+			self.cv.notify()
+
+	def Behind(self):
+		"""Seconds of samples waiting to be matched."""
+		return self.queued / self.rate
+
+	def Status(self):
+		with self.cv:
+			return dict(self.stats, behind_s=round(self.Behind(), 3), error=self.error)
+
+	def Close(self):
+		with self.cv:
+			self.stop = True
+			self.cv.notify_all()
+
+
+def Cat(parts):
+	"""Spikes, the parts put together in the order of their samples."""
+	parts = [p for p in parts if p is not None and len(p)]
+	if not parts:
+		return Spikes()
+	if len(parts) == 1:
+		return parts[0]
+	s = Spikes(np.concatenate([p.sample for p in parts]), np.concatenate([p.channel for p in parts]),
+		np.concatenate([p.amplitude for p in parts]), np.concatenate([p.unit for p in parts]),
+		np.concatenate([p.waveforms for p in parts]), np.concatenate([p.neighbors for p in parts]),
+		np.concatenate([p.frame for p in parts]))
+	order = np.argsort(s.sample, kind="stable")
+	return Spikes(s.sample[order], s.channel[order], s.amplitude[order], s.unit[order], s.waveforms[order],
+		s.neighbors[order], s.frame[order])
+
+
+class Engine:
+	"""A source through the filter, the detector and the sorter into Live, piece by piece, timing each step. A sorter
+	that finds spikes itself too (the templates matched) runs in a thread of its own (SortWorker; sort_thread)."""
+
+	def __init__(self, source, threshold=4.5, sorter=None, scope=None, frames=None, sort_thread=True):
 		self.source, self.threshold, self.sorter = source, threshold, sorter or Unsorted()
 		self.frames = frames # CameraFrames, or None
 		self.scope = scope
 		self.stream = None
 		self.stats = {"fetch_s": 0.0, "process_s": 0.0, "reads": 0, "samples": 0, "spikes": 0, "gaps": 0}
 		self.expected = None
+		self.sort_thread = sort_thread and hasattr(self.sorter, "Feed")
+		self.worker = None
 
 	def Start(self):
 		stream = self.source.Open()
@@ -814,6 +952,11 @@ class Engine:
 		self.stream, self.filter = stream, Filter(stream)
 		self.detector = Detector(stream, self.threshold)
 		self.expected = None
+		if self.sort_thread:
+			if self.worker is None:
+				self.worker = SortWorker(self.sorter, stream.rate)
+			else:
+				self.worker.Clear()
 		if self.frames is not None:
 			self.frames.Reset()
 		return True
@@ -849,7 +992,10 @@ class Engine:
 		self.expected = first + len(raw)
 		filtered = self.filter.Apply(raw)
 		spikes = self.detector.Feed(first, filtered)
-		if hasattr(self.sorter, "Feed"): # a sorter that finds spikes itself too (the templates, matched)
+		if self.worker is not None: # the templates matched, in their thread: the spikes it has given so far
+			self.worker.Put(first, filtered, spikes, self.detector.next)
+			spikes = self.worker.Take()
+		elif hasattr(self.sorter, "Feed"): # a sorter that finds spikes itself too (the templates, matched)
 			spikes = self.sorter.Feed(first, filtered, spikes, self.detector.next)
 		else:
 			spikes = self.sorter.Assign(spikes)
@@ -866,6 +1012,21 @@ class Engine:
 		self.stats["samples"] += len(raw)
 		self.stats["spikes"] += len(spikes)
 		return len(raw)
+
+	def Finish(self, timeout=None):
+		"""The end of a replay: the matcher (in its thread or not) matches what is left, and its spikes go into Live."""
+		if self.stream is None or not hasattr(self.sorter, "Flush"):
+			return
+		spikes = self.worker.Flush(timeout) if self.worker is not None else self.sorter.Flush()
+		if self.frames is not None and len(spikes):
+			spikes.frame = self.frames.Frame(spikes.sample)
+		with self.live.lock:
+			self.live.Spikes(spikes)
+		self.stats["spikes"] += len(spikes)
+
+	def SortStatus(self):
+		"""The matcher's thread: how far behind, how busy, what it skipped (None without one)."""
+		return self.worker.Status() if self.worker is not None else None
 
 
 def LowerPriority():
@@ -993,7 +1154,8 @@ def Serve(args, out=print):
 		h = dict(state["health"])
 		h.update(state=source.state, lag_s=source.Lag(), skipped=source.skipped,
 			unavailable=getattr(source, "unavailable", 0), gaps=engine.stats["gaps"],
-			reading=engine.stream is not None, camera=frames.Status() if frames is not None else None)
+			reading=engine.stream is not None, camera=frames.Status() if frames is not None else None,
+			matcher=engine.SortStatus())
 		return h
 
 	class Handler(http.server.BaseHTTPRequestHandler):
@@ -1113,6 +1275,8 @@ def Serve(args, out=print):
 		pass
 	state["stop"] = True
 	server.shutdown()
+	if engine.worker is not None:
+		engine.worker.Close()
 	source.Close()
 	return 0
 

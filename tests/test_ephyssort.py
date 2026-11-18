@@ -145,6 +145,68 @@ def test_the_live_engine_sorts_with_it(sorted_recording):
 	assert [u["unit"] for u in engine.sorter.Units()] == [0, 1, 2, 3, 4]
 
 
+def test_the_live_engine_matches_in_a_thread_of_its_own_with_the_same_spikes(sorted_recording):
+	# The templates matched in the engine (pieces of 50 ms, as from SpikeGLX): in a thread of their own, the same
+	# spikes as in the reader's thread, in order; the thread says how far behind it is
+	tmp, bin_path, phy, times, clusters = sorted_recording
+	out = str(tmp / "templates_thread.npz")
+	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":5"]) == 0
+	got = {}
+	for threaded in (True, False):
+		source = el.ReplaySource(bin_path, speed=0, chunk_s=0.05)
+		engine = el.Engine(source, sorter=es.MatchingSorter(out), sort_thread=threaded)
+		engine.Start()
+		while source.state != "ended":
+			engine.Step()
+		engine.Finish(timeout=60)
+		s = engine.live.spikes
+		assert (np.diff(s.sample) >= 0).all() # in order, though the thread gives them later
+		got[threaded] = list(zip(s.sample.tolist(), s.unit.tolist(), s.channel.tolist()))
+		status = engine.SortStatus()
+		if threaded:
+			assert status["pieces"] > 100 and status["skipped_pieces"] == 0 and status["error"] is None, status
+			assert status["behind_s"] == 0
+			engine.worker.Close()
+		else:
+			assert status is None
+	assert got[True] and any(u >= 0 for _, u, _ in got[True])
+	assert got[True] == got[False]
+
+
+def test_a_matcher_too_far_behind_leaves_pieces_unmatched_and_never_holds_the_reader(sorted_recording):
+	# A matcher slower than the samples (each piece held up 20 ms more than its 50 ms take to come, at speed 0 here
+	# as fast as they can be read): past SORT_BEHIND_S behind, a piece's threshold spikes go out unsorted, and the
+	# reader goes on at its own pace
+	import time as _time
+	tmp, bin_path, phy, times, clusters = sorted_recording
+	out = str(tmp / "templates_slow.npz")
+	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":5", "--no-learn"]) == 0
+	sorter = es.MatchingSorter(out, 7)
+	feed = sorter.Feed
+
+	def Slow(*a):
+		_time.sleep(0.02)
+		return feed(*a)
+
+	sorter.Feed = Slow
+	source = el.ReplaySource(bin_path, speed=0, chunk_s=0.05)
+	engine = el.Engine(source, sorter=sorter)
+	engine.Start()
+	engine.worker.most = int(0.3 * source.stream.rate) # 0.3 s behind at most
+	t0 = _time.perf_counter()
+	while source.state != "ended":
+		engine.Step()
+	reading = _time.perf_counter() - t0
+	engine.Finish(timeout=60)
+	status = engine.SortStatus()
+	assert status["skipped_pieces"] > 10 and status["skipped_samples"] > 0, status
+	assert reading < status["busy_s"] # the reader didn't wait for the matcher
+	s = engine.live.spikes
+	assert (np.diff(s.sample) >= 0).all()
+	assert (s.unit >= 0).any() and (s.unit < 0).any() # matched spikes, and the skipped pieces' threshold spikes
+	engine.worker.Close()
+
+
 def test_serve_sorts_with_the_templates_and_says_its_units(sorted_recording):
 	# campy-ephys serve --templates (what the panel starts with spikeglx.templates): the page gets the units, and
 	# the spikes' units
