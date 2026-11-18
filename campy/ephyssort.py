@@ -948,11 +948,17 @@ class MatchingSorter(TemplateSorter):
 		out, self.pending = Take(self.pending, ready), Take(self.pending, ~ready)
 		later = Take(self.pending, self.pending.unit >= 0) # template spikes not given out yet, just after upto
 		tmpl = Cat([self.recent, Take(out, out.unit >= 0), later])
+		# A threshold spike within DEDUP_W samples of a template spike whose sites include its channel: that spike
 		drop = np.zeros(len(out), bool)
-		for i in np.flatnonzero(out.unit < 0):
-			near = np.abs(tmpl.sample - out.sample[i]) <= DEDUP_W
-			if near.any() and any(out.channel[i] in tmpl.neighbors[j] for j in np.flatnonzero(near)):
-				drop[i] = True
+		mine = np.flatnonzero(out.unit < 0)
+		if len(mine) and len(tmpl):
+			a = np.searchsorted(tmpl.sample, out.sample[mine] - DEDUP_W)
+			b = np.searchsorted(tmpl.sample, out.sample[mine] + DEDUP_W, side="right")
+			n = b - a
+			which = np.repeat(np.arange(len(mine)), n)
+			j = np.arange(n.sum()) - np.repeat(np.cumsum(n) - n - a, n)
+			hit = (tmpl.neighbors[j] == out.channel[mine][which][:, None]).any(axis=1)
+			drop[mine[np.unique(which[hit])]] = True
 		out = Take(out, ~drop)
 		given = Take(out, out.unit >= 0)
 		self.recent = Take(Cat([self.recent, given]), Cat([self.recent, given]).sample >= upto - 2 * DEDUP_W)
@@ -1147,6 +1153,7 @@ def Learn(data, stream, path, times, clusters, start, end, say=print):
 	paired with Kilosort's (times, clusters) from a second in (as live, the filter settles first)."""
 	t0 = time.monotonic()
 	sorter = MatchingSorter(path, LEARN_Z)
+	Fast(wait=True)
 	sorter.matcher.record = []
 	ReplayMatched(data, stream, start, end, sorter)
 	rec = np.array(sorter.matcher.record, np.float64).reshape(-1, 8)
@@ -1196,6 +1203,8 @@ def Evaluate(data, stream, phy, templates, span=None, warm_s=1.0, say=print, rep
 	start, end = Span(span, stream.rate, len(data))
 	warm = max(0, start - int(warm_s * stream.rate)) # the noise measured before the span, as live would have
 	if match:
+		if sorter.matcher.fast:
+			Fast(wait=True) # numba's loop loaded before the clock starts (the same spikes either way)
 		spikes, took = ReplayMatched(data, stream, warm, end, sorter)
 		spikes = Take(spikes, spikes.sample >= start + el.BEFORE)
 		per_second = took / ((end - warm) / stream.rate)
@@ -1253,6 +1262,7 @@ def Evaluate(data, stream, phy, templates, span=None, warm_s=1.0, say=print, rep
 			else None,
 		"sort_us_per_spike": round(per_spike_us, 1), "sort_s_per_s": round(per_second, 3),
 		"match_z": (match if match == "learned" else float(match)) if match else None,
+		"numba": FastStatus()["numba"] if match and sorter.matcher.fast else None, "threads": threads,
 		"given_per_s": round(float(np.isin(spikes.unit, [u for u, c in zip(units, sorter.compete) if not c]).sum()) /
 			((end - start) / stream.rate), 1),
 		"template_spikes": int((spikes.unit >= 0).sum()) if match else None,
