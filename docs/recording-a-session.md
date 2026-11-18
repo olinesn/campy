@@ -165,6 +165,16 @@ You can also give a time for the Pico to start (`7:20 PM`); otherwise you start 
 
 While it records, the **Pico** card shows the bout (for example `bout 212 of 1728`, or `between bouts`), the camera pulses so far, and when the session ends. The **SpikeGLX** card shows its run, whether a file is open (the gate is high), and how many files this session has.
 
+**Live ephys.** Below the Pico and SpikeGLX cards, the **Live ephys** card shows the probe while SpikeGLX runs (before, during and after a recording; not while SpikeGLX runs no run). Press **Show the probe live**:
+
+- **Oscilloscope:** the last 2 seconds of the picked site and its 3 nearest, filtered as for spikes. **−** and **+** change the scale.
+- **Spikes, last 10 s:** every spike found, by its depth on the probe; darker is bigger.
+- **Probe map:** each site's spikes a second. Click a site to pick it.
+- **Its last 30 spikes**, their mean, and the threshold (dashed). The threshold is in multiples of the site's noise (4.5 to start). **All sites** sets it everywhere, **This site** for the picked one only.
+- **The camera's frame** (and the Pico's bout) on the card's status line, and a tick for each frame along the top of the oscilloscope. A bout already under way when you opened the card has no frame numbers; they start with the next bout.
+
+It only reads from SpikeGLX: it never changes SpikeGLX or what it records. It runs in a program of its own at low priority, only while the card is shown, and stops when you press **Hide** or close the page. Its spikes are threshold crossings, not sorted units. How it works and what it costs: [Live electrophysiology](live-ephys.md).
+
 **Stop.** **Stop** asks first, and offers two ways:
 
 - **Stop after this bout:** the Pico finishes the bout it is in, so its gate falls on time and SpikeGLX's file closes as planned; then campy and SpikeGLX stop.

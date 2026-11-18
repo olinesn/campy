@@ -1,6 +1,6 @@
 # Live electrophysiology from SpikeGLX
 
-*Being built. This page says what exists so far: the engine (`campy/ephyslive.py`) and `campy-ephys bench`, which measures what it costs. The campy-session panel's Ephys section, which will show it, comes next.*
+*Being built. What exists so far: the engine (`campy/ephyslive.py`), `campy-ephys bench`, which measures what it costs, and the campy-session panel's **Live ephys** card, which shows it ([below](#in-the-panel-the-live-ephys-card)).*
 
 A Neuropixels probe recorded by SpikeGLX can be watched live: a few channels scrolling like an oscilloscope, and its spikes, found by a threshold on every channel, as snippets, firing rates and a map of the probe. campy reads the probe's samples from SpikeGLX while SpikeGLX records them, and changes nothing in SpikeGLX.
 
@@ -77,6 +77,20 @@ On the synthetic recordings of the tests (4 units on 96 sites, 8 µV noise, 180 
 | Filter and spike finder | 57% of one core per second of samples (more spikes than the synthetic recording, and a slower core) |
 | Samples skipped, gaps | none |
 
+**Against Kilosort 4,** on the same 45 s. Kilosort 4.1.7 sorted the recording on a cluster GPU with its default settings: 281 units, 135 of them labelled "good" by Kilosort, 138,147 spikes. A Kilosort spike counts as found live when a live spike is within 10 samples of it, on a site within 60 µm of its unit's peak site. Recall is measured for each good unit; precision is the share of live spikes (after the first half second) near any Kilosort spike.
+
+| | |
+|---|---|
+| Good units' spikes found live (median of the 135 units) | 85% (25th to 75th percentile: 59% to 97%) |
+| Units with a trough deeper than −100 µV at their peak site (47) | 98% |
+| −60 to −100 µV (48) | 80% |
+| −40 to −60 µV (36) | 40% |
+| Shallower than −40 µV (4) | 16% |
+| Live spikes near some Kilosort spike | 70% |
+| Live trough minus Kilosort's spike time | 0 samples median; −3 to +3 (5th to 95th percentile) |
+
+A unit's trough here is the median of the live-filtered signal at its peak site around Kilosort's spike times. As expected of a threshold, recall falls for units near the threshold (−4.5 × the 13 µV noise, about −58 µV), where Kilosort's template matching still finds them. These are the numbers a live sorter has to improve on: matching templates finds spikes below the threshold, and tells apart the 30% of live spikes that Kilosort doesn't place on a unit near them (noise crossings, or units Kilosort didn't keep). The same comparison is the yardstick for accuracy before any speed work.
+
 **From a running SpikeGLX (on a test VM):** SpikeGLX v20260826 (API 4.1.3), the release on the ChronicRecord rig, with no probe attached. It ran a simulated probe (below) playing the same sample recording, labelled as a Neuropixels 2.0 four-shank probe (NP2013, the rig's). The computer was a Windows 11 virtual machine with 8 cores of an Intel Core i9-14900. Numbers on the VM vary with the other VMs on its server, so take them as a first look, not the rig's numbers. 40 s of reading, in a `bench/rig.py` job that came out clean (`RIG_CLEAN`).
 
 | | |
@@ -109,22 +123,52 @@ SpikeGLX takes the probe's part number from the file's `.meta`, so the `.meta` o
 
 **Not measured yet:** reading while SpikeGLX writes (the gate open, in a recording), and alongside the cameras, their encoders and campy-live.
 
-## Lining spikes up with camera frames
+## In the panel: the Live ephys card
 
-On the ChronicRecord rig the Pico's camera pulses are recorded by the OneBox (XD0), so live a spike's frame is:
-1. its probe sample, turned into a OneBox sample with `mapSample`;
-2. then the camera pulses counted up to it.
+With a `spikeglx:` section in its config (the ChronicRecord rig's), the campy-session panel's page has a **Live ephys** card. **Show the probe live** opens it:
 
-That is exact to the frame unless a camera dropped frames. The exact timeline stays the job of `chronicrecord/sync_match.py` and `campy-align` after the recording. This part comes with the panel's Ephys section.
+- an oscilloscope of the picked site and its 3 nearest, the last 2 s (each millisecond's lowest and highest);
+- the last 10 s of spikes, by depth on the probe;
+- a probe map of each site's spikes a second; a click picks a site;
+- the picked site's last 30 spikes, their mean and its threshold, and the threshold to set, for every site or the picked one (2 to 20 × noise);
+- the camera's frame, and a tick for each frame along the oscilloscope's top ([below](#each-spikes-camera-frame)).
+
+**How it runs:**
+- **A process of its own.** Showing the card starts `campy-ephys serve` at below-normal priority: the engine above, answering on a port of its own on 127.0.0.1, only with a key the panel gives it.
+- **The panel passes the page's requests on to it** (`/ephys.json`, `/ephys-scope`, `/ephys-threshold`), with the page's own key and its checks.
+- **It reads only.** It opens its own connection to SpikeGLX and uses only the read calls, so it can't start, stop or change anything, nor get in the way of the panel's own steps with SpikeGLX.
+- **It stops** when **Hide** is pressed, when the page hasn't asked for 30 s (its tab closed), or when the panel ends. On Windows it is in the panel's job object, so it ends with it whatever happens.
+- **The page asks 10 times a second** for what came since its last ask: the scope's new bins, the new spikes, the rates, and the picked site's snippets; every 2 s also the probe's sites, noise and thresholds. That is a few kB to some tens of kB a second. Nothing else is fetched: the page works on a rig with no internet.
+- **The traces scroll smoothly.** The oscilloscope and the spikes are drawn up to 30 times a second, at a time that moves at the samples' own rate, 0.3 s behind the newest sample, so there is always something to scroll into. (Drawn only when they came in, they jumped in 200 ms steps.) The probe map and the snippets are drawn with each answer. A tab out of sight draws nothing.
+- **What the status line counts:** samples the reader skipped because it fell more than 1 s behind, and, apart from those, samples SpikeGLX didn't have when they were asked for: as its run starts it gives a sample count a few seconds before those samples can be read.
+- **Before SpikeGLX runs** (or between runs) the card says it is waiting. A new run starts the view again.
+
+Checked in the tests (`tests/test_panel.py`) with a stand-in SpikeGLX: the card's data comes through the panel, the scope and threshold reach the process, only read calls reach SpikeGLX, and the process ends with **Hide** and when the page stops asking.
+
+## Each spike's camera frame
+
+On the ChronicRecord rig the OneBox records the Pico's camera pulses (its XD0 word, bit 2), on the same clock as its other channels, and SpikeGLX keeps the probe and the OneBox in step with its own sync. So with each read of the probe, the reader also reads the OneBox's XD0 channel alone (read calls only) and:
+
+1. **Finds the camera pulses.** A pulse after more than 1 s with none is a bout's first.
+2. **Numbers them.** A bout's first pulse is frame *n*, where *n* is the Pico's count of camera pulses so far: `pulses` in `chronic_control.py`'s `status.json`, which counts every pulse of the bouts already ended. Each pulse after it in the bout is one more. That is campy's frame number, since each camera takes one frame a pulse from the recording's first.
+3. **Gives each spike its frame:** the last pulse's before it, within a frame period, or none (−1) between bouts. A probe sample becomes a OneBox sample through SpikeGLX's own sync (`mapSample`, once a read).
+
+What this means:
+- **A bout already under way** when the card was opened has no frame numbers. They come from the next bout's first pulse.
+- **The Live ephys card** shows the current frame and bout in its status line, and a tick for each frame along the top of its oscilloscope.
+- **The panel tells the reader where to look:** the OneBox is `spikeglx.stream`'s (the one with the gate's TTL), and the Pico's `status.json` is the `pico:` section's.
+- **It costs** one more read (one channel) and one `mapSample` call each read.
+- **It's approximate:** a camera that drops a frame is one off from then on, live. The recording's exact timeline stays `campy-align`'s and `chronicrecord/sync_match.py`'s.
+
+Checked in the tests with the stand-in SpikeGLX's OneBox (camera pulses in bouts) and a Pico `status.json`:
+- every spike's frame equals the frame worked out from the pulses' plan;
+- a bout under way at the start gets none, and spikes between bouts get none;
+- the panel passes the OneBox and the Pico's status on.
+
+Not yet tried with the rig's own OneBox and Pico.
 
 ## Next
 
-- **The panel's Ephys section:**
-  - the engine in its own process, at below-normal priority, only while the section is open;
-  - a scrolling oscilloscope of a few channels;
-  - spike snippets per channel, rates, and a heatmap of the probe;
-  - per-channel thresholds;
-  - each spike's camera frame.
 - **A live sorter:** templates from a Kilosort 4 sort of an earlier recording of the same probe, curated in phy, matched to each spike's waveforms.
   - Trained on that recording replayed through this engine, so that the templates have the live filter's shape.
   - Checked against the Kilosort sort before it is used live.

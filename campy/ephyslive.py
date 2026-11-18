@@ -203,6 +203,7 @@ class ReplaySource:
 		self.t0, self.at0 = None, self.at
 		self.state = "replaying"
 		self.skipped = 0
+		self.every_s, self.read_at = (0.05 if self.speed > 0 else 0.0), 0.0 # as recorded: a read at most every 50 ms
 
 	def Open(self):
 		return self.stream
@@ -220,6 +221,9 @@ class ReplaySource:
 			end = min(len(self.data), self.at + self.chunk)
 		else:
 			now = time.monotonic()
+			if now - self.read_at < self.every_s:
+				return None
+			self.read_at = now
 			if self.t0 is None:
 				self.t0 = now
 			end = min(len(self.data), self.at0 + int((now - self.t0) * self.stream.rate * self.speed))
@@ -264,6 +268,7 @@ class SpikeGLXSource:
 		self.every_s, self.fetched_at = every_s, 0.0 # a read at most every every_s: SpikeGLX answers each one
 		self.conn, self.stream, self.next = None, None, None
 		self.state, self.skipped, self.lag = "not connected", 0, None
+		self.unavailable = 0 # of those skipped: samples SpikeGLX no longer had (or didn't have yet, as its run starts)
 		self.lag_at = 0.0
 
 	def Connect(self):
@@ -343,8 +348,9 @@ class SpikeGLXSource:
 		samples = nd.value // nc
 		if samples == 0:
 			return None
-		if head > self.next: # SpikeGLX no longer had them
+		if head > self.next: # SpikeGLX no longer had them (or, as its run starts, not yet)
 			self.skipped += head - self.next
+			self.unavailable += head - self.next
 		block = np.ctypeslib.as_array(data, shape=(samples * nc,)).reshape(samples, nc).copy()
 		self.next = head + samples
 		now = time.monotonic()
@@ -368,6 +374,140 @@ class SpikeGLXSource:
 				self.conn.__exit__(None, None, None)
 			finally:
 				self.conn = None
+
+
+class CameraFrames:
+	"""
+	Each spike's camera frame, live, on a rig whose camera pulses SpikeGLX
+	records beside the probe: the ChronicRecord rig, where the Pico's camera
+	line is on the OneBox's XD0 (camera_bit 2; chronicrecord/README.md).
+
+	With each read of the probe it reads the OneBox's XD0 channel alone (read
+	calls only, on the probe's connection), and finds the camera pulses'
+	rises. A rise after more than gap_s of none is a bout's first pulse; its
+	frame is the Pico's count of camera pulses so far (pico_status: its
+	chronic_control.py status.json, whose "pulses" counts every pulse of the
+	bouts already ended), and each pulse after it in the bout is one more.
+	That is campy's frame number: each camera takes one frame a pulse, from
+	the recording's first. A bout under way when the reading started (no
+	gap_s of quiet seen before it) has no frame numbers (-1): they come from
+	the next bout on. A spike's frame is that of the last pulse before it,
+	within a frame period (-1 between bouts); probe samples become OneBox ones
+	through SpikeGLX's own sync (mapSample, once a read).
+
+	This is the live view's: a camera that dropped a frame is off by one
+	from then on. The recording's exact timeline is campy-align's and
+	chronicrecord/sync_match.py's.
+	"""
+
+	def __init__(self, source, obx_ip=0, camera_bit=2, pico_status=None, gap_s=1.0):
+		self.source, self.obx_ip, self.bit, self.pico_status, self.gap_s = source, obx_ip, camera_bit, pico_status, gap_s
+		self.Reset()
+
+	def Reset(self):
+		self.chan, self.rate = None, None # the OneBox's XD0 channel and rate, once known
+		self.next = None # the OneBox sample to read from
+		self.level = 0 # the camera bit at the last sample read
+		self.watched = None # the first OneBox sample read: a bout must start gap_s after it to be counted
+		self.last_rise, self.base, self.in_bout = None, None, 0 # the last rise; its bout's first frame; pulses in it
+		self.rises = np.zeros(0, np.int64) # recent rises (OneBox samples) and their frames
+		self.frames = np.zeros(0, np.int64)
+		self.anchor = None # (probe sample, OneBox sample): the same moment
+		self.state = "not started"
+		self.bout = None
+
+	def Open(self):
+		from ctypes import byref, c_int
+		sglx, h = self.source.sdk, self.source.conn.h
+		n = c_int()
+		if not sglx.c_sglx_getStreamAcqChans(byref(n), h, 1, self.obx_ip) or n.value < 2:
+			self.state = "no OneBox stream {}".format(self.obx_ip)
+			return False
+		counts = [sglx.c_sglx_getint(h, i) for i in range(n.value)] # XA, XD (words), SY
+		if counts[1] < 1:
+			self.state = "the OneBox records no digital word (XD0)"
+			return False
+		self.chan, self.rate = counts[0], sglx.c_sglx_getStreamSampleRate(h, 1, self.obx_ip)
+		self.state = "counting camera pulses on OneBox {} XD0 bit {}".format(self.obx_ip, self.bit)
+		return self.rate > 0
+
+	def PicoPulses(self):
+		"""The Pico's camera pulses so far (its bouts already ended), or None."""
+		if not self.pico_status:
+			return None
+		try:
+			from campy import strictjson
+			with open(self.pico_status) as f:
+				status = strictjson.load(f)
+			self.bout = status.get("bout")
+			return int(status["pulses"]) if status.get("pulses") is not None else None
+		except (OSError, ValueError, KeyError, TypeError):
+			return None
+
+	def Update(self, probe_first, probe_n):
+		"""After a read of the probe's samples from probe_first: the camera pulses read with them, as (probe sample,
+		frame) arrays."""
+		from ctypes import POINTER, byref, c_int, c_short
+		none = (np.zeros(0, np.int64), np.zeros(0, np.int64))
+		if self.chan is None and not self.Open():
+			return none
+		sglx, h, ip = self.source.sdk, self.source.conn.h, self.source.ip
+		at = sglx.c_sglx_mapSample(h, 1, self.obx_ip, int(probe_first), 2, ip)
+		if at == 0:
+			return none
+		self.anchor = (int(probe_first), int(at))
+		if self.next is None or self.next > at + self.rate: # the start, or a new run
+			self.next = max(1, int(at))
+			self.watched, self.last_rise, self.level = self.next, None, 0
+		data, nd = POINTER(c_short)(), c_int()
+		chans = (c_int * 1)(self.chan)
+		head = sglx.c_sglx_fetch(byref(data), byref(nd), h, 1, self.obx_ip, self.next, int(self.rate * 2), chans, 1, 1)
+		if head == 0 or nd.value == 0:
+			return none
+		if head > self.next: # samples gone: a bout seen from its middle can't be counted
+			self.watched, self.last_rise = int(head), None
+		bits = (np.ctypeslib.as_array(data, shape=(nd.value,)).astype(np.int32) >> self.bit) & 1
+		prev = np.concatenate([[self.level], bits[:-1]])
+		rises = np.flatnonzero((bits == 1) & (prev == 0)) + int(head)
+		self.level, self.next = int(bits[-1]), int(head) + len(bits)
+		frames = np.empty(len(rises), np.int64)
+		gap = self.gap_s * self.rate
+		for i, r in enumerate(rises):
+			if r - (self.last_rise if self.last_rise is not None else self.watched) > gap: # a bout's first pulse
+				if self.last_rise is None and r - self.watched <= gap:
+					self.base = None # under way when the reading started
+				else:
+					self.base, self.in_bout = self.PicoPulses(), 0
+			frames[i] = -1 if self.base is None else self.base + self.in_bout
+			self.in_bout += 1
+			self.last_rise = int(r)
+		self.rises = np.concatenate([self.rises, rises])[-4000:]
+		self.frames = np.concatenate([self.frames, frames])[-4000:]
+		return self.ToProbe(rises), frames
+
+	def ToProbe(self, obx):
+		p, o = self.anchor
+		return (p + (np.asarray(obx, np.float64) - o) * self.source.stream.rate / self.rate).round().astype(np.int64)
+
+	def Frame(self, probe_samples):
+		"""Each probe sample's camera frame: the last pulse's before it, within a frame period; -1 otherwise."""
+		samples = np.asarray(probe_samples, np.int64)
+		if self.anchor is None or not len(self.rises) or not len(samples):
+			return -np.ones(len(samples), np.int64)
+		p, o = self.anchor
+		obx = o + (samples - p) * self.rate / self.source.stream.rate
+		i = np.searchsorted(self.rises, obx, side="right") - 1
+		# A frame lasts until the next pulse: the pulses' period within bouts (1/30 s before two have come)
+		d = np.diff(self.rises[-50:])
+		d = d[d < self.gap_s * self.rate]
+		period = (np.median(d) if len(d) else self.rate / 30.0) * 1.5
+		ok = (i >= 0) & (obx - self.rises[np.maximum(i, 0)] <= period)
+		return np.where(ok, self.frames[np.maximum(i, 0)], -1)
+
+	def Status(self):
+		latest = int(self.frames[-1]) if len(self.frames) else None
+		return {"state": self.state, "frame": latest if latest is not None and latest >= 0 else None,
+			"known": latest is not None and latest >= 0, "bout": self.bout, "pulses_seen": len(self.rises)}
 
 
 # ---------------------------------------------------------------- filtering and spikes
@@ -403,10 +543,11 @@ class Filter:
 
 class Spikes:
 	"""Spikes found: their sample (on the probe's stream), channel, amplitude (uV, the trough: negative), unit (-1:
-	not sorted), and waveforms [spikes, 61, NEIGHBORS] on the sites in neighbors [spikes, NEIGHBORS] (-1: none,
-	its waveform zeros), the spike's own channel first."""
+	not sorted), camera frame (-1: not known, or between bouts; CameraFrames), and waveforms [spikes, 61,
+	NEIGHBORS] on the sites in neighbors [spikes, NEIGHBORS] (-1: none, its waveform zeros), the spike's own
+	channel first."""
 
-	def __init__(self, sample=(), channel=(), amplitude=(), unit=None, waveforms=None, neighbors=None):
+	def __init__(self, sample=(), channel=(), amplitude=(), unit=None, waveforms=None, neighbors=None, frame=None):
 		self.sample = np.asarray(sample, np.int64)
 		self.channel = np.asarray(channel, np.int32)
 		self.amplitude = np.asarray(amplitude, np.float32)
@@ -414,6 +555,7 @@ class Spikes:
 		self.unit = -np.ones(n, np.int32) if unit is None else np.asarray(unit, np.int32)
 		self.waveforms = np.zeros((n, BEFORE + AFTER, NEIGHBORS), np.float32) if waveforms is None else waveforms
 		self.neighbors = -np.ones((n, NEIGHBORS), np.int32) if neighbors is None else neighbors
+		self.frame = -np.ones(n, np.int64) if frame is None else np.asarray(frame, np.int64)
 
 	def __len__(self):
 		return len(self.sample)
@@ -558,6 +700,7 @@ class Live:
 		self.first_bin = None # the bin number of lo[0] (sample // bin)
 		self.pending, self.pending_first = None, None # samples of a bin not yet whole
 		self.spikes = Spikes()
+		self.camera = (np.zeros(0, np.int64), np.zeros(0, np.int64)) # camera pulses: probe sample, frame (-1: unknown)
 		self.by_channel, self.by_unit = {}, {}
 		self.newest = None # the newest sample seen
 
@@ -567,11 +710,17 @@ class Live:
 			self.lo, self.hi = np.zeros((0, len(self.scope)), np.float32), np.zeros((0, len(self.scope)), np.float32)
 			self.first_bin, self.pending = None, None
 
-	def Add(self, first, filtered, spikes):
+	def Add(self, first, filtered, spikes, camera=None):
+		"""camera: the camera pulses that came with these samples, (probe sample, frame) arrays."""
 		with self.lock:
 			self.newest = first + len(filtered)
 			self.Envelope(first, filtered[:, self.scope])
 			self.Spikes(spikes)
+			if camera is not None and len(camera[0]):
+				self.camera = (np.concatenate([self.camera[0], camera[0]]), np.concatenate([self.camera[1], camera[1]]))
+			if len(self.camera[0]) and self.camera[0][0] < self.newest - self.keep:
+				k = np.searchsorted(self.camera[0], self.newest - self.keep)
+				self.camera = (self.camera[0][k:], self.camera[1][k:])
 
 	def Envelope(self, first, x):
 		if self.pending is not None and self.pending_first + len(self.pending) == first:
@@ -595,7 +744,8 @@ class Live:
 		if len(new):
 			s = self.spikes
 			self.spikes = Spikes(np.concatenate([s.sample, new.sample]), np.concatenate([s.channel, new.channel]),
-				np.concatenate([s.amplitude, new.amplitude]), np.concatenate([s.unit, new.unit]))
+				np.concatenate([s.amplitude, new.amplitude]), np.concatenate([s.unit, new.unit]),
+				frame=np.concatenate([s.frame, new.frame]))
 			for i in range(len(new)):
 				wave = new.waveforms[i, :, 0]
 				self.by_channel.setdefault(int(new.channel[i]), deque(maxlen=self.snippets)).append(wave)
@@ -604,7 +754,7 @@ class Live:
 		if self.newest is not None and len(self.spikes) and self.spikes.sample[0] < self.newest - self.keep:
 			k = np.searchsorted(self.spikes.sample, self.newest - self.keep)
 			s = self.spikes
-			self.spikes = Spikes(s.sample[k:], s.channel[k:], s.amplitude[k:], s.unit[k:])
+			self.spikes = Spikes(s.sample[k:], s.channel[k:], s.amplitude[k:], s.unit[k:], frame=s.frame[k:])
 
 	def Snapshot(self, since_sample=None, since_bin=None, rate_s=2.0, snippet_channels=(), snippet_units=()):
 		"""For a view: the scope's bins after since_bin, the spikes after since_sample, each channel's and unit's
@@ -620,7 +770,12 @@ class Live:
 			s = self.spikes
 			k = 0 if since_sample is None else np.searchsorted(s.sample, since_sample, side="right")
 			out["spikes"] = {"sample": s.sample[k:].tolist(), "channel": s.channel[k:].tolist(),
-				"amplitude": np.round(s.amplitude[k:], 1).tolist(), "unit": s.unit[k:].tolist()}
+				"amplitude": np.round(s.amplitude[k:], 1).tolist(), "unit": s.unit[k:].tolist(),
+				"frame": s.frame[k:].tolist()}
+			# The camera's pulses (frames) since since_sample, on the probe's samples: the scope's ticks
+			c = self.camera
+			k = 0 if since_sample is None else np.searchsorted(c[0], since_sample, side="right")
+			out["camera"] = {"sample": c[0][k:].tolist(), "frame": c[1][k:].tolist()}
 			recent = s.sample > (self.newest or 0) - rate_s * self.stream.rate
 			n = len(self.stream.uv)
 			out["rates"] = {"channel": np.round(np.bincount(np.searchsorted(self.stream.channels, s.channel[recent]),
@@ -637,8 +792,9 @@ class Live:
 class Engine:
 	"""A source through the filter, the detector and the sorter into Live, piece by piece, timing each step."""
 
-	def __init__(self, source, threshold=4.5, sorter=None, scope=None):
+	def __init__(self, source, threshold=4.5, sorter=None, scope=None, frames=None):
 		self.source, self.threshold, self.sorter = source, threshold, sorter or Unsorted()
+		self.frames = frames # CameraFrames, or None
 		self.scope = scope
 		self.stream = None
 		self.stats = {"fetch_s": 0.0, "process_s": 0.0, "reads": 0, "samples": 0, "spikes": 0, "gaps": 0}
@@ -648,12 +804,33 @@ class Engine:
 		stream = self.source.Open()
 		if stream is None:
 			return False
-		if self.stream is None or len(stream.uv) != len(self.stream.uv):
+		live = getattr(self, "live", None)
+		if live is None or len(stream.uv) != len(live.stream.uv):
 			self.live = Live(stream, self.scope)
-		self.stream, self.filter = stream, Filter(stream)
-		self.detector = Detector(stream, self.threshold)
+		else: # a new run (its samples counted from 0 again): the view starts again, on the same channels
+			with live.lock:
+				live.stream = stream
+				live.Clear()
+		self.filter, self.detector = Filter(stream), Detector(stream, self.threshold)
 		self.expected = None
+		if self.frames is not None:
+			self.frames.Reset()
+		# The stream last: campy-ephys serve answers requests in threads of their own, and one that sees a stream
+		# takes all that goes with it as ready (one between the two found no spike finder)
+		self.stream = stream
 		return True
+
+	def SetThreshold(self, threshold, channel=None):
+		"""The spike threshold (x each channel's noise), for every channel or one; kept for the next run too."""
+		n = len(self.stream.uv) if self.stream is not None else None
+		if channel is None:
+			self.threshold = float(threshold)
+		elif n is not None:
+			t = np.broadcast_to(np.asarray(self.threshold, np.float32), (n,)).copy()
+			t[int(channel)] = threshold
+			self.threshold = t
+		if self.stream is not None:
+			self.detector.SetThreshold(threshold, channel)
 
 	def Step(self):
 		"""One read and what follows: the number of samples it brought (0: nothing new)."""
@@ -674,7 +851,14 @@ class Engine:
 		self.expected = first + len(raw)
 		filtered = self.filter.Apply(raw)
 		spikes = self.sorter.Assign(self.detector.Feed(first, filtered))
-		self.live.Add(first, filtered, spikes)
+		camera = None
+		if self.frames is not None:
+			try:
+				camera = self.frames.Update(first, len(raw))
+				spikes.frame = self.frames.Frame(spikes.sample)
+			except Exception as e: # the frames are extra: the probe's view goes on without them
+				self.frames.state = "{}: {}".format(type(e).__name__, e)
+		self.live.Add(first, filtered, spikes, camera)
 		self.stats["process_s"] += time.perf_counter() - t1
 		self.stats["reads"] += 1
 		self.stats["samples"] += len(raw)
@@ -766,6 +950,174 @@ def Bench(args, out=print):
 	return summary
 
 
+def Serve(args, out=print):
+	"""
+	campy-ephys serve: the engine for a page (the campy-session panel's Ephys
+	section), in a process of its own at below-normal priority, so that
+	nothing it does slows the panel or the recording. It answers on
+	127.0.0.1, on a port it prints first ("EPHYS_PORT <port>"), only with the
+	key in its environment (CAMPY_EPHYS_KEY) in an X-Ephys-Key header:
+
+	  GET  /snapshot?since_sample=&since_bin=&snippets=3,40&units=&stream=1
+	       what came since the page's last (Live.Snapshot), the reading's
+	       health, and with stream=1 the probe's sites, each channel's noise
+	       and threshold
+	  POST /scope {"channels": [...]}         the scope's channels
+	  POST /threshold {"k": 4.5, "channel": c} every channel's, or one's
+
+	It ends when nothing has asked for idle_s seconds (the page closed), when
+	the program that started it (--parent) has ended, or at Ctrl-C.
+	"""
+	import http.server
+	from campy import strictjson
+	from urllib.parse import parse_qs, urlparse
+	LowerPriority()
+	if args.replay:
+		source = ReplaySource(args.replay, speed=args.speed or 1.0, loop=True)
+	else:
+		source = SpikeGLXSource(args.sdk, args.host, args.port, args.ip, filtered=args.spikeglx_filter)
+	frames = CameraFrames(source, args.obx_ip, args.camera_bit, args.pico_status) if args.sdk and args.obx_ip >= 0 \
+		else None
+	engine = Engine(source, args.threshold, frames=frames)
+	key = os.environ.get("CAMPY_EPHYS_KEY", "")
+	state = {"asked": time.monotonic(), "health": {}, "stop": False}
+	lock = threading.Lock() # the engine's settings, between the reading thread and the requests
+
+	def Health():
+		h = dict(state["health"])
+		h.update(state=source.state, lag_s=source.Lag(), skipped=source.skipped,
+			unavailable=getattr(source, "unavailable", 0), gaps=engine.stats["gaps"],
+			reading=engine.stream is not None, camera=frames.Status() if frames is not None else None)
+		return h
+
+	class Handler(http.server.BaseHTTPRequestHandler):
+		def log_message(self, *a):
+			pass
+
+		def Send(self, code, body):
+			data = strictjson.dumps(body).encode()
+			self.send_response(code)
+			self.send_header("Content-Type", "application/json")
+			self.send_header("Content-Length", str(len(data)))
+			self.end_headers()
+			self.wfile.write(data)
+
+		def Allowed(self):
+			import secrets
+			given = self.headers.get("X-Ephys-Key", "")
+			if not (key and given.isascii() and secrets.compare_digest(given, key)):
+				self.Send(403, {"error": "wrong key"})
+				return False
+			state["asked"] = time.monotonic()
+			return True
+
+		def do_GET(self):
+			if not self.Allowed():
+				return
+			url = urlparse(self.path)
+			if url.path != "/snapshot":
+				return self.Send(404, {"error": "no such page"})
+			q = {k: v[0] for k, v in parse_qs(url.query).items()}
+			Int = lambda k: int(q[k]) if q.get(k, "").lstrip("-").isdigit() else None
+			Ints = lambda k: [int(v) for v in q.get(k, "").split(",") if v.strip().lstrip("-").isdigit()]
+			out = {"health": Health(), "live": None}
+			live = getattr(engine, "live", None)
+			if live is not None and engine.stream is not None:
+				out["live"] = live.Snapshot(Int("since_sample"), Int("since_bin"), snippet_channels=Ints("snippets"),
+					snippet_units=Ints("units"))
+				if q.get("stream"):
+					st = engine.stream.Describe()
+					noise = getattr(engine.detector, "noise", None)
+					st["noise_uv"] = None if noise is None else np.round(noise, 2).tolist()
+					st["threshold"] = np.round(np.broadcast_to(np.asarray(engine.threshold, np.float32),
+						(len(engine.stream.uv),)), 2).tolist()
+					st["channels"] = engine.stream.channels.tolist()
+					st["sorter"] = engine.sorter.name
+					out["stream"] = st
+			self.Send(200, out)
+
+		def do_POST(self):
+			if not self.Allowed():
+				return
+			try:
+				body = strictjson.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+			except ValueError:
+				return self.Send(400, {"error": "not JSON"})
+			url = urlparse(self.path)
+			with lock:
+				if url.path == "/scope":
+					chans = [int(c) for c in body.get("channels", [])][:8]
+					n = len(engine.stream.uv) if engine.stream is not None else 0
+					if not chans or any(c < 0 or c >= n for c in chans):
+						return self.Send(409, {"error": "channels: 1 to 8, each from 0 to {}".format(n - 1)})
+					engine.scope = chans
+					engine.live.SetScope(chans)
+				elif url.path == "/threshold":
+					try:
+						k = float(body.get("k"))
+					except (TypeError, ValueError):
+						k = None
+					if k is None or not 2.0 <= k <= 20.0:
+						return self.Send(409, {"error": "the threshold: 2 to 20 x the channel's noise"})
+					engine.SetThreshold(k, body.get("channel"))
+				else:
+					return self.Send(404, {"error": "no such action"})
+			self.Send(200, {"ok": True})
+
+	server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+	server.daemon_threads = True
+	threading.Thread(target=server.serve_forever, daemon=True).start()
+	out("EPHYS_PORT {}".format(server.server_address[1]), flush=True)
+
+	def Read():
+		import psutil
+		me = psutil.Process()
+		me.cpu_percent(None)
+		last, last_stats = time.monotonic(), dict(engine.stats)
+		while not state["stop"]:
+			try:
+				with lock:
+					got = engine.Step()
+			except Exception as e: # SpikeGLX gone, a bad read: say so, and try again
+				source.state = "{}: {}".format(type(e).__name__, e)
+				got = 0
+				time.sleep(1.0)
+			now = time.monotonic()
+			if now - last >= 1.0:
+				d = {k: engine.stats[k] - last_stats[k] for k in engine.stats}
+				state["health"] = {"reads_per_s": round(d["reads"] / (now - last), 1), "fetch_ms": round(1000 *
+					d["fetch_s"] / max(1, d["reads"]), 2), "spikes_per_s": round(d["spikes"] / (now - last), 1),
+					"cpu": round(me.cpu_percent(None), 1)}
+				last, last_stats = now, dict(engine.stats)
+			if not got:
+				time.sleep(0.01)
+
+	threading.Thread(target=Read, daemon=True).start()
+	try:
+		while True:
+			time.sleep(0.5)
+			if time.monotonic() - state["asked"] > args.idle_s:
+				out("campy-ephys serve: nothing asked for {:g} s: ending.".format(args.idle_s), flush=True)
+				break
+			if args.parent and not ParentAlive(args.parent):
+				out("campy-ephys serve: the program that started it has ended: ending.", flush=True)
+				break
+	except KeyboardInterrupt:
+		pass
+	state["stop"] = True
+	server.shutdown()
+	source.Close()
+	return 0
+
+
+def ParentAlive(pid):
+	try:
+		import psutil
+		return psutil.pid_exists(pid)
+	except Exception:
+		return True
+
+
 def Main(argv=None):
 	parser = argparse.ArgumentParser(prog="campy-ephys", description="Live ephys from SpikeGLX (read-only): measure "
 		"what reading, filtering and finding spikes costs.")
@@ -786,7 +1138,31 @@ def Main(argv=None):
 	b.add_argument("--threshold", type=float, default=4.5, help="x each channel's noise")
 	b.add_argument("--priority", choices=("low", "normal"), default="low")
 	b.add_argument("--json", help="write the summary and the lines here")
+	v = sub.add_parser("serve", help="the engine for the campy-session panel's Ephys section, in a process of its own")
+	src = v.add_mutually_exclusive_group(required=True)
+	src.add_argument("--sdk", help="the folder holding SpikeGLX's SDK (sglx_pkg): read live from SpikeGLX")
+	src.add_argument("--replay", help="a saved .ap.bin (its .meta beside it), over and over")
+	v.add_argument("--host", default="127.0.0.1")
+	v.add_argument("--port", type=int, default=4142)
+	v.add_argument("--ip", type=int, default=0)
+	v.add_argument("--spikeglx-filter", action="store_true")
+	v.add_argument("--speed", type=float, default=1.0)
+	v.add_argument("--threshold", type=float, default=4.5)
+	v.add_argument("--idle-s", type=float, default=30.0, help="end when nothing has asked for this long")
+	v.add_argument("--parent", type=int, default=0, help="end when this process has ended")
+	v.add_argument("--obx-ip", type=int, default=-1, help="the OneBox whose XD0 has the camera pulses (-1: none): "
+		"each spike's camera frame")
+	v.add_argument("--camera-bit", type=int, default=2, help="XD0's bit for the camera pulses (2 on the ChronicRecord "
+		"rig)")
+	v.add_argument("--pico-status", help="chronic_control.py's status.json: the Pico's camera pulses so far, each "
+		"bout's first frame")
 	args = parser.parse_args(argv)
+	if args.command == "serve":
+		try:
+			return Serve(args)
+		except (EphysError, OSError, KeyError) as e:
+			print("campy-ephys serve: {}".format(e), file=sys.stderr)
+			return 1
 	try:
 		Bench(args)
 	except (EphysError, OSError, KeyError) as e:
