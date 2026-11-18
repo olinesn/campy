@@ -744,7 +744,12 @@ def test_setting_garbage_aside_frees_what_start_up_left_first():
 		before = gc.get_freeze_count()
 		count, seconds = live.SetAsideGarbage()
 		assert gone() is None and count > before and seconds >= 0
-		assert gc.get_freeze_count() == count and kept is not None
+		# Read again, the count it returned or a little under: a frozen object is still freed when its last
+		# reference goes, and something else in this process (a thread an earlier test left) can drop one between
+		# the two reads (2 of 150,992 once, on GitHub's Python 3.9 runner). Nothing joins the frozen set without
+		# a freeze, so never more
+		now = gc.get_freeze_count()
+		assert count - 1000 <= now <= count and kept is not None, (count, now)
 	finally:
 		gc.unfreeze()
 
