@@ -1598,12 +1598,14 @@ def test_the_ephys_section_reads_spikeglx_in_a_process_of_its_own(tmp_path, monk
 		time.sleep(0.5)
 		code, said = raw(p, "GET", "/ephys.json" + key + "&stream=1")
 		assert said["live"]["scope"]["channels"] == [3, 4, 5, 6] and said["stream"]["threshold"][3] == 6.0
-		# Only reads: nothing set, started or stopped in SpikeGLX
-		assert set(json.loads(state.read_text())["calls"]) == {"fetch"}
 		# Closing the section ends the process
 		child = p.ephys.child
 		assert post("/ephys", {"open": False})[0] == 200
 		assert child.poll() is not None and p.ephys.Status()["open"] is False
+		# Only reads: nothing set, started or stopped in SpikeGLX. Read once the process has ended: the stand-in
+		# rewrites its state at every read, and Windows can't open a file while it's being replaced (GitHub's Windows
+		# runner, 18 November)
+		assert set(json.loads(state.read_text())["calls"]) == {"fetch"}
 		# A page that stops asking (its tab closed): the process ends by itself
 		post("/ephys", {"open": True})
 		deadline = time.monotonic() + 60
