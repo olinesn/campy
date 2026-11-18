@@ -456,6 +456,40 @@ def test_a_copys_speed_is_its_recent_rate_and_a_stall_says_so():
 	assert d["speed"] is None and d["stalled_s"] is None
 
 
+def test_the_speed_plot_keeps_the_whole_phase_in_a_few_points():
+	# speeds: the page's small plot, [seconds into the phase, bytes/s], the exact mean between two of its points (every
+	# look at first: a pause of a few seconds drops to 0, where the 20 s speed only dips); never more than PLOT_POINTS
+	# however long the copy, still from its start and evenly spread; a new one for the check
+	job = copyqueue.Job("/rec/2026-11-17_15-08-09", "/share")
+	job.state, job.bytes = "copying", 10**15
+	job.Phase("copying", now=0.0)
+	assert job.Dict(0.0)["speeds"] == []
+	t, done = 0.0, 0
+	for i in range(1, 11):
+		t += 3.0
+		done += 0 if i in (5, 6) else 300_000_000 # a 6 s pause
+		job.done_bytes = done
+		job.Sample(t)
+	speeds = job.Dict(t)["speeds"]
+	assert [p[0] for p in speeds] == [3.0 * i for i in range(1, 11)]
+	assert [p[1] for p in speeds] == [100_000_000] * 4 + [0, 0] + [100_000_000] * 4
+	for _ in range(2000): # hours more
+		t += 3.0
+		done += 300_000_000
+		job.done_bytes = done
+		job.Sample(t)
+	speeds = job.Dict(t)["speeds"]
+	assert len(speeds) <= copyqueue.PLOT_POINTS and speeds[-1][0] == t
+	assert all(a[0] < b[0] for a, b in zip(speeds, speeds[1:])) # in order, the whole phase
+	gaps = [b[0] - a[0] for a, b in zip(speeds, speeds[1:])]
+	assert speeds[0][0] <= 2 * max(gaps) and max(gaps[:-1]) <= 2 * min(gaps[:-1]) # from its start, evenly spread
+	assert len(speeds) > copyqueue.PLOT_POINTS / 2 - 2 and all(p[1] == pytest.approx(1e8, rel=0.1) for p in speeds)
+	job.Phase("checking", now=t)
+	assert job.Dict(t)["speeds"] == []
+	job.state = "done"
+	assert job.Dict(t)["speeds"] == []
+
+
 def test_the_checks_read_speed_has_its_own_count():
 	# The byte-for-byte check: its read-back speed from its own count, from none at its start; finishing has none
 	job = copyqueue.Job("/rec/2026-11-17_15-08-09", "/share")

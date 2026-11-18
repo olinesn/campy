@@ -55,6 +55,7 @@ ETA_AFTER_S = 5.0 # a phase's time left is only estimated once it has run this l
 FRESH_S = 2 * LOOK_S + 1 # a count looked at longer ago than this is old: no speed, no stall from it
 RATE_S = 20.0 # the copy's speed (and its time left): its rate over about this long, so a slowdown or a stall shows
 RATE_MIN_S = 6.0 # ... once its counts span this long (two looks): before, the time left goes by the phase's average
+PLOT_POINTS = 120 # the page's speed plot: at most this many points for a phase, evenly spread over all of it
 STALL_S = 15.0 # nothing copied (or read back) for this long: the page says so instead of a speed and a time left
 SAME_TIME_S = 2.0 # a copied file's modification time is its original's to within this (FAT keeps it to 2 s)
 
@@ -278,6 +279,9 @@ class Job:
 		# The phase's count as looked at (Sample), the last RATE_S of it: its recent speed (Rate); and when it last
 		# grew (Stalled)
 		self.samples, self.moved_at = collections.deque(), None
+		# The phase's count at points plot_step apart (every look at first, the step doubled each time they fill up):
+		# the page's speed plot (Speeds)
+		self.checkpoints, self.plot_step = [], 0.0
 		self.verified, self.mismatched = None, None # files the same in the copy, and not, once checked
 		self.local = None # what became of the folder here: deleted, kept (why) or here
 		self.copier = None # the copy program (robocopy, rsync), a psutil.Process, while it runs (Progress)
@@ -297,6 +301,7 @@ class Job:
 		rate, stalled = self.Rate(now), self.Stalled(now)
 		d["speed"] = None if rate is None or stalled is not None else round(rate) # bytes a second, recently
 		d["stalled_s"] = stalled
+		d["speeds"] = self.Speeds() if self.state == "copying" and self.Count()[0] is not None else []
 		return d
 
 	def Phase(self, phase, now=None):
@@ -305,6 +310,7 @@ class Job:
 			self.measured_at = None
 			# A new count, from none (a deque of its own: Status may be reading the old one)
 			self.samples, self.moved_at = collections.deque([(self.phase_at, 0)]), self.phase_at
+			self.checkpoints, self.plot_step = [(self.phase_at, 0)], 0.0
 		self.phase = phase
 
 	def Count(self):
@@ -332,6 +338,33 @@ class Job:
 		samples.append((now, count))
 		while len(samples) > 2 and samples[1][0] <= now - RATE_S:
 			samples.popleft() # the oldest kept is the last one at least RATE_S old: the rate spans RATE_S once it can
+		if self.Counting():
+			self.Checkpoint(now, count)
+
+	def Checkpoint(self, now, count):
+		"""
+		The count onto the plot's points (checkpoints): a new point once the last is plot_step past the one before,
+		else the last one moved up to now. Over PLOT_POINTS: every other one dropped (the first and last kept) and the
+		step doubled, so the whole phase stays on the plot, evenly, however long it runs (days), and each speed on it
+		is the exact mean between two points (a pause of a few seconds early on drops to 0).
+		"""
+		points = list(self.checkpoints) or [(now, count)]
+		if len(points) >= 2 and points[-1][0] - points[-2][0] < self.plot_step:
+			points[-1] = (now, count)
+		elif now > points[-1][0]:
+			points.append((now, count))
+		if len(points) > PLOT_POINTS + 1:
+			points = points[:-1:2] + [points[-1]]
+			self.plot_step = max(LOOK_S, 2 * self.plot_step) if self.plot_step else 2 * LOOK_S
+		self.checkpoints = points # a new list: Status may be reading the old one
+
+	def Speeds(self):
+		"""The page's plot: [seconds into the phase, bytes/s between the point before and this one]."""
+		points = list(self.checkpoints)
+		if self.phase_at is None:
+			return []
+		return [[round(t1 - self.phase_at, 1), round(max(0.0, (c1 - c0) / (t1 - t0)))]
+			for (t0, c0), (t1, c1) in zip(points, points[1:]) if t1 > t0]
 
 	def Rate(self, now):
 		"""

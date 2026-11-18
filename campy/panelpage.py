@@ -46,7 +46,7 @@ label{font-size:.9375rem;color:var(--muted)}h2{font-size:1.25rem;font-weight:500
 .bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden}.bar div{height:6px;background:var(--ok)}
 .copybar{max-width:28rem;margin:4px 0 2px}.copybar div{background:var(--accent)}
 .bgcopy{border-left:4px solid var(--accent)}.copyeta{text-align:right;line-height:1.1;flex:none;min-width:9rem}
-.copyeta .big{font-size:3rem;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text)}.copyeta .big.wait{font-size:1.5rem;font-weight:500}.copyeta .big.stall{color:var(--warn)}.copyeta .gap{margin-left:1.25rem}
+.copyeta .big{font-size:3rem;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text)}.copyeta .big.wait{font-size:1.5rem;font-weight:500}.copyeta .big.stall{color:var(--warn)}.copyplot{margin-top:6px}.copyplot svg{display:block;width:100%;height:2.25rem}.copyplot .peak{font-size:.9375rem}.copyeta .gap{margin-left:1.25rem}
 .copyeta .lab{font-size:2.125rem;color:var(--muted)}#clock b{font-variant-numeric:tabular-nums}.bgcopy .copybar{max-width:none;height:10px}.bgcopy .copybar div{height:10px}
 .err{color:var(--bad);font-size:1rem}ul{margin:.25rem 0 0;padding-left:1.25rem}li{margin:.25rem 0}
 select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
@@ -87,7 +87,7 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
 <div id="bgcopy" class="card bgcopy" hidden><div class="row" style="align-items:flex-start"><div class="grow"><b id="bgcopytitle">Copying in the background</b>
   <div id="bgcopyok" style="font-weight:500"></div>
   <div class="muted">Leave the computer on, and the panel's black window open, until it is done.</div></div>
-  <div id="bgeta" class="copyeta" hidden><div><span id="bgetapct" class="big"></span> <span id="bgetapctlab" class="lab"></span><span id="bgetanum" class="big gap"></span> <span id="bgetalab" class="lab"></span></div><div id="bgetaend" class="muted"></div></div></div>
+  <div id="bgeta" class="copyeta" hidden><div><span id="bgetapct" class="big"></span> <span id="bgetapctlab" class="lab"></span><span id="bgetanum" class="big gap"></span> <span id="bgetalab" class="lab"></span></div><div id="bgetaend" class="muted"></div><div id="bgetaplot" class="copyplot" hidden></div></div></div>
   <div id="bgcopytext" style="margin-top:6px"></div></div>
 
 <div id="typebox" class="card" hidden>
@@ -551,6 +551,19 @@ function copyBar(j){
   if(j.state!="copying" || !j.bytes) return "";
   return '<div class="bar copybar"><div style="width:'+Math.min(100, 100*(j.done_bytes||0)/j.bytes).toFixed(1)+'%"></div></div>';
 }
+let plotSig = "";
+function speedPlot(speeds){
+  // The phase's speed since it began (the server's, between its looks every 3 s or so), as a small area under a line,
+  // from 0 at the bottom to its peak at the top; time across. Nothing until there are two points
+  if(!speeds || speeds.length < 2) return "";
+  const W = 300, H = 40, t0 = speeds[0][0], span = Math.max(1, speeds[speeds.length-1][0] - t0);
+  const peak = Math.max(1, ...speeds.map(p => p[1]));
+  const xy = speeds.map(p => ((p[0]-t0)/span*W).toFixed(1)+","+(H - 2 - p[1]/peak*(H-4)).toFixed(1));
+  return '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" role="img" aria-label="Speed since it began, up to '+speedText(peak)+'">'+
+    '<polygon points="0,'+H+' '+xy.join(" ")+' '+W+','+H+'" fill="var(--accent)" fill-opacity=".28"/>'+
+    '<polyline points="'+xy.join(" ")+'" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>'+
+    '<div class="muted peak">since it began ('+dur(speeds[speeds.length-1][0])+') · peak '+speedText(peak)+'</div>';
+}
 function renderCopies(C, folder, st){
   const jobs = C.jobs || [];
   // Copies still to do, at the top of the page in every state (a new recording too) until the last is done: not only in
@@ -559,6 +572,9 @@ function renderCopies(C, folder, st){
   $("bgcopy").hidden = !now.length && !queued.length;
   // The big time left, top right: the copy under way (one at a time), not the ones waiting behind it
   followEta(now[0]); paintEta();
+  // Under it, the speed since the phase began: a stall or a slow patch shows as a dip
+  const speeds = now[0] && (now[0].phase=="copying" || now[0].phase=="checking") ? now[0].speeds : null, sig = JSON.stringify(speeds||[]);
+  if(sig != plotSig){ plotSig = sig; const svg = speedPlot(speeds); $("bgetaplot").innerHTML = svg; $("bgetaplot").hidden = !svg; }
   $("bgcopytitle").textContent = now.length ? "Copying in the background" : "Copies waiting to start";
   // Said plainly: the copy is no reason to wait (it keeps going while the next one records)
   $("bgcopyok").textContent = ["ready","done","failed"].includes(st) ? "You can start a new recording now: the copy goes on beside it and doesn't disturb it." :

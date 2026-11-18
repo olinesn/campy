@@ -1213,6 +1213,23 @@ console.log(JSON.stringify({row, corner, big, slow, crawl, unknown, check, stall
 	assert out["stall2"] == "nothing copied for 0:47" # counted on from the first status, not back with a poll's delay
 
 
+def test_the_copy_card_plots_the_speed_since_the_phase_began():
+	# A small area under a line in the corner, from 0 to the phase's peak, time across; nothing under two points
+	from campy import panelpage
+	assert 'id="bgetaplot"' in panelpage.PAGE
+	_, fns = page_functions("speedPlot", "speedText", "dur")
+	out = run_node(fns + """
+const svg = speedPlot([[3, 100e6], [6, 0], [9, 50e6]]);
+console.log(JSON.stringify({svg, none: speedPlot([[3, 1e8]]), empty: speedPlot(null)}));
+""")
+	svg = out["svg"]
+	assert svg.startswith("<svg") and "<polyline" in svg and "<polygon" in svg
+	line = re.search(r'<polyline points="([^"]+)"', svg).group(1).split()
+	assert line == ["0.0,2.0", "150.0,38.0", "300.0,20.0"] # the peak at the top, none at the bottom
+	assert "since it began (0:09) · peak 100 MB/s" in svg
+	assert out["none"] == "" and out["empty"] == ""
+
+
 def test_the_pages_text_is_in_rem_and_can_be_made_larger():
 	# Sizes in rem, so the browser's own font size and the page's Text size buttons scale every text; none in px, and
 	# nothing below 15 px at the browser's default (0.9375rem)
