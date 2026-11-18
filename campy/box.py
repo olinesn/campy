@@ -102,14 +102,17 @@ One board for the cameras and the box (docs/design/single-board-box.md): with --
 camera pulses itself (sketch version 4), and its frames come from them. --camera-pins are the cameras' pins on the
 board (campy's digitalPins), --camera-frames how many pulses (recTimeInSec x frameRate; 0 until stopped), and
 --sync-pin (with --sync-seed, --sync-pulse-ms, --sync-gap-ms: campy's syncPin, syncSeed, syncPulseMs, syncGapMs) the
-sync output for other recorders. The pulses start at once, or with --cameras-when-ready once every camera of the
-recording (--recording-folder's session.json) is waiting for them. campy-box then keeps the board's pulses going to
+sync output for other recorders. The pulses start at once, or with --cameras-when-ready once campy-acquire has
+stopped waiting for the cameras of the recording (--recording-folder's session.json): with those that are ready, as
+campy-acquire starts its own trigger, the others named in a critical alert. With --all-cameras too, only if every
+camera is ready (else there are no pulses, and an alert says why). campy-box then keeps the board's pulses going to
 the end of the recording, the task's own end aside: the cameras stop at their count, or at a period's end when the
 recording ends (the stop file, the recording's watch, Ctrl-C). If campy-box itself fails, they go on to their count
 (the board's own watchdog never stops them; --camera-watch-ms, after that long a silence, does). It writes
 <out>.cameras.json (time 0 on the board's and the host's clocks, the period, the count, and with
---cameras-when-ready the cameras that were waiting, which campy-align starts at trigger 1) and sync.json (into the
-recording's folder, else <out>.sync.json) for campy-syncmatch: frame k (from 0) rose at time 0 + k x P + P / 2.
+--cameras-when-ready the cameras that were waiting, which campy-align starts at trigger 1, and those that were
+not) and sync.json (into the recording's folder, else <out>.sync.json) for campy-syncmatch: frame k (from 0) rose
+at time 0 + k x P + P / 2.
 
 Output (--out, default campy-box_<date_time>):
   <out>.events.jsonl  every event: input edges, link firings, state changes, trials, pulses, levels, servo
@@ -510,7 +513,7 @@ class Cameras:
 	"""
 
 	def __init__(self, fps, frames, pins, sync_pin=None, sync_seed=None, sync_pulse_ms=10.0, sync_gap_ms=(200, 1000),
-			when_ready=False, watch_ms=0):
+			when_ready=False, watch_ms=0, all_cameras=False):
 		from campy import syncmatch
 		self.fps = float(fps)
 		self.period = syncmatch.TriggerPeriodUs(self.fps)
@@ -536,6 +539,7 @@ class Cameras:
 			self.sync = dict(pin=Pin(sync_pin, "sync pin"), seed=int(sync_seed), width_us=width_us,
 				min_gap_ms=gaps[0], max_gap_ms=gaps[1])
 		self.when_ready = bool(when_ready)
+		self.all_cameras = bool(all_cameras) # with when_ready: only once every camera is ready, else with those that are
 		self.watch_ms = int(watch_ms)
 
 	def Pins(self):
@@ -725,6 +729,11 @@ class LogFile:
 		self.runner.Write(self.f, text)
 
 
+def Missing(missing):
+	# The cameras not ready, and why: "Camera3 (not ready after 30 s (readyTimeoutSec))"
+	return ", ".join("{} ({})".format(name, why) for name, why in sorted(missing.items()))
+
+
 class Runner:
 	"""
 	The task's loop: the board's lines come in on its reading thread (Listen) and wait in a queue; the loop takes
@@ -766,6 +775,7 @@ class Runner:
 		# The camera pulses the board makes (box.cameras): started, running, ended, their time 0
 		self.cams = dict(started=False, running=False, ended=None, t0_board_us=None, t0_host_ns=None, frames=None,
 			stop_asked=False)
+		self.cams_held = False   # said why the pulses won't start (--all-cameras, a camera not ready)
 		self.task_done = False   # the task ended, the camera pulses going on to the recording's end
 		self.cams_stop_by = None # campy-box ends by this time (time.monotonic) once it asked the pulses to stop
 
@@ -1127,38 +1137,61 @@ class Runner:
 
 	def CamerasReady(self):
 		"""
-		Whether the pulses can start, and the cameras waiting for them: once every camera of the recording is
-		(session.json's recording.cameras[].ready, as the panel reads it for the Pico), with their names, which
-		cameras.json keeps for campy-align; without a recording folder or --cameras-when-ready, at once, with None
-		(nobody waited for them).
+		Whether the pulses can start: (True or False, the cameras waiting for them, {each camera that is not: why}).
+		Once campy-acquire has stopped waiting for the cameras (session.json's recording, written then, with each
+		camera's ready and notReady), as it starts its own trigger: with the cameras that are ready, if any is, or
+		with --all-cameras only if every one is; never when it was stopping by then (Ctrl-C, its cameras ended). The
+		names go into cameras.json for campy-align. Without a recording folder or --cameras-when-ready: at once, with
+		None (nobody waited for them).
 		"""
 		folder = getattr(self.args, "recording_folder", "")
 		if not folder or not self.box.cameras.when_ready:
-			return True, None
+			return True, None, {}
 		try:
 			with open(os.path.join(folder, "session.json"), encoding="utf-8") as f:
 				record = strictjson.load(f).get("recording")
 		except (OSError, ValueError, AttributeError, TypeError):
-			return False, None
-		cams = (record or {}).get("cameras") or []
-		if not cams or not all(c.get("ready") for c in cams):
-			return False, None
-		return True, [str(c["name"]) for c in cams if c.get("name") is not None]
+			return False, None, {}
+		if not isinstance(record, dict) or record.get("stopping"):
+			return False, None, {} # still waiting for them, or stopping: campy-acquire starts no trigger then either
+		cams = [c for c in record.get("cameras") or [] if isinstance(c, dict) and c.get("name") is not None]
+		ready = [str(c["name"]) for c in cams if c.get("ready")]
+		missing = {str(c["name"]): str(c.get("notReady") or "not ready") for c in cams if not c.get("ready")}
+		if not ready or missing and self.box.cameras.all_cameras:
+			if missing and ready and not self.cams_held:
+				self.cams_held = True
+				text = ("campy-box: no camera pulses for this recording, so no frames: box.all_cameras (--all-cameras) "
+					"starts them only with every camera, and campy stopped waiting without {}. Stop, and start "
+					"again.".format(Missing(missing)))
+				self.say(text)
+				self.Event(dict(kind="cameras_held", ready=sorted(ready), not_ready=missing, host_ns=clock.HostNs()))
+				self.Alert("session/campy-box-cameras", text)
+			return False, None, {}
+		return True, ready, missing
 
-	def StartCameras(self, out, ready=None):
+	def Alert(self, key, text):
+		# To the alerts' channels, as campy-session sends its own (session.Alert), in a thread of its own: sending can
+		# take seconds, and the loop keeps the board's watchdog fed
+		from campy import session
+		threading.Thread(target=session.Alert, args=(key, text), name="campy-box alert", daemon=True).start()
+
+	def StartCameras(self, out, ready=None, missing=None):
 		"""
 		camgo: the pulses from now; their time 0 into <out>.cameras.json, and sync.json. ready: the cameras that were
-		waiting for them (CamerasReady), kept as ready_before_pulses: campy-align starts those at trigger 1.
+		waiting for them (CamerasReady), kept as ready_before_pulses: campy-align starts those at trigger 1. missing:
+		those that were not, and why (not_ready), named in a critical alert.
 		"""
 		cams = self.box.cameras
 		words = self.board.Command("camgo {}".format(cams.frames)).Ok().split()
 		t0, period = int(words[3]), int(words[4])
 		t0_ns = self.HostNs(t0)
-		self.cams.update(started=True, running=True, t0_board_us=t0, t0_host_ns=t0_ns, frames=cams.frames)
+		missing = dict(missing or {})
+		self.cams.update(started=True, running=True, t0_board_us=t0, t0_host_ns=t0_ns, frames=cams.frames,
+			not_ready=missing)
 		record = dict(board="campy_outputs", fps=cams.fps, period_us=period, frames=cams.frames, pins=cams.pins,
 			t0_board_us=t0, t0_host_ns=t0_ns, rises="frame k (from 0) at t0 + k * period_us + period_us // 2",
 			sync=cams.SyncRecord(t0, t0_ns) if cams.sync else None,
-			ready_before_pulses=sorted(ready) if ready is not None else None)
+			ready_before_pulses=sorted(ready) if ready is not None else None, not_ready=missing)
 		WriteJson(out + ".cameras.json", record)
 		if cams.sync:
 			folder = getattr(self.args, "recording_folder", "")
@@ -1171,6 +1204,14 @@ class Runner:
 		self.Event(dict(kind="cameras_start", **record))
 		self.say("campy-box: the camera pulses started: {:g} fps ({} us), {}.".format(cams.fps, period,
 			"{} frames".format(cams.frames) if cams.frames else "until stopped"))
+		if missing:
+			text = ("campy-box started the camera pulses with {} of {} cameras, without {}. The recording goes on "
+				"without {}; one that comes up later joins at a later pulse, and campy-align places it from its "
+				"arrival times. To record with every camera, stop and start again (box.all_cameras: true holds the "
+				"pulses instead).").format(len(ready or []), len(ready or []) + len(missing), Missing(missing),
+				"it" if len(missing) == 1 else "them")
+			self.say(text)
+			self.Alert("session/campy-box-cameras", text)
 
 	def Waiting(self):
 		# --start-with-frames: no camera frame yet
@@ -1206,9 +1247,9 @@ class Runner:
 			self.beat = now = time.monotonic()
 			if box.cameras is not None and not self.cams["started"] and now - ready_at >= 0.2:
 				ready_at = now
-				ready, names = self.CamerasReady()
+				ready, names, missing = self.CamerasReady()
 				if ready:
-					self.StartCameras(out, names)
+					self.StartCameras(out, names, missing)
 			if self.state is None and not self.Waiting():
 				# The start: now, or at the first camera frame
 				self.started = now
@@ -1424,8 +1465,10 @@ def Main(argv=None):
 		"stopped")
 	p.add_argument("--camera-pins", default="", help="the cameras' pins on the board, comma-separated (campy's "
 		"digitalPins)")
-	p.add_argument("--cameras-when-ready", action="store_true", help="start the pulses once every camera of the "
-		"recording (--recording-folder) is waiting for them")
+	p.add_argument("--cameras-when-ready", action="store_true", help="start the pulses once campy-acquire has stopped "
+		"waiting for the cameras of the recording (--recording-folder), with those that are ready")
+	p.add_argument("--all-cameras", action="store_true", help="with --cameras-when-ready: start the pulses only if every "
+		"camera is ready (else none: no frames); without it, with those that are once campy-acquire stops waiting")
 	p.add_argument("--camera-watch-ms", type=int, default=0, help="the board stops the pulses after that long without a "
 		"word from campy-box (0: never)")
 	p.add_argument("--sync-pin", default=None, help="the sync output's pin (campy's syncPin)")
@@ -1443,7 +1486,7 @@ def Main(argv=None):
 			box.UseCameras(Cameras(args.camera_fps, args.camera_frames, [p for p in args.camera_pins.split(",") if p],
 				sync_pin=args.sync_pin, sync_seed=args.sync_seed, sync_pulse_ms=args.sync_pulse_ms,
 				sync_gap_ms=[g for g in args.sync_gap_ms.split(",") if g], when_ready=args.cameras_when_ready,
-				watch_ms=args.camera_watch_ms))
+				watch_ms=args.camera_watch_ms, all_cameras=args.all_cameras))
 	except (BoxError, RulesError, OSError) as e:
 		print("campy-box: {}".format(e))
 		return 2

@@ -62,7 +62,9 @@ which `campy-syncmatch` already reads as no hold).
 **Start and stop.**
 
 - **Start**: once every camera is ready. `campy-box` reads that from the recording's `session.json` (each camera's
-  `ready`), as the panel does for the Pico, and starts the pulses. Nothing to press.
+  `ready`), as the panel does for the Pico, and starts the pulses. Nothing to press. (Since pull request PRNUM: once
+  campy-acquire stops waiting for the cameras, with those that are ready, as it starts its own trigger, and an alert
+  naming the others; `box.all_cameras: true` keeps every camera or nothing.)
 - **Stop**: the planned count; or a stop from the panel or Ctrl-C (`campy-box` asks the board to stop at the next
   period boundary, campy-acquire's stop file stops the cameras); or the recording's end.
 

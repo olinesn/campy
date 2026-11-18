@@ -318,7 +318,8 @@ timeouts to Never, or it may go into standby mid-recording.".format(awake.proble
 				emu.StartClock(start)
 			trigger.SaveStart(params, ready, missing, systems.get("triggerStartedNs"), systems.get("triggerStartError"),
 				systems.get("triggerSync"))
-			session.Recording(ready, missing)
+			# Stopping (Ctrl-C, or the camera processes ended): no trigger, nor one from outside (campy-box's pulses)
+			session.Recording(ready, missing, stopping=bool(interrupts.count) or cameras.ready())
 			# The recording watch: alerts (Slack, the console) while it records, and a clean stop before the
 			# disk is full (watch.py). Whatever goes wrong in it, the recording goes on.
 			try:

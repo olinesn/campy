@@ -596,10 +596,11 @@ def test_a_pose_that_already_holds_moves_the_state_at_once():
 
 # ---------------------------------------------------------------- one board for the cameras and the box
 
-def camera_runner(tmp_path, config=None, port=None, frames=600, when_ready=True, folder=None, sync=True, **args):
+def camera_runner(tmp_path, config=None, port=None, frames=600, when_ready=True, folder=None, sync=True,
+		all_cameras=False, **args):
 	b = box.Box(config or Task())
 	b.UseCameras(box.Cameras(60, frames, [12, 13], sync_pin=9 if sync else None, sync_seed=4242,
-		when_ready=when_ready))
+		when_ready=when_ready, all_cameras=all_cameras))
 	ns = argparse.Namespace(task=None, port="", out=str(tmp_path / "box"), check=False, duration_s=0,
 		start_with_frames=True, stop_file=str(tmp_path / "box.stop"), recording_folder=str(folder or ""),
 		launcher_pid=0, ready_file="", status_file="")
@@ -614,9 +615,30 @@ def camera_runner(tmp_path, config=None, port=None, frames=600, when_ready=True,
 	return runner, thread, result, said
 
 
-def session_json(folder, ready):
-	(folder / "session.json").write_text(json.dumps({"recording": {"cameras": [{"name": "Camera0", "ready": ready[0]},
-		{"name": "Camera1", "ready": ready[1]}]}}))
+NOT_READY = "not ready after 30 s (readyTimeoutSec)"
+
+
+def session_json(folder, ready, stopping=False):
+	"""
+	The recording's session.json as campy-acquire leaves it: with ready None, still waiting for the cameras (no
+	recording yet); else once it stopped waiting, each camera ready or not, and why not, and whether it was stopping
+	by then (manifest.Session.Recording).
+	"""
+	if ready is None:
+		(folder / "session.json").write_text(json.dumps({"start": {}}))
+		return
+	cams = [dict({"name": "Camera{}".format(n), "ready": r}, **({} if r else {"notReady": NOT_READY}))
+		for n, r in enumerate(ready)]
+	(folder / "session.json").write_text(json.dumps({"start": {}, "recording": {"stopping": stopping, "cameras": cams}}))
+
+
+@pytest.fixture
+def alerts(monkeypatch):
+	# What campy-box sends to the alerts' channels (session.Alert, from a thread of its own)
+	from campy import session
+	sent = []
+	monkeypatch.setattr(session, "Alert", lambda key, text, severity="critical": sent.append((key, severity, text)))
+	return sent
 
 
 def test_the_board_s_cameras_are_set_up_with_the_box():
@@ -636,16 +658,16 @@ def test_the_board_s_cameras_are_set_up_with_the_box():
 	b.UseCameras(box.Cameras(60, 0, [10]))
 
 
-def test_the_cameras_start_once_every_camera_is_ready(tmp_path):
+def test_the_cameras_start_once_every_camera_is_ready(tmp_path, alerts):
 	folder = tmp_path / "rec"
 	folder.mkdir()
-	session_json(folder, [True, False])
+	session_json(folder, None)
 	port = FakeBoard()
 	runner, thread, result, said = camera_runner(tmp_path, port=port, folder=folder)
 	try:
 		assert until(lambda: "camwatch 0" in port.Sent())
 		time.sleep(0.5)
-		assert "camgo 600" not in port.Sent() and runner.state is None # one camera not ready: no pulses, no task
+		assert "camgo 600" not in port.Sent() and runner.state is None # campy still waits for them: no pulses, no task
 		session_json(folder, [True, True])
 		assert until(lambda: "camgo 600" in port.Sent())
 		assert until(lambda: os.path.exists(str(tmp_path / "box.cameras.json")))
@@ -658,6 +680,7 @@ def test_the_cameras_start_once_every_camera_is_ready(tmp_path):
 	cams = json.load(open(str(tmp_path / "box.cameras.json")))
 	assert (cams["period_us"], cams["frames"], cams["pins"], cams["t0_board_us"]) == (16666, 600, [12, 13], port.t0)
 	assert cams["ready_before_pulses"] == ["Camera0", "Camera1"] # campy-align starts these at trigger 1
+	assert cams["not_ready"] == {} and alerts == []
 	sync = json.load(open(str(folder / "sync.json")))
 	assert (sync["seed"], sync["pin"], sync["frame_period_us"], sync["hold_guard_us"], sync["hold_after_us"],
 		sync["board"]) == (4242, 9, 16666, 0, 0, "campy_outputs")
@@ -665,6 +688,77 @@ def test_the_cameras_start_once_every_camera_is_ready(tmp_path):
 	assert first["first_frame"] == 1
 	# Stopped from here (Ctrl-C): the pulses stopped at a period's end first
 	assert "camstop" in port.Sent()
+
+
+def test_a_camera_not_ready_the_pulses_start_with_the_others(tmp_path, alerts):
+	# campy-acquire gave up on Camera1 (readyTimeoutSec): the pulses start with Camera0 at once, as campy-acquire starts
+	# its own trigger with the cameras that are ready, and an alert names Camera1
+	folder = tmp_path / "rec"
+	folder.mkdir()
+	session_json(folder, [True, False])
+	port = FakeBoard()
+	runner, thread, result, said = camera_runner(tmp_path, port=port, folder=folder)
+	try:
+		assert until(lambda: "camgo 600" in port.Sent())
+		assert until(lambda: os.path.exists(str(tmp_path / "box.cameras.json")))
+		port.Say("t 1 {}".format(port.t0 + 16666 // 2))
+		assert until(lambda: runner.state == "iti") # the task with the first pulse, as with every camera
+		assert until(lambda: alerts)
+	finally:
+		runner.stop.set()
+		thread.join(5)
+	cams = json.load(open(str(tmp_path / "box.cameras.json")))
+	assert (cams["ready_before_pulses"], cams["not_ready"]) == (["Camera0"], {"Camera1": NOT_READY})
+	(key, severity, text), = alerts
+	assert (key, severity) == ("session/campy-box-cameras", "critical")
+	assert text.startswith("campy-box started the camera pulses with 1 of 2 cameras, without Camera1 (not ready after "
+		"30 s (readyTimeoutSec)). The recording goes on without it;") and text in said
+	start = [e for e in events(tmp_path) if e["kind"] == "cameras_start"][0]
+	assert start["not_ready"] == {"Camera1": NOT_READY}
+
+
+def test_with_all_cameras_one_not_ready_holds_the_pulses(tmp_path, alerts):
+	# box.all_cameras (--all-cameras): every camera or no pulses, as before; now an alert says why, once
+	folder = tmp_path / "rec"
+	folder.mkdir()
+	session_json(folder, [True, False])
+	port = FakeBoard()
+	runner, thread, result, said = camera_runner(tmp_path, port=port, folder=folder, all_cameras=True)
+	try:
+		assert until(lambda: alerts)
+		time.sleep(0.6) # campy-box looks at session.json every 0.2 s: still said once
+		assert "camgo 600" not in port.Sent() and runner.state is None
+		(key, severity, text), = alerts
+		assert (key, severity) == ("session/campy-box-cameras", "critical")
+		assert text == ("campy-box: no camera pulses for this recording, so no frames: box.all_cameras (--all-cameras) "
+			"starts them only with every camera, and campy stopped waiting without Camera1 (not ready after 30 s "
+			"(readyTimeoutSec)). Stop, and start again.")
+		assert said.count(text) == 1
+		session_json(folder, [True, True]) # every camera ready: they start
+		assert until(lambda: "camgo 600" in port.Sent())
+	finally:
+		runner.stop.set()
+		thread.join(5)
+	held = [e for e in events(tmp_path) if e["kind"] == "cameras_held"]
+	assert [(e["ready"], e["not_ready"]) for e in held] == [(["Camera0"], {"Camera1": NOT_READY})]
+
+
+@pytest.mark.parametrize("ready, stopping", [([False, False], False), ([True, False], True)])
+def test_no_pulses_with_no_camera_ready_or_campy_stopping(tmp_path, alerts, ready, stopping):
+	# campy-acquire stopped waiting with none ready, or because it was stopped (Ctrl-C) or its cameras ended: it starts
+	# no trigger then, and campy-box no pulses, nor an alert (the camera stopped by the Ctrl-C is no fault)
+	folder = tmp_path / "rec"
+	folder.mkdir()
+	session_json(folder, ready, stopping=stopping)
+	port = FakeBoard()
+	runner, thread, result, said = camera_runner(tmp_path, port=port, folder=folder)
+	try:
+		assert until(lambda: "camwatch 0" in port.Sent())
+		time.sleep(0.5)
+		assert "camgo 600" not in port.Sent() and alerts == []
+	finally:
+		runner.stop.set()
+		thread.join(5)
 
 
 def test_the_task_ending_leaves_the_cameras_running_to_the_recording_s_end(tmp_path):

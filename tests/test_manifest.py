@@ -443,6 +443,7 @@ def test_a_recording_says_how_it_was_made(tmp_path):
 	assert [c["cameraModel"] for c in opened] == ["Emulated_Camera"] * 2 and all(c["ready"] for c in opened)
 	assert opened[0]["frameWidth"] == 64 and opened[0]["frameHeight"] == 48
 	assert data["recording"]["trigger"]["startedBy"] == "external"
+	assert data["recording"]["stopping"] is False # nothing stopped it before the cameras were ready
 	# How it ended
 	end = data["end"]
 	assert end["exitCode"] == 0 and end["failures"] == {}
@@ -475,6 +476,8 @@ def test_a_recording_whose_camera_fails_says_so(tmp_path):
 	assert list(data["end"]["failures"]) == ["Camera1"]
 	assert data["end"]["cameras"][0]["framesWritten"] == 20
 	assert data["recording"]["cameras"][1]["ready"] is False
+	# One camera failing is no stop: campy-box's camera pulses start with Camera0, as campy's own trigger would
+	assert data["recording"]["stopping"] is False
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Ctrl-C to a process group: POSIX")
