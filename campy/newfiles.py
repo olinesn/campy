@@ -60,6 +60,9 @@ SYNC_FILE = "sync.json" # the trigger's sync output: trigger.SaveStart, read by 
 SESSION_FILE = "session.json" # how the recording was made: manifest.Session
 ALERTS_FILE = "alerts.log" # what the recording watch found: watch.Watch
 RATCAM_FILES = ("ratcam_frames.csv", "ratcam_sync.csv") # ratcam.Logs
+# campy-box's logs in a recording's folder, as campy-session starts it (its --out): <BOX_LOGS>.events.jsonl,
+# .json, .cameras.json (the camera pulses' start, which campy-align reads), ...
+BOX_LOGS = os.path.join("box", "campy-box")
 
 
 class WouldOverwrite(Exception):

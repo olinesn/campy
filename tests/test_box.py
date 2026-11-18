@@ -662,6 +662,7 @@ def test_the_cameras_start_once_every_camera_is_ready(tmp_path):
 		thread.join(5)
 	cams = json.load(open(str(tmp_path / "box.cameras.json")))
 	assert (cams["period_us"], cams["frames"], cams["pins"], cams["t0_board_us"]) == (16666, 600, [12, 13], port.t0)
+	assert cams["ready_before_pulses"] == ["Camera0", "Camera1"] # campy-align starts these at trigger 1
 	sync = json.load(open(str(folder / "sync.json")))
 	assert (sync["seed"], sync["pin"], sync["frame_period_us"], sync["hold_guard_us"], sync["hold_after_us"],
 		sync["board"]) == (4242, 9, 16666, 0, 0, "campy_outputs")
@@ -689,6 +690,9 @@ def test_the_task_ending_leaves_the_cameras_running_to_the_recording_s_end(tmp_p
 	finally:
 		runner.stop.set()
 		thread.join(5)
+	# Started at once, without looking at the cameras: cameras.json names none as waiting, and campy-align places
+	# them from their arrival times
+	assert json.load(open(str(tmp_path / "box.cameras.json")))["ready_before_pulses"] is None
 	summary = json.load(open(str(tmp_path / "box.json")))
 	assert summary["ended"] == "1 trials" and summary["task_ended"]
 	assert summary["cameras"]["ended"]["frames"] == 600 and not summary["cameras"]["stop_asked"]
