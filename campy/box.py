@@ -55,7 +55,8 @@ is, so at the start each servo jumps to its safe position (its pulses stop for a
 Links: when (an input), edge (active, the default, or inactive), do (an output with action pulse, the default for
 an output with pulse_ms, on, off or train; or a servo with to). armed: always (the whole session) or task (the
 default: armed by states). The board fires a link itself, within microseconds of the edge, so a reward never
-waits for the computer.
+waits for the computer. An edge the board saw before a state's arm reached it (campy-box held up as the state
+began) fired none of the state's links on it, so the state doesn't move on it either (logged: before_arm).
 
 States: do (actions on entering: {output, action: on, off, pulse (ms: to override pulse_ms), train, stop, burst
 (pulses: n)}, {servo, to}, {note: text}), arm (links armed while in the state, {link: times} or a list for once
@@ -779,13 +780,15 @@ class Runner:
 		self.next = None        # the state it then goes to
 		self.edges = {}         # (input, active) -> edges since the state was entered
 		self.armed = set()      # the links the state armed
+		self.arming = {}        # each of them: its arm command's (record, answer); line_no in the record once heard
+		self.heard = 0          # the board's lines heard so far (Listen): the board says everything in its order
 		self.trial = 0
 		self.started = None
 		self.end_why = None
 		self.counts = dict(inputs={n: 0 for n in box.inputs}, releases={n: 0 for n in box.inputs},
 			links={n: 0 for n in box.links}, links_refused={n: 0 for n in box.links},
 			states={n: 0 for n in box.states}, pulses=0, servo_moves=0, commands=0, errors=0, watchdog=0, gaps=0,
-			clash=0)
+			clash=0, before_arm=0)
 		self.said = set()
 		self.created = time.time()
 		self.holding = {name: False for name in box.poses} # each pose's state, as the task sees it
@@ -826,12 +829,15 @@ class Runner:
 	# ------------------------------------------------------------ the board's lines (its reading thread)
 
 	def Listen(self, kind, fields, heard_ns, line):
+		# Numbered as heard: the board sends its answers and its lines in the order it did things, so an input's line
+		# before the answer to an arm is an edge the board saw before it armed the link
+		self.heard += 1
 		if kind == "answer":
 			answer = fields
 			record = answer.record
 			if record is None:
 				return
-			record.update(sent_ns=answer.sent_ns, heard_ns=answer.heard_ns, answer=answer.line)
+			record.update(sent_ns=answer.sent_ns, heard_ns=answer.heard_ns, answer=answer.line, line_no=self.heard)
 			words = answer.line.split()
 			if words[:1] == ["ok"] and words[1:2] and words[1] in ("on", "off", "pulse", "move", "run"):
 				pos = {"on": 3, "off": 3, "pulse": 3, "move": 4, "run": 4}[words[1]]
@@ -852,6 +858,8 @@ class Runner:
 			if self.state is None:
 				self.queue.put((kind, fields, heard_ns, line))
 			return
+		if kind == "i":
+			fields = list(fields[:5]) + [self.heard]
 		self.queue.put((kind, fields, heard_ns, line))
 
 	# ------------------------------------------------------------ the loop's side
@@ -859,7 +867,8 @@ class Runner:
 	def Send(self, command, record=None):
 		self.counts["commands"] += 1
 		record = dict(record or {}, kind="command", command=command, state=self.state, trial=self.trial)
-		self.board.Command(command, record)
+		answer = self.board.Command(command, record)
+		return record, answer
 
 	def Handle(self, kind, fields, heard_ns, line):
 		box = self.box
@@ -872,8 +881,17 @@ class Runner:
 			record = dict(kind="input", input=name, active=active, board_us=t, host_ns=self.HostNs(t),
 				frame=k or None, after_us=after if after >= 0 else None, heard_ns=heard_ns, state=self.state,
 				trial=self.trial)
+			early = self.BeforeArm(inp, bool(active), fields[5] if len(fields) > 5 else None) if inp else []
+			if early:
+				record["before_arm"] = early
+				self.counts["before_arm"] += 1
+				if "before_arm" not in self.said:
+					self.said.add("before_arm")
+					self.say("campy-box: the board saw {} before it had {} armed (campy-box was held up entering {}): "
+						"no link fired, and the task doesn't move on it. Logged as before_arm.".format(name,
+						" and ".join(early), self.state))
 			self.Event(record)
-			if inp is not None:
+			if inp is not None and not early:
 				self.Edge(inp, bool(active), record)
 		elif kind == "x":
 			number, index, t, k, done = (int(x) for x in fields[:5])
@@ -986,6 +1004,29 @@ class Runner:
 			self.end_why = "board restarted"
 			self.stop.set()
 
+	def BeforeArm(self, inp, active, line_no):
+		"""
+		The links this state armed on this edge that the board hadn't armed yet when it saw the edge: the answer to
+		their arm came after the edge's line, or hasn't come. The board fired none of them, so the state doesn't move
+		on the edge either (a held-up campy-box arms them late). An arm the board refused, or sent while its link was
+		down, armed nothing: left out.
+		"""
+		if line_no is None or self.state is None or self.task_done:
+			return []
+		early = []
+		for name in sorted(self.armed):
+			link = self.box.links[name]
+			sent = self.arming.get(name)
+			if link.input is not inp or (link.edge == "active") != active or sent is None:
+				continue
+			record, answer = sent
+			if answer.line is not None and not answer.line.startswith("ok"):
+				continue
+			heard = record.get("line_no")
+			if heard is None or heard > line_no:
+				early.append(name)
+		return early
+
 	def Edge(self, inp, active, record, pose=None):
 		# An input's edge (inp), or a pose starting or ending (pose: its name): the state's move on it, if any
 		if self.state is None or self.task_done:
@@ -1039,8 +1080,9 @@ class Runner:
 				self.Event(dict(kind="note", text=a.note, state=name, trial=self.trial, host_ns=clock.HostNs()))
 			else:
 				self.Send(a.command, dict(action=a.action, target=a.Name(), position=getattr(a, "position", None)))
+		self.arming = {}
 		for link, n in state.arm.items():
-			self.Send("arm {} {}".format(box.links[link].number, n), dict(link=link))
+			self.arming[link] = self.Send("arm {} {}".format(box.links[link].number, n), dict(link=link))
 			self.armed.add(link)
 		if state.end:
 			self.Finish("state {}".format(name), dict(why="end state"))
