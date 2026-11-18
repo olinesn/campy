@@ -637,10 +637,14 @@ def test_a_session_with_the_sync_train(tmp_path, board):
 	p = pins(log_path)
 	t0 = [t for t, level in p[2] if level == 1][0] # the gate rises at the session's time 0
 	up = np.array([t for t, level in p[6] if level == 1]) - t0
-	# The live sketch runs on the computer's clock, which a busy CI runner delays by tens of ms (33.7 ms once): this
-	# checks that the pulses are the seed's (its gaps are 200 ms or more apart), test_chronic_timer.py their timing to
-	# the microsecond on the simulated clock
-	assert len(up) == len(want) and np.abs(up - want).max() <= 50000
+	# The pulses are the seed's, told by their gaps: from time 0 to the first, and from each to the next. The live
+	# sketch runs on the computer's clock, which a busy CI runner holds up by tens of ms (33.7 ms once; 54.8 ms once
+	# on the Pico, whose queue ran dry, which moved every later pulse by as much). Each gap takes a hold-up once,
+	# where the pulses' times added them up. Within 100 ms: each of seeds 1 to 20,000 has one of these 10 gaps 170 ms
+	# or more from seed 4242's. test_chronic_timer.py checks their timing to the microsecond, on the simulated clock
+	assert len(up) == len(want), (up, want)
+	gaps = np.diff(up, prepend=0) - np.diff(want, prepend=0)
+	assert np.abs(gaps).max() <= 100000, (up - want, gaps)
 	assert p[6][-1][1] == 0
 
 
