@@ -1424,6 +1424,9 @@ def test_the_panel_takes_the_rig_with_ephys_allowed(tmp_path, home, monkeypatch)
 	rig.write_text("")
 	calls = []
 	monkeypatch.setattr(subprocess, "call", lambda cmd, env=None: calls.append((cmd, env)) or 0)
+	# Not in this test's process: SIGINT ignored here would be every later test's child's too (a panel that
+	# then can't be stopped with Ctrl-C)
+	monkeypatch.setattr(panel, "IgnoreCtrlC", lambda: None)
 	monkeypatch.delenv("RIG_JOB", raising=False)
 	monkeypatch.setenv("RIG_ALLOW", "trigger")
 	assert panel.UnderRig(str(rig), "panel-look", "configs", ["--no-browser"]) == 0
