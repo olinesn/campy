@@ -856,7 +856,13 @@ Notes on the measurements:
   | Pro Tower Plus (RTX A2000) | 1,200 / 2.7 / 2.9 | 3,600 / 6.8 / 7.1 / 9.0 / 10.0 | 1,799 / 6.9 / 7.2 / 11.0 / 12.1 |
   | Jetson AGX Orin | 1,800 / 3.9 / 4.1 | 3,600 / 10.1 / 10.6 / 13.6 / 15.0 | 3,600 / 10.0 / 10.3 / 13.5 / 14.8 |
 
-- At 11:16 PM on 17 November the Pro Max Slim (the ChronicRecord PC) moved on to dev `3013041`, through pull request 472, under its lock and `RIG_CLEAN`. That was a fast-forward of 71 commits from `f563862`: the operant boxes' `campy-box` (a new command, so campy was reinstalled in both of its environments) and the copy card's speed, stall line and speed plot (472). It had been on a test branch for the panel's Live ephys card since that afternoon, and leaves it for dev until that card's pull requests are merged. Its rig lock (`rig.py`) was already dev's. No rig checks were run on `3013041` yet.
+- At 11:16 PM on 17 November the Pro Max Slim (the ChronicRecord PC) moved on to dev `3013041`, through pull request 472, under its lock and `RIG_CLEAN`. That was a fast-forward of 71 commits from `f563862`: the operant boxes' `campy-box` (a new command, so campy was reinstalled in both of its environments) and the copy card's speed, stall line and speed plot (472). It had been on a test branch for the panel's Live ephys card since that afternoon, and leaves it for dev until that card's pull requests are merged. Its rig lock (`rig.py`) was already dev's. At 11:18–11:21 PM it ran its rig checks on `3013041`, under its lock (the same scripts as `f563862`'s). All four runs were `RIG_CLEAN`, and every camera kept all its frames, nothing misaligned. The times were the same as `f563862`'s to within 0.1 ms at p50. The 3-camera check skipped 8 sets, all in one pause of about 150 ms near the middle of its minute (frame to 3D at most 151.8 ms). The lock saw no other program using the GPU, the cameras or the disk at that moment, and Dell's TechHub service, which used to stall these PCs every 15 minutes, was still disabled. Its rerun at 11:22 PM kept all 3,600 sets, none skipped, so the pause was a one-off. The replay started from frame 2 this time (frame 1 for `f563862`'s), as it has on some earlier rounds.
+
+  | Run | 1 camera, sets / time per set p50 / p99 | 3 cameras, sets / time per set / frame to 3D p50 / p99 | Replay, sets / time per set / frame to 3D p50 / p99 |
+  |---|---|---|---|
+  | `3013041` | 1,200 / 2.3 / 2.5 | 3,592 (8 skipped) / 5.6 / 5.8 / 7.6 / 8.5 | 1,799 / 5.6 / 5.8 / 8.5 / 9.4 |
+  | `3013041`, 3 cameras again | | 3,600 / 5.6 / 5.8 / 7.6 / 8.4 | |
+  | `f563862` | 1,200 / 2.3 / 2.5 | 3,600 / 5.6 / 5.8 / 7.6 / 8.4 | 1,800 / 5.6 / 5.7 / 8.5 / 9.4 |
 
 ## Four cameras on the Pro Max Slim (26 October 2026)
 
