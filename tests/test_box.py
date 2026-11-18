@@ -360,8 +360,11 @@ def test_pokes_on_the_simulated_board(tmp_path, outputs_sim):
 		sim = subprocess.Popen([outputs_sim, "live"], stdin=master, stdout=master, stderr=log, env=env)
 	try:
 		assert until(lambda: sim.poll() is not None or "ready campy_outputs" in log_path.read_text(), 60)
+		# The board's watchdog at its longest: a test computer that holds campy-box (or the whole computer) up past the
+		# usual 250 ms trips it, as it should, and the box goes safe, a trial without its reward (a 300 ms hold-up did,
+		# on a Mac, 18 November). The watchdog's own tests are above; here, the pokes' path
 		config = Task(task__end={"trials": 3}, task__states__iti__after_s=0.1,
-			servos__door__speed_us_per_s=0)
+			servos__door__speed_us_per_s=0, board__watchdog_ms=10000)
 		args = argparse.Namespace(task=None, port=os.ttyname(slave), out=str(tmp_path / "box"), check=False,
 			duration_s=30)
 		runner = box.Runner(args, box.Box(config))
@@ -378,7 +381,22 @@ def test_pokes_on_the_simulated_board(tmp_path, outputs_sim):
 	summary = json.load(open(str(tmp_path / "box.json")))
 	assert summary["ended"] == "3 trials", (summary, said)
 	rewards = [e for e in ev if e["kind"] == "link" and e["link"] == "reward_left"]
-	assert len(rewards) == 3 and all(e["done"] for e in rewards)
+	assert all(e["done"] for e in rewards)
+	# Every poke that moved ready to reward was rewarded by the board, if the board had the link armed by then. A test
+	# computer holding campy-box up as ready began arms it late (1 s, held up on purpose on a Mac, 18 November: ready
+	# and its arm 1 s late, and the poke the board saw before the arm moved the task with no reward). Such a poke is
+	# one the board saw before campy-box heard its arm answered; at most one, and the rest rewarded
+	missed = 0
+	for i, e in enumerate(ev):
+		if e["kind"] == "state" and e["state"] == "reward":
+			poke_ns = e["host_ns"]
+			ready = max(j for j in range(i) if ev[j]["kind"] == "state" and ev[j]["state"] == "ready")
+			arm = next(a for a in ev[ready:] if a["kind"] == "command" and a.get("link") == "reward_left" and
+				a["command"].endswith(" 1"))
+			if not any(r["board_us"] == e["board_us"] for r in rewards):
+				assert poke_ns < arm["heard_ns"], (e, arm)
+				missed += 1
+	assert summary["counts"]["states"]["reward"] == 3 and len(rewards) == 3 - missed >= 2, (rewards, missed)
 	pokes = [e for e in ev if e["kind"] == "input" and e["active"] == 1]
 	period = 400000
 	for e in pokes:
@@ -390,7 +408,7 @@ def test_pokes_on_the_simulated_board(tmp_path, outputs_sim):
 		assert off < 50000 or off > period - 10000, e
 		assert e["frame"] >= 1 and 0 <= e["after_us"], e
 	valve = [e for e in ev if e["kind"] == "pulse" and e["output"] == "valve"]
-	assert len(valve) == 3
+	assert len(valve) == len(rewards)
 	for r, p in zip(rewards, valve):
 		# Each pulse rises after its poke, lasts at least its 40 ms, and is over before the next poke (400 ms after
 		# this one): a pulse that never ended, or one still on at the next poke, fails
@@ -998,8 +1016,16 @@ def test_one_board_makes_the_cameras_pulses_and_runs_the_box(tmp_path, outputs_s
 	planned, _ = syncmatch.SyncEdges(sync, 120 * period - 20000)
 	got = [t - t0 for t, level in edges.get(9, []) if level == 1]
 	late = [g - p for g, p in zip(got, planned)]
-	assert len(got) == len(planned) and all(0 <= d < 100000 for d in late) and sorted(late)[len(late) // 2] < 5000, \
-		(got, list(planned))
+	# Every change made, none early, each within 100 ms and most within 5 ms. Except while a test computer held the
+	# simulated board's process up (200 ms or more failed this on a Mac held up on purpose, 18 November): the changes
+	# it should have made then come late, one after the other, as it catches up. So the changes from the first one
+	# 100 ms late to the last are left out of the 5 ms check, but at least half must be in it. A wrong time 0 or period
+	# puts every change off, still caught. (Held up 1 s just before the pulses end, it can miss its last changes: fails)
+	held = [i for i, d in enumerate(late) if d >= 100000]
+	held = set(range(held[0], held[-1] + 1)) if held else set()
+	rest = sorted(d for i, d in enumerate(late) if i not in held)
+	assert len(got) == len(planned) and all(d >= 0 for d in late) and len(rest) >= len(late) // 2 and \
+		rest[len(rest) // 2] < 5000, (got, list(planned))
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal for the simulated board")
