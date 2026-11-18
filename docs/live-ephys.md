@@ -232,6 +232,9 @@ With `--match learned` (`campy-ephys evaluate` and `campy-ephys serve`), the tem
   - **Candidates:** only samples above their unit's threshold are looked at, and the search for another unit's spike at once is skipped where no unit near it peaks.
   - **The judging loop** (look again, fit, take away) is compiled with numba when numba is installed (`pip install numba`, or campy's `fast3d` extra). It gives numpy's spikes, sizes and scores to the last bit (the tests hold it to that), and `CAMPY_NUMBA=0` turns it off.
   - **Threads:** `--threads N` works the scores out in N threads (the same spikes). Four saved only about a fifth of the scores' time on a cluster node: each group's product is small.
+- **Live (`campy-ephys serve`, the card), the matcher runs in a thread of its own** beside the reader, so the two use two cores: its matrix products, transforms and numba's loop let the reader's thread run meanwhile. Spikes reach the view in order, a little later (as they already did, once both finders had judged them).
+  - **It never holds the reader up.** A piece that would put the matcher more than 2 s behind goes out with its threshold spikes unsorted, and the matcher starts again after the gap.
+  - **The card's health** (`matcher`) says how far behind it is, how busy, and how many pieces it skipped.
 
 **Checked against Kilosort 4** on two recordings (each probe 384 channels), trained on one span and tested on a later one:
 - Kilosort 4's sample recording: 45 s, Kilosort's own labels;
@@ -254,13 +257,23 @@ For good units, each unit's Kilosort spikes and the spikes given to it are paire
 The curated recording is the harder one: 38% of its good units are at 80% or more on both, against 80% of those in Kilosort's sample. Small units do worst there: of the units whose trough is under 40 µV, 11% are; of those over 100 µV, 53%. Before whitening, most of the matcher's wrong spikes there fell where Kilosort had no spike nearby, and a fifth fell on another good unit's spike nearby. That hasn't been measured again since whitening.
 
 **What limits it:**
-- **Speed.** Matching takes 0.6 to 0.7 s of one core of a cluster node per second of a 384-channel probe with numba, and about 0.9 s without. On the ChronicRecord PC it took 0.49 s with numba and 0.69 s in the panel's own environment, which has no numba (18 November, Kilosort's sample, under the rig lock, the same spikes every way). The card's reader already takes about 40% of a core for reading, filtering and finding spikes, so in the same thread matching would bring it to about 0.9 s a second with numba, and over 1 s without. The panel's card doesn't use matching yet.
+- **Speed.** Matching takes 0.6 to 0.7 s of one core of a cluster node per second of a 384-channel probe with numba, and about 0.9 s without. On the ChronicRecord PC it took 0.49 s with numba and 0.69 s in the panel's own environment, which has no numba (18 November, Kilosort's sample replayed as fast as it could be, under the rig lock, the same spikes every way).
+- **Live, at the recording's own pace** (the same PC and recording, 20 s replayed as SpikeGLX would give it, under the rig lock):
+
+| | Reader's thread | Matcher's thread | Behind at most | Pieces skipped |
+|---|---|---|---|---|
+| Matcher in the reader's thread, numba | 88% of a core | (the same) | none | none |
+| Matcher in its own thread, numba | 37% | 53% | 0.06 s | 0 |
+| Matcher in its own thread, the panel's environment (no numba) | 41% | 80% | 0.25 s | 0 |
+
+  In its own thread the matcher keeps up even without numba. On a cluster node's slower cores, in the reader's thread it couldn't keep up (20 s of samples took 29 s), and without numba it fell 2 s behind and skipped a fifth of the pieces.
+- **Not on the card yet:** the panel doesn't pass `--match` yet.
 - **Harder recordings.** On the curated recording, a quarter of good units have under 45% of their Kilosort spikes found, and a quarter have under 56% of what they're given right.
 - **No drift correction**, as above.
 
 ## Next
 
 - **A better sorter:** following the probe's drift.
-- **Matching on the card:** numba in the panel's campy environment, and the matcher in a thread of its own beside the reader (its compiled loop, matrix products and transforms let other threads run meanwhile); then how many probes one PC can match live at once.
+- **Matching on the card:** a setting for the panel to start the reader with `--match learned`, tried on the ChronicRecord PC with templates from a sort of its own probe (numba in the panel's environment would leave more room); then how many probes one PC can match live at once.
 - **Accuracy first, then speed.** Speed work waits until the live output matches an automated sort made after the recording (Kilosort 4) in precision and accuracy. After that come tests of how many probes one PC can follow live at once, and only then speedups.
 - **Later, on top of live-sorted units:** each neuron's activity plotted live against the population's low-dimensional space and against the behaviour campy-live tracks: keypoint-MoSeq syllables, a PCA or UMAP space of the poses, or another map that describes the behaviour better.
