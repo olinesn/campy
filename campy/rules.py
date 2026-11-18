@@ -1077,6 +1077,10 @@ class Runner:
 			self.Event(dict(kind="relink", what=fields[0], detail=fields[1], heard_ns=heard_ns))
 			if fields[0] == "down":
 				self.say("campy-rules: the board's USB link stalled ({}): opening it again.".format(fields[1]))
+			elif fields[0] == "reset":
+				self.say("campy-rules: the board's link is still down: a USB port reset from the computer, {}.".format(
+					fields[1]))
+				self.counts["usb_resets"] = self.counts.get("usb_resets", 0) + 1
 			else:
 				# Over the board's watchdog: it switched everything off; the rules start over, as after "wd"
 				self.say("campy-rules: the board's link is back after {:.1f} s: the rules start over and the session's "
@@ -1168,8 +1172,10 @@ class Runner:
 				if not port:
 					raise RulesError("no port for the outputs board: --port, or board: port: in the rules")
 				boardlog = open(out + ".board.txt", "x", buffering=1)
+				# The board's USB link, if it stalls, opened again (linkwatch); still down after 5 s, its USB port reset
+				# from the computer (Linux only)
 				self.board = outputs.Board(port, log=LogFile(self, boardlog), listener=self.Listen, say=self.say,
-					alive=self.Alive, relink=10.0) # the board's USB link, if it stalls, opened again (linkwatch)
+					alive=self.Alive, relink=15.0)
 				for command in ["alloff"] + rules.Free() + ["trig {}".format(int(board_cfg.get("trigger_pin", 10))),
 						"watchdog {}".format(int(board_cfg.get("watchdog_ms", 250))),
 						"bound {}".format(int(self.bound_ms * 1000)), "linkwatch 2000"] + rules.Setup():
