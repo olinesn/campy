@@ -218,6 +218,15 @@ fewer cores. On the EVO-X2, the Precision 7875 and the Dell Pro Tower Plus
 the step got slower, and on the Dell Pro Max Slim nothing changed. So it is off by default
 (docs/jetson.md, docs/live-tracking.md).
 
+Garbage collection: Python's full collection, which comes every so often as
+a run makes and keeps objects, goes through every object campy-live holds,
+hundreds of thousands from start-up (torch, sleap-nn, the models, numba).
+On the Dell Pro Max Slim it held up one set's 3D step 140-152 ms about 40 s
+after start, and 7-8 sets were skipped (in 4 of 6 three-camera checks on
+17 November 2026). So just before the first set campy-live collects once
+and freezes what is left (gc.freeze; numba's loops too, if they load later):
+a collection during the sets then goes only through what the run made.
+
 --cuda-graphs records each model's GPU work once per input shape and then
 replays it in one go (a CUDA graph), instead of launching its hundred or so
 GPU operations one by one, each costing the CPU some microseconds: the
@@ -305,7 +314,7 @@ gives latency from the set's last frame (the earliest the set could be read)
 and its first.
 """
 
-import argparse, json, math, os, queue, signal, sys, threading, time
+import argparse, gc, json, math, os, queue, signal, sys, threading, time
 from datetime import datetime
 import numpy as np
 from campy import children, cpus, defaults, livefeed, liveresults, manifest, runstats, stopfile, strictjson
@@ -3076,6 +3085,7 @@ def Run(args):
 		pose3d.StartFast()
 	cameras = Cameras(names, poll=args.poll_ms / 1e3)
 	log = worker = clock = session = moved = None
+	frozen = False # SetAsideGarbage froze the start-up objects: given back at the end (Run may run in a test's process)
 	# What campy-live-session.json says of the models, campy and the computer,
 	# read meanwhile: the models' SHA-256s, git, nvidia-smi and PowerShell take
 	# a second or more, done before the feed comes
@@ -3143,6 +3153,14 @@ def Run(args):
 			log.results = Publish(args, log, names, cameras, model, tracker, frameRate, interrupts)
 		worker = Pose3DThread(tracker, log, cpus=threeD) if tracker else None
 		Say("Logging to {}.npy.".format(out))
+		# Python's garbage collection, done here once, before the first set: the objects start-up left are then
+		# out of its way, and a full collection during the sets no longer goes through all of them
+		# (SetAsideGarbage). numba's loops, when they load after this, are set aside once they have
+		frozen = True
+		kept, took = SetAsideGarbage()
+		Say("Garbage collection: the {:,} objects from start-up set aside ({:.0f} ms), so a collection during the "
+			"sets doesn't go through them.".format(kept, took * 1e3))
+		numbaLoading = tracker is not None and pose3d.FastStatus()["state"] == "loading"
 		reported, since = time.monotonic(), 0
 		while True:
 			got = cameras.NextSet(host.array, stop=stop)
@@ -3159,6 +3177,9 @@ def Run(args):
 				log.Add(row, frames, durations=(done_pc - read_pc, None))
 			else:
 				worker.Put(row, frames, done_pc - read_pc) # its 3D while the model runs on the next set
+			if numbaLoading and pose3d.FastStatus()["state"] != "loading":
+				gc.freeze() # numba's compiled loops, loaded since the first set: set aside too (no collection: µs)
+				numbaLoading = False
 			if args.report_sec and time.monotonic() - reported >= args.report_sec:
 				printer.Do(Say, Line(log.Summary(since), log) + (clock.Now() if clock is not None else ""))
 				reported, since = time.monotonic(), len(log.latency_last)
@@ -3221,6 +3242,25 @@ def Run(args):
 			signal.signal(signal.SIGINT, previous)
 			if stopWatch is not None:
 				stopWatch.Stop()
+			if frozen: # with the few hundred Python 3.12 starts with frozen: back in its collections, harmlessly
+				gc.unfreeze()
+
+
+def SetAsideGarbage():
+	"""
+	Python's garbage collection done once, then everything left frozen (gc.freeze: never looked at by a
+	collection again, never freed). Returns (objects frozen, seconds it took). Called before the first set:
+	campy-live holds hundreds of thousands of objects from start-up (torch, sleap-nn, the models, numba), and
+	Python's full collection, which comes every so often as a run makes and keeps objects, goes through every
+	one of them. On the Dell Pro Max Slim FCS1250 that held up one set's 3D step 140-152 ms, about 40 s after
+	start (17 November 2026: 7-8 sets skipped in 4 of 6 three-camera checks; logged with gc.callbacks). With
+	them frozen, a collection goes only through what the run made since. What start-up left that is no
+	longer used is freed by the collection here, before the freeze.
+	"""
+	t = time.perf_counter()
+	gc.collect()
+	gc.freeze()
+	return gc.get_freeze_count(), time.perf_counter() - t
 
 
 class SessionFacts:

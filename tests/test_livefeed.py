@@ -4,7 +4,7 @@ memory, which campy never waits on, and campy-live's reading of them. No
 camera, torch or sleap-nn needed (campy-live runs here with --model none).
 """
 
-import csv, itertools, json, multiprocessing as mp, os, subprocess, sys, threading, time, types
+import csv, gc, itertools, json, multiprocessing as mp, os, re, subprocess, sys, threading, time, types, weakref
 from argparse import ArgumentParser
 from collections import deque
 
@@ -700,6 +700,49 @@ def test_campy_live_reads_a_recording_to_its_end(tmp_path, capsys):
 	assert summary["ended"] == "the recording ended"
 	text = capsys.readouterr().out
 	assert "Waiting for the live feed" in text and "Done, the recording ended" in text
+
+
+def test_campy_live_sets_its_start_up_objects_aside_from_garbage_collection(tmp_path, capsys):
+	# Just before the first set campy-live collects once and freezes what is left (gc.freeze), so Python's full
+	# collection during the sets, which went through every object from start-up (140-152 ms in one set's 3D step
+	# on the Dell Pro Max Slim), goes only through what the run made. Given back when it ends: Run can run in
+	# another program's process (here, the tests')
+	before = gc.get_freeze_count() # Python 3.12 starts with a few hundred frozen
+	frozen = []
+	collect = gc.collect
+
+	def Collect(*a):
+		frozen.append(gc.get_freeze_count())
+		return collect(*a)
+	out = str(tmp_path / "live")
+	with pytest.MonkeyPatch.context() as m:
+		m.setattr(live.gc, "collect", Collect)
+		assert run_live(name(), out, ["--model", "none", "--report-sec", "0", "--wait-sec", "30"], frames=60) == 0
+	text = capsys.readouterr().out
+	said = re.search(r"Garbage collection: the ([\d,]+) objects from start-up set aside \((\d+) ms\)", text)
+	assert said and int(said.group(1).replace(",", "")) > 1000, text
+	# Said before the first set: right after "Logging to", before the summary
+	assert text.index("Logging to") < said.start() < text.index("Done, the recording ended")
+	assert frozen == [before] # one collection, before campy-live froze anything
+	assert gc.get_freeze_count() <= before # given back
+
+
+def test_setting_garbage_aside_frees_what_start_up_left_first():
+	# What start-up left and no longer uses (here a reference cycle) is freed by the collection before the freeze,
+	# not frozen with the rest; what is still used stays, and is frozen
+	class Node:
+		pass
+	a, b, kept = Node(), Node(), Node()
+	a.other, b.other = b, a
+	gone = weakref.ref(a)
+	del a, b
+	try:
+		before = gc.get_freeze_count()
+		count, seconds = live.SetAsideGarbage()
+		assert gone() is None and count > before and seconds >= 0
+		assert gc.get_freeze_count() == count and kept is not None
+	finally:
+		gc.unfreeze()
 
 
 def test_campy_live_looks_for_the_feed_every_20_ms(monkeypatch):
