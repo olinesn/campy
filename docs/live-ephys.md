@@ -189,7 +189,7 @@ campy-ephys evaluate --replay <run>_g0_t0.imec0.ap.bin --phy <Kilosort's output 
 1. **Labels:** each live spike near a spike of a kept unit (within 10 samples, on a site within 60 µm of the unit's peak site) takes that unit. The kept units are those labelled `good` or `mua`: phy's labels if the sort was curated (`cluster_group.tsv`), else Kilosort's (`cluster_KSLabel.tsv`); `--labels` changes them. Units labelled `noise` in a curated sort get templates too, but only to compete for spikes: what they match stays unsorted, and the card doesn't list them (`--compete`).
 2. **Templates:** each unit's template is the median of its spikes' waveforms at Kilosort's spike times, on its 32 nearest sites (a spike's whole footprint), as the live filter shapes them. Kilosort's own templates are whitened and filtered forwards and backwards, so they are not what the live view sees. A threshold's spike is compared on the 12 nearest of them, the sites a spike keeps.
 3. **Acceptance:** each unit gets how far its own spikes fall from its template: the 99th percentile of their distances (`--accept-q`).
-4. **For matching** ([below](#spikes-found-by-the-templates-below-the-threshold)): the whitening, the templates again in the whitened samples, and each unit's threshold, learned by replaying the training span once more with the templates matched. This replay takes longer than the first: about 4 s per second of recording on one core of a cluster node (16 minutes for a 240 s span of a 384-channel probe with 437 templates). `--no-whiten` and `--no-learn` leave these out.
+4. **For matching** ([below](#spikes-found-by-the-templates-below-the-threshold)): the whitening, the templates again in the whitened samples, and each unit's threshold, learned by replaying the training span once more with the templates matched. This replay takes longer than the first: with numba, 1.4 to 1.7 s per second of recording on one core of a cluster node (7 minutes for a 240 s span of a 384-channel probe with 437 templates). `--no-whiten` and `--no-learn` leave these out. The units are saved in their order on the probe, which the matcher's work goes by.
 
 **Sorting live.** Each spike is compared with the units whose sites include its channel, on the sites they share. The template is scaled to the spike (0.5 to 2 times), and the distance is the residual per sample, divided by each site's noise. The spike takes the closest unit if it is within that unit's acceptance, and stays unsorted (−1) otherwise.
 
@@ -227,6 +227,11 @@ With `--match learned` (`campy-ephys evaluate` and `campy-ephys serve`), the tem
 - **Each unit's threshold is learned in training.** The training span is replayed with the templates matched from z 6. Each unit's template spikes are paired one to one with its Kilosort spikes (within 10 samples), and its threshold is the one where F1 is highest: F1 counts both the share of its Kilosort spikes found and the share of its template spikes that are its. One threshold for every unit doesn't work: on a real recording, z 7 gave out three times Kilosort's spike count, mostly to small units.
 - **The threshold's spikes** that no template spike explains (within 10 samples, on its sites) stay as unsorted crossings.
 - **The same spikes however they come.** A sample is judged once all it needs has come, so a recording replayed in 50 ms pieces or 1 s pieces gives the same spikes.
+- **How it's fast enough** (the same spikes as the first, slower version, on both recordings below):
+  - **Scores:** each template is 8 shapes in time with a weight on each of its sites. For a group of about 12 neighbouring units at once, their weights times their channels' transforms is one matrix product, done in whole 2,048-sample blocks.
+  - **Candidates:** only samples above their unit's threshold are looked at, and the search for another unit's spike at once is skipped where no unit near it peaks.
+  - **The judging loop** (look again, fit, take away) is compiled with numba when numba is installed (`pip install numba`, or campy's `fast3d` extra). It gives numpy's spikes, sizes and scores to the last bit (the tests hold it to that), and `CAMPY_NUMBA=0` turns it off.
+  - **Threads:** `--threads N` works the scores out in N threads (the same spikes). Four saved only about a fifth of the scores' time on a cluster node: each group's product is small.
 
 **Checked against Kilosort 4** on two recordings (each probe 384 channels), trained on one span and tested on a later one:
 - Kilosort 4's sample recording: 45 s, Kilosort's own labels;
@@ -241,19 +246,20 @@ For good units, each unit's Kilosort spikes and the spikes given to it are paire
 | **Matched, each unit's threshold, not whitened:** found / right | 87% / 89% | 55% / 45% |
 | **Matched, each unit's threshold, whitened (the default):** found / right | **95% (86–99%) / 96% (89–100%)** | **75% (45–92%) / 80% (56–95%)** |
 | Spikes given to good units a second, whitened (Kilosort's) | 1,362 (1,389) | 2,008 (1,931) |
-| One core of a cluster node, per second of recording, whitened | 3.0 s | 2.3 s |
+| One core of a cluster node, per second of recording, whitened, with numba (without) | 0.59 s (0.87 s) | 0.71 s |
 
 "Found" is the share of a unit's Kilosort spikes found and given to it; "right" is the share of the spikes given to it that are its.
 
 The curated recording is the harder one: 38% of its good units are at 80% or more on both, against 80% of those in Kilosort's sample. Small units do worst there: of the units whose trough is under 40 µV, 11% are; of those over 100 µV, 53%. Before whitening, most of the matcher's wrong spikes there fell where Kilosort had no spike nearby, and a fifth fell on another good unit's spike nearby. That hasn't been measured again since whitening.
 
 **What limits it:**
-- **Speed.** Matching takes 2 to 3 s of one core per second of a 384-channel probe, more than real time, so the panel's card doesn't use it yet. Speed work comes next (below).
+- **Speed.** Matching takes 0.6 to 0.7 s of one core of a cluster node per second of a 384-channel probe with numba, and about 0.9 s without: faster than the samples come, but not by much. The panel's card doesn't use it yet: it hasn't been tried on the ChronicRecord PC, whose campy environment has no numba yet.
 - **Harder recordings.** On the curated recording, a quarter of good units have under 45% of their Kilosort spikes found, and a quarter have under 56% of what they're given right.
 - **No drift correction**, as above.
 
 ## Next
 
-- **A better sorter:** following the probe's drift, and matching faster than the samples come.
+- **A better sorter:** following the probe's drift.
+- **Matching on the card:** timed on the ChronicRecord PC (with numba in its campy environment), then how many probes one PC can match live at once.
 - **Accuracy first, then speed.** Speed work waits until the live output matches an automated sort made after the recording (Kilosort 4) in precision and accuracy. After that come tests of how many probes one PC can follow live at once, and only then speedups.
 - **Later, on top of live-sorted units:** each neuron's activity plotted live against the population's low-dimensional space and against the behaviour campy-live tracks: keypoint-MoSeq syllables, a PCA or UMAP space of the poses, or another map that describes the behaviour better.
