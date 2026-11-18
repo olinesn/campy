@@ -540,6 +540,27 @@ def test_frame_locked_trains_and_sensor_stamps_on_the_cameras_frames(outputs_sim
 	assert got[2] - poke in range(0, 4) and t0 + (k - 1) * CAM_P + CAM_P // 2 <= got[2] < t0 + k * CAM_P + CAM_P // 2
 
 
+def test_a_late_loop_counts_the_camera_rise_before_stamping_an_input(outputs_sim):
+	# The loop held up (simstall) across frame 11's rise, a poke starting after that rise and during the stall: when
+	# the loop comes back, the rise it missed is counted first, so the poke is in frame 11, not frame 10
+	commands = ["cam {} {}".format(CAM_P, CAMS[0]), "in 0 100 2 1 0", "camgo 40"]
+	edges, said = run(outputs_sim, 0.75, commands, *heartbeats(0.75), inputs="")
+	t0, _ = camgo(said)
+	stall_at = t0 + 10 * CAM_P # frame 10's period has just ended; frame 11 rises P/2 later
+	poke = stall_at + CAM_P // 2 + 1000
+	stall = ((stall_at) / 1e6, ["simstall 10000"])
+	edges, said = run(outputs_sim, 0.75, commands, stall, *heartbeats(0.75), inputs=pulse(A[0], poke, 20000))
+	assert camgo(said)[0] == t0
+	check_camera_pulses(edges, t0, 40, pins=CAMS[:1])
+	got = said_inputs(said, 0)[0]
+	_, level, t, k, after = got
+	assert t >= poke and level == 1, got # stamped once the loop came back (after the stall), not before the poke
+	assert k == 11 and t0 + 10 * CAM_P + CAM_P // 2 <= t < t0 + 11 * CAM_P + CAM_P // 2, got
+	assert after == t - (t0 + 10 * CAM_P + CAM_P // 2), got
+	frames = [(int(l.split()[1]), int(l.split()[2])) for _, l in lines(said, "t")]
+	assert frames == [(j + 1, t0 + j * CAM_P + CAM_P // 2) for j in range(40)] # each counted once, at its own time
+
+
 @pytest.mark.parametrize("where, extra", [(0.25, 0), (0.75, 0), (1.0, 1)])
 def test_camstop_ends_at_a_period_end_with_no_pulse_cut_or_added(outputs_sim, where, extra):
 	# A stop in a period's first half keeps its pulse; in its second half the pulse has risen and ends whole; under

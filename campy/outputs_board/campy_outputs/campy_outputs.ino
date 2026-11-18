@@ -1700,6 +1700,13 @@ void loop() {
   bool level = ReadTrigger();
   if (level && !trig_level) { trig_level = true; Rose(now); }
   else { trig_level = level; }
+  // Camera rises already past, on a pass that came late: counted before the inputs are stamped, so an input
+  // after a rise is in that rise's frame (WaitRise would count them next, after the inputs)
+  for (int64_t r = CamNextRise(); r != NONE && r <= now; r = CamNextRise()) {
+    noInterrupts();
+    Rose(r);
+    interrupts();
+  }
   TakeInputs(now);
   CamCheck(now);
 
