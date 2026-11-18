@@ -228,6 +228,37 @@ def raw(p, method, path, headers=None, body=None):
 		c.close()
 
 
+def test_a_refused_post_has_its_body_read_first():
+	# The panel reads a POST's body before answering it, a refusal too: on Windows a connection closed with its
+	# request's body unread is reset, and the client saw "connection aborted" (WinError 10053) instead of the 403
+	# (now and then on GitHub's Windows runner). Read: the refusal comes back whole, the body sent first in full
+	import socket
+	p, calls = stub_panel()
+	try:
+		body = b'{"notes": "' + b"x" * 200000 + b'"}' # more than a socket buffer holds
+		for headers, want in (([b"Origin: https://evil.example"], 403), ([b"Content-Length: -5"], 400)):
+			s = socket.create_connection(("127.0.0.1", p.port), timeout=10)
+			try:
+				length = [] if any(h.startswith(b"Content-Length") for h in headers) else \
+					[b"Content-Length: %d" % len(body)]
+				request = b"\r\n".join([b"POST /start?t=" + p.token.encode() + b" HTTP/1.1", b"Host: 127.0.0.1",
+					b"Content-Type: text/plain"] + headers + length + [b"", b""])
+				s.sendall(request + (body if length else b""))
+				answer = b""
+				while True:
+					chunk = s.recv(65536)
+					if not chunk:
+						break
+					answer += chunk
+			finally:
+				s.close()
+			assert answer.startswith(b"HTTP/1.0 %d" % want) or answer.startswith(b"HTTP/1.1 %d" % want), answer[:200]
+		assert calls == []
+	finally:
+		p.server.shutdown()
+		p.server.server_close()
+
+
 def test_the_page_answers_only_its_key_from_this_computer():
 	p, calls = stub_panel()
 	try:

@@ -1682,12 +1682,23 @@ class Panel:
 			def Post(self):
 				url = urlparse(self.path)
 				query = parse_qs(url.query)
+				# The body read before anything is answered, a refusal too: on Windows a connection closed with its
+				# request's body still unread is reset, and the browser (and the tests, now and then on GitHub's
+				# Windows runner) saw the connection aborted instead of the panel's 403
+				try:
+					size = int(self.headers.get("Content-Length") or 0)
+				except ValueError:
+					size = None
+				if size is not None and size < 0:
+					size = None # read(-1) would wait for the connection to close
+				data = self.rfile.read(size) if size else b""
 				why = self.Refused(query)
 				if why:
 					return self.Send(403, {"error": "wrong key" if why == "key" else why})
 				try:
-					size = int(self.headers.get("Content-Length") or 0)
-					body = json.loads(self.rfile.read(size) or b"{}") if size else {}
+					if size is None:
+						raise ValueError("no Content-Length")
+					body = json.loads(data or b"{}") if size else {}
 				except ValueError:
 					return self.Send(400, {"error": "not JSON"})
 				if url.path == "/start":
