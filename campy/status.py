@@ -14,13 +14,15 @@ Outside campy-acquire (tests, campy-encode-sweep) there is no array, and
 This() is a Camera whose stores do nothing.
 """
 
+import time
+
 from campy import clock
 
 # A camera's row: its fields, in this order
 FIELDS = ("grabbed", "queued", "sent", "dropped", "frameNs", "sentNs", "state", "restarts", "counted", "lost",
-	"missed", "missedNs", "missedFrame")
+	"missed", "missedNs", "missedFrame", "hostNs", "reconnects", "goneFrames")
 GRABBED, QUEUED, SENT, DROPPED, FRAME_NS, SENT_NS, STATE, RESTARTS, COUNTED, LOST_FRAMES, MISSED, MISSED_NS, \
-	MISSED_FRAME = range(len(FIELDS))
+	MISSED_FRAME, HOST_NS, RECONNECTS, GONE_FRAMES = range(len(FIELDS))
 WIDTH = 16 # words per camera: room for more fields
 
 # Cameras whose last frames are this close stopped together: the trigger, not a camera
@@ -39,7 +41,7 @@ WAITING = 0 # not grabbing yet
 GRABBING = 1
 ENDED = 2 # its recording ended as it should (recTimeInSec, Ctrl-C, a stop file, the watch's stop)
 NOT_STARTED = 3 # the camera did not start grabbing
-LOST = 4 # the camera is gone (unicam.CameraLost)
+LOST = 4 # the camera is gone (unicam.CameraLost); with cameraReconnect, campy waits for it, and it can be GRABBING again
 VIDEO_FAILED = 5 # ffmpeg stopped, or did not start
 CAMERA_FAILED = 6 # the camera thread stopped with an error
 
@@ -61,14 +63,55 @@ class Camera:
 		self.a = array
 		self.o = n * WIDTH
 
-	def Frame(self, grabbed, queued):
-		# A frame grabbed (its number), and the frames waiting for ffmpeg as it came
+	def Frame(self, grabbed, queued, hostNs=0):
+		# A frame grabbed (its number), the frames waiting for ffmpeg as it came, and its host time (hosttimes.npy's)
 		a = self.a
 		if a is not None:
 			o = self.o
+			a[o + HOST_NS] = hostNs
 			a[o + GRABBED] = grabbed
 			a[o + QUEUED] = queued
 			a[o + FRAME_NS] = Now()
+
+	def Reconnected(self, count, frames):
+		# Times the camera came back after it was unplugged (cameraReconnect), and the frame numbers it skipped while
+		# it was gone, in all (its frames grabbed are grabbed - goneFrames)
+		if self.a is not None:
+			self.a[self.o + GONE_FRAMES] = frames
+			self.a[self.o + RECONNECTS] = count # last: the watch reads goneFrames once reconnects has changed
+
+	def Others(self):
+		"""
+		The other cameras grabbing: [(their newest frame's number, its host
+		time ns)], for a camera back after it was unplugged to number its
+		frames as theirs (unicam.Resume). Empty outside campy-acquire, or with
+		no other camera grabbing.
+		"""
+		a = self.a
+		if a is None:
+			return []
+		def Read():
+			return {o: (int(a[o + GRABBED]), int(a[o + HOST_NS])) for o in range(0, len(a) - WIDTH + 1, WIDTH)
+				if o != self.o and a[o + STATE] == GRABBING}
+		# A camera's number and host time are two stores: read twice, 1 ms apart, and kept where both reads agree
+		# (one taken as its next frame came in between could pair a number with the next frame's time)
+		first = Read()
+		time.sleep(0.001)
+		second = Read()
+		return [first[o] for o in first if first[o] == second.get(o) and first[o][0] > 0 and first[o][1] > 0]
+
+	def OthersGoOn(self):
+		"""
+		Whether another camera is still recording (waiting, grabbing, or gone
+		and waited for): a camera that was unplugged is waited for while one
+		is. True outside campy-acquire, or with one camera: there, its own
+		recording's length says.
+		"""
+		a = self.a
+		if a is None:
+			return True
+		others = [a[o + STATE] for o in range(0, len(a) - WIDTH + 1, WIDTH) if o != self.o]
+		return not others or any(state in (WAITING, GRABBING, LOST) for state in others)
 
 	def Dropped(self, count):
 		if self.a is not None:

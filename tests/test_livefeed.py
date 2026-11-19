@@ -4,7 +4,7 @@ memory, which campy never waits on, and campy-live's reading of them. No
 camera, torch or sleap-nn needed (campy-live runs here with --model none).
 """
 
-import csv, itertools, json, multiprocessing as mp, os, subprocess, sys, threading, time, types
+import csv, gc, itertools, json, multiprocessing as mp, os, re, subprocess, sys, threading, time, types, weakref
 from argparse import ArgumentParser
 from collections import deque
 
@@ -589,12 +589,70 @@ def test_campy_live_waits_for_a_ring_still_being_made(rings):
 		cams.Close()
 
 
-def _record(prefix, cameras, frames, rate, delay, trigger=None, lose=None):
+def fields_not_written(writer):
+	# A ring as a campy-acquire from before 13 November 2026 left it for a moment: MAGIC and the
+	# version written, the other fields (dtype, sizes) not yet. Returns what makes it whole again.
+	header = writer.ring.header
+	saved = header.copy()
+	header[12:] = 0
+	def Finish():
+		header[:] = saved
+	return Finish
+
+
+def test_the_writer_shows_magic_only_after_every_field(monkeypatch):
+	# MAGIC comes last, past a release fence: a reader that sees it sees the whole header. Written
+	# first, a campy-live attaching in between read an empty dtype and stopped ("data type ''
+	# not understood", seen once on a CI runner)
+	made, seen = [], []
+	make = livefeed.RingWriter._Make
+	monkeypatch.setattr(livefeed.RingWriter, "_Make", staticmethod(lambda n, size: made.append(make(n, size)) or made[-1]))
+	monkeypatch.setattr(livefeed, "_Release",
+		lambda: seen.append((bytes(made[-1].buf[:8]), bytes(made[-1].buf[32:40]).rstrip(b"\0"))))
+	w = livefeed.RingWriter(name(), (16, 20), np.uint8, slots=4)
+	try:
+		assert seen and seen[0] == (b"\0" * 8, b"|u1")
+		assert bytes(w.shm.buf[:8]) == livefeed.MAGIC
+		reader = livefeed.RingReader(w.name)
+		assert reader.dtype == np.uint8 and reader.shape == (16, 20, 1)
+		reader.Close()
+	finally:
+		w.Close()
+
+
+def test_a_ring_with_its_fields_not_written_yet_is_refused_and_waited_for(rings, monkeypatch):
+	# MAGIC there but not the rest (an older writer's ring, for a moment): refused like a ring not
+	# made yet, its memory let go of, and campy-live waits for it instead of stopping
+	opened = []
+	attach = livefeed.Attach
+	monkeypatch.setattr(livefeed, "Attach", lambda n: opened.append(attach(n)) or opened[-1])
+	w = rings(name(), (16, 20), np.uint8, slots=4)
+	finish = fields_not_written(w)
+	with pytest.raises(ValueError, match="its header is being written"):
+		livefeed.RingReader(w.name)
+	assert len(opened) == 1 and opened[0].buf is None
+	monkeypatch.setattr(livefeed, "Attach", attach)
+	prefix = name()
+	writers = [rings(livefeed.RingName(prefix, c), (16, 20), np.uint8, slots=4) for c in range(2)]
+	finish2 = fields_not_written(writers[1])
+	cams = live.Cameras([x.name for x in writers], poll=0.0001)
+	try:
+		threading.Timer(0.5, finish2).start()
+		start = time.monotonic()
+		assert cams.Attach(wait=10)
+		assert time.monotonic() - start >= 0.4
+	finally:
+		cams.Close()
+		finish()
+
+
+def _record(prefix, cameras, frames, rate, delay, trigger=None, lose=None, hold=None):
 	# campy-acquire's rings, made after delay, and frames at rate from when
 	# trigger is set: campy makes its rings a few seconds before the trigger,
 	# and a campy-live already waiting attaches meanwhile. A short recording
 	# started at once could end between campy-live's looks for the feed
-	# (every 20 ms), and it would wait for the next one.
+	# (every 20 ms), and it would wait for the next one. With hold (an Event),
+	# the frames after the first wait for it, then go on at rate.
 	time.sleep(delay)
 	writers = [livefeed.RingWriter(livefeed.RingName(prefix, c), (16, 20), np.uint8, slots=4, frameRate=rate,
 		camera=c, cameraName="Camera{}".format(c)) for c in range(cameras)]
@@ -619,6 +677,9 @@ def _record(prefix, cameras, frames, rate, delay, trigger=None, lose=None):
 						w.Close() # the camera lost: its process closes its ring, the others record on
 					continue
 				w.Write(frame(n), n, host, n / rate)
+			if n == 1 and hold is not None:
+				hold.wait(60)
+				start = time.perf_counter() - 1 / rate # frame 2 a frame after the hold
 	finally:
 		for w in writers:
 			w.Close()
@@ -645,6 +706,54 @@ def test_campy_live_reads_a_recording_to_its_end(tmp_path, capsys):
 	assert "Waiting for the live feed" in text and "Done, the recording ended" in text
 
 
+def test_campy_live_sets_its_start_up_objects_aside_from_garbage_collection(tmp_path, capsys):
+	# Before the feed campy-live collects once and freezes what is left (gc.freeze), so Python's full
+	# collection during the sets, which went through every object from start-up (140-152 ms in one set's 3D step
+	# on the Dell Pro Max Slim), goes only through what the run made. Given back when it ends: Run can run in
+	# another program's process (here, the tests')
+	before = gc.get_freeze_count() # Python 3.12 starts with a few hundred frozen
+	frozen = []
+	collect = gc.collect
+
+	def Collect(*a):
+		frozen.append(gc.get_freeze_count())
+		return collect(*a)
+	out = str(tmp_path / "live")
+	with pytest.MonkeyPatch.context() as m:
+		m.setattr(live.gc, "collect", Collect)
+		assert run_live(name(), out, ["--model", "none", "--report-sec", "0", "--wait-sec", "30"], frames=60) == 0
+	text = capsys.readouterr().out
+	said = re.search(r"Garbage collection: the ([\d,]+) objects from start-up set aside \((\d+) ms\)", text)
+	assert said and int(said.group(1).replace(",", "")) > 1000, text
+	# Done before the feed, so no frames wait on the collection; what was made after it frozen before the first set
+	assert said.start() < text.index("Live feed:") < text.index("Logging to")
+	assert frozen == [before] # one collection, before campy-live froze anything
+	assert gc.get_freeze_count() <= before # given back
+
+
+def test_setting_garbage_aside_frees_what_start_up_left_first():
+	# What start-up left and no longer uses (here a reference cycle) is freed by the collection before the freeze,
+	# not frozen with the rest; what is still used stays, and is frozen
+	class Node:
+		pass
+	a, b, kept = Node(), Node(), Node()
+	a.other, b.other = b, a
+	gone = weakref.ref(a)
+	del a, b
+	try:
+		before = gc.get_freeze_count()
+		count, seconds = live.SetAsideGarbage()
+		assert gone() is None and count > before and seconds >= 0
+		# Read again, the count it returned or a little under: a frozen object is still freed when its last
+		# reference goes, and something else in this process (a thread an earlier test left) can drop one between
+		# the two reads (2 of 150,992 once, on GitHub's Python 3.9 runner). Nothing joins the frozen set without
+		# a freeze, so never more
+		now = gc.get_freeze_count()
+		assert count - 1000 <= now <= count and kept is not None, (count, now)
+	finally:
+		gc.unfreeze()
+
+
 def test_campy_live_looks_for_the_feed_every_20_ms(monkeypatch):
 	# Started first, it looks for the feed every 20 ms: a camera without a
 	# trigger sends its first frame as its ring is made, at 60 fps one every
@@ -664,16 +773,35 @@ def test_campy_live_looks_for_the_feed_every_20_ms(monkeypatch):
 	assert len(slept) == 5 and max(slept) <= 0.02, slept
 
 
-def test_campy_live_waiting_tracks_from_the_first_frames(tmp_path):
-	# Started first, it reads the recording from its start. The first frame it
-	# reads is the newest when its setup after attaching is done: frame 1 on a
-	# Mac (setup 3-19 ms), 7 and 10 on a CI runner so busy it skipped 24 of 54
-	# sets with no model. How often it looks is checked above, without timing
+def test_campy_live_waiting_tracks_from_the_first_frames(tmp_path, monkeypatch):
+	# Started first, it reads the recording from its start: nothing slow comes between finding the feed and the
+	# first set. campy-live-session.json did (git, nvidia-smi, PowerShell, the models' SHA-256s: about 1 s, and
+	# frame 68 the first tracked at 60 fps). Checked without timing: that file is held until the first set is read
+	# (had the first set waited for it, both would wait 30 s), and the recording after its first frame, so the
+	# first set is frame 1 however long the rest of the setup takes. By the clock the first frame was 1 on a Mac,
+	# 7 and 10 on busy CI runners, and 60, this 1 s recording's last, on a Windows runner whose setup took about
+	# a second. How often it looks for the feed is checked above, also without timing
+	first, held = threading.Event(), []
+	next_set, write = live.Cameras.NextSet, live.SessionFile.Run
+
+	def NextSet(cameras, *a, **k):
+		got = next_set(cameras, *a, **k)
+		if got is not None:
+			first.set()
+		return got
+
+	def Run(session, *a, **k):
+		held.append(first.wait(30))
+		return write(session, *a, **k)
+	monkeypatch.setattr(live.Cameras, "NextSet", NextSet)
+	monkeypatch.setattr(live.SessionFile, "Run", Run)
 	out = str(tmp_path / "live")
 	assert run_live(name(), out, ["--model", "none", "--report-sec", "0", "--wait-sec", "30"], frames=60, rate=60,
-		delay=0.5, triggered=False) == 0
+		delay=0.5, triggered=False, hold=first) == 0
 	rows = np.load(out + ".npy")
-	assert rows["frame"][0] <= 30 and rows["frame"][-1] == 60
+	assert held == [True], "the first set waited for campy-live-session.json"
+	assert rows["frame"][0] == 1 and rows["frame"][-1] == 60, rows["frame"]
+	assert os.path.exists(out + ".session.json") # written once the first set was read
 
 
 def log_sets(log, first, count):
@@ -777,13 +905,14 @@ def seeing(tmp_path, monkeypatch):
 	return args, truth, order
 
 
-def run_live(prefix, out, args, frames=60, rate=200, delay=0.3, triggered=True, lose=None):
+def run_live(prefix, out, args, frames=60, rate=200, delay=0.3, triggered=True, lose=None, hold=None):
 	# campy-live on a recording of 3 cameras' frames, from a thread: its rings
 	# made after delay, its frames from when campy-live has attached to them
 	# (triggered), or else from when the rings are made, as cameras without a
-	# trigger send them
+	# trigger send them; with hold, the frames after the first wait for it
 	trigger = threading.Event()
-	t = threading.Thread(target=_record, args=(prefix, 3, frames, rate, delay, trigger if triggered else None, lose))
+	t = threading.Thread(target=_record, args=(prefix, 3, frames, rate, delay, trigger if triggered else None, lose,
+		hold))
 	attach = live.Cameras.Attach
 
 	def Attach(cameras, *a, **k):
@@ -800,6 +929,8 @@ def run_live(prefix, out, args, frames=60, rate=200, delay=0.3, triggered=True, 
 			return live.Run(live.ParseArgs(["--cameras", "3", "--name", prefix, "--out", out, "--cpus", "none"] + args))
 	finally:
 		trigger.set()
+		if hold is not None:
+			hold.set() # campy-live over (or failed) before its first set: the recording goes on, and ends
 		t.join()
 
 
@@ -1487,3 +1618,63 @@ def test_a_cameras_feed_says_its_processes(tmp_path):
 		"folder": os.path.join(str(tmp_path), "Camera0")}
 	readers = [types.SimpleNamespace(Description=feed.Description), types.SimpleNamespace(Description=lambda: "")]
 	assert livefeed.Processes(readers) == sorted({os.getpid(), os.getppid()})
+
+
+def test_a_ring_says_its_camera_is_lost_until_its_next_frame(rings):
+	# cameraReconnect: LOST while campy waits for the camera, RECORDING again with its next frame; never ended
+	ring = name()
+	w = rings(ring, (4, 4), np.uint8)
+	w.Write(frame(1, (4, 4)), 1, 1000)
+	r = livefeed.RingReader(ring)
+	try:
+		w.Lost()
+		assert r.Lost() and not r.Ended()
+		w.Write(frame(70, (4, 4)), 70, 2000)
+		assert not r.Lost() and r.State() == livefeed.RECORDING and r.Latest() == 70
+	finally:
+		r.Close()
+
+
+def test_campy_live_takes_back_a_camera_plugged_back_in(rings, monkeypatch):
+	# cameraReconnect: camera 1 unplugged after pulse 30 (its ring LOST, not ended), plugged back in at pulse 91, its
+	# frames numbered as the other cameras' again: left out meanwhile, then taken back, every set pairing one pulse's
+	# frames, with no offset. Left out at once, as its feed says it is lost: not after STALL_S (1 s, here the
+	# whole time it is gone), which held every camera's sets back that long, untracked
+	writers, cams, said = three(rings)
+	out = np.empty((3, 16, 20, 1), np.uint8)
+	got = []
+	done = threading.Event()
+
+	def Read():
+		while not done.is_set():
+			r = cams.NextSet(out, stop=done.is_set)
+			if r is None:
+				return
+			got.append((r[0].number, list(r[0].own), pulses(out)))
+
+	reader = threading.Thread(target=Read)
+	reader.start()
+	try:
+		t0 = clock.HostNs()
+		for p in range(1, 151): # 2.5 s at 60 fps
+			if p == 31:
+				writers[1].Lost()
+			pulse(writers, p, t0, skip=(1,) if 30 < p <= 90 else ())
+			time.sleep(PERIOD / 1e9)
+		time.sleep(0.2)
+	finally:
+		done.set()
+		reader.join()
+		cams.Close()
+	assert any("Camera1 unplugged after its frame 30" in s for s in said), said
+	assert not any("No frame from Camera1" in s for s in said), said
+	assert any("Camera1's frames came again" in s for s in said), said
+	# The sets without it start within a few pulses of the unplug (a loaded runner: up to 0.25 s), not 1 s later
+	without = [g[0] for g in got if g[1][1] == -1]
+	assert without and min(without) <= 45, without
+	assert cams.Report()["events"][0]["why"] == "lost"
+	back = [g for g in got if g[0] > 95 and g[1][1] != -1]
+	assert back, got
+	for number, own, seen in back:
+		assert seen[0] == seen[1] == seen[2] == number % 251 and own[1] == number, (number, own, seen)
+	assert cams.offset == [0, 0, 0]

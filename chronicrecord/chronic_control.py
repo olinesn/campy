@@ -12,6 +12,12 @@ LED controllers, each edge on its microsecond, the LEDs on whole camera frames.
 The computer only starts it, logs what the Pico reports, and stops it. (An Arduino
 Nano ESP32 with the same sketch works too.)
 
+With SYNC=1 the Pico also makes a sync train on GP6 (output E), for the OneBox:
+10 ms pulses with random gaps of 200 to 1000 ms from a seed, saved beside
+timestamps.txt in sync_<date_time>.json. sync_match.py matches the OneBox's
+record of them to the plan: the two clocks' offset and drift, and any pulse
+either side missed.
+
 Over SSH (each returns at once; the session runs in the background):
   python3 chronic_control.py start        start a session
   python3 chronic_control.py stop         end it after the current bout (on time)
@@ -24,7 +30,8 @@ Over SSH (each returns at once; the session runs in the background):
   python3 chronic_control.py wiring       a wiring check, in the background until
                                           'stop': each output blinks on its own, its
                                           letter's number of times (A gate 1, B camera
-                                          2, C blue 3, D yellow 4), then a pause.
+                                          2, C blue 3, D yellow 4; E sync 5 with
+                                          --channels E), then a pause.
                                           --channels AB checks only those outputs;
                                           --pause 60 waits a minute between rounds.
   python3 chronic_control.py blink        every output on and off together, 2 Hz
@@ -77,6 +84,15 @@ SETTINGS = dict(
 	# A camera-only session: this many seconds of camera pulses at CAMERA_FPS and
 	# nothing else (no bouts, no LEDs, the gate stays low). 0 = the bouts above.
 	CAMERA_ONLY=0,
+	# The sync train on output E (GP6), for the OneBox (1 = on): pulses of SYNC_WIDTH_US, each
+	# gap from one rise to the next a random whole number of ms from SYNC_MIN_GAP_MS to
+	# SYNC_MAX_GAP_MS, from SYNC_SEED (None: a new one each session). It runs from the
+	# session's start to its end, in and between the bouts. Needs chronic_timer 3.
+	SYNC=0,
+	SYNC_WIDTH_US=10000,
+	SYNC_MIN_GAP_MS=200,
+	SYNC_MAX_GAP_MS=1000,
+	SYNC_SEED=None,
 )
 
 # --- Outputs: the Pico's pins (a Nano ESP32's D2-D5), the board's channel, what it is ---
@@ -88,6 +104,11 @@ OUTPUTS = [
 	("D", 5, "Yellow LED"),        # GP5 -> 560 nm LED controller TTL
 ]
 GATE, CAMERA, BLUE, YELLOW = range(4)
+# The sync train's output: loaded only for a session with SYNC=1 (a board before chronic_timer 3 has no channel 4)
+SYNC_OUTPUT = ("E", 6, "Sync")          # GP6 -> OneBox XA1 (XD0 bit 1)
+SYNC_CH = 4
+ALL_OUTPUTS = OUTPUTS + [SYNC_OUTPUT]
+SYNC_VERSION = 3 # chronic_timer's first version with the sync train
 
 STATE_DIR = os.path.expanduser("~/.chronic_control")
 LOG_ROOT = os.path.expanduser("~/Documents")
@@ -113,7 +134,18 @@ def Settings(overrides=()):
 		s[name] = None if value == "None" else float(value) if "." in value else int(value)
 	if s["BLUE_FRAME"] is None:
 		s["BLUE_FRAME"] = round(s["CAMERA_LEAD_IN"] * s["CAMERA_FPS"])
+	if s["SYNC"] not in (0, 1):
+		raise SystemExit("SYNC is 0 (off) or 1 (the sync train on output E), not {!r}.".format(s["SYNC"]))
+	if s["SYNC"] and not (1 <= s["SYNC_MIN_GAP_MS"] <= s["SYNC_MAX_GAP_MS"] <= 100000 and
+			0 < s["SYNC_WIDTH_US"] < s["SYNC_MIN_GAP_MS"] * 1000):
+		raise SystemExit("The sync train needs 1 <= SYNC_MIN_GAP_MS <= SYNC_MAX_GAP_MS <= 100000 and a SYNC_WIDTH_US "
+			"under the shortest gap.")
 	return s
+
+
+def SyncCommand(s):
+	"""The board's sync command for the session's settings (SYNC_SEED chosen)."""
+	return "sync {} {} {} {} {}".format(SYNC_CH, s["SYNC_SEED"], s["SYNC_WIDTH_US"], s["SYNC_MIN_GAP_MS"], s["SYNC_MAX_GAP_MS"])
 
 
 def Us(seconds):
@@ -267,6 +299,10 @@ def Describe(s, bouts):
 		for name, part in (("blue", blue_part), ("yellow", yellow_part)):
 			if part:
 				lines.append("  Warning: the {} LED switches during the exposure of frame(s) {}".format(name, Frames(part)))
+	if s.get("SYNC"):
+		lines.append("Sync train on output E (GP6): {:g} ms pulses, a random {}-{} ms from one to the next{}, from the "
+			"start to the end".format(s["SYNC_WIDTH_US"] / 1000, s["SYNC_MIN_GAP_MS"], s["SYNC_MAX_GAP_MS"],
+			", seed {}".format(s["SYNC_SEED"]) if s.get("SYNC_SEED") is not None else ""))
 	return lines
 
 
@@ -360,6 +396,8 @@ class Board:
 				answer = self.Command("id", timeout=1.0)
 				if not answer.startswith("ok chronic_timer"):
 					raise BoardError("the board on {} runs something else: {}".format(self.port, answer))
+				words = answer.split()
+				self.version = int(words[2]) if len(words) > 2 and words[2].isdigit() else 0
 				return self.Command("status")
 			except BoardError as e:
 				error = e
@@ -379,6 +417,10 @@ class Session:
 		self.log_dir = os.path.dirname(self.log_path)
 		os.makedirs(self.log_dir, exist_ok=True)
 		self.bouts, self.trains, self.edges = Plan(s)
+		if s["SYNC"] and s["SYNC_SEED"] is None:
+			# A new seed: its gaps are this session's alone (saved with it, and in session.json for attach)
+			s["SYNC_SEED"] = int.from_bytes(os.urandom(4), "big")
+		self.sync_path = None
 		self.labels = {}
 		for b in self.bouts if not s["CAMERA_ONLY"] else []:
 			self.labels[(b["gate_on"], GATE, 1)] = (b, "HIGH (SpikeGLX File Recording Started)")
@@ -423,6 +465,20 @@ class Session:
 			end_requested=self.end_requested, end_sent=self.end_sent is not None, pulses=self.pulses, done=self.done, error=self.error)
 		WriteJson(os.path.join(self.state_dir, "status.json"), status)
 
+	def WriteSync(self):
+		"""sync_<date_time>.json beside timestamps.txt: what sync_match.py needs to work out every planned pulse."""
+		if self.sync_path is None:
+			self.sync_path = os.path.join(self.log_dir, "sync_{}.json".format(
+				datetime.fromtimestamp(self.t0_wall).strftime("%Y-%m-%d_%H-%M-%S")))
+		WriteJson(self.sync_path, dict(seed=self.s["SYNC_SEED"], width_us=self.s["SYNC_WIDTH_US"],
+			min_gap_ms=self.s["SYNC_MIN_GAP_MS"], max_gap_ms=self.s["SYNC_MAX_GAP_MS"], channel=SYNC_CH, pin="GP{}".format(
+			SYNC_OUTPUT[1]), generator="pulse k rises at the sum of gaps 1..k+1 (board us from the session's time 0); "
+			"gap j = 1000 * (min_gap_ms + SplitMix64(seed, j) % (max_gap_ms - min_gap_ms + 1)) us; SplitMix64(seed, j) "
+			"mixes seed + j * 0x9E3779B97F4A7C15 (chronic_timer.ino, sync_match.py)",
+			board_t0_wall=self.t0_wall, board_t0=datetime.fromtimestamp(self.t0_wall).isoformat(),
+			ends_us=self.end_sent if self.end_sent is not None else self.bouts[-1]["gate_off"],
+			done=self.done, settings=self.s))
+
 	# --- what the board reports ---
 
 	def OnReport(self, line):
@@ -454,6 +510,8 @@ class Session:
 					"moved later: {}".format(self.done))
 			self.Log("SYSTEM: Board finished the session at t={:.6f} s, every output low: {}".format(int(words[1]) / 1e6,
 				self.done))
+			if self.s["SYNC"] and self.t0_wall is not None:
+				self.WriteSync()
 		elif words[0] == "ready":
 			if self.t0_wall is not None and self.done is None:
 				self.done = "lost"
@@ -468,9 +526,15 @@ class Session:
 		status = self.board.Check()
 		if "running" in status:
 			raise BoardError("the board is already running a session ({}): run 'stop --now' first".format(status))
-		for ch, (name, pin, description) in enumerate(OUTPUTS):
+		if self.s["SYNC"] and getattr(self.board, "version", 0) < SYNC_VERSION:
+			raise BoardError("the sync train (SYNC=1) needs chronic_timer {} or later on the board, which runs chronic_timer "
+				"{}: flash chronic_timer.ino again (chronicrecord/README.md, Setting it up)".format(SYNC_VERSION,
+				getattr(self.board, "version", "?")))
+		for ch, (name, pin, description) in enumerate(OUTPUTS + ([SYNC_OUTPUT] if self.s["SYNC"] else [])):
 			self.board.Command("pin {} {}".format(ch, pin))
 		self.board.Command("clear")
+		if self.s["SYNC"]:
+			self.board.Command(SyncCommand(self.s))
 		for train in self.trains:
 			self.board.Command("train {} {} {} {} {}".format(*train))
 		for t, ch, level in self.edges:
@@ -540,8 +604,14 @@ class Session:
 				self.board.close()
 			return 1
 		self.state = "running"
+		if self.s["SYNC"]:
+			self.WriteSync()
 		WriteJson(os.path.join(self.state_dir, SESSION_FILE), dict(settings=self.s, port=self.port, log=self.log_path,
-			started=self.t0_wall))
+			started=self.t0_wall, sync=self.sync_path))
+		if self.s["SYNC"]:
+			self.Log("SYSTEM: Sync train on output E (GP6): {} us pulses, gaps of {}-{} ms from seed {}; saved in {}".format(
+				self.s["SYNC_WIDTH_US"], self.s["SYNC_MIN_GAP_MS"], self.s["SYNC_MAX_GAP_MS"], self.s["SYNC_SEED"],
+				self.sync_path))
 		self.Log("SYSTEM: Session started: {} bouts, ending at board t={:.1f} s".format(len(self.bouts),
 			self.bouts[-1]["gate_off"] / 1e6))
 		self.WriteStatus()
@@ -703,6 +773,7 @@ def CmdAttach(args, s):
 		return 1
 	if args.foreground:
 		session = Session(saved["settings"], args.port_given or saved["port"], args.state_dir, None, log_path=saved["log"])
+		session.sync_path = saved.get("sync") # its sync file, updated at the end
 		OnStopSignals(lambda: session.RequestEnd("bout"), lambda: session.RequestEnd("now"))
 		session.WriteStatus()
 		return session.Attach()
@@ -725,7 +796,7 @@ def WiringPlan(channels, pause_us=PAUSE_US):
 	"""
 	channels = channels.upper()
 	edges, t = [], 0
-	for ch, (name, pin, description) in enumerate(OUTPUTS):
+	for ch, (name, pin, description) in enumerate(ALL_OUTPUTS):
 		if name not in channels:
 			continue
 		for k in range(ch + 1):
@@ -745,7 +816,7 @@ def BlinkPlan(channels, hz, round_us=BLINK_ROUND_S * 10**6):
 	for one round: edges (time, channel, level), in order, and the round's length.
 	"""
 	period = int(round(1e6 / hz))
-	chans = [ch for ch, (name, pin, description) in enumerate(OUTPUTS) if name in channels.upper()]
+	chans = [ch for ch, (name, pin, description) in enumerate(ALL_OUTPUTS) if name in channels.upper()]
 	edges = []
 	for k in range(max(1, round_us // period)):
 		edges += [(k * period, ch, 1) for ch in chans] + [(k * period + period // 2, ch, 0) for ch in chans]
@@ -754,7 +825,7 @@ def BlinkPlan(channels, hz, round_us=BLINK_ROUND_S * 10**6):
 
 def WiringText(channels):
 	return ", ".join("{} ({}) {}x".format(name, description, ch + 1) for ch, (name, pin, description) in
-		enumerate(OUTPUTS) if name in channels)
+		enumerate(ALL_OUTPUTS) if name in channels)
 
 
 def CmdWiringRun(args, s):
@@ -787,7 +858,7 @@ def CmdWiringRun(args, s):
 	board, rounds, lost_since = None, 0, None
 	if blink:
 		Log("=== BLINK: {} together at {:g} Hz, in rounds of {:g} s (a pause between rounds, while "
-			"the next loads) ===".format(", ".join(n for n, _, _ in OUTPUTS if n in channels), args.hz, length / 1e6))
+			"the next loads) ===".format(", ".join(n for n, _, _ in ALL_OUTPUTS if n in channels), args.hz, length / 1e6))
 	else:
 		Log("=== WIRING CHECK: {}, each followed by a {:g} s pause; a round every {:g} s ===".format(WiringText(channels),
 			PAUSE_US / 1e6, length / 1e6))
@@ -884,7 +955,7 @@ def CmdStart(args, s):
 	status = ReadStatus(args.state_dir)
 	if status and status["state"] == "running" and args.command == "blink":
 		print("Blinking (pid {}): {} together at {:g} Hz, until 'stop'. Log: {}".format(child.pid,
-			", ".join(n for n, _, _ in OUTPUTS if n in args.channels.upper()), args.hz, status["log"]))
+			", ".join(n for n, _, _ in ALL_OUTPUTS if n in args.channels.upper()), args.hz, status["log"]))
 		return 0
 	if status and status["state"] == "running" and wiring:
 		print("Wiring check started (pid {}): {}, every {:g} s, until 'stop'. Log: {}".format(child.pid,
@@ -978,7 +1049,7 @@ def Main(argv=None):
 		"attach"])
 	parser.add_argument("--hz", type=float, default=2, help="blink: blinks a second (default 2)")
 	parser.add_argument("--pause", type=float, default=PAUSE_US / 1e6, help="wiring: seconds after the round's last output (default 2.5)")
-	parser.add_argument("--channels", default="ABCD", help="wiring: the outputs to blink (A gate, B camera, C blue, D yellow)")
+	parser.add_argument("--channels", default="ABCD", help="wiring: the outputs to blink (A gate, B camera, C blue, D yellow; E sync, on chronic_timer 3)")
 	parser.add_argument("--now", action="store_true", help="stop: end now rather than after the current bout")
 	parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", help="change a timing setting")
 	parser.add_argument("--port", default=None, help="the board's serial port, or a Pico's USB serial number (default: "

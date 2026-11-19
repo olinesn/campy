@@ -167,7 +167,11 @@ The view puts a red label on a camera's tile when something is wrong with it ([W
 
 ## Timing tests
 
-**A timing run's log ends `RIG_CONTAMINATED`.** Something outside the run used the GPU, the encoder, the cameras, the trigger, or a lot of CPU or disk while it ran. Its numbers can't be compared; the log names what it saw. Run it again when the machine is quiet ([Timing tests on a shared machine](development.md#timing-tests-on-a-shared-machine-benchrigpy)).
+**A timing run's log ends `RIG_CONTAMINATED`.** Something outside the run used the GPU, the encoder, the cameras, the trigger, or a lot of CPU or disk for more than a moment (2 looks in a row, or more than a fifth of the run) while it ran. Its numbers can't be compared; the log names what it saw, with the load's peak and how long it lasted. Run it again when the machine is quiet ([Timing tests on a shared machine](development.md#timing-tests-on-a-shared-machine-benchrigpy)). If it is the same always-running program every time, such as the IT security agent, it can go in the machine's `background.json` ([Which load counts](development.md#which-load-counts-and-background-programs)).
+
+**A timing run's log ends `RIG_CLEAN_BACKGROUND`.** Only programs listed in the machine's `background.json` (an IT security agent, say) took the CPU or disk load above the limits, within their ceilings and for no more than a quarter of the run. Its numbers count as clean; the line names the programs, their peak and how long they ran. A script that needs a machine with nothing else running uses `rig.py run --strict`, under which this run would have been `RIG_CONTAMINATED`.
+
+**A timing run's log ends `RIG_CLEAN (brief load outside the job ...)`.** Another program's load went over the limits for a single look, not long enough to count. The run is clean; the `LOAD` line in the log says what it was.
 
 **A timing run's log ends `RIG_ABORTED`, or has no `RIG_` line.** The run was stopped before its job ended: by Ctrl-C, `kill`, a closed terminal or SSH session, or an error inside `rig.py`, which the last line names. With no `RIG_` line, `rig.py` itself was killed outright. Its numbers can't be trusted, even if nothing else was seen until then; run it again. To keep a run going after the terminal or SSH session closes, start it with `setsid` or `nohup`.
 

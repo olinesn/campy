@@ -3,7 +3,8 @@ campy-session panel's page (campy/panel.py serves it): one HTML file with its
 CSS and JavaScript, no build step and nothing fetched from elsewhere, so it
 works on a rig without internet. It asks the panel for /status.json once a
 second, and each camera's thumbnail (/thumb/<n>.png) once a second, with the
-key from its own address on every request.
+key from its own address on every request; while its Live ephys card is
+shown, /ephys.json five times a second.
 """
 
 from campy import panellogo
@@ -46,7 +47,7 @@ label{font-size:.9375rem;color:var(--muted)}h2{font-size:1.25rem;font-weight:500
 .bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden}.bar div{height:6px;background:var(--ok)}
 .copybar{max-width:28rem;margin:4px 0 2px}.copybar div{background:var(--accent)}
 .bgcopy{border-left:4px solid var(--accent)}.copyeta{text-align:right;line-height:1.1;flex:none;min-width:9rem}
-.copyeta .big{font-size:3rem;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text)}.copyeta .big.wait{font-size:1.5rem;font-weight:500}.copyeta .gap{margin-left:1.25rem}
+.copyeta .big{font-size:3rem;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text)}.copyeta .big.wait{font-size:1.5rem;font-weight:500}.copyeta .big.stall{color:var(--warn)}.copyplot{margin-top:6px}.copyplot svg{display:block;width:100%;height:2.25rem}.copyplot .peak{font-size:.9375rem}.copyeta .gap{margin-left:1.25rem}
 .copyeta .lab{font-size:2.125rem;color:var(--muted)}#clock b{font-variant-numeric:tabular-nums}.bgcopy .copybar{max-width:none;height:10px}.bgcopy .copybar div{height:10px}
 .err{color:var(--bad);font-size:1rem}ul{margin:.25rem 0 0;padding-left:1.25rem}li{margin:.25rem 0}
 select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);width:100%}
@@ -57,6 +58,7 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
 .types li span{flex:1}.star{padding:0 .5rem;font-size:1.25rem;line-height:1.4;border:none;background:none;color:var(--accent)}
 .drive{display:flex;gap:.625rem;align-items:center}.drive svg{flex:none;display:block;width:3.75rem;height:3.75rem}
 .drives .drive{margin-top:.5rem;font-size:1rem;line-height:1.35}.drives .drive svg{width:2.25rem;height:2.25rem}
+.eph canvas{width:100%;display:block;background:var(--soft);border-radius:6px;cursor:crosshair}.ephgrid{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:.625rem;margin-top:.5rem}@media (max-width:52rem){.ephgrid{grid-template-columns:1fr}}.eph label{display:block;margin-bottom:.125rem}.eph input.k{width:5em}
 .legend{font-size:.9375rem;margin-top:.125rem}.legend i{display:inline-block;width:.7em;height:.7em;border-radius:2px;margin:0 .25em 0 .5em}.legend i:first-child{margin-left:0}
 .bgrid>div{display:flex;flex-direction:column;justify-content:flex-end}.bgrid input.changed{border-color:var(--accent);border-width:2px}details summary{cursor:pointer;font-size:1rem;margin-top:.375rem}
 .ledrows{display:grid;grid-template-columns:auto minmax(6rem,1fr) minmax(6rem,1fr);gap:.375rem .75rem;align-items:end;margin:.5rem 0}
@@ -86,8 +88,8 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
 <div id="gone" class="card gone" hidden><h2 id="gonetitle"></h2><p id="gonetext" class="muted"></p></div>
 <div id="bgcopy" class="card bgcopy" hidden><div class="row" style="align-items:flex-start"><div class="grow"><b id="bgcopytitle">Copying in the background</b>
   <div id="bgcopyok" style="font-weight:500"></div>
-  <div class="muted">Leave the computer on, and the panel's black window open, until it is done.</div></div>
-  <div id="bgeta" class="copyeta" hidden><div><span id="bgetapct" class="big"></span> <span id="bgetapctlab" class="lab"></span><span id="bgetanum" class="big gap"></span> <span id="bgetalab" class="lab"></span></div><div id="bgetaend" class="muted"></div></div></div>
+  <div class="muted">Leave the computer on until it is done, and don't close the panel's command window (the black window full of text that opened with the panel): the copy runs in it.</div></div>
+  <div id="bgeta" class="copyeta" hidden><div><span id="bgetapct" class="big"></span> <span id="bgetapctlab" class="lab"></span><span id="bgetanum" class="big gap"></span> <span id="bgetalab" class="lab"></span></div><div id="bgetaend" class="muted"></div><div id="bgetaplot" class="copyplot" hidden></div></div></div>
   <div id="bgcopytext" style="margin-top:6px"></div></div>
 
 <div id="typebox" class="card" hidden>
@@ -149,6 +151,29 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
     <h2 style="margin-top:10px">SpikeGLX</h2><div id="sglxstate" class="muted">-</div></div>
 </div>
 
+<div id="ephys" class="card eph" hidden><div class="row"><h2 class="grow" style="margin:0">Live ephys</h2>
+  <button id="ephysbtn">Show the probe live</button></div>
+  <div class="muted note">The probe read from SpikeGLX while it runs, read-only: it never changes SpikeGLX or what it records.
+    Read by a program of its own at low priority, only while this is shown. Spikes: threshold crossings, sorted into units when the
+    config gives templates from a Kilosort sort (spikeglx.templates); with spikeglx.match, the templates find spikes below the threshold too.</div>
+  <div id="ephysstate" class="muted" style="margin-top:.25rem"></div>
+  <div id="ephysbody" hidden>
+    <label style="margin-top:.5rem">Oscilloscope: the site picked on the probe map and its 3 nearest, filtered (300 Hz high-pass, median across the probe taken off), last 2 s. Ticks along the top: the camera's frames, while it records.
+      <button id="ephlo" title="Smaller signals">&minus;</button> <span id="ephscale" class="mono"></span> <button id="ephhi" title="Bigger signals">+</button></label>
+    <canvas id="ephscope" height="260"></canvas>
+    <div class="ephgrid">
+      <div><label>Spikes, last 10 s, by depth on the probe (darker: bigger)</label><canvas id="ephraster" height="300"></canvas></div>
+      <div><label>Probe map: spikes a second at each site. Click a site.</label><canvas id="ephprobe" height="300"></canvas></div>
+      <div><label id="ephsniplab">Its last 30 spikes, and their mean</label><canvas id="ephsnip" height="300"></canvas>
+        <div class="row" style="margin-top:.375rem"><span class="muted">Threshold</span><input id="ephk" class="k" type="number" min="2" max="20" step="0.5">
+          <span class="muted">&times; noise</span><button id="ephkall">All sites</button><button id="ephkone">This site</button></div>
+        <div id="epherr" class="err"></div>
+        <div id="ephunitbox" hidden style="margin-top:.5rem"><label>Units, by spikes a second (click one: its spikes above; its site on the map)</label>
+          <div id="ephunits" class="mono" style="line-height:1.6"></div></div></div>
+    </div>
+  </div>
+</div>
+
 <div id="during" hidden>
   <div class="tiles" style="margin-bottom:12px">
     <div class="tile"><label>Disk free</label>
@@ -157,6 +182,7 @@ select{font:inherit;padding:.375em .5em;border-radius:8px;border:1px solid var(-
     <div class="tile"><label>Tracked in 3D</label><div class="big" id="good3d">-</div><div class="muted">animals, last second</div><div class="muted mono" id="usedmodels"></div></div>
     <div class="tile"><label>Programs</label><div id="programs"></div></div>
     <div class="tile"><label>Bookmarks</label><div class="big" id="nmarks">0</div><div class="muted" id="lastmark"></div></div>
+    <div class="tile" id="boxtile" hidden><label>Operant box</label><div class="big" id="boxtrial">-</div><div class="muted" id="boxstate"></div><div class="muted" id="boxcounts"></div></div>
   </div>
   <div class="cams" id="cams" style="margin-bottom:12px"></div>
   <div class="two">
@@ -284,22 +310,30 @@ function followEta(j){
   // How much of it is done (of the bytes to copy, or to read back), as last measured
   const done = j.phase=="checking" ? j.checked_bytes : j.done_bytes, total = j.phase=="checking" ? j.check_bytes : j.bytes;
   const pct = total ? Math.min(100, 100*(done||0)/total) : null;
-  if(j.eta_s==null){ bgEta = {folder: j.folder, phase: j.phase, end: null, pct}; return; }
+  // Its speed lately (the server's, over its last 20 s or so), or since when nothing more is done (a stall: kept from
+  // the last status, so it counts on every second, not back a second with a poll's delay)
+  const speed = j.speed, stallAt = j.stalled_s==null ? null : same && bgEta.stallAt!=null ? bgEta.stallAt : Date.now() - j.stalled_s*1000;
+  if(j.eta_s==null){ bgEta = {folder: j.folder, phase: j.phase, end: null, pct, speed, stallAt}; return; }
   const target = Date.now() + j.eta_s*1000;
-  bgEta = {folder: j.folder, phase: j.phase, pct, end: same && bgEta.end!=null ? bgEta.end + (target - bgEta.end)/3 : target};
+  bgEta = {folder: j.folder, phase: j.phase, pct, speed, stallAt, end: same && bgEta.end!=null ? bgEta.end + (target - bgEta.end)/3 : target};
 }
 function paintEta(){
   const E = bgEta; $("bgeta").hidden = !E; if(!E) return;
   // As big as the time left, in front of it: how much is done (65% copied), then the time left (2:07 left)
-  let pct = "", pctLab = "", num, lab = "", end = "", wait = false;
+  let pct = "", pctLab = "", num, lab = "", end = "", wait = false, stall = false;
+  // Under them, small: its speed lately and when it should be done (110 MB/s · done around 3:26 PM), or how long
+  // nothing more has been done
   if(E.phase!="copying" && E.phase!="checking"){ num = "finishing…"; wait = true; }
   else { if(E.pct!=null){ pct = Math.floor(E.pct)+"%"; pctLab = E.phase=="checking" ? "checked" : "copied"; }
-    if(E.end==null){ num = "estimating…"; wait = true; if(!pct) end = E.phase=="checking" ? "the time left to check" : "the time left to copy"; }
+    const at = E.speed!=null ? speedText(E.speed) : "";
+    if(E.stallAt!=null){ num = "stalled"; wait = stall = true;
+      end = (E.phase=="checking" ? "nothing read back for " : "nothing copied for ")+dur((Date.now() - E.stallAt)/1000); }
+    else if(E.end==null){ num = "estimating…"; wait = true; end = at || (pct ? "" : E.phase=="checking" ? "the time left to check" : "the time left to copy"); }
     else { num = mss(Math.max(0, (E.end - Date.now())/1000)); lab = "left";
-      end = "done around "+clockAt(E.end)+(E.phase=="checking" ? "" : ", then checked"); } }
-  const html = [pct, pctLab, num, lab, end, wait].join("|"); if(html == etaHtml) return; etaHtml = html;
+      end = (at ? at+" · " : "")+"done around "+clockAt(E.end)+(E.phase=="checking" ? "" : ", then checked"); } }
+  const html = [pct, pctLab, num, lab, end, wait, stall].join("|"); if(html == etaHtml) return; etaHtml = html;
   $("bgetapct").textContent = pct; $("bgetapctlab").textContent = pctLab;
-  $("bgetanum").textContent = num; $("bgetanum").className = "big"+(pct ? " gap" : "")+(wait ? " wait" : ""); $("bgetalab").textContent = lab; $("bgetaend").textContent = end;
+  $("bgetanum").textContent = num; $("bgetanum").className = "big"+(pct ? " gap" : "")+(wait ? " wait" : "")+(stall ? " stall" : ""); $("bgetalab").textContent = lab; $("bgetaend").textContent = end;
 }
 function paint(){ paintClock(); paintEta(); }
 function render(s){
@@ -323,6 +357,7 @@ function render(s){
   $("stop").hidden = !(st=="recording" || st=="stopping");
   $("close").hidden = !(st=="ready" || st=="done" || st=="failed");
   renderDevices(s, st);
+  renderEphys(s.ephys);
   renderTypes(TY, st, s);
   $("stop").textContent = stopArmed ? "Stop now, without closing" : (rec.stop_asked ? "Stopping…" : "Stop");
   const DP = s.devices && s.devices.plan ? s.devices.pico : null;
@@ -385,6 +420,13 @@ function render(s){
   renderDrives(D_);
   const T = H.tracking; $("good3d").textContent = T && T.good3d!=null ? T.good3d+" of "+T.animals : "-";
   const parts = Object.assign({}, L.parts||{}); if((L.live||[]).length) parts["campy-live"] = L.live[L.live.length-1];
+  // campy-box's task (the config's box: section): its trial, its state and each sensor's count, from its status file
+  const BX = L.box; $("boxtile").hidden = !BX;
+  if(BX){
+    $("boxtrial").textContent = BX.waiting ? "Waiting" : "Trial "+(BX.trial||0)+(BX.trials ? " of "+BX.trials : "");
+    $("boxstate").textContent = (BX.task ? BX.task+": " : "") + (BX.ended ? "ended ("+BX.ended+")" : BX.waiting ? "starts with the first camera frame" : "state "+(BX.state||"-"));
+    $("boxcounts").textContent = Object.entries(BX.inputs||{}).map(([n,c]) => n+" "+c).join(" · ") + (BX.watchdog ? " · watchdog "+BX.watchdog : "");
+  }
   $("programs").innerHTML = Object.entries(parts).map(([n,p]) => tag(p.state, p.state=="running"?"ok":p.exit_code?"bad":"warn")+" "+esc(PROGRAMS[n] || n)).join("<br>") || "-";
   const R = s.recording || {}, counters = {}; (R.cameras||[]).forEach(c => counters[c.name] = c);
   const cams = H.cameras || [];
@@ -441,6 +483,7 @@ function render(s){
 }
 let typeSig = "", listSig = "", choosing = false, refill = false;
 const PROGRAMS = {acquire: "Cameras and video files (campy-acquire)", view: "Viewer window", watch: "Alerts (campy-watch)",
+  box: "Operant box (campy-box)",
   "campy-live": "Live tracking (campy-live)"};
 const STEPS = {remux: "Video files", join: "Joined video files", align: "Cameras on the trigger's timeline", calibrate: "Calibration (calibrat3)",
   export: "Tracking files for LUC3D", copy: "Copy", run: "Extra commands"};
@@ -497,11 +540,18 @@ async function chooseType(path){
 }
 function base(p){ return String(p||"").split(/[\\/]/).filter(x => x).pop() || ""; }
 function gb(b){ return b==null ? "?" : (b/1e9).toFixed(1); }
+function speedText(b){ const m = b/1e6; return (m >= 10 ? Math.round(m) : m >= 1 ? m.toFixed(1) : m.toFixed(2))+" MB/s"; }
+function copyRate(j, what){
+  // The copy's speed lately (the server's, over its last 20 s or so: a slowdown shows), or how long nothing more has
+  // been done; nothing while it can't say (just begun, or done and ending)
+  if(j.stalled_s!=null) return ", nothing "+what+" for the last "+dur(j.stalled_s);
+  return j.speed!=null ? " at "+speedText(j.speed) : "";
+}
 function copyText(j){
-  if(j.state=="copying" && j.phase=="checking") return "checking the copy byte for byte: "+gb(j.checked_bytes)+" of "+gb(j.check_bytes)+" GB read back, "+dur(j.seconds||0)+copyEta(j);
+  if(j.state=="copying" && j.phase=="checking") return "checking the copy byte for byte: "+gb(j.checked_bytes)+" of "+gb(j.check_bytes)+" GB read back"+copyRate(j, "read back")+", "+dur(j.seconds||0)+copyEta(j);
   if(j.state=="copying" && j.phase=="deleting") return "every file the same in the copy: deleting it from this computer";
   if(j.state=="copying" && j.phase=="finishing") return "every file the same in the copy: copying its logs";
-  if(j.state=="copying") return "copying into "+j.to+": "+gb(j.done_bytes)+" of "+gb(j.bytes)+" GB, "+dur(j.seconds||0)+copyEta(j);
+  if(j.state=="copying") return "copying into "+j.to+": "+gb(j.done_bytes)+" of "+gb(j.bytes)+" GB"+copyRate(j, "copied")+", "+dur(j.seconds||0)+copyEta(j);
   if(j.state=="waiting") return "waits for the copies before it, into "+j.to+(j.delete ? ", then deleted here once checked" : "");
   return j.message || j.state;
 }
@@ -514,9 +564,9 @@ function copyCheck(j){
   return t;
 }
 function copyEta(j){
-  // How long the rest of the copy (or of its check) takes at its average rate so far (the server's eta_s, once it has
-  // one), and the clock time it should end
-  const left = etaLeft(j); if(left==null) return "";
+  // How long the rest of the copy (or of its check) takes at its speed lately (the server's eta_s, once it has one),
+  // and the clock time it should end; none while it is stalled
+  const left = j.stalled_s!=null ? null : etaLeft(j); if(left==null) return "";
   const m = Math.round(left/60), end = clockAt(Date.now() + left*1000);
   return ", " + (left < 60 ? "under a minute" : m < 60 ? "about "+m+" min" : "about "+Math.floor(m/60)+" h "+(m%60)+" min") + " left (done around "+end+")";
 }
@@ -527,6 +577,19 @@ function copyBar(j){
   if(j.state!="copying" || !j.bytes) return "";
   return '<div class="bar copybar"><div style="width:'+Math.min(100, 100*(j.done_bytes||0)/j.bytes).toFixed(1)+'%"></div></div>';
 }
+let plotSig = "";
+function speedPlot(speeds){
+  // The phase's speed since it began (the server's, between its looks every 3 s or so), as a small area under a line,
+  // from 0 at the bottom to its peak at the top; time across. Nothing until there are two points
+  if(!speeds || speeds.length < 2) return "";
+  const W = 300, H = 40, t0 = speeds[0][0], span = Math.max(1, speeds[speeds.length-1][0] - t0);
+  const peak = Math.max(1, ...speeds.map(p => p[1]));
+  const xy = speeds.map(p => ((p[0]-t0)/span*W).toFixed(1)+","+(H - 2 - p[1]/peak*(H-4)).toFixed(1));
+  return '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" role="img" aria-label="Speed since it began, up to '+speedText(peak)+'">'+
+    '<polygon points="0,'+H+' '+xy.join(" ")+' '+W+','+H+'" fill="var(--accent)" fill-opacity=".28"/>'+
+    '<polyline points="'+xy.join(" ")+'" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>'+
+    '<div class="muted peak">since it began ('+dur(speeds[speeds.length-1][0])+') · peak '+speedText(peak)+'</div>';
+}
 function renderCopies(C, folder, st){
   const jobs = C.jobs || [];
   // Copies still to do, at the top of the page in every state (a new recording too) until the last is done: not only in
@@ -535,6 +598,9 @@ function renderCopies(C, folder, st){
   $("bgcopy").hidden = !now.length && !queued.length;
   // The big time left, top right: the copy under way (one at a time), not the ones waiting behind it
   followEta(now[0]); paintEta();
+  // Under it, the speed since the phase began: a stall or a slow patch shows as a dip
+  const speeds = now[0] && (now[0].phase=="copying" || now[0].phase=="checking") ? now[0].speeds : null, sig = JSON.stringify(speeds||[]);
+  if(sig != plotSig){ plotSig = sig; const svg = speedPlot(speeds); $("bgetaplot").innerHTML = svg; $("bgetaplot").hidden = !svg; }
   $("bgcopytitle").textContent = now.length ? "Copying in the background" : "Copies waiting to start";
   // Said plainly: the copy is no reason to wait (it keeps going while the next one records)
   $("bgcopyok").textContent = ["ready","done","failed"].includes(st) ? "You can start a new recording now: the copy goes on beside it and doesn't disturb it." :
@@ -832,6 +898,220 @@ let orphanArmed = 0;
 $("stoporphan").onclick = async () => { const e = await post("/stop-orphan", {now: !!orphanArmed});
   if(e) alert(e); else if(!orphanArmed){ orphanArmed = 1; $("stoporphan").textContent = "Stop now, without closing"; setTimeout(() => { orphanArmed = 0; $("stoporphan").textContent = "Stop that recording"; }, 5000); } tick(); };
 $("viewer").onclick = async () => { const e = await post("/viewer"); if(e) alert(e); };
+// ---- Live ephys (campy/ephyslive.py, through the panel): polled 5 times a second while shown
+const EPH = {selUnit:null, units:[], unitRates:{}, open:false, timer:null, sinceSample:null, sinceBin:null, b0:null, lo:[], hi:[], chans:[], spikes:[], rates:null, cam:[], binN:30,
+  stream:null, streamAt:0, sel:null, snips:[], scale:150, newest:null, rate:30000, health:null, busy:false};
+const SCOPE_BINS = 2000, SCOPE_KEEP = 3000, RASTER_S = 10, PLAY_DELAY_S = 0.3, POLL_MS = 100, DRAW_MS = 33;
+// The traces scroll smoothly: drawn up to 30 times a second at a playhead that moves at the samples' own rate, kept
+// PLAY_DELAY_S behind the newest sample (the reader reads about every 60 ms and the page asks every POLL_MS, so there
+// is always something to scroll into)
+function renderEphys(E){
+  $("ephys").hidden = !E; if(!E) return;
+  $("ephysbtn").textContent = EPH.open ? "Hide" : "Show the probe live";
+  $("ephysbody").hidden = !EPH.open;
+  if(!EPH.open){ $("ephysstate").textContent = ""; return; }
+  if(E.error) $("ephysstate").innerHTML = tag("stopped","bad")+" "+esc(E.error);
+  else if(E.starting && !E.open) $("ephysstate").innerHTML = tag("starting","warn")+" the reader is starting";
+}
+function ephysText(){
+  const H = EPH.health; if(!H) return;
+  if(!H.reading){ $("ephysstate").innerHTML = tag("waiting","warn")+" "+esc(H.state||"")+" — the view starts with SpikeGLX's run (Start)."; return; }
+  $("ephysstate").innerHTML = tag("live","ok")+" "+esc(H.state)+" · "+(H.reads_per_s||0)+" reads/s, "+(H.fetch_ms||0)+" ms each · "+
+    (H.lag_s!=null ? Math.round(1000*H.lag_s)+" ms behind" : "")+" · "+Math.round(H.spikes_per_s||0).toLocaleString()+" spikes/s · reader "+
+    (H.matcher ? "and matcher " : "")+Math.round(H.cpu||0)+"% of a core"+ephysMatchText(H)+(H.skipped - (H.unavailable||0) > 0 ? " · "+Number(H.skipped - (H.unavailable||0)).toLocaleString()+" samples skipped (the reader fell behind)" : "")+
+    (H.unavailable ? " · "+Number(H.unavailable).toLocaleString()+" samples SpikeGLX didn't have (its run starting, or the reader late)" : "")+
+    (H.gaps ? " · "+H.gaps+" gaps" : "") + ephysCamText(H.camera) +
+    ((EPH.units||[]).length ? " · sorted into "+EPH.units.length+" units: "+Math.round(100*(EPH.sortedShare||0))+"% of spikes" : "");
+}
+function ephysMatchText(H){ // the templates matched in a thread of their own (spikeglx.match): keeping up?
+  const M = H.matcher; if(!M) return "";
+  return " · templates matched: busy "+Math.round(100*(H.matcher_busy||0))+"% of the time, "+Number(M.behind_s||0).toFixed(2)+" s behind"+
+    (M.skipped_pieces ? " · "+(M.skipped_samples/(EPH.rate||30000)).toFixed(1)+" s left unmatched (the matcher fell too far behind: their spikes went out unsorted)" : "")+
+    (M.error ? " · matcher: "+esc(M.error) : "");
+}
+function ephysCamText(C){ // the camera's frame, from the OneBox's camera pulses and the Pico's count
+  if(!C) return "";
+  if(C.known) return " · camera frame "+Number(C.frame).toLocaleString()+(C.bout!=null ? " (bout "+C.bout+")" : "");
+  if(C.pulses_seen) return " · camera pulses seen: frame numbers from the next bout (this one was under way)";
+  return " · "+esc(C.state||"");
+}
+$("ephysbtn").onclick = async () => {
+  EPH.open = !EPH.open; $("epherr").textContent = "";
+  const e = await post("/ephys", {open: EPH.open}); if(e){ $("epherr").textContent = e; EPH.open = false; }
+  clearInterval(EPH.timer); EPH.timer = null;
+  if(EPH.open){ ephysReset(); EPH.timer = setInterval(ephysTick, POLL_MS); requestAnimationFrame(ephysFrame); }
+  renderEphys((last||{}).ephys);
+};
+function ephysReset(){ Object.assign(EPH, {sinceSample:null, sinceBin:null, b0:null, lo:[], hi:[], spikes:[], snips:[], cam:[], newest:null, play:null, playAt:null}); }
+function ephysFrame(now){ // the playhead, and the traces at it
+  if(!EPH.open) return;
+  requestAnimationFrame(ephysFrame);
+  if(EPH.drawnAt && now - EPH.drawnAt < DRAW_MS) return;
+  if(EPH.newest!=null){
+    const target = EPH.newest - PLAY_DELAY_S*EPH.rate;
+    if(EPH.play==null || Math.abs(target - EPH.play) > 0.5*EPH.rate) EPH.play = target; // the start, or far off: jump
+    else EPH.play += (now - EPH.playAt)/1000*EPH.rate + (target - EPH.play)*0.05; // on at its rate, eased to the target
+    EPH.play = Math.min(EPH.play, EPH.newest);
+  }
+  EPH.playAt = now; EPH.drawnAt = now;
+  ephysDrawFast();
+}
+async function ephysTick(){
+  if(EPH.busy || !EPH.open) return; EPH.busy = true;
+  try {
+    const wantStream = !EPH.stream || Date.now() - EPH.streamAt > 2000;
+    const qs = new URLSearchParams(); if(EPH.sinceSample!=null) qs.set("since_sample", EPH.sinceSample);
+    if(EPH.sinceBin!=null) qs.set("since_bin", EPH.sinceBin); if(EPH.sel!=null) qs.set("snippets", EPH.sel); if(EPH.selUnit!=null) qs.set("units", EPH.selUnit); if(wantStream) qs.set("stream", "1");
+    const r = await fetch(q("/ephys.json?"+qs.toString())); const j = await r.json();
+    if(!r.ok){ $("epherr").textContent = j.error || ("error "+r.status); return; }
+    $("epherr").textContent = "";
+    if(j.status) renderEphys(j.status);
+    EPH.health = j.health || null; if(j.health) ephysText();
+    if(j.stream){ EPH.stream = j.stream; EPH.streamAt = Date.now(); EPH.rate = j.stream.rate;
+      if(EPH.sel==null) ephysPick(Math.floor(j.stream.channels.length/2), true); }
+    const L = j.live; if(!L) return;
+    if(EPH.newest!=null && L.newest!=null && L.newest < EPH.newest) ephysReset(); // a new run: its samples count from 0 again
+    EPH.newest = L.newest;
+    const S = L.scope;
+    if(S.first_bin!=null && S.min.length && S.min[0].length){
+      if(EPH.b0==null || S.first_bin != EPH.b0 + EPH.lo[0].length || String(S.channels) != String(EPH.chans)){
+        EPH.b0 = S.first_bin; EPH.lo = S.min.map(a => a.slice()); EPH.hi = S.max.map(a => a.slice()); EPH.chans = S.channels;
+      } else { S.min.forEach((a,i) => EPH.lo[i].push(...a)); S.max.forEach((a,i) => EPH.hi[i].push(...a)); }
+      const cut = EPH.lo[0].length - SCOPE_KEEP; if(cut > 0){ EPH.lo = EPH.lo.map(a => a.slice(cut)); EPH.hi = EPH.hi.map(a => a.slice(cut)); EPH.b0 += cut; }
+      EPH.sinceBin = EPH.b0 + EPH.lo[0].length - 1;
+    }
+    EPH.binN = S.bin_samples || EPH.binN;
+    const C = L.camera || {sample:[], frame:[]};
+    for(let i=0;i<C.sample.length;i++) EPH.cam.push([C.sample[i], C.frame[i]]);
+    const camKeep = (EPH.newest||0) - 4*EPH.rate; let kc = 0; while(kc < EPH.cam.length && EPH.cam[kc][0] < camKeep) kc++; if(kc) EPH.cam.splice(0, kc);
+    const P = L.spikes;
+    for(let i=0;i<P.sample.length;i++) EPH.spikes.push([P.sample[i], P.channel[i], P.amplitude[i], P.unit[i]]);
+    if(P.sample.length) EPH.sinceSample = P.sample[P.sample.length-1];
+    const keep = (EPH.newest||0) - (RASTER_S+1)*EPH.rate; let k = 0; while(k < EPH.spikes.length && EPH.spikes[k][0] < keep) k++; if(k) EPH.spikes.splice(0, k);
+    EPH.rates = L.rates.channel; EPH.unitRates = L.rates.unit || {};
+    if(EPH.stream && EPH.stream.units) EPH.units = EPH.stream.units;
+    const sn = EPH.selUnit!=null ? (L.snippets.unit||{})[EPH.selUnit] : (L.snippets.channel||{})[EPH.sel]; if(sn) EPH.snips = sn;
+    ephysUnits(P);
+    ephysDrawSlow();
+  } catch(e) { $("epherr").textContent = "The panel didn't answer: " + e; }
+  finally { EPH.busy = false; }
+}
+function ephysNearest(c, n){ // the n sites nearest c (itself first), on its shank
+  const G = EPH.stream; if(!G) return [c];
+  const d = G.x.map((x,i) => [Math.hypot(x-G.x[c], G.z[i]-G.z[c]) + (G.used[i]?0:1e9), i]); d.sort((a,b) => a[0]-b[0]);
+  return d.slice(0, n).map(v => v[1]);
+}
+function unitColor(u){ return "hsl("+((u*137.508)%360)+",65%,55%)"; } // each unit its own hue
+function ephysUnits(P){ // the sorter's units, busiest first, and how many of the new spikes it sorted
+  const U = EPH.units || []; $("ephunitbox").hidden = !U.length; if(!U.length) return;
+  const by = {}; for(const u of U) by[u.unit] = u;
+  const rows = Object.entries(EPH.unitRates).map(([u, r]) => [Number(u), r]).filter(x => by[x[0]]).sort((a,b) => b[1]-a[1]).slice(0, 16);
+  $("ephunits").innerHTML = rows.length ? rows.map(([u, r]) => '<span class="unit" data-u="'+u+'" style="cursor:pointer;margin-right:.75rem;white-space:nowrap;display:inline-block;'+
+    (u===EPH.selUnit ? 'text-decoration:underline;' : '')+'"><span style="color:'+unitColor(u)+'">&#9632;</span> '+u+(by[u].label!="good" ? " ("+esc(by[u].label)+")" : "")+
+    " "+r.toFixed(1)+"/s</span>").join("") : '<span class="muted">no spike sorted in the last 2 s</span>';
+  for(const el of $("ephunits").querySelectorAll(".unit")) el.onclick = () => ephysPickUnit(Number(el.dataset.u));
+  if(P && P.unit.length){ const sorted = P.unit.filter(u => u >= 0).length; EPH.sortedShare = 0.8*(EPH.sortedShare||0) + 0.2*sorted/P.unit.length; }
+}
+function ephysPickUnit(u){
+  const info = (EPH.units||[]).find(x => x.unit === u); EPH.selUnit = u; EPH.snips = [];
+  $("ephsniplab").textContent = "Unit "+u+(info ? " ("+info.label+", site "+info.channel+")" : "")+": its last 30 spikes, and their mean (back to a site: click the map)";
+  if(info) ephysPick(info.channel, true, true);
+}
+async function ephysPick(c, quiet, keepUnit){
+  EPH.sel = c; EPH.snips = []; if(!keepUnit){ EPH.selUnit = null; $("ephsniplab").textContent = "Site "+c+": its last 30 spikes, and their mean"; }
+  const T = EPH.stream && EPH.stream.threshold; if(T) $("ephk").value = T[c];
+  const r = await postFull("/ephys-scope", {channels: ephysNearest(c, 4)}); if(r.error && !quiet) $("epherr").textContent = r.error;
+}
+async function ephysK(one){
+  const k = Number($("ephk").value); const r = await postFull("/ephys-threshold", one ? {k, channel: EPH.sel} : {k});
+  $("epherr").textContent = r.error || ""; EPH.streamAt = 0;
+}
+$("ephkall").onclick = () => ephysK(false); $("ephkone").onclick = () => ephysK(true);
+$("ephlo").onclick = () => { EPH.scale = Math.min(2000, EPH.scale*2); ephysDraw(); };
+$("ephhi").onclick = () => { EPH.scale = Math.max(10, EPH.scale/2); ephysDraw(); };
+function ephysCanvas(id){ // a canvas sized to its box on screen, for sharp lines
+  const c = $(id), r = c.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  if(!c.dataset.h) c.dataset.h = c.getAttribute("height"); // its height on the page (the attribute becomes pixels)
+  const h = Number(c.dataset.h);
+  if(c.width != Math.round(r.width*dpr)){ c.width = Math.round(r.width*dpr); c.style.height = h + "px"; c.height = Math.round(h*dpr); }
+  const g = c.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,r.width,h); return [g, r.width, h];
+}
+function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+function ephysDraw(){ ephysDrawFast(); ephysDrawSlow(); }
+function ephysDrawFast(){ // the oscilloscope, the camera's frames and the raster, at the playhead
+  if(!EPH.open || !EPH.stream || EPH.play==null || EPH.b0==null) return;
+  const ink = cssVar("--text"), muted = cssVar("--muted"), accent = cssVar("--accent"), line = cssVar("--line");
+  // Oscilloscope: each pixel column the lowest and highest of its bins, the window ending at the playhead
+  let [g, W, H] = ephysCanvas("ephscope"); const n = EPH.lo.length, rowH = H / Math.max(1, n), left = 64;
+  const endBin = EPH.play / EPH.binN, firstBin = endBin - SCOPE_BINS, per = SCOPE_BINS / (W-left);
+  g.font = "12px system-ui"; g.textBaseline = "middle";
+  for(let r=0;r<n;r++){
+    const mid = rowH*(r+0.5), lo = EPH.lo[r], hi = EPH.hi[r];
+    g.fillStyle = muted; g.fillText("site "+EPH.chans[r], 6, mid); g.strokeStyle = line; g.beginPath(); g.moveTo(left, mid); g.lineTo(W, mid); g.stroke();
+    g.strokeStyle = r==0 ? accent : ink; g.beginPath();
+    const off = Math.floor(firstBin) - EPH.b0; // the index in lo of the window's first bin
+    for(let x=left; x<W; x++){
+      const a = Math.floor((x-left)*per) + off, b = Math.floor((x-left+1)*per) + off; if(b <= 0 || a >= lo.length) continue;
+      let mn = Infinity, mx = -Infinity; for(let i=Math.max(0,a); i<Math.min(lo.length, Math.max(a+1,b)); i++){ if(lo[i]<mn) mn = lo[i]; if(hi[i]>mx) mx = hi[i]; }
+      const y1 = mid - mx/EPH.scale*rowH/2, y2 = mid - mn/EPH.scale*rowH/2; g.moveTo(x+.5, Math.max(mid-rowH/2, y1)); g.lineTo(x+.5, Math.min(mid+rowH/2, y2)+1);
+    }
+    g.stroke();
+  }
+  // The camera's pulses along the top: a tick each frame, its number now and then (-1: not numbered yet)
+  if(EPH.cam.length && EPH.b0!=null){
+    let lastLabel = -1;
+    g.strokeStyle = cssVar("--gate") || accent; g.fillStyle = muted; g.textBaseline = "top";
+    for(const [smp, fr] of EPH.cam){
+      const x = left + (smp/EPH.binN - firstBin)/per; if(x < left || x > W) continue;
+      g.beginPath(); g.moveTo(x+.5, 0); g.lineTo(x+.5, 6); g.stroke();
+      const label = (lastLabel < 0 ? "frame " : "") + fr;
+      if(fr >= 0 && x > lastLabel){ g.fillText(label, x+2, 7); lastLabel = x + g.measureText(label).width + 14; }
+    }
+  }
+  // Raster: time against depth
+  const G = EPH.stream, zmin = Math.min(...G.z), zmax = Math.max(...G.z) || 1;
+  [g, W, H] = ephysCanvas("ephraster"); const pad = 8, zy = z => H - pad - (z - zmin)/(zmax - zmin || 1)*(H - 2*pad);
+  const t1 = EPH.play, tx = s => W - (t1 - s)/(RASTER_S*EPH.rate)*W;
+  for(const [smp, ch, amp, u] of EPH.spikes){
+    if(smp > t1) break;
+    g.fillStyle = u >= 0 ? unitColor(u) : ink; g.globalAlpha = Math.min(1, Math.max(0.15, -amp/150)); g.fillRect(tx(smp), zy(G.z[ch])-1, 2, 2);
+  }
+  g.globalAlpha = 1; g.fillStyle = muted; g.textBaseline = "top"; g.fillText(zmax.toFixed(0)+" µm", 4, 2); g.textBaseline = "bottom"; g.fillText(zmin.toFixed(0)+" µm", 4, H-2);
+}
+function ephysDrawSlow(){ // the probe map and the picked site's snippets, at each answer
+  if(!EPH.open || !EPH.stream) return;
+  const muted = cssVar("--muted"), accent = cssVar("--accent"), line = cssVar("--line"), bad = cssVar("--bad");
+  $("ephscale").textContent = "±"+EPH.scale+" µV";
+  const G = EPH.stream, zmin = Math.min(...G.z), zmax = Math.max(...G.z) || 1;
+  // Probe map: sites colored by their rate
+  let [g, W, H] = ephysCanvas("ephprobe"); const pad = 8, zy = z => H - pad - (z - zmin)/(zmax - zmin || 1)*(H - 2*pad);
+  const xmin = Math.min(...G.x), xmax = Math.max(...G.x);
+  // Across: at most 2 px a um, centred (a single shank's two columns stay close; four shanks fill the width)
+  const sx = Math.min(2, (W-24)/Math.max(1, xmax - xmin)), px = x => W/2 + (x - (xmin+xmax)/2)*sx, R = EPH.rates || [], rmax = Math.max(5, ...R);
+  for(let i=0;i<G.x.length;i++){
+    const v = Math.min(1, (R[i]||0)/rmax); g.fillStyle = G.used[i] ? "hsl("+(220-180*v)+",70%,"+(70-35*v)+"%)" : line;
+    g.fillRect(px(G.x[i])-4, zy(G.z[i])-2, 8, 4);
+  }
+  if(EPH.sel!=null){ g.strokeStyle = bad; g.lineWidth = 2; g.strokeRect(px(G.x[EPH.sel])-6, zy(G.z[EPH.sel])-4, 12, 8); g.lineWidth = 1; }
+  g.fillStyle = muted; g.textBaseline = "top"; g.fillText("max "+rmax.toFixed(0)+"/s", 4, 2);
+  $("ephprobe").onclick = ev => { const b = ev.target.getBoundingClientRect(), x = ev.clientX - b.left, y = ev.clientY - b.top;
+    let best = null, bd = 1e9; for(let i=0;i<G.x.length;i++){ const d = Math.hypot(px(G.x[i])-x, zy(G.z[i])-y); if(d < bd){ bd = d; best = i; } }
+    if(best!=null) ephysPick(best); };
+  // Snippets of the picked site, its mean, its threshold
+  // Scaled to its own spikes (the biggest swing fills it), the threshold kept in view
+  let big = 30; for(const w of EPH.snips) for(const v of w) big = Math.max(big, Math.abs(v));
+  [g, W, H] = ephysCanvas("ephsnip"); const sc = big*1.1, mid = H*0.5, sy = v => mid - v/sc*(H/2 - 14), sxp = i => 8 + i/60*(W-16);
+  g.strokeStyle = line; g.beginPath(); g.moveTo(0, mid); g.lineTo(W, mid); g.stroke();
+  const T = G.threshold && G.noise_uv && EPH.sel!=null && G.noise_uv[EPH.sel]!=null ? -G.threshold[EPH.sel]*G.noise_uv[EPH.sel] : null;
+  if(T!=null){ g.strokeStyle = bad; g.setLineDash([4,4]); g.beginPath(); g.moveTo(0, sy(T)); g.lineTo(W, sy(T)); g.stroke(); g.setLineDash([]); }
+  g.strokeStyle = muted; g.globalAlpha = 0.35;
+  for(const w of EPH.snips){ g.beginPath(); w.forEach((v,i) => i ? g.lineTo(sxp(i), sy(v)) : g.moveTo(sxp(i), sy(v))); g.stroke(); }
+  g.globalAlpha = 1;
+  if(EPH.snips.length){ const m = EPH.snips[0].map((_,i) => EPH.snips.reduce((a,w) => a + w[i], 0)/EPH.snips.length);
+    g.strokeStyle = EPH.selUnit!=null ? unitColor(EPH.selUnit) : accent; g.lineWidth = 2; g.beginPath(); m.forEach((v,i) => i ? g.lineTo(sxp(i), sy(v)) : g.moveTo(sxp(i), sy(v))); g.stroke(); g.lineWidth = 1; }
+  g.fillStyle = muted; g.textBaseline = "bottom";
+  g.fillText((EPH.snips.length||0)+" spikes"+(T!=null ? " · threshold "+T.toFixed(0)+" µV" : "")+" · 2 ms", 6, H-4);
+}
 // Text size: a share of the browser's own font size (which scales the page too), kept by this browser for the next visit
 const TEXT_SIZES = [100, 115, 130, 150, 175, 200], TEXT_KEY = "campy-panel-text-size";
 function textSize(pct){

@@ -1,4 +1,4 @@
-import os, shutil, subprocess
+import os, shutil, subprocess, sys, warnings
 
 import pytest
 
@@ -16,6 +16,37 @@ def Compile(sketch, exe, *flags):
 	subprocess.run([CXX, "-std=c++11", "-O2", *flags, "-I", sim_dir, "-include", "Arduino.h", "-x", "c++", sketch,
 		"-x", "none", os.path.join(sim_dir, "sim.cpp"), "-o", exe], check=True)
 	return exe
+
+
+def NoColoramaWrapping():
+	# colorama's init() sets sys.stdout to a wrapper around the stream current at that moment, and reinit() sets that
+	# wrapper again later (libraries call them on Windows when they are imported). In a test worker that stream is one
+	# test's captured output, closed when it ends: a later test's print then failed in it, as campy-live said its
+	# first line ("I/O operation on closed file", 18 November 2026, GitHub's Windows runner, 3 of 5 runs). campy
+	# never uses colorama, and pytest's own use (its terminal writer wraps its file itself) doesn't go through these.
+	try:
+		import colorama, colorama.initialise
+	except ImportError:
+		return
+	for module in (colorama, colorama.initialise):
+		for name in ("init", "reinit", "deinit", "just_fix_windows_console"):
+			if hasattr(module, name):
+				setattr(module, name, lambda *args, **kwargs: None)
+
+
+NoColoramaWrapping()
+
+
+@pytest.fixture(autouse=True)
+def std_streams_kept(request):
+	# Each test leaves sys.stdout and sys.stderr as it found them: one that replaced them (or a library it imported)
+	# would hand the next test on its worker a stream that may be closed. Put back, and the test that did it is said
+	streams = (sys.stdout, sys.stderr)
+	yield
+	changed = [name for name, stream in zip(("stdout", "stderr"), streams) if getattr(sys, name) is not stream]
+	if changed:
+		sys.stdout, sys.stderr = streams
+		warnings.warn("{} left sys.{} replaced: put back".format(request.node.nodeid, " and sys.".join(changed)))
 
 
 def pytest_configure(config):
@@ -49,6 +80,20 @@ def old_sim(tmp_path_factory):
 	old = os.path.join(HERE, "old_trigger")
 	return Compile(os.path.join(old, "trigger.ino"), str(tmp_path_factory.mktemp("old_sketch") / "sim"), "-include",
 		os.path.join(old, "prototypes.h"))
+
+
+@pytest.fixture(scope="session")
+def upstream_sim(tmp_path_factory):
+	# The trigger sketch upstream campy (github.com/ksseverson57/campy, master) ships: tests/old_trigger/trigger.ino
+	# with its settling delay at 4 s instead of 6 s, its only difference from that copy (checked 13 November 2026)
+	old = os.path.join(HERE, "old_trigger")
+	folder = tmp_path_factory.mktemp("upstream_sketch")
+	with open(os.path.join(old, "trigger.ino")) as f:
+		text = f.read()
+	assert text.count("delay(6000);") == 1
+	sketch = folder / "trigger.ino"
+	sketch.write_text(text.replace("delay(6000);", "delay(4000);"))
+	return Compile(str(sketch), str(folder / "sim"), "-include", os.path.join(old, "prototypes.h"))
 
 
 @pytest.fixture(scope="session", params=["pico", "nano"])

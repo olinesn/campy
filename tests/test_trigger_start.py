@@ -2,6 +2,7 @@
 
 import json, os, re, sys, queue, subprocess, threading, time, types
 
+import numpy as np
 import pytest
 
 from campy import configurator, newfiles
@@ -231,6 +232,90 @@ def test_one_pin_without_a_list(capsys):
 	assert "is triggering pins [2] at 60 fps" in capsys.readouterr().out
 
 
+def test_the_sync_output_in_the_start_command_and_the_recording(tmp_path, capsys):
+	# syncPin: its pin, seed, pulse (us) and gaps (ms) after the test LED's; sync.json and trigger.json keep them, with
+	# what campy-syncmatch needs (the frame period); the stop command leaves the sync output off
+	p = params(n=1)
+	p.update(digitalPins=[2, 3], frameRate=100, syncPin=7, syncSeed=42, videoFolder=str(tmp_path / "rec"))
+	systems = arduino.StartTriggers({"serial": Port()}, p)
+	assert systems["serial"].written == b"2,2,3,100,-1,0,7,42,10000,200,1000"
+	assert "with sync pulses on pin 7 (seed 42)" in capsys.readouterr().out
+	sync = systems["triggerSync"]
+	assert sync == dict(pin=7, seed=42, width_us=10000, min_gap_ms=200, max_gap_ms=1000, frame_period_us=10000,
+		hold_guard_us=50, hold_after_us=10, board="trigger.ino")
+	path = trigger.SaveStart(p, ["Camera0"], {}, systems["triggerStartedNs"], None, sync)
+	record = json.loads(open(path).read())
+	assert (record["syncPin"], record["syncSeed"], record["syncFile"]) == (7, 42, "sync.json")
+	assert json.loads((tmp_path / "rec" / "sync.json").read_text()) == sync
+	systems["serial"].written = b""
+	arduino.StopTriggers(systems)
+	assert systems["serial"].written == b"2,2,3,-1,-1,0"
+
+
+class Talking(Port):
+	# A port on which the sketch has said something since the check: Listen reads it
+	def __init__(self, text):
+		super().__init__()
+		self.pending = text.encode()
+
+	@property
+	def in_waiting(self):
+		return len(self.pending)
+
+	def read(self, n=256):
+		data, self.pending = self.pending[:n], self.pending[n:]
+		return data
+
+
+@pytest.mark.parametrize("sketch", ["current", "upstream"])
+def test_a_sketch_without_the_sync_output_gets_no_sync_json(tmp_path, capsys, sketch):
+	# An older trigger.ino, or upstream campy's, says neither "Test LED off." nor "Sync output off." after its answer
+	# to the check: campy then says so, and records no sync.json, rather than claim pulses nobody makes
+	answer = "\r\nFrame rate set to: 0.00 fps.\r\nFrame period set to: 4294967295 microseconds."
+	rest = "\r\nTest LED off.\r\nSync output off." if sketch == "current" else ""
+	p = params(n=1)
+	p.update(digitalPins=[2, 3], frameRate=100, syncPin=7, syncSeed=42, blinkPin=13, blinkHz=43,
+		videoFolder=str(tmp_path / "rec"))
+	systems = {"serial": Talking(rest), "triggerCheckedAt": time.monotonic() - arduino.START_AFTER_CHECK_S,
+		"triggerSaid": answer}
+	assert arduino.WaitToStart(systems)
+	systems = arduino.StartTriggers(systems, p)
+	out = capsys.readouterr().out
+	if sketch == "current":
+		assert systems["serial"].written == b"2,2,3,100,13,43,7,42,10000,200,1000"
+		assert "triggerSync" in systems and "with sync pulses on pin 7" in out and "without the" not in out
+	else:
+		assert systems["serial"].written == b"2,2,3,100,13,43" # no sync settings for a sketch without it
+		assert "triggerSync" not in systems
+		assert "runs a sketch without the sync output" in out and "runs a sketch without the test LED" in out
+		assert "with sync pulses" not in out and "blinking the test LED" not in out
+		trigger.SaveStart(p, ["Camera0"], {}, systems["triggerStartedNs"], None, systems.get("triggerSync"))
+		assert not (tmp_path / "rec" / "sync.json").exists()
+
+
+def test_a_new_seed_for_each_recording():
+	p = params(n=1)
+	p.update(syncPin=7)
+	seeds = {configurator.SyncSettings(p)["seed"] for _ in range(20)}
+	assert len(seeds) > 15 and all(0 <= s < 2 ** 31 for s in seeds)
+	p.update(syncSeed=5, syncGapMs=[300, 900], syncPulseMs=5)
+	assert configurator.SyncSettings(p) == dict(pin=7, seed=5, width_us=5000, min_gap_ms=300, max_gap_ms=900)
+	assert configurator.SyncSettings(params(n=1)) is None
+
+
+@pytest.mark.parametrize("change, problem", [
+	(dict(syncPin=3), "syncPin 3 is one of digitalPins"),
+	(dict(syncPin=13, blinkPin=13, blinkHz=43), "syncPin 13 is also blinkPin"),
+	(dict(syncPin=7, syncGapMs=[900, 300]), "syncGapMs: give the shortest and longest gap"),
+	(dict(syncPin=7, syncPulseMs=199), "syncPulseMs 199 leaves too little of the shortest gap"),
+])
+def test_sync_settings_that_cannot_work_are_refused(change, problem):
+	p = params(n=1)
+	p.update(digitalPins=[2, 3], **change)
+	with pytest.raises(ValueError, match=re.escape(problem)):
+		configurator.ValidateSync(p)
+
+
 def test_a_start_command_that_fails_is_not_written_down_as_started(tmp_path, capsys):
 	# The Arduino unplugged between the check and the start: the write fails. trigger.json then says the trigger
 	# did not start (campy-align would otherwise put the ready cameras at trigger 1), and why
@@ -265,8 +350,8 @@ def write_clip(path, frames=30):
 	w.close()
 
 
-def start_campy(tmp_path, port, rec=10):
-	# campy-acquire, two emulated cameras, the trigger Arduino on port
+def start_campy(tmp_path, port, rec=10, more=()):
+	# campy-acquire, two emulated cameras, the trigger Arduino on port; more: config lines
 	config = tmp_path / "config.yaml"
 	config.write_text("\n".join([
 		# Forward slashes: in YAML's double quotes, Windows' C:\Users would be an escape
@@ -274,7 +359,7 @@ def start_campy(tmp_path, port, rec=10):
 		"frameRate: 20", "recTimeInSec: {}".format(rec), "chunkLengthInSec: 1", "displayFrameRate: 0",
 		'pixelFormatInput: "rgb24"', 'pixelFormatOutput: "yuv420p"', "gpuID: -1", 'codec: "h264"',
 		'preflight: "off"', "startArduino: True", 'triggerController: "arduino"',
-		'serialPort: "{}"'.format(port), "digitalPins: [2, 3]", "blinkPin: 13", "blinkHz: 43", ""]))
+		'serialPort: "{}"'.format(port), "digitalPins: [2, 3]", "blinkPin: 13", "blinkHz: 43"] + list(more) + [""]))
 	env = dict(os.environ, PYTHONPATH=REPO, PYTHONUNBUFFERED="1")
 	env.pop("IMAGEIO_FFMPEG_EXE", None)
 	code = "import sys; sys.argv = ['campy-acquire', sys.argv[1]]; from campy.campy import Main; Main()"
@@ -282,8 +367,8 @@ def start_campy(tmp_path, port, rec=10):
 		stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
-def run_campy(tmp_path, port, rec=10):
-	proc = start_campy(tmp_path, port, rec)
+def run_campy(tmp_path, port, rec=10, more=()):
+	proc = start_campy(tmp_path, port, rec, more)
 	try:
 		proc.stdout_text, proc.stderr_text = proc.communicate(timeout=120)
 	finally:
@@ -304,6 +389,22 @@ def pty():
 	return master, slave
 
 
+def sim_up(proc, log_path, said, timeout=60):
+	"""
+	Waits until the live simulator has started its sketch: it said said (its
+	first line, in the log). A fixed wait isn't one: the first start of a
+	just-compiled simulator on a busy computer (4 tests at once) can take
+	seconds, and a program that opens the port first gets no answer in time.
+	"""
+	deadline = time.monotonic() + timeout
+	while proc.poll() is None and said not in log_path.read_text() and time.monotonic() < deadline:
+		time.sleep(0.01)
+	if proc.poll() is not None or said not in log_path.read_text():
+		proc.kill()
+		proc.wait()
+		raise AssertionError("the simulated board didn't start: {}".format(log_path.read_text()[-2000:]))
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal for the fake Arduino")
 def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path, sim):
 	# The Arduino: trigger.ino itself, in real time (tests/arduino_sim, live) on
@@ -312,13 +413,15 @@ def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path, sim):
 	log_path = tmp_path / "sim.log"
 	with open(str(log_path), "w") as log:
 		arduino_sim = subprocess.Popen([sim, "live"], stdin=master, stdout=master, stderr=log)
+	sim_up(arduino_sim, log_path, "Set baudrate to ")
 	try:
 		for name in ("Camera0", "Camera1"):
 			(tmp_path / name).mkdir()
 			write_clip(str(tmp_path / name / "clip.mp4")) # emu reads videoFilename minus its first 3 characters
 		# The emulated cameras wait for campy to start the trigger, as triggered cameras do
 		# (cameras/emu.py StartClock), then record 10 s from there.
-		proc = run_campy(tmp_path, os.ttyname(slave))
+		# With the sync output, on pin 7: the sketch makes it while it triggers
+		proc = run_campy(tmp_path, os.ttyname(slave), more=["syncPin: 7", "syncSeed: 42"])
 		time.sleep(0.2)
 	finally:
 		arduino_sim.terminate()
@@ -328,7 +431,7 @@ def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path, sim):
 	out = proc.stdout
 	assert proc.returncode == 0, out + proc.stderr
 
-	received, said, pin2 = [], [], []
+	received, said, pin2, pin7 = [], [], [], []
 	for line in log_path.read_text().splitlines():
 		kind, t, rest = line.split(" ", 2)
 		if kind == "rx":
@@ -337,11 +440,14 @@ def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path, sim):
 			said.append((int(t) / 1e6, rest))
 		elif (t, rest) == ("2", "1"): # pin 2 rises
 			pin2.append(int(kind) / 1e6)
+		elif (t, rest) == ("7", "1"):
+			pin7.append(int(kind) / 1e6)
 
 	# The check's stop command, which it answered; one start command, from the
 	# main process only (each camera process used to send its own), with the
 	# test LED; and the stop command at the end, with it off
-	assert re.fullmatch(r"(2,2,3,-1,-1,0)+2,2,3,20,13,43" r"2,2,3,-1,-1,0", "".join(data for _, data in received))
+	assert re.fullmatch(r"(2,2,3,-1,-1,0)+2,2,3,20,13,43,7,42,10000,200,1000" r"2,2,3,-1,-1,0",
+		"".join(data for _, data in received))
 	# The start command came START_AFTER_CHECK_S after the check's answer
 	# (the sketch says it as it reads the command), and the sketch took it
 	start = [t for t, data in received if data.startswith("2,2,3,20")][0]
@@ -381,6 +487,21 @@ def test_trigger_starts_once_after_every_camera_is_grabbing(tmp_path, sim):
 	assert record["readyBeforeTrigger"] == ["Camera0", "Camera1"] and record["notReady"] == {}
 	assert isinstance(record["startedHostNs"], int) and record["startedHostNs"] > 0
 	assert (record["blinkPin"], record["blinkHz"]) == (13, 43) # campy-synctest reads the rate
+	# The sync output: its settings kept for campy-syncmatch, and its pulses, from the trigger's start on (live, the
+	# simulated board's clock is the computer's: a pulse every 200 to 1000 ms)
+	assert (record["syncPin"], record["syncSeed"]) == (7, 42)
+	sync = json.loads((session / "sync.json").read_text())
+	assert (sync["seed"], sync["frame_period_us"], sync["min_gap_ms"], sync["max_gap_ms"]) == (42, 50000, 200, 1000)
+	assert len(pin7) >= 5 and min(pin7) > min(pin2)
+	from campy import syncmatch
+	want = syncmatch.PlannedRises(42, 200, 1000, 5e6) / 1e6
+	got = np.array(pin7[:4]) - (pin2[0] - 0.025) # time 0: half a period before the first camera rise
+	# Live, the simulated board's loop sleeps 50 us a turn, and on a busy test computer its process now and then runs
+	# much later (GitHub's Linux runner, 18 November: one edge of four 84 ms late, the others within 0.3 ms). So the
+	# median stays within 5 ms, and none is off by the shortest gap (200 ms) or more. tests/test_trigger_sketch.py
+	# checks the edges to the microsecond, on a simulated clock
+	off = np.abs(got - want[:4])
+	assert off.max() < 0.2 and np.median(off) < 0.005, (got, want[:4])
 
 
 @pytest.mark.parametrize("how", ["no port", "no answer"])

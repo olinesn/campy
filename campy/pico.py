@@ -182,8 +182,9 @@ def Shown(at):
 class Pico:
 	"""The pico: section, checked (its keys filled in), and what campy-session asks of the Pico."""
 
-	def __init__(self, section, python=None, fps=None):
+	def __init__(self, section, python=None, fps=None, sync=False):
 		self.section = section
+		self.sync = bool(sync) # campy's picoSync: chronic_control.py's SYNC=1 in every session
 		self.control = section["control"] or CampyControl()
 		self.python = python or sys.executable
 		self.fps = fps
@@ -203,6 +204,9 @@ class Pico:
 				"seconds": length["seconds"], "videoFolder": length.get("videoFolder"),
 				"copyTo": str(length["copyTo"]).strip() if length.get("copyTo") else None})
 		for key, value in section["set"].items():
+			if key == "SYNC":
+				raise PicoError("pico.set: SYNC is campy's picoSync setting (in the rig profile), so that one switch says "
+					"whether the Pico makes its sync train: picoSync: True.")
 			if key not in self.module.SETTINGS or key == "TOTAL_DURATION":
 				raise PicoError("pico.set: {} is not one of chronic_control.py's settings{} ({}).".format(key,
 					" here (the session's length comes from pico.lengths, or the page)" if key == "TOTAL_DURATION" else "",
@@ -216,6 +220,8 @@ class Pico:
 	def Sets(self, seconds):
 		# chronic_control.py's --set NAME=VALUE for a session of seconds: pico.set, with the page's over it
 		values = dict(self.section["set"], **self.page)
+		if self.sync:
+			values["SYNC"] = 1
 		sets = ["{}={}".format(k, SetText(v)) for k, v in values.items()]
 		return sets + (["TOTAL_DURATION={}".format(int(seconds))] if seconds is not None else [])
 

@@ -20,7 +20,10 @@ three times, each time adding to it, never changing what it said before
              status "recording".
   recording  once the trigger has started (or campy has given up waiting for
              the cameras): "recording": trigger.json's record, and each
-             camera's model, firmware and frame size, from its metadata.csv.
+             camera's model, firmware and frame size, from its metadata.csv;
+             "stopping" true when campy was stopped (Ctrl-C) or its cameras
+             ended meanwhile, so a trigger started from outside (campy-box)
+             is not.
   end        when the cameras have stopped: "end": how each camera ended
              (frames grabbed, written, dropped, lost, seconds, errors; after
              an ffmpeg restart its video files, the restarts and the frames
@@ -616,7 +619,9 @@ TOTAL_KEYS = (("framesGrabbed", "totalFrames"), ("seconds", "totalTime"), ("fram
 	("framesIncomplete", "flirFramesIncomplete"),
 	("cameraError", "cameraError"), ("videoError", "videoError"), ("frameTimesError", "frameTimesError"),
 	# restartFfmpeg: the video in several files (campy/segments.py), and the frames lost in stopped ffmpegs
-	("ffmpegRestarts", "ffmpegRestarts"), ("videoFiles", "videoFiles"), ("framesLostInEncoder", "framesLostInEncoder"))
+	("ffmpegRestarts", "ffmpegRestarts"), ("videoFiles", "videoFiles"), ("framesLostInEncoder", "framesLostInEncoder"),
+	# cameraReconnect: the times the camera was unplugged and came back, and the frame numbers and seconds it was gone
+	("cameraReconnects", "cameraReconnects"), ("framesWhileGone", "framesWhileGone"), ("secondsGone", "secondsGone"))
 
 
 def SdkVersions(systems):
@@ -712,6 +717,8 @@ class Session:
 			pin, hz = self.configurator.BlinkSettings(p)
 			if pin >= 0:
 				record.update(blinkPin=pin, blinkHz=hz)
+			if str(p.get("syncPin", "None")) != "None":
+				record["syncPin"] = p["syncPin"] # the seed: trigger.json and sync.json, once it started
 		record["cameraTriggers"] = {cam["cameraName"]: str(cam["cameraTrigger"]) for cam in self.cams}
 		return record
 
@@ -756,13 +763,14 @@ class Session:
 	def CameraMetadata(self, n):
 		return ReadMetadata(os.path.join(self.newfiles.CameraFolder(self.cams[n]), "metadata.csv")) or {}
 
-	def Recording(self, ready=None, missing=None):
-		# The trigger has started, or campy gave up waiting for the cameras
+	def Recording(self, ready=None, missing=None, stopping=False):
+		# The trigger has started, or campy gave up waiting for the cameras. stopping: campy was stopped, or its cameras
+		# ended, meanwhile: no trigger started, and none should be from outside (campy-box's camera pulses)
 		def recording(old):
 			data = self.Merge(old)
 			if "recording" in data:
 				return data
-			record = {"at": Now()}
+			record = {"at": Now(), "stopping": bool(stopping)}
 			trigger_path = os.path.join(self.folder, self.newfiles.TRIGGER_FILE)
 			try:
 				with open(trigger_path, encoding="utf-8") as f:

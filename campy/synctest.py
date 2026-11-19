@@ -170,7 +170,8 @@ def ReadBlinkHz(folder):
 
 def Analyze(folder, blink_hz=None, reference=None, rois=None, tolerance_us=TOLERANCE_US, block_s=BLOCK_S):
 	cams = align.LoadRecording(folder)
-	period, _ = align.Align(cams, align.ReadTriggerStart(folder))
+	# Paired as campy-align pairs them: the cameras trigger.json or campy-box's list says were ready start at trigger 1
+	period, _ = align.Align(cams, align.ReadStart(folder)[0])
 	warnings = []
 	triggered = [c for c in cams if c["usable"] and not c["ratcam"]]
 	for c in cams:

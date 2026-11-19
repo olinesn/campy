@@ -42,6 +42,14 @@ ESP32; campy/trigger/outputs.py talks to it). The rules come from a YAML file:
       refractory_s: 5
       do: {output: reward, action: pulse}
 
+Inputs (an operant box's sensors, on the same board: docs/operant-boxes.md): as campy-box's,
+  inputs:
+    poke_left: {input: 0, pin: A0, pull: up}     # active low with a pull-up
+and a rule's condition {input: poke_left} is true for a set while the input is active, or if it went active
+since the set before (so a lick shorter than a frame still counts). With a pose condition, under all: a reward
+only when mouse 2 is the one at the port. Every input edge is logged (kind input: its board time, host time and
+the board's frame).
+
 Outputs: a channel of the board (0-7) on an Arduino pin. With a train, the
 board itself makes a pulse of width_us, offset_us after the camera trigger of
 every frame k with (k - phase) % every == 0 (photometry excitation: 3 ms on
@@ -51,6 +59,7 @@ never high together (the board skips the pulse and says so). max_on_s: the
 board switches a level off after that long, whatever campy-rules says.
 
 Rules: when is one condition, or all: [...], any: [...], not: {...}:
+  input    an input's name (inputs:): active, or went active since the set before
   inside   {region, animal, node[, margin]}: the animal's node in the region.
            margin (mm, or pixels for a camera's polygon): once inside, it
            leaves only when that far out (hysteresis)
@@ -398,18 +407,64 @@ def PolygonDistance(p, poly):
 	return best
 
 
-def Condition(spec, d, regions, where):
+class InputState:
+	"""
+	An input of the board (an operant box's sensor), as the rules see it: active now, or went active since the
+	set before. Its edges come on the board's reading thread (Edge), the sets on the decision thread (Begin, Value,
+	End): an edge between a set's Begin and End counts for the next set too.
+	"""
+
+	def __init__(self, spec):
+		self.spec = spec          # campy.box.Input: its index, pin, pull, active, debounce
+		self.name = spec.name
+		self.active = False
+		self.known = False        # the board said its level (False: dry run, replay, no board)
+		self.rises = 0            # how many times it went active
+		self.seen = self.taken = 0
+		self.count = 0
+
+	def Set(self, active):
+		# Its level as the board set it up: known, not an edge
+		self.known, self.active = True, bool(active)
+
+	def Edge(self, active):
+		self.known = True
+		if active:
+			self.rises += 1
+			self.count += 1
+		self.active = bool(active)
+
+	def Begin(self):
+		self.taken = self.rises
+
+	def Value(self):
+		if not self.known:
+			return None
+		return self.active or self.taken > self.seen
+
+	def End(self):
+		self.seen = self.taken
+
+
+def Condition(spec, d, regions, where, inputs=None):
 	"""
 	The condition spec as a function (row, holding) -> True, False or None
-	(unknown); holding: whether its rule holds now (hysteresis).
+	(unknown); holding: whether its rule holds now (hysteresis). inputs: the
+	board's inputs by name (InputState), for input conditions.
 	"""
 	if not isinstance(spec, dict) or len(spec) != 1:
-		raise RulesError("{}: one of inside, near, test, all, any, not".format(where))
+		raise RulesError("{}: one of inside, near, test, input, all, any, not".format(where))
 	(kind, args), = spec.items()
+	if kind == "input":
+		name = args.get("name") if isinstance(args, dict) else args
+		if not inputs or name not in inputs:
+			raise RulesError("{}: no input {!r} (inputs: {})".format(where, name, ", ".join(inputs or {}) or "none"))
+		state = inputs[name]
+		return lambda row, holding: state.Value()
 	if kind in ("all", "any"):
 		if not isinstance(args, list) or not args:
 			raise RulesError("{}: {} takes a list of conditions".format(where, kind))
-		parts = [Condition(a, d, regions, "{} {}[{}]".format(where, kind, i)) for i, a in enumerate(args)]
+		parts = [Condition(a, d, regions, "{} {}[{}]".format(where, kind, i), inputs) for i, a in enumerate(args)]
 		if kind == "any":
 			return lambda row, holding: Any3(p(row, holding) for p in parts)
 
@@ -422,7 +477,7 @@ def Condition(spec, d, regions, where):
 			return True
 		return All
 	if kind == "not":
-		part = Condition(args, d, regions, where + " not")
+		part = Condition(args, d, regions, where + " not", inputs)
 
 		def Not(row, holding):
 			r = part(row, not holding)
@@ -477,19 +532,19 @@ def Condition(spec, d, regions, where):
 					results.append(None if pa is None or pb is None else float(np.linalg.norm(pa - pb)) <= limit)
 			return Any3(results)
 		return Near
-	raise RulesError("{}: unknown condition {!r} (inside, near, test, all, any, not)".format(where, kind))
+	raise RulesError("{}: unknown condition {!r} (inside, near, test, input, all, any, not)".format(where, kind))
 
 
 # ---------------------------------------------------------------- rules
 
 class Rule:
-	def __init__(self, spec, d, regions, outputs, index):
+	def __init__(self, spec, d, regions, outputs, index, inputs=None):
 		where = "rules[{}]".format(index)
 		if not isinstance(spec, dict):
 			raise RulesError("{}: must be a mapping".format(where))
 		self.name = str(spec.get("name", "rule{}".format(index)))
 		where = "rule {}".format(self.name)
-		self.condition = Condition(Need(spec, "when", where), d, regions, where)
+		self.condition = Condition(Need(spec, "when", where), d, regions, where, inputs)
 		self.enter_ns = int(Number(spec.get("enter_ms", 0), where) * 1e6)
 		self.exit_ns = int(Number(spec.get("exit_ms", 0), where) * 1e6)
 		self.missing_ns = int(Number(spec.get("missing_ms", 100), where) * 1e6)
@@ -572,10 +627,12 @@ class Rules:
 			raise RulesError("outputs: two outputs on one channel")
 		regions = config.get("regions") or {}
 		self.regions = {name: Region(name, spec, d) for name, spec in regions.items()}
+		self.by_input = {}
+		self.inputs = self.Inputs(config.get("inputs"))
 		rules = config.get("rules") or []
 		if not isinstance(rules, list):
 			raise RulesError("rules: must be a list")
-		self.rules = [Rule(spec, d, self.regions, self.outputs, i) for i, spec in enumerate(rules)]
+		self.rules = [Rule(spec, d, self.regions, self.outputs, i, self.inputs) for i, spec in enumerate(rules)]
 		names = [r.name for r in self.rules]
 		if len(set(names)) != len(names):
 			raise RulesError("rules: two rules of the same name")
@@ -588,11 +645,47 @@ class Rules:
 		self.retry = set()
 		self.retry_lock = threading.Lock()
 
+	def Inputs(self, spec):
+		# An operant box's sensors (campy-box's inputs:, campy/box.py), by name, with their pins checked against the
+		# outputs' and the camera trigger's
+		if not spec:
+			return {}
+		from campy import box
+		if not isinstance(spec, dict):
+			raise RulesError("inputs: must be a mapping")
+		inputs = {name: InputState(box.Input(name, s)) for name, s in spec.items()}
+		indices = [i.spec.index for i in inputs.values()]
+		if len(set(indices)) != len(indices):
+			raise RulesError("inputs: two of them have the same number")
+		pins = {o.pin: "output " + o.name for o in self.outputs.values()}
+		trigger = self.board.get("trigger_pin", 10)
+		if trigger is not None and str(trigger).lower() != "none":
+			pins.setdefault(box.Pin(trigger, "board: trigger_pin"), "the camera trigger")
+		for i in inputs.values():
+			if i.spec.pin in pins:
+				raise RulesError("input {} and {} are both on {}".format(i.name, pins[i.spec.pin], box.PinName(i.spec.pin)))
+			pins[i.spec.pin] = "input " + i.name
+		self.by_input.update({i.spec.index: i for i in inputs.values()})
+		return inputs
+
 	def Holding(self, o, kind):
 		return bool(self.holders[(o.name, kind)])
 
+	def Free(self):
+		# Before anything else: what another program (campy-box) left on the board, its camera pulses' settings, inputs,
+		# servos and links, freed
+		# (alloff has disarmed the links and sent the servos home already). Only for a board with inputs: version 3
+		# (cam 0 is refused while the board makes camera pulses for another recording, which campy-rules won't stop)
+		out = ["cam 0", "camsync -1"] + ["link {} -1".format(n) for n in range(8)] + ["in {} -1".format(n) for n in range(8)]
+		out += ["servo {} -1".format(n) for n in range(4)]
+		if self.inputs:
+			# A channel the rules don't use keeps no pin: its default (D2-D9) can't be an input's
+			used = {o.channel for o in self.outputs.values()}
+			out += ["pin {} -1".format(ch) for ch in range(8) if ch not in used]
+		return out
+
 	def Setup(self):
-		# The board's commands for the outputs (pins, groups, limits, trains)
+		# The board's commands for the outputs (pins, groups, limits, trains), then the inputs
 		out = []
 		for o in self.outputs.values():
 			out += ["pin {} {}".format(o.channel, o.pin), "group {} {}".format(o.channel, o.group),
@@ -600,6 +693,7 @@ class Rules:
 			if o.train:
 				t = o.train
 				out.append("train {} {} {} {} {}".format(o.channel, t["every"], t["phase"], t["offset_us"], t["width_us"]))
+		out += [i.spec.Command() for i in self.inputs.values()]
 		return out
 
 	def SessionStarts(self):
@@ -608,11 +702,15 @@ class Rules:
 
 	def Step(self, row, t):
 		values, commands = [], []
+		for i in self.inputs.values():
+			i.Begin()
 		for rule in self.rules:
 			raw, change = rule.Step(row, t)
 			values.append(-1 if raw is None else int(raw))
 			if change:
 				commands += self.Act(rule, change)
+		for i in self.inputs.values():
+			i.End()
 		return values, commands + self.Retries(commands)
 
 	def Act(self, rule, change):
@@ -886,11 +984,12 @@ class Runner:
 		self.latency = dict(trigger_to_host=[], host_to_pose=[], pose_to_read=[], read_to_decided=[],
 			decided_to_written=[], written_to_pin=[], trigger_to_pin=[], host_to_pin=[])
 		self.counts = dict(rows=0, commands=0, late_host=0, late_board=0, clash=0, pulses=0, stale=0, errors=0,
-			watchdog=0, retries=0, gaps=0, live_gaps=0)
+			watchdog=0, retries=0, gaps=0, live_gaps=0, inputs=0)
 		self.rules = None
 		self.results = None   # campy-live's results feed now (None while waiting for campy-live to come back)
 		self.live_gaps = []   # each time campy-live's results were gone while the recording went on (Rejoin)
-		self.writer = None    # the log files' writes, on a thread of their own (frametimes.Writer)
+		self.recording = None # whether the recording goes on, from its cameras' feeds (Recording; made by Loop)
+		self.writer = None   # the log files' writes, on a thread of their own (frametimes.Writer)
 		self.beat = None      # when the decision loop last went round (time.monotonic), None: not looping yet
 		self.watchdog_fired = threading.Event() # the board's watchdog switched everything off: Loop recovers
 		self.said = set()     # the board's errors said already (a retried command's error is said once)
@@ -960,11 +1059,35 @@ class Runner:
 					"the session's trains start again.".format(line))
 				self.watchdog_fired.set()
 			self.Event(dict(kind=kind, line=line, heard_ns=heard_ns))
+		elif kind == "i":
+			# An input's edge (an operant box's sensor): the rules see it with the next set
+			index, active, t, k, after = (int(x) for x in fields[:5])
+			state = self.rules.by_input.get(index) if self.rules is not None and self.rules.inputs else None
+			if state is not None:
+				state.Edge(active)
+			self.counts["inputs"] += 1
+			self.Event(dict(kind="input", input=state.name if state else index, active=active, board_us=t,
+				host_ns=self.board.clock.HostNs(t) if self.board is not None else None, board_frame=k or None,
+				after_us=after if after >= 0 else None, heard_ns=heard_ns))
 		elif kind == "gap":
 			# The trigger paused (the board keeps counting its frames: campy's frame k stays the board's k)
 			self.counts["gaps"] += 1
 			k, gap_us = (int(x) for x in fields[:2])
 			self.Event(dict(kind="gap", board_frame=k, gap_ms=gap_us / 1e3, heard_ns=heard_ns, line=line))
+		elif kind == "relink":
+			self.Event(dict(kind="relink", what=fields[0], detail=fields[1], heard_ns=heard_ns))
+			if fields[0] == "down":
+				self.say("campy-rules: the board's USB link stalled ({}): opening it again.".format(fields[1]))
+			elif fields[0] == "reset":
+				self.say("campy-rules: the board's link is still down: a USB port reset from the computer, {}.".format(
+					fields[1]))
+				self.counts["usb_resets"] = self.counts.get("usb_resets", 0) + 1
+			else:
+				# Over the board's watchdog: it switched everything off; the rules start over, as after "wd"
+				self.say("campy-rules: the board's link is back after {:.1f} s: the rules start over and the session's "
+					"trains start again.".format(fields[1]))
+				self.counts["relinks"] = self.counts.get("relinks", 0) + 1
+				self.watchdog_fired.set()
 		elif kind == "lost":
 			self.say("campy-rules: {}. The board switches its outputs off by itself (its watchdog). "
 				"Stopping.".format(fields[0]))
@@ -1050,12 +1173,16 @@ class Runner:
 				if not port:
 					raise RulesError("no port for the outputs board: --port, or board: port: in the rules")
 				boardlog = open(out + ".board.txt", "x", buffering=1)
+				# The board's USB link, if it stalls, opened again (linkwatch); still down after 5 s, its USB port reset
+				# from the computer (Linux only)
 				self.board = outputs.Board(port, log=LogFile(self, boardlog), listener=self.Listen, say=self.say,
-					alive=self.Alive)
-				for command in ["alloff", "trig {}".format(int(board_cfg.get("trigger_pin", 10))),
+					alive=self.Alive, relink=15.0)
+				for command in ["alloff"] + rules.Free() + ["trig {}".format(int(board_cfg.get("trigger_pin", 10))),
 						"watchdog {}".format(int(board_cfg.get("watchdog_ms", 250))),
-						"bound {}".format(int(self.bound_ms * 1000))] + rules.Setup():
-					self.board.Command(command).Ok()
+						"bound {}".format(int(self.bound_ms * 1000)), "linkwatch 2000"] + rules.Setup():
+					words = self.board.Command(command).Ok().split()
+					if words[:2] == ["ok", "in"] and len(words) == 5 and int(words[2]) in rules.by_input:
+						rules.by_input[int(words[2])].Set(words[4] == "1") # its level now
 				match = FrameMatch(self.board, self.say, self.Event)
 			self.say("campy-rules: {} rules on {} outputs, {}; results from {} ({} cameras, {}).".format(
 				len(rules.rules), len(rules.outputs), "dry run (no board)" if self.board is None else
@@ -1117,7 +1244,8 @@ class Runner:
 		stale = self.args.stale_ms / 1e3
 		released = True
 		end = time.monotonic() + self.args.duration_s if self.args.duration_s else None
-		recording = Recording() # whether the recording goes on, from its cameras' feeds: taken once sets come
+		# Whether the recording goes on, from its cameras' feeds: taken once sets come
+		recording = self.recording = Recording()
 		snapped = False # this results feed's camera rings taken
 		looked = 0.0 # when the recording was last looked at, while no set came
 		while not self.stop.is_set():
@@ -1299,6 +1427,7 @@ class Runner:
 		if match is not None:
 			match.Check()
 		summary = dict(counts=self.counts, rules=[r.name for r in rules.rules],
+			inputs={i.name: dict(input=i.spec.index, pin=i.spec.pin, went_active=i.count) for i in rules.inputs.values()},
 			outputs={o.name: dict(channel=o.channel, pin=o.pin, group=o.group, run=o.run, train=o.train)
 				for o in rules.outputs.values()},
 			bound_ms=getattr(self, "bound_ms", None), dry_run=self.board is None,

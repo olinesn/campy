@@ -6,9 +6,19 @@
 // A command "@<path>" is that file's contents (Windows limits a command line's length).
 // SIM_START_US in the environment starts the clock there instead of at 0 (to
 // run a sketch across micros()'s 32-bit wrap); all times printed are the clock's.
+// SIM_USB_TX="<bytes>:<us>" gives the serial port a transmit buffer of that many bytes, which USB empties at that
+// many bytes per <us> (the Nano ESP32's is 64 bytes): availableForWrite says the room left, and a print that
+// doesn't fit waits for it, the clock running, as the real one does. Unset: no limit. Simulated clock only.
 // SIM_INPUT makes an input pin a pulse train, as a camera trigger:
 // "<pin>:<start_us>:<period_us>:<high_us>:<count>", several separated by ";"
-// (digitalRead: HIGH during a pulse). In live mode, times from the start.
+// (digitalRead: HIGH during a pulse, or LOW on a pin the sketch set INPUT_PULLUP: a sensor pulling it
+// down, as an open-collector beam break does). In live mode, times from the start.
+// The camera timer (SimCamStart, as campy_outputs uses the ESP32's MCPWM): from time 0, each period P is low for
+// its first half and high for its second; its edges are printed with their exact times as the clock passes them,
+// and the sketch's on_rise is called at each rise, as the timer's interrupt. SimCamStopAtZero stops it at its next
+// zero (a period's end; at a rise, the end of that period), SimCamHold at once, its pins low.
+// PWM (ledcAttach, ledcWrite, ledcDetach) is printed as "pwm <microseconds> <pin> <duty> <freq> <bits>",
+// duty -1 once detached.
 //
 //   sim live
 // Runs it in real time instead, as a serial device: it reads its commands
@@ -60,12 +70,17 @@ static void Sleep(unsigned long long us) {
 #endif
 }
 
+static void CamAdvance(unsigned long long now);
+
 unsigned long micros() {
 	if (live) {
 		Sleep(50); // not a whole core for the sketch's waits
+		CamAdvance(Now());
 		return (unsigned long) Now();
 	}
-	return (unsigned long) (++now_us); // each call takes a microsecond
+	++now_us; // each call takes a microsecond
+	CamAdvance(now_us);
+	return (unsigned long) now_us;
 }
 
 void delay(unsigned long ms) {
@@ -73,16 +88,102 @@ void delay(unsigned long ms) {
 	else now_us += 1000ULL * ms;
 }
 
-void pinMode(int, int) {}
+static std::map<int, int> modes;
+
+void pinMode(int pin, int mode) { modes[pin] = mode; }
 
 int digitalRead(int pin) {
 	unsigned long long t = Now();
+	int idle = modes.count(pin) && modes[pin] == INPUT_PULLUP ? HIGH : LOW;
 	for (const Pulses& p : inputs) {
 		if (p.pin != pin || t < p.start || p.period == 0) continue;
 		unsigned long long k = (t - p.start) / p.period;
-		if (k < p.count && t - p.start - k * p.period < p.high) return HIGH;
+		if (k < p.count && t - p.start - k * p.period < p.high) return idle == HIGH ? LOW : HIGH;
 	}
-	return LOW;
+	return idle;
+}
+
+static void PrintEdge(unsigned long long t, int pin, int value) {
+	if (level.count(pin) && level[pin] == value) return;
+	level[pin] = value;
+	std::fprintf(live ? stderr : stdout, "%llu %d %d\n", t, pin, value);
+}
+
+static struct Cam {
+	bool on;
+	std::vector<int> pins;
+	unsigned long long t0, period, stop_at, next; // stop_at: the period it stops before (0: none); next: 2m rise, 2m+1 fall
+	void (*on_rise)();
+	bool in_rise;
+	unsigned long long rise_t;
+} cam = {false, std::vector<int>(), 0, 0, 0, 0, 0, false, 0};
+
+static void CamAdvance(unsigned long long now) {
+	// The timer's edges up to now, in order, each at its own time; the interrupt at each rise
+	while (cam.on) {
+		unsigned long long m = cam.next / 2;
+		bool rise = cam.next % 2 == 0;
+		if (rise && cam.stop_at && m >= cam.stop_at) { cam.on = false; break; }
+		unsigned long long t = cam.t0 + m * cam.period + (rise ? cam.period / 2 : cam.period);
+		if (t > now) break;
+		for (int pin : cam.pins) PrintEdge(t, pin, rise ? 1 : 0);
+		cam.next++;
+		if (rise && cam.on_rise) {
+			cam.in_rise = true;
+			cam.rise_t = t;
+			cam.on_rise();
+			cam.in_rise = false;
+		}
+	}
+}
+
+unsigned long SimCamStart(const int* pins, int npins, unsigned long period_us, void (*on_rise)()) {
+	cam.pins.assign(pins, pins + npins);
+	cam.t0 = Now();
+	cam.period = period_us;
+	cam.stop_at = 0;
+	cam.next = 0;
+	cam.on_rise = on_rise;
+	cam.on = true;
+	return (unsigned long) cam.t0;
+}
+
+void SimCamStopAtZero() {
+	// At its next zero: the end of the period it is in (from a rise's interrupt, that rise's period)
+	if (!cam.on) return;
+	unsigned long long t = cam.in_rise ? cam.rise_t : Now();
+	unsigned long long m = t < cam.t0 ? 1 : (t - cam.t0) / cam.period + 1;
+	if (!cam.stop_at || m < cam.stop_at) cam.stop_at = m;
+}
+
+void SimCamHold() {
+	CamAdvance(Now());
+	cam.on = false;
+	for (int pin : cam.pins) PrintEdge(Now(), pin, 0);
+}
+
+void SimUsbDetach() { std::fprintf(live ? stderr : stdout, "usb %llu detach\n", Now()); }
+void SimUsbAttach() { std::fprintf(live ? stderr : stdout, "usb %llu attach\n", Now()); }
+
+static std::map<int, std::pair<unsigned, unsigned> > pwm; // pin -> its frequency and bits
+
+bool ledcAttach(uint8_t pin, uint32_t freq, uint8_t resolution) {
+	pwm[pin] = std::make_pair((unsigned) freq, (unsigned) resolution);
+	return true;
+}
+
+bool ledcWrite(uint8_t pin, uint32_t duty) {
+	if (!pwm.count(pin)) return false;
+	std::fprintf(live ? stderr : stdout, "pwm %llu %d %u %u %u\n", Now(), (int) pin, duty, pwm[pin].first,
+		pwm[pin].second);
+	return true;
+}
+
+bool ledcDetach(uint8_t pin) {
+	if (!pwm.count(pin)) return false;
+	pwm.erase(pin);
+	std::fprintf(live ? stderr : stdout, "pwm %llu %d -1 0 0\n", Now(), (int) pin);
+	return true;
 }
 
 static void ReadInputs() {
@@ -160,6 +261,43 @@ void SimPioClearStall() {
 	pio_stalled = false;
 }
 
+// The transmit buffer (SIM_USB_TX): its size (0: no limit), how long USB takes to empty it, what's in it
+static unsigned long long tx_size = 0, tx_drain_us = 1, tx_fill = 0, tx_at = 0;
+
+static void ReadUsbTx() {
+	const char* text = std::getenv("SIM_USB_TX");
+	if (!text) return;
+	std::sscanf(text, "%llu:%llu", &tx_size, &tx_drain_us);
+	if (tx_drain_us == 0) tx_drain_us = 1;
+}
+
+static void TxDrain() {
+	// What USB took since the last look
+	unsigned long long now = Now();
+	unsigned long long gone = (now - tx_at) * tx_size / tx_drain_us;
+	if (gone > 0 || now < tx_at) {
+		tx_fill = gone >= tx_fill ? 0 : tx_fill - gone;
+		tx_at = now;
+	}
+}
+
+int SimSerial::availableForWrite() {
+	if (live || tx_size == 0) return 4096;
+	TxDrain();
+	return (int) (tx_size - tx_fill);
+}
+
+static void TxWait(size_t bytes) {
+	// A print waits until the buffer has room for all of it: the clock runs meanwhile
+	if (live || tx_size == 0) return;
+	TxDrain();
+	while (tx_fill + bytes > tx_size && bytes <= tx_size) {
+		now_us++;
+		TxDrain();
+	}
+	tx_fill += bytes > tx_size ? tx_size : bytes;
+}
+
 static std::string Escaped(const std::string& text) {
 	std::string out;
 	for (char c : text) {
@@ -178,6 +316,7 @@ static void Say(const std::string& text) {
 		return;
 	}
 #endif
+	TxWait(text.size());
 	std::printf("serial %llu %s\n", Now(), Escaped(text).c_str());
 }
 
@@ -261,6 +400,25 @@ float SimSerial::parseFloat() {
 	return std::strtof(number.c_str(), 0);
 }
 
+long SimSerial::parseInt() {
+	// Like Stream::parseInt: skip to a digit or '-', then read the digits, with the timeout as parseFloat
+	int c;
+	while ((c = TimedPeek()) >= 0 && !std::isdigit(c) && c != '-') pos++;
+	if (c < 0) return 0;
+	std::string number;
+	while ((c = TimedPeek()) >= 0 && (std::isdigit(c) || (c == '-' && number.empty()))) {
+		number += (char) c;
+		pos++;
+	}
+	return std::strtol(number.c_str(), 0, 10);
+}
+
+int SimSerial::peek() {
+	// The next character without taking it, or -1: no waiting
+	if (available() <= 0) return -1;
+	return (unsigned char) input[pos];
+}
+
 static std::string Command(const std::string& arg) {
 	if (arg.empty() || arg[0] != '@') return arg;
 	std::string path = arg.substr(1, arg.find_first_of("\r\n") - 1), text;
@@ -275,6 +433,7 @@ static std::string Command(const std::string& arg) {
 
 int main(int argc, char** argv) {
 	ReadInputs();
+	ReadUsbTx();
 	if (argc == 2 && std::strcmp(argv[1], "live") == 0) {
 		live = true;
 		started = std::chrono::steady_clock::now();
@@ -295,5 +454,6 @@ int main(int argc, char** argv) {
 		loop();
 		now_us++; // a real clock runs whether or not the sketch reads it
 	}
+	CamAdvance(end);
 	return 0;
 }

@@ -25,10 +25,14 @@ For each bout it gives:
   values are blank, with a note;
 - how long each receiver took to reach half its step after its LED's edge;
 - clipping (a sample at the OneBox's range) and the dark level's noise;
-- with --campy, each camera's frames in the bout (from frametimes.npy, split
-  where frames stop for more than 1 s), against the OneBox's camera pulses,
-  and the flashes' frames in campy's numbering, counted from the recording's
-  first frame.
+- with --campy, each camera's frames in the bout, against the OneBox's camera
+  pulses, and the flashes' frames in campy's video, counted from 0 (the
+  recording's first frame). They come from each camera's aligned.csv
+  (campy-align, run after every panel recording), which gives every frame
+  the Pico pulse behind it: a frame the Pico didn't send (a stray edge on the
+  trigger line) or a missing frame shifts nothing else, and frames outside
+  the bouts are listed. Without aligned.csv, from frametimes.npy split where
+  frames stop for more than 1 s, which such a frame does shift.
 
 Needs numpy only. Run it on a copy of the session, not on the rig while it
 records (any python there counts against the rig lock).
@@ -122,7 +126,12 @@ def Bout(bin_path, args):
 	if not len(cam_on):
 		row["note"] = "no camera pulses (the gate check's blink?)"
 		return row
-	green = data[:, ch[args.green]].astype(np.float64) * volts
+	# The first camera pulse on the run's clock, and the pulses' rate on the OneBox's clock: --campy finds each
+	# bout's place among the Pico's triggers from them
+	row["camera_on_s"] = round((t0 + cam_on[0]) / rate, 6)
+	if len(cam_on) > 1:
+		row["camera_hz"] = round((len(cam_on) - 1) / ((cam_on[-1] - cam_on[0]) / rate), 6)
+	green =data[:, ch[args.green]].astype(np.float64) * volts
 	red = data[:, ch[args.red]].astype(np.float64) * volts
 	full = float(meta["obAiRangeMax"]) * 0.999
 	cycle = int(round(CYCLE_S * rate))
@@ -192,6 +201,107 @@ def CampyBouts(folder, gap_s=1.0):
 	return out
 
 
+def CampyAligned(folder):
+	"""{camera: trigger of each saved frame, in the video's order}, from campy-align's aligned.csv (trigger k is the
+	Pico's k-th pulse on a grid that keeps counting through its pauses). Cameras without one are left out."""
+	out = {}
+	for path in sorted(glob.glob(os.path.join(folder, "*", "aligned.csv"))):
+		with open(path, newline="") as f:
+			rows = list(csv.DictReader(f))
+		out[os.path.basename(os.path.dirname(path))] = np.array([int(round(float(r["trigger"]))) for r in rows], np.int64)
+	return out
+
+
+SNAP_TRIGGERS = 5 # a bout's first frame within this many triggers of where the OneBox puts it is its first pulse's
+
+
+def PlaceBouts(bouts, triggers):
+	"""
+	Each bout's first trigger, from one camera's triggers. The first bout starts
+	at trigger 1, the Pico's first pulse (campy-align's trigger 1 is the first
+	pulse any camera has a frame for). Each next one starts the time between the two
+	bouts' first pulses later (on the OneBox's clock, in the pulses' own rate
+	there), snapped to the first frame within SNAP_TRIGGERS of that, which
+	absorbs the two clocks' small difference. A frame the Pico didn't send
+	(a stray edge on the trigger line between bouts) is then in no bout.
+	"""
+	starts = []
+	for i, r in enumerate(bouts):
+		if not len(triggers):
+			return []
+		if i == 0:
+			start = 1
+		else:
+			p = bouts[i - 1]
+			hz = r.get("camera_hz") or p.get("camera_hz") or 60.0
+			start = starts[-1] + int(round((r["camera_on_s"] - p["camera_on_s"]) * hz))
+			near = triggers[(triggers >= start - SNAP_TRIGGERS) & (triggers <= start + SNAP_TRIGGERS)]
+			if len(near):
+				start = int(near.min())
+		starts.append(start)
+	return starts
+
+
+def AddCampyFrames(bouts, folder):
+	"""
+	Each camera's frames in each bout, and the flashes' frames in campy's video
+	(counted from 0, the recording's first frame), from aligned.csv: each frame
+	is put with the Pico pulse that made it, so a missing or extra frame moves
+	nothing else. Without aligned.csv (campy-align didn't run), from
+	frametimes.npy, split where frames stop for more than 1 s, as before.
+	Returns lines to print.
+	"""
+	said = []
+	aligned = CampyAligned(folder)
+	if not aligned:
+		said.append("No aligned.csv in {}: campy's frames counted from frametimes.npy, which an extra or missing frame "
+			"shifts (run campy-align on the recording for the exact frames).".format(folder))
+		cams = CampyBouts(folder)
+		total = 0
+		for i, r in enumerate(bouts):
+			for cam, runs in cams.items():
+				r[cam + "_frames"] = runs[i][1] if i < len(runs) else ""
+			for name in ("blue", "yellow"):
+				if r.get(name + "_frames"):
+					a, b = (int(v) for v in r[name + "_frames"].split("-"))
+					r[name + "_campy_frames"] = "{}-{}".format(total + a, total + b)
+			total += r["camera_pulses"]
+		for cam, runs in cams.items():
+			if len(runs) != len(bouts):
+				said.append("{}: {} bouts of frames, the OneBox {} bouts".format(cam, len(runs), len(bouts)))
+		return said
+	flash = {cam: {} for cam in aligned}
+	for cam, triggers in aligned.items():
+		starts = PlaceBouts(bouts, triggers)
+		mine = np.zeros(len(triggers), bool)
+		for r, start in zip(bouts, starts):
+			inside = (triggers >= start) & (triggers < start + r["camera_pulses"])
+			mine |= inside
+			r[cam + "_frames"] = int(np.count_nonzero(inside))
+			for name in ("blue", "yellow"):
+				if r.get(name + "_frames"):
+					a, b = (int(v) for v in r[name + "_frames"].split("-"))
+					at = [np.flatnonzero(triggers == start + k) for k in (a, b)]
+					flash[cam][(r["bout"], name)] = "{}-{}".format(at[0][0], at[1][0]) if all(len(x) for x in at) else \
+						"missing"
+		extra = np.flatnonzero(~mine)
+		if len(extra):
+			said.append("{}: {} frame{} outside the Pico's bouts (video frame{} {}): not one of its pulses".format(cam,
+				len(extra), "s" if len(extra) > 1 else "", "s" if len(extra) > 1 else "",
+				", ".join(str(int(x)) for x in extra[:10]) + (", ..." if len(extra) > 10 else "")))
+	for r in bouts:
+		for name in ("blue", "yellow"):
+			seen = {cam: flash[cam].get((r["bout"], name)) for cam in aligned}
+			seen = {cam: v for cam, v in seen.items() if v}
+			if not seen:
+				continue
+			if len(set(seen.values())) == 1:
+				r[name + "_campy_frames"] = next(iter(seen.values()))
+			else:
+				r[name + "_campy_frames"] = "; ".join("{} {}".format(cam, v) for cam, v in seen.items())
+	return said
+
+
 def RunFolder(path):
 	"""The SpikeGLX run folder (holding the .obx.bin files): the path, or within a session's spikeglx\\."""
 	for pattern in ("*.obx0.obx.bin", os.path.join("*", "*.obx0.obx.bin"), os.path.join("spikeglx", "*", "*.obx0.obx.bin"),
@@ -227,20 +337,8 @@ def Main(argv=None):
 	for i, r in enumerate(bouts):
 		r["bout"] = i + 1
 	if args.campy:
-		cams = CampyBouts(args.campy)
-		total = 0
-		for i, r in enumerate(bouts):
-			for cam, runs in cams.items():
-				r[cam + "_frames"] = runs[i][1] if i < len(runs) else ""
-			# The flashes' frames in campy's numbering: the bouts before, plus the frame within this one
-			for name in ("blue", "yellow"):
-				if r.get(name + "_frames"):
-					a, b = (int(v) for v in r[name + "_frames"].split("-"))
-					r[name + "_campy_frames"] = "{}-{}".format(total + a, total + b)
-			total += r["camera_pulses"]
-		for cam, runs in cams.items():
-			if len(runs) != len(bouts):
-				print("{}: {} bouts of frames, the OneBox {} bouts".format(cam, len(runs), len(bouts)))
+		for line in AddCampyFrames(bouts, args.campy):
+			print(line)
 	keys = []
 	for r in rows:
 		keys += [k for k in r if k not in keys]

@@ -193,3 +193,49 @@ def test_a_flash_too_short_to_read_is_blank(tmp_path, capsys):
 	assert isinstance(b["dark_green_V"], float)
 	assert "green blank V, red blank V" in capsys.readouterr().out
 	assert ",," in (tmp_path / "out.csv").read_text().splitlines()[1]
+
+
+def write_aligned(folder, cam, triggers):
+	d = folder / cam
+	d.mkdir(exist_ok=True)
+	with open(str(d / "aligned.csv"), "w") as f:
+		f.write("frame,trigger,t_s\n")
+		for i, k in enumerate(triggers):
+			f.write("{},{},{:.6f}\n".format(i + 1, k, (k - 1) / 60))
+
+
+def three_bouts(tmp_path):
+	"""Three bouts 300 s apart on the run's clock, as the panel's gate test (each 600 pulses here)."""
+	for t, at in ((1, 0), (2, 300), (3, 600)):
+		write_obx(str(tmp_path), t, 12.0, first=int(round(at * RATE)), bout=True)
+
+
+def test_campys_frames_come_from_aligned_csv_and_a_stray_frame_moves_nothing(tmp_path, capsys):
+	three_bouts(tmp_path)
+	bout = lambda first: list(range(first, first + 600))
+	# Camera0: a frame between bouts 2 and 3 that the Pico didn't send, and campy stopping at the planned total, so
+	# bout 3 has no frame for its last pulse (as on 10 November). Camera1: every pulse, nothing else, and its grid
+	# puts bout 2 one trigger later than the OneBox's times do (the clocks' small difference)
+	write_aligned(tmp_path, "Camera0", bout(1) + bout(18001) + [20000] + bout(36001)[:-1])
+	write_aligned(tmp_path, "Camera1", bout(1) + bout(18002) + bout(36001))
+	rows = ps.Main([str(tmp_path), "--campy", str(tmp_path), "--csv", str(tmp_path / "out.csv")])
+	b = [r for r in rows if r.get("bout")]
+	assert [(r["Camera0_frames"], r["Camera1_frames"]) for r in b] == [(600, 600), (600, 600), (599, 600)]
+	assert [r["yellow_campy_frames"] for r in b[:2]] == ["300-302", "900-902"]
+	assert [r["blue_campy_frames"] for r in b[:2]] == ["312-314", "912-914"]
+	# Bout 3: after the stray frame, Camera0's video is one frame later than Camera1's
+	assert b[2]["yellow_campy_frames"] == "Camera0 1501-1503; Camera1 1500-1502"
+	assert b[2]["blue_campy_frames"] == "Camera0 1513-1515; Camera1 1512-1514"
+	assert "Camera0: 1 frame outside the Pico's bouts (video frame 1200)" in capsys.readouterr().out
+
+
+def test_without_aligned_csv_frametimes_as_before(tmp_path, capsys):
+	three_bouts(tmp_path)
+	cam = tmp_path / "Camera0"
+	cam.mkdir()
+	t = np.r_[np.arange(600) / 60, 300 + np.arange(600) / 60, 600 + np.arange(600) / 60]
+	np.save(str(cam / "frametimes.npy"), np.vstack([np.arange(1800), t]))
+	rows = ps.Main([str(tmp_path), "--campy", str(tmp_path), "--csv", str(tmp_path / "out.csv")])
+	b = [r for r in rows if r.get("bout")]
+	assert [r["yellow_campy_frames"] for r in b] == ["300-302", "900-902", "1500-1502"]
+	assert "No aligned.csv" in capsys.readouterr().out

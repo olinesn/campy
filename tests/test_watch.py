@@ -175,7 +175,7 @@ def test_every_camera_at_once_is_the_trigger(monkeypatch, tmp_path):
 
 
 def test_an_external_trigger(monkeypatch, tmp_path):
-	rig = Rig(monkeypatch, tmp_path, systems={}).Start()
+	rig = Rig(monkeypatch, tmp_path, systems={}, cameraTrigger="Line3").Start()
 	assert rig.Sent()[0].endswith("for 1 h 0 min, on an external trigger. 500.0 GB free.")
 	rig.Run(watch.EXTERNAL_WAIT_S - 10, cameras=[]) # waiting for it: nothing yet
 	assert len(rig.Sent()) == 1
@@ -190,7 +190,7 @@ def test_an_external_trigger(monkeypatch, tmp_path):
 
 def test_an_external_trigger_started_later_on_purpose(monkeypatch, tmp_path):
 	# alertExternalWaitSec: a session that starts campy well before the device that makes the pulses
-	rig = Rig(monkeypatch, tmp_path, systems={}, alertExternalWaitSec=1800).Start()
+	rig = Rig(monkeypatch, tmp_path, systems={}, cameraTrigger="Line3", alertExternalWaitSec=1800).Start()
 	rig.Run(watch.EXTERNAL_WAIT_S + 60, cameras=[]) # past the default 10 min: nothing
 	assert len(rig.Sent()) == 1
 	rig.Run(1800 - watch.EXTERNAL_WAIT_S - 60 + 10, cameras=[])
@@ -202,13 +202,64 @@ def test_an_external_trigger_started_later_on_purpose(monkeypatch, tmp_path):
 
 def test_an_external_trigger_never_waited_for(monkeypatch, tmp_path):
 	# alertExternalWaitSec None: no "No frame yet" however long campy waits; the rest as before
-	rig = Rig(monkeypatch, tmp_path, systems={}, alertExternalWaitSec="None").Start()
+	rig = Rig(monkeypatch, tmp_path, systems={}, cameraTrigger="Line3", alertExternalWaitSec="None").Start()
 	rig.Run(3 * 3600, cameras=[])
 	rig.Run(20)
 	assert len(rig.Sent()) == 1 # the start only: nothing said as the frames came either
 	assert not any("No frame yet" in line or "first frames" in line for line in rig.said)
 	rig.Run(watch.EVERY_S * 7, cameras=[])
 	assert "so the trigger has stopped (an external trigger: is it still running?)" in rig.Sent()[-1]
+
+
+def test_free_running_cameras_are_not_on_an_external_trigger(monkeypatch, tmp_path):
+	# No trigger Arduino and cameraTrigger "None": the cameras time their own frames. The Jetson AGX Orin's first
+	# recording (one Blackfly S, no trigger board) was said to be "on an external trigger"
+	rig = Rig(monkeypatch, tmp_path, names=["Camera0"], systems={}, recTimeInSec=120).Start()
+	assert rig.Sent()[0].endswith("*Test rig*: Recording 2026-10-23_01-00-00 started: 1 camera (Camera0) at 30 fps, "
+		"for 2 min, free-running (no trigger). 500.0 GB free."), rig.Sent()[0]
+	assert not rig.watch.external and rig.watch.freeRunning
+
+
+def test_free_running_cameras_with_no_first_frame(monkeypatch, tmp_path):
+	# Their frames come at once, so none 10 s in is critical, as with the Arduino: not a 10-min wait for a trigger
+	rig = Rig(monkeypatch, tmp_path, systems={}).Start()
+	rig.Run(8, cameras=[])
+	assert len(rig.Sent()) == 1
+	rig.Run(4, cameras=[])
+	assert rig.Sent()[-1] == ":red_circle: *Test rig*: No camera has had a frame 10 s after the recording started. " \
+		"They free-run, with no trigger, so their frames should have come at once."
+	rig.Run(20)
+	assert rig.Sent()[-1].endswith(": The first frames came")
+
+
+def test_free_running_cameras_stopping_together_blame_no_trigger(monkeypatch, tmp_path):
+	rig = Rig(monkeypatch, tmp_path, systems={}).Start()
+	rig.Run(20)
+	rig.Run(watch.EVERY_S * 8, cameras=[])
+	assert rig.Sent()[1:] == [":red_circle: *Test rig*: No camera has had a frame for 12 s: all 3 stopped together. "
+		"They free-run, with no trigger: is the computer, or their USB, stuck?"]
+
+
+def test_which_trigger_from_each_camera(monkeypatch, tmp_path):
+	# cameraTrigger is each camera's: one triggered camera is enough for an external trigger; a RatCam free-runs
+	# (its SYNC input only marks the pulses); a list in the config gives each camera its own
+	def kind(systems=None, cams=None, **values):
+		w = Rig(monkeypatch, tmp_path, systems=systems if systems is not None else {}, cams=cams, **values).watch
+		return "arduino" if w.board else "external" if w.external else "free" if w.freeRunning else "?"
+	free, line = {"cameraTrigger": "None"}, {"cameraTrigger": "Line3"}
+	assert kind(cams=[free, free, free]) == "free"
+	assert kind(cams=[free, line, free]) == "external"
+	assert kind(cams=[dict(line, cameraMake="ratcam")] * 3) == "free"
+	assert kind(cameraTrigger=["None", "None", "Line3"]) == "external"
+	assert kind(cameraTrigger=["None", "None", "None"]) == "free"
+	# The trigger Arduino is campy's, whatever the cameras say: as before
+	assert kind(systems={"serial": object()}, cams=[free, free, free]) == "arduino"
+	assert kind(systems={"serial": object()}, cams=[line, line, line]) == "arduino"
+
+
+def test_the_arduino_note_is_unchanged(monkeypatch, tmp_path):
+	rig = Rig(monkeypatch, tmp_path).Start() # cameraTrigger "None", with the trigger Arduino
+	assert rig.Sent()[0].endswith("for 1 h 0 min. 500.0 GB free.")
 
 
 def test_external_wait_leaves_the_arduino_alone(monkeypatch, tmp_path):
@@ -295,7 +346,7 @@ def Pile(rig, c, seconds, queued, per_second=30):
 def test_an_encoder_opening_at_the_first_frames_is_no_stall(monkeypatch, tmp_path):
 	# ffmpeg opens its encoder at its first frame: on the ChronicRecord PC, 4 Quick Sync encoders opening at once
 	# after an external trigger's wait let 1.8 s of frames pile up, and then caught up (none dropped)
-	rig = Rig(monkeypatch, tmp_path, systems={}).Start()
+	rig = Rig(monkeypatch, tmp_path, systems={}, cameraTrigger="Line3").Start()
 	rig.Run(30, cameras=[]) # waiting for the trigger
 	Pile(rig, 0, 4, 0, per_second=20) # 2.7 s waiting (27 % of writeQueueMaxSec 10 s) after 4 s
 	assert waiting(rig, 0) >= watch.STALL_WARNING * 10
@@ -308,7 +359,7 @@ def waiting(rig, c):
 
 
 def test_a_stall_that_goes_on_past_the_start_is_said(monkeypatch, tmp_path):
-	rig = Rig(monkeypatch, tmp_path, systems={}).Start()
+	rig = Rig(monkeypatch, tmp_path, systems={}, cameraTrigger="Line3").Start()
 	rig.Run(30, cameras=[])
 	Pile(rig, 0, int(watch.STALL_START_S) + 2, 0, per_second=8) # 3.2 s waiting at 12 s, and growing
 	said = [t for t in rig.Sent() if "waiting for ffmpeg" in t]
@@ -316,7 +367,7 @@ def test_a_stall_that_goes_on_past_the_start_is_said(monkeypatch, tmp_path):
 
 
 def test_a_stall_near_dropping_frames_at_the_start_is_still_said(monkeypatch, tmp_path):
-	rig = Rig(monkeypatch, tmp_path, systems={}).Start()
+	rig = Rig(monkeypatch, tmp_path, systems={}, cameraTrigger="Line3").Start()
 	rig.Run(30, cameras=[])
 	Pile(rig, 0, 4, 0, per_second=30 * 2) # 8 s waiting of 10 within 4 s: critical
 	assert rig.Sent()[-1].startswith(":red_circle: *Test rig*: Camera0: 8.0 s of frames waiting for ffmpeg (80%")

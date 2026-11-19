@@ -34,7 +34,10 @@ def rig(tmp_path):
 	gpu.write_text("")
 	env = dict(os.environ, RIG_ROOT=str(tmp_path / "root"), RIG_EXTRA="gpu=%s" % gpu,
 		RIG_PERIOD="0.3", RIG_CPU="1000", RIG_IO="100000")
-	env.pop("RIG_JOB", None)
+	# when the tests themselves run inside a rig.py job (as on a rig), its RIG_JOB and RIG_TAG are in
+	# the environment: a guarded script here would join that job, or log under that job's tag
+	for name in ("RIG_JOB", "RIG_TAG", "RIG_LOGDIR"):
+		env.pop(name, None)
 	os.makedirs(env["RIG_ROOT"])
 
 	class Rig:
@@ -164,8 +167,11 @@ def test_a_desktop_is_noted_not_waited_for_and_one_starting_mid_run_is_caught(ri
 	try:
 		r = rig("run", "tester", "desk", "--", "sleep", "1")
 		assert r.returncode == 0 and "in use outside" not in r.stdout, r.stdout
-		assert "desktop on the GPU: Xwayland" in rig.log("desk"), rig.log("desk")
-		assert last(rig.log("desk")).startswith("RIG_CLEAN (desktop on the GPU: Xwayland"), rig.log("desk")
+		# the machine's own desktop may be listed too, before the stand-in (Xorg on an X11 session)
+		desk = [l for l in rig.log("desk").splitlines() if "desktop on the GPU:" in l]
+		assert desk and "Xwayland (" in desk[0], rig.log("desk")
+		assert last(rig.log("desk")).startswith("RIG_CLEAN (desktop on the GPU: "), rig.log("desk")
+		assert "Xwayland (" in last(rig.log("desk")), rig.log("desk")
 	finally:
 		up.kill()
 		up.wait()
@@ -181,11 +187,12 @@ def test_a_desktop_is_noted_not_waited_for_and_one_starting_mid_run_is_caught(ri
 @linux
 def test_a_logged_in_gnome_desktops_helpers_are_desktop_not_device_users(rig, tmp_path):
 	# Logged in, GNOME's gsd-xsettings and mutter-x11-frames keep the render node open for the whole
-	# session; stand-ins named like them hold the fake GPU open, and run neither waits nor is contaminated.
-	# mutter-x11-frames is longer than the 15 characters the kernel keeps of a name, so this checks that too
+	# session, and its portal helper xdg-desktop-portal-gnome from the first dialog it draws until it ends;
+	# stand-ins named like them hold the fake GPU open, and run neither waits nor is contaminated. The last
+	# two names are longer than the 15 characters the kernel keeps of a name, so this checks that too
 	helpers = []
 	with open(rig.gpu) as dev:
-		for name in ("gsd-xsettings", "mutter-x11-frames"):
+		for name in ("gsd-xsettings", "mutter-x11-frames", "xdg-desktop-portal-gnome"):
 			exe = tmp_path / name
 			shutil.copy(shutil.which("sleep"), str(exe))
 			helpers.append(subprocess.Popen([str(exe), "30"], stdin=dev))
@@ -195,6 +202,7 @@ def test_a_logged_in_gnome_desktops_helpers_are_desktop_not_device_users(rig, tm
 		assert r.returncode == 0 and "in use outside" not in r.stdout, r.stdout
 		assert last(log).startswith("RIG_CLEAN (desktop on the GPU:"), log
 		assert "gsd-xsettings" in log and "mutter-x11-frames" in log, log
+		assert "xdg-desktop-portal-gnome (" in last(log), log
 	finally:
 		for h in helpers:
 			h.kill()
@@ -589,3 +597,14 @@ def test_what_rig_py_says_can_not_stop_it(tmp_path):
 	err = p.communicate(timeout=60)[1]
 	assert p.returncode == 0 and (tmp_path / "out").read_text() == "went on", err
 	assert not err, err
+
+
+def test_device_kinds_of_a_jetson():
+	# The AGX Orin's GPU and encoder nodes (JetPack 7.2): what a CUDA job and a GStreamer encode open
+	kind = lambda path: riglib.device_kind(path, {})
+	assert kind("/dev/nvgpu/igpu0/ctrl") == "gpu"
+	assert kind("/dev/nvhost-ctrl-gpu") == "gpu" and kind("/dev/nvhost-gpu") == "gpu"
+	assert kind("/dev/v4l2-nvenc") == "encoder"
+	assert kind("/dev/dri/renderD128") == "encoder" and kind("/dev/kfd") == "gpu"
+	assert kind("/dev/nvmap") is None and kind("/dev/nvhost-ctrl-nvdla0") is None and kind("/dev/v4l2-nvdec") is None
+	assert {"xdg-desktop-por", "gnome-software", "gnome-initial-s"} <= riglib.DESKTOP

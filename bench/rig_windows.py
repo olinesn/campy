@@ -11,6 +11,10 @@ What a process counts as using:
   trigger  has a COM port open (any port in HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM), found in the
            system's handle table; RIG_EXTRA can add other devices by their NT name, e.g.
            RIG_EXTRA="trigger=\\Device\\Null"
+  ephys    named SpikeGLX*.exe or open-ephys*.exe (RIG_EPHYS_NAMES): an ephys acquisition program
+           (SpikeGLX, SpikeGLX_NISIM, the Open Ephys GUI). Running at all counts: it may be recording
+           Neuropixels or other probes unattended, through drivers (an imec PCIe base station, NI DAQ
+           cards) whose device names rig.py doesn't know
   desktop  a program nvidia-smi lists as drawing on the GPU (dwm.exe, explorer.exe, ...)
 and the disk each loads: the bytes it reads and writes, except the kernel's (see classify). rig.py
 counts no more of them than the physical disks moved (disk_bytes): a program's I/O can be a pipe,
@@ -32,6 +36,7 @@ def patterns(var, default):
 GPU_NAMES = patterns("RIG_GPU_NAMES", "python*.exe")
 ENCODER_NAMES = patterns("RIG_ENCODER_NAMES", "ffmpeg*.exe")
 CAMERA_MODULES = patterns("RIG_CAMERA_MODULES", "spinnaker*.dll")
+EPHYS_NAMES = patterns("RIG_EPHYS_NAMES", "spikeglx*.exe,open-ephys*.exe")
 RIG_PY = re.compile(r"rig\.py\W+(run|hold|status|break)\b", re.I)
 KERNEL = 4
 NOT_PROCESSES = (0, KERNEL)  # the idle "process" (its CPU time is idle time) and the kernel
@@ -60,6 +65,8 @@ def classify(table, gpu_pids=(), camera_pids=(), ports=None, jobs=None, cmdline=
 			kinds.add("encoder")
 		if pid in camera_pids:
 			kinds.add("camera")
+		if matches(name, EPHYS_NAMES):
+			kinds.add("ephys")
 		if python and pid not in gpu_pids and kinds == {"gpu"} and RIG_PY.search(cmdline(pid, start) or ""):
 			kinds = set()  # another rig.py
 		if not kinds and pid in desktop_pids:

@@ -432,6 +432,24 @@ def pty():
 	return master, slave
 
 
+def live_sim(outputs_sim, master, sim_log, env):
+	"""
+	The board's sketch in real time on the pty, once it is up: it said "ready"
+	(its power-up line, in sim_log). campy-rules gives a board 2 s to answer
+	"id", as a real one is running before campy-rules opens it; the first start
+	of a just-compiled simulator, on a busy computer (4 tests at once), took
+	longer now and then, and campy-rules rightly said the board didn't answer.
+	"""
+	with open(str(sim_log), "w") as log:
+		board_sim = subprocess.Popen([outputs_sim, "live"], stdin=master, stdout=master, stderr=log, env=env)
+	up = until(lambda: board_sim.poll() is not None or "ready campy_outputs" in sim_log.read_text(), 60)
+	if not up or board_sim.poll() is not None:
+		board_sim.kill()
+		board_sim.wait()
+		raise AssertionError("the simulated board didn't start: {}".format(sim_log.read_text()[-2000:]))
+	return board_sim
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal for the simulated board")
 def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, outputs_sim):
 	"""
@@ -444,8 +462,7 @@ def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, ou
 	master, slave = pty()
 	sim_log = tmp_path / "sim.log"
 	env = dict(os.environ, SIM_INPUT="10:300000:{}:3000:100000".format(period_us))
-	with open(str(sim_log), "w") as log:
-		board_sim = subprocess.Popen([outputs_sim, "live"], stdin=master, stdout=master, stderr=log, env=env)
+	board_sim = live_sim(outputs_sim, master, sim_log, env)
 	prefix = name()
 	feed = Feed(prefix)
 	out = str(tmp_path / "live")
@@ -464,15 +481,19 @@ def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, ou
 		# before its trigger; the live simulation's own timing is too rough to
 		# place it closer). campy's frame numbers are the board's: both count
 		# from the first trigger.
-		deadline = time.monotonic() + 10
-		while time.monotonic() < deadline and (runner.board is None or len(runner.board.rises) < 5 or
-				not runner.board.clock.Ready()):
-			time.sleep(0.01)
+		# Waited for as long as it takes (a busy runner, 4 tests at once, took over 10 s now and then), and not at
+		# all once campy-rules has ended (it couldn't open the board: said says why)
+		assert until(lambda: "code" in result or (runner.board is not None and len(runner.board.rises) >= 5 and
+			runner.board.clock.Ready()), 60), said
+		assert "code" not in result, (result, said)
 		board = runner.board
 		k0 = next(reversed(board.rises))
 		for k in range(k0 + 2, k0 + 62):
-			while k not in board.rises and time.monotonic() < deadline + 5:
+			# Each trigger looked for every 0.5 ms (not until's 5): the row goes as soon as its trigger is reported
+			deadline = time.monotonic() + 10
+			while k not in board.rises and time.monotonic() < deadline:
 				time.sleep(0.0005)
+			assert k in board.rises, (k, said)
 			# The frame reached the host 5 ms after its trigger, as a camera's does: its time from the trigger's,
 			# not from when this loop got to it. On a busy computer (other tests beside this one) the loop can be
 			# held up for more than 3 frames, and a frame stamped then would look late by that much, which
@@ -492,11 +513,15 @@ def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, ou
 	events = [json.loads(l) for l in open(out + ".events.jsonl")]
 	commands = [e for e in events if e["kind"] == "command"]
 	assert len(commands) == 10, commands
-	# A pulse the board gets too late it refuses (err late), on purpose: a pulse fired late is wrong in a closed loop,
-	# and a pulse isn't sent again. On a busy CI runner (other test workers beside this one) campy-rules can be held
-	# up that long, once: 'err late 3 30 74668' on GitHub's Linux runner. So at most 2 of the 10 may be refused late,
-	# and the board made exactly the others
-	late = [e for e in commands if e["answer"].startswith("err late 3 ")]
+	# A pulse decided too late is refused, on purpose: a pulse fired late is wrong in a closed loop, and a pulse isn't
+	# sent again. The board refuses one it gets past the bound (err late), and campy-rules one it decides past it,
+	# without sending it ("late (campy-rules: ...)"). On a busy CI runner (other test workers beside this one) the
+	# rows or campy-rules can be held up that long, once: 'err late 3 30 74668' on GitHub's Linux runner, and
+	# 'late (campy-rules: 79.9 ms after the frame)' on Python 3.9's (November 2026). So at most 2 of the 10 may be
+	# refused late, either way, and the board made exactly the others
+	late_board = [e for e in commands if e["answer"].startswith("err late 3 ")]
+	late_host = [e for e in commands if e["answer"].startswith("late (campy-rules: ")]
+	late = late_board + late_host
 	made = [e for e in commands if e not in late]
 	assert len(late) <= 2, commands
 	for e in made:
@@ -516,7 +541,8 @@ def test_live_rules_switch_the_board_with_the_frame_and_its_latency(tmp_path, ou
 	assert all(a["fall_us"] < b["rise_us"] for a, b in zip(pulses, pulses[1:])), pulses
 	summary = json.load(open(out + ".json"))
 	assert summary["frame_offset"] == 0 and summary["frame_offset_changes"] == 0
-	assert summary["latency_ms"]["trigger_to_pin"]["n"] == len(made) and summary["counts"]["late_board"] == len(late)
+	assert summary["latency_ms"]["trigger_to_pin"]["n"] == len(made)
+	assert (summary["counts"]["late_board"], summary["counts"]["late_host"]) == (len(late_board), len(late_host))
 	t2h = summary["trigger_to_host_all_ms"]
 	assert 0 < t2h["p50"] < 16.7 and t2h["n"] >= 55, t2h
 	board = open(out + ".board.txt").read()
@@ -584,13 +610,20 @@ class FakePort:
 
 
 def test_board_refuses_an_older_or_newer_sketch():
-	# A board still running the sketch from before pull request 304 answers
-	# id with version 1: campy-rules says to upload the new one, and why
-	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 1\).*needs version 2.*Upload"):
+	# A board still running the sketch from before pull request 304 answers id with version 1, one from before the
+	# operant box's inputs and servos 2, one from before the camera pulses 3, one from before linkwatch 4: campy-rules
+	# says to upload the new one, and why
+	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 1\).*needs version 5.*frames.*Upload"):
 		outputs.Board(connection=FakePort(version=1), port="fake", heartbeat=0, sync=0)
-	with pytest.raises(outputs.BoardError, match=r"newer campy_outputs \(version 3\).*Update campy"):
+	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 2\).*needs version 5.*servos.*Upload"):
+		outputs.Board(connection=FakePort(version=2), port="fake", heartbeat=0, sync=0)
+	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 3\).*needs version 5.*camera pulses.*Upload"):
 		outputs.Board(connection=FakePort(version=3), port="fake", heartbeat=0, sync=0)
-	assert "not campy_outputs version 2" in outputs.Mismatch("fake", "ok something 2")
+	with pytest.raises(outputs.BoardError, match=r"older campy_outputs \(version 4\).*needs version 5.*USB link.*Upload"):
+		outputs.Board(connection=FakePort(version=4), port="fake", heartbeat=0, sync=0)
+	with pytest.raises(outputs.BoardError, match=r"newer campy_outputs \(version 6\).*Update campy"):
+		outputs.Board(connection=FakePort(version=6), port="fake", heartbeat=0, sync=0)
+	assert "not campy_outputs version 5" in outputs.Mismatch("fake", "ok something 2")
 
 
 def test_a_lost_answer_never_goes_to_the_wrong_command():
@@ -780,7 +813,11 @@ def test_after_the_watchdog_the_rules_start_over_and_the_session_trains_again(mo
 			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
 			time.sleep(1 / 60)
 		port.Say("wd 123456") # the board's watchdog switched everything off
-		time.sleep(0.05)
+		# Waited for, not slept on: the wd heard (the board's reading thread) and dealt with (the decision loop
+		# clears watchdog_fired as it sends the release and the session's train). After a fixed 50 ms, a busy runner
+		# could hear the wd only after sets 6-10 were all decided: then no set came after the release, and the
+		# laser stayed off
+		assert until(lambda: runner.counts["watchdog"] == 1 and not runner.watchdog_fired.is_set(), 30)
 		for k in range(6, 11):
 			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
 			time.sleep(1 / 60)
@@ -824,15 +861,25 @@ def test_a_stuck_decision_loop_lets_the_board_watchdog_fire(monkeypatch, tmp_pat
 			said = [x for _, x in port.Lines()]
 			on = [i for i, x in enumerate(said) if x.startswith("on 2 ")] # set 1's, or a later one's if 1 came late
 			return bool(on) and "hb" in said[on[0]:]
-		assert until(beat_since_on)
+		assert until(beat_since_on, 30)
 		for k in range(5, 8):
 			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
 			time.sleep(1 / 60)
-		time.sleep(1.3)
-	run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows)
-	# Nothing at all on the port from LOOP_ALIVE_S into the hold to its end: 0.9 s, well over the watchdog's 250 ms
-	quiet_from = held["at"] + int((rules.LOOP_ALIVE_S + 0.02) * 1e9)
-	assert [x for t, x in port.Lines() if quiet_from <= t <= held["end"]] == []
+		assert until(lambda: "end" in held, 30)
+		time.sleep(0.3)
+	# --bound-ms 0: no limit on a set's age, which isn't what this test checks. On a busy CI runner (Windows, 4
+	# workers) sets 1 to 4 were all decided over 40 ms after they were written, now and then: all rightly refused as
+	# late, so the laser never came on, no set came after them, and the wait for a heartbeat since the laser's on
+	# above ran out
+	run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows, bound_ms=0)
+	# The board hears nothing for most of the hold: the longest quiet stretch on the port within it is at least
+	# 2 x the watchdog's 250 ms (the hold is 1 s; the heartbeat stops LOOP_ALIVE_S into it). With the heartbeat
+	# going whatever the loop does, the longest is about HEARTBEAT_S (50 ms). Not "nothing after exactly
+	# LOOP_ALIVE_S + 20 ms": one heartbeat checked for just before that and written a little late, by a busy runner,
+	# would fail that without the watchdog being any less sure to fire
+	times = [held["at"]] + [t for t, _ in port.Lines() if held["at"] < t < held["end"]] + [held["end"]]
+	quiet_ms = max(np.diff(times)) / 1e6
+	assert quiet_ms >= 2 * 250, (quiet_ms, [(t - held["at"]) / 1e6 for t in times])
 	# Heartbeats before it, as usual
 	assert any(x == "hb" and t < held["at"] for t, x in port.Lines())
 
@@ -921,9 +968,13 @@ def test_campy_live_restarting_keeps_the_session_trains_and_the_rules_resume(mon
 	after = [x for t, x in switches if t >= marks["back"]]
 	assert after[0].startswith("on 2 ") and int(after[0].split()[2]) >= 100 # the new feed's sets, from a fresh start
 	assert after[-1] == "alloff" and "run 1 0" not in after[:-1] # Ctrl-C (the test's stop): all off
-	# The board heard campy-rules all through the gap: never quiet near its watchdog_ms (250)
+	# The board heard campy-rules all through the gap: the heartbeat at its usual pace (HEARTBEAT_S, 50 ms; about
+	# 62 ms on Windows' 15.6 ms ticks), never quiet near the watchdog's 250 ms more than once, never a stop. Before,
+	# the heartbeat stopped for all of the gap; a waiting loop slowed to 300 ms leaves a 200 ms hush every round.
+	# One is let by: a busy runner (4 tests at once) can write a heartbeat late, which isn't campy-rules' doing
 	heard = [t for t, x in lines if marks["gone"] <= t <= marks["back"]]
-	assert len(heard) >= 15 and max(np.diff(heard)) / 1e6 < 200, max(np.diff(heard)) / 1e6
+	gaps_ms = np.diff(heard) / 1e6
+	assert len(heard) >= 8 and sum(gaps_ms >= 200) <= 1 and max(gaps_ms) < 500, list(gaps_ms.round())
 	assert runner.counts["watchdog"] == 0 and runner.counts["live_gaps"] == 1
 	gone = [e for e in events if e["kind"] == "live_gone"]
 	back = [e for e in events if e["kind"] == "live_back"]
@@ -963,8 +1014,18 @@ def test_the_recording_ending_while_campy_live_is_gone_ends_campy_rules_with_all
 	assert any("the recording ended while campy-live was gone" in x for x in runner.said_lines)
 
 
+def knows_the_cameras(runner):
+	# campy-rules has taken the recording's cameras (Recording.Snap: at its first look between sets, once sets came)
+	return lambda: runner.recording is not None and runner.recording.Known()
+
+
 def test_the_recording_ending_first_ends_campy_rules_with_campy_live(monkeypatch, tmp_path):
-	# The usual end: the cameras stop, then campy-live ends: no waiting, everything off as before
+	# The usual end: the cameras stop, then campy-live ends: no waiting, everything off as before.
+	# The recording ends only once campy-rules has taken its cameras, as with a real one (campy-rules started before
+	# it, looking between sets 0.2 ms apart). This test's recording is 5 sets, about 150 ms, and campy-rules sets its
+	# board up (about 10 commands and their answers) after the test sees it: GitHub's Windows runner, busy, twice
+	# looked first only after the recording had ended (18 November), and so said "campy-live ended." alone (the test
+	# below makes that start late on purpose)
 	port = SketchPort()
 	marks = {}
 
@@ -972,6 +1033,7 @@ def test_the_recording_ending_first_ends_campy_rules_with_campy_live(monkeypatch
 		for k in range(1, 6):
 			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
 			time.sleep(1 / 60)
+		assert until(knows_the_cameras(runner))
 		time.sleep(0.05)
 		marks["ended"] = clock.HostNs()
 		feed.cameras.Close()
@@ -982,7 +1044,44 @@ def test_the_recording_ending_first_ends_campy_rules_with_campy_live(monkeypatch
 	assert (alloff - marks["ended"]) / 1e6 < 1000
 	assert runner.counts["live_gaps"] == 0
 	assert not [e for e in events if e["kind"] in ("live_gone", "live_back")]
-	assert any("campy-live ended, and the recording with it" in x for x in runner.said_lines), runner.said_lines
+	# How it says so: campy-live's results ending with the cameras' (seen together), or, when it looks at the cameras
+	# between the two (the test closes them a moment apart, as campy-acquire and campy-live end; a busy runner let it
+	# look in between once, GitHub's Windows runner on 18 November), the cameras' feeds ending, then the results'. Both
+	# are this test's end; "campy-live ended." alone would mean it never knew the recording's cameras
+	ends = [x for x in runner.said_lines if "ended" in x]
+	assert any("campy-live ended, and the recording with it" in x or "the recording ended (its cameras' live feeds "
+		"did), and campy-live's results stopped with it" in x for x in ends), ends
+
+
+def test_a_recording_over_before_campy_rules_looks_ends_it_at_once(monkeypatch, tmp_path):
+	# campy-rules' loop starts only after the recording's cameras and campy-live's results have both ended (what a
+	# busy runner did to the test above, here on purpose): its first look finds the cameras ended, so it never knew
+	# them recording. It ends at once all the same: everything off, no wait for campy-live, no gap counted
+	port = SketchPort()
+	marks = {}
+	over = threading.Event()
+	loop = rules.Runner.Loop
+
+	def late(self, *args):
+		assert until(over.is_set)
+		return loop(self, *args)
+	monkeypatch.setattr(rules.Runner, "Loop", late)
+
+	def feed_rows(feed, runner):
+		for k in range(1, 6):
+			feed.Write(make_row(k, IN_NEST, t_ns=clock.HostNs()))
+			time.sleep(1 / 60)
+		marks["ended"] = clock.HostNs()
+		feed.cameras.Close()
+		feed.Close()
+		over.set()
+		assert until(lambda: alloff_after(port, marks["ended"]), 3)
+	runner, events = run_on_port(monkeypatch, tmp_path, port, LASER_RULE, feed_rows, cameras=True)
+	assert (alloff_after(port, marks["ended"]) - marks["ended"]) / 1e6 < 1000
+	assert not runner.recording.Known() # the cameras had ended at its first look
+	assert runner.counts["rows"] == 5 and runner.counts["live_gaps"] == 0
+	assert not [e for e in events if e["kind"] in ("live_gone", "live_back")]
+	assert [x for x in runner.said_lines if "ended" in x] == ["campy-rules: campy-live ended."]
 
 
 @pytest.mark.parametrize("cameras, arg", [(False, {}), (True, {"live_wait_s": 0.0})])
@@ -1075,19 +1174,22 @@ def test_refractory_counts_from_the_last_start_across_a_release():
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal for the simulated board")
 def test_the_board_sketch_keeps_the_session_train_and_never_fires_its_watchdog_while_campy_live_is_gone(tmp_path,
 		outputs_sim):
-	# The sketch itself, in real time with a 60 Hz trigger: campy-live gone for 1 s (4 x watchdog_ms) while the
+	# The sketch itself, in real time with a 60 Hz trigger: campy-live gone for 2 s (4 x watchdog_ms) while the
 	# cameras record. The session train's pin keeps pulsing on its frames, the laser goes off, the board's watchdog
-	# never fires; the laser comes back on with the new campy-live's sets
+	# never fires; the laser comes back on with the new campy-live's sets.
+	# watchdog_ms 500 here, not the usual 250: the simulated board and campy-rules are two processes on a CI runner
+	# that runs 4 tests at once, and a 250 ms stall of either one (the simulator checks its watchdog before reading
+	# what came while it was held up) now and then fired it (ARM runner, November 2026). How campy-rules itself keeps
+	# the heartbeat's pace through the gap is checked from its own log of what it sent, below
 	master, slave = pty()
 	sim_log = tmp_path / "sim.log"
 	env = dict(os.environ, SIM_INPUT="10:300000:16667:3000:100000")
-	with open(str(sim_log), "w") as log:
-		board_sim = subprocess.Popen([outputs_sim, "live"], stdin=master, stdout=master, stderr=log, env=env)
+	board_sim = live_sim(outputs_sim, master, sim_log, env)
 	prefix = name()
 	cams = CameraRings(prefix)
 	feed = Feed(prefix, rings=cams.names)
 	out = str(tmp_path / "live")
-	config = dict(LASER_RULE, board={"trigger_pin": 10, "bound_ms": 60, "watchdog_ms": 250})
+	config = dict(LASER_RULE, board={"trigger_pin": 10, "bound_ms": 60, "watchdog_ms": 500})
 	args = args_for(prefix, out)
 	args.port = os.ttyname(slave)
 	runner = rules.Runner(args, config)
@@ -1100,21 +1202,21 @@ def test_the_board_sketch_keeps_the_session_train_and_never_fires_its_watchdog_w
 		board = runner.board
 		k0 = next(reversed(board.rises))
 		for k in range(k0 + 1, k0 + 1 + count):
-			assert until(lambda: k in board.rises, 2)
+			assert until(lambda: k in board.rises, 10)
 			rise = board.RiseHostNs(k)
 			feed.Write(make_row(k, IN_NEST, t_ns=rise + 5_000_000 if rise is not None else clock.HostNs()))
 	try:
 		assert until(lambda: runner.board is not None and len(runner.board.rises) >= 5 and
-			runner.board.clock.Ready(), 10)
+			runner.board.clock.Ready(), 30)
 		rows(10)
 		time.sleep(0.05)
 		marks["gone"] = clock.HostNs()
 		feed.Close()
-		assert until(lambda: runner.results is None and runner.counts["live_gaps"] == 1)
-		time.sleep(1.0)
+		assert until(lambda: runner.results is None and runner.counts["live_gaps"] == 1, 30)
+		time.sleep(2.0)
 		marks["back"] = clock.HostNs()
 		feed.publisher = feed.Publisher()
-		assert until(lambda: runner.results is not None)
+		assert until(lambda: runner.results is not None, 30)
 		rows(10)
 		time.sleep(0.2)
 	finally:
@@ -1127,8 +1229,18 @@ def test_the_board_sketch_keeps_the_session_train_and_never_fires_its_watchdog_w
 		os.close(slave)
 		os.close(master)
 	assert result.get("code") == 0, said
-	assert runner.counts["watchdog"] == 0, said
-	assert not [line for line in open(out + ".board.txt") if line.split()[1:2] == ["wd"]] # the board never said wd
+	# What campy-rules sent the board through the gap, on its own clock: the heartbeat at its usual pace
+	# (HEARTBEAT_S, 50 ms), quiet for 200 ms or more at most once (a busy runner), never for 500. This is what
+	# catches a waiting loop slowed to 300 ms (a 200 ms hush every round), which the 500 ms watchdog wouldn't.
+	# Said with any watchdog below, to tell a stalled runner from a bug
+	board_log = [line.split() for line in open(out + ".board.txt")]
+	sent = [int(w[0]) for w in board_log if w[1:2] == [">"] and marks["gone"] <= int(w[0]) <= marks["back"]]
+	gaps_ms = np.diff(sent) / 1e6
+	pace = "{} lines sent in the gap, {} of them 200 ms or more after the one before, at most {:.0f} ms".format(
+		len(sent), sum(gaps_ms >= 200), max(gaps_ms))
+	assert len(sent) >= 15 and sum(gaps_ms >= 200) <= 1 and max(gaps_ms) < 500, pace
+	assert runner.counts["watchdog"] == 0, (pace, said)
+	assert not [w for w in board_log if w[1:2] == ["wd"]], pace # the board never said wd
 	events = [json.loads(l) for l in open(out + ".events.jsonl")]
 	laser = [e["command"].split()[0] for e in events if e["kind"] == "command" and e["output"] == "laser"]
 	assert laser[:3] == ["on", "off", "on"], laser # (then off once the test's sets stop: stale)
@@ -1138,3 +1250,127 @@ def test_the_board_sketch_keeps_the_session_train_and_never_fires_its_watchdog_w
 	pulses = [e for e in events if e["kind"] == "pulse" and e["channel"] == 1 and e.get("rise_ns")]
 	during = [p for p in pulses if marks["gone"] + 100_000_000 < p["rise_ns"] < marks["back"]]
 	assert len(during) >= 20, len(during)
+
+
+# ---------------------------------------------------------------- an operant box's inputs (sketch version 3)
+
+POKE = {"poke": {"input": 0, "pin": "A0", "pull": "up"}}
+
+
+def test_a_poke_rewarded_only_when_mouse_2_is_at_the_port():
+	# all: [the poke, mouse 2's nose in the port]: a poke while mouse 2 is elsewhere gives nothing
+	r = build({"outputs": OUT, "inputs": POKE, "regions": {"port": NEST}, "rules": [
+		{"name": "m2_poke", "when": {"all": [{"input": "poke"}, {"inside": {"region": "port", "animal": 2,
+			"node": "nose"}}]}, "do": {"output": "reward", "action": "pulse"}}]})
+	poke = r.inputs["poke"]
+	inside, outside = {2: {"nose": [50, 50, 10]}}, {2: {"nose": [500, 50, 10]}}
+	poke.Set(False)
+	t = lambda k: int(k * 16_666_667)
+	assert r.Step(make_row(1, inside), t(1))[1] == []        # mouse 2 there, no poke
+	poke.Edge(True)
+	assert r.Step(make_row(2, outside), t(2))[1] == []       # a poke, mouse 2 elsewhere
+	poke.Edge(False)
+	assert r.Step(make_row(3, inside), t(3))[1] == []
+	poke.Edge(True)
+	assert [c[3] for c in r.Step(make_row(4, inside), t(4))[1]] == ["pulse 3 50000"]
+	assert r.inputs["poke"].count == 2
+
+
+def test_an_input_shorter_than_a_frame_still_counts_once():
+	# A lick between two sets (active, then inactive before the next set): true for that set only
+	r = build({"outputs": OUT, "inputs": {"lick": {"input": 3, "pin": "A3", "pull": "down", "debounce_ms": 0.5}},
+		"rules": [{"name": "lick", "when": {"input": "lick"}, "do": {"output": "laser"}}]})
+	lick = r.inputs["lick"]
+	lick.Set(False)
+	t = lambda k: int(k * 16_666_667)
+	assert r.Step(make_row(1), t(1))[1] == []
+	lick.Edge(True)
+	lick.Edge(False)
+	assert [c[3] for c in r.Step(make_row(2), t(2))[1]] == ["on 2"]
+	assert [c[3] for c in r.Step(make_row(3), t(3))[1]] == ["off 2"]
+
+
+def test_an_input_unknown_without_a_board_never_switches_on():
+	r = build({"outputs": OUT, "inputs": POKE, "rules": [{"name": "p", "when": {"input": "poke"},
+		"do": {"output": "laser"}}]})
+	assert all(c == [] for c in steps(r, [make_row(k) for k in range(1, 20)]))
+
+
+def test_inputs_are_set_up_on_the_board():
+	r = build({"outputs": OUT, "inputs": POKE, "rules": []})
+	assert r.Setup()[-1] == "in 0 100 1 0 1000"
+	free = r.Free()
+	assert "in 7 -1" in free and "servo 3 -1" in free and "link 0 -1" in free
+	assert [c for c in free if c.startswith("pin")] == ["pin 4 -1", "pin 5 -1", "pin 6 -1", "pin 7 -1"]
+	assert build({"outputs": OUT, "rules": []}).Free()[-1] == "servo 3 -1" # no inputs: the channels keep their pins
+	with pytest.raises(rules.RulesError, match=r"input poke and output laser are both on D4"):
+		build({"outputs": OUT, "inputs": {"poke": {"input": 0, "pin": 4}}, "rules": []})
+	with pytest.raises(rules.RulesError, match=r"no input 'nose_poke'"):
+		build({"outputs": OUT, "inputs": POKE, "rules": [{"when": {"input": "nose_poke"}, "do": {"output": "laser"}}]})
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal for the simulated board")
+def test_live_rules_reward_pokes_from_the_board(tmp_path, outputs_sim):
+	"""
+	The whole path with an input: the sketch in real time, a 60 Hz trigger, a poke on A0 (pulled low) every 0.25 s,
+	rows into the results feed. A rule rewards each poke: the board says each edge (logged, with its frame), the
+	rules see it with the next set, and the reward pulse follows.
+	"""
+	period_us = 16667
+	master, slave = pty()
+	sim_log = tmp_path / "sim.log"
+	env = dict(os.environ, SIM_INPUT="10:300000:{}:3000:100000;30:500000:250000:40000:1000".format(period_us))
+	board_sim = live_sim(outputs_sim, master, sim_log, env)
+	prefix = name()
+	feed = Feed(prefix)
+	out = str(tmp_path / "live")
+	config = {"board": {"trigger_pin": 10, "bound_ms": 200, "watchdog_ms": 250},
+		"outputs": {"reward": {"channel": 3, "pin": 5, "pulse_ms": 2}}, "inputs": POKE,
+		"rules": [{"name": "poke", "when": {"input": "poke"}, "do": {"output": "reward", "action": "pulse"}}]}
+	args = args_for(prefix, out)
+	args.port = os.ttyname(slave)
+	runner = rules.Runner(args, config)
+	said = []
+	runner.say = said.append
+	thread, result = start(runner)
+	try:
+		assert until(lambda: "code" in result or (runner.board is not None and len(runner.board.rises) >= 5 and
+			runner.board.clock.Ready()), 60), said
+		assert "code" not in result, (result, said)
+		board = runner.board
+		k0 = next(reversed(board.rises))
+		for k in range(k0 + 1, k0 + 90): # 1.5 s of sets: about 6 pokes
+			deadline = time.monotonic() + 10
+			while k not in board.rises and time.monotonic() < deadline:
+				time.sleep(0.0005)
+			rise = board.RiseHostNs(k)
+			feed.Write(make_row(k, t_ns=rise + 5_000_000 if rise is not None else clock.HostNs()))
+		time.sleep(0.3)
+	finally:
+		runner.stop.set()
+		thread.join(10)
+		feed.Close()
+		board_sim.terminate()
+		board_sim.wait()
+		os.close(slave)
+		os.close(master)
+	assert result.get("code") == 0, said
+	events = [json.loads(l) for l in open(out + ".events.jsonl")]
+	pokes = [e for e in events if e["kind"] == "input" and e["active"] == 1]
+	assert len(pokes) >= 4, events
+	for e in pokes:
+		# (seen in real time: later than the edge on a busy computer)
+		# (or a little before it: the sketch stamps an edge with the time it read just before looking at the pins,
+		# and the edge can come in between; seen 1 us early on GitHub's runner. On a busy computer the simulated
+		# board's process can pause between the two reads: up to 3.7 ms in 472 runs on a loaded Mac, so 10 ms)
+		off = (e["board_us"] - 500000) % 250000
+		assert e["input"] == "poke" and (off < 50000 or off > 250000 - 10000) and e["board_frame"] >= 1, e
+	pulses = [e for e in events if e["kind"] == "command" and e["command"].startswith("pulse 3 2000")]
+	# Each poke rewarded once (a poke lasts 40 ms: two or three sets, one start of the rule), within a few sets. Only
+	# pokes in the frames fed (up to set k0 + 89): the board keeps stamping pokes during the wait and the stop after
+	# the last set, with no set to reward them, one usually and two when a busy computer makes the stop slow
+	fed = [e for e in pokes if e["board_frame"] <= k0 + 89]
+	assert abs(len(pulses) - len(fed)) <= 1, (pokes, pulses)
+	summary = json.load(open(out + ".json"))
+	assert summary["inputs"]["poke"]["went_active"] == len(pokes) and summary["counts"]["inputs"] >= 2 * len(pokes) - 1
+	assert any(l.startswith("> in 0 100 1 0 1000") for l in [x.split(" ", 1)[1] for x in open(out + ".board.txt")])

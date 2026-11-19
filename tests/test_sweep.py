@@ -175,9 +175,10 @@ def test_run_streams_when_a_stream_dies(tmp_path, monkeypatch):
 	(out, errors, _), took = run_streams(tmp_path, 3, {2: "while encoding"})
 	assert errors == ["stream 2: exited with code 4 before it sent its result"]
 	assert took < 30
-	# One that hangs: an error at the timeout, and it is stopped
+	# One that hangs: an error at the timeout, and it is stopped. Alone: with the timeout cut to 2 s, a second stream,
+	# which doesn't hang, was now and then not ready in 2 s either on a busy computer (its process starting)
 	monkeypatch.setattr(sweep, "READY_TIMEOUT", 2)
-	(out, errors, _), took = run_streams(tmp_path, 2, {0: "hangs"})
+	(out, errors, _), took = run_streams(tmp_path, 1, {0: "hangs"})
 	assert errors == ["stream 0: was not ready after 2 s"] and took < 30
 
 

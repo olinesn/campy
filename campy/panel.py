@@ -53,6 +53,9 @@ What the page shows, once a second:
   recording's bookmarks.csv as campy-live-view writes them; each program's
   state, and a button to open the view again.
 - after it: each post-step's progress (campy/post.py).
+- with SpikeGLX in the config: the Live ephys card, shown on request, the
+  probe read live from SpikeGLX, read-only (EphysView, campy/ephyslive.py,
+  in a process of its own).
 - copies: with a folder in the page's "Copy each recording to" box, each
   recording is copied into it once it and its post-steps have ended, in the
   background, one at a time, while the next records (campy/copyqueue.py; the
@@ -81,8 +84,8 @@ Only the standard library and numpy (campy's recording environment): the
 page is one file of HTML and JavaScript (campy/panelpage.py), no build step.
 """
 
-import argparse, collections, http.server, json, os, platform, re, secrets, shutil, struct, sys, threading, time, \
-	webbrowser, zlib
+import argparse, collections, http.server, json, os, platform, re, secrets, shutil, socket, struct, sys, threading, \
+	time, webbrowser, zlib
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
@@ -95,10 +98,13 @@ PORT = 8765
 THUMB_WIDTH = 192 # px, each camera's thumbnail
 SAMPLE_S = 0.25 # how often the rings' slots are read (campy-live-view: about 20 times a second)
 THUMB_S = 1.0 # and a frame of each camera, for its thumbnail
+LOST_AFTER_S = 2.0 # one camera's feed ended this long while the others' have not: CAMERA LOST (campy-live-view's)
 STATUS_FRESH_S = 20 # recording.json older than this is not the recording's now
 WARN_FRACTION = 0.8 # the disk check warns when a length needs more than this share of the free space (as the launch
 # check's, campy/preflight.py)
 DRIVE_FRESH_S = 10 # a copy destination's drive is measured at most this often (a network share can be slow to answer)
+EPHYS_IDLE_S = 30 # campy-ephys serve ends when the page hasn't asked for this long (its tab closed)
+EPHYS_START_S = 60 # and has this long to say its port
 DiskUsage = shutil.disk_usage # (tests replace it: drives of made-up sizes)
 
 
@@ -412,6 +418,8 @@ class Health:
 		self.rig = livehealth.Rig([r.cameraName or n for r, n in zip(readers, self.names)], self.frameRate,
 			readers[0].slots, self.pause_s, self.stop_s)
 		self.thumbs, self.lastRow = {}, 0
+		self.endedAt = {} # camera: when its feed was first seen ended, while the others' had not
+		self.lostFrame = {} # camera lost: its newest frame then (one waited for comes back past it)
 		return True
 
 	def Detach(self):
@@ -429,6 +437,22 @@ class Health:
 			self.Detach() # the next recording's rings
 			return
 		ended = all(r.Ended() for r in self.readers)
+		now = time.monotonic()
+		for c, r in enumerate(self.readers):
+			# A camera whose feed ended while the others record on (unplugged): CAMERA LOST, as campy-live-view says;
+			# at once when campy waits for it (cameraReconnect), and no longer once it is back
+			waited = not r.Ended() and r.Lost()
+			if not ended and not r.Ended() and not waited:
+				if c in self.rig.gone and r.Latest() > self.lostFrame.get(c, 0):
+					self.rig.gone.pop(c)
+					self.endedAt.pop(c, None)
+				continue
+			if not ended and c not in self.rig.gone and (waited or now - self.endedAt.setdefault(c, now) >= LOST_AFTER_S):
+				self.lostFrame[c] = r.Latest()
+				self.rig.gone[c] = "{}: camera lost, {} its frame {:,} while the other cameras record on ({})".format(
+					r.cameraName or self.names[c], "gone after" if waited else "its live feed ended at", r.Latest(),
+					"unplugged: campy waits for it to be plugged back in" if waited else
+					"unplugged, or its camera stopped")
 		self.rig.Sample(self.readers)
 		status = self.rig.Status()
 		cameras = []
@@ -566,11 +590,12 @@ def SerialPorts():
 		return None
 
 
-def TriggerCheck(params, pico, ports=SerialPorts):
+def TriggerCheck(params, pico, ports=SerialPorts, box=None):
 	"""
 	The check line for the cameras' trigger board, or None (no trigger): the Arduino campy starts must be on its
-	serialPort, and a config whose rig the Pico pulses (triggerController: pico) needs a pico: section to start it.
-	Either missing stops the start: campy-acquire would stop 2 s in (no Arduino), or wait for pulses nobody makes.
+	serialPort, a config whose rig the Pico pulses (triggerController: pico) needs a pico: section to start it, and
+	one whose operant box's board pulses them (triggerController: box) a box: section (campy-box runs the board).
+	Any missing stops the start: campy-acquire would stop 2 s in (no Arduino), or wait for pulses nobody makes.
 	"""
 	from campy import configurator
 	triggers = params.get("cameraTrigger", "None")
@@ -595,6 +620,12 @@ def TriggerCheck(params, pico, ports=SerialPorts):
 				"no pico: section to start it: the cameras would wait for pulses nobody makes. Add one (a camera-only "
 				"session: pico: {set: {CAMERA_ONLY: <seconds>, CAMERA_FPS: <frameRate>}})")
 		return ("ok", "Trigger: the Pico")
+	if board == "box" and triggered:
+		if box is None:
+			return ("block", "Trigger: the operant box's board pulses this rig's cameras (triggerController: box), but "
+				"this config has no box: section to run it: the cameras would wait for pulses nobody makes. Add one "
+				"(box: {task: <the task file>})")
+		return ("ok", "Trigger: the operant box's board (campy-box)")
 	return None
 
 
@@ -880,6 +911,156 @@ class Types:
 
 # ------------------------------------------------------------------ the panel
 
+
+class PanelServer(http.server.ThreadingHTTPServer):
+	"""The panel's HTTP server: a port another socket listens on counts as taken, on every OS.
+
+	ThreadingHTTPServer sets SO_REUSEADDR. On Linux and macOS that only lets a restarted panel bind its port again
+	while the old connections sit in TIME_WAIT. On Windows it also lets it bind a port that another socket with
+	SO_REUSEADDR is listening on (seen on GitHub's Windows runner: a second ThreadingHTTPServer bound the first one's
+	port), so a second panel, or another Python HTTP server, would share the port instead of moving to the next free
+	one, and requests would land on either. There the socket takes the port with SO_EXCLUSIVEADDRUSE instead: binding
+	it fails while anything else holds it, and nothing else can bind it while the panel listens.
+	"""
+
+	if sys.platform == "win32":
+		allow_reuse_address = False
+
+		def server_bind(self):
+			self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+			super().server_bind()
+
+
+class EphysView:
+	"""
+	The page's Ephys section, with a spikeglx: section: the probe read live
+	from SpikeGLX, read-only (campy/ephyslive.py), by campy-ephys serve, a
+	process of its own at below-normal priority, started when the page opens
+	the section and ended when it closes it, when the page stops asking for
+	EPHYS_IDLE_S (its tab closed), or with the panel. The panel passes the
+	page's requests on to it, with a key of its own. One thread starts it: on
+	Linux a child dies with the thread that started it (campy/children.py),
+	and a request's thread ends with the request.
+	"""
+
+	def __init__(self, section, pico_status=None):
+		self.section, self.pico_status = section, pico_status
+		self.key = secrets.token_urlsafe(24)
+		self.child, self.port, self.error = None, None, None
+		self.log = collections.deque(maxlen=20) # its last lines, for the page when it fails
+		self.want, self.stopping = threading.Event(), False
+		threading.Thread(target=self.Keep, name="campy panel ephys", daemon=True).start()
+
+	def Keep(self):
+		while not self.stopping:
+			if self.want.wait(0.5):
+				self.want.clear()
+				if not self.Running() and not self.stopping:
+					self.StartChild()
+
+	def Command(self):
+		"""campy-ephys serve's command line, from the spikeglx: section."""
+		from campy import spikeglx as sglxmod
+		cmd = [sys.executable, "-m", "campy.ephyslive", "serve", "--sdk", str(self.section["sdk"]), "--host",
+			str(self.section["host"]), "--port", str(self.section["port"]), "--parent", str(os.getpid()),
+			"--idle-s", str(EPHYS_IDLE_S)]
+		# The live sorter: templates from a Kilosort 4 sort (spikeglx.templates, campy-ephys train), and with
+		# spikeglx.match, spikes found by them too, below the threshold (in a thread of its own)
+		templates = str(self.section.get("templates") or "")
+		try:
+			match = sglxmod.Match(self.section)
+		except sglxmod.SpikeGLXError as e:
+			match = None
+			self.log.append("{}: the threshold's spikes sorted only".format(e))
+		if templates and os.path.isfile(templates):
+			cmd += ["--templates", templates] + (["--match", match] if match else [])
+		elif templates:
+			self.log.append("spikeglx.templates: {} isn't there: threshold crossings only".format(templates))
+		elif match:
+			self.log.append("spikeglx.match: no templates to match (spikeglx.templates): threshold crossings only")
+		# Each spike's camera frame: the camera pulses on the OneBox that has the gate's TTL (spikeglx.stream: js 1),
+		# numbered from the Pico's count of pulses so far
+		js, ip = (list(self.section.get("stream") or []) + [None, None])[:2]
+		if js == 1 and isinstance(ip, int):
+			cmd += ["--obx-ip", str(ip)] + (["--pico-status", self.pico_status] if self.pico_status else [])
+		return cmd
+
+	def StartChild(self):
+		import subprocess
+		cmd = self.Command()
+		kwargs = {"creationflags": 0x00004000} if sys.platform == "win32" else {} # BELOW_NORMAL_PRIORITY_CLASS
+		self.error, self.port = None, None
+		# The same campy as the panel's, wherever it was installed from
+		here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+		env = dict(os.environ, CAMPY_EPHYS_KEY=self.key, PYTHONPATH=os.pathsep.join(
+			[here] + [v for v in [os.environ.get("PYTHONPATH")] if v]))
+		try:
+			child = children.Child(cmd, env=env, stdout=subprocess.PIPE,
+				stderr=subprocess.STDOUT, text=True, **kwargs)
+		except OSError as e:
+			self.error = "campy-ephys serve didn't start: {}".format(e)
+			return
+		self.child = child
+
+		def Lines():
+			for line in child.stdout:
+				line = line.rstrip()
+				if line.startswith("EPHYS_PORT "):
+					self.port = int(line.split()[1])
+				elif line:
+					self.log.append(line)
+		threading.Thread(target=Lines, name="campy panel ephys output", daemon=True).start()
+		deadline = time.monotonic() + EPHYS_START_S
+		while self.port is None and child.poll() is None and time.monotonic() < deadline:
+			time.sleep(0.05)
+		if self.port is None:
+			self.error = "campy-ephys serve didn't answer{}{}".format(" (it ended)" if child.poll() is not None else "",
+				": " + self.log[-1] if self.log else "")
+			child.Close()
+			self.child = None
+
+	def Running(self):
+		return self.child is not None and self.child.poll() is None and self.port is not None
+
+	def Open(self):
+		if not self.Running():
+			self.want.set()
+
+	def Close(self):
+		child, self.child, self.port = self.child, None, None
+		if child is not None:
+			child.Close()
+
+	def Shutdown(self):
+		self.stopping = True
+		self.Close()
+
+	def Ask(self, method, path, body=None):
+		"""(HTTP code, JSON) from campy-ephys serve."""
+		import urllib.error, urllib.request
+		if not self.Running():
+			return 200, {"open": False}
+		data = strictjson.dumps(body).encode() if body is not None else None
+		request = urllib.request.Request("http://127.0.0.1:{}{}".format(self.port, path), data=data, method=method,
+			headers={"X-Ephys-Key": self.key, "Content-Type": "application/json"})
+		try:
+			with urllib.request.urlopen(request, timeout=5) as r:
+				return r.status, strictjson.loads(r.read())
+		except urllib.error.HTTPError as e:
+			try:
+				return e.code, strictjson.loads(e.read())
+			except ValueError:
+				return e.code, {"error": str(e)}
+		except (OSError, ValueError) as e:
+			return 502, {"error": "campy-ephys serve didn't answer: {}".format(e)}
+
+	def Status(self):
+		starting = self.child is not None and self.child.poll() is None and self.port is None
+		ended = self.child is not None and self.child.poll() is not None
+		return {"open": self.Running(), "starting": starting or self.want.is_set(), "error": self.error or (
+			"campy-ephys serve ended" + (": " + self.log[-1] if self.log else "") if ended else None)}
+
+
 class Panel:
 	def __init__(self, config_path, args=(), port=PORT, browser=True, new_key=False):
 		# The copies of finished recordings (the page's "Copy each recording to"): the panel's for as long as it is
@@ -936,6 +1117,11 @@ class Panel:
 		# The model picker (campy/livemodels.py): with trained models only
 		picker = livemodels.Picker(config) if config.live is not None and config.live["model"] == "sleap" else None
 		old = self.health
+		if getattr(self, "ephys", None) is not None:
+			self.ephys.Shutdown()
+		# The page's Ephys section: with SpikeGLX in the config
+		self.ephys = EphysView(config.spikeglx, os.path.join(devs.pico.state_dir, "status.json") if devs is not None and
+			devs.pico is not None else None) if getattr(config, "spikeglx", None) is not None else None
 		self.config_path, self.config, self.devices, self.lengths, self.picker = config.path, config, devs, lengths, picker
 		self.length = lengths[0]["seconds"] if lengths else None # the page's choice
 		self.health = health
@@ -1014,7 +1200,8 @@ class Panel:
 			checks += self.picker.Checks()
 		if live is not None and live.get("calibration"):
 			checks.append(CalibrationCheck(live["calibration"]))
-		trigger = TriggerCheck(self.config.acquire, self.devices.pico if self.devices is not None else None)
+		trigger = TriggerCheck(self.config.acquire, self.devices.pico if self.devices is not None else None,
+			box=self.config.box)
 		if trigger is not None:
 			checks.append(trigger)
 		calibrate_check = CalibrateCheck(self.config)
@@ -1478,7 +1665,8 @@ class Panel:
 				"animal_ids": ", ".join(str(a) for a in (self.config.Value("animalIds", []) or [])),
 				"copy_to": self.CopyTo(), "copy_delete": self.CopyDelete(), "copy_box": self.copy_box},
 			"led_power": {"leds": self.LedNames(), "last": LedRemembered(LedPowerFile(), self.config.path)}
-				if self.LedNames() else None}
+				if self.LedNames() else None,
+			"ephys": self.ephys.Status() if getattr(self, "ephys", None) is not None else None}
 
 	def BoutStatus(self):
 		# The page's bout settings box, with a Pico's bouts (none for a camera-only session)
@@ -1624,6 +1812,13 @@ class Panel:
 					return self.Send(200, panelpage.PAGE.encode(), "text/html; charset=utf-8")
 				if url.path == "/status.json":
 					return self.Send(200, panel.Status())
+				if url.path == "/ephys.json":
+					if panel.ephys is None:
+						return self.Send(404, {"error": "no SpikeGLX in this config"})
+					ask = "&".join("{}={}".format(k, v[0]) for k, v in query.items() if k != "t" and v and
+						re.fullmatch(r"[\w,-]*", v[0]))
+					code, body = panel.ephys.Ask("GET", "/snapshot?" + ask)
+					return self.Send(code, dict(body, status=panel.ephys.Status()))
 				if url.path.startswith("/thumb/") and url.path.endswith(".png"):
 					try:
 						png = panel.health.thumbs.get(int(url.path[7:-4]))
@@ -1635,12 +1830,23 @@ class Panel:
 			def Post(self):
 				url = urlparse(self.path)
 				query = parse_qs(url.query)
+				# The body read before anything is answered, a refusal too: on Windows a connection closed with its
+				# request's body still unread is reset, and the browser (and the tests, now and then on GitHub's
+				# Windows runner) saw the connection aborted instead of the panel's 403
+				try:
+					size = int(self.headers.get("Content-Length") or 0)
+				except ValueError:
+					size = None
+				if size is not None and size < 0:
+					size = None # read(-1) would wait for the connection to close
+				data = self.rfile.read(size) if size else b""
 				why = self.Refused(query)
 				if why:
 					return self.Send(403, {"error": "wrong key" if why == "key" else why})
 				try:
-					size = int(self.headers.get("Content-Length") or 0)
-					body = json.loads(self.rfile.read(size) or b"{}") if size else {}
+					if size is None:
+						raise ValueError("no Content-Length")
+					body = json.loads(data or b"{}") if size else {}
 				except ValueError:
 					return self.Send(400, {"error": "not JSON"})
 				if url.path == "/start":
@@ -1668,6 +1874,15 @@ class Panel:
 						return self.Send(200, {"ok": True, "waiting": len(panel.copies.Pending())})
 				elif url.path == "/stop-orphan":
 					error = panel.StopOrphan(bool(body.get("now")))
+				elif url.path in ("/ephys", "/ephys-scope", "/ephys-threshold"):
+					if panel.ephys is None:
+						return self.Send(404, {"error": "no SpikeGLX in this config"})
+					if url.path == "/ephys":
+						panel.ephys.Open() if body.get("open") else panel.ephys.Close()
+						error = None
+					else:
+						code, answer = panel.ephys.Ask("POST", "/scope" if url.path == "/ephys-scope" else "/threshold", body)
+						return self.Send(code, answer)
 				elif url.path == "/viewer":
 					error = panel.Viewer()
 				elif url.path == "/bookmark":
@@ -1699,7 +1914,7 @@ class Panel:
 
 		for port in range(self.port, self.port + 20):
 			try:
-				server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+				server = PanelServer(("127.0.0.1", port), Handler)
 				break
 			except OSError:
 				continue
@@ -1737,24 +1952,21 @@ class Panel:
 							break
 						time.sleep(0.2)
 				except KeyboardInterrupt:
-					for job in self.copies.Leave():
-						Say("Not copied: {} ({}).".format(job.folder, job.message))
-					try:
-						if self.copies.Pending():
-							# A copy checked already, its folder being deleted: let it end (Ctrl-C again: now)
-							Say("Closing once the copy being finished ends (Ctrl-C again closes now).")
-						while self.copies.Pending():
-							time.sleep(0.2)
-					except KeyboardInterrupt:
-						pass
-					Say("Closed.")
-					return 0
+					return self.Interrupted()
 				if self.closing:
 					Say("Closed from the page.")
 					return 0
-				self.Record()
+				try:
+					self.Record()
+				except KeyboardInterrupt:
+					# Ctrl-C outside the recording itself (campy-session's own Ctrl-C handles that): as the next one
+					# was set up, or once it had ended, while the checks for the next one ran (a Python started for
+					# campy-live's environment, seconds on a busy computer). It used to end the panel with a traceback
+					return self.Interrupted()
 		finally:
 			self.health.Stop()
+			if getattr(self, "ephys", None) is not None:
+				self.ephys.Shutdown()
 			if getattr(self, "server", None) is not None:
 				self.server.shutdown()
 			try:
@@ -1764,6 +1976,21 @@ class Panel:
 			except (OSError, ValueError, AttributeError):
 				pass
 			lock.Release()
+
+	def Interrupted(self):
+		# Ctrl-C with nothing recording: the page's copies not started are left (and said), the one being finished ends
+		for job in self.copies.Leave():
+			Say("Not copied: {} ({}).".format(job.folder, job.message))
+		try:
+			if self.copies.Pending():
+				# A copy checked already, its folder being deleted: let it end (Ctrl-C again: now)
+				Say("Closing once the copy being finished ends (Ctrl-C again closes now).")
+			while self.copies.Pending():
+				time.sleep(0.2)
+		except KeyboardInterrupt:
+			pass
+		Say("Closed.")
+		return 0
 
 	def Record(self):
 		# One recording, in this (the main) thread: campy-session's Ctrl-C and its tied children need it
@@ -1869,8 +2096,11 @@ def UnderRig(rig_lock, owner, name, argv):
 		"does nothing in this window: close the panel from its page.".format(rig))
 	IgnoreCtrlC()
 	import subprocess
+	# SpikeGLX (or Open Ephys) started by hand beside the panel is part of the recording, not someone
+	# else's: rig.py neither waits for it nor counts it (RIG_ALLOW; a rig.py from before it ignores this)
+	allow = {k for k in os.environ.get("RIG_ALLOW", "").split(",") if k.strip()} | {"ephys"}
 	return subprocess.call([session.Python(), rig, "run", "--log-dir", logs, owner or "panel", tag, "--",
-		session.Python(), "-m", "campy.session", "panel"] + list(argv))
+		session.Python(), "-m", "campy.session", "panel"] + list(argv), env=dict(os.environ, RIG_ALLOW=",".join(sorted(allow))))
 
 
 def Main(argv=None):

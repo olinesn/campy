@@ -15,15 +15,23 @@ every test takes, and a watch over everything a test can be spoiled by.
   rig.py version                                this copy's version, and the installed one's
   rig.py install [--check] [--from <checkout>]  install this copy (a campy checkout's) as the rig's
 
-run waits until the rig is free and nothing else uses the GPU, the cameras,
-the video encoder or the trigger, and nothing else loads the CPU or the disk;
-then it runs cmd. Every 2 s while it runs, anything outside the job that uses
-one of those, or a CPU or disk load outside the job above --cpu cores or --io
-MB/s, is logged to <tag>.rig.log, whose last line says RIG_CLEAN or
-RIG_CONTAMINATED. A contaminated run's timings are not to be trusted: run it
-again. Nor are those of a run stopped before its job ended (Ctrl-C, SIGTERM, a
-hangup, an error in rig.py), whose last line says RIG_ABORTED, or of one whose
-log has no RIG_ line at all (its rig.py was killed): trust only RIG_CLEAN. A
+run waits until the rig is free, nothing else uses the GPU, the cameras, the
+video encoder or the trigger, no ephys acquisition program (SpikeGLX, Open
+Ephys) runs, and nothing else loads the CPU or the disk; then it runs cmd.
+Every 2 s while it runs, anything outside the job that uses one of those, or a
+CPU or disk load outside the job above --cpu cores or --io MB/s, is logged to
+<tag>.rig.log, whose last line says RIG_CLEAN, RIG_CLEAN_BACKGROUND or
+RIG_CONTAMINATED. One look at a device user contaminates
+a run; load has to last (--load-looks looks in a row, 2, or more than
+--load-share of the run's looks, 0.2), and a machine's known background load
+(RIG_ROOT/background.json: an IT security agent, each program with a CPU and
+disk ceiling) makes it RIG_CLEAN_BACKGROUND instead, unless it covers more of the
+run than that file allows. --strict (RIG_STRICT=1): every look above the limits
+counts, background or not. A contaminated run's timings are not to be trusted:
+run it again. Nor are those of a run stopped before its job ended (Ctrl-C,
+SIGTERM, a hangup, an error in rig.py), whose last line says RIG_ABORTED, or of
+one whose log has no RIG_ line at all (its rig.py was killed): trust only a last
+line starting RIG_CLEAN, and only RIG_CLEAN itself under --strict. A
 signal ignored when rig.py starts stays ignored: under nohup, a hangup (the
 terminal or the ssh closing) stops neither rig.py nor its job. A closed output
 (rig.py run ... | head, a cut ssh) doesn't stop it either: the log still gets
@@ -33,13 +41,17 @@ and why it is held down (its throttle reasons): the same GPU can run a test at
 
 On Linux (every process the user can see; other users' processes show only their CPU use):
   gpu      /dev/kfd                 GPU compute (ROCm: torch, sleap-nn)
-  encoder  /dev/dri/renderD*        VA-API encoding (campy's ffmpegs); ROCm opens it too
+           /dev/nvgpu/*, /dev/nvhost-*gpu   a Jetson's integrated GPU (CUDA on an AGX Orin)
+  encoder  /dev/dri/renderD*        VA-API encoding (campy's ffmpegs); ROCm opens it too, and
+                                    CUDA on a Jetson
+           /dev/v4l2-nvenc          a Jetson's video encoder (GStreamer's nvv4l2h264enc/h265enc)
   camera   /dev/bus/usb/... of a FLIR camera (USB vendor 1e10), or libSpinnaker
            loaded (a process that can open, reset or enumerate the cameras)
   trigger  /dev/ttyACM*, /dev/ttyUSB*  the trigger Arduino
+  ephys    a process named open-ephys* or spikeglx* (RIG_EPHYS_NAMES; by /proc/<pid>/comm, any user's)
   load     the CPU (cores) and disk (MB/s) used by everything outside the job
-  desktop  a desktop drawing on the GPU (gnome-shell, Xwayland, Xorg, GNOME's gsd-xsettings and
-           mutter-x11-frames, ...; any user,
+  desktop  a desktop drawing on the GPU (gnome-shell, Xwayland, Xorg, GNOME's gsd-xsettings,
+           mutter-x11-frames and portal helper xdg-desktop-portal-gnome, ...; any user,
            the login screen too). run does not wait for it (it would not go away),
            but says in the log which was up, and a desktop that starts or ends
            during the run contaminates it.
@@ -49,6 +61,10 @@ On Windows (rig_windows.py beside this file says how each is seen):
   encoder  ffmpeg*.exe
   camera   a Spinnaker DLL loaded (PySpin, SpinView)
   trigger  a COM port open
+  ephys    SpikeGLX*.exe or open-ephys*.exe running (RIG_EPHYS_NAMES): SpikeGLX (SpikeGLX_NISIM
+           too) or the Open Ephys GUI. Running at all counts, recording or not: an unattended
+           Neuropixels recording (an imec PCIe base station, a OneBox, NI DAQ cards) opens drivers
+           rig.py can't name, so the program is what it looks for
   load     the CPU as on Linux. The disk: what all disks read and wrote (PhysicalDisk(_Total))
            less what the job's processes read and wrote, or what processes outside the job
            read and wrote if more, but never more than the disks moved (a program's reads and
@@ -59,6 +75,12 @@ On Windows (rig_windows.py beside this file says how each is seen):
            Manager, ...). Noted, not waited for; the log says when one starts or
            ends, but that doesn't contaminate the run, since Windows starts and
            ends some (WebView, search) by itself.
+
+--allow ephys (RIG_ALLOW=ephys) on run or hold: ephys acquisition programs outside the job are
+neither waited for nor counted, only logged (ALLOWED). For a real recording that pairs cameras with
+SpikeGLX, such as campy-session's panel, which sets RIG_ALLOW=ephys when it takes the rig: the
+lock still keeps tests away while it records, but SpikeGLX, started by hand beside it, mustn't keep
+the panel from opening. --allow takes any of the kinds above, comma-separated.
 
 A process belongs to the job when it carries the job's RIG_JOB in its
 environment (everything the job starts does, even with setsid or nohup), is in
@@ -85,12 +107,13 @@ uses the Windows lock on Linux too.
 On an experiment machine (RIG_ROOT/experiment.json; docs/design/rig-fleet.md, section 5), where people
 record experiments, run starts a test only when every Windows session (quser) has been idle 15+ min,
 nothing outside it uses a device, the hour is allowed ("hours", default 22:00-06:00) and RIG_ROOT/PAUSE
-isn't there (or its time has passed); otherwise it exits 75 at once, never waiting in line. On Windows the
+isn't there (or its time has passed), and no ephys acquisition program runs; otherwise it exits 75 at once, never waiting in line. On Windows the
 banner (rig_banner.ps1, started in the session by a Task Scheduler task; rig_experiment_setup.ps1 sets it
 up) must show the test first. The test ends within 2 s, every process of it, when RIG_ROOT/STOP appears
 (the banner's Stop button, the "Stop campy test" shortcut, keyboard or mouse input at the machine, an
 unlock, a Remote Desktop connect, a logon), when anything outside it starts using the GPU, a camera, the
-encoder or the trigger (campy, SpinView, a Python), or when quser shows a session in use; the log's last
+encoder or the trigger (campy, SpinView, a Python) or an ephys acquisition program starts (SpikeGLX, Open
+Ephys), or when quser shows a session in use; the log's last
 line is then RIG_STOPPED, run exits 75, and PAUSE keeps new tests away until 9 AM ("pause_until").
 
 Installing and versions. Each machine runs one installed copy, in RIG_ROOT, which every
@@ -114,7 +137,7 @@ The Python standard library only. On Linux run it with /usr/bin/python3; on
 Windows with any 64-bit Python 3.9 or newer (campy's own environment will do).
 """
 
-import argparse, contextlib, datetime, hashlib, json, os, re, shlex, shutil, signal, subprocess, sys, time
+import argparse, collections, contextlib, datetime, fnmatch, hashlib, json, os, re, shlex, shutil, signal, subprocess, sys, time
 
 WINDOWS = os.name == "nt"
 if WINDOWS:
@@ -131,14 +154,27 @@ PERIOD = float(os.environ.get("RIG_PERIOD", 2.0))  # s between looks
 # Other files to watch as one of the kinds, e.g. RIG_EXTRA="trigger=/dev/ttyS0,gpu=/dev/nvidia0"
 # (on Windows, NT device names: RIG_EXTRA="trigger=\Device\Serial0")
 EXTRA = dict(reversed(kv.split("=", 1)) for kv in os.environ.get("RIG_EXTRA", "").split(",") if "=" in kv)
-KINDS = ("gpu", "encoder", "camera", "trigger")
+KINDS = ("gpu", "encoder", "camera", "trigger", "ephys")
+# Ephys acquisition programs (the "ephys" kind), by name: on Linux /proc/<pid>/comm (its first 15
+# characters), on Windows the image name (rig_windows.EPHYS_NAMES, the same variable). Their PCIe and
+# USB acquisition hardware (an imec base station, a OneBox, NI DAQ cards) opens devices rig.py has no
+# names for, so the program running at all is what counts. RIG_EPHYS_NAMES (comma-separated
+# patterns) replaces the list on a machine
+EPHYS_NAMES = [s.strip().lower() for s in os.environ.get("RIG_EPHYS_NAMES", "spikeglx*,open-ephys*").split(",") if s.strip()]
 # Desktops drawing on the GPU, by /proc/<pid>/comm (the kernel keeps its first 15 characters). A logged-in
 # GNOME session also has two helpers that keep the GPU's render node open for as long as it runs:
 # gsd-xsettings and mutter-x11-frames (comm "mutter-x11-fram"). At the login screen they run as gdm, whose
 # open files rig.py can not see; logged in, they are the user's and would otherwise look like encoder users
-# that never go away
+# that never go away. So would GNOME's portal helper, xdg-desktop-portal-gnome, on any GNOME desktop: it
+# draws the dialogs apps ask the desktop for (a file chooser, the screen-sharing picker; the capture itself
+# runs in gnome-shell), opens the render node with the first one it draws, and keeps it until it ends. On
+# the EVO-X2 (GNOME on Wayland) it did so partway through a run, and the next run waited until it was
+# stopped. Its comm, "xdg-desktop-por", is also that of the other portals (xdg-desktop-portal itself and
+# -gtk). Ubuntu's GNOME on a Jetson (an X11 session) adds two more that draw with the GPU: GNOME Software's
+# background service, and the first-login wizard (comm "gnome-initial-s")
 DESKTOP = {"gnome-shell", "Xwayland", "Xorg", "Xvnc", "mutter", "kwin_wayland", "kwin_x11", "plasmashell",
-	"sway", "weston", "Hyprland", "xfwm4", "TeamViewer", "gsd-xsettings", "mutter-x11-frames"[:15]}
+	"sway", "weston", "Hyprland", "xfwm4", "TeamViewer", "gsd-xsettings", "mutter-x11-frames"[:15],
+	"xdg-desktop-portal-gnome"[:15], "gnome-software", "gnome-initial-setup"[:15]}
 FLIR_VENDOR = "1e10"
 HZ = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 NO_WINDOW = 0x08000000 if WINDOWS else 0  # CREATE_NO_WINDOW: no console flashing up for nvidia-smi
@@ -167,13 +203,41 @@ def device_kind(path, cameras):
 		return EXTRA[path]
 	if path == "/dev/kfd":
 		return "gpu"
-	if path.startswith("/dev/dri/renderD"):
+	# A Jetson (AGX Orin, JetPack 7.2): CUDA opens /dev/nvgpu/igpu0/ctrl (and /dev/nvmap, renderD128);
+	# the GPU's other nodes are /dev/nvhost-*-gpu. The video encoder is /dev/v4l2-nvenc, which
+	# NVIDIA's V4L2 plugin opens (the node itself is a stand-in: the plugin does the work)
+	if path.startswith("/dev/nvgpu/") or (path.startswith("/dev/nvhost-") and path.endswith("gpu")):
+		return "gpu"
+	if path.startswith("/dev/dri/renderD") or path == "/dev/v4l2-nvenc":
 		return "encoder"
 	if re.match(r"/dev/tty(ACM|USB)\d+$", path):
 		return "trigger"
 	if path in cameras:
 		return "camera"
 	return None
+
+def is_ephys(comm):
+	"""Whether a Linux process's comm names an ephys acquisition program."""
+	comm = comm.lower()
+	return any(fnmatch.fnmatchcase(comm, pat[:15]) for pat in EPHYS_NAMES)
+
+def ephys_programs():
+	"""[(pid, name)] of every ephys acquisition program running, anyone's, found by name alone: cheap
+	enough to ask before anything else (no nvidia-smi, no handle table)."""
+	if WINDOWS:
+		return sorted((row[0], row[2]) for row in rig_windows.process_table()
+			if rig_windows.matches(row[2], rig_windows.EPHYS_NAMES))
+	out = []
+	for name in os.listdir("/proc") if os.path.isdir("/proc") else ():
+		if name.isdigit():
+			try:
+				with open("/proc/%s/comm" % name) as f:
+					comm = f.read().strip()
+			except OSError:
+				continue
+			if is_ephys(comm):
+				out.append((int(name), comm))
+	return sorted(out)
 
 def flir_cameras():
 	"""{'/dev/bus/usb/BBB/DDD': 'bus-port'} for every FLIR camera on USB."""
@@ -217,7 +281,10 @@ def read_proc(pid, cameras):
 	if not p.cmd:
 		p.cmd = "[" + stat[stat.index("(") + 1:stat.rindex(")")] + "]"
 	p.kinds, p.io, p.job, p.user = set(), None, None, None
-	if stat[stat.index("(") + 1:stat.rindex(")")] in DESKTOP:
+	comm = stat[stat.index("(") + 1:stat.rindex(")")]
+	if is_ephys(comm):  # by name: seen whoever runs it, before its open files (another user's are hidden)
+		p.kinds.add("ephys")
+	if comm in DESKTOP:
 		p.kinds.add("desktop")
 		try:
 			p.user = pwd.getpwuid(os.stat("/proc/%d" % pid).st_uid).pw_name
@@ -433,11 +500,130 @@ class Clocks:
 			notes.append("GPU %s SM median %d MHz" % (i, median))
 		return lines, "; ".join(notes)
 
+# A machine's known background load (ROOT/background.json): programs that always run there and that nobody
+# can stop, above all an IT security agent, which on the Windows PCs reads 70-110 MB/s or uses 1-3 cores for a
+# few seconds as a test starts. Each entry names the program (its file name or its full path, * and ? allowed,
+# letter case ignored) and the most CPU (cores) and disk (MB/s) it may use:
+#   {"processes": [{"name": "agent.exe", "cpu": 4, "io": 200, "why": "IT security agent"},
+#                  {"path": "C:/Program Files/Vendor/*/scanner.exe", "cpu": 4, "io": 200}],
+#    "share": 0.25, "looks": 3}
+# Load from listed programs within their ceilings doesn't contaminate a run, for at most "share" of its looks
+# or "looks" looks, whichever is more: a scan through a third of a run did slow it (the Pro Max Slim's p99
+# 7.8 ms against 2.4 in the 2.5.0 round), so a run that background covers that much is still contaminated.
+# Such a run ends RIG_CLEAN_BACKGROUND, saying what was seen. Load from anything else, or from a listed
+# program above its ceiling, counts as before; device users always do. --strict ignores the file.
+
+BACKGROUND = "background.json"
+BACKGROUND_SHARE, BACKGROUND_LOOKS = 0.25, 3
+
+def norm(text):
+	"""A program's name or path, or a pattern for one, as compared: / for \\, lower case."""
+	return (text or "").replace("\\", "/").strip().lower()
+
+def first_word(cmd):
+	"""The program a command line runs: its first word, or what its opening quotes hold."""
+	cmd = (cmd or "").strip()
+	if cmd.startswith('"'):
+		return cmd[1:].split('"', 1)[0]
+	return cmd.split(None, 1)[0] if cmd else ""
+
+def program(p):
+	"""(file name, full path or '') of p's program, normalised (norm). On Windows the name is the image's and
+	the path is its command line's first word; on Linux the path is /proc/<pid>/exe (another user's process
+	hides it: then the command line's first word)."""
+	if WINDOWS:
+		path = first_word(cmdline(p))
+		return norm(p.cmd), norm(path if ("\\" in path or "/" in path) else "")
+	if p.cmd.startswith("[") and p.cmd.endswith("]"):  # no command line: [comm]
+		return norm(p.cmd[1:-1]), ""
+	try:
+		path = os.readlink("/proc/%d/exe" % p.pid)
+	except OSError:
+		path = first_word(p.cmd)
+	path = path[:-len(" (deleted)")] if path.endswith(" (deleted)") else path
+	return norm(first_word(p.cmd).rsplit("/", 1)[-1]), norm(path if "/" in path else "")
+
+class Background:
+	"""The programs of background.json (entries: dicts with label, name, path, cpu, io), how much of a run
+	they may cover (share of its looks, or looks), and what was wrong with the file (problems)."""
+
+	def __init__(self, entries=(), share=BACKGROUND_SHARE, looks=BACKGROUND_LOOKS, problems=(), path=None):
+		self.entries, self.share, self.looks = list(entries), share, looks
+		self.problems, self.path = list(problems), path
+		self.cache = {}  # (pid, start): entry index or None
+
+	@classmethod
+	def read(cls, root=None):
+		"""ROOT/background.json; an empty list if there is none. A file that can't be read, or an entry
+		without a program or a ceiling, excuses nothing (problems says why): a typo must not hide load."""
+		path = os.path.join(root or ROOT, BACKGROUND)
+		try:
+			with open(path, encoding="utf-8") as f:
+				cfg = json.load(f)
+		except FileNotFoundError:
+			return cls(path=path)
+		except (OSError, ValueError) as e:
+			return cls(problems=["%s can't be read (%s): no background excused" % (path, e)], path=path)
+		if isinstance(cfg, list):
+			cfg = {"processes": cfg}
+		if not isinstance(cfg, dict) or not isinstance(cfg.get("processes", []), list):
+			return cls(problems=["%s: not {\"processes\": [...]}: no background excused" % path], path=path)
+		entries, problems = [], []
+		for i, e in enumerate(cfg.get("processes", [])):
+			try:
+				if not isinstance(e, dict) or not (e.get("name") or e.get("path")):
+					raise ValueError("no name or path")
+				cpu, io = float(e["cpu"]), float(e["io"])
+			except (KeyError, TypeError, ValueError) as err:
+				problems.append("%s: entry %d (%s) left out: it needs a name or path, and cpu and io ceilings (%s)" % (
+					path, i + 1, json.dumps(e)[:80], err))
+				continue
+			label = str(e.get("name") or e.get("path"))
+			entries.append({"label": label, "name": norm(e.get("name")), "path": norm(e.get("path")), "cpu": cpu, "io": io,
+				"why": str(e.get("why") or "")})
+		try:
+			share, looks = float(cfg.get("share", BACKGROUND_SHARE)), int(cfg.get("looks", BACKGROUND_LOOKS))
+		except (TypeError, ValueError):
+			problems.append("%s: share or looks isn't a number: the defaults (%s, %d) used" % (path, BACKGROUND_SHARE, BACKGROUND_LOOKS))
+			share, looks = BACKGROUND_SHARE, BACKGROUND_LOOKS
+		return cls(entries, share, looks, problems, path)
+
+	def match(self, p):
+		"""The index of the entry p's program is, or None."""
+		key = (p.pid, p.start)
+		if key not in self.cache:
+			if len(self.cache) > 5000:
+				self.cache.clear()
+			name, path = program(p)
+			self.cache[key] = next((i for i, e in enumerate(self.entries) if
+				(e["name"] and fnmatch.fnmatchcase(name, e["name"])) or (e["path"] and path and fnmatch.fnmatchcase(path, e["path"]))), None)
+		return self.cache[key]
+
+	def allowed(self, looks):
+		"""How many of a run's looks background load may cover."""
+		return max(self.looks, int(self.share * looks))
+
+	def text(self):
+		"""What the log's start says about the list."""
+		if not self.entries:
+			return "none"
+		return "%s (each within its ceiling, for up to %d%% of the run's looks or %d looks)" % ("; ".join(
+			"%s up to %g cores, %g MB/s%s" % (e["label"], e["cpu"], e["io"], " (%s)" % e["why"] if e["why"] else "")
+			for e in self.entries), round(100 * self.share), self.looks)
+
+# One look's load outside the job: all of it (cpu cores, io MB/s), the processes with most ([(cores, MB/s,
+# Proc)]), what all disks moved (MB/s, or None), what is left once listed background within its ceiling is
+# taken out (rest_cpu, rest_io), and that background ([(label, cores, MB/s, within its ceiling)])
+Load = collections.namedtuple("Load", "cpu io top disks rest_cpu rest_io background")
+
 class Watch:
 	"""Which processes are outside the job, and the CPU and disk they use."""
 
-	def __init__(self, job=None, sid=None, root_pid=None):
+	def __init__(self, job=None, sid=None, root_pid=None, background=None, allow=()):
 		self.job, self.sid, self.root_pid = job, sid, root_pid
+		self.background = background
+		self.allow = set(allow)  # kinds neither waited for nor counted (--allow): only noted, in self.allowed
+		self.allowed = []  # outside the job at the last sample, using only allowed kinds
 		self.me = {os.getpid()}
 		self.prev, self.prev_t, self.prev_disk = {}, None, None
 		self.desktops = {}  # (pid, start): Proc, every desktop up at the last sample
@@ -459,12 +645,17 @@ class Watch:
 			q, seen = parent, seen + 1
 		return False
 
+	def foreign(self, p):
+		"""The kinds p uses that count against a run: all but desktop and the allowed ones."""
+		return p.kinds - {"desktop"} - self.allow
+
 	def sample(self):
 		"""(foreign device users, foreign load) now: [(Proc, kinds)], (cores, MB/s, [(cores, MB/s, Proc)],
 		MB/s all disks moved or None)."""
 		t, procs = time.perf_counter(), scan(self.own_pids)  # Windows' monotonic() ticks every 15.6 ms
 		disk = disk_bytes()
 		users, load, cpu, io, own_io = [], [], 0.0, 0.0, 0.0
+		self.allowed = []
 		self.desktops = {(p.pid, p.start): p for p in procs.values() if "desktop" in p.kinds}
 		self.ancestors, q = set(), procs.get(os.getpid())
 		while q and q.ppid in procs and procs[q.ppid].start <= q.start and q.ppid not in self.ancestors:
@@ -482,24 +673,48 @@ class Watch:
 				own.add(p.pid)
 				own_io += b
 				continue
-			if p.kinds - {"desktop"}:
+			if self.foreign(p):
 				users.append(p)
+			elif p.kinds & self.allow:
+				self.allowed.append(p)
 			cpu, io = cpu + c, io + b
 			if c > 0.05 or b > 1:
 				load.append((c, b, p))
 		self.own_pids = own
 		self.prev = {(p.pid, p.start): (p.cpu, p.io) for p in procs.values()}
+		# Known background (background.json), each entry's processes together: within its ceilings it is
+		# taken out of what is left (rest); above them it stays in, as anything else's load would. Only
+		# processes in load (over 0.05 cores or 1 MB/s) are looked at: the rest of a listed program stays in
+		bg, seen = self.background, {}
+		for c, b, p in load if bg and bg.entries else ():
+			i = bg.match(p)
+			if i is not None:
+				s = seen.setdefault(i, [0.0, 0.0])
+				s[0], s[1] = s[0] + c, s[1] + b
 		disks = None
 		if measured and disk is not None and self.prev_disk is not None:
+			disks = max(0.0, (disk - self.prev_disk) / 1e6 / (t - self.prev_t))
+		# On Windows a program's count is all its I/O, disk or not (a security agent's reached 6,102 MB/s with
+		# the disks at a few): against its ceiling goes at most what the disks moved
+		background, bg_cpu, bg_io = [], 0.0, 0.0
+		for i, (c, b) in sorted(seen.items()):
+			e, disk_b = bg.entries[i], b if disks is None else min(b, disks)
+			ok = c <= e["cpu"] and disk_b <= e["io"]
+			background.append((e["label"], c, disk_b, ok))
+			if ok:  # taken out of the load: all its CPU, and all its I/O as counted
+				bg_cpu, bg_io = bg_cpu + c, bg_io + b
+		rest_cpu, rest_io = cpu - bg_cpu, io - bg_io
+		if disks is not None:
 			# What outside programs read and wrote, as far as it reached a disk; and at least what the
 			# disks moved beyond the job's own reads and writes, which catches writes that Windows'
-			# file cache took and the kernel wrote out later, after their program had gone
-			disks = max(0.0, (disk - self.prev_disk) / 1e6 / (t - self.prev_t))
+			# file cache took and the kernel wrote out later, after their program had gone. What is left
+			# once the background is out: the same, with its reads and writes taken off the disks' too
 			io = max(min(io, disks), disks - own_io)
+			rest_io = max(min(rest_io, disks), disks - own_io - bg_io)
 		self.prev_disk = disk
 		self.prev_t = t
 		load.sort(key=lambda x: -(x[0] + x[1] / 50))
-		return users, (cpu, io, load, disks) if measured else None
+		return users, Load(cpu, io, load, disks, max(0.0, rest_cpu), max(0.0, rest_io), background) if measured else None
 
 def describe(p, width=150):
 	return "%d %s %s" % (p.pid, ",".join(sorted(p.kinds)) or "-", cmdline(p)[:width])
@@ -512,13 +727,101 @@ def desktop_text(desktops, short=False):
 	return ", ".join(sorted(set("%s (%s%s)" % (p.cmd.split()[0].rsplit("/", 1)[-1], p.user or "?",
 		", the login screen" if p.user == "gdm" else "") for p in desktops.values()))) or "none"
 
+def background_text(background):
+	return "; ".join("%s %.1f cores %.0f MB/s%s" % (label, c, b, "" if ok else " ABOVE its ceiling")
+		for label, c, b, ok in background)
+
 def load_text(load, n=3):
-	cpu, io, top, disks = load
-	return "cpu %.1f cores, disk %.0f MB/s%s; %s" % (cpu, io, "" if disks is None else " (all disks %.0f)" % disks, "; ".join(
+	cpu, io, top, disks = load[:4]
+	text = "cpu %.1f cores, disk %.0f MB/s%s; %s" % (cpu, io, "" if disks is None else " (all disks %.0f)" % disks, "; ".join(
 		"%d %.1f cores %.0f MB/s %s" % (p.pid, c, b, cmdline(p)[:80]) for c, b, p in top[:n]) or "nothing")
+	background = getattr(load, "background", None)
+	if background:
+		text += "; background (background.json): %s; the rest: cpu %.1f cores, disk %.0f MB/s" % (
+			background_text(background), load.rest_cpu, load.rest_io)
+	return text
 
 def overloaded(load, args):
+	"""All the load outside the job is above --cpu or --io (a LOAD line in the log)."""
 	return load is not None and (load[0] > args.cpu or load[1] > args.io)
+
+def foreign_load(load, args):
+	"""What is left of the load once listed background within its ceiling is out is above --cpu or --io; with
+	--strict, all of it."""
+	if getattr(args, "strict", False) or not hasattr(load, "rest_cpu"):
+		return overloaded(load, args)
+	return load is not None and (load.rest_cpu > args.cpu or load.rest_io > args.io)
+
+def streak(flags):
+	"""The most True in a row."""
+	best = run = 0
+	for f in flags:
+		run = run + 1 if f else 0
+		best = max(best, run)
+	return best
+
+def looks_text(n, period=None):
+	period = PERIOD if period is None else period
+	return "%d look%s (%s s)" % (n, "" if n == 1 else "s", "%g" % round(n * period, 1))
+
+class LoadTrack:
+	"""The CPU and disk load outside the job, look by look through a run, for its last line.
+
+	A look is 'load' when what is left once listed background is out is above --cpu or --io, 'background'
+	when only listed background (within its ceilings) took the load above them. Load counts (contaminates)
+	only when it lasts: --load-looks looks in a row (2), or more than --load-share of the run's looks (0.2);
+	a moment of it is logged and named on the last line, but the run stays clean. Background contaminates
+	only when it covers more of the run than background.json allows. --strict: every look above the limits
+	counts at once, background or not, as before 13 November 2026."""
+
+	def __init__(self, args, background=None):
+		self.args, self.bg = args, background or Background()
+		self.strict = getattr(args, "strict", False)
+		self.need, self.share = getattr(args, "load_looks", 2), getattr(args, "load_share", 0.2)
+		self.states = []  # per look: None, "load" or "background"
+		self.peak = [0.0, 0.0]  # the most cores and MB/s of 'load' looks (what is left)
+		self.bg_peak = {}  # label: [cores, MB/s] at most, within its ceiling
+
+	def add(self, load):
+		if load is None:
+			return None
+		state = None
+		if foreign_load(load, self.args):
+			state = "load"
+			cpu, io = (load.cpu, load.io) if self.strict else (load.rest_cpu, load.rest_io)
+			self.peak = [max(self.peak[0], cpu), max(self.peak[1], io)]
+		elif overloaded(load, self.args):
+			state = "background"
+			for label, c, b, ok in load.background:
+				if ok:
+					p = self.bg_peak.setdefault(label, [0.0, 0.0])
+					p[0], p[1] = max(p[0], c), max(p[1], b)
+		self.states.append(state)
+		return state
+
+	def verdict(self):
+		"""(load sightings that count, background contaminates, notes for the last line)."""
+		looks = len(self.states)
+		n = self.states.count("load")
+		longest = streak(s == "load" for s in self.states)
+		notes, counted = [], 0
+		if n:
+			lasts = self.strict or longest >= self.need or n > self.share * looks
+			counted = n if lasts else 0
+			notes.append("%sload outside the job in %d of %d looks, longest %s in a row, peak %.1f cores, %.0f MB/s%s" % (
+				"" if lasts else "brief ", n, looks, looks_text(longest), self.peak[0], self.peak[1],
+				"" if lasts else " (not counted: under %d looks in a row and %d%% of the run)" % (
+					self.need, round(100 * self.share))))
+		b = self.states.count("background")
+		too_much = False
+		if b:
+			allowed = self.bg.allowed(looks)
+			too_much = b > allowed
+			notes.append("background (background.json) above the limits in %d of %d looks, longest %s in a row%s: %s" % (
+				b, looks, looks_text(streak(s == "background" for s in self.states)),
+				", more than the %d allowed" % allowed if too_much else "",
+				", ".join("%s peak %.1f cores, %.0f MB/s" % (k, c, io) for k, (c, io) in self.bg_peak.items())))
+		return counted, too_much, notes
 
 # The locks. Each has acquire (wait for it, or exit 75), record (say who holds it and for which job),
 # ours (still held by this rig.py), release, and state/describe for status and break.
@@ -779,6 +1082,35 @@ def make_lock():
 
 WAITING = " (waiting for the rig to be quiet)"
 
+def background_for(args):
+	"""The machine's background list (background.json), or none with --strict."""
+	return Background() if getattr(args, "strict", False) else Background.read()
+
+def allowed_kinds(args):
+	"""The kinds --allow (RIG_ALLOW) leaves out: neither waited for nor counted."""
+	return set(getattr(args, "allow", None) or ())
+
+def parse_allow(text):
+	kinds = {k.strip().lower() for k in (text or "").split(",") if k.strip()}
+	bad = kinds - set(KINDS)
+	if bad:
+		raise argparse.ArgumentTypeError("not a kind: %s (the kinds: %s)" % (", ".join(sorted(bad)), ", ".join(KINDS)))
+	return kinds
+
+def log_rules(log, args, bg):
+	"""The log says, before the job starts, what will count against the run."""
+	if allowed_kinds(args):
+		log("allowed outside the job, not waited for and not counted (--allow): %s" % ", ".join(sorted(allowed_kinds(args))))
+	if getattr(args, "strict", False):
+		log("--strict: any look with load outside the job above %g cores or %g MB/s contaminates the run; "
+			"background.json is not used" % (args.cpu, args.io))
+		return
+	log("load outside the job above %g cores or %g MB/s counts when it lasts %d looks in a row or more than %d%% "
+		"of the run's looks; known background (%s): %s" % (args.cpu, args.io, getattr(args, "load_looks", 2),
+		round(100 * getattr(args, "load_share", 0.2)), BACKGROUND, bg.text()))
+	for problem in bg.problems:
+		log(problem)
+
 def wait_quiet(w, args):
 	"""Wait until nothing outside w's job uses a device or loads the CPU or disk; exit 75 instead with --no-wait.
 	The rig is ours by then, but something started without rig.py may still be at work."""
@@ -787,7 +1119,7 @@ def wait_quiet(w, args):
 	while True:
 		time.sleep(PERIOD)
 		users, load = w.sample()
-		if not users and not overloaded(load, args):
+		if not users and not foreign_load(load, args):
 			return
 		if args.no_wait:
 			say("rig in use outside rig.py:")
@@ -800,14 +1132,15 @@ def wait_quiet(w, args):
 			say("%s in use outside rig.py, waiting:" % time.strftime("%H:%M:%S"))
 			for p in users:
 				say("  " + describe(p))
-			if overloaded(load, args):
+			if foreign_load(load, args):
 				say("  load: " + load_text(load))
 
 def watch(w, alive, log, args, on_signal, lock, stopper=None):
 	"""Log what is outside the job every PERIOD s until alive() is False; returns the sighting counts.
 	With a stopper (an experiment machine), it ends as soon as the stopper says why, its STOP file
-	looked for every 0.2 s."""
+	looked for every 0.2 s. Load outside the job counts as LoadTrack says."""
 	counts = dict.fromkeys(KINDS + ("desktop", "load", "lock"), 0)
+	track = LoadTrack(args, w.background)
 	last = {}  # what was logged when, so a process that stays is logged every 30 s, not every 2 s
 	def note(key, text):
 		now = time.monotonic()
@@ -828,11 +1161,14 @@ def watch(w, alive, log, args, on_signal, lock, stopper=None):
 			log("DESKTOP %s: %s" % ("started" if key in w.desktops else "ended", describe(p)))
 		before = dict(w.desktops)
 		for p in users:
-			for k in p.kinds:
+			for k in w.foreign(p):
 				counts[k] += 1
 			note(("dev", p.pid, p.start), "FOREIGN %s" % describe(p))
-		if overloaded(load, args):
-			counts["load"] += 1
+		for p in w.allowed:
+			if ("allowed", p.pid, p.start) not in last:  # once each: it is no contamination
+				last[("allowed", p.pid, p.start)] = time.monotonic()
+				log("ALLOWED (--allow) %s" % describe(p))
+		if track.add(load):
 			note(("load",), "LOAD %s" % load_text(load))
 		if not lock.ours():
 			counts["lock"] += 1
@@ -853,28 +1189,36 @@ def watch(w, alive, log, args, on_signal, lock, stopper=None):
 			break
 	counts["desktops"] = desktop_text(w.desktops, short=True)
 	counts["clocks"] = clocks.summary()
+	counts["load"], counts["background"], counts["loadnotes"] = track.verdict()
 	return counts
 
 def finish(counts, log, aborted=None, stopped=None):
-	"""The run's last line: RIG_CLEAN or RIG_CONTAMINATED; or, for a run stopped before its job ended,
-	RIG_ABORTED with what was seen until then, never RIG_CLEAN; or RIG_STOPPED for one stopped at an
-	experiment machine (stopped says how)."""
+	"""The run's last line: RIG_CLEAN, RIG_CLEAN_BACKGROUND (clean but for a machine's listed background
+	load, within what background.json allows) or RIG_CONTAMINATED; or, for a run stopped before its job
+	ended, RIG_ABORTED with what was seen until then, never RIG_CLEAN; or RIG_STOPPED for one stopped at an
+	experiment machine (stopped says how). Load notes (LoadTrack) give how long and how much."""
 	desktops = counts.pop("desktops", "none")
 	lines, gpu = counts.pop("clocks", ([], ""))
+	too_much = counts.pop("background", False)
+	load_notes = counts.pop("loadnotes", [])
 	for line in lines:
 		log(line)
 	n = sum(counts.values())
-	notes = ([] if desktops == "none" else ["desktop on the GPU: " + desktops]) + ([gpu] if gpu else [])
+	background = any(t.startswith("background") for t in load_notes)
+	notes = load_notes + ([] if desktops == "none" else ["desktop on the GPU: " + desktops]) + ([gpu] if gpu else [])
 	if n:
 		notes.insert(0, "%d sightings: %s" % (n, ", ".join("%s %d" % kv for kv in counts.items())))
+	clean = "clean but for background" if background else "clean"
 	if stopped:
-		log("RIG_STOPPED at the machine by %s (until then: %s)" % (stopped, "; ".join(notes if n else ["clean"] + notes)))
+		log("RIG_STOPPED at the machine by %s (until then: %s)" % (stopped, "; ".join(notes if n or too_much else [clean] + notes)))
 	elif aborted:
-		log("RIG_ABORTED by %s (until then: %s)" % (aborted, "; ".join(notes if n else ["clean"] + notes)))
-	elif n == 0:
-		log("RIG_CLEAN" + (" (%s)" % "; ".join(notes) if notes else ""))
-	else:
+		log("RIG_ABORTED by %s (until then: %s)" % (aborted, "; ".join(notes if n or too_much else [clean] + notes)))
+	elif n or too_much:
 		log("RIG_CONTAMINATED (%s)" % "; ".join(notes))
+	elif background:
+		log("RIG_CLEAN_BACKGROUND (%s)" % "; ".join(notes))
+	else:
+		log("RIG_CLEAN" + (" (%s)" % "; ".join(notes) if notes else ""))
 
 def logger(path):
 	def log(text):
@@ -1388,10 +1732,15 @@ def banner_shows(job, wait=15.0):
 		time.sleep(0.25)
 	return False
 
-def experiment_blockers(cfg, banner=True, now=None):
-	"""(why a test may not start now, [] if it may; the sessions seen)."""
+def experiment_blockers(cfg, banner=True, now=None, allow=()):
+	"""(why a test may not start now, [] if it may; the sessions seen). allow: kinds --allow leaves out."""
 	now = now or datetime.datetime.now()
 	why = []
+	if "ephys" not in allow:
+		programs = ephys_programs()
+		if programs:
+			why.append("an ephys acquisition program is running (it may be recording): %s" % ", ".join(
+				"%s (pid %d)" % (name, pid) for pid, name in programs))
 	if not in_hours(cfg["hours"], now):
 		why.append("outside the hours tests may start (%s)" % cfg["hours"])
 	paused = read_pause(now)
@@ -1411,8 +1760,8 @@ def experiment_blockers(cfg, banner=True, now=None):
 class Stopper:
 	"""During a test on an experiment machine: why to stop it now (self.why), or None."""
 
-	def __init__(self, cfg, found):
-		self.cfg, self.why = cfg, None
+	def __init__(self, cfg, found, allow=()):
+		self.cfg, self.why, self.allow = cfg, None, set(allow)
 		self.base = {s["id"]: s for s in found}
 		self.next = time.monotonic() + cfg["session_every"]
 
@@ -1430,7 +1779,11 @@ class Stopper:
 		if users:
 			p = users[0]
 			name = re.split(r"[\\/]", (p.cmd or "?").split()[0].strip('"'))[-1]
-			self.why = "%s started outside the test, using the %s (pid %d)" % (name, ",".join(sorted(p.kinds - {"desktop"})), p.pid)
+			kinds = p.kinds - {"desktop"} - self.allow
+			uses = sorted(kinds - {"ephys"})
+			what = (["using the %s" % ",".join(uses)] if uses else []) + (
+				["an ephys acquisition program"] if "ephys" in kinds else [])
+			self.why = "%s started outside the test, %s (pid %d)" % (name, ", ".join(what), p.pid)
 			return True
 		if time.monotonic() >= self.next:
 			self.next = time.monotonic() + self.cfg["session_every"]
@@ -1469,7 +1822,7 @@ def cmd_run(args):
 	cfg = experiment_config()
 	if cfg:  # an experiment machine: a test starts only now or not at all, never waits in line
 		args.no_wait = True
-		why, _ = experiment_blockers(cfg)
+		why, _ = experiment_blockers(cfg, allow=allowed_kinds(args))
 		if why:
 			say("rig.py run: not now on this experiment machine: %s" % "; ".join(why))
 			sys.exit(75)
@@ -1479,9 +1832,10 @@ def cmd_run(args):
 	proc, found = None, []
 	try:
 		lock.record(note=WAITING)
-		wait_quiet(Watch(), args)
+		bg = background_for(args)
+		wait_quiet(Watch(background=bg, allow=allowed_kinds(args)), args)
 		if cfg:  # again, now that the rig is ours; a STOP left from before is not for this run
-			why, found = experiment_blockers(cfg)
+			why, found = experiment_blockers(cfg, allow=allowed_kinds(args))
 			if why:
 				say("rig.py run: not now on this experiment machine: %s" % "; ".join(why))
 				sys.exit(75)
@@ -1491,6 +1845,7 @@ def cmd_run(args):
 		# The log's first line before the job starts: a run whose job ran has a log, even when rig.py
 		# is killed (SIGKILL) the moment RIG_BUSY names the job, and the log says nothing more then
 		log("rig.py " + version_text())
+		log_rules(log, args, bg)
 		catch_signals(got)
 		env = dict(os.environ, RIG_JOB=job, RIG_OWNER=args.owner, RIG_TAG=args.tag)
 		# The lock names the job before the job starts: a guarded script (rig_guard.sh, .ps1) checks
@@ -1508,8 +1863,8 @@ def cmd_run(args):
 		proc = start_job(args.cmd, env, log)
 		lock.record(job, proc.pid)
 		log("rig held by %s for %s (job %s, pid %d): %s" % (args.owner, args.tag, job, proc.pid, " ".join(shlex.join(args.cmd).split())))
-		w = Watch(job=job, sid=None if WINDOWS else proc.pid, root_pid=proc.pid)
-		stopper = Stopper(cfg, found) if cfg else None
+		w = Watch(job=job, sid=None if WINDOWS else proc.pid, root_pid=proc.pid, background=bg, allow=allowed_kinds(args))
+		stopper = Stopper(cfg, found, allowed_kinds(args)) if cfg else None
 		counts = watch(w, lambda: proc.poll() is None, log, args, got, lock, stopper)
 		stopped = stopper and stopper.why
 		if stopped:
@@ -1565,18 +1920,20 @@ def cmd_hold(args):
 		return alive(args.pid, start)
 	try:
 		lock.record(note=WAITING)
-		wait_quiet(Watch(root_pid=args.pid), args)
+		bg = background_for(args)
+		wait_quiet(Watch(root_pid=args.pid, background=bg, allow=allowed_kinds(args)), args)
 		if not running():
 			sys.exit("rig.py hold: pid %d ended while waiting for the rig" % args.pid)
 		p = scan().get(args.pid)
 		job = (p and p.job) or "hold-%d" % args.pid
 		log = logger(log_path(args, args.tag))
 		log("rig.py " + version_text())  # before RIG_BUSY names the pid, as in run
+		log_rules(log, args, bg)
 		catch_signals(got)
 		lock.record(job, args.pid, " (held for a running pid)")
 		held = True
 		log("rig held by %s for %s (running pid %d): %s" % (args.owner, args.tag, args.pid, cmdline(p) if p else "?"))
-		w = Watch(job=p and p.job, sid=p and p.sid, root_pid=args.pid)
+		w = Watch(job=p and p.job, sid=p and p.sid, root_pid=args.pid, background=bg, allow=allowed_kinds(args))
 		counts = watch(w, running, log, args, got, lock)
 		finish(counts, log, got[0] and "%s; the held pid was left running" % got[0])
 	except BaseException as e:
@@ -1617,7 +1974,8 @@ def cmd_status(args):
 	m = re.search(r"\bjob=(\S+)", info) if state == "held" else None
 	job = m and m.group(1)
 	m = re.search(r"\bpid=(\d+)", info) if state == "held" else None
-	w = Watch(job=job, root_pid=m and int(m.group(1)))  # the job's processes (on Windows, those it started)
+	bg = background_for(args)
+	w = Watch(job=job, root_pid=m and int(m.group(1)), background=bg)  # the job's processes (on Windows, those it started)
 	w.sample()
 	time.sleep(1.0)
 	_, load = w.sample()
@@ -1625,13 +1983,17 @@ def cmd_status(args):
 	if WINDOWS:
 		ports = sorted(rig_windows.serial_devices().values())
 		names = {"gpu": "GPU (nvidia-smi%s, python*.exe)" % ("" if NVSMI else ": none"), "encoder": "video encoder (ffmpeg*.exe)",
-			"camera": "FLIR cameras (Spinnaker loaded)", "trigger": "trigger (%s)" % (" ".join(ports) or "no COM port")}
+			"camera": "FLIR cameras (Spinnaker loaded)", "trigger": "trigger (%s)" % (" ".join(ports) or "no COM port"),
+			"ephys": "ephys acquisition (%s)" % ", ".join(rig_windows.EPHYS_NAMES)}
 	else:
 		cams = flir_cameras()
-		names = {"gpu": "GPU compute (/dev/kfd)", "encoder": "video encoder (/dev/dri/renderD*)",
+		jetson = os.path.isdir("/dev/nvgpu")  # a Jetson's integrated GPU (see device_kind)
+		names = {"gpu": "GPU compute (%s)" % ("/dev/nvgpu/*, /dev/nvhost-*gpu" if jetson else "/dev/kfd"),
+			"encoder": "video encoder (%s)" % ("/dev/v4l2-nvenc, /dev/dri/renderD*" if jetson else "/dev/dri/renderD*"),
 			"camera": "FLIR cameras (%d on USB: %s)" % (len(cams), " ".join(sorted(cams.values())) or "none"),
 			"trigger": "trigger (%s)" % (" ".join(sorted(
-				"/dev/" + d for d in os.listdir("/dev") if re.match(r"tty(ACM|USB)\d+$", d))) or "none plugged in")}
+				"/dev/" + d for d in os.listdir("/dev") if re.match(r"tty(ACM|USB)\d+$", d))) or "none plugged in"),
+			"ephys": "ephys acquisition (%s)" % ", ".join(EPHYS_NAMES)}
 	for k in KINDS:
 		users = [p for p in procs.values() if k in p.kinds and p.pid != os.getpid()]
 		print("%-48s %s" % (names[k] + ":", "free" if not users else ""))
@@ -1642,11 +2004,20 @@ def cmd_status(args):
 	for row in gpu_clocks():
 		print(clock_text(row))
 	if load:
-		cpu, io, top, disks = load
+		cpu, io, top, disks = load[:4]
 		print("load outside the job (1 s): cpu %.1f cores, disk %.0f MB/s%s   (run waits above %.1f cores or %.0f MB/s)" % (
 			cpu, io, "" if disks is None else " (all disks %.0f)" % disks, args.cpu, args.io))
 		for c, b, p in top[:5]:
-			print("    %d %.1f cores %.0f MB/s %s" % (p.pid, c, b, cmdline(p)[:110]))
+			i = bg.match(p) if bg.entries else None
+			print("    %d %.1f cores %.0f MB/s %s%s" % (p.pid, c, b, cmdline(p)[:110],
+				"" if i is None else "   [background: %s]" % bg.entries[i]["label"]))
+		if load.background:
+			print("    background (background.json): %s; the rest: cpu %.1f cores, disk %.0f MB/s" % (
+				background_text(load.background), load.rest_cpu, load.rest_io))
+	if bg.entries or bg.problems:
+		print("background (%s): %s" % (bg.path, bg.text()))
+		for problem in bg.problems:
+			print("    " + problem)
 
 def cmd_break(args):
 	lock = make_lock()
@@ -1683,6 +2054,13 @@ def main(argv=None):
 			help="CPU outside the job above which run waits and the run is contaminated, in cores (default 2, or RIG_CPU)")
 		p.add_argument("--io", type=float, default=float(os.environ.get("RIG_IO", 50)),
 			help="the same for disk reads and writes, MB/s (default 50, or RIG_IO)")
+		p.add_argument("--load-looks", type=int, default=int(os.environ.get("RIG_LOAD_LOOKS", 2)),
+			help="load outside the job contaminates a run when it lasts this many looks in a row (default 2, or RIG_LOAD_LOOKS) ...")
+		p.add_argument("--load-share", type=float, default=float(os.environ.get("RIG_LOAD_SHARE", 0.2)),
+			help="... or comes in more than this share of the run's looks (default 0.2, or RIG_LOAD_SHARE)")
+		p.add_argument("--strict", action="store_true", default=os.environ.get("RIG_STRICT") == "1",
+			help="every look with load outside the job above --cpu or --io contaminates the run, and background.json "
+			"is not used (or RIG_STRICT=1)")
 	limits(sub.add_parser("status", help="who holds the rig, and who uses each device"))
 	sub.add_parser("break", help="remove a lock that nothing holds any more, or one written by hand")
 	sub.add_parser("version", help="this copy's version, and the installed one's")
@@ -1699,6 +2077,9 @@ def main(argv=None):
 		limits(p)
 		p.add_argument("--no-wait", action="store_true", default=os.environ.get("RIG_NOWAIT") == "1",
 			help="exit 75 instead of waiting when the rig is busy (or RIG_NOWAIT=1)")
+		p.add_argument("--allow", type=parse_allow, default=os.environ.get("RIG_ALLOW", ""),
+			help="kinds outside the job not waited for and not counted, only logged, comma-separated: ephys for a "
+			"recording run beside SpikeGLX (or RIG_ALLOW)")
 		p.add_argument("--log-dir", default=os.environ.get("RIG_LOGDIR"),
 			help="where <tag>.rig.log goes (default: the current folder, or RIG_LOGDIR)")
 		p.add_argument("owner", help="who runs it: the session's name")

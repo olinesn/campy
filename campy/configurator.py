@@ -288,7 +288,7 @@ def ResolveClargs(clargs):
 	problems += EveryCamera(params, sources)
 
 	for check in (lambda p: ValidateCameraLists(p, sources, notes), lambda p: ValidateSerials(p, sources),
-			ValidateColorRange, ValidateGamma, ValidateExperiment,
+			ValidateColorRange, ValidateGamma, ValidateExperiment, ValidateSync,
 			lambda p: ValidateTriggerBoard(p, sources, chain, sections, section_sources)):
 		try:
 			check(params)
@@ -321,6 +321,7 @@ def ConfigureCamParams(systems, params, n_cam):
 	cam_idx = cam_params["cameraSelection"]
 
 	cam_params["device"] = systems[cam_make]["deviceList"][cam_idx]
+	cam_params["system"] = systems[cam_make]["system"] # to find the camera again after a replug (cameraReconnect)
 	cam_params = unicam.LoadDevice(systems, params, cam_params)
 
 	cam_params["cameraSerialNo"] = systems[cam_make]["serials"][cam_idx]
@@ -329,7 +330,7 @@ def ConfigureCamParams(systems, params, n_cam):
 
 
 # Lists that are not one value per camera
-NON_CAMERA_LISTS = ("digitalPins", "ratcamPorts", "animalIds")
+NON_CAMERA_LISTS = ("digitalPins", "ratcamPorts", "animalIds", "syncGapMs")
 # Lists that need a value for every camera: one name or index cannot be shared
 EVERY_CAMERA_LISTS = ("cameraNames", "cameraSelection", "cameraSerials")
 
@@ -492,9 +493,11 @@ def GammaFromDisableGamma(values, where, notes=None):
 
 
 def DrivesTrigger(params):
-	# campy starts the trigger itself (startArduino), with a controller:
-	# triggerController "None" or "none" means none, whatever its case
-	return bool(params.get("startArduino")) and str(params.get("triggerController", "arduino")).lower() != "none"
+	# campy starts the trigger itself (startArduino), with its Arduino: triggerController "None" or "none" means
+	# none, whatever its case, and the Pico and an operant box's board are never campy-acquire's (refused with
+	# startArduino True: ValidateTriggerBoard)
+	return bool(params.get("startArduino")) and str(params.get("triggerController", "arduino")).lower() not in (
+		"none", "pico", "box")
 
 
 def TriggerFrameRate(params):
@@ -518,6 +521,46 @@ def BlinkSettings(params):
 		return -1, 0
 	hz = float(hz)
 	return int(pin), (int(hz) if hz.is_integer() else hz)
+
+
+def SyncSettings(params, seed=None):
+	"""
+	The trigger's sync output for this recording, as trigger.ino takes it and
+	sync.json keeps it (campy/syncmatch.py reads it); None when syncPin is
+	None. seed: the one to use when syncSeed is None (default: a new random one).
+	"""
+	pin = params.get("syncPin", "None")
+	if str(pin) == "None":
+		return None
+	gaps = params.get("syncGapMs", [200, 1000])
+	gaps = list(gaps) if isinstance(gaps, (list, tuple)) else [gaps]
+	if len(gaps) != 2 or int(gaps[0]) > int(gaps[1]):
+		raise ValueError("syncGapMs: give the shortest and longest gap, e.g. [200, 1000], not {}".format(gaps))
+	width_us = int(round(float(params.get("syncPulseMs", 10)) * 1000))
+	if width_us + 3000 > int(gaps[0]) * 1000:
+		raise ValueError("syncPulseMs {:g} leaves too little of the shortest gap ({} ms): the pulse must end at least "
+			"3 ms before the next one".format(width_us / 1000, gaps[0]))
+	if str(params.get("syncSeed", "None")) != "None":
+		seed = int(params["syncSeed"])
+	elif seed is None:
+		import secrets
+		seed = secrets.randbelow(2 ** 31)
+	return dict(pin=int(pin), seed=int(seed), width_us=width_us, min_gap_ms=int(gaps[0]), max_gap_ms=int(gaps[1]))
+
+
+def ValidateSync(params):
+	# The sync output's pin is its own: not a camera's trigger pin, nor the test LED's
+	if str(params.get("syncPin", "None")) == "None":
+		return
+	SyncSettings(params, seed=0)
+	pin = int(params["syncPin"])
+	pins = params.get("digitalPins", [])
+	pins = list(pins) if isinstance(pins, (list, tuple)) else [pins]
+	if pin in [int(p) for p in pins]:
+		raise ValueError("syncPin {} is one of digitalPins {}, which trigger the cameras: give the sync output a pin "
+			"of its own.".format(pin, pins))
+	if str(params.get("blinkPin", "None")) != "None" and int(params["blinkPin"]) == pin:
+		raise ValueError("syncPin {} is also blinkPin, the test LED's: give each its own pin.".format(pin))
 
 
 def CameraParams(params, n_cam):
@@ -844,7 +887,7 @@ def YamlValue(text):
 
 
 def Board(value):
-	# triggerController as a board: "arduino", "pico", or None (no trigger), whatever its case
+	# triggerController as a board: "arduino", "pico", "box", or None (no trigger), whatever its case
 	board = str(value).lower()
 	return None if board == "none" else board
 
@@ -880,6 +923,14 @@ def ValidateTriggerBoard(params, sources, chain, sections=None, section_sources=
 		raise ValueError("triggerController: pico ({}): the Pico makes this rig's camera pulses, and campy starts no "
 			"Arduino, but startArduino is True ({}). Set startArduino: False.".format(where("triggerController"),
 			where("startArduino")))
+	if board == "box" and params.get("startArduino"):
+		raise ValueError("triggerController: box ({}): the operant box's board makes this rig's camera pulses (campy-box "
+			"runs it), and campy starts no Arduino, but startArduino is True ({}). Set startArduino: False.".format(
+			where("triggerController"), where("startArduino")))
+	if pico and board == "box":
+		raise ValueError("A pico: section ({}) on a rig whose operant box's board makes the camera pulses "
+			"(triggerController: box, {}): the Pico and the box's board would both pulse the cameras. Leave the pico: "
+			"section out.".format(pico_where, where("triggerController")))
 	if pico and DrivesTrigger(params):
 		raise ValueError("A pico: section ({}) and startArduino: True ({}): the Pico and the Arduino would both pulse "
 			"the cameras. One board makes a rig's camera pulses: set startArduino: False (and triggerController: pico "

@@ -1,26 +1,52 @@
 #!/usr/bin/env python3
 """Benchmark B2 for the Jetson AGX Orin: can its hardware encoder keep up with 3 cameras?
 
-Stock ffmpeg can't use the Orin's video encoder (there is no libnvidia-encode
-on Orin, so hevc_nvenc fails). NVIDIA's route is GStreamer's nvv4l2h265enc.
-This script starts one encoder per simulated camera and feeds it synthetic
+ffmpeg's hevc_nvenc can't use the Orin's video encoder. Stock ffmpeg finds
+no NVENC driver on the Orin; on JetPack 7.2.1, NVIDIA's own ffmpeg (8.0.1)
+loads one, but it belongs to the Jetson Thor's driver stack, and opening an
+encoder on the Orin fails with "OpenEncodeSessionEx failed: unsupported
+device". NVIDIA's route on the Orin is GStreamer's nvv4l2h265enc. This
+script starts one encoder per simulated camera and feeds it synthetic
 8-bit mono frames (moving bright blobs on a noisy gradient), paced at --fps
 for --seconds, the way campy's writer feeds ffmpeg: one pipe per camera, one
 frame per write, and a write blocks when the encoder falls behind.
 
-Each stream is (the default, --mux ffmpeg):
+Each stream is what campy's writer runs for a gpuMake "jetson" camera
+(campy/writer.py, JetsonEncoderArgs; the defaults, --input gray8 --mux ffmpeg):
 
     this script --pipe--> gst-launch-1.0 fdsrc ! rawvideoparse format=gray8 ...
-        ! nvvidconv ! video/x-raw(memory:NVMM),format=NV12
-        ! nvv4l2h265enc ratecontrol-enable=0 quant-i-frames=QP quant-p-frames=QP
-            iframeinterval=N idrinterval=N insert-sps-pps=1 num-B-Frames=0
-        ! h265parse ! fdsink --pipe--> ffmpeg -f hevc -i pipe: -c copy
+        ! nvvidconv ! video/x-raw(memory:NVMM),format=I420
+        ! nvv4l2h265enc control-rate=variable_bitrate bitrate=4000000000
+            qp-range=QP,QP:QP,QP:QP,QP preset-level=1 insert-sps-pps=1
+            iframeinterval=N idrinterval=N
+        ! h265parse ! fdsink --pipe--> ffmpeg -f hevc -framerate F -r F -i pipe:0
+            -c copy -bsf:v hevc_metadata=video_full_range_flag=1
             (campy's fragmented-MP4 flags and hvc1 tag) streamN.mp4
 
-so the file is laid out like one campy writes today. --mux raw writes the
+so the file is laid out, and marked, like one campy writes. What the writer
+had to get right on JetPack 7.2.1, and so this script too:
+- Constant QP through qp-range, with rate control left on (variable bitrate,
+  a 4 Gbit/s ceiling) and peak-bitrate at its default. The encoder's own
+  constant-QP switch (ratecontrol-enable=0 with quant-i-frames and
+  quant-p-frames, what this script set before) is ignored: every QP gave the
+  same file, at the default 4 Mbit/s. A peak-bitrate equal to the ceiling
+  held every file at the ceiling.
+- Gray frames straight in: nvvidconv makes them I420 in the encoder's memory
+  with the levels unchanged (0-255). It refuses GRAY8 to NV12, and the route
+  this script took before (I420 built here, then nvvidconv to NV12) clipped
+  the levels to 16-235.
+- -r on the muxer's input: the stream carries no frame times, and with
+  -framerate alone they stopped advancing (a 4 s file said 0.2 s).
+--input gray8-convert adds GStreamer's videoconvert (gray to I420 on the CPU)
+before nvvidconv, to see what a CPU conversion costs. --mux raw writes the
 H.265 stream straight to a .h265 file instead (no ffmpeg), to see what the
 second process costs. --cpu-fallback libx264|libx265 replaces the whole chain
 with one stock ffmpeg encoding on the CPU, for comparison.
+
+Every synthetic frame has a ramp of all 256 gray levels across its top rows,
+and the report gives the lowest and highest level read back there from
+stream 0's first frame: 0 and 255 when the levels survive (within a step or
+two of compression), about 16 and 235 when something on the way clipped them.
 
 What it reports, per stream:
   frames written, achieved fps, pipe write time (p50/p99/max), how far the
@@ -28,7 +54,8 @@ What it reports, per stream:
   keeps growing means the encoder can't keep up and a real recording's write
   queue would grow), CPU % of the gst-launch and ffmpeg processes (100 = one
   core), output size and bitrate, frames counted back in the file, and for
-  stream 0 the PSNR of the first --psnr-frames frames against what was sent.
+  stream 0 the PSNR of the first --psnr-frames frames against what was sent
+  and the gray levels its ramp came back as.
 And for the whole machine: CPU busy % (mean and max over 1 s samples, Linux),
 this script's own CPU, and the tegrastats lines logged during the run (if
 tegrastats is installed; it shows the encoder clock NVENC, power and heat).
@@ -39,6 +66,7 @@ Examples, on the Orin (as campy's rig tests do, through bench/rig.py when
 other people use the machine):
 
     python3 bench/jetson_encode_bench.py                       # 3 x 60 fps, 30 s, QP 21
+    python3 bench/jetson_encode_bench.py --qp 28               # the file size follows the QP
     python3 bench/jetson_encode_bench.py --seconds 1800        # the 30-minute pass/fail run
     python3 bench/jetson_encode_bench.py --mux raw             # without the ffmpeg muxer
     python3 bench/jetson_encode_bench.py --cpu-fallback libx264 --cpu-preset ultrafast
@@ -73,23 +101,35 @@ FRAGMENTED_MP4 = [
 # H.265 in an MP4 is tagged hvc1 (writer.py: Apple's decoder refuses hev1)
 HVC1 = ["-tag:v", "hvc1"]
 
-# nvv4l2h265enc properties used, as named in NVIDIA's Jetson Linux r39.2
-# "Accelerated GStreamer" guide. The script checks them against
-# gst-inspect-1.0 before it starts, so a renamed property stops it with a
-# clear message rather than a gst-launch error.
-#   ratecontrol-enable=0       constant QP (1, the default, is variable)
-#   quant-i-frames / quant-p-frames   the QP of I and P frames
-#   iframeinterval / idrinterval      frames between I frames / IDR frames
+# nvv4l2h265enc properties used, as campy/writer.py's JetsonEncoderArgs sets
+# them (tests/test_jetson_bench.py checks that they match), named as in
+# NVIDIA's Jetson Linux r39.2 "Accelerated GStreamer" guide. The script checks
+# them against gst-inspect-1.0 before it starts, so a renamed property stops
+# it with a clear message rather than a gst-launch error.
+#   control-rate=variable_bitrate, bitrate=MAX_BITRATE   rate control stays on,
+#                              with a ceiling it never reaches
+#   qp-range=Q,Q:Q,Q:Q,Q       min,max QP of P, I and B frames: all one QP, so
+#                              the QP alone sets the size (peak-bitrate is left
+#                              at its default)
+#   preset-level               hardware preset (1, UltraFastPreset, campy's
+#                              "ultrafast" and the encoder's own default)
 #   insert-sps-pps=1           parameter sets before every IDR (a reader can
 #                              start at any keyframe)
-#   num-B-Frames=0             no B frames, like campy's GPU paths
-#   preset-level               hardware preset (only with --preset-level)
+#   iframeinterval / idrinterval      frames between I frames / IDR frames
 #   maxperf-enable             encoder at full clock (only with --maxperf; in
 #                              older guides, not in r39.2's)
 ENCODER = "nvv4l2h265enc"
+# The variable rate's ceiling, bits a second, as writer.JETSON_MAX_BITRATE
+MAX_BITRATE = 4000000000
+
+# How frames reach the encoder (--input): see the module docstring
+INPUTS = ("gray8", "gray8-convert")
+# Rows at the top of every synthetic frame holding the 0-255 ramp
+RAMP_ROWS = 16
 
 
 def frame_bytes(width, height):
+    """Bytes in one GRAY8 frame as written to the pipe."""
     return width * height
 
 
@@ -98,38 +138,44 @@ def keyframe_frames(fps, keyframe_interval):
     return max(1, int(round(fps * keyframe_interval)))
 
 
-def gst_encoder_props(qp, iframe_interval, preset_level=None, maxperf=False):
+def gst_encoder_props(qp, iframe_interval, preset_level=1, maxperf=False):
     props = [
-        "ratecontrol-enable=0",
-        "quant-i-frames=%d" % qp,
-        "quant-p-frames=%d" % qp,
-        "iframeinterval=%d" % iframe_interval,
-        "idrinterval=%d" % iframe_interval,
-        "insert-sps-pps=1",
-        "num-B-Frames=0",
+        "control-rate=variable_bitrate",
+        "bitrate=%d" % MAX_BITRATE,
+        "qp-range={0},{0}:{0},{0}:{0},{0}".format(qp),
     ]
     if preset_level is not None:
         props.append("preset-level=%d" % preset_level)
+    props += [
+        "insert-sps-pps=1",
+        "iframeinterval=%d" % iframe_interval,
+        "idrinterval=%d" % iframe_interval,
+    ]
     if maxperf:
         props.append("maxperf-enable=1")
     return props
 
 
-def gst_args(width, height, fps, qp, iframe_interval, out, preset_level=None,
-             maxperf=False, gst="gst-launch-1.0"):
-    """gst-launch-1.0 arguments for one stream: raw GRAY8 frames on stdin, H.265 out.
+def gst_args(width, height, fps, qp, iframe_interval, out, preset_level=1,
+             maxperf=False, gst="gst-launch-1.0", input_format="gray8"):
+    """gst-launch-1.0 arguments for one stream: gray frames on stdin, H.265 out.
 
     out is a file path (written by filesink, the raw .h265 stream) or an int,
     a file descriptor the H.265 byte-stream is written to (fdsink) for ffmpeg
     to read. Each word is one argument, so nothing is parsed by a shell.
     """
-    size = frame_bytes(width, height)
+    if input_format not in INPUTS:
+        raise ValueError("input_format is one of %s, not %r" % (", ".join(INPUTS), input_format))
+    # blocksize: one frame per buffer; plane-strides: rows of exactly width
+    # bytes (GStreamer would round a gray row up to 4), as campy's writer
     args = [gst, "-q", "-e",
-            "fdsrc", "fd=0", "blocksize=%d" % size, "!",
+            "fdsrc", "fd=0", "blocksize=%d" % frame_bytes(width, height), "!",
             "rawvideoparse", "format=gray8", "width=%d" % width, "height=%d" % height,
-            "framerate=%d/1" % fps, "!",
-            "nvvidconv", "!",
-            "video/x-raw(memory:NVMM),format=NV12", "!",
+            "framerate=%d/1" % fps, "plane-strides=<%d>" % width, "!"]
+    if input_format == "gray8-convert":
+        args += ["videoconvert", "!", "video/x-raw,format=I420", "!"]
+    args += ["nvvidconv", "!",
+            "video/x-raw(memory:NVMM),format=I420", "!",
             ENCODER] + gst_encoder_props(qp, iframe_interval, preset_level, maxperf) + [
             "!", "h265parse", "!"]
     if isinstance(out, int):
@@ -140,10 +186,15 @@ def gst_args(width, height, fps, qp, iframe_interval, out, preset_level=None,
 
 
 def ffmpeg_mux_args(fps, out, ffmpeg="ffmpeg"):
-    """ffmpeg arguments that copy an H.265 byte-stream on stdin into a campy-style MP4."""
+    """ffmpeg arguments that copy an H.265 byte-stream on stdin into a campy-style MP4.
+
+    As campy's writer: -r gives each frame its time from the frame rate (the
+    stream has none), and hevc_metadata marks the video full range (the
+    encoder keeps 0-255 but marks it limited) without touching the frames.
+    """
     return [ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
-            "-f", "hevc", "-framerate", str(fps), "-i", "pipe:0",
-            "-c", "copy"] + FRAGMENTED_MP4 + HVC1 + [out]
+            "-f", "hevc", "-framerate", str(fps), "-r", str(fps), "-i", "pipe:0",
+            "-c", "copy", "-bsf:v", "hevc_metadata=video_full_range_flag=1"] + FRAGMENTED_MP4 + HVC1 + [out]
 
 
 def ffmpeg_cpu_args(codec, width, height, fps, qp, iframe_interval, preset, out, ffmpeg="ffmpeg"):
@@ -181,11 +232,13 @@ def stream_commands(args, index, out_dir, gst_fd=None):
     if args.mux == "raw":
         out = os.path.join(out_dir, "stream%d.h265" % index)
         return (gst_args(args.width, args.height, args.fps, args.qp, kf, out,
-                         args.preset_level, args.maxperf, gst=args.gst_launch), None, out)
+                         args.preset_level, args.maxperf, gst=args.gst_launch,
+                         input_format=args.input), None, out)
     out = os.path.join(out_dir, "stream%d.mp4" % index)
     fd = 3 if gst_fd is None else gst_fd
     return (gst_args(args.width, args.height, args.fps, args.qp, kf, fd,
-                     args.preset_level, args.maxperf, gst=args.gst_launch),
+                     args.preset_level, args.maxperf, gst=args.gst_launch,
+                     input_format=args.input),
             ffmpeg_mux_args(args.fps, out, ffmpeg=args.ffmpeg), out)
 
 
@@ -199,8 +252,15 @@ def missing_properties(inspect_text, props):
 # Frames
 # --------------------------------------------------------------------------
 
+def ramp_row(width):
+    """One row of the ramp: the gray levels 0-255 left to right, in equal steps."""
+    import numpy as np
+    return (np.arange(width) * 256 // width).astype(np.uint8)
+
+
 def make_frames(width, height, count, seed=0):
-    """`count` gray frames: a gradient, sensor-like noise, and 5 bright blobs moving around.
+    """`count` gray frames: a gradient, sensor-like noise, 5 bright blobs moving around,
+    and the 0-255 ramp across the top RAMP_ROWS rows.
 
     Real camera video compresses differently (texture, lighting), so file sizes
     are indicative; the encoder's speed hardly depends on the content.
@@ -221,7 +281,9 @@ def make_frames(width, height, count, seed=0):
             r2 = ((xx - x) / 60.0) ** 2 + ((yy - y) / 30.0) ** 2
             img += 150 * np.exp(-r2)
         img += rng.normal(0, 2.0, size=img.shape).astype(np.float32)
-        frames.append(np.clip(img, 0, 255).astype(np.uint8).tobytes())
+        img = np.clip(img, 0, 255).astype(np.uint8)
+        img[:min(RAMP_ROWS, height)] = ramp_row(width)
+        frames.append(img.tobytes())
     return frames
 
 
@@ -471,6 +533,43 @@ def parse_psnr(stderr):
     return float("inf") if m[-1] == "inf" else float(m[-1])
 
 
+def first_frame_args(ffmpeg, path, width, height, fps, raw_luma):
+    """ffmpeg arguments that write a video's first frame, gray, to stdout (raw bytes).
+
+    raw_luma: the Y plane as stored, rather than converted by the video's range.
+    """
+    fmt = ["-f", "hevc", "-framerate", str(fps)] if path.endswith(".h265") else []
+    return [ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error"] + fmt + ["-i", path,
+            "-frames:v", "1", "-vf", "extractplanes=y" if raw_luma else "format=gray",
+            "-f", "rawvideo", "-pix_fmt", "gray", "-"]
+
+
+def ramp_levels(data, width, height):
+    """(lowest, highest) gray level in the ramp rows of a decoded frame, or None.
+
+    Each end is the mean of the columns holding level 0 (or 255), over the
+    ramp's rows, so one pixel the codec moved doesn't decide it.
+    """
+    import numpy as np
+    if len(data) < width * height:
+        return None
+    rows = np.frombuffer(data[:width * min(RAMP_ROWS, height)], np.uint8).reshape(-1, width)
+    # leave out the rows next to the image below (the codec blends across them)
+    band = rows[:max(1, rows.shape[0] - 4)].astype(np.float64)
+    k = max(1, width // 256)
+    return float(round(band[:, :k].mean(), 1)), float(round(band[:, -k:].mean(), 1))
+
+
+def measure_levels(args, path):
+    out = {}
+    for raw in (True, False):
+        p = subprocess.run(first_frame_args(args.ffmpeg, path, args.width, args.height, args.fps, raw),
+                           capture_output=True)
+        levels = ramp_levels(p.stdout, args.width, args.height) if p.returncode == 0 else None
+        out["ramp_levels_stored_luma" if raw else "ramp_levels_by_range"] = levels
+    return out
+
+
 def measure_psnr(args, path, frames, offset, n_sent, tmp):
     # the reference is the frames sent, written out in full (ffmpeg's
     # -stream_loop on a raw file paired them wrongly after the first loop)
@@ -517,15 +616,20 @@ def parse_args(argv=None):
     p.add_argument("--width", type=int, default=1280, help="frame width (Blackfly S 1.3 MP)")
     p.add_argument("--height", type=int, default=1024, help="frame height")
     p.add_argument("--qp", type=int, default=21,
-                   help="fixed quantizer for I and P frames (campy's default quality)")
+                   help="the QP of every frame (campy's quality; default 21, campy's default)")
     p.add_argument("--keyframe-interval", type=float, default=1.0,
                    help="seconds between keyframes (campy's keyframeInterval)")
     g = p.add_argument_group("Jetson encoder (GStreamer)")
+    g.add_argument("--input", choices=INPUTS, default="gray8",
+                   help="how frames reach the encoder: gray8 (straight to nvvidconv, which makes I420 "
+                        "in the encoder's memory, as campy's writer), gray8-convert (GStreamer's "
+                        "videoconvert makes I420 on the CPU first)")
     g.add_argument("--mux", choices=["ffmpeg", "raw"], default="ffmpeg",
                    help="ffmpeg: pipe the H.265 into stock ffmpeg -c copy, making a fragmented MP4 "
                         "like campy's; raw: write a .h265 file with filesink, no second process")
-    g.add_argument("--preset-level", type=int, default=None,
-                   help="nvv4l2h265enc preset-level (default: the encoder's own)")
+    g.add_argument("--preset-level", type=int, default=1,
+                   help="nvv4l2h265enc preset-level (1 UltraFast, as campy's preset \"ultrafast\" and "
+                        "the encoder's own default; 2 Fast, 3 Medium, 4 Slow)")
     g.add_argument("--maxperf", action="store_true",
                    help="add maxperf-enable=1 (only if this JetPack's encoder has it)")
     g.add_argument("--gst-launch", default="gst-launch-1.0", help="gst-launch-1.0 to run")
@@ -551,6 +655,8 @@ def parse_args(argv=None):
     args = p.parse_args(argv)
     if args.streams < 1 or args.fps < 1 or args.seconds <= 0:
         p.error("--streams, --fps and --seconds must be positive")
+    if not 0 <= args.qp <= 51:
+        p.error("--qp is 0-51")
     return args
 
 
@@ -618,7 +724,6 @@ def main(argv=None):
 
     print("making %d synthetic %dx%d frames..." % (args.pattern_frames, args.width, args.height), flush=True)
     frames = make_frames(args.width, args.height, args.pattern_frames)
-
     tegra = None
     if not args.no_tegrastats and shutil.which("tegrastats"):
         tegra = Tegrastats(shutil.which("tegrastats"))
@@ -632,7 +737,7 @@ def main(argv=None):
     start_at = time.monotonic() + 0.5
     syscpu.start()
     threads = [threading.Thread(target=s.feed, args=(start_at, total), daemon=True) for s in streams]
-    label = args.cpu_fallback or ("%s, mux %s" % (ENCODER, args.mux))
+    label = args.cpu_fallback or ("%s QP %d, input %s, mux %s" % (ENCODER, args.qp, args.input, args.mux))
     print("feeding %d streams x %d fps for %g s (%s) into %s" % (args.streams, args.fps, args.seconds,
                                                                  label, out_dir), flush=True)
     for t in threads:
@@ -648,9 +753,11 @@ def main(argv=None):
 
     for r in results:
         r["frames_in_file"] = count_frames(args.ffmpeg, r["output"]) if r["bytes"] and shutil.which(args.ffmpeg) else None
-    if args.psnr_frames and results[0]["bytes"] and shutil.which(args.ffmpeg):
-        results[0].update(measure_psnr(args, results[0]["output"], frames, streams[0].offset,
-                                       results[0]["frames_written"], out_dir))
+    if results[0]["bytes"] and shutil.which(args.ffmpeg):
+        results[0].update(measure_levels(args, results[0]["output"]))
+        if args.psnr_frames:
+            results[0].update(measure_psnr(args, results[0]["output"], frames, streams[0].offset,
+                                           results[0]["frames_written"], out_dir))
 
     header = {
         "bench": "jetson_encode_bench",
@@ -694,6 +801,10 @@ def main(argv=None):
     if "psnr_db_stored_luma" in results[0]:
         print("stream 0 PSNR, first %d frames: %s dB as stored, %s dB by the video's range" % (
             min(args.psnr_frames, results[0]["frames_written"]), f(results[0]["psnr_db_stored_luma"], "%.2f"), f(results[0]["psnr_db_by_range"], "%.2f")))
+    lv = lambda v: "-" if not v else "%g to %g" % tuple(v)
+    if "ramp_levels_stored_luma" in results[0]:
+        print("stream 0 ramp (0 to 255 sent), first frame: %s as stored, %s by the video's range" % (
+            lv(results[0]["ramp_levels_stored_luma"]), lv(results[0]["ramp_levels_by_range"])))
 
     out_path = args.json or "jetson_encode_bench_%s.json" % datetime.now().strftime("%Y%m%d_%H%M%S")
     with open(out_path, "w") as fh:

@@ -5,7 +5,8 @@
 
 Goal: releases, health checks and rig checks on the rigs (EVO-X2, Dell Pro Max Slim FCS1250, Precision 7875, and since
 2026-10-28 the Dell Pro Tower Plus, an experiment machine: section 5; and since 2026-10-29 a Windows 11 virtual machine
-with an Intel Arc Pro B50 and no cameras: section 6) stop being hand work, without ever disturbing a
+with an Intel Arc Pro B50 and no cameras: section 6; and since 2026-11-11 an NVIDIA Jetson AGX Orin 64GB Developer Kit:
+section 7) stop being hand work, without ever disturbing a
 recording or another session's locked run.
 
 Nothing has been changed on any rig. I only copied the existing rig-check scripts, READMEs and update scripts to my
@@ -250,13 +251,27 @@ It runs **Windows 11 with one shared lab account**, reached from the Mac over SS
 *How a person at the machine takes it back. Every path to "stopped" takes about 2 s and needs no rights over the test's
 processes: the STOP file is the only thing the banner touches.*
 
+### A second experiment machine: a Dell Precision 3660 that runs SpikeGLX
+
+Added 2026-11-18: a Dell Precision 3660 that runs SpikeGLX (v20230905-phase30) for the DoublePoke rig's Neuropixels
+recordings, on a PXIe chassis with an imec base station (Windows lists it as an "Enclustra PCI Express Adapter"), an
+NI PCIe-8383 link and an NI PXIe-6341; Open Ephys 0.6.6 is installed too. It has no NVIDIA GPU and no cameras. It got
+the lock and `experiment.json` like the Tower (tests may start 8 PM to 9 AM, after 15 idle minutes; a stop pauses them
+until 9 AM). Its recordings can run overnight with nobody at it, and none of the devices the lock knew (GPU, encoder,
+FLIR cameras, trigger COM ports) shows one. So `rig.py` counts an **ephys acquisition program** as in use, by its
+process name (`SpikeGLX*.exe`, `open-ephys*.exe`): while one runs, no test starts there, and one starting during a
+test stops it. The same rule covers the ChronicRecord PC (a Dell Pro Max Slim FCS1250 with a OneBox), whose panel
+records beside SpikeGLX and so takes the rig with `RIG_ALLOW=ephys` (docs/development.md, "Timing tests on a shared
+machine").
+
 ### When a test may start there
 
 The Mac starts a test on the Tower only when all of these hold:
 - **Nobody is using it.** The lab account's session is locked, disconnected or logged off, or has had no keyboard or
   mouse input for 15 minutes. `quser` gives the session's state and idle time; it's a small program, not PowerShell
   or WMI.
-- **No camera or recording in use**, checked the same way as on the other rigs.
+- **No camera or recording in use**, checked the same way as on the other rigs, and **no ephys acquisition program
+  running** (SpikeGLX, Open Ephys), recording or not (below).
 - **The hour is inside the machine's allowed window.** Decided 2026-11-05: nights only, 10 PM to 6 AM, every day
   (`experiment.json`'s `hours`).
 - **Tests aren't paused** (see below).
@@ -286,8 +301,8 @@ every test and spoil every timing.
   other checks, ends **every process of the job** (it already runs each job in a Windows job object), frees the lock,
   and logs `RIG_STOPPED` with how it was stopped. The banner then says "Stopped. The machine is yours." No admin rights are needed,
   and the user never has to find or kill a process.
-- **Automatically, when someone starts working:** opening a camera, or starting campy-acquire, campy-session or SpinView,
-  stops the test the same way (rig.py's `--yield`, section 1). Any keyboard or mouse input in the session stops it
+- **Automatically, when someone starts working:** opening a camera, or starting campy-acquire, campy-session, SpinView,
+  SpikeGLX or Open Ephys, stops the test the same way (rig.py's `--yield`, section 1). Any keyboard or mouse input in the session stops it
   too (question 9, decided 2026-11-05): the banner sees it (GetLastInputInfo), and rig.py sees a session's idle time go
   back down in `quser`. The banner says so: "Touching the mouse or keyboard stops it".
 - **When someone connects with Remote Desktop or unlocks the screen.** The banner script hears Windows' session
@@ -472,6 +487,23 @@ What changes because it's a VM:
     rig checks end with refuses any path that isn't on the local disk.
 - **Its own account.** Unlike the Tower, nobody shares it, so the VM gets one account for the fleet (an administrator,
   so installs can be tried). Its password is in your password manager, never in the repo or on the Mac.
+
+## 7. An NVIDIA Jetson AGX Orin: the Arm rig
+
+Added 2026-11-11: an **NVIDIA Jetson AGX Orin 64GB Developer Kit** (12 Arm Cortex-A78AE cores, an Ampere GPU sharing
+64 GB, JetPack 7.2.1 on Ubuntu 24.04), with one FLIR Blackfly S and a trigger Arduino on its USB ports. What it adds to
+the fleet, and what a fleet tool has to allow for there (docs/jetson.md has the setup and the numbers):
+- **The only Arm machine.** campy's tests, its two environments (PyQt5 from Ubuntu, PyTorch's CUDA 13.2 wheels for Arm64)
+  and its rig checks run there as on the EVO-X2; anything that assumes x86-64 shows up there first.
+- **Updates like the EVO-X2's**: a `~/campy` git checkout (the Orin reaches GitHub itself), both environments
+  reinstalled, `rig.py install` when the lock changes, the rig checks (`~/sleap-bench/rigcheck`) under the lock.
+- **Its own devices.** The lock knows its GPU (`/dev/nvgpu/*`) and encoder (`/dev/v4l2-nvenc`) since pull request 401.
+  A GNOME desktop runs on it with no monitor; the programs on it that keep the GPU open count as desktop.
+- **Its encoder isn't campy's yet.** campy records there on the CPU (libx264 `ultrafast`); the hardware encoder, which
+  keeps up with 8 cameras at 60 fps, needs a GStreamer writer in campy. A fleet check on the Orin covers both.
+- **Nobody at it.** It has no screen or keyboard and is reached over SSH only. A reflash needs a person and an x86
+  Ubuntu PC with a USB-C cable (docs/jetson.md, step 1), so nothing a fleet job runs there may touch its boot
+  configuration or network settings.
 
 ---
 

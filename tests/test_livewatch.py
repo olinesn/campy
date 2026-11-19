@@ -239,3 +239,44 @@ def test_campy_watch_says_a_camera_fell_behind(tmp_path, service):
 	lines = [json.loads(line) for line in (session / "alerts-live.log").read_text().splitlines()]
 	assert any(l["key"] == "live/Camera1/offset" and l["state"] == "open" for l in lines), lines
 	assert (session / "alerts.log").exists()
+
+
+def test_a_camera_unplugged_is_not_the_recordings_end(monkeypatch):
+	# One camera's feed ends (unplugged) while the others record on: campy-watch used to say "the recording ended"
+	# and stop watching every camera. Now it watches the others on, until every feed has ended
+	import threading, time
+	import numpy as np
+	from campy import livefeed
+	from test_livefeed import name
+	monkeypatch.setattr(livewatch, "LOST_AFTER_S", 0.0)
+	monkeypatch.setattr(livewatch, "ATTACH_S", 0.0)
+	prefix = name()
+	writers = [livefeed.RingWriter(livefeed.RingName(prefix, c), (8, 8), np.uint8, frameRate=100.0,
+		cameraName="Camera{}".format(c)) for c in range(3)]
+	said = []
+	n = notify.Notifier("Test rig", channels=[Capture()], background=False, say=lambda t: None)
+	args = types.SimpleNamespace(name=prefix, cameras=3, rings="", stop_file=None, launcher_pid=0, bad_px=20.0,
+		source="campy-watch")
+	thread = threading.Thread(target=livewatch.Run, args=(args, n, said.append), daemon=True)
+	try:
+		for w in writers:
+			w.Write(np.zeros((8, 8), np.uint8), 1, 1000)
+		thread.start()
+		deadline = time.monotonic() + 10
+		while not any(t.startswith("campy-watch: watching") for t in said) and time.monotonic() < deadline:
+			time.sleep(0.01)
+		writers[1].Close()
+		k = 2
+		while not any("Camera1's feed ended" in t for t in said) and time.monotonic() < deadline:
+			for c in (0, 2):
+				writers[c].Write(np.zeros((8, 8), np.uint8), k, 1000 * k)
+			k += 1
+			time.sleep(0.01)
+		assert thread.is_alive() and "campy-watch: the recording ended." not in said, said
+		assert any(t == "campy-watch: Camera1's feed ended while the other cameras record on (camera lost): watching "
+			"the others." for t in said), said
+	finally:
+		for w in writers:
+			w.Close()
+		thread.join(10)
+	assert not thread.is_alive() and "campy-watch: the recording ended." in said, said # every feed ended: now it ends

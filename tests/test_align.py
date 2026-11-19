@@ -302,7 +302,7 @@ def test_command_line(tmp_path, capsys):
 	assert "no camera folders" in capsys.readouterr().err
 
 
-# ------------------------------------------------------------------ trigger.json
+# ------------------------------------------------------------------ trigger.json, campy-box's cameras.json
 
 def trigger_record(root, ready, started=True):
 	# What campy writes when it starts the trigger itself (trigger.SaveStart)
@@ -310,7 +310,35 @@ def trigger_record(root, ready, started=True):
 		"readyBeforeTrigger": sorted(ready) if started else [], "notReady": {}, "startedHostNs": HOST0 - 2_000_000}))
 
 
-def test_ready_cameras_start_at_one_where_arrival_times_would_round_wrong(tmp_path):
+BOX_CAMERAS = "box/campy-box.cameras.json"
+
+
+def box_record(root, ready, said=True):
+	"""
+	What a recording with triggerController: box holds: campy-acquire started no trigger (trigger.json external),
+	and campy-box started the operant box's board's camera pulses once every camera was waiting, and said which
+	(box.Runner.StartCameras). ready None: campy-box did not wait for the cameras. said False: a campy-box from before
+	it said which.
+	"""
+	(root / "trigger.json").write_text(json.dumps({"triggerStarted": False, "startedBy": "external",
+		"readyBeforeTrigger": [], "notReady": {}, "startedHostNs": None}))
+	(root / "box").mkdir(exist_ok=True)
+	record = {"board": "campy_outputs", "fps": 60.0, "period_us": 16666, "frames": 0, "pins": [12, 13],
+		"t0_board_us": 4_000_000, "t0_host_ns": HOST0 - 8_333_000,
+		"rises": "frame k (from 0) at t0 + k * period_us + period_us // 2", "sync": None}
+	if said:
+		record["ready_before_pulses"] = sorted(ready) if ready is not None else None
+	(root / BOX_CAMERAS).write_text(json.dumps(record))
+
+
+@pytest.fixture(params=["trigger.json", "campy-box"])
+def start_record(request):
+	# Which cameras were grabbing before the trigger's first pulse: as campy says it when it starts the trigger itself,
+	# and as campy-box does when the operant box's board makes the camera pulses
+	return trigger_record if request.param == "trigger.json" else box_record
+
+
+def test_ready_cameras_start_at_one_where_arrival_times_would_round_wrong(tmp_path, start_record):
 	# Both cameras saw trigger 1, but CamB's frames take 9 ms (0.54 periods) longer to arrive
 	a = triggered_camera(tmp_path, "CamA", 1, 300, lag_ms=6)
 	b = triggered_camera(tmp_path, "CamB", 1, 300, lag_ms=15, seed=5)
@@ -321,9 +349,10 @@ def test_ready_cameras_start_at_one_where_arrival_times_would_round_wrong(tmp_pa
 	summary, _ = run(tmp_path)
 	assert summary["cameras"]["CamB"]["start_trigger"] == 2
 
-	trigger_record(tmp_path, {"CamA", "CamB", "Eye"})
+	start_record(tmp_path, {"CamA", "CamB", "Eye"})
 	summary, text = run(tmp_path)
 	assert summary["ready_before_trigger"] == ["CamA", "CamB", "Eye"]
+	assert summary["ready_before_trigger_from"] == ("trigger.json" if start_record is trigger_record else BOX_CAMERAS)
 	for name in ("CamA", "CamB", "Eye"):
 		s = summary["cameras"][name]
 		assert (s["start_trigger"], s["start_from"], s["start_unsure"]) == (1, "ready before the trigger", False)
@@ -331,14 +360,15 @@ def test_ready_cameras_start_at_one_where_arrival_times_would_round_wrong(tmp_pa
 		assert {int(r["frame"]): int(r["trigger"]) for r in aligned(tmp_path, name)} == truth
 	rows = aligned(tmp_path, "Eye")
 	assert max(abs(float(r["trigger"]) - eye[int(r["frame"])]) for r in rows) < 1e-3
-	assert "Trigger 1 is the trigger's first pulse" in text
+	assert "Trigger 1 is the trigger's first pulse: {} started it".format("campy" if start_record is trigger_record
+		else "campy-box (the operant box's board)") in text
 	assert "grabbing before the trigger started" in text and "off by one" not in text
 
 
-def test_a_ready_camera_that_clearly_missed_its_first_triggers(tmp_path):
+def test_a_ready_camera_that_clearly_missed_its_first_triggers(tmp_path, start_record):
 	triggered_camera(tmp_path, "CamA", 1, 300)
 	b = triggered_camera(tmp_path, "CamB", 3, 300, seed=6) # its first frame is trigger 3
-	trigger_record(tmp_path, {"CamA", "CamB"})
+	start_record(tmp_path, {"CamA", "CamB"})
 	summary, text = run(tmp_path)
 	s = summary["cameras"]["CamB"]
 	assert (s["start_trigger"], s["start_from"]) == (3, "arrival times")
@@ -346,20 +376,20 @@ def test_a_ready_camera_that_clearly_missed_its_first_triggers(tmp_path):
 	assert "it missed its first 2" in text
 
 
-def test_a_camera_that_was_not_ready_is_placed_by_arrival_times(tmp_path):
+def test_a_camera_that_was_not_ready_is_placed_by_arrival_times(tmp_path, start_record):
 	triggered_camera(tmp_path, "CamA", 1, 300)
 	triggered_camera(tmp_path, "CamB", 40, 300, seed=7) # opened late: campy started without it
-	trigger_record(tmp_path, {"CamA"})
+	start_record(tmp_path, {"CamA"})
 	summary, _ = run(tmp_path)
 	assert summary["cameras"]["CamA"]["start_from"] == "ready before the trigger"
 	assert (summary["cameras"]["CamB"]["start_trigger"], summary["cameras"]["CamB"]["start_from"]) == \
 		(40, "arrival times")
 
 
-def test_ready_cameras_without_arrival_times(tmp_path):
+def test_ready_cameras_without_arrival_times(tmp_path, start_record):
 	triggered_camera(tmp_path, "CamA", 1, 300, host=False)
 	triggered_camera(tmp_path, "CamB", 1, 300, host=False)
-	trigger_record(tmp_path, {"CamA", "CamB"})
+	start_record(tmp_path, {"CamA", "CamB"})
 	summary, text = run(tmp_path)
 	assert summary["cameras"]["CamB"]["start_from"] == "ready before the trigger"
 	assert "assumed" not in text
@@ -370,12 +400,71 @@ def test_a_trigger_campy_did_not_start_changes_nothing(tmp_path):
 	triggered_camera(tmp_path, "CamB", 1, 300, seed=8)
 	trigger_record(tmp_path, {"CamA", "CamB"}, started=False) # an external trigger
 	summary, _ = run(tmp_path)
-	assert summary["ready_before_trigger"] is None
+	assert summary["ready_before_trigger"] is None and summary["ready_before_trigger_from"] is None
 	assert summary["cameras"]["CamB"]["start_from"] == "arrival times"
 
 
+@pytest.mark.parametrize("record", ["none", "no file", "did not wait", "did not say", "unreadable"])
+def test_a_box_recording_without_campy_box_s_list_is_placed_by_arrival_times(tmp_path, record):
+	# triggerController: box, but nothing says which cameras were waiting for the board's pulses: no trigger.json
+	# either; trigger.json external and no box/campy-box.cameras.json (campy-box ended before it started them);
+	# campy-box started them without waiting for the cameras (no --cameras-when-ready); a cameras.json from a
+	# campy-box that did not say which were waiting; a cameras.json cut short. As before: from arrival times
+	triggered_camera(tmp_path, "CamA", 1, 300)
+	b = triggered_camera(tmp_path, "CamB", 3, 300, seed=6) # its first frame is trigger 3
+	if record == "no file":
+		box_record(tmp_path, {"CamA", "CamB"})
+		(tmp_path / BOX_CAMERAS).unlink()
+	elif record == "did not wait":
+		box_record(tmp_path, None)
+	elif record == "did not say":
+		box_record(tmp_path, {"CamA", "CamB"}, said=False)
+	elif record == "unreadable":
+		box_record(tmp_path, {"CamA", "CamB"})
+		(tmp_path / BOX_CAMERAS).write_text('{"board": "campy_outputs", "ready_before_pul')
+	assert align.ReadStart(str(tmp_path)) == (None, None)
+	summary, text = run(tmp_path)
+	assert summary["ready_before_trigger"] is None and summary["ready_before_trigger_from"] is None
+	s = summary["cameras"]["CamB"]
+	assert (s["start_trigger"], s["start_from"]) == (3, "arrival times")
+	assert {int(r["frame"]): int(r["trigger"]) for r in aligned(tmp_path, "CamB")} == b
+	assert "Trigger 1 is the first trigger any camera recorded, by arrival times" in text
+
+
+def test_campy_box_s_list_where_arrival_times_would_round_wrong(tmp_path):
+	# A box recording (triggerController: box) of two FLIR cameras and a RatCam, all waiting before the board's first
+	# pulse: CamB's frames take 0.54 of a period longer to arrive, and arrival times alone put it a trigger late.
+	# campy-box's list starts all three at trigger 1, where they were
+	a = triggered_camera(tmp_path, "CamA", 1, 300, lag_ms=6)
+	b = triggered_camera(tmp_path, "CamB", 1, 300, lag_ms=15, seed=5)
+	ratcam(tmp_path, "Eye", 1, 300, duration_s=4.9)
+	box_record(tmp_path, {"CamA", "CamB", "Eye"}, said=False) # a campy-box from before it said
+	summary, _ = run(tmp_path)
+	assert summary["cameras"]["CamB"]["start_trigger"] == 2
+	box_record(tmp_path, {"CamA", "CamB", "Eye"})
+	assert align.ReadStart(str(tmp_path)) == ({"CamA", "CamB", "Eye"}, BOX_CAMERAS)
+	summary, text = run(tmp_path)
+	assert [s["start_trigger"] for s in summary["cameras"].values()] == [1, 1, 1]
+	for name, truth in (("CamA", a), ("CamB", b)):
+		assert {int(r["frame"]): int(r["trigger"]) for r in aligned(tmp_path, name)} == truth
+	with open(tmp_path / "alignment.json") as f:
+		written = json.load(f)
+	assert (written["ready_before_trigger"], written["ready_before_trigger_from"]) == (["CamA", "CamB", "Eye"],
+		BOX_CAMERAS)
+
+
+def test_campy_started_trigger_comes_before_a_box_list(tmp_path):
+	# Both files (a config the checks refuse: campy starts no trigger with triggerController: box): trigger.json's
+	# own start is the one campy-align takes
+	triggered_camera(tmp_path, "CamA", 1, 300)
+	triggered_camera(tmp_path, "CamB", 1, 300, seed=8)
+	box_record(tmp_path, {"CamB"})
+	trigger_record(tmp_path, {"CamA", "CamB"})
+	assert align.ReadStart(str(tmp_path)) == ({"CamA", "CamB"}, "trigger.json")
+
+
 @pytest.mark.parametrize("lag_ms, unsure", [(3, False), (9, False), (13, True)])
-def test_a_ratcam_that_was_not_ready_against_ready_triggered_cameras(tmp_path, lag_ms, unsure):
+def test_a_ratcam_that_was_not_ready_against_ready_triggered_cameras(tmp_path, start_record, lag_ms, unsure):
 	# The triggered cameras' frames arrive lag_ms after their trigger (0.18, 0.54
 	# and 0.78 of a period at 60 Hz), its pulses 0.3 ms after. Rounded to
 	# nearest, the RatCam came out a trigger early from 0.5 of a period on, and
@@ -383,7 +472,7 @@ def test_a_ratcam_that_was_not_ready_against_ready_triggered_cameras(tmp_path, l
 	a = triggered_camera(tmp_path, "CamA", 1, 1200, lag_ms=lag_ms)
 	triggered_camera(tmp_path, "CamB", 1, 1200, lag_ms=lag_ms, seed=3)
 	eye = ratcam(tmp_path, "Eye", 50, 1199, start_s=trigger_s(50) + 0.003, duration_s=15)
-	trigger_record(tmp_path, {"CamA", "CamB"})
+	start_record(tmp_path, {"CamA", "CamB"})
 	summary, text = run(tmp_path)
 
 	s = summary["cameras"]["Eye"]
@@ -397,7 +486,7 @@ def test_a_ratcam_that_was_not_ready_against_ready_triggered_cameras(tmp_path, l
 	assert ("off by one" in text) == unsure
 
 
-def test_placements_the_rounding_already_got_right(tmp_path):
+def test_placements_the_rounding_already_got_right(tmp_path, start_record):
 	# A ready RatCam places the triggered cameras that were not, rounding down
 	# (CamC's frames take 0.78 of a period: could be off by one); between
 	# triggered cameras, to nearest. Both as before
@@ -408,7 +497,7 @@ def test_placements_the_rounding_already_got_right(tmp_path):
 	b = triggered_camera(with_ratcam, "CamB", 300, 900, lag_ms=9, seed=9)
 	c = triggered_camera(with_ratcam, "CamC", 41, 900, lag_ms=13, seed=10)
 	ratcam(with_ratcam, "Eye", 1, 900, duration_s=14.5)
-	trigger_record(with_ratcam, {"Eye"})
+	start_record(with_ratcam, {"Eye"})
 	summary, _ = run(with_ratcam)
 	got = {name: (s["start_trigger"], s["start_unsure"]) for name, s in summary["cameras"].items()}
 	assert got == {"CamA": (20, False), "CamB": (300, False), "CamC": (41, True), "Eye": (1, False)}
@@ -417,7 +506,7 @@ def test_placements_the_rounding_already_got_right(tmp_path):
 
 	triggered_camera(triggered, "CamA", 1, 900, lag_ms=9, seed=11)
 	b = triggered_camera(triggered, "CamB", 300, 900, lag_ms=9, seed=9)
-	trigger_record(triggered, {"CamA"})
+	start_record(triggered, {"CamA"})
 	summary, _ = run(triggered)
 	s = summary["cameras"]["CamB"]
 	assert (s["start_trigger"], s["start_from"], s["start_unsure"]) == (300, "arrival times", False)

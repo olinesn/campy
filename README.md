@@ -41,6 +41,8 @@ Each run records into a new folder inside the config's `videoFolder`, named by t
 | `campy-live-flag`, `campy-label-pack`, `campy-label-merge`, `campy-model-eval`, `campy-model-fit` | Find the frames a model gets wrong, label them for the next model, and compare models on a rig | [Models](docs/models.md) |
 | `campy-infer` | SLEAP predictions on recorded videos, about 10 times faster than `sleap-nn track`, as ordinary `.slp` files | [Offline inference](docs/offline-inference.md#poses-from-recorded-videos-campy-infer) |
 | `campy-rules` | Switch TTL outputs from the live poses (an animal in a region, two animals close), for closed-loop experiments | [Closed-loop outputs](docs/closed-loop.md) |
+| `campy-box` | Run an operant box's task (states, timers, trials) on the outputs board: sensors in, servos and valves out, every event stamped with the camera frame | [Operant boxes](docs/operant-boxes.md) |
+| `campy-ephys` | Read a Neuropixels probe live from SpikeGLX (read-only), filter it and find its spikes; `bench` measures what that costs; `train` and `evaluate` make and check a live sorter from a Kilosort 4 sort, which can also find spikes with its templates | [Live electrophysiology](docs/live-ephys.md) |
 
 ## Documentation
 
@@ -59,6 +61,7 @@ Each run records into a new folder inside the config's `videoFolder`, named by t
 | [RatCam cameras](docs/ratcam.md) | nir-eye-cam's NIR eye cameras |
 | [Live tracking](docs/live-tracking.md), [Watching it live](docs/live-view.md), [3D poses](docs/pose3d.md) | `campy-live`, `campy-live-view`, `campy-live-export`, and the 3D tracker |
 | [Closed-loop outputs](docs/closed-loop.md) | `campy-rules`: TTL outputs on an Arduino from the live poses, with the wiring, the rules file, safety and latency |
+| [Operant boxes](docs/operant-boxes.md) | The outputs board as an operant box's controller: sensors stamped with the camera frame, servos, valve and cue pulses, reflexes on the board, wiring and safety |
 | [Models](docs/models.md), [Offline inference](docs/offline-inference.md) | Small models that keep up live; running SLEAP faster on recorded videos |
 | [Hardware](docs/hardware.md) | What to buy, with the measurements behind it |
 | [Calibration](docs/calibration.md) | Camera placement, exposure and calibration |

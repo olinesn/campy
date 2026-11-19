@@ -195,9 +195,10 @@ SETTINGS = [
 			camera, and less CPU for ffmpeg; raise quality by about 2 for the same file size)."),
 	Setting("gpuID", -1, int, section=ENC, low=-1,
 		help="List of integers assigning the gpu index to stream each camera. Set to -1 to stream with CPU."),
-	Setting("gpuMake", "nvidia", str, section=ENC, choices=("nvidia", "amd", "intel", "vaapi"),
+	Setting("gpuMake", "nvidia", str, section=ENC, choices=("nvidia", "amd", "intel", "vaapi", "jetson"),
 		help="Company that produced the GPU. Currently supported: 'nvidia', 'amd', 'intel' (QuickSync), \
-			'vaapi' (Linux VA-API: AMD through Mesa, or Intel)."),
+			'vaapi' (Linux VA-API: AMD through Mesa, or Intel), 'jetson' (an NVIDIA Jetson's video \
+			encoder, through GStreamer: gray frames, h264 or h265, always full range; docs/jetson.md)."),
 	Setting("codec", "h264", str, section=ENC, choices=("h264", "h265", "av1"),
 		help="Video codec for compression. Currently supported: 'h264', 'h265' (hevc), and 'av1' \
 			with gpuMake 'vaapi', 'nvidia' or 'intel' (quality is then AV1's quantizer index, 0-255)."),
@@ -209,7 +210,8 @@ SETTINGS = [
 			0-51 for h264 and h265, 0-255 for av1."),
 	Setting("preset", "None", str, section=ENC,
 		help="Compression preset (e.g. 'slow', 'fast', 'veryfast'). Incorrect settings may break the pipe. \
-			Test with ffmpegLogLevel 'warning' or 'info'."),
+			Test with ffmpegLogLevel 'warning' or 'info'. gpuMake 'jetson': 'ultrafast' (its default), \
+			'fast', 'medium' or 'slow'."),
 	Setting("keyframeInterval", "None", float, section=ENC, words=("None",), above=0,
 		help="Seconds between keyframes (I-frames), e.g. 0.5. Shorter makes seeking and sparse frame \
 			sampling cheaper (LUCID's image ID-switch check needs 0.5) but files larger. Default: the \
@@ -257,7 +259,7 @@ SETTINGS = [
 			pause that would be a fault, and alertNoFramesSec above the longest planned gap. See \
 			docs/alerts.md."),
 	Setting("alertExternalWaitSec", 600, float, section=ALERTS, per_camera=ONE, words=("None",), above=0,
-		help="With an external trigger (startArduino False): no frame from any camera this many seconds \
+		help="With an external trigger (startArduino False, and a camera with cameraTrigger set): no frame from any camera this many seconds \
 			after campy started waiting for the trigger is a warning, 'No frame yet ... is it running?' \
 			(default: 600, 10 minutes; None = never). Set it above how long campy can wait on purpose, \
 			for a session that starts campy well before the device that makes the pulses. With the \
@@ -276,6 +278,14 @@ SETTINGS = [
 	Setting("alertGpuStalls", 3, int, section=ALERTS, per_camera=ONE, low=1,
 		help="This many GPU firmware stalls ('Fence fallback timer expired on ring ...' in the kernel log) \
 			within 10 minutes are an alert (default: 3)."),
+	Setting("cameraReconnect", True, bool, section=ALERTS, per_camera=ONE,
+		help="When a camera is unplugged mid-recording (or its USB link is lost), wait for it, and take it back \
+			when it is plugged in again (default: True; FLIR and emulated cameras). Meanwhile the other cameras \
+			record on. Its video, frametimes.npy and live feed go on from the trigger pulse it comes back on: \
+			the frames while it was gone are a gap in its frame numbers, as dropped frames are, and its \
+			timestamps are carried on across the gap, so campy-align puts every later frame on its pulse. \
+			metadata.csv's cameraReconnects says when. False ends its recording when it is unplugged, as \
+			before. See docs/alerts.md."),
 	Setting("restartFfmpeg", False, bool, section=ALERTS, per_camera=ONE,
 		help="When a camera's ffmpeg stops mid-recording (killed, crashed, an encoder error), start a new \
 			one instead of stopping that camera (default: False). The camera never stops; its video goes \
@@ -328,10 +338,13 @@ SETTINGS = [
 
 	# Trigger
 	Setting("triggerController", "arduino", str, section=TRIGGER, per_camera=ONE,
-		choices=("arduino", "Arduino", "pico", "Pico", "None", "none"),
+		choices=("arduino", "Arduino", "pico", "Pico", "box", "Box", "None", "none"),
 		help="The board that makes the cameras' trigger pulses. 'arduino': campy's Arduino, which campy starts \
 			itself with startArduino True. 'pico': the ChronicRecord Pico (campy-session's pico: section, or \
-			chronic_control.py), never started by campy-acquire: startArduino must be False. 'None' (or 'none'): \
+			chronic_control.py), never started by campy-acquire: startArduino must be False. 'box': an operant \
+			box's board, which campy-box (campy-session's box: section) runs, makes them too: one Nano ESP32 for \
+			the cameras and the box (docs/design/single-board-box.md); digitalPins are the cameras' pins on it and \
+			syncPin its sync output; never started by campy-acquire: startArduino must be False. 'None' (or 'none'): \
 			campy starts no trigger, even with startArduino True. One board per rig: set it in the rig profile, \
 			and a config that extends the profile can't name the other board (only None), nor start the \
 			Arduino or have a pico: section when the profile names the other one."),
@@ -349,6 +362,25 @@ SETTINGS = [
 	Setting("blinkHz", "None", float, section=TRIGGER, per_camera=ONE, words=("None",), low=0,
 		help="Test LED blink rate. Pick one that is not near a whole or half multiple of the frame rate \
 			(e.g. 43 Hz at 25 or 60 fps)."),
+	Setting("syncPin", "None", int, section=TRIGGER, per_camera=ONE, words=("None",), low=0,
+		help="Arduino pin for a sync output: pulses with random gaps, from the trigger's clock, for a \
+			recorder with a clock of its own (ephys, photometry, a DAQ). Wire it to one of the recorder's \
+			inputs; campy-syncmatch then puts the recorder's time on the trigger's, frame by frame \
+			(docs/sync.md). Needs the current trigger.ino, a board with a crystal for the best fit. \
+			None: off."),
+	Setting("syncSeed", "None", int, section=TRIGGER, per_camera=ONE, words=("None",), low=0, high=2 ** 31 - 1,
+		help="The sync output's seed, which sets its gaps. None: a new random one for each recording. \
+			Either way it is saved in the recording's sync.json."),
+	Setting("syncPulseMs", 10, float, section=TRIGGER, per_camera=ONE, above=0,
+		help="How long each sync pulse is high, in ms."),
+	Setting("syncGapMs", [200, 1000], int, section=TRIGGER, per_camera=LIST, low=1, high=60000,
+		help="The sync pulses' shortest and longest gap (rise to rise), in whole ms. Each gap is one of \
+			these values, at random, so any four in a row say where in the recording they are."),
+	Setting("picoSync", False, bool, section=TRIGGER, per_camera=ONE,
+		help="campy-session's Pico (pico: section) also makes its sync train on GP6 for the OneBox (wired to \
+			XA1): 10 ms pulses, a random 200 to 1000 ms apart, from a seed saved in the recording's pico \
+			folder, so chronicrecord/sync_match.py can line the Pico's clock up with the OneBox's and find any \
+			pulse either missed (default: False). Needs chronic_timer 3 on the Pico. Set it in the rig profile."),
 
 	# Session: the experiment, for the recording's session.json (campy/manifest.py), and the
 	# warnings for defaults that changed (campy/defaults.py)
@@ -387,6 +419,10 @@ SETTINGS = [
 		help="campy-session: a Raspberry Pi Pico that makes the trigger and the experiment's TTLs \
 			(chronicrecord/chronic_control.py): its session's lengths, port, settings. The panel starts it once every \
 			camera is ready. campy-acquire passes it by."),
+	Setting("box", None, SECTION, section=PROGRAMS, per_camera=ONE,
+		help="campy-session: an operant box's task (campy-box, campy/box.py) on the outputs board, started before \
+			the cameras so that it begins with the first frame, and ended with the recording: its task file, port, \
+			whether the recording needs it. campy-acquire passes it by."),
 	Setting("spikeglx", None, SECTION, section=PROGRAMS, per_camera=ONE,
 		help="campy-session: SpikeGLX's run, started into the recording's folder before the cameras and stopped \
 			after them, through its command server and SDK. campy-acquire passes it by."),

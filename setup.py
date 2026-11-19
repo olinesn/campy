@@ -21,6 +21,9 @@ setup(
 					'opencv-python-headless',
 					],
 	extras_require={
+		# campy-live's 3D step (campy/pose3d.py) and campy-ephys's template matching
+		# (campy/ephyssort.py) in numba's compiled loops: the same numbers, faster; without it, numpy
+		"fast3d": ["numba"],
 		# RatCam (cameraMake "ratcam"): the host package of nir-eye-cam
 		"ratcam": ["nireyecam @ git+https://github.com/olinesn/nir-eye-cam.git#subdirectory=host"],
 	},
@@ -33,11 +36,13 @@ setup(
 			"campy-align = campy.align:Main",
 			"campy-calibrate = campy.calibrate:Main",
 			"campy-synctest = campy.synctest:Main",
+			"campy-syncmatch = campy.syncmatch:Main",
 			"campy-flir-reset = campy.flirreset:Main",
 			"campy-live = campy.live:Main",
 			"campy-live-view = campy.liveview:Main",
 			"campy-live-export = campy.liveexport:Main",
 			"campy-rules = campy.rules:Main",
+			"campy-box = campy.box:Main",
 			"campy-live-flag = campy.liveflag:Main",
 			"campy-label-pack = campy.labelpack:Main",
 			"campy-label-merge = campy.labelmerge:Main",
@@ -49,6 +54,7 @@ setup(
 			"campy-infer = campy.infer:Main",
 			"campy-train-check = campy.traincheck:Main",
 			"campy-distill-train = campy.distill:Main",
+			"campy-ephys = campy.ephyslive:Main",
 		]
 	}
 )

@@ -1,6 +1,8 @@
 # ChronicRecord timer
 
-The ChronicRecord rig's four TTL outputs, made by a Raspberry Pi Pico instead of the Raspberry Pi 3B's own GPIO pins:
+*To run a session on the rig, step by step, read the [ChronicRecord run book](https://claude.ai/artifact/NFxr3z2Vvpc9G7gFnK255L) (source: [docs/chronicrecord-run-book.html](../docs/chronicrecord-run-book.html)). This page is how the timer works.*
+
+The ChronicRecord rig's TTL outputs, made by a Raspberry Pi Pico instead of the Raspberry Pi 3B's own GPIO pins:
 
 | Output | What it drives | Pi 3B before (chronicControlv13.py) | Pico now |
 |---|---|---|---|
@@ -8,6 +10,7 @@ The ChronicRecord rig's four TTL outputs, made by a Raspberry Pi Pico instead of
 | B | FLIR camera trigger (Line3), 3 ms high | GPIO 12 | GP3 (board pin 5), through a 50 Ω resistor |
 | C | Blue LED controller TTL (465 nm) | GPIO 13 | GP4 (board pin 6) |
 | D | Yellow LED controller TTL (560 nm) | GPIO 19 | GP5 (board pin 7) |
+| E | Sync pulses to the OneBox's XA1 (optional, off by default): see [Sync pulses for the OneBox](#sync-pulses-for-the-onebox) | (none) | GP6 (board pin 9) |
 | | Every cable's ground | GND | GND (board pin 3 or 8) |
 
 Since 5 November 2026 the Pico is plugged into the recording PC, which runs the experiment: `chronic_control.py` plans the whole session and loads it onto the Pico over USB. Then the Pico makes every edge from its own crystal clock. Until then a Raspberry Pi 3B did the same over USB, started over SSH; the checks dated 2 and 4 November below ran that way, and the Pi is no longer used. campy doesn't take part: on this setup the campy configs need `startArduino: False`, and the cameras just record the pulses on Line3. Start campy first, so that every camera is grabbing before the Pico's `start`.
@@ -94,6 +97,7 @@ The blue and yellow LEDs are a fiber photometry system's excitation light. On th
 - The receivers' outputs go to the OneBox: **XA5 green** (500–540 nm), **XA6 red** (580–680 nm). SpikeGLX records them while the gate is high, on the same clock as the gate, camera and LED lines, so every reading lines up with the camera frames to a sample (33 µs).
 - **The receivers must be on DC Low** (2×10¹⁰ V/A, DC to 750 Hz). On their AC settings (30 to 750 Hz) a flash's steady level is filtered out. In a test on 5 November (no animal) they were on AC: each flash showed as a jump that sagged back within the flash and swung negative when it ended.
 - **Set the LED currents with a power meter** at the patch cord's tip. In the same test, with 100 mA on each LED and no animal, the blue flash pushed both XA5 and XA6 to +5 V, the top of the OneBox's ±5 V range.
+- **Each receiver runs on a 9 V battery.** A receiver whose battery is flat reads a steady 0.2 V or so and doesn't move when its LED flashes; a flat battery has spoiled a gate test before.
 - Between flashes the receivers' outputs carried about 70 mV rms of noise, mostly 60 Hz mains hum (same test). Averaging over whole 60 Hz cycles (16.7 ms) removes the hum: averaged over 20 ms it was 4 to 5 mV rms.
 
 **The pattern.** The panel's config ([`chronic_session.yaml`](chronic_session.yaml)) reads the neuro-seeER reporter (EGFP and FusionRed) with the "snapshot" pattern of its paper (Neuron, 2026; [doi:10.1016/j.neuron.2026.07.031](https://doi.org/10.1016/j.neuron.2026.07.031)). Once a bout (every 5 minutes), it gives 50 ms of yellow (560 nm), then 150 ms dark, then 50 ms of blue. These are `pico.set`'s `YELLOW_FIRST: 1`, `PULSE_WIDTH_D: 0.05`, `LED_GAP: 0.15` and `PULSE_WIDTH_C: 0.05`. 50 ms is exactly 3 frames at 60 Hz and 150 ms exactly 9, so every edge still falls 1 ms before a camera pulse: yellow lights frames 300–302 and blue 312–314, each frame wholly lit or wholly dark. The paper's system (a Neurophotometrics FP3002) recorded the emission with a camera chip; here the two receivers are sampled every 33 µs, so each flash gives about 1,500 samples per channel. `chronic_control.py`'s own settings, and the PowerShell launcher's, keep chronicControlv13.py's pattern (blue 30 ms, then yellow 30 ms at once).
@@ -108,11 +112,9 @@ python photometry_snapshots.py D:\data\<date_time> --campy D:\data\<date_time>
 - **The readout:** each receiver's mean over the last 16.7 ms (one 60 Hz cycle) of each flash, less its dark level over the 16.7 ms before the first flash, 1 ms clear of every edge. `green_V` is XA5 in the blue flash and `red_V` XA6 in the yellow one. XA5 in yellow and XA6 in blue are the bleed between the channels.
 - **Flashes shorter than 18.7 ms** (a cycle plus 1 ms at each edge) are read over what they have, from 1 ms after the LED comes on to 1 ms before it goes off, never the dark before the flash or the other LED's flash. The value is still given, and `note` says over how many milliseconds, less than a cycle, so the mains hum wasn't averaged out of it (for example `blue flash: read over 8.0 ms, less than one 60 Hz cycle (hum not averaged out)` for a 10 ms flash). A flash of about 2 ms or less leaves nothing 1 ms clear of its edges: its values are blank and `note` says so. The same goes for the dark level if the first flash comes within 17.7 ms of the file's start. The 30 ms and 50 ms flashes are read over a whole cycle, as before.
 - **Checks:** how long each receiver took to reach half its step after its LED's edge, any sample at the OneBox's ±5 V limit (`note`), and the dark level's noise.
-- **With `--campy`:** each camera's frames in each bout (from `frametimes.npy`, a new bout where frames stop for more than 1 s) next to the OneBox's camera pulses, and the flashes' frames in campy's numbering, so each reading can be put next to the video.
+- **With `--campy`:** each camera's frames in each bout next to the OneBox's camera pulses, and the flashes' frames in campy's video (counted from 0, the recording's first frame), so each reading can be put next to the video. They come from each camera's `aligned.csv` (campy-align, which runs after every panel recording), which gives every frame the Pico pulse behind it. A frame the Pico didn't send (a stray edge on the trigger line) or a frame that is missing then shifts nothing else: the frames outside the bouts are listed, and if the cameras' videos no longer agree, the flash's frames are given for each camera (`Camera0 1501-1503; Camera1 1500-1502`). Without `aligned.csv` it falls back to `frametimes.npy`, a new bout where frames stop for more than 1 s, and says so; an extra or missing frame shifts every later bout's numbers there.
 
 It ends with what should be the same in every bout: the order, the frames lit, the widths, the gap and the leads, each as a range.
-
-Not checked yet: the receivers on DC Low, the light levels, and a recording with a fiber-implanted mouse.
 
 ## Running it
 
@@ -157,7 +159,7 @@ python3 chronic_control.py start --set CAMERA_ONLY=3600 --set CAMERA_FPS=30
 python3 chronic_control.py wiring
 ```
 
-Each output blinks on its own, its letter's number of times: A (gate) once, B (camera) twice, C (blue) three times, D (yellow) four times, half a second on and half off, with a pause after each. It goes round until `stop`. Watch for them in SpikeGLX, on a meter or with an LED probe.
+Each output blinks on its own, its letter's number of times: A (gate) once, B (camera) twice, C (blue) three times, D (yellow) four times, half a second on and half off, with a pause after each. The sync output, E, blinks five times, only when asked for (`--channels E`, version 3). It goes round until `stop`. Watch for them in SpikeGLX, on a meter or with an LED probe.
 - `--channels AB` blinks only those outputs.
 - `--pause 60` waits a minute between rounds.
 
@@ -165,9 +167,9 @@ The gate starts a SpikeGLX file each time, if SpikeGLX is armed: about 23 MB a s
 
 ## Setting it up
 
-1. **Flash the Pico.** Hold BOOTSEL while plugging it in; it appears as a drive named `RPI-RP2`. Copy `chronic_timer.ino.uf2` onto it (built with the [arduino-pico](https://github.com/earlephilhower/arduino-pico) core, board `rp2040:rp2040:rpipico`). It restarts as a serial port, and `id` should answer `ok chronic_timer 2`.
+1. **Flash the Pico.** Hold BOOTSEL while plugging it in; it appears as a drive named `RPI-RP2`. Copy `chronic_timer.ino.uf2` onto it (built with the [arduino-pico](https://github.com/earlephilhower/arduino-pico) core, board `rp2040:rp2040:rpipico`). It restarts as a serial port, and `id` should answer `ok chronic_timer 3` (version 3 added the sync output, GP6; version 2 runs everything else the same).
 2. **Wire it** as in the table at the top (in place of the Pi 3B's GPIO pins, on this rig). Don't connect anything above 3.3 V to a Pico pin: they aren't 5 V tolerant.
-3. **Pull-down resistors.** Fit a 10 kΩ resistor from each of GP2–GP5 to GND, so that nothing reads high while the Pico resets or is being flashed.
+3. **Pull-down resistors.** Fit a 10 kΩ resistor from each of GP2–GP5 to GND (and GP6, if the sync output is wired), so that nothing reads high while the Pico resets or is being flashed.
 4. **A 50 Ω resistor in series with GP3** (the camera output). Without it, the camera cable rings as each pulse falls, and the Pico's own input counts a second rise on every pulse (`bounces=` equal to `pulses=`). The cameras didn't see that ring, but the resistor stops it: see "The 50 Ω resistor on the camera pin" near the top.
 5. **Voltage.** The Pico's outputs are 3.3 V, the same as the Pi 3B's GPIO that drove these inputs before. The Blackfly S Line3 counts 2.6 V or more as high, so 3.3 V works, with a small margin. With the cameras and the 50 Ω resistor on it, the camera line reads 2.97 V high on the OneBox.
 6. **Plug the Pico into the recording PC by USB.** On Windows it is a COM port ("USB Serial Device"), which `chronic_control.py` finds by the Pico's USB IDs; on Linux it shows up in `/dev/serial/by-id/`, which it finds by name.
@@ -250,12 +252,14 @@ Since pull request 283 a ChronicRecord session runs from campy's panel, a page i
 - **Its bouts** can be changed on the page too (**Bout settings**: `INTERVAL`, `TOTAL_BASELINE`, `CAMERA_LEAD_IN`, `STANDARD_STIM_DURATION`, `EXTENDED_STIM_DURATION`, `EXTENDED_EVERY`, and the LEDs' `PULSE_WIDTH_C` and `PULSE_WIDTH_D`, `YELLOW_FIRST` (1 or 0) and `LED_GAP`, the widths and gap in ms there), over the config's `pico.set`, without changing the config; the next panel with the same config starts from the last values (`~/.campy/status/panel-bouts.json`) ([Recording a session from the desktop](../docs/recording-a-session.md#on-the-chronicrecord-rig-the-pico-and-spikeglx)). The page says what one bout does, with the frames each LED lights. Each length's plan, the disk check and `recTimeInSec` follow the settings; a plan the Pico can't run stops the start, including one of more than 2,048 bouts, which the Pico would refuse only at its `start`, after campy and SpikeGLX had started. The Pico starts with the settings the recording was started with. The recording's `logs\session-config.yaml` has them in `pico.set` (the line marked as the panel's), and `launcher.json` every setting the Pico ran with.
 - **Checks before Start:** the Pico (by its USB serial number) answers and is idle; SpikeGLX answers, has no run, and its trigger is TTL (`trigMode=2`), or isn't open and will be opened; Windows Update paused until a day after the session's end (else a warning, and a button that runs `tools/windows/pause_windows_update.ps1`: Windows asks for administrator rights); USB selective suspend off (a warning); and the disk: what the chosen length needs against the free space where it records, keeping `stopAtFreeGB` free. SpikeGLX's part is the plan's open-gate seconds plus SpikeGLX's trigger margin (read from SpikeGLX, 1 s before and after each opening here) at `spikeglx.write_mb_s` (24 MB/s); the videos' part is the plan's camera seconds for every camera at `panel.video_mb_s` (0.6 MB/s a camera, an estimate on the high side). For the 8-hour rehearsal that is about 162 GB (SpikeGLX 151 GB, against 150.3 GB written on 6 November), for 6 days about 2,910 GB. A length that doesn't fit is red and stops the start; the page's Start then offers a confirm that names the shortfall, for a session whose data will be moved off during it. During the session the Disk free tile shows what the rest of the plan still needs, not hours at the rate so far (which, before the Pico's first pulse, was the cameras' rate of nothing).
 - **One folder per session,** `D:\data\<date_time>\` (gate tests: `D:\data\gatetest\<date_time>\`): campy's videos and `logs\`, `spikeglx\` and `pico\`.
-- **SpikeGLX** through its command server and the official SDK (`campy/spikeglx.py`, the launcher's `sglx_session.py` moved into campy): opened through a shortcut that starts it in its own folder, via Explorer, so it runs outside the rig's job; if its settings were "never validated" since it opened, the probe and OneBox are detected and verified (`(20,1,1)(20,obx)`); data folder `spikeglx\`, run name `chronic_<date_time>`; the run started; recording enabled once the OneBox's stream holds more than the trigger's margin plus 2 s of samples.
+- **SpikeGLX** through its command server and the official SDK (`campy/spikeglx.py`, the launcher's `sglx_session.py` moved into campy): opened through a shortcut that starts it in its own folder, via Explorer, so it runs outside the rig's job; if its settings were "never validated" since it opened, the config's devices (`spikeglx.devices`, the probe and OneBox: `(20,1,1)(20,obx)`) are detected and verified; at each Start, a SpikeGLX whose probes and OneBoxes aren't the config's is given them the same way (the page's check says so beforehand); data folder `spikeglx\`, run name `chronic_<date_time>`; the run started; recording enabled once the OneBox's stream holds more than the trigger's margin plus 2 s of samples.
 - **The gate check:** `wiring --channels A` for one blink, then `stop`; SpikeGLX must open a new file, or nothing else starts and SpikeGLX's run stops.
 - **campy** with the live feed and one `campy-live-view` window (frames only), the panel's usual camera thumbnails and health.
 - **The Pico's session** starts when **Start the Pico** is pressed (it asks first) once session.json says every camera is ready, or at a time given on the page: `chronic_control.py start --set TOTAL_DURATION=<length> --port E665485457699D30 --state-dir C:\campy_data\pico\state --log-dir <session>\pico`.
 - **The end:** campy stops after the last frame; the panel waits for the Pico's last gate (up to `pico.last_gate_s`, 120 s), stops SpikeGLX's run 3 s later, and copies this session's part of `session.out` into `pico\`. **Stop** asks first: after this bout (the Pico's `stop`, then campy once the bout's gate has fallen, then SpikeGLX) or now (`stop --now`, then campy's stop file, then SpikeGLX). If campy fails on its own, the Pico and SpikeGLX are left running and the page offers to stop each.
-- **The rig's lock:** the panel waits for the rig and holds it while it is open (`panel: {rig_lock: auto}`). Ctrl-C in its window does nothing then (it would reach `rig.py`, which ends the whole job before anything stops in order); **Close the panel** on the page ends it when nothing records. Closing its window by mistake leaves campy, the Pico and SpikeGLX running; the panel opened again shows them, with buttons to stop each.
+- **The rig's lock:** the panel waits for the rig and holds it while it is open (`panel: {rig_lock: auto}`). Ctrl-C in its window does nothing then (it would reach `rig.py`, which ends the whole job before anything stops in order); **Close the panel** on the page ends it when nothing records. Closing its window by mistake leaves campy, the Pico and SpikeGLX running; the panel opened again shows them, with buttons to stop each. SpikeGLX open on the PC keeps tests away from the rig (`rig.py` counts it as in use, recording or not), but not the panel, which takes the rig with `RIG_ALLOW=ephys`. A script run under the rig's lock beside SpikeGLX (a launcher, a live-ephys check) sets `RIG_ALLOW=ephys` first, or waits until SpikeGLX is closed.
+
+**Fiber photometry without the probe** ([`chronic_photometry.yaml`](chronic_photometry.yaml), *ChronicRecord photometry only (OneBox, no probe)* on the panel's Experiment list; star it there). The same session as `chronic_session.yaml`, which it extends, but SpikeGLX records the OneBox alone (`spikeglx.devices: "(20,obx)"`). The probe's 385 channels are most of what SpikeGLX writes while the gate is open: 23.1 of its 24 MB/s, against the OneBox's 0.85 (14 channels × 2 bytes × 30,303 a second). The gate, the camera and LED lines, the photometry receivers (XA5, XA6) and the sync train are all on the OneBox, so with no probe implanted nothing is lost, and SpikeGLX writes about 4% as much: about 5.3 GB in place of 150 for the 8-hour rehearsal, and about 100 GB in place of 2.7 TB for 6 days. The panel's disk check counts 1 MB/s for it (`spikeglx.write_mb_s: 1`). At Start the panel gives SpikeGLX the OneBox alone if it was last set to the probe and OneBox, and the daily config puts the probe back at its own Start: SpikeGLX's Configure dialog opens and closes by itself each time (don't click in it). Checked on the rig on 18 November 2026 (this pull request's `spikeglx.py`, no cameras, one gate blink from the Pico in each run): SpikeGLX verified with the probe and the OneBox, then a run with the OneBox alone wrote only the OneBox's file (14 channels, 2.1 MB for the 2.5 s blink), a run with the daily devices put the probe back (its 385-channel file, 57.8 MB for the same 2.5 s, beside the OneBox's), and the OneBox alone again wrote only the OneBox's file. Each selection took about 6 s.
 
 **Gate test from the panel** (5 November 2026, 7:15 to 7:27 PM; this pull request's code, LED drivers on, no animal; SpikeGLX closed beforehand, so the panel opened it, and its settings were verified from the panel). The page ran every step in order:
 - SpikeGLX's run, then the gate check: the blink opened a 2.5 s file.
@@ -300,6 +304,46 @@ The desktop icon, made once in the recording environment: `campy-session shortcu
 
 Not checked yet: the PC restarting with the Pico on its own supply, and a multi-day session from the PC.
 
+## Sync pulses for the OneBox
+
+**What it is for.** The Pico and the OneBox each keep their own clock. The gate, camera and LED lines say when the Pico switched them, but they repeat: every camera pulse looks like every other one, and every bout like the last. If something goes wrong (a stray camera frame, a missing pulse, a file that starts late), it can be hard to tell which pulse is which. The sync output (E, GP6) is a fifth line that never repeats: its pulses come at random gaps from a seed, so any few of them in a row say exactly where in the session they are. Wired to a free OneBox input, it ties every OneBox sample to the Pico's own time, so the two clocks can be compared at any point of the session, and every other line can be checked pulse by pulse against the Pico's plan.
+
+**The pulses:** 10 ms high, and from one rise to the next a random whole number of milliseconds from 200 to 1000 (SplitMix64, from a seed; the formula is at the top of the sketch and in the session's sync file). They run from the session's time 0 to its end (the last gate's fall, or the time `stop` or `end` set), in and between the bouts; SpikeGLX keeps only what falls in its files, which is enough. Why these numbers:
+- **10 ms** is 303 OneBox samples (one every 33 µs), so a pulse can't be missed or mistaken for noise. It is also unlike every other line (the camera's 3 ms, the LEDs' tens of ms with one flash a bout), so a cable on the wrong input shows straight away.
+- **200 to 1000 ms**, whole milliseconds: 801 possible gaps, about 2 pulses a second. Each gap is measured on the OneBox to within two samples (about 70 µs; the clocks' 3.2 ppm difference adds 3 µs at most over a second), far less than the 1 ms between possible gaps, so each one is read without error. Four gaps in a row (about 2.4 s) have 801⁴, about 4 × 10¹¹, possible values; a 6-day session has about 864,000 runs of four, so nearly every one is unique (in a 6-day plan, one pair repeats; the matcher skips any run that isn't unique and places it by its neighbours). The shortest bout's file, 27 s, holds about 45 pulses.
+- **On the Pico's state machine**, the same queue as the other four outputs: each sync edge is on its microsecond of the Pico's crystal, exactly like the others, and a sync edge due at the same microsecond as another output's goes out in the same instruction. The sync train adds about 4 queue entries a second to the camera's 120, so it doesn't change the risk of the queue running dry (`stalls=` still counts it) or the camera self check (`self_check_us`, `rises=`). The sketch's tests check that every camera and LED edge stays on its exact clock tick with the sync train on.
+
+**Wiring.** GP6 (board pin 9) to the OneBox's XA1, the analog input between the gate (XA0) and the camera (XA2), which nothing else uses here, with its ground to the Pico's GND, and a 10 kΩ pull-down from GP6 to GND like the other outputs. SpikeGLX records XA1 as a voltage, and its digital copy as bit 1 of XD0, as it does for the gate (bit 0) and camera (bit 2); *expected from those two, not yet checked on the rig.* If XD0's bit 1 doesn't show it, the matcher reads XA1 itself (`--sync-xa XA1`, high above 1.5 V). To check the wiring: `python chronic_control.py wiring --channels E` blinks it five times, then a pause, until `stop`; watch XA1 in SpikeGLX's graphs, which show the inputs whether or not a file is being written.
+
+**Turning it on.** It is off by default. In campy, set `picoSync: True` in the rig profile ([config reference](../docs/config-reference.md#trigger)); every Pico session from the panel then has it. Run by hand: `python chronic_control.py start --set SYNC=1`. The other settings (`SYNC_WIDTH_US`, `SYNC_MIN_GAP_MS`, `SYNC_MAX_GAP_MS`, `SYNC_SEED`) can be changed the same way, in `pico.set` or with `--set`; by default each session picks a new random seed. It needs `chronic_timer 3` on the Pico: a session with the sync train on a board still running version 2 doesn't start, and says to flash it again.
+
+**What the session saves.** Beside `timestamps.txt` (in the recording's `pico\<date>\` folder from the panel), `sync_<date_time>.json`: the seed, the pulse settings, when the session's time 0 was by the PC's clock, its end, the board's final `done` line and all the session's settings. `timestamps.txt` gets a line with the seed, and the board's `done` line says how many sync pulses it made (`sync=`).
+
+**Matching it with the OneBox:** [`sync_match.py`](sync_match.py) (needs numpy only; run it on a copy of the session, not on the rig while it records):
+
+```bash
+python sync_match.py D:\data\<date_time>
+```
+
+It finds the session's sync file and the OneBox files (one per gate opening, placed on the run's own sample count), works out every planned pulse from the seed, finds each file's place by its runs of four gaps, and fits one straight line, OneBox sample = a + b × board time, through every pulse. It prints:
+- how many sync pulses matched, and any **missing** (planned inside a file, clear of its ends, but not on the OneBox) or **extra** (on the OneBox but not planned, or not 10 ms wide), with their times on both clocks;
+- the **offset**: the OneBox's time at the board's time 0;
+- the **drift**: how many OneBox samples one second of the Pico's crystal is, and how far that is from SpikeGLX's `obSampRate`, in ppm and ms a day (the rig measured about 3.2 ppm, 0.28 s a day, from the gate in earlier tests);
+- the **residuals** from that line: a few tens of µs at most when everything is right (a sample is 33 µs);
+- then the **camera, gate and LED lines**, each rise put on the board's clock through the same line and matched to the Pico's plan for the session's settings: how many, how far from the plan at most, and every rise the Pico didn't plan (a stray edge on that line, with its board time) or planned rise that isn't there. Files before the session (the gate check's blink) are left out.
+
+It writes `sync_match.csv` (one row per sync pulse, seen, missing or extra: its file, OneBox sample and time, width, planned pulse and board time, residual) and `sync_match.json` (the fit, the counts, and the other lines' odd pulses) in the session folder. `--sync <file>` picks the sync file when the folder has more than one; `--no-lines` checks only the sync line.
+
+**Checked on the rig, on the camera line (13 November 2026, 1:35 to 1:41 PM).** GP6 wasn't wired yet, so the sync train ran on the camera output instead (GP3, already wired to the OneBox's XA2 and recorded as XD0 bit 2), with no camera train and no LEDs. The Pico ran version 3, built with arduino-pico 6.3.2; no animal, campy not recording (the cameras got the sync pulses on Line3 and nothing recorded them).
+- **Flashing and the board's own check:** version 3 went on in about 6 s (a 1200-baud reset into its USB drive, then the .uf2 copied). A 30 s camera-only session with the sync train on GP6 then made its 1,800 camera pulses with `stalls=0`, `lost=0`, `rises=1800`, `bounces=0`, and 51 sync pulses, exactly the seed's plan. Its `self_check_us` read −11 µs (−10 µs on version 2 built with the same core, against −1 to −3 µs with the build of 2 November); it didn't grow from 10 s to 30 s.
+- **Against the OneBox:** the gate opened three times (30, 30 and 80 s) with SpikeGLX's TTL trigger and 1 s margin, so SpikeGLX wrote three files, 32, 32 and 82 s long. The board made 329 sync pulses over the 205 s session, as planned (`stalls=0`, `lost=0`). `sync_match.py --sync-bit 2 --no-lines` matched every one of the 232 inside the files (51, 51 and 130, as many as the plan puts there) to its planned pulse: none missing, none extra.
+- **The clocks:** the OneBox counted 30,303.1054 samples per second of the Pico's crystal, 3.48 ppm over its `obSampRate` (0.30 s a day), close to the 3.2 to 3.3 ppm the gate showed in the hour-long and 8-hour checks above. The residuals from the fitted line were 20.6 µs at most and 10.1 µs rms, under one sample (33 µs).
+- **An independent check of the fit:** the gate's own edges, put on the board's clock through it, came out 0.000012, 30.000007, 60.000002, 89.999996, 119.999991 and 200.000010 s, against 0, 30, 60, 90, 120 and 200 s planned: within 12 µs.
+
+Afterwards the Pico got dev's version 2 back (the same core), and a 10 s camera-only session with the rig's own `chronic_control.py` ran clean (600 pulses, `stalls=0`, `rises=600`).
+
+*Still not checked on the rig:* GP6 itself wired to XA1, and whether SpikeGLX's XD0 bit 1 copies XA1 as bit 2 copies XA2 (the matcher can read XA1's voltage instead, `--sync-xa XA1`).
+
 ## Commands the board takes
 
 These are what `chronic_control.py` sends. Each answer comes at once: `ok ...` or `err ...`.
@@ -307,6 +351,7 @@ These are what `chronic_control.py` sends. Each answer comes at once: `ok ...` o
 - `pin <ch> <pin>`, `clear`: set up the outputs and clear the old schedule.
 - `train <ch> <start_us> <count> <rate_mHz> <width_us>`: one camera train.
 - `edge <ch> <t_us> <0|1>`: one edge, in order of time.
+- `sync <ch> <seed> <width_us> <min_gap_ms> <max_gap_ms>`: the sync train on channel 4 (GP6) for the session (version 3).
 - `go`: start; session time 0 is 20 ms later.
 - `end <t_us>`: the session ends at that time.
 - `stop`: end now.
@@ -317,13 +362,15 @@ It reports by itself:
 - `ev <t_us> <ch> <level> <late_us>`: an edge happened.
 - `camon <train> <first_rise_us>`: a camera train started.
 - `cam <train> <pulses> <first_rise_us> <last_fall_us>`: a camera train ended.
-- `done ...`: the session is over and every output is low.
+- `done ...`: the session is over and every output is low; `sync=` is the sync pulses it made.
 - `ready ...`: it just powered up.
 
 The full description is at the top of the sketch.
 
 ## Tests
 
-`tests/test_chronic_timer.py` compiles the sketch for the computer and runs it on a simulated clock (`tests/arduino_sim`).
+`tests/test_chronic_timer.py` compiles the sketch for the computer and runs it on a simulated clock (`tests/arduino_sim`), the sync train included: its pulses are the seed's to the microsecond, and every camera and LED edge stays on its clock tick. The tests of what it says give it a USB transmit buffer: 64 bytes, as a Nano ESP32's, or 256, as the Pico's. Before pull request 432, the sketch dropped a line that didn't fit that buffer at once: on a Nano ESP32 every `ok status running` (about 85 characters) and a long `done`. On the Pico, with its 256 bytes, the same tests lost nothing, as the real sessions' `lost=0` showed. Now every line goes out whole, in pieces if need be, and nothing is waited for.
+
+`tests/test_sync_match.py` runs `sync_match.py` on made-up OneBox files from a real plan, on a clock that runs fast: a clean session, a dropped and a glitched sync pulse with a stray camera pulse, files that start mid-session and mid-pulse, and 40 ppm of drift over an hour.
 
 `tests/test_chronic_control.py` checks the program's plan against chronicControlv13.py's timeline. It also runs `start`, `status`, `stop`, `stop --now` and `attach` (after the session program is killed) end to end against the sketch running live on a pseudo-terminal. Where there is no pseudo-terminal (Windows), the same commands run against a stand-in board on a network socket, which answers as the sketch does but reports only the session's end. It also checks that the Pico is found by its USB IDs, never an Arduino, off the Pi.

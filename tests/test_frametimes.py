@@ -446,3 +446,49 @@ def test_trigger_gaps_learns_a_trigger_at_another_rate():
 	for k in range(100):
 		assert gaps.Add(k / 30, k + 1) == 0
 	assert gaps.Add(102 / 30, 101) == 2 and gaps.missed == 2 and gaps.frame == 101
+
+
+def test_the_step_over_a_camera_unplugged_is_no_missed_pulses():
+	# cameraReconnect: the camera's timestamps step over the time it was gone; that step is not counted as trigger
+	# pulses without a frame (the recording watch says the time it was gone apart), and counting goes on after it
+	gaps = frametimes.TriggerGaps()
+	t = [n / 30 for n in range(1, 61)]
+	for n, s in enumerate(t, 1):
+		gaps.Add(s, n)
+	gaps.Restart()
+	assert gaps.Add(130 / 30, 130) == 0 # back at frame 130: 69 numbers skipped, not counted
+	assert gaps.Add(131 / 30, 131) == 0
+	assert gaps.Add(134 / 30, 134) == 2 and gaps.missed == 2 # and pulses missed after it still are
+
+
+def test_a_camera_back_is_numbered_as_the_other_cameras():
+	# unicam.FrameNumberBack: by the other cameras' newest frames within a second (the median), else its own last
+	period = 1 / 30
+	ns = lambda s: int(s * 1e9)
+	at = 10.0 # its first frame back came then
+	# The others' newest frames: their frame 300 at 10.0 s (the same pulse), and one a frame behind (299 at 9.967 s)
+	assert unicam.FrameNumberBack(ns(at + 0.002), period, [(300, ns(at)), (299, ns(at - period)), (300, ns(at))],
+		60, ns(2.0)) == (300, True)
+	# The others' frame of this pulse not in yet: theirs before it, a period earlier
+	assert unicam.FrameNumberBack(ns(at), period, [(299, ns(at - period - 0.001))], 60, ns(2.0)) == (300, True)
+	# No other camera within a second (one camera, or all paused): by its own last frame (frame 60 at 2.0 s)
+	assert unicam.FrameNumberBack(ns(at), period, [(100, ns(5.0))], 60, ns(2.0)) == (300, False)
+	assert unicam.FrameNumberBack(ns(at), period, [], 60, ns(2.0)) == (300, False)
+	# Never at or below its last frame
+	assert unicam.FrameNumberBack(ns(at), period, [(10, ns(at))], 60, ns(2.0)) == (61, True)
+	# The offset carries its timestamps on from its last frame's: its clock started again at 0
+	resume = unicam.Resume(60, ns(2.0), 2.0, period, 0.0)
+	assert abs(resume.Offset(300, 0.25) - (2.0 + 240 * period - 0.25)) < 1e-12
+
+
+def test_a_camera_back_asks_the_others_again_when_their_counters_were_changing(monkeypatch):
+	# status.Camera.Others leaves out a camera whose counters changed between its two reads; on a busy computer that
+	# can be every other camera at once (seen on GitHub's runner, 2026-11-12: numbered by its own last frame instead).
+	# Resume.Number asks again, rather than taking an empty answer for no other camera
+	period = 1 / 30
+	answers = iter([[], [], [(300, int(10.0 * 1e9))]])
+	resume = unicam.Resume(60, int(2.0 * 1e9), 2.0, period, 0.0)
+	assert resume.Number(int(10.001 * 1e9), lambda: next(answers)) == (300, True)
+	# None grabbing at all: given up after MATCH_WAIT_S, by its own last frame
+	monkeypatch.setattr(unicam, "MATCH_WAIT_S", 0.02)
+	assert resume.Number(int(10.0 * 1e9), lambda: []) == (300, False)

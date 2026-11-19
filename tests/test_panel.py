@@ -24,7 +24,7 @@ import zlib
 import numpy as np
 import pytest
 
-from campy import bookmarks, panel
+from campy import bookmarks, panel, session
 from test_session import NAMES, emu_session, frames, home, recorded, the_folder # noqa: F401 (home: a fixture)
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -149,12 +149,17 @@ def test_recording_json_only_when_it_is_this_recordings_and_fresh(tmp_path, monk
 
 # ------------------------------------------------------------------ the page's requests, and a second launch
 
-def stub_panel():
+# Each pytest worker's in-process panels start from a port of their own, not campy's 8765 (CI runs 4 workers at once;
+# the subprocess panels further down use 18700 and 18800 the same way)
+SERVE_PORT = 19700 + os.getpid() % 1000
+
+
+def stub_panel(port=SERVE_PORT):
 	# The real Serve's handler, on a Panel whose actions are stubs: nothing starts
 	calls = []
 	p = object.__new__(panel.Panel)
 	p.token = "T0kenT0kenT0kenT0kenT0ke"
-	p.port = 19700 + os.getpid() % 1000
+	p.port = port
 	p.health = types.SimpleNamespace(thumbs={})
 	p.Status = lambda: {"state": "ready"}
 	p.Start = lambda body: calls.append(("start", body)) or None
@@ -187,6 +192,29 @@ def test_a_start_refused_for_a_copy_folder_not_there_yet_offers_to_make_it(tmp_p
 		p.server.server_close()
 
 
+def test_a_port_already_listened_on_is_skipped():
+	# A second panel from the same port takes the next free one, and so does a panel whose port another program listens
+	# on. On Windows, Python's HTTP server (SO_REUSEADDR) bound the port another one listened on and shared it (seen on
+	# GitHub's Windows runner without the fix: both panels on one port), so requests reached either one, and one that
+	# closed reset them (WinError 10054). The panel's server takes its port exclusively there instead.
+	import socket
+	panels, other = [], socket.socket()
+	try:
+		panels.append(stub_panel(SERVE_PORT + 40)[0]) # clear of stub_panel's usual ports
+		panels.append(stub_panel(panels[0].port)[0])
+		assert panels[1].port != panels[0].port
+		other.bind(("127.0.0.1", 0)) # another program, on a port the system picks
+		other.listen()
+		panels.append(stub_panel(other.getsockname()[1])[0])
+		assert panels[2].port != other.getsockname()[1]
+		for p in panels: # each answers on its own port
+			assert raw(p, "GET", "/status.json?t=" + p.token)[0] == 200
+	finally:
+		for p in panels:
+			p.server.shutdown()
+			p.server.server_close()
+		other.close()
+
 def raw(p, method, path, headers=None, body=None):
 	c = http.client.HTTPConnection("127.0.0.1", p.port, timeout=10)
 	try:
@@ -198,6 +226,37 @@ def raw(p, method, path, headers=None, body=None):
 		return r.status, json.loads(data or b"{}")
 	finally:
 		c.close()
+
+
+def test_a_refused_post_has_its_body_read_first():
+	# The panel reads a POST's body before answering it, a refusal too: on Windows a connection closed with its
+	# request's body unread is reset, and the client saw "connection aborted" (WinError 10053) instead of the 403
+	# (now and then on GitHub's Windows runner). Read: the refusal comes back whole, the body sent first in full
+	import socket
+	p, calls = stub_panel()
+	try:
+		body = b'{"notes": "' + b"x" * 200000 + b'"}' # more than a socket buffer holds
+		for headers, want in (([b"Origin: https://evil.example"], 403), ([b"Content-Length: -5"], 400)):
+			s = socket.create_connection(("127.0.0.1", p.port), timeout=10)
+			try:
+				length = [] if any(h.startswith(b"Content-Length") for h in headers) else \
+					[b"Content-Length: %d" % len(body)]
+				request = b"\r\n".join([b"POST /start?t=" + p.token.encode() + b" HTTP/1.1", b"Host: 127.0.0.1",
+					b"Content-Type: text/plain"] + headers + length + [b"", b""])
+				s.sendall(request + (body if length else b""))
+				answer = b""
+				while True:
+					chunk = s.recv(65536)
+					if not chunk:
+						break
+					answer += chunk
+			finally:
+				s.close()
+			assert answer.startswith(b"HTTP/1.0 %d" % want) or answer.startswith(b"HTTP/1.1 %d" % want), answer[:200]
+		assert calls == []
+	finally:
+		p.server.shutdown()
+		p.server.server_close()
 
 
 def test_the_page_answers_only_its_key_from_this_computer():
@@ -764,6 +823,7 @@ def test_the_copy_room_is_the_folder_typed_in_the_box(tmp_path, home, monkeypatc
 	copies = lambda: [d["name"] for d in p.Drives(str(tmp_path / "D")) if d["copies"]]
 	assert [level for level, _ in room()] == ["ok"] and copies() == ["C:"] # before the page has said: the usual folder
 	assert p.Status()["fields"]["copy_box"] is None
+	p.port = SERVE_PORT
 	p.Serve()
 	try:
 		def box(to):
@@ -793,6 +853,7 @@ def test_the_copy_room_is_the_folder_typed_in_the_box(tmp_path, home, monkeypatc
 		assert p.copy_box == share
 	finally:
 		p.server.shutdown()
+		p.server.server_close()
 
 
 def test_a_typed_share_is_measured_at_most_every_10_s(tmp_path, home, monkeypatch):
@@ -821,6 +882,29 @@ def test_the_page_tells_the_server_the_copy_box_folder():
 	page = panelpage.PAGE
 	assert 'document.activeElement != $("copyto") && box !== s.fields.copy_box && box !== copyAsked' in page
 	assert 'post("/check", {copy_to: box})' in page
+
+
+def test_ctrl_c_as_the_checks_run_after_a_recording_closes_the_panel(tmp_path, home, monkeypatch):
+	# Once a recording has ended, the panel checks again for the next one (campy-live's environment: a Python started,
+	# seconds on a busy computer). A Ctrl-C then ended the panel with a traceback and exit code 1; now it closes it
+	from test_session import write_config
+	config = write_config(tmp_path / "c.yaml", {"numCams": 1, "frameRate": 60, "videoFolder": str(tmp_path / "data"),
+		"recTimeInSec": 60})
+	p = panel.Panel(str(config), browser=False)
+	said = []
+	monkeypatch.setattr(panel, "Say", said.append)
+	from campy import session
+	monkeypatch.setattr(session.Session, "Run", lambda self: 0) # the recording, done
+
+	def checks():
+		raise KeyboardInterrupt
+	monkeypatch.setattr(p, "Checks", checks)
+	p.wanted = {"experiment": "x"}
+	try:
+		code = p.Run()
+	except KeyboardInterrupt: # not out of the test: it would end pytest
+		pytest.fail("Ctrl-C as the checks ran ended the panel with a traceback")
+	assert code == 0 and said[-1] == "Closed."
 
 
 # ------------------------------------------------------------------ the LEDs' power, asked for at Start
@@ -1074,7 +1158,8 @@ def run_node(code):
 	node = shutil.which("node")
 	if node is None:
 		pytest.skip("no node to run the page's script")
-	r = subprocess.run([node, "-e", code], capture_output=True, text=True, timeout=60)
+	# node writes UTF-8; Windows would read it in its own code page (a "·" in the page's text then comes back garbled)
+	r = subprocess.run([node, "-e", code], capture_output=True, text=True, encoding="utf-8", timeout=60)
 	assert r.returncode == 0, r.stderr
 	return json.loads(r.stdout)
 
@@ -1124,6 +1209,56 @@ console.log(JSON.stringify({first, pct, steady1, eased, check, none, gone}));
 	assert out["steady1"] == 199 # the same end time: a second less
 	assert out["eased"] == pytest.approx(198 + 30 / 3) # the estimate went 30 s up: a third of it now
 	assert out["check"] == 400 and out["none"] is None and out["gone"] is None
+
+
+def test_the_copy_card_shows_the_copys_speed_or_its_stall():
+	# The row: "7.2 of 7.7 GB at 110 MB/s, 5:52, …" (the server's recent speed), "… read back at 210 MB/s" while it is
+	# checked; stalled: how long nothing was done, and no time left. The corner, under the big numbers: the speed and
+	# when it should be done, or "stalled" and for how long, counting on every second
+	_, fns = page_functions("copyText", "copyRate", "copyEta", "etaLeft", "speedText", "gb", "dur", "mss", "clockAt",
+		"followEta", "paintEta")
+	out = run_node("""
+let T = 1e12; Date.now = () => T; let bgEta = null, etaHtml = null; const el = {};
+function $(id){ return el[id] = el[id] || {}; }
+""" + fns + """
+const j = {state: "copying", phase: "copying", folder: "f", to: "/share", done_bytes: 7.2e9, bytes: 7.7e9, seconds: 352,
+  eta_s: 30, speed: 110.4e6, stalled_s: null};
+followEta(j); paintEta(); const row = copyText(j), corner = $("bgetaend").textContent, big = $("bgetanum").textContent;
+const slow = copyText(Object.assign({}, j, {speed: 4.26e6})), crawl = copyText(Object.assign({}, j, {speed: 0.5e6}));
+const unknown = copyText(Object.assign({}, j, {speed: null}));
+const check = copyText({state: "copying", phase: "checking", checked_bytes: 3.1e9, check_bytes: 7.7e9, seconds: 400,
+  speed: 210e6, stalled_s: null, eta_s: null});
+const st = Object.assign({}, j, {speed: null, eta_s: null, stalled_s: 45});
+const stalled = copyText(st); followEta(st); paintEta(); const stallBig = $("bgetanum").textContent, stall1 = $("bgetaend").textContent;
+T += 2000; followEta(Object.assign({}, st, {stalled_s: 46})); paintEta(); const stall2 = $("bgetaend").textContent;
+console.log(JSON.stringify({row, corner, big, slow, crawl, unknown, check, stalled, stallBig, stall1, stall2}));
+""")
+	assert out["row"].startswith("copying into /share: 7.2 of 7.7 GB at 110 MB/s, 5:52, under a minute left (done around ")
+	assert out["corner"].startswith("110 MB/s · done around ") and out["corner"].endswith(", then checked")
+	assert out["big"] == "0:30"
+	assert " at 4.3 MB/s, " in out["slow"] and " at 0.50 MB/s, " in out["crawl"]
+	assert out["unknown"].startswith("copying into /share: 7.2 of 7.7 GB, 5:52")
+	assert out["check"].startswith("checking the copy byte for byte: 3.1 of 7.7 GB read back at 210 MB/s, 6:40")
+	assert out["stalled"] == "copying into /share: 7.2 of 7.7 GB, nothing copied for the last 0:45, 5:52" # no time left
+	assert out["stallBig"] == "stalled" and out["stall1"] == "nothing copied for 0:45"
+	assert out["stall2"] == "nothing copied for 0:47" # counted on from the first status, not back with a poll's delay
+
+
+def test_the_copy_card_plots_the_speed_since_the_phase_began():
+	# A small area under a line in the corner, from 0 to the phase's peak, time across; nothing under two points
+	from campy import panelpage
+	assert 'id="bgetaplot"' in panelpage.PAGE
+	_, fns = page_functions("speedPlot", "speedText", "dur")
+	out = run_node(fns + """
+const svg = speedPlot([[3, 100e6], [6, 0], [9, 50e6]]);
+console.log(JSON.stringify({svg, none: speedPlot([[3, 1e8]]), empty: speedPlot(null)}));
+""")
+	svg = out["svg"]
+	assert svg.startswith("<svg") and "<polyline" in svg and "<polygon" in svg
+	line = re.search(r'<polyline points="([^"]+)"', svg).group(1).split()
+	assert line == ["0.0,2.0", "150.0,38.0", "300.0,20.0"] # the peak at the top, none at the bottom
+	assert "since it began (0:09) · peak 100 MB/s" in svg
+	assert out["none"] == "" and out["empty"] == ""
 
 
 def test_the_pages_text_is_in_rem_and_can_be_made_larger():
@@ -1254,6 +1389,7 @@ def test_a_switch_while_the_panel_is_open_follows_the_new_cameras(tmp_path, home
 def test_the_page_picks_and_stars_over_http(tmp_path, home):
 	folder = configs_folder(tmp_path)
 	p = panel.Panel(str(folder), browser=False)
+	p.port = SERVE_PORT
 	p.Serve()
 	try:
 		url = p.url
@@ -1280,6 +1416,22 @@ def test_a_folder_panel_takes_the_rig_lock_when_a_config_asks(tmp_path, home, mo
 	monkeypatch.setattr(panel, "Running", lambda: None)
 	assert panel.Main([str(folder), "--no-browser"]) == 0
 	assert ran == [("auto", "panel-look", "configs")]
+
+
+def test_the_panel_takes_the_rig_with_ephys_allowed(tmp_path, home, monkeypatch):
+	# SpikeGLX started by hand beside the panel (ChronicRecord's OneBox) mustn't keep it waiting for the rig
+	rig = tmp_path / "rig.py"
+	rig.write_text("")
+	calls = []
+	monkeypatch.setattr(subprocess, "call", lambda cmd, env=None: calls.append((cmd, env)) or 0)
+	# Not in this test's process: SIGINT ignored here would be every later test's child's too (a panel that
+	# then can't be stopped with Ctrl-C)
+	monkeypatch.setattr(panel, "IgnoreCtrlC", lambda: None)
+	monkeypatch.delenv("RIG_JOB", raising=False)
+	monkeypatch.setenv("RIG_ALLOW", "trigger")
+	assert panel.UnderRig(str(rig), "panel-look", "configs", ["--no-browser"]) == 0
+	(cmd, env), = calls
+	assert cmd[1:3] == [str(rig), "run"] and env["RIG_ALLOW"] == "ephys,trigger"
 
 
 @POSIX
@@ -1362,5 +1514,169 @@ def test_trigger_check(monkeypatch):
 	assert level == "block" and "no pico: section to start it" in text
 	assert panel.TriggerCheck(pico, object(), ports=lambda: []) == ("ok", "Trigger: the Pico")
 	assert panel.TriggerCheck(dict(pico, cameraTrigger="None"), None, ports=lambda: []) is None
+	# With an operant box beside it (box:, its board counting the Pico's pulses on D10): still the Pico's
+	assert panel.TriggerCheck(pico, object(), ports=lambda: [], box={"task": "t.yaml"}) == ("ok", "Trigger: the Pico")
+	# A rig whose operant box's board pulses the cameras: the config must run the box (its box: section)
+	boxrig = {"startArduino": False, "triggerController": "box", "cameraTrigger": "Line3"}
+	level, text = panel.TriggerCheck(boxrig, None, ports=lambda: [])
+	assert level == "block" and "no box: section to run it" in text
+	assert panel.TriggerCheck(boxrig, None, ports=lambda: [], box={"task": "t.yaml"}) == ("ok",
+		"Trigger: the operant box's board (campy-box)")
 	# An external trigger on a rig that names no board (startArduino False): as before, no line
 	assert panel.TriggerCheck({"startArduino": False, "cameraTrigger": "Line3"}, None, ports=lambda: []) is None
+
+
+def test_the_panel_says_a_camera_unplugged_and_shows_the_others(monkeypatch):
+	# One camera's feed ends while the others record on: its thumbnail's health says CAMERA LOST, the others' go on
+	from campy import livefeed
+	from test_livefeed import name
+	monkeypatch.setattr(panel, "LOST_AFTER_S", 0.0)
+	prefix = name()
+	writers = [livefeed.RingWriter(livefeed.RingName(prefix, c), (8, 8), np.uint8, frameRate=30.0,
+		cameraName="Camera{}".format(c)) for c in range(3)]
+	health = panel.Health(prefix, 3)
+	try:
+		for n in range(1, 6):
+			for w in writers:
+				w.Write(np.zeros((8, 8), np.uint8), n, 1000 * n)
+		health.Step()
+		writers[1].Close()
+		for n in range(6, 11):
+			for c in (0, 2):
+				writers[c].Write(np.zeros((8, 8), np.uint8), n, 1000 * n)
+		health.Step()
+		snap = health.snapshot
+		assert snap["feed"] and not snap["ended"]
+		assert [c["frame"] for c in snap["cameras"]] == [10, 5, 10]
+		assert snap["cameras"][1]["problems"] == ["CAMERA LOST"] and "CAMERA LOST" not in snap["cameras"][0]["problems"]
+		assert snap["cameras"][1]["sentences"][0].startswith("Camera1: camera lost, its live feed ended at its frame 5")
+		writers[0].Close()
+		writers[2].Close()
+		health.Step()
+		assert health.snapshot["ended"] and health.readers is None
+	finally:
+		for w in writers:
+			w.Close()
+		health.Detach()
+
+
+# ------------------------------------------------------------------ the Ephys section (campy/ephyslive.py)
+
+def test_the_ephys_section_reads_spikeglx_in_a_process_of_its_own(tmp_path, monkeypatch):
+	# The page opens the section: the panel starts campy-ephys serve, which reads the stand-in SpikeGLX (a run going,
+	# a probe of 32 channels) with read-only calls; the page's requests go through the panel with the page's key, and
+	# on to the process with its own. Closing the section ends the process, and so does a page that stops asking
+	from test_ephyslive import FakeState, Synthetic
+	data, geometry, truth = Synthetic(seconds=2.0, n=32)
+	# Camera pulses on the OneBox (spikeglx.stream [1, 0]), a bout of 120 (2 s) every 10 s from the run's 3rd second;
+	# the Pico's status says 1,200 so far: the frames are numbered from 1,200 at the first bout the reading sees start
+	state = FakeState(tmp_path, data, t_run=time.time(), camera={"fps": 60, "bit": 2, "bouts": [[3 + 10 * b, 120]
+		for b in range(6)]})
+	monkeypatch.setenv("FAKE_SGLX_STATE", str(state))
+	monkeypatch.setattr(panel, "EPHYS_IDLE_S", 3)
+	pico_status = tmp_path / "status.json"
+	pico_status.write_text(json.dumps({"pulses": 1200, "bout": 3}))
+	p, calls = stub_panel(SERVE_PORT + 60)
+	p.ephys = panel.EphysView({"sdk": FAKE_SDK, "host": "127.0.0.1", "port": 4142, "stream": [1, 0]}, str(pico_status))
+	key = "?t=" + p.token
+	post = lambda path, body: raw(p, "POST", path + key, {"Content-Type": "application/json"}, json.dumps(body))
+	try:
+		code, said = raw(p, "GET", "/ephys.json" + key)
+		assert code == 200 and said["open"] is False and said["status"]["open"] is False
+		assert raw(p, "GET", "/ephys.json?t=wrong")[0] == 403
+		assert post("/ephys", {"open": True})[0] == 200
+		deadline, said = time.monotonic() + 60, {}
+		while time.monotonic() < deadline:
+			code, said = raw(p, "GET", "/ephys.json" + key + "&stream=1&snippets=0")
+			if code == 200 and said.get("live") and said["live"]["spikes"]["sample"] and said.get("stream"):
+				break
+			time.sleep(0.3)
+		assert said["status"]["open"] and said["health"]["reading"], said
+		assert len(said["stream"]["x"]) == 32 and said["stream"]["threshold"] == [4.5] * 32
+		assert said["live"]["scope"]["channels"] and len(said["live"]["rates"]["channel"]) == 32
+		# Each spike's camera frame: numbered from the Pico's count once a bout's start is seen
+		deadline = time.monotonic() + 30
+		while time.monotonic() < deadline:
+			code, said = raw(p, "GET", "/ephys.json" + key)
+			if (said["health"].get("camera") or {}).get("known"):
+				break
+			time.sleep(0.3)
+		assert said["health"]["camera"]["state"].startswith("counting camera pulses") and said["health"]["camera"]["known"]
+		assert 1200 <= said["health"]["camera"]["frame"] < 1320 and said["health"]["camera"]["bout"] == 3
+		code, said = raw(p, "GET", "/ephys.json" + key)
+		numbered = [f for f in said["live"]["camera"]["frame"] if f >= 0]
+		assert numbered and min(numbered) >= 1200 and all(f == -1 or f >= 1200 for f in said["live"]["camera"]["frame"])
+		# The page's scope and threshold, on to the process
+		assert post("/ephys-scope", {"channels": [3, 4, 5, 6]}) == (200, {"ok": True})
+		assert post("/ephys-threshold", {"k": 6, "channel": 3}) == (200, {"ok": True})
+		code, said = post("/ephys-threshold", {"k": 50})
+		assert code == 409 and "2 to 20" in said["error"]
+		time.sleep(0.5)
+		code, said = raw(p, "GET", "/ephys.json" + key + "&stream=1")
+		assert said["live"]["scope"]["channels"] == [3, 4, 5, 6] and said["stream"]["threshold"][3] == 6.0
+		# Closing the section ends the process
+		child = p.ephys.child
+		assert post("/ephys", {"open": False})[0] == 200
+		assert child.poll() is not None and p.ephys.Status()["open"] is False
+		# Only reads: nothing set, started or stopped in SpikeGLX. Read once the process has ended: the stand-in
+		# rewrites its state at every read, and Windows can't open a file while it's being replaced (GitHub's Windows
+		# runner, 18 November)
+		assert set(json.loads(state.read_text())["calls"]) == {"fetch"}
+		# A page that stops asking (its tab closed): the process ends by itself
+		post("/ephys", {"open": True})
+		deadline = time.monotonic() + 60
+		while not p.ephys.Running() and time.monotonic() < deadline:
+			time.sleep(0.2)
+		child = p.ephys.child
+		assert child.wait(timeout=30) == 0
+	finally:
+		p.ephys.Shutdown()
+		p.server.shutdown()
+		p.server.server_close()
+
+
+def test_spikeglx_match_starts_the_reader_matching_with_the_templates(tmp_path):
+	# spikeglx.match: campy-ephys serve gets --match with the templates, and only with them; off by default
+	from campy import spikeglx as sglx
+	templates = tmp_path / "templates.npz"
+	templates.write_bytes(b"")
+	base = {"sdk": FAKE_SDK, "host": "127.0.0.1", "port": 4142, "stream": [1, 0], "templates": str(templates)}
+
+	def Command(**given):
+		view = panel.EphysView(session.Section("spikeglx", dict(base, **given), sglx.KEYS))
+		try:
+			cmd = view.Command()
+			return cmd[cmd.index("--templates") + 1:cmd.index("--obx-ip")] if "--templates" in cmd else None, \
+				list(view.log)
+		finally:
+			view.Shutdown()
+
+	assert Command() == ([str(templates)], [])
+	assert Command(match="learned") == ([str(templates), "--match", "learned"], [])
+	assert Command(match=" Learned ") == ([str(templates), "--match", "learned"], [])
+	assert Command(match=8) == ([str(templates), "--match", "8"], [])
+	assert Command(match=8.5) == ([str(templates), "--match", "8.5"], [])
+	assert Command(match="9") == ([str(templates), "--match", "9"], [])
+	for off in ("", 0, "0", "off"):
+		assert Command(match=off) == ([str(templates)], [])
+	# No templates: nothing to match, and the panel says so
+	cmd, log = Command(match="learned", templates="")
+	assert cmd is None and log == ["spikeglx.match: no templates to match (spikeglx.templates): threshold crossings only"]
+	# A value it can't use stops the config at the start, with what it takes (YAML's off is False: not a match)
+	for bad in ("fast", -1, float("nan"), float("inf")):
+		with pytest.raises(sglx.SpikeGLXError, match="spikeglx.match: \"learned\""):
+			sglx.SpikeGLX(session.Section("spikeglx", dict(base, match=bad), sglx.KEYS))
+	with pytest.raises(session.SessionError, match="spikeglx.match: False is not text or a whole number or a number"):
+		session.Section("spikeglx", dict(base, match=False), sglx.KEYS)
+
+
+def test_no_ephys_section_without_spikeglx():
+	p, calls = stub_panel(SERVE_PORT + 61)
+	p.ephys = None
+	try:
+		key = "?t=" + p.token
+		assert raw(p, "GET", "/ephys.json" + key)[0] == 404
+		assert raw(p, "POST", "/ephys" + key, {"Content-Type": "application/json"}, "{}")[0] == 404
+	finally:
+		p.server.shutdown()
+		p.server.server_close()

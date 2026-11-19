@@ -74,7 +74,11 @@ others) or that sends no frame for STALL_S (1 s) while the others send
 half a second of frames is left out of the sets, said once on the
 console: tracking and 3D go on with the other cameras, and its columns in
 those sets are empty (cam_frame -1, host_ns 0, keypoints NaN, members -1).
-A stalled camera is taken back once its frames come again. Every camera
+A camera whose feed says it is lost (cameraReconnect: it was unplugged,
+and campy waits for it) is left out at once, at the next look (every
+WATCH_S), not after STALL_S: the sets of the other cameras would otherwise
+wait a second for it, and that second go untracked.
+A stalled or lost camera is taken back once its frames come again. Every camera
 pausing at once (the trigger's pause, between a Pico's bouts) is not a
 stall: nothing is left out, and the sets go on after it as before.
 A camera that lost a frame numbers its later frames one lower than the
@@ -201,6 +205,30 @@ the CPU that took them is left out, and the startup line and
 campy-live-session.json (cpus) say which. python -m campy.cpus --gpu N says
 it for any GPU.
 
+On Linux and Windows --pose3d-cpus puts the 3D step's thread alone on the
+CPUs given and keeps the rest of campy-live off them (on Windows by the
+process's default CPU sets, cpus.KeepOff). On the Jetson AGX Orin, whose cores
+are in three clusters of four with a cache each, the 3D step ran a quarter
+slower when the replay check's feeder shared its cluster; with the feeder on
+8-11, campy-live on 0-3 and the 3D step alone on 4-7, it took 1.48 ms
+instead of 1.64. In a recording (campy-acquire and its encoders instead of
+the feeder) the step gained as much, but frame to 3D only 0.2 ms at the
+median, and lost 0.4-0.5 ms at p99: the models and campy-acquire share
+fewer cores. On the EVO-X2, the Precision 7875 and the Dell Pro Tower Plus
+the step got slower, and on the Dell Pro Max Slim nothing changed. So it is off by default
+(docs/jetson.md, docs/live-tracking.md).
+
+Garbage collection: Python's full collection, which comes every so often as
+a run makes and keeps objects, goes through every object campy-live holds,
+about 600,000 from start-up (torch, sleap-nn, the models, numba). On the
+Dell Pro Max Slim it held up one set's 3D step 140-152 ms about 40 s after
+start, and 7-8 sets were skipped (in 4 of 6 three-camera checks on 17
+November 2026). So once the models are warm, before the feed, campy-live
+collects once and freezes what is left (gc.freeze, about 0.17 s there), and
+freezes again just before the first set what was made since (numba's loops
+too, if they load later): a collection during the sets then goes only
+through what the run made.
+
 --cuda-graphs records each model's GPU work once per input shape and then
 replays it in one go (a CUDA graph), instead of launching its hundred or so
 GPU operations one by one, each costing the CPU some microseconds: the
@@ -288,7 +316,7 @@ gives latency from the set's last frame (the earliest the set could be read)
 and its first.
 """
 
-import argparse, json, math, os, queue, signal, sys, threading, time
+import argparse, gc, json, math, os, queue, signal, sys, threading, time
 from datetime import datetime
 import numpy as np
 from campy import children, cpus, defaults, livefeed, liveresults, manifest, runstats, stopfile, strictjson
@@ -326,7 +354,8 @@ def DeadWriter(reader):
 
 # A camera whose feed ended, or that sent no frame for STALL_S while the
 # others sent half a second of frames, is left out of the sets till it sends
-# frames again (an ended one: for good). A pause of every camera at once (the
+# frames again (an ended one: for good). One whose feed says it is lost
+# (unplugged, campy waiting for it) is left out at once. A pause of every camera at once (the
 # trigger's: between a Pico's bouts) is never taken for one.
 STALL_S = 1.0
 # Sets in a row whose host times are more than half a frame apart, before
@@ -376,7 +405,7 @@ class Cameras:
 		n = len(self.names)
 		self.offset = [0] * n # each camera's frame number for set n is n + offset
 		self.active = list(range(n)) # the cameras in the sets
-		self.left = {} # camera: why it is left out ("ended", "stalled")
+		self.left = {} # camera: why it is left out ("ended", "stalled", "lost": unplugged, campy waiting for it)
 		self.leftAt = [0.0] * n
 		self.seen = [0] * n # each camera's newest frame number as last looked at
 		self.movedAt = [0.0] * n # when it last changed
@@ -579,11 +608,13 @@ class Cameras:
 				break
 			# Not moved for STALL_S (or ended), while the others sent half a second of frames: every camera
 			# pausing at once (the trigger's pause) is not that
-			ended = self.readers[i].Ended()
-			if (ended or now - self.movedAt[i] >= STALL_S) and newest - self.snap[i] >= self.stallFrames:
-				self.Leave(i, "ended" if ended else "stalled", now)
-		back = [i for i, why in self.left.items() if why == "stalled" and self.movedAt[i] > self.leftAt[i] and
-			not self.readers[i].Ended()]
+			# The feed saying its camera is lost (unplugged, campy waiting for it): at once, without waiting for
+			# STALL_S, which would hold every camera's sets back that long
+			ended, lost = self.readers[i].Ended(), self.readers[i].Lost()
+			if lost or (ended or now - self.movedAt[i] >= STALL_S) and newest - self.snap[i] >= self.stallFrames:
+				self.Leave(i, "lost" if lost else "ended" if ended else "stalled", now)
+		back = [i for i, why in self.left.items() if why in ("stalled", "lost") and self.movedAt[i] > self.leftAt[i]
+			and not self.readers[i].Ended()]
 		# Only cameras sending frames: one that stopped is left out after STALL_S instead, and its newest frame
 		# is no time to pair the others' with
 		moving = [i for i in self.active if now - self.movedAt[i] < REPAIR_S]
@@ -605,7 +636,11 @@ class Cameras:
 			self.buffer[i] = 0 # the model gets a blank frame for it, and its results are dropped (Log.Row)
 		self.Event(i, "left out", why=why, frame=self.seen[i])
 		others = ", ".join(self.Name(j) for j in self.active)
-		if why == "ended":
+		if why == "lost":
+			self.say("{} unplugged after its frame {}, campy waiting for it, while the other cameras record on: tracking "
+				"goes on with {}, and takes it back when it is plugged in again.".format(self.Name(i), self.seen[i],
+				others))
+		elif why == "ended":
 			self.say("{}'s feed ended at its frame {} while the other cameras record on (camera lost?): tracking "
 				"goes on with {}, without it.".format(self.Name(i), self.seen[i], others))
 		else:
@@ -1966,7 +2001,12 @@ class FixedEngine:
 
 	def Enqueue(self, x):
 		# sleap-nn's normalize_on_gpu for uint8 (float32 / 255), then the
-		# engine on torch's stream; its output buffer is the same every call
+		# engine on torch's stream; its output buffer is the same every call.
+		# Not on CUDA's default stream, though (campy-infer and any run
+		# without a graph): there TensorRT says "Using default stream in
+		# enqueueV3() may lead to performance issues" and synchronizes it on
+		# each call. Then the engine runs on a stream of its own, after what
+		# torch's stream has queued and before what it queues next.
 		torch = self.torch
 		x = x.squeeze(1)
 		if torch.is_floating_point(x):
@@ -1976,8 +2016,14 @@ class FixedEngine:
 			x = x.float() / 255.0
 		x = x.contiguous()
 		self.ctx.set_tensor_address("x", x.data_ptr())
-		if not self.ctx.execute_async_v3(torch.cuda.current_stream().cuda_stream):
+		stream = torch.cuda.current_stream()
+		run = stream if stream.cuda_stream else FixedStream("tensorrt")
+		if run is not stream:
+			run.wait_stream(stream)
+		if not self.ctx.execute_async_v3(run.cuda_stream):
 			raise RuntimeError("TensorRT: the {} network didn't run".format(self.name))
+		if run is not stream:
+			stream.wait_stream(run)
 		return self.out
 
 	def __call__(self, x):
@@ -2664,6 +2710,8 @@ class Pose3D:
 		self.tracker = pose3d.Tracker(self.cameras, n_animals=self.animals)
 		self.text = "{} animals, cameras {} of {}".format(self.animals, ", ".join(names), args.calibration)
 		Say("3D: {}.".format(self.text))
+		self.fastSaid = False
+		self.SayFast()
 		# The cage (--cage): its file, looked at again once a second (Watch)
 		cage = args.cage.strip()
 		self.cagePath = None if cage.lower() == "off" else os.path.abspath(
@@ -2694,7 +2742,26 @@ class Pose3D:
 
 	def Update(self, keypoints, scores, frame):
 		self.Watch(frame)
+		if not self.fastSaid:
+			self.SayFast()
 		return self.tracker.Update(keypoints, scores, frame=frame)
+
+	def SayFast(self):
+		# Once: whether the 3D step runs in numba's compiled loops or in numpy (the same numbers either way)
+		from campy import pose3d
+		fast = pose3d.FastStatus()
+		if fast["state"] == "ready":
+			Say("3D: in numba {}'s compiled loops, loaded in {:.1f} s.".format(fast["numba"], fast["seconds"]))
+		elif fast["state"] == "missing":
+			Say("3D: in numpy. With numba installed (pip install numba) its busiest loops are compiled, about a "
+				"fifth faster, with the same numbers.")
+		elif fast["state"] == "failed":
+			Say("3D: in numpy: numba's compiled loops failed ({}).".format(fast["error"]))
+		elif fast["state"] == "off":
+			Say("3D: in numpy (CAMPY_NUMBA=0).")
+		else:
+			return                                   # still loading: said once it is done
+		self.fastSaid = True
 
 	def Watch(self, frame):
 		"""
@@ -2753,12 +2820,22 @@ class Pose3DThread:
 	by the next Put, or by Close.
 	"""
 
-	def __init__(self, tracker, log, queued=8):
+	def __init__(self, tracker, log, queued=8, cpus=None):
 		self.tracker, self.log = tracker, log # tracker: a Pose3D, or anything with Update
 		self.sets = queue.Queue(maxsize=queued) # (row, frames, inference ns); None stops it
 		self.error = None
+		self.cpus = cpus # --pose3d-cpus: this thread alone on these CPUs (Linux), or None
 		self.thread = threading.Thread(target=self.Run, daemon=True, name="campy-live 3D")
 		self.thread.start()
+
+	def Place(self):
+		# This thread onto --pose3d-cpus (cpus.PinThread); the rest of campy-live was kept off them (PlaceSelf)
+		if not self.cpus:
+			return
+		try:
+			cpus.PinThread(self.cpus)
+		except OSError as e:
+			Say("Could not pin the 3D step to CPUs {} (--pose3d-cpus): {}".format(cpus.Text(self.cpus), e))
 
 	def Put(self, row, frames, inference):
 		# Waits only if the 3D is that many sets behind
@@ -2767,6 +2844,7 @@ class Pose3DThread:
 		self.sets.put((row, frames, inference))
 
 	def Run(self):
+		self.Place()
 		while True:
 			item = self.sets.get()
 			if item is None:
@@ -2992,15 +3070,24 @@ def Run(args):
 	# campy-live without a console (campy-session)
 	stopWatch = stopfile.Watch(os.path.abspath(args.stop_file), lambda level: stopping.append(level)).Start() \
 		if args.stop_file else None
-	placed, interrupts = PlaceSelf(args)
+	threeD = Pose3DCpus(args)
+	placed, interrupts = PlaceSelf(args, threeD)
 	if args.nice:
 		try:
 			os.nice(args.nice)
 		except (AttributeError, OSError) as e:
 			Say("Could not lower this program's priority (--nice): {}".format(e))
 
+	if args.calibration:
+		# numba's compiled loops for the 3D step (when numba is installed), loaded in a thread of their own
+		# from now, while the models load: loading them takes about a second, compiling them the first time
+		# a few. Until they are ready the 3D step runs in numpy, with the same numbers; loaded after the feed
+		# came, they held up its first sets (the Jetson AGX Orin's replay check: 1-3 sets skipped)
+		from campy import pose3d
+		pose3d.StartFast()
 	cameras = Cameras(names, poll=args.poll_ms / 1e3)
 	log = worker = clock = session = moved = None
+	frozen = False # SetAsideGarbage froze the start-up objects: given back at the end (Run may run in a test's process)
 	# What campy-live-session.json says of the models, campy and the computer,
 	# read meanwhile: the models' SHA-256s, git, nvidia-smi and PowerShell take
 	# a second or more, done before the feed comes
@@ -3025,6 +3112,14 @@ def Run(args):
 			clock = GpuClock(model.device, args.hold_gpu_clock_blocks,
 				memory=os.path.join(FixedEngine.CacheDir(getattr(args, "engine_cache", "")), "gpu_clock.json"))
 			clock.Start()
+		# Python's garbage collection, done here once, before the feed (no frames waiting on it), and what is
+		# left frozen: start-up's objects are then out of its way, and a full collection during the sets no longer
+		# goes through all of them (SetAsideGarbage). What is made from here to the first set (the log, the 3D
+		# step, numba's loops once loaded) is frozen just before it
+		frozen = True
+		kept, took = SetAsideGarbage()
+		Say("Garbage collection: the {:,} objects from start-up set aside ({:.0f} ms), so a collection during the "
+			"sets doesn't go through them.".format(kept, took * 1e3))
 		if args.ready_file:
 			Ready(args.ready_file)
 		# A program that started campy-live first (campy-session) and then
@@ -3035,12 +3130,14 @@ def Run(args):
 				"has ended: stopped.".format(args.launcher_pid) if gone() else "No live feed after {:g} s.".format(
 				args.wait_sec))
 			return 1
-		Say("Live feed: {}.".format(cameras.Describe()))
+		Say("Live feed: {}.".format(cameras.Describe())) # campy-session reads it: campy-live found the feed (Recorded)
 		if clock is not None and clock.FeedCame():
 			Say("The feed took over {:g} minutes to come, so the GPU's clock wasn't held: without a trigger, "
 				"the first sets may be slow.".format(GpuClock.WAITING_MOST_S / 60))
-		if placed:
-			moved = PlaceCampy(args, cameras.readers)
+		# PlaceCampy decides for itself: auto moves campy-acquire only when campy-live went on the performance
+		# cores; a list given moves it even where campy-live wasn't placed (the Jetson AGX Orin's --campy-cpus 8-11
+		# moved nothing before)
+		moved = PlaceCampy(args, cameras.readers)
 		shape, dtype = cameras.readers[0].shape, cameras.readers[0].dtype
 		frameRate = cameras.readers[0].Info("frameRate")
 		if (shape, dtype) != expected:
@@ -3064,8 +3161,12 @@ def Run(args):
 			tracker.animals if tracker else 0)
 		if args.results_feed == "on":
 			log.results = Publish(args, log, names, cameras, model, tracker, frameRate, interrupts)
-		worker = Pose3DThread(tracker, log) if tracker else None
+		worker = Pose3DThread(tracker, log, cpus=threeD) if tracker else None
 		Say("Logging to {}.npy.".format(out))
+		# What was made since SetAsideGarbage frozen too (no collection: µs); numba's loops, if still loading,
+		# once they have
+		gc.freeze()
+		numbaLoading = tracker is not None and pose3d.FastStatus()["state"] == "loading"
 		reported, since = time.monotonic(), 0
 		while True:
 			got = cameras.NextSet(host.array, stop=stop)
@@ -3082,6 +3183,9 @@ def Run(args):
 				log.Add(row, frames, durations=(done_pc - read_pc, None))
 			else:
 				worker.Put(row, frames, done_pc - read_pc) # its 3D while the model runs on the next set
+			if numbaLoading and pose3d.FastStatus()["state"] != "loading":
+				gc.freeze() # numba's compiled loops, loaded since the first set: set aside too (no collection: µs)
+				numbaLoading = False
 			if args.report_sec and time.monotonic() - reported >= args.report_sec:
 				printer.Do(Say, Line(log.Summary(since), log) + (clock.Now() if clock is not None else ""))
 				reported, since = time.monotonic(), len(log.latency_last)
@@ -3144,6 +3248,25 @@ def Run(args):
 			signal.signal(signal.SIGINT, previous)
 			if stopWatch is not None:
 				stopWatch.Stop()
+			if frozen: # with the few hundred Python 3.12 starts with frozen: back in its collections, harmlessly
+				gc.unfreeze()
+
+
+def SetAsideGarbage():
+	"""
+	Python's garbage collection done once, then everything left frozen (gc.freeze: never looked at by a
+	collection again, never freed). Returns (objects frozen, seconds it took). Called before the first set:
+	campy-live holds hundreds of thousands of objects from start-up (torch, sleap-nn, the models, numba), and
+	Python's full collection, which comes every so often as a run makes and keeps objects, goes through every
+	one of them. On the Dell Pro Max Slim FCS1250 that held up one set's 3D step 140-152 ms, about 40 s after
+	start (17 November 2026: 7-8 sets skipped in 4 of 6 three-camera checks; logged with gc.callbacks). With
+	them frozen, a collection goes only through what the run made since. What start-up left that is no
+	longer used is freed by the collection here, before the freeze.
+	"""
+	t = time.perf_counter()
+	gc.collect()
+	gc.freeze()
+	return gc.get_freeze_count(), time.perf_counter() - t
 
 
 class SessionFacts:
@@ -3294,13 +3417,42 @@ def Publish(args, log, names, cameras, model, tracker, frameRate, interrupts=Non
 	return results
 
 
-def PlaceSelf(args):
+def Pose3DCpus(args):
+	"""
+	--pose3d-cpus as a list of CPUs, or None (none asked, no --calibration so
+	no 3D step, or neither Linux nor Windows). On Linux each thread has CPUs
+	of its own, and a thread starts on its starter's; on Windows a new thread
+	takes the process's affinity mask, so the rest of campy-live is kept off
+	by the process's default CPU sets instead (cpus.KeepOff), which threads
+	started later take too.
+	"""
+	text = (getattr(args, "pose3d_cpus", "") or "none").strip().lower()
+	if text == "none":
+		return None
+	if not getattr(args, "calibration", ""):
+		Say("--pose3d-cpus without --calibration: there is no 3D step to pin.")
+		return None
+	if not (sys.platform.startswith("linux") or sys.platform == "win32"):
+		Say("--pose3d-cpus: pinning the 3D step's thread alone is done only on Linux and Windows; left as it is.")
+		return None
+	try:
+		chosen = cpus.Resolve(args.pose3d_cpus)
+	except ValueError as e:
+		raise SystemExit("--pose3d-cpus {}: {}".format(args.pose3d_cpus, e))
+	if not chosen:
+		raise SystemExit("--pose3d-cpus {}: no CPUs".format(args.pose3d_cpus))
+	return chosen
+
+
+def PlaceSelf(args, keep_off=None):
 	"""
 	campy-live onto --cpus at --priority. auto: on a CPU with performance and
 	efficiency cores, the performance ones, at high priority; elsewhere as it
 	is. On Windows auto also leaves out the CPU that handles the GPU's
-	interrupts (GpuInterrupts). Returns what it did, as text, or None, and
-	what GpuInterrupts found (or None).
+	interrupts (GpuInterrupts). keep_off: CPUs kept for the 3D step's thread
+	(--pose3d-cpus, Pose3DCpus), which the rest of campy-live is kept off:
+	the threads it starts from now take its CPUs. Returns what it did, as
+	text, or None, and what GpuInterrupts found (or None).
 	"""
 	choice, priority = args.cpus.strip().lower(), args.priority
 	cores = interrupts = None
@@ -3328,10 +3480,31 @@ def PlaceSelf(args):
 	if priority == "auto":
 		# High on the performance cores or the CPUs given; all but an interrupt CPU is still everywhere: normal
 		priority = "high" if chosen is not None and (choice != "auto" or cores is not None) else "normal"
+	if keep_off:
+		# The rest of campy-live off the 3D step's CPUs: the 3D thread alone on 4-7 and the rest on 0-3 (the
+		# replay feeder on 8-11) took the Jetson AGX Orin's step from 1.67 to 1.51 ms; alone on 4-7 with the
+		# rest free to join it, 1.67 ms, and a set skipped (docs/jetson.md)
+		base = chosen or cpus.All()
+		rest = [c for c in base if c not in set(keep_off)]
+		if not rest:
+			raise SystemExit("--pose3d-cpus {} leaves campy-live's other threads no CPU of --cpus {} ({})".format(
+				cpus.Text(keep_off), args.cpus, cpus.Text(base)))
+		if rest != base:
+			chosen = rest
+			if why:
+				why = why[:-1] + ", less the 3D step's)"
+			else:
+				why = " (all but the 3D step's)" if choice in ("auto", "none", "all") else " (less the 3D step's)"
 	done = []
 	if chosen is not None:
 		try:
-			cpus.Pin(chosen)
+			if keep_off and sys.platform == "win32":
+				# A Windows thread can't leave its process's affinity mask, and a new one takes it: the mask
+				# takes the 3D step's CPUs in too, and the process's default CPU sets keep the rest off them
+				cpus.Pin(sorted(set(chosen) | set(keep_off)))
+				cpus.KeepOff(chosen)
+			else:
+				cpus.Pin(chosen)
 			done.append("CPUs {}".format(cpus.Text(chosen)) + why)
 		except OSError as e:
 			Say("Could not pin campy-live to CPUs {} (--cpus): {}".format(cpus.Text(chosen), e))
@@ -3341,10 +3514,13 @@ def PlaceSelf(args):
 			done.append("{} priority".format(priority.replace("_", " ")))
 		except OSError as e:
 			Say("Could not give campy-live {} priority (--priority): {}".format(priority, e))
-	if not done:
+	text = " at ".join(done)
+	if keep_off:
+		text = "; ".join(t for t in (text, "the 3D step alone on CPUs {}".format(cpus.Text(keep_off))) if t)
+	if not text:
 		return None, interrupts
-	Say("campy-live on {}.".format(" at ".join(done)))
-	return " at ".join(done), interrupts
+	Say("campy-live on {}.".format(text))
+	return text, interrupts
 
 
 def GpuInterrupts(args):
@@ -3584,6 +3760,10 @@ def Parser():
 		efficiency cores, the performance cores; elsewhere all; on Windows less the CPU that handles the GPU's \
 		interrupts), performance, efficiency, all, none (as it is started), or a list such as 0,1,10-13. python -m \
 		campy.cpus says which are which, and python -m campy.cpus --gpu N which CPU handles GPU N's interrupts.")
+	p.add_argument("--pose3d-cpus", default="none", help="Linux and Windows, with --calibration: the 3D step's thread alone on \
+		these CPUs (a list such as 4-7), and the rest of campy-live kept off them; keep campy-acquire off them \
+		too with --campy-cpus. On the Jetson AGX Orin it helped the replay check but not a recording, and on the \
+		EVO-X2 and the Windows PCs tried it gained nothing or was slower (docs/live-tracking.md). none (the default): as --cpus puts it.")
 	p.add_argument("--priority", default="auto", choices=("auto",) + cpus.PRIORITIES, help="campy-live's priority: \
 		auto is high when --cpus auto put it on the performance cores, else normal. Above normal needs root on Linux.")
 	p.add_argument("--campy-cpus", default="auto", help="The CPUs campy-acquire (its camera processes and \

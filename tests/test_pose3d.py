@@ -219,6 +219,145 @@ def test_reprojection_check_drops_the_bad_view():
 	assert np.isnan(fixed[7]).all() and used[7] == 0
 
 
+# The 3D step works on whole sets at once (fewer, larger numpy operations); these hold it
+# to what one camera or one view at a time gives, to the last bit.
+
+def normalize_one_by_one(xy, f, c, dist, iterations=10, check_px=0.0):
+	# _Normalize as it was written before it worked on flat arrays
+	x0 = (xy[..., 0] - c[..., 0]) / f[..., 0]
+	y0 = (xy[..., 1] - c[..., 1]) / f[..., 1]
+	k1, k2, p1, p2, k3 = (dist[..., i] for i in range(5))
+	x, y = x0, y0
+	if np.any(dist):
+		for _ in range(iterations):
+			r2 = x * x + y * y
+			radial = 1 + r2 * (k1 + r2 * (k2 + r2 * k3))
+			x, y = ((x0 - 2 * p1 * x * y - p2 * (r2 + 2 * x * x)) / radial,
+				(y0 - p1 * (r2 + 2 * y * y) - 2 * p2 * x * y) / radial)
+		if check_px > 0:
+			r2 = x * x + y * y
+			radial = 1 + r2 * (k1 + r2 * (k2 + r2 * k3))
+			ex = (x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x) - x0) * f[..., 0]
+			ey = (y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y - y0) * f[..., 1]
+			with np.errstate(invalid="ignore"):
+				off = ex * ex + ey * ey > check_px * check_px
+			x = np.where(off, np.nan, x)
+			y = np.where(off, np.nan, y)
+	return np.stack([x, y], -1)
+
+
+def test_normalize_is_the_same_on_flat_arrays():
+	cams = rig()
+	rng = np.random.default_rng(4)
+	kp = rng.uniform(-50, 1330, (3, 5, 15, 2))
+	kp[rng.random(kp.shape[:-1]) < 0.1] = np.nan
+	f = np.array([c.f for c in cams])[:, None, None]
+	c = np.array([c.c for c in cams])[:, None, None]
+	d = np.array([[-0.33, 0.12, 0.001, -0.002, 0.01], [-0.2, 0, 0, 0, 0], [0.05, -0.1, 0.003, 0.001, 0]])[:, None, None]
+	for check in (0.0, 1.0):
+		want = normalize_one_by_one(kp, f, c, d, check_px=check)
+		assert np.array_equal(pose3d._Normalize(kp, f, c, d, check_px=check), want, equal_nan=True)
+		assert np.array_equal(pose3d._Undistorter(f, c, d, kp.shape[:-1], check_px=check)(kp), want, equal_nan=True)
+	# One camera's points, its own constants
+	assert np.array_equal(cams[0].Normalize(kp[0]), normalize_one_by_one(kp[0], cams[0].f, cams[0].c, cams[0].dist),
+		equal_nan=True)
+
+
+def test_reprojection_errors_of_every_view_at_once():
+	cams = rig()
+	X = scene(1)[0]                                              # (5, 15, 3)
+	rng = np.random.default_rng(5)
+	xy = normalized_views(cams, X) + rng.normal(0, 0.002, (3, 5, 15, 2))
+	xy[0, 1, 3] = np.nan
+
+	def one_view_at_a_time(X, xy):
+		out = np.empty(xy.shape[:-1])
+		for v, cam in enumerate(cams):
+			d = (cam.ProjectNormalized(X) - xy[v]) * cam.f
+			out[v] = np.sqrt((d * d).sum(-1))
+		return out
+	frame = pose3d._Frame(cams)
+	for Xi, xyi in ((X, xy), (X[0], xy[:, 0]), (np.stack([X[0]] * 3), np.broadcast_to(xy[:, None, 0], (3, 3, 15, 2)))):
+		want = one_view_at_a_time(Xi, xyi)
+		assert np.array_equal(pose3d.ReprojectionErrors(Xi, xyi, cams), want, equal_nan=True)
+		assert np.array_equal(pose3d.ReprojectionErrors(Xi, xyi, cams, frame), want, equal_nan=True)
+	# One point: one view at a time, as before
+	assert np.array_equal(pose3d.ReprojectionErrors(X[0, 0], xy[:, 0, 0], cams), one_view_at_a_time(X[0, 0], xy[:, 0, 0]))
+
+
+def test_scoring_every_camera_at_once():
+	cams = rig()
+	X = scene(5)
+	rng = np.random.default_rng(6)
+	tracker = pose3d.Tracker(cams, n_animals=5)
+	for f in range(4):
+		tracker.Update(*observe(cams, X[f], rng)[:2], frame=f)
+	assert tracker.n_targets == 5
+	kp, sc, _ = observe(cams, X[4], rng)
+	xy = pose3d._Normalize(kp, tracker._f, tracker._c, tracker._dist, check_px=1.0)
+	mean_frame = np.full(5, 3.0)
+	every = tracker._ScoreCameras(range(3), tracker.X, mean_frame, 4, xy)
+	for c in range(3):
+		dets = np.nonzero(np.isfinite(xy[c]).all(-1).any(-1))[0]
+		assert np.array_equal(every[c][:, dets], tracker._Score(c, tracker.X, mean_frame, 4, xy[c, dets]))
+
+
+# numba's compiled loops (campy/pose3d_numba.py, when numba is installed): the same numbers as numpy's
+
+def test_numba_loops_give_numpys_numbers_to_the_last_bit():
+	pytest.importorskip("numba")
+	fast = pose3d.Fast(wait=True)
+	assert fast is not None, pose3d.FastStatus()
+	cams = rig()
+	rng = np.random.default_rng(7)
+	# The undistortion, with and without the check of points beyond the lens model
+	kp = rng.uniform(-50, 1330, (3, 5, 15, 2))
+	kp[rng.random(kp.shape[:-1]) < 0.1] = np.nan
+	f = np.array([c.f for c in cams])[:, None, None]
+	c = np.array([c.c for c in cams])[:, None, None]
+	d = np.array([[-0.33, 0.12, 0.001, -0.002, 0.01], [-0.2, 0, 0, 0, 0], [0.05, -0.1, 0.003, 0.001, 0]])[:, None, None]
+	for check in (0.0, 1.0):
+		u = pose3d._Undistorter(f, c, d, kp.shape[:-1], check_px=check)
+		assert np.array_equal(u(kp, fast), u(kp), equal_nan=True)
+	# Whole runs: every output of every set, numba against numpy, with padding, missed animals and
+	# misplaced nodes; 15 nodes (numpy sums 8 or more by pairs) and 7 (in order)
+	for nodes in (15, 7):
+		X = scene(200)[:, :, :nodes]
+		with_numba = pose3d.Tracker(cams, n_animals=5)
+		numpy_only = pose3d.Tracker(cams, n_animals=5, fast=False)
+		for f_ in range(len(X)):
+			kp, sc, order = observe(cams, X[f_], rng, drop_animal=0.05)
+			junk_nodes(kp, sc, order, rng, 0.05)
+			a, b = with_numba.Update(kp, sc, frame=f_), numpy_only.Update(kp, sc, frame=f_)
+			for name in ("points3d", "reproj_px", "members", "n_views", "outside"):
+				assert np.array_equal(getattr(a, name), getattr(b, name), equal_nan=True), (nodes, f_, name)
+
+
+def test_numba_off_or_missing_leaves_numpy(monkeypatch):
+	import sys
+	cams = rig()
+	X = scene(3)
+	rng = np.random.default_rng(8)
+	sets = [observe(cams, X[f], rng)[:2] for f in range(3)]
+	want = [pose3d.Tracker(cams, 5, fast=False).Update(*s, frame=0).points3d for s in sets]
+	# CAMPY_NUMBA=0: not loaded at all
+	monkeypatch.setattr(pose3d, "_FAST", {"state": "idle", "module": None, "seconds": None, "error": None, "thread": None})
+	monkeypatch.setenv("CAMPY_NUMBA", "0")
+	tracker = pose3d.Tracker(cams, 5)
+	assert pose3d.FastStatus()["state"] == "off" and pose3d.Fast(wait=True) is None
+	assert np.array_equal(tracker.Update(*sets[0], frame=0).points3d, want[0], equal_nan=True)
+	# No numba: said so, and numpy
+	monkeypatch.setattr(pose3d, "_FAST", {"state": "idle", "module": None, "seconds": None, "error": None, "thread": None})
+	monkeypatch.delenv("CAMPY_NUMBA")
+	monkeypatch.delitem(sys.modules, "campy.pose3d_numba", raising=False)
+	monkeypatch.setitem(sys.modules, "numba", None)
+	assert pose3d.Fast(wait=True) is None
+	status = pose3d.FastStatus()
+	assert status["state"] == "missing" and "numba" in status["error"]
+	tracker = pose3d.Tracker(cams, 5)
+	assert np.array_equal(tracker.Update(*sets[1], frame=0).points3d, want[1], equal_nan=True)
+
+
 # ---------------------------------------------------------------- tracking
 
 def identities(order, members):

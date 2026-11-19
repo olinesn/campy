@@ -35,7 +35,11 @@ All numbers little-endian. One ring holds a header and `slots` slots:
   40      uint64      slot bytes: from one slot to the next
   48      uint64      frame bytes
   56      int64       ring id: a random number, new for every ring made
-  64      int64       state: 1 recording, 2 ended (the camera stopped)
+  64      int64       state: 1 recording, 2 ended (the camera stopped), 3 lost
+                      (the camera is gone, unplugged: campy waits for it
+                      to be plugged back in, cameraReconnect, and then
+                      writes its frames here again, state 1; from campy
+                      after November 2026)
   72      int64       latest: the newest frame number written, 0 before the first
   80      float64     frame rate (frameRate)
   88      int64       camera index (n_cam)
@@ -52,6 +56,13 @@ All numbers little-endian. One ring holds a header and `slots` slots:
                       campy before it said so; the pids from campy after
                       October 2026).
                       Other rings: what the ring holds (campy/liveresults.py)
+
+The magic is written last, after every other header field (and a release
+fence): a ring whose magic is there has its whole header. A ring being made
+has no magic yet. A reader of its own should treat a ring without the magic,
+or with a layout version, dtype, slots or slot bytes of 0, as not made yet and
+look again (campy before 13 November 2026 wrote the magic first, so its rings
+had the magic for a moment before the rest; campy's own readers wait).
 
 Slot i starts at header bytes + i * slot bytes, and holds frame number n in
 slot n % slots:
@@ -108,7 +119,7 @@ DEFAULT_SLOTS = 8
 # whatever liveFeed says, for the campy-live-view window it opens itself (displayFrameRate, campy/acquireview.py)
 FEED_ENV = "CAMPY_LIVE_FEED"
 
-RECORDING, ENDED = 1, 2
+RECORDING, ENDED, LOST = 1, 2, 3
 
 # Header fields: (offset, numpy type)
 _HEADER = {
@@ -169,6 +180,12 @@ def _Nothing():
 
 
 _Release, _Acquire, FENCE = _Fences()
+
+
+def _Field(header, key):
+	# A header field from a copy of the header (bytes)
+	at, kind = _HEADER[key]
+	return np.frombuffer(header, kind, 1, at)[0].item()
 
 
 def RingName(prefix, n_cam):
@@ -255,7 +272,16 @@ class Ring:
 		if head[:8] != MAGIC:
 			# Also a ring still being made: its header not written yet
 			raise ValueError("{} is not a campy live feed ring".format(shm.name))
+		# MAGIC is written last (RingWriter): the fields are read after it, past an acquire fence, and
+		# again from a copy, so that a ring refused here leaves no view open
+		_Acquire()
+		head = bytes(buf[:HEADER_BYTES])
 		version = int(np.frombuffer(head, "<u4", 1, 8)[0])
+		if version == 0 or not head[_DTYPE_AT:_DTYPE_AT + 8].rstrip(b"\0") or not _Field(head, "slots") \
+				or not _Field(head, "slotBytes"):
+			# A writer of this campy never shows MAGIC before the rest; one from before 13 November 2026
+			# did, so its ring may look like this for a moment while it is made
+			raise ValueError("{} is not a campy live feed ring yet: its header is being written".format(shm.name))
 		if version != VERSION:
 			raise ValueError("{} has layout version {}; this campy reads version {}".format(
 				shm.name, version, VERSION))
@@ -317,10 +343,12 @@ class RingWriter:
 		self.name = name
 		size = RingBytes(shape, dtype, slots)
 		self.shm = self._Make(name, size)
-		# The header, with state 0 until it is complete
+		# The header, with state 0 until it is complete. Its first 8 bytes (MAGIC) are written last, after
+		# a release fence: a reader that sees them sees every field (on Windows, reused memory may hold an
+		# old ring's header, so all of it is zeroed first). A reader that attached between MAGIC and the
+		# rest, as campy-live once did on a CI runner, read an empty dtype and failed
 		header = np.frombuffer(self.shm.buf, np.uint8, HEADER_BYTES)
 		header[:] = 0
-		header[:8] = np.frombuffer(MAGIC, np.uint8)
 		frameBytes = int(np.prod(shape)) * dtype.itemsize
 		values = {"version": VERSION, "headerBytes": HEADER_BYTES, "slots": slots,
 			"height": shape[0], "width": shape[1], "channels": shape[2],
@@ -338,12 +366,21 @@ class RingWriter:
 		header[_NAME_AT:_NAME_AT + len(text)] = np.frombuffer(text, np.uint8)
 		header[_DESCRIPTION_AT:_DESCRIPTION_AT + len(description)] = np.frombuffer(description, np.uint8)
 		np.ndarray((1,), "<u4", self.shm.buf, _HEADER["descriptionBytes"][0])[0] = len(description)
+		_Release() # every field is seen before MAGIC
+		header[:8] = np.frombuffer(MAGIC, np.uint8)
 		del header
 		self.ring = Ring(self.shm)
 		self.ring.slotFields[:] = 0
 		self.ring.Set("state", RECORDING)
 		self.written = 0
 		self.notWritten = 0
+		self.lost = False # state LOST: the camera is gone, until its next frame
+
+	def Lost(self):
+		# Its camera is gone (unplugged), and campy waits for it: readers see state LOST until its next frame
+		if self.ring is not None:
+			self.lost = True
+			self.ring.Set("state", LOST)
 
 	@staticmethod
 	def _Make(name, size):
@@ -402,6 +439,9 @@ class RingWriter:
 		_Release() # and the frame and its fields before end
 		fields[END] = n
 		ring.Set("latest", n)
+		if self.lost:
+			self.lost = False
+			ring.Set("state", RECORDING) # its camera is back
 		self.written += 1
 		ring.Set("written", self.written)
 		return True
@@ -479,6 +519,10 @@ class RingReader:
 
 	def Ended(self):
 		return self.State() == ENDED
+
+	def Lost(self):
+		# Its camera is gone (unplugged) and campy waits for it: frames may come again (state LOST)
+		return self.State() == LOST
 
 	def Replaced(self):
 		# Windows: a new recording reused this ring's memory (RingWriter._Make)
@@ -630,6 +674,12 @@ class Feed:
 			self.on = False
 			self.say("{}: the live feed stopped, {}: {}. The recording goes on.".format(self.cameraName, when, e))
 			self.Close()
+
+	def Lost(self):
+		# The camera is gone (unplugged), and campy waits for it (unicam's cameraReconnect): the ring says so to its
+		# readers until the camera's next frame
+		if self.on and self.writer is not None:
+			self._Do(self.writer.Lost, "as its camera was lost")
 
 	def Write(self, img, frameNumber, hostTime, timeStamp):
 		if self.on:

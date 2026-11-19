@@ -21,9 +21,13 @@ How to set up the Orin (the full version is docs/jetson.md)
    CUDA 13.2, TensorRT 10.16) with NVIDIA SDK Manager from an Ubuntu PC
    (or the USB installer image; if it loops, SDK Manager or
    l4t_initrd_flash). Then: sudo apt update && sudo apt install nvidia-jetpack
-2. Put an NVMe drive in the M.2 Key-M slot for video (the 64 GB eMMC is too
-   small), format it ext4 and mount it at /data from /etc/fstab (by UUID),
-   owned by your user.
+2. A disk for video of its own, not the system disk, formatted ext4 and
+   mounted at /data from /etc/fstab (by UUID), owned by your user. The
+   64 GB eMMC is too small for video. A kit that boots from the eMMC can use
+   an NVMe drive in its M.2 Key-M slot; one that boots from an NVMe drive in
+   that slot (as ours does) needs a USB 3 drive. Until then, recordings go
+   on the system disk: pass --video-dir with their folder, and the video
+   disk item FAILs "on the system disk", as expected.
 3. Full power: sudo nvpmodel -m 0 (MAXN; it may ask to reboot), then
    sudo jetson_clocks --fan after every boot (a systemd unit can do it).
 4. USB for the cameras: add usbcore.usbfs_memory_mb=1000 usbcore.autosuspend=-1
@@ -52,6 +56,7 @@ import gzip
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -368,10 +373,15 @@ def check_sleap_venv(rep, venv):
         rep.add(FAIL, "sleap-nn (sleap venv)", "not installed", "%s -m pip install sleap-nn (after torch)" % py)
 
 
+# Where a disk for video of its own goes, said by both of check_disk's FAILs
+DISK_WHERE = "an NVMe drive in the M.2 Key-M slot if the system doesn't boot from it, else a USB 3 drive"
+
+
 def check_disk(rep, folder, min_free_gb):
     if not os.path.isdir(folder):
         rep.add(FAIL, "video disk", "no %s" % folder,
-                "put an NVMe drive in the M.2 Key-M slot, format it ext4, mount it at %s from /etc/fstab" % folder)
+                "a disk of its own for video, ext4, mounted at %s from /etc/fstab: %s; or --video-dir "
+                "with the folder recordings go to" % (folder, DISK_WHERE))
         return
     du = shutil.disk_usage(folder)
     free = du.free / 1e9
@@ -383,14 +393,29 @@ def check_disk(rep, folder, min_free_gb):
             source = parts[0]
     detail = "%.0f GB free of %.0f GB%s" % (free, du.total / 1e9, " on %s" % source if source else "")
     if same_as_root:
-        rep.add(FAIL, "video disk", detail + ", but on the system disk (eMMC)",
-                "mount the NVMe drive at %s (see /etc/fstab)" % folder)
+        rep.add(FAIL, "video disk", detail + ", but on the system disk",
+                "record on a disk of its own (ext4, mounted from /etc/fstab): %s" % DISK_WHERE)
     elif free < min_free_gb:
         rep.add(FAIL, "video disk", detail + ", want >= %g GB" % min_free_gb, "free space or use a bigger drive")
     else:
         rep.add(PASS, "video disk", detail)
     if not os.access(folder, os.W_OK):
-        rep.add(FAIL, "video disk access", "%s isn't writable by you" % folder, "sudo chown $USER %s" % folder)
+        rep.add(FAIL, "video disk access", "%s isn't writable by you" % folder, access_fix(folder, same_as_root))
+
+
+def access_fix(folder, on_system_disk):
+    """The fix for a video folder you can't write to.
+
+    A video disk of its own is yours to take over (sudo chown its top
+    folder, as setup step 2 says). A folder on the system disk (/, /home, /opt
+    ...) is not: changing its owner can break the system, so the fix is a new
+    folder in it that you own, given with --video-dir.
+    """
+    if not on_system_disk:
+        return "sudo chown $USER %s" % shlex.quote(folder)
+    sub = shlex.quote(os.path.join(folder, "campy_videos"))
+    return "don't change the owner of a folder on the system disk; make one for recordings: " \
+           "sudo mkdir -p %s && sudo chown $USER %s, then --video-dir %s" % (sub, sub, sub)
 
 
 def lsusb_flir_count():
@@ -414,7 +439,8 @@ def parse_args(argv=None):
         formatter_class=Help)
     p.add_argument("--campy-venv", default="~/campy/.venv", help="the venv campy-acquire runs in (PySpin, PyQt5)")
     p.add_argument("--sleap-venv", default="~/venvs/sleap", help="the venv campy-live runs in (torch, sleap-nn)")
-    p.add_argument("--video-dir", default="/data", help="where recordings go (the NVMe drive)")
+    p.add_argument("--video-dir", default="/data",
+                   help="where recordings go (a disk of their own, not the system disk)")
     p.add_argument("--min-free-gb", type=float, default=200, help="free space wanted on --video-dir")
     p.add_argument("--cameras", type=int, default=3, help="FLIR cameras that should be plugged in")
     p.add_argument("--no-cameras", action="store_true",

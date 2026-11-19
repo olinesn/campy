@@ -275,6 +275,9 @@ def start(tmp_path, home, config, *args, group=False, env=None):
 
 
 def wait_for(lines, pattern, timeout=60):
+	# Asserted with "".join(lines) as its message: everything campy-session said. Pytest shortens the list itself to
+	# its first two lines, and a wait that ran out once on CI (12 November, campy-live never said "Logging to") left
+	# nothing else to go on
 	t0 = time.monotonic()
 	while time.monotonic() - t0 < timeout:
 		if any(re.search(pattern, line) for line in list(lines)):
@@ -356,7 +359,7 @@ def test_ctrl_c_stops_the_recording_and_campy_live_tracks_to_its_end(tmp_path, h
 	config, clips = emu_session(tmp_path, home, 60, live={"model": "none"})
 	proc, lines = start(tmp_path, home, config, group=True)
 	try:
-		assert wait_for(lines, r"\[acquire\] Camera1 collected 40 frames")
+		assert wait_for(lines, r"\[acquire\] Camera1 collected 40 frames"), "".join(lines)
 		os.killpg(proc.pid, signal.SIGINT)
 		proc.wait(timeout=60)
 	finally:
@@ -367,9 +370,36 @@ def test_ctrl_c_stops_the_recording_and_campy_live_tracks_to_its_end(tmp_path, h
 	folder = the_folder(clips)
 	counts = recorded(folder)
 	assert 40 <= min(counts) and max(counts) < 400, counts
+	# Once (5 November, Python 3.9, Linux) it wasn't there; what campy-session said, if it happens again
+	assert (folder / "campy-live.json").exists(), out
 	summary = json.loads((folder / "campy-live.json").read_text())
 	assert summary["ended"] == "the recording ended", summary
 	assert not (folder / "logs" / "campy-acquire.stop").exists() # campy-acquire removed it
+
+
+@POSIX
+def test_ctrl_c_as_the_recording_starts_ends_campy_session_at_once(tmp_path, home):
+	# Ctrl-C to the console just as campy-live is ready: campy-acquire stops as it starts, with no frames (or dies of it
+	# as it loads). campy-live and campy-watch then wait for a feed that never comes (or came and ended before they
+	# looked: they don't take an ended one) until campy-session ends, and campy-session waited LIVE_END_S (60 s) for
+	# each. With nothing recorded, it asks them to stop at once
+	config, clips = emu_session(tmp_path, home, 30, live={"model": "none"})
+	proc, lines = start(tmp_path, home, config, group=True)
+	try:
+		assert wait_for(lines, r"\[session\] campy-live is ready"), "".join(lines)
+		os.killpg(proc.pid, signal.SIGINT)
+		t0 = time.monotonic()
+		try:
+			proc.wait(timeout=60)
+		except subprocess.TimeoutExpired:
+			pass
+		took = time.monotonic() - t0
+	finally:
+		if proc.poll() is None:
+			os.killpg(proc.pid, signal.SIGKILL)
+	out = "".join(lines)
+	assert took < 30, (took, out)
+	assert "Ctrl-C" in out, out
 
 
 @POSIX
@@ -378,7 +408,7 @@ def test_campy_live_that_dies_is_started_again_and_the_recording_goes_on(tmp_pat
 	config, clips = emu_session(tmp_path, home, 10, live={"model": "none"})
 	proc, lines = start(tmp_path, home, config, env={"CAMPY_TEST_LIVE_RESTART_S": "1,60,300"})
 	try:
-		assert wait_for(lines, r"\[live\] .*Logging to")
+		assert wait_for(lines, r"\[live\] .*Logging to"), "".join(lines)
 		folder = the_folder(clips)
 		pid = json.loads((folder / "launcher.json").read_text())["live"][0]["pid"]
 		os.kill(pid, signal.SIGKILL)
@@ -401,7 +431,7 @@ def test_without_restart_campy_live_stays_down_and_the_recording_goes_on(tmp_pat
 	config, clips = emu_session(tmp_path, home, 5, live={"model": "none", "restart": False})
 	proc, lines = start(tmp_path, home, config)
 	try:
-		assert wait_for(lines, r"\[live\] .*Logging to")
+		assert wait_for(lines, r"\[live\] .*Logging to"), "".join(lines)
 		folder = the_folder(clips)
 		os.kill(json.loads((folder / "launcher.json").read_text())["live"][0]["pid"], signal.SIGKILL)
 		proc.wait(timeout=120)
@@ -419,7 +449,7 @@ def test_the_recording_outlives_campy_session(tmp_path, home):
 	# campy-session killed mid-recording: campy-acquire records on to recTimeInSec, and campy-live to its end
 	config, clips = emu_session(tmp_path, home, 6, live={"model": "none"})
 	proc, lines = start(tmp_path, home, config)
-	assert wait_for(lines, r"\[acquire\] Camera1 collected 20 frames")
+	assert wait_for(lines, r"\[acquire\] Camera1 collected 20 frames"), "".join(lines)
 	folder = the_folder(clips)
 	status = json.loads((folder / "launcher.json").read_text())
 	acquire, live = status["parts"]["acquire"]["pid"], status["live"][0]["pid"]
@@ -609,6 +639,76 @@ os._exit(code)
 """
 
 
+# A campy-acquire stand-in that records until its stop file is there (at most 20 s): exit code 0 if it saw it, 7 if not
+STOP_STANDIN = """
+import os, sys, time
+stop = sys.argv[sys.argv.index('--stopFile') + 1]
+t0 = time.monotonic()
+while not os.path.exists(stop) and time.monotonic() - t0 < 20:
+	time.sleep(0.05)
+os._exit(0 if os.path.exists(stop) else 7)
+"""
+
+
+def stand_in_session(tmp_path, monkeypatch, standin, view=False):
+	config = write_config(tmp_path / "c.yaml", {"numCams": 2, "cameraMake": "emu", "videoFolder": str(tmp_path /
+		"rec"), "frameRate": 20, "recTimeInSec": 60, "preflight": "off", "liveFeedName": "x"}, view=view,
+		post={"remux": False, "export": False})
+	monkeypatch.setattr(session, "Alert", lambda *a, **k: None)
+	monkeypatch.setattr(session, "ACQUIRE", standin)
+	return session.Session(session.Config(str(config)))
+
+
+def test_any_frames_reads_the_cameras_hosttimes_without_numpy(tmp_path):
+	from campy.frametimes import GrowingNpy
+	assert not session.AnyFrames(str(tmp_path)) # campy-acquire made no camera folder
+	(tmp_path / "Camera0").mkdir()
+	(tmp_path / "Camera1").mkdir()
+	empty = GrowingNpy(str(tmp_path / "Camera0" / "hosttimes.npy"), np.int64)
+	empty.Close()
+	assert not session.AnyFrames(str(tmp_path)) # its header alone
+	one = GrowingNpy(str(tmp_path / "Camera1" / "hosttimes.npy"), np.int64)
+	one.Append(np.array([123], np.int64))
+	one.Close()
+	assert session.AnyFrames(str(tmp_path))
+	(tmp_path / "Camera1" / "hosttimes.npy").write_bytes(b"not npy")
+	assert session.AnyFrames(str(tmp_path)) # can't tell: as if it had
+
+
+def test_ctrl_c_while_the_view_starts_records_nothing(tmp_path, home, monkeypatch):
+	# Ctrl-C after the last look before the view, as it starts: campy-acquire isn't started, and the view is ended.
+	# Before, the press was only said ("stopping before the recording starts"), and the recording ran its full length
+	s = stand_in_session(tmp_path, monkeypatch, STOP_STANDIN, view=True)
+	ended = []
+	monkeypatch.setattr(s, "StartView", lambda: s.Press(signal.SIGINT, None))
+	monkeypatch.setattr(s, "EndLive", lambda: ended.append("live"))
+	# The devices (SpikeGLX's run, started before campy-live): stopped too. Before, only a Ctrl-C before campy-live
+	# started stopped them
+	s.devices = types.SimpleNamespace(Before=lambda s: None, After=lambda s, code: ended.append(("devices", code)),
+		Status=lambda: None)
+	assert s.Run() == 1
+	assert "acquire" not in s.parts and s.state == "stopped" and ended == ["live", ("devices", 1)]
+	assert s.problems[-1][1] == "Stopped (Ctrl-C) before the recording started: nothing was recorded."
+
+
+def test_ctrl_c_as_campy_acquire_starts_reaches_it_through_its_stop_file(tmp_path, home, monkeypatch):
+	# Ctrl-C while campy-acquire starts, before campy-session has it in its parts: Press finds none to stop, and the
+	# press may have come before campy-acquire was there to get it. Its stop file says it. Before, nothing did, and
+	# the recording ran its full length
+	s = stand_in_session(tmp_path, monkeypatch, STOP_STANDIN)
+	real = session.Part.Start
+
+	def Start(part):
+		started = real(part)
+		if part.name == "acquire":
+			s.Press(signal.SIGINT, None) # the handler, run before Start's caller has the part
+		return started
+	monkeypatch.setattr(session.Part, "Start", Start)
+	t0 = time.monotonic()
+	assert s.Run() == 0 # the stand-in saw its stop file
+	assert time.monotonic() - t0 < 15 and s.stop_written == 1
+
+
 @pytest.mark.parametrize("state, code, alert", [
 	("recording", 9, "while it recorded"), # killed mid-recording: no finally ran, its watch said nothing
 	(None, 3, "before its recording watch started"), # an error before the watch started
@@ -678,7 +778,7 @@ def test_a_frozen_campy_live_is_found_by_campy_watch_and_replaced(tmp_path, home
 	proc, lines = start(tmp_path, home, config, env={"CAMPY_TEST_LIVE_STALL_S": "5", "CAMPY_TEST_LIVE_STOP_S": "3",
 		"CAMPY_TEST_LIVE_RESTART_S": "1,60,300"})
 	try:
-		assert wait_for(lines, r"\[live\] .*Logging to")
+		assert wait_for(lines, r"\[live\] .*Logging to"), "".join(lines)
 		folder = the_folder(clips)
 		pid = json.loads((folder / "launcher.json").read_text())["live"][0]["pid"]
 		time.sleep(3)
@@ -696,3 +796,232 @@ def test_a_frozen_campy_live_is_found_by_campy_watch_and_replaced(tmp_path, home
 	assert "Starting campy-live again (campy-live.part2)" in out
 	status = json.loads((folder / "launcher.json").read_text())
 	assert status["live_restarts"] == 1 and status["live"][1]["exit_code"] == 0
+
+
+# ------------------------------------------------------------------ an operant box (box:, campy-box)
+
+BOX_TASK = """
+board: {trigger_pin: 10, watchdog_ms: 250}
+inputs:
+  poke: {input: 0, pin: A0, pull: up}
+outputs:
+  valve: {channel: 0, pin: D2, pulse_ms: 20}
+links:
+  reward: {when: poke, do: {output: valve}}
+task:
+  end: {trials: TRIALS}
+  states:
+    ready:
+      trial: true
+      arm: {reward: 1}
+      on: {poke: done}
+    done:
+      after_s: 0.05
+      next: ready
+"""
+
+
+def test_the_box_section_is_checked(tmp_path):
+	(tmp_path / "tasks").mkdir()
+	(tmp_path / "tasks" / "t.yaml").write_text(BOX_TASK)
+	config = write_config(tmp_path / "c.yaml", {"numCams": 1}, box={"task": "tasks/t.yaml"})
+	c = session.Config(str(config))
+	assert c.box["task"] == str(tmp_path / "tasks" / "t.yaml") # from the config's folder
+	# A profile's box: from the profile's folder
+	(tmp_path / "rig").mkdir()
+	(tmp_path / "rig" / "t.yaml").write_text(BOX_TASK)
+	write_config(tmp_path / "rig" / "profile.yaml", {"numCams": 1}, box={"task": "t.yaml"})
+	(tmp_path / "exp.yaml").write_text("extends: rig/profile.yaml\n")
+	assert session.Config(str(tmp_path / "exp.yaml")).box["task"] == str(tmp_path / "rig" / "t.yaml")
+	assert c.box["required"] is True and c.box["end_recording"] is False and c.box["ready_timeout_s"] == 30
+	assert c.box["all_cameras"] is False
+	for box, message in [({"required": False}, r"box: needs task:"), ({"task": "nope.yaml"}, r"box\.task: .*nope\.yaml is not a file"),
+			({"task": "tasks/t.yaml", "reqired": True}, r'Did you mean "required"')]:
+		config = write_config(tmp_path / "c.yaml", {"numCams": 1}, box=box)
+		with pytest.raises(session.SessionError, match=message):
+			session.Config(str(config))
+
+
+def box_board(tmp_path, outputs_sim):
+	# The board's sketch in real time on a pseudo-terminal: a 60 Hz camera trigger, a poke on A0 every 0.3 s
+	import tty
+	master, slave = os.openpty()
+	tty.setraw(slave)
+	log = tmp_path / "sim.log"
+	env = dict(os.environ, SIM_INPUT="10:300000:16667:3000:100000;30:400000:300000:30000:1000")
+	with open(str(log), "w") as f:
+		sim = subprocess.Popen([outputs_sim, "live"], stdin=master, stdout=master, stderr=f, env=env)
+	t0 = time.monotonic()
+	while "ready campy_outputs" not in log.read_text() and time.monotonic() - t0 < 60 and sim.poll() is None:
+		time.sleep(0.05)
+	return sim, master, slave
+
+
+@POSIX
+def test_a_recording_with_an_operant_box(tmp_path, home, outputs_sim):
+	# campy-box starts before the cameras, its task with the first frame; it ends with the recording, its logs in
+	# the recording's folder, its state in launcher.json
+	sim, master, slave = box_board(tmp_path, outputs_sim)
+	try:
+		task = tmp_path / "task.yaml"
+		task.write_text(BOX_TASK.replace("TRIALS", "1000"))
+		config, clips = emu_session(tmp_path, home, 3)
+		with open(str(config), "a") as f:
+			f.write(yaml.safe_dump({"box": {"task": str(task), "port": os.ttyname(slave)}}))
+		proc, lines = start(tmp_path, home, config)
+		proc.wait(timeout=180)
+	finally:
+		sim.terminate()
+		sim.wait()
+		os.close(slave)
+		os.close(master)
+	out = "".join(lines)
+	assert proc.returncode == 0, out
+	assert "campy-box is ready." in out and "[box]" in out
+	folder = the_folder(clips)
+	assert recorded(folder) == [60, 60]
+	logs = folder / "logs"
+	assert {"campy-box.log", "campy-box.ready", "campy-box.status.json"} <= {p.name for p in logs.iterdir()}
+	boxdir = folder / "box"
+	assert sorted(p.name for p in boxdir.iterdir()) == ["campy-box.board.txt", "campy-box.events.jsonl",
+		"campy-box.json", "campy-box.task.yaml"]
+	summary = json.loads((boxdir / "campy-box.json").read_text())
+	assert summary["ended"] in ("stop file", "the recording ended"), summary
+	assert summary["trials"] >= 3 and summary["counts"]["links"]["reward"] >= 2
+	status = json.loads((folder / "launcher.json").read_text())
+	assert status["parts"]["box"]["exit_code"] == 0 and status["problems"] == []
+	assert status["box"]["task"] == "task.yaml" and status["box"]["ended"] == summary["ended"]
+	assert status["box"]["inputs"]["poke"] >= 3
+	assert "campy-box: {} trials; ended".format(summary["trials"]) in out
+
+
+@POSIX
+def test_a_task_that_ends_can_end_the_recording(tmp_path, home, outputs_sim):
+	sim, master, slave = box_board(tmp_path, outputs_sim)
+	try:
+		task = tmp_path / "task.yaml"
+		# 20 trials, a poke every 0.3 s: about 6 s, once the cameras record (the simulated board's trigger runs from
+		# before they start, unlike a rig's, so the task starts as soon as the board is set up)
+		task.write_text(BOX_TASK.replace("TRIALS", "20"))
+		config, clips = emu_session(tmp_path, home, 60)
+		with open(str(config), "a") as f:
+			f.write(yaml.safe_dump({"box": {"task": str(task), "port": os.ttyname(slave), "end_recording": True}}))
+		proc, lines = start(tmp_path, home, config)
+		proc.wait(timeout=180)
+	finally:
+		sim.terminate()
+		sim.wait()
+		os.close(slave)
+		os.close(master)
+	out = "".join(lines)
+	assert proc.returncode == 0, out
+	assert "campy-box: the task ended after its 20 trials. Stopping the recording (box.end_recording)." in out
+	folder = the_folder(clips)
+	assert 0 < max(recorded(folder)) < 20 * 30 # stopped long before its 60 s
+
+
+def test_a_box_that_cannot_start_stops_the_recording_or_not(tmp_path, home):
+	task = tmp_path / "task.yaml"
+	task.write_text(BOX_TASK.replace("TRIALS", "2"))
+	for required in (True, False):
+		config, clips = emu_session(tmp_path, home, 2)
+		with open(str(config), "a") as f:
+			f.write(yaml.safe_dump({"box": {"task": str(task), "port": str(tmp_path / "no-such-port"),
+				"required": required}}))
+		proc, lines = start(tmp_path, home, config)
+		proc.wait(timeout=120)
+		out = "".join(lines)
+		assert "campy-box ended before the board was set up" in out, out
+		if required:
+			assert proc.returncode == 1 and "No recording: campy-box did not set the board up" in out
+		else:
+			assert proc.returncode == 0, out
+		shutil.rmtree(str(clips))
+
+
+def test_a_rig_whose_box_board_makes_the_camera_pulses_needs_its_box(tmp_path):
+	(tmp_path / "t.yaml").write_text(BOX_TASK)
+	rig = {"numCams": 2, "triggerController": "box", "startArduino": False, "frameRate": 60, "recTimeInSec": 30,
+		"digitalPins": [12, 13], "syncPin": 9, "syncGapMs": [200, 1000]}
+	with pytest.raises(session.SessionError, match=r"triggerController: box: .* no box: section"):
+		session.Config(str(write_config(tmp_path / "c.yaml", rig)))
+	with pytest.raises(session.SessionError, match=r"box.required: false, but the box's board makes this rig's camera"):
+		session.Config(str(write_config(tmp_path / "c.yaml", rig, box={"task": "t.yaml", "required": False})))
+	c = session.Config(str(write_config(tmp_path / "c.yaml", rig, box={"task": "t.yaml"})))
+	s = session.Session(c, lock=False)
+	assert s.CameraArgs() == ["--camera-fps", "60.0", "--camera-frames", "1800", "--camera-pins", "12,13",
+		"--cameras-when-ready", "--sync-pin", "9", "--sync-pulse-ms", "10", "--sync-gap-ms", "200,1000"]
+	# box.all_cameras: the pulses only with every camera ready
+	every = session.Config(str(write_config(tmp_path / "c.yaml", rig, box={"task": "t.yaml", "all_cameras": True})))
+	assert session.Session(every, lock=False).CameraArgs()[:8] == ["--camera-fps", "60.0", "--camera-frames", "1800",
+		"--camera-pins", "12,13", "--cameras-when-ready", "--all-cameras"]
+	# The two-board setup (the Arduino pulses the cameras, the box's board reads them on D10): no camera options
+	two = session.Config(str(write_config(tmp_path / "c.yaml", dict(rig, triggerController="arduino",
+		startArduino=True), box={"task": "t.yaml"})))
+	assert session.Session(two, lock=False).CameraArgs() == []
+	# ChronicRecord's two boards: the Pico pulses the cameras (its pico: section), the box's board reads them on D10;
+	# campy-box gets no camera options, and its task starts with the Pico's first pulse (--start-with-frames)
+	pico = session.Config(str(write_config(tmp_path / "c.yaml", dict(rig, triggerController="pico", syncPin="None"),
+		pico={"set": {"CAMERA_ONLY": 60}}, box={"task": "t.yaml"})))
+	assert pico.pico is not None and pico.box["task"] == str(tmp_path / "t.yaml")
+	assert session.Session(pico, lock=False).CameraArgs() == []
+
+
+@POSIX
+def test_a_recording_whose_box_board_makes_the_camera_pulses(tmp_path, home, outputs_sim):
+	# campy-session with triggerController: box: campy-acquire opens no trigger port, campy-box starts the board's
+	# pulses once every camera is ready (as many as campy-acquire takes frames), and sync.json goes into the recording.
+	# (The emulated cameras don't take the simulated board's pulses: their frames run on their own clock.)
+	import tty
+	master, slave = os.openpty()
+	tty.setraw(slave)
+	log = tmp_path / "sim.log"
+	with open(str(log), "w") as f:
+		sim = subprocess.Popen([outputs_sim, "live"], stdin=master, stdout=master, stderr=f,
+			env=dict(os.environ, SIM_INPUT="30:400000:300000:30000:1000"))
+	try:
+		t0 = time.monotonic()
+		while "ready campy_outputs" not in log.read_text() and time.monotonic() - t0 < 60 and sim.poll() is None:
+			time.sleep(0.05)
+		task = tmp_path / "task.yaml"
+		task.write_text(BOX_TASK.replace("TRIALS", "1000"))
+		config, clips = emu_session(tmp_path, home, 3)
+		with open(str(config), "a") as f:
+			f.write(yaml.safe_dump({"triggerController": "box", "startArduino": False, "digitalPins": [12, 13],
+				"syncPin": 9, "syncSeed": 77, "syncGapMs": [100, 300], "box": {"task": str(task),
+				"port": os.ttyname(slave)}}))
+		proc, lines = start(tmp_path, home, config)
+		proc.wait(timeout=180)
+	finally:
+		sim.terminate()
+		sim.wait()
+		os.close(slave)
+		os.close(master)
+	out = "".join(lines)
+	assert proc.returncode == 0, out
+	folder = the_folder(clips)
+	assert recorded(folder) == [60, 60]
+	trigger = json.loads((folder / "trigger.json").read_text())
+	assert trigger["startedBy"] == "external" and not trigger["triggerStarted"] # campy-acquire drove no trigger
+	cams = json.loads((folder / "box" / "campy-box.cameras.json").read_text())
+	assert (cams["frames"], cams["period_us"], cams["pins"]) == (60, 50000, [12, 13]) # 3 s at 20 fps
+	# Every camera was waiting for the first pulse, and campy-align reads that where campy-box left it
+	assert cams["ready_before_pulses"] == list(NAMES)
+	from campy import align
+	assert align.ReadStart(str(folder)) == (set(NAMES), "box/campy-box.cameras.json")
+	sync = json.loads((folder / "sync.json").read_text())
+	assert (sync["seed"], sync["pin"], sync["t0_board_us"], sync["hold_guard_us"]) == (77, 9, cams["t0_board_us"], 0)
+	ev = [json.loads(l) for l in open(str(folder / "box" / "campy-box.events.jsonl"))]
+	started = [e for e in ev if e["kind"] == "cameras_start"]
+	assert len(started) == 1
+	# The board's pulses on both camera pins, where trigger.ino puts them from that time 0
+	rises = {}
+	for line in log.read_text().splitlines():
+		w = line.split()
+		if len(w) == 3 and w[0].isdigit() and w[2] == "1":
+			rises.setdefault(int(w[1]), []).append(int(w[0]))
+	for pin in (12, 13):
+		assert rises[pin] == [cams["t0_board_us"] + k * 50000 + 25000 for k in range(len(rises[pin]))]
+		assert len(rises[pin]) <= 60
+	status = json.loads((folder / "launcher.json").read_text())
+	assert status["parts"]["box"]["exit_code"] == 0 and status["problems"] == []
