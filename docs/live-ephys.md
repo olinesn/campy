@@ -308,12 +308,26 @@ The curated recording is the harder one: 38% of its good units are at 80% or mor
 
   In its own thread the matcher keeps up even without numba; with numba, which the panel's environment now has, it is busy about half the time. On a cluster node's slower cores, in the reader's thread it couldn't keep up (20 s of samples took 29 s), and without numba it fell 2 s behind and skipped a fifth of the pieces.
 - **Not tried on the card yet:** the panel passes `--match` with `spikeglx.match`, but the ChronicRecord probe has no templates from a sort of its own recordings yet.
+- **Many probes on one PC.** The ChronicRecord PC (Intel Core Ultra 9 285, 24 cores) matched up to 8 probes at once and kept up, once each reader's math library ran on one thread. That's how the panel starts the card's reader since this change. Each simulated probe was a reader process of its own, as the card runs it: Kilosort's sample (384 channels, 275 templates) replayed at the recording's pace for 20 s, each from another point in it, all starting together, the templates matched in their own thread (numba, the panel's environment), at below-normal priority, under the rig lock (18 November):
+
+| Probes at once | 1 | 2 | 3 | 4 | 6 | 8 |
+|---|---|---|---|---|---|---|
+| **One math thread each:** matcher busy (mean) | 50% | 53% | 55% | 58% | 64% | 72% |
+| … matcher behind at most | 0.06 s | 0.06 s | 0.13 s | 0.13 s | 0.13 s | 0.13 s |
+| … CPU, whole PC (of 24 cores) | 5% | 10% | 14% | 22% | 31% | 45% |
+| **The math library's default threads** (the card before this change): matcher busy | 77% | 95% | 99% | 99% | 71% | 76% |
+| … matcher behind at most | 0.13 s | 0.44 s | 2.0 s | 2.0 s | 1.9 s | 2.0 s |
+| … pieces left unmatched (all probes) | 0 | 0 | 269 | 728 | 67 | 40 |
+| … reader's own thread busy | 39% | 47% | 61% | 83% | 99% | 99% |
+
+  With one math thread no piece was left unmatched, and each probe used 0.9 to 1.2 cores (reader and matcher). Left at its default, the math library spread a single probe's small matrix products over 3.5 cores, and its matcher was slower for it. From 3 probes the matchers fell 2 s behind and left pieces unmatched, and from 6 the readers' own threads were busy 99% of the time, close to falling behind SpikeGLX. `campy-ephys serve` started by hand keeps the default: set `OPENBLAS_NUM_THREADS=1` (and `OMP_NUM_THREADS`, `MKL_NUM_THREADS`) before it to do the same.
 - **Harder recordings.** On the curated recording, a quarter of good units have under 45% of their Kilosort spikes found, and a quarter have under 56% of what they're given right.
 - **No drift correction**, as above.
 
 ## Next
 
 - **A better sorter:** following the probe's drift.
-- **Matching on the card, on the ChronicRecord PC:** once its probe is implanted, `campy-ephys templates` on its first session, then `match: learned` tried during the next; then how many probes one PC can match live at once. Until then its probe is on a bench, and its recordings have no units to make templates from.
+- **Matching on the card, on the ChronicRecord PC:** once its probe is implanted, `campy-ephys templates` on its first session, then `match: learned` tried during the next. Until then its probe is on a bench, and its recordings have no units to make templates from.
 - **Accuracy first, then speed.** Speed work waits until the live output matches an automated sort made after the recording (Kilosort 4) in precision and accuracy. After that come tests of how many probes one PC can follow live at once, and only then speedups.
+- **Many probes, a heavier recording:** the same test on the curated 384-channel recording (437 templates, about a fifth more matching per second than Kilosort's sample), and on another rig.
 - **Later, on top of live-sorted units:** each neuron's activity plotted live against the population's low-dimensional space and against the behaviour campy-live tracks: keypoint-MoSeq syllables, a PCA or UMAP space of the poses, or another map that describes the behaviour better.
