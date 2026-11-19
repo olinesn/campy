@@ -320,7 +320,17 @@ The curated recording is the harder one: 38% of its good units are at 80% or mor
 | … pieces left unmatched (all probes) | 0 | 0 | 269 | 728 | 67 | 40 |
 | … reader's own thread busy | 39% | 47% | 61% | 83% | 99% | 99% |
 
-  With one math thread no piece was left unmatched, and each probe used 0.9 to 1.2 cores (reader and matcher). Left at its default, the math library spread a single probe's small matrix products over 3.5 cores, and its matcher was slower for it. From 3 probes the matchers fell 2 s behind and left pieces unmatched, and from 6 the readers' own threads were busy 99% of the time, close to falling behind SpikeGLX. `campy-ephys serve` started by hand keeps the default: set `OPENBLAS_NUM_THREADS=1` (and `OMP_NUM_THREADS`, `MKL_NUM_THREADS`) before it to do the same.
+  The same test on a heavier recording, 90 s of the curated NP2013 one (384 channels, 437 templates; its probes from 690 s on):
+
+| Probes at once | 1 | 2 | 3 | 4 | 6 | 8 |
+|---|---|---|---|---|---|---|
+| **One math thread each:** matcher busy (mean) | 58% | 60% | 63% | 66% | 76% | 86% |
+| … matcher behind at most | 0.06 s | 0.13 s | 0.13 s | 0.13 s | 0.13 s | 0.25 s |
+| … CPU, whole PC | 5% | 10% | 15% | 20% | 33% | 49% |
+| **The math library's default threads:** matcher behind at most | 2.0 s | 2.0 s | 2.0 s | 2.0 s | 1.8 s | 1.8 s |
+| … pieces left unmatched (all probes) | 17 | 137 | 519 | 903 | 62 | 39 |
+
+  With one math thread no piece was left unmatched on either recording: 8 probes kept up, the busiest matcher at 91% of its time with the curated one. Each probe used 0.9 to 1.4 cores (reader and matcher). With the default threads, the curated recording's matcher fell 2 s behind with a single probe. Left at its default, the math library spread a single probe's small matrix products over 3.5 cores, and its matcher was slower for it. From 3 probes the matchers fell 2 s behind and left pieces unmatched, and from 6 the readers' own threads were busy 99% of the time, close to falling behind SpikeGLX. `campy-ephys serve` started by hand keeps the default: set `OPENBLAS_NUM_THREADS=1` (and `OMP_NUM_THREADS`, `MKL_NUM_THREADS`) before it to do the same.
 - **Harder recordings.** On the curated recording, a quarter of good units have under 45% of their Kilosort spikes found, and a quarter have under 56% of what they're given right.
 - **No drift correction**, as above.
 
@@ -329,5 +339,5 @@ The curated recording is the harder one: 38% of its good units are at 80% or mor
 - **A better sorter:** following the probe's drift.
 - **Matching on the card, on the ChronicRecord PC:** once its probe is implanted, `campy-ephys templates` on its first session, then `match: learned` tried during the next. Until then its probe is on a bench, and its recordings have no units to make templates from.
 - **Accuracy first, then speed.** Speed work waits until the live output matches an automated sort made after the recording (Kilosort 4) in precision and accuracy. After that come tests of how many probes one PC can follow live at once, and only then speedups.
-- **Many probes, a heavier recording:** the same test on the curated 384-channel recording (437 templates, about a fifth more matching per second than Kilosort's sample), and on another rig.
+- **Many probes on another rig:** the same test on another PC, to compare.
 - **Later, on top of live-sorted units:** each neuron's activity plotted live against the population's low-dimensional space and against the behaviour campy-live tracks: keypoint-MoSeq syllables, a PCA or UMAP space of the poses, or another map that describes the behaviour better.
