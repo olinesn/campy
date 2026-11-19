@@ -5,11 +5,11 @@ a OneBox, NI DAQ cards), so the program running at all makes the machine busy: s
 it, an experiment machine refuses a test at once, and a test running when one starts is stopped. --allow ephys
 (RIG_ALLOW, which campy-session's panel sets) is for a recording that runs beside it.
 
-The rules run on any OS with made-up processes; whole runs need Linux (/proc), where a symlink to sleep
+The rules run on any OS with made-up processes; whole runs need Linux (/proc) or macOS, where a symlink to sleep
 named open-ephys stands in for the program (its comm is the link's name).
 """
 
-import datetime, json, os, shutil, subprocess, sys, time, types
+import datetime, json, os, pathlib, shutil, subprocess, sys, tempfile, time, types
 
 import pytest
 
@@ -23,7 +23,7 @@ import rig_windows  # noqa: E402
 # other test beside them (conftest.py, 'alone')
 pytestmark = pytest.mark.alone
 
-linux = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="rig.py reads Linux's /proc")
+linux = pytest.mark.skipif(not sys.platform.startswith(("linux", "darwin")), reason="rig.py reads /proc, or ps and libproc on macOS")
 
 
 def fake(pid, kinds=(), name="python.exe", ppid=1, start=None, job=None):
@@ -179,8 +179,10 @@ def test_an_experiment_machine_refuses_a_test_while_spikeglx_runs(tmp_path, monk
 
 @pytest.fixture
 def ephys(tmp_path):
-	"""A program named open-ephys: a symlink to sleep (its comm is the link's name)."""
-	link = tmp_path / "bin" / "open-ephys"
+	"""A program named open-ephys: a symlink to sleep (its comm is the link's name; on macOS ps names the link
+	too). On macOS in a short folder: status shows a command's first 120 characters, and tmp_path there is long."""
+	base = pathlib.Path(tempfile.mkdtemp(prefix="rig", dir="/tmp")) if sys.platform == "darwin" else tmp_path
+	link = base / "bin" / "open-ephys"
 	link.parent.mkdir()
 	os.symlink(shutil.which("sleep"), str(link))
 	procs = []
@@ -193,6 +195,8 @@ def ephys(tmp_path):
 	for p in procs:
 		p.kill()
 		p.wait()
+	if base != tmp_path:
+		shutil.rmtree(str(base), ignore_errors=True)
 
 
 @pytest.fixture

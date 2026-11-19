@@ -1,7 +1,7 @@
-"""bench/rig.py, the one-test-at-a-time lock for a shared Linux test machine.
+"""bench/rig.py, the one-test-at-a-time lock for a shared Linux or macOS test machine.
 
 A temporary file stands in for the GPU (RIG_EXTRA), so no device is needed. Whole runs need Linux
-(/proc); the lock in-process (a flock) runs on macOS too, and what rig.py prints on any OS.
+(/proc) or macOS (ps and libproc); the lock in-process (a flock) runs on both, and what rig.py prints on any OS.
 """
 
 import os, re, shlex, shutil, signal, subprocess, sys, threading, time
@@ -18,6 +18,10 @@ import rig as riglib  # noqa: E402
 pytestmark = pytest.mark.alone
 
 linux = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="rig.py reads Linux's /proc")
+# Whole runs: rig.py sees the processes through /proc on Linux, through ps and libproc on macOS
+procs = pytest.mark.skipif(not sys.platform.startswith(("linux", "darwin")), reason="rig.py reads /proc, or ps and libproc on macOS")
+# A desktop drawing on the GPU: one that comes and goes on Linux (Xwayland), the only one on macOS
+DESKTOP = "WindowServer" if sys.platform == "darwin" else "Xwayland"
 posix = pytest.mark.skipif(os.name != "posix", reason="the Linux lock is a flock")
 HOLD_OPEN = "import sys, time; f = open(sys.argv[1]); time.sleep(float(sys.argv[2]))"
 WAIT_FOR = "import os, sys, time\nwhile not os.path.exists(sys.argv[1]): time.sleep(0.05)"  # a job that ends when told
@@ -58,10 +62,10 @@ def rig(tmp_path):
 	return r
 
 
-@linux
+@procs
 def test_clean_run_and_its_own_device_use(rig):
 	# The job opens the GPU itself, even from a process in a new session: not foreign
-	job = "import subprocess, sys; subprocess.run(['setsid', sys.executable, '-c', %r, %r, '1.5'])" % (HOLD_OPEN, rig.gpu)
+	job = "import subprocess, sys; subprocess.run([sys.executable, '-c', %r, %r, '1.5'], start_new_session=True)" % (HOLD_OPEN, rig.gpu)
 	r = rig("run", "tester", "clean", "--", sys.executable, "-c", job)
 	assert r.returncode == 0, r.stdout + r.stderr
 	log = rig.log("clean")
@@ -69,7 +73,7 @@ def test_clean_run_and_its_own_device_use(rig):
 	assert (rig.root / "RIG_BUSY").read_text() == ""
 
 
-@linux
+@procs
 def test_overlap_is_caught(rig):
 	r = rig.popen(RIG, "run", "tester", "overlap", "--", "sleep", "3")
 	time.sleep(1.5)  # the rig is taken; then another job opens the GPU without it
@@ -81,7 +85,7 @@ def test_overlap_is_caught(rig):
 	assert last(log).startswith("RIG_CONTAMINATED") and re.search(r"\bgpu [1-9]", last(log)), log
 
 
-@linux
+@procs
 def test_cpu_load_outside_the_job_is_caught(rig):
 	spin = rig.popen("-c", "import time; t = time.time() + 4\nwhile time.time() < t: pass")
 	try:
@@ -91,7 +95,7 @@ def test_cpu_load_outside_the_job_is_caught(rig):
 		spin.wait()
 
 
-@linux
+@procs
 def test_no_wait_while_held_and_status(rig):
 	held = rig.popen(RIG, "run", "holder", "long", "--", "sleep", "3")
 	time.sleep(1.5)
@@ -103,7 +107,7 @@ def test_no_wait_while_held_and_status(rig):
 	assert rig("status").stdout.startswith("rig free")
 
 
-@linux
+@procs
 def test_a_device_user_without_the_rig_makes_run_wait(rig):
 	other = rig.popen("-c", HOLD_OPEN, rig.gpu, "2")
 	time.sleep(0.5)
@@ -114,7 +118,7 @@ def test_a_device_user_without_the_rig_makes_run_wait(rig):
 	other.wait()
 
 
-@linux
+@procs
 def test_stale_busy_note_is_cleared(rig):
 	(rig.root / "RIG_BUSY").write_text("ghost old since 2026-01-01 rigpid=1 job=old-1 pid=1\n")
 	s = rig("status")
@@ -122,7 +126,7 @@ def test_stale_busy_note_is_cleared(rig):
 	assert (rig.root / "RIG_BUSY").read_text() == ""
 
 
-@linux
+@procs
 def test_hold_of_an_ended_pid_is_refused(rig):
 	p = subprocess.Popen(["true"])
 	p.wait()
@@ -130,7 +134,7 @@ def test_hold_of_an_ended_pid_is_refused(rig):
 	assert r.returncode != 0 and "not running" in r.stderr
 
 
-@linux
+@procs
 def test_hold_lasts_until_the_pid_ends(rig):
 	job = subprocess.Popen(["sleep", "1.5"])
 	r = rig("hold", "tester", "held", str(job.pid))
@@ -138,11 +142,11 @@ def test_hold_lasts_until_the_pid_ends(rig):
 	assert last(rig.log("held")).startswith("RIG_CLEAN")
 
 
-@linux
+@procs
 def test_guarded_script_takes_the_rig_once(rig, tmp_path):
 	# rig_guard.sh re-runs a script under rig.py; a guarded script it calls does not wait on itself
 	root = rig.root
-	for f in ("rig.py", "rig_guard.sh"):
+	for f in ("rig.py", "rig_macos.py", "rig_guard.sh"):
 		(root / f).write_text(open(os.path.join(BENCH, f)).read())
 	inner = tmp_path / "inner.sh"
 	inner.write_text('. "$RIG_ROOT/rig_guard.sh" "$@"\necho "inner $RIG_JOB"\n')
@@ -157,21 +161,24 @@ def test_guarded_script_takes_the_rig_once(rig, tmp_path):
 	assert "rig held by tester for t1" in (tmp_path / "t1.rig.log").read_text()
 
 
-@linux
+@procs
 def test_a_desktop_is_noted_not_waited_for_and_one_starting_mid_run_is_caught(rig, tmp_path):
-	# A desktop drawing on the GPU (here a stand-in named Xwayland) never goes away, so run does not
-	# wait for it; but one that starts during a run changes what the run measured
-	xwayland = tmp_path / "Xwayland"
-	shutil.copy(shutil.which("sleep"), str(xwayland))
+	# A desktop drawing on the GPU (here a stand-in named Xwayland, or WindowServer on macOS) never goes
+	# away, so run does not wait for it; but one that starts during a run changes what the run measured
+	xwayland = tmp_path / DESKTOP
+	if sys.platform == "darwin":  # macOS kills a copy of a system program (its signature): a link, which ps names as the link
+		os.symlink(shutil.which("sleep"), str(xwayland))
+	else:
+		shutil.copy(shutil.which("sleep"), str(xwayland))
 	up = subprocess.Popen([str(xwayland), "6"])
 	try:
 		r = rig("run", "tester", "desk", "--", "sleep", "1")
 		assert r.returncode == 0 and "in use outside" not in r.stdout, r.stdout
 		# the machine's own desktop may be listed too, before the stand-in (Xorg on an X11 session)
 		desk = [l for l in rig.log("desk").splitlines() if "desktop on the GPU:" in l]
-		assert desk and "Xwayland (" in desk[0], rig.log("desk")
+		assert desk and DESKTOP + " (" in desk[0], rig.log("desk")
 		assert last(rig.log("desk")).startswith("RIG_CLEAN (desktop on the GPU: "), rig.log("desk")
-		assert "Xwayland (" in last(rig.log("desk")), rig.log("desk")
+		assert DESKTOP + " (" in last(rig.log("desk")), rig.log("desk")
 	finally:
 		up.kill()
 		up.wait()
@@ -224,14 +231,14 @@ rig.main()
 """
 
 
-@linux
+@procs
 def test_queued_guarded_jobs_each_start_when_rig_py_is_slow(rig, tmp_path):
 	# Several guarded scripts wait for the rig while another job holds it. Each, once it has the
 	# rig, must run, even when it checks the lock before its rig.py has gone on past starting it:
 	# the lock has to name its job already, or the script re-runs itself under rig.py and waits
 	# forever on the rig its own rig.py holds
 	root = rig.root
-	for f in ("rig.py", "rig_guard.sh"):
+	for f in ("rig.py", "rig_macos.py", "rig_guard.sh"):
 		(root / f).write_text(open(os.path.join(BENCH, f)).read())
 	slow = tmp_path / "slow_rig.py"
 	slow.write_text(SLOW_START)
@@ -264,7 +271,7 @@ def test_queued_guarded_jobs_each_start_when_rig_py_is_slow(rig, tmp_path):
 	assert (root / "RIG_BUSY").read_text() == ""
 
 
-@linux
+@procs
 def test_run_inside_the_rigs_job_runs_at_once(rig):
 	# rig.py run called by the job that holds the rig runs its command in that job, without waiting
 	inner = "%s %s run tester inner -- %s -c \"import os; print('inner', os.environ['RIG_JOB'])\"" % (
@@ -303,11 +310,8 @@ def job_pid(rig, timeout=30):
 
 
 def runs(pid):
-	try:
-		with open("/proc/%d/stat" % pid) as f:
-			return f.read().rsplit(")", 1)[1].split()[0] != "Z"
-	except OSError:
-		return False
+	# running, not a zombie (rig.py's own test of it: /proc on Linux, ps on macOS)
+	return riglib.proc_start(pid) is not None
 
 
 def until(check, timeout=30):
@@ -318,7 +322,7 @@ def until(check, timeout=30):
 		time.sleep(0.05)
 
 
-@linux
+@procs
 def test_a_killed_rig_py_keeps_the_rig_until_its_job_ends(rig, tmp_path):
 	# SIGKILL (the OOM killer, a tool's timeout): the kernel drops rig.py's flock, but its job runs on
 	go = tmp_path / "go"
@@ -358,7 +362,7 @@ def test_a_killed_rig_py_keeps_the_rig_until_its_job_ends(rig, tmp_path):
 	assert busy(rig) == "" and rig("status").stdout.startswith("rig free")
 
 
-@linux
+@procs
 def test_a_killed_run_whose_job_ended_leaves_a_free_rig(rig, tmp_path):
 	go = tmp_path / "go"
 	r = rig.popen(RIG, "run", "tester", "killed", "--", sys.executable, "-c", WAIT_FOR, str(go))
@@ -372,7 +376,7 @@ def test_a_killed_run_whose_job_ended_leaves_a_free_rig(rig, tmp_path):
 	assert rig("run", "--no-wait", "tester", "after", "--", "true").returncode == 0
 
 
-@linux
+@procs
 def test_a_closed_output_does_not_end_the_run(rig, tmp_path):
 	# rig.py run ... | head, or an ssh whose local end was cut: what rig.py prints goes nowhere, and the
 	# run goes on holding the rig, logging, to the job's end
@@ -411,7 +415,7 @@ rig.main()
 """
 
 
-@linux
+@procs
 def test_an_error_in_rig_py_keeps_the_rig_until_the_job_ends(rig, tmp_path):
 	failing = tmp_path / "failing_rig.py"
 	failing.write_text(FAILING_WATCH)
@@ -436,7 +440,7 @@ def test_an_error_in_rig_py_keeps_the_rig_until_the_job_ends(rig, tmp_path):
 	assert busy(rig) == ""
 
 
-@linux
+@procs
 def test_a_stopped_run_ends_aborted_not_clean(rig):
 	r = rig.popen(RIG, "run", "tester", "stopped", "--", "sleep", "30")
 	job = job_pid(rig)
@@ -447,7 +451,7 @@ def test_a_stopped_run_ends_aborted_not_clean(rig):
 	assert "job exit -%d" % signal.SIGTERM in log and last(log).startswith("RIG_ABORTED by SIGTERM (until then: clean"), log
 
 
-@linux
+@procs
 @pytest.mark.skipif(not shutil.which("nohup"), reason="no nohup")
 def test_a_nohup_run_survives_a_hangup(rig, tmp_path):
 	go = tmp_path / "go"
@@ -468,7 +472,7 @@ def test_a_nohup_run_survives_a_hangup(rig, tmp_path):
 	assert last(rig.log("nohup")).startswith("RIG_CLEAN"), rig.log("nohup")
 
 
-@linux
+@procs
 def test_a_stopped_hold_ends_aborted_and_a_killed_one_keeps_the_rig(rig):
 	held = subprocess.Popen(["sleep", "60"])
 	try:
@@ -492,7 +496,7 @@ def test_a_stopped_hold_ends_aborted_and_a_killed_one_keeps_the_rig(rig):
 	assert rig("status").stdout.startswith("rig free")
 
 
-@linux
+@procs
 def test_rig_busy_names_a_run_while_it_waits_for_quiet(rig):
 	other = rig.popen("-c", HOLD_OPEN, rig.gpu, "4")
 	time.sleep(0.5)

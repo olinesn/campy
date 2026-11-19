@@ -56,6 +56,15 @@ On Linux (every process the user can see; other users' processes show only their
            but says in the log which was up, and a desktop that starts or ends
            during the run contaminates it.
 
+On macOS (rig_macos.py beside this file says how each is seen; every user's CPU, through ps, but only this
+user's processes' open files, disk and environment):
+  trigger  /dev/cu.usbmodem*, /dev/cu.usbserial*, ... (and their /dev/tty.* names): a USB serial port
+  ephys    a program named spikeglx* or open-ephys* (RIG_EPHYS_NAMES), a Windows one under Wine too
+  load     the CPU (cores) and disk (MB/s) used by everything outside the job (disk: this user's processes)
+  desktop  WindowServer, noted and never waited for
+  gpu, encoder and camera are not watched (Metal, VideoToolbox and the cameras have no device files, and
+  every app with a window draws on the GPU): status says so. The lock is the Linux one, a flock.
+
 On Windows (rig_windows.py beside this file says how each is seen):
   gpu      a CUDA program (type C in nvidia-smi -q -d PIDS), or any python*.exe
   encoder  ffmpeg*.exe
@@ -118,8 +127,8 @@ line is then RIG_STOPPED, run exits 75, and PAUSE keeps new tests away until 9 A
 
 Installing and versions. Each machine runs one installed copy, in RIG_ROOT, which every
 script calls (a campy checkout can be on any branch or commit, and every lock user on a
-machine must run the same lock). Its version is a short hash of the six files (rig.py,
-rig_windows.py, rig_guard.sh, rig_guard.ps1, rig_hold.ps1, rig_banner.ps1) with line endings ignored, so the
+machine must run the same lock). Its version is a short hash of the seven files (rig.py,
+rig_windows.py, rig_macos.py, rig_guard.sh, rig_guard.ps1, rig_hold.ps1, rig_banner.ps1) with line endings ignored, so the
 same commit shows the same version on every machine; status (its second line) and every
 rig.log say it. To
 update, run the checkout's own copy: python <checkout>/bench/rig.py install. It takes the rig
@@ -133,19 +142,23 @@ wait for the rig that job holds. --check only says whether the installed copy di
 files (--allow-dirty), or one older than what is installed (--allow-older). Files copied
 from a checkout (not a git checkout themselves) can name their commit with --commit.
 
-The Python standard library only. On Linux run it with /usr/bin/python3; on
+The Python standard library only. On Linux and macOS run it with /usr/bin/python3; on
 Windows with any 64-bit Python 3.9 or newer (campy's own environment will do).
 """
 
 import argparse, collections, contextlib, datetime, fnmatch, hashlib, json, os, re, shlex, shutil, signal, subprocess, sys, time
 
 WINDOWS = os.name == "nt"
+MACOS = sys.platform == "darwin"
 if WINDOWS:
 	import msvcrt
 	sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 	import rig_windows
 else:
 	import fcntl, pwd
+if MACOS:
+	sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+	import rig_macos
 
 ROOT = os.path.expanduser(os.environ.get("RIG_ROOT", r"C:\campy_data\live" if WINDOWS else "~/sleap-bench"))
 LOCK = os.path.join(ROOT, ".rig.lock")
@@ -154,6 +167,8 @@ PERIOD = float(os.environ.get("RIG_PERIOD", 2.0))  # s between looks
 # Other files to watch as one of the kinds, e.g. RIG_EXTRA="trigger=/dev/ttyS0,gpu=/dev/nvidia0"
 # (on Windows, NT device names: RIG_EXTRA="trigger=\Device\Serial0")
 EXTRA = dict(reversed(kv.split("=", 1)) for kv in os.environ.get("RIG_EXTRA", "").split(",") if "=" in kv)
+if MACOS:  # macOS gives an open file's real path (/private/var/..., not /var/...)
+	EXTRA.update({os.path.realpath(path): kind for path, kind in list(EXTRA.items())})
 KINDS = ("gpu", "encoder", "camera", "trigger", "ephys")
 # Ephys acquisition programs (the "ephys" kind), by name: on Linux /proc/<pid>/comm (its first 15
 # characters), on Windows the image name (rig_windows.EPHYS_NAMES, the same variable). Their PCIe and
@@ -181,7 +196,9 @@ NO_WINDOW = 0x08000000 if WINDOWS else 0  # CREATE_NO_WINDOW: no console flashin
 JOBS = {}  # Windows: {job name: rig_windows.Job} of the job rig.py runs
 HERE = os.path.dirname(os.path.abspath(__file__))
 # The lock's files: installed together, and hashed together into its version
-FILES = ("rig.py", "rig_windows.py", "rig_guard.sh", "rig_guard.ps1", "rig_hold.ps1", "rig_banner.ps1")
+FILES = ("rig.py", "rig_windows.py", "rig_macos.py", "rig_guard.sh", "rig_guard.ps1", "rig_hold.ps1", "rig_banner.ps1")
+# The kinds macOS gives rig.py no way to see (rig_macos.py), unless RIG_EXTRA names a file as one
+UNWATCHED = ({"gpu", "encoder", "camera"} - set(EXTRA.values())) if MACOS else set()
 STAMP = "RIG_INSTALLED"
 
 def say(text):
@@ -210,7 +227,7 @@ def device_kind(path, cameras):
 		return "gpu"
 	if path.startswith("/dev/dri/renderD") or path == "/dev/v4l2-nvenc":
 		return "encoder"
-	if re.match(r"/dev/tty(ACM|USB)\d+$", path):
+	if re.match(r"/dev/tty(ACM|USB)\d+$", path) or (MACOS and rig_macos.SERIAL.match(path)):
 		return "trigger"
 	if path in cameras:
 		return "camera"
@@ -227,6 +244,9 @@ def ephys_programs():
 	if WINDOWS:
 		return sorted((row[0], row[2]) for row in rig_windows.process_table()
 			if rig_windows.matches(row[2], rig_windows.EPHYS_NAMES))
+	if MACOS:
+		return sorted((p.pid, rig_macos.program_name(getattr(p, "exe", None) or first_word(p.cmd)))
+			for p in scan().values() if "ephys" in p.kinds)
 	out = []
 	for name in os.listdir("/proc") if os.path.isdir("/proc") else ():
 		if name.isdigit():
@@ -256,7 +276,7 @@ def flir_cameras():
 	return out
 
 class Proc:
-	__slots__ = ("pid", "ppid", "sid", "start", "cpu", "io", "kinds", "cmd", "job", "user")
+	__slots__ = ("pid", "ppid", "sid", "start", "cpu", "io", "kinds", "cmd", "job", "user", "exe")
 
 def read_proc(pid, cameras):
 	"""A Proc for pid, or None if it is gone or a kernel thread (Linux)."""
@@ -323,8 +343,53 @@ def read_proc(pid, cameras):
 		pass
 	return p
 
+# macOS: a process's command line and RIG_JOB ({(pid, start, program): (argv, job)}), read once per process:
+# they don't change while the program runs (an exec changes its program)
+MAC_ARGS = {}
+
+def scan_macos():
+	"""{pid: Proc} for every process on macOS (rig_macos.py): ps for all of them (pid, parent, CPU time,
+	start, program); this user's own also show their open files, disk bytes and environment."""
+	procs, me, args = {}, os.getuid(), {}
+	for pid, ppid, uid, cpu, start, stat, exe in rig_macos.process_table():
+		if pid == 0 or "Z" in stat:  # kernel_task (the kernel, as Linux's kernel threads); zombies have ended
+			continue
+		p = Proc()
+		p.pid, p.ppid, p.start, p.cpu, p.exe = pid, ppid, start or 0, cpu or 0.0, exe
+		p.sid, p.kinds, p.io, p.job, p.user, p.cmd = rig_macos.getsid(pid), set(), None, None, None, exe
+		argv = []
+		if uid == me:
+			key = (pid, start, exe)
+			info = MAC_ARGS.get(key) or rig_macos.procargs(pid)
+			if info:
+				args[key] = info
+				argv, env = info[:2]
+				p.cmd = " ".join(" ".join(argv).split()) or exe
+				p.job = rig_macos.job_of(env)
+			p.io = rig_macos.disk_io(pid)
+		name = rig_macos.program_name(exe)
+		if rig_macos.matches(name, EPHYS_NAMES) or (argv and rig_macos.matches(rig_macos.program_name(argv[0]), EPHYS_NAMES)):
+			p.kinds.add("ephys")  # a Windows program under Wine: its process is Wine's, its first word the program
+		if name in rig_macos.DESKTOP:
+			p.kinds.add("desktop")
+			try:
+				p.user = pwd.getpwuid(uid).pw_name
+			except KeyError:
+				p.user = str(uid)
+		elif uid == me:
+			for path in rig_macos.open_paths(pid):
+				k = device_kind(path, ())
+				if k:
+					p.kinds.add(k)
+		procs[pid] = p
+	MAC_ARGS.clear()
+	MAC_ARGS.update(args)
+	return procs
+
 def scan(own=()):
 	"""{pid: Proc} for every process. own: pids known to be the job's (Windows looks less at them)."""
+	if MACOS:
+		return scan_macos()
 	if WINDOWS:
 		procs = {}
 		on_gpu = gpu_processes()  # first, so nvidia-smi has ended before the processes are listed
@@ -356,6 +421,8 @@ def proc_start(pid):
 	"""When pid started (an opaque number), None if it isn't running; -1 or 0 if it runs but that is unknown."""
 	if WINDOWS:
 		return rig_windows.process_start(pid)
+	if MACOS:
+		return rig_macos.process_start(pid)
 	try:
 		with open("/proc/%d/stat" % pid) as f:
 			fields = f.read().rsplit(")", 1)[1].split()
@@ -534,6 +601,9 @@ def program(p):
 	if WINDOWS:
 		path = first_word(cmdline(p))
 		return norm(p.cmd), norm(path if ("\\" in path or "/" in path) else "")
+	if MACOS:  # ps's program path (every user's)
+		path = getattr(p, "exe", None) or first_word(p.cmd)
+		return norm(rig_macos.program_name(path)), norm(path if "/" in path else "")
 	if p.cmd.startswith("[") and p.cmd.endswith("]"):  # no command line: [comm]
 		return norm(p.cmd[1:-1]), ""
 	try:
@@ -1451,6 +1521,9 @@ def rig_processes(procs=None):
 			continue
 		if WINDOWS and not re.match(r"(python|pythonw|py|powershell|pwsh)\d*(\.\d+)*(\.exe)?$", p.cmd, re.I):
 			continue
+		# macOS: a Python (rig.py runs under one), not a shell or an ssh whose command text names rig.py
+		if MACOS and not re.match(r"python\d*(\.\d+)*$", rig_macos.program_name(getattr(p, "exe", None) or ""), re.I):
+			continue
 		text = cmdline(p)
 		if text and RIG_PROC.search(text):
 			found.append((p.pid, text))
@@ -1985,6 +2058,11 @@ def cmd_status(args):
 		names = {"gpu": "GPU (nvidia-smi%s, python*.exe)" % ("" if NVSMI else ": none"), "encoder": "video encoder (ffmpeg*.exe)",
 			"camera": "FLIR cameras (Spinnaker loaded)", "trigger": "trigger (%s)" % (" ".join(ports) or "no COM port"),
 			"ephys": "ephys acquisition (%s)" % ", ".join(rig_windows.EPHYS_NAMES)}
+	elif MACOS:
+		ports = rig_macos.serial_ports()
+		names = {"gpu": "GPU", "encoder": "video encoder", "camera": "FLIR cameras",
+			"trigger": "trigger (%s)" % (" ".join(ports) or "no USB serial port plugged in"),
+			"ephys": "ephys acquisition (%s)" % ", ".join(EPHYS_NAMES)}
 	else:
 		cams = flir_cameras()
 		jetson = os.path.isdir("/dev/nvgpu")  # a Jetson's integrated GPU (see device_kind)
@@ -1996,6 +2074,9 @@ def cmd_status(args):
 			"ephys": "ephys acquisition (%s)" % ", ".join(EPHYS_NAMES)}
 	for k in KINDS:
 		users = [p for p in procs.values() if k in p.kinds and p.pid != os.getpid()]
+		if k in UNWATCHED:
+			print("%-48s %s" % (names[k] + ":", "not watched on macOS"))
+			continue
 		print("%-48s %s" % (names[k] + ":", "free" if not users else ""))
 		for p in users:
 			print("    %s%s" % ("[job] " if job and p.job == job else "", describe(p, 120)))

@@ -5,7 +5,7 @@ In-process tests (the lock a gpu.lock file, no process scan) run on any OS; whol
 Linux or Windows, where it can see processes.
 """
 
-import argparse, os, shutil, subprocess, sys
+import argparse, os, shutil, subprocess, sys, types
 
 import pytest
 
@@ -18,7 +18,7 @@ import rig as riglib  # noqa: E402
 # other test beside them (conftest.py, 'alone')
 pytestmark = pytest.mark.alone
 
-RUNS = sys.platform == "win32" or sys.platform.startswith("linux")
+RUNS = sys.platform == "win32" or sys.platform.startswith(("linux", "darwin"))
 runs = pytest.mark.skipif(not RUNS, reason="rig.py reads processes on Linux and Windows only")
 has_git = pytest.mark.skipif(not shutil.which("git"), reason="needs git")
 
@@ -216,12 +216,13 @@ def test_install_refuses_uncommitted_changes_and_older_commits(root, tmp_path, c
 # Finding other rig.py processes
 
 class P:
-	def __init__(self, pid, ppid, cmd):
-		self.pid, self.ppid, self.cmd, self.start = pid, ppid, cmd, 0
+	def __init__(self, pid, ppid, cmd, exe=None):
+		self.pid, self.ppid, self.cmd, self.start, self.exe = pid, ppid, cmd, 0, exe
 
 
 def test_rig_processes_finds_runs_holds_and_rig_hold_but_not_its_own_parents(monkeypatch):
 	monkeypatch.setattr(riglib, "WINDOWS", False)
+	monkeypatch.setattr(riglib, "MACOS", False)
 	me = os.getpid()
 	procs = {p.pid: p for p in [
 		P(me, 10, "python3 rig.py install"),
@@ -234,6 +235,23 @@ def test_rig_processes_finds_runs_holds_and_rig_hold_but_not_its_own_parents(mon
 		P(24, 1, "vim rig.py"),
 	]}
 	assert sorted(pid for pid, _ in riglib.rig_processes(procs)) == [20, 21, 22]
+
+
+def test_rig_processes_on_macos_are_pythons(monkeypatch):
+	# macOS: a shell or an ssh whose command text names rig.py run (a Claude session's command) is no rig.py
+	monkeypatch.setattr(riglib, "WINDOWS", False)
+	monkeypatch.setattr(riglib, "MACOS", True)
+	monkeypatch.setattr(riglib, "rig_macos", types.SimpleNamespace(program_name=lambda path: (path or "").rsplit("/", 1)[-1]),
+		raising=False)
+	py = "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python"
+	procs = {p.pid: p for p in [
+		P(os.getpid(), 1, "python3 rig.py install", "/usr/bin/python3"),
+		P(20, 1, "/usr/bin/python3 /Users/x/sleap-bench/rig.py run s1 t1 -- bash x.sh", py),
+		P(21, 1, "/opt/homebrew/bin/python3.12 rig.py hold s2 t2 99", "/opt/homebrew/Cellar/python@3.12/3.12.8/bin/python3.12"),
+		P(22, 1, "/bin/zsh -c ~/sleap-bench/rig.py run s3 t3 -- true", "/bin/zsh"),
+		P(23, 1, "ssh evo-x2 pgrep -f 'rig.py run --log-dir x'", "/usr/bin/ssh"),
+	]}
+	assert sorted(pid for pid, _ in riglib.rig_processes(procs)) == [20, 21]
 
 
 # Whole runs

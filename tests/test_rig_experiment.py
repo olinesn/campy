@@ -17,9 +17,9 @@ import rig  # noqa: E402
 # other test beside them (conftest.py, 'alone')
 pytestmark = pytest.mark.alone
 
-RUNS = os.name == "nt" or sys.platform.startswith("linux")
+RUNS = os.name == "nt" or sys.platform.startswith(("linux", "darwin"))
 runs = pytest.mark.skipif(not RUNS, reason="rig.py reads processes on Linux and Windows only")
-linux = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="a fake GPU device file (RIG_EXTRA) is Linux's")
+linux = pytest.mark.skipif(not sys.platform.startswith(("linux", "darwin")), reason="rig.py reads /proc, or ps and libproc on macOS")
 
 QUSER = """ USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME
 >lab                   console             1  Active      {idle}  11/4/2026 9:00 PM
