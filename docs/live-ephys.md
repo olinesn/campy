@@ -205,6 +205,35 @@ spikeglx:
 
 The status line then says how the matcher keeps up: how busy its thread was in the last second, how far behind it is, and how many seconds of samples it left unmatched (its threshold spikes went out unsorted then).
 
+### Templates from a recording session: `campy-ephys templates`
+
+`campy/ephystemplates.py` does the whole of it from a session's folder, on the PC that recorded it:
+
+```bash
+campy-ephys templates --session <recording folder> --out <folder> --kilosort-python <Kilosort 4's python>
+```
+
+1. **The probe's bouts, joined.** A session on the ChronicRecord rig has one SpikeGLX file per bout (the Pico's gate: `<run>_g0_t0`, `_t1`, ...). They are joined one after the other, in SpikeGLX's order, into `<probe>.joined.ap.bin`, with its `.meta` (the first bout's, with the joined file's size and length) and `.bouts.csv` (where each bout starts in it). By default it takes the session's first 20 minutes (`--minutes`; 0: all of it). A bout SpikeGLX didn't finish is left out, and the joining stops at a bout whose probe settings (its sites, `imroTbl`) differ from the first's. Each join is a step in the signal, so a few spikes may be found at each one, by Kilosort and live alike.
+2. **Kilosort 4,** in an environment of its own (`--kilosort-python`), at low priority, with its defaults and the probe's layout from the `.meta` (its sites, across its shanks). Its output, phy's files, goes in `kilosort4/`.
+3. **Training** (`campy-ephys train`, [above](#a-live-sorter-from-a-kilosort-4-sort)) on the joined file's last 240 s (`--span`): the newest, nearest the sessions that follow. The span is held in memory, about 46 MB a second of a 384-channel probe.
+
+It writes only in `--out`: the joined file, `kilosort4/`, `templates.npz` and `templates.json` (what it did), then prints the lines for the panel's config. A step whose output is already there is skipped, so a run that stopped goes on from where it was; delete `--out` to start again. Run it when nothing records: Kilosort holds the GPU for minutes. To curate the units first, open `kilosort4/` in phy, then run `campy-ephys train` on the joined file, as above.
+
+**Kilosort 4 on the ChronicRecord PC:** a conda environment of its own, `kilosort4` (Python 3.11, Kilosort 4.1.7, torch 2.11.0 with CUDA 12.8, the build campy-live's environment runs on its RTX 2000 Ada). Installed on 18 November, under the rig lock.
+
+**Run on that PC (18 November), on a session recorded with its probe on a bench, not implanted:** 4 bouts (2.5 s, 257 s, 27 s and 27 s) of its Neuropixels 2.0 four-shank probe (384 channels), under the rig lock, with nothing recording:
+
+| Step | Time | Note |
+|---|---|---|
+| Joining the 4 bouts (7.2 GB, 313 s) | 26 s | |
+| Kilosort 4 | 5.8 min | 17.9 GB of memory, 2.6 GB on the GPU; drift correction and spike detection take 80% of it |
+| Training on the last 240 s | 6.2 min | the replay 1.6 min, learning the thresholds 3.9 min |
+| All of it | 12.2 min | |
+
+Kilosort's time grows with the minutes joined (20 by default); the training's doesn't (its 240 s).
+
+- **A probe that isn't in a brain still gives "units".** Kilosort found 119 in the bench recording (29 it labelled good, 90 mua; 237,047 spikes, about 760 a second), and the training made templates for 117 of them. They are noise and interference, not neurons. So make templates only from sessions with the probe implanted, and look at Kilosort's units in phy before training (`campy-ephys train --phy` on the curated folder): Kilosort's "good" label alone doesn't tell a neuron from noise.
+
 **Checked on Kilosort 4's sample recording** (45 s, Neuropixels 1.0; Kilosort 4.1.7, its labels, not curated). Trained on the first 30 s, evaluated on the last 15 s against Kilosort's sort there, for its good units:
 
 | | Templates for good units only | Good and mua units (the default) |
@@ -284,6 +313,6 @@ The curated recording is the harder one: 38% of its good units are at 80% or mor
 ## Next
 
 - **A better sorter:** following the probe's drift.
-- **Matching on the card, on the ChronicRecord PC:** templates from a Kilosort 4 sort of its own probe, then `match: learned` tried during a session (numba in the panel's environment would leave more room); then how many probes one PC can match live at once.
+- **Matching on the card, on the ChronicRecord PC:** once its probe is implanted, `campy-ephys templates` on its first session, then `match: learned` tried during the next (numba in the panel's environment would leave more room); then how many probes one PC can match live at once. Until then its probe is on a bench, and its recordings have no units to make templates from.
 - **Accuracy first, then speed.** Speed work waits until the live output matches an automated sort made after the recording (Kilosort 4) in precision and accuracy. After that come tests of how many probes one PC can follow live at once, and only then speedups.
 - **Later, on top of live-sorted units:** each neuron's activity plotted live against the population's low-dimensional space and against the behaviour campy-live tracks: keypoint-MoSeq syllables, a PCA or UMAP space of the poses, or another map that describes the behaviour better.

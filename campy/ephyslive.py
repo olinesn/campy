@@ -1371,7 +1371,31 @@ def Main(argv=None):
 		"threads (the same spikes)")
 	e.add_argument("--report", default="good", help="report the units with these labels only (default good; \"\" "
 		"for all): the others' templates still compete for the spikes")
+	m = sub.add_parser("templates", help="a live sorter's templates from a recording session: its probe's bouts "
+		"joined, Kilosort 4 (in its own environment), then train (campy/ephystemplates.py)")
+	m.add_argument("--session", required=True, help="the recording's folder (or its spikeglx folder): SpikeGLX's "
+		"bout files, <run>_g0_tN.<probe>.ap.bin")
+	m.add_argument("--out", required=True, help="the folder to write in: the joined file, kilosort4/, templates.npz "
+		"(a step whose output is there is skipped)")
+	m.add_argument("--kilosort-python", required=True, help="the python of Kilosort 4's environment")
+	m.add_argument("--probe", help="which probe's bouts (imec0, imec1000, ...), when the session has several")
+	m.add_argument("--minutes", type=float, default=20.0, help="the minutes of the session joined for Kilosort, from "
+		"its first bout (0: all of it)")
+	m.add_argument("--span", help="the seconds of the joined file to train on, a:b (default: its last 240 s; the "
+		"span is held in memory, about 46 MB a second of a 384-channel probe)")
+	m.add_argument("--labels", default="good,mua", help="the units to keep, by label (Kilosort's, or phy's once "
+		"curated)")
 	args = parser.parse_args(argv)
+	if args.command == "templates":
+		from campy import ephystemplates
+		LowerPriority()
+		try:
+			ephystemplates.Templates(args.session, args.out, args.kilosort_python, args.probe,
+				args.minutes or None, args.span, tuple(l.strip() for l in args.labels.split(",") if l.strip()))
+		except (EphysError, OSError, KeyError, ValueError) as e:
+			print("campy-ephys templates: {}".format(e), file=sys.stderr)
+			return 1
+		return 0
 	if args.command in ("train", "evaluate"):
 		from campy import ephyssort, strictjson
 		source = ReplaySource(args.replay, speed=0)
