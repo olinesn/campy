@@ -395,15 +395,15 @@ color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,H
 .body{fill:var(--body)}
 .lensc{fill:var(--lens)}
 .mount{stroke:var(--muted);stroke-width:2.2;stroke-linecap:round}
-.beam-all{stroke-width:.8;stroke-opacity:.55;fill-opacity:.08}
-.beam-mid{stroke-width:1.1;stroke-opacity:.9;fill-opacity:.18}
+.beam-all{stroke-width:1;stroke-opacity:.85;fill-opacity:.07}
+.beam-mid{stroke-width:1.2;stroke-opacity:.95;fill-opacity:.18;stroke-dasharray:4 3}
 .c1{fill:var(--c1);stroke:var(--c1)}.c2{fill:var(--c2);stroke:var(--c2)}.c3{fill:var(--c3);stroke:var(--c3)}
 .c4{fill:var(--c4);stroke:var(--c4)}.c5{fill:var(--c5);stroke:var(--c5)}
 .mouseA{fill:var(--mA);stroke:var(--mAs);stroke-width:.8;stroke-linejoin:round}
 .mouseB{fill:var(--mB);stroke:var(--mBs);stroke-width:.8;stroke-linejoin:round}
 .tail-mouseA{fill:none;stroke:var(--mAs);stroke-width:1.1;stroke-linecap:round}
 .tail-mouseB{fill:none;stroke:var(--mBs);stroke-width:1.1;stroke-linecap:round}
-.hidden{fill:none;stroke:var(--warn);stroke-width:1.5;stroke-dasharray:4 3}
+.hidden{fill:none;stroke:var(--warn);stroke-width:1.5;stroke-dasharray:2 2}
 .warn{fill:var(--warn);stroke:var(--warn)}
 .ghost{fill:none;stroke:var(--warn);stroke-width:1.3;stroke-dasharray:3 2}
 text{fill:var(--fg);font-size:13px}
@@ -411,9 +411,10 @@ text{fill:var(--fg);font-size:13px}
 .t-small{font-size:12px}
 .t-b{font-weight:600}
 .t-c1{fill:var(--c1)}.t-c2{fill:var(--c2)}.t-c3{fill:var(--c3)}.t-c4{fill:var(--c4)}.t-c5{fill:var(--c5)}.t-warn{fill:var(--warn)}
-.frame{fill:var(--bg);stroke:var(--fg);stroke-width:1.2}
-.frame.warn{stroke:var(--warn);stroke-width:1.6;fill:var(--bg)}
-.margin{fill:none;stroke:var(--muted);stroke-width:.8;stroke-dasharray:3 3}
+.frame{fill:var(--bg);stroke:none}
+.edge{fill:none;stroke-width:1.6}
+.margin{fill:none;stroke-width:1.2;stroke-dasharray:4 3}
+.s-c1{stroke:var(--c1)}.s-c2{stroke:var(--c2)}.s-c3{stroke:var(--c3)}.s-c4{stroke:var(--c4)}.s-c5{stroke:var(--c5)}.s-warn{stroke:var(--warn)}
 .lead{fill:none;stroke:var(--muted);stroke-width:.8}
 """
 
@@ -581,9 +582,8 @@ def main_view(sc, out, view):
     for a, b in floor_grid(sc):
         out.append(line(view(a), view(b), "grid"))
     for cam in sorted(sc["cameras"], key=lambda c: view.depth(c["pos"])):
-        extra = ' stroke-dasharray="5 4"' if cam["too_long"] else ""
         for frac, klass in ((1.0, "beam-all"), (FILL, "beam-mid")):
-            out.append(f'<polygon class="{klass} {cam["cls"]}" points="{pts(fan(sc, cam, frac, view))}"{extra}/>')
+            out.append(f'<polygon class="{klass} {cam["cls"]}" points="{pts(fan(sc, cam, frac, view))}"/>')
     draw_mice(sc, out, view, view.depth)
     for quad in sorted(walls, key=lambda q: view.depth(mul(add(q[0], q[2]), 0.5))):
         out.append(f'<polygon class="glass" points="{pts([view(p) for p in quad])}"/>')
@@ -644,8 +644,7 @@ def thumbnail(sc, out, x0, y0, width, cam, f, dist, title, note, height=None, wi
     axes = camera_axes(pos)
     clip = f"clip-{sc['name']}-{cam['key']}-{tag}"
     out.append(f'<clipPath id="{clip}"><rect x="{x0}" y="{y0}" width="{width:.1f}" height="{height:.1f}"/></clipPath>')
-    frame_cls = "frame warn" if cam["too_long"] else "frame"
-    out.append(f'<rect class="{frame_cls}" x="{x0}" y="{y0}" width="{width:.1f}" height="{height:.1f}"/>')
+    out.append(f'<rect class="frame" x="{x0}" y="{y0}" width="{width:.1f}" height="{height:.1f}"/>')
 
     def sensor_px(q):
         return (x0 + (q[0] - wx0) / (wx1 - wx0) * width, y0 + (wy1 - q[1]) / (wy1 - wy0) * height)
@@ -698,8 +697,8 @@ def thumbnail(sc, out, x0, y0, width, cam, f, dist, title, note, height=None, wi
     cam["hidden"] = share
     if full:
         mx, my = width * (1 - FILL) / 2, height * (1 - FILL) / 2
-        out.append(f'<rect class="margin" x="{x0 + mx:.1f}" y="{y0 + my:.1f}" width="{width * FILL:.1f}" height="{height * FILL:.1f}"/>')
-    out.append(f'<rect class="{frame_cls}" x="{x0}" y="{y0}" width="{width:.1f}" height="{height:.1f}" style="fill:none"/>')
+        out.append(f'<rect class="margin s-{cam["cls"]}" x="{x0 + mx:.1f}" y="{y0 + my:.1f}" width="{width * FILL:.1f}" height="{height * FILL:.1f}"/>')
+    out.append(f'<rect class="edge s-{cam["cls"]}" x="{x0}" y="{y0}" width="{width:.1f}" height="{height:.1f}"/>')
     out.append(f'<text x="{x0}" y="{y0 - 22}" class="t-b t-{cam["cls"]}">{title}</text>')
     out.append(f'<text x="{x0}" y="{y0 - 7}" class="t-small t-muted">{note}</text>')
 
@@ -749,7 +748,7 @@ def svg(sc):
              "Each lens is the longest that keeps the whole box in the middle 80% of its frame. "
              "Distances: from the lens to the middle of the box&#8217;s floor.",
              "Each lens bends lines as the guide&#8217;s example lens for that focal length does, from its maker&#8217;s figures.",
-             "Each camera&#8217;s triangles: how wide its frame is at the middle of the box. Light: all of it. Dark: the middle 80%."]
+             "Each camera&#8217;s triangles: how wide its frame is at the middle of the box. Solid: all of it. Dashed: its middle 80%."]
     for i, text in enumerate(notes):
         out.append(f'<text x="24" y="{sc["notes_y"] + 16 * i}" class="t-small t-muted">{text}</text>')
 
@@ -765,8 +764,8 @@ def svg(sc):
 
     # what each camera sees
     out.append(f'<text x="24" y="{header_y}" class="t-b">What each camera sees, through the lens it is drawn with</text>')
-    out.append(f'<text x="24" y="{header_y + 16}" class="t-small t-muted">Grey dashes: the middle 80% of the frame, where the '
-               'whole box must sit. Orange dashes: the part of a mouse another one hides.</text>')
+    out.append(f'<text x="24" y="{header_y + 16}" class="t-small t-muted">Solid, in the camera&#8217;s colour: its whole frame. '
+               'Dashed: the middle 80%, where the whole box must sit. Fine orange dashes: a hidden mouse.</text>')
     for i, cam in enumerate(sc["cameras"]):
         x, y = 24 + (i % THUMB_COLS) * (THUMB_W + THUMB_GAP), thumbs_y + (i // THUMB_COLS) * THUMB_ROW
         title = f"{cam['title']}, {fmt_mm(cam['lens'])} ({LENS_DATA[cam['lens']]['name']})"
