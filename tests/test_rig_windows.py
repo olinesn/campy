@@ -21,7 +21,7 @@ import rig, rig_windows  # noqa: E402
 pytestmark = pytest.mark.alone
 
 WINDOWS = sys.platform == "win32"
-RUNS = WINDOWS or sys.platform.startswith("linux")  # where rig.py can see processes
+RUNS = WINDOWS or sys.platform.startswith(("linux", "darwin"))  # where rig.py can see processes
 runs = pytest.mark.skipif(not RUNS, reason="rig.py reads processes on Linux and Windows only")
 windows = pytest.mark.skipif(not WINDOWS, reason="Windows API")
 

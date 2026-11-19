@@ -18,7 +18,7 @@ import rig  # noqa: E402
 # other test beside them (conftest.py, 'alone')
 pytestmark = pytest.mark.alone
 
-linux = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="rig.py reads Linux's /proc")
+linux = pytest.mark.skipif(not sys.platform.startswith(("linux", "darwin")), reason="rig.py reads /proc, or ps and libproc on macOS")
 
 
 def last(log):
@@ -94,6 +94,7 @@ def test_background_programs_are_matched_by_name_or_path(tmp_path, monkeypatch):
 	assert bg.match(fake(12, "scanner.exe")) is None  # its command line can't be read: not excused
 	assert bg.match(fake(13, "python.exe")) is None
 	monkeypatch.setattr(rig, "WINDOWS", False)  # Linux: the program's file name, and /proc/<pid>/exe or argv[0]
+	monkeypatch.setattr(rig, "MACOS", False)
 	assert bg.match(fake(20, "/opt/sec/bin/secd --daemon")) == 2
 	assert bg.match(fake(21, "[secd]")) == 2
 	assert bg.match(fake(22, "/usr/bin/secdx")) is None
@@ -236,15 +237,19 @@ def run(tmp_path):
 def test_a_listed_program_within_its_ceiling(run):
 	# Other programs' noise on the test machine must not count here: only the background verdict is tested
 	run.background({"processes": [{"name": "bgspin", "cpu": 8, "io": 100000}], "share": 1.0})
-	spin = run.spin(6)
+	# A desktop Mac's own programs (a browser, the window server) take about a core between them: there the
+	# limit is 3 cores, and the background program spins 4
+	cores, limit = (4, "3") if sys.platform == "darwin" else (1, "0.5")
+	spins = [run.spin(6) for _ in range(cores)]
 	try:
 		time.sleep(0.5)
 		t = time.monotonic()
-		r = run("--cpu", "0.5", "--load-looks", "1000", "--load-share", "1", "tester", "bg", "--", "sleep", "2")
+		r = run("--cpu", limit, "--load-looks", "1000", "--load-share", "1", "tester", "bg", "--", "sleep", "2")
 		assert r.returncode == 0, r.stdout + r.stderr
 		assert time.monotonic() - t < 5  # it didn't wait for the background program
 	finally:
-		spin.kill()
+		for spin in spins:
+			spin.kill()
 	log = run.log("bg")
 	assert "known background (background.json): bgspin up to 8 cores" in log, log
 	assert "LOAD " in log and "background (background.json): bgspin" in log, log
