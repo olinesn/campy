@@ -625,10 +625,12 @@ class TemplateMatcher:
 		return self.moved + float((n * a * (r * G).sum(axis=(1, 2))).sum() / den), len(use)
 
 	def MoveNow(self, at):
-		"""At sample at: the drift measured, and the templates moved if it changed enough."""
+		"""At sample at: the drift measured, and the templates moved if it changed enough. The measure is rounded to
+		0.01 um: the samples as scored may differ in their last bits with how they came in pieces (a matrix product's
+		rounding, on some machines), and so the sums measured from; rounded, the templates move the same way."""
 		up, n = self.Measure(at)
 		if up is not None:
-			up = float(np.clip(up, -DRIFT_MAX_UM, DRIFT_MAX_UM))
+			up = round(float(np.clip(up, -DRIFT_MAX_UM, DRIFT_MAX_UM)), 2)
 			if abs(up - self.moved) >= DRIFT_MOVE_UM:
 				self.Move(up)
 		self.drift_log.append((int(at), up, self.moved, n))
