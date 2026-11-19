@@ -588,13 +588,12 @@ class TemplateMatcher:
 		period = (bfirst + t + DRIFT_LAG) // self.every # (those in a period are all judged before it is measured)
 		rows = t[:, None] + np.arange(-el.BEFORE, el.AFTER)[None, :]
 		waves = self.scored[rows[:, :, None], self.cols[u][:, None, :]] # [spikes, 61, sites]
-		for k in np.unique(period).tolist():
+		for i, (k, unit) in enumerate(zip(period.tolist(), u.tolist())): # (one at a time: np.add.at is slow here)
 			if k not in self.periods:
 				self.periods[k] = (np.zeros(self.base.shape, np.float64), np.zeros(len(self.units), np.int64))
 			sums, counts = self.periods[k]
-			mine = period == k
-			np.add.at(sums, u[mine], waves[mine])
-			np.add.at(counts, u[mine], 1)
+			sums[unit] += waves[i]
+			counts[unit] += 1
 
 	def Measure(self, at):
 		"""The drift at sample at: from the strong spikes of the window before it (Gather), each unit's mean (on its
@@ -639,28 +638,40 @@ class TemplateMatcher:
 		in noise units, kept to the shapes in time (W), and its shapes' weights; its energy and the score its threshold
 		needs; the cross-correlations of the templates that share sites (K[u][i, d + 60] is unit over[u][i]'s score at
 		t + d lowered by a spike of u at t, of size 1, taken away), one after another for numba's loop (unit u's from
-		row cross_at[u]); and each score group's weights. At the start, and when the templates move with the drift."""
+		row cross_at[u]); and each score group's weights. At the start, and when the templates move with the drift.
+		Each pair's cross-correlation is its weights' products (K x K, on the sites they share) times the shapes' own
+		cross-correlations: a few matrix products for all pairs at once."""
 		U, L = len(self.units), el.BEFORE + el.AFTER
 		ok = self.sites >= 0
 		W = self.W
+		K = W.shape[1]
 		Tn = templates / self.noise[self.cols][:, None, :] * ok[:, None, :] # [units, 61, sites], noise units
-		self.Tn = np.einsum("tk,sk,usj->utj", W, W, Tn).astype(np.float32) # each template as its shapes give it
-		self.weights = np.einsum("tk,utj->ukj", W, Tn) # [units, K, sites]: each template's shapes' weights on its sites
+		self.weights = np.matmul(W.T, Tn.astype(np.float64)) # [units, K, sites]: each template's shapes' weights on its sites
+		self.Tn = np.matmul(W, self.weights).astype(np.float32) # each template as its shapes give it
 		self.norm2 = np.maximum((self.Tn.astype(np.float64) ** 2).sum(axis=(1, 2)), 1e-12) # its energy
 		self.root = np.sqrt(self.norm2)
 		self.loose = self.zu * self.root * (1 - 1e-9) # a score above this may be above its unit's threshold
-		n = 1 << int(np.ceil(np.log2(2 * L - 1)))
-		F = np.fft.rfft(self.Tn.astype(np.float64), n=n, axis=1).transpose(0, 2, 1) # [units, sites, freq]
-		cross = []
-		for u in range(U):
-			mine = np.zeros((self.channels, F.shape[2]), complex)
-			np.add.at(mine, self.cols[u], F[u])
-			V = self.over[u]
-			c = np.fft.irfft((mine[self.cols[V]] * np.conj(F[V])).sum(axis=1), n=n, axis=1) # sum_n Tn_u[n+d] Tn_v[n]
-			cross.append(np.concatenate([c[:, n - (L - 1):], c[:, :L]], axis=1).astype(np.float32))
-		self.cross_flat = np.ascontiguousarray(np.concatenate(cross) if cross else np.zeros((0, 2 * L - 1)), np.float32)
-		self.cross_at = np.r_[0, np.cumsum([len(c) for c in cross])][:-1].astype(np.int64)
-		self.cross = [self.cross_flat[a:a + len(c)] for a, c in zip(self.cross_at, cross)] # (views of cross_flat)
+		if not hasattr(self, "shape_cross"): # the shapes' cross-correlations: [K, K, 2L - 1], R[k, l, d + 60] =
+			# sum_n W[n + d, k] W[n, l]
+			R = np.zeros((K, K, 2 * L - 1))
+			for d in range(-(L - 1), L):
+				a, b = max(0, d), L + min(0, d)
+				R[:, :, d + L - 1] = W[a:b].T @ W[a - d:b - d]
+			self.shape_cross = R.reshape(K * K, 2 * L - 1)
+			self.pairs_u = np.repeat(np.arange(U), [len(V) for V in self.over]) # every (u, v) sharing sites, in
+			self.pairs_v = np.concatenate(self.over) if U else np.zeros(0, int) # cross_flat's order
+		on = np.zeros((U, self.channels, K)) # each unit's weights on the channels of its sites
+		np.add.at(on, (np.repeat(np.arange(U), self.sites.shape[1]), self.cols.ravel()),
+			self.weights.transpose(0, 2, 1).reshape(-1, K))
+		cross = np.empty((len(self.pairs_u), 2 * L - 1), np.float32)
+		for a in range(0, len(self.pairs_u), 8192):
+			pu, pv = self.pairs_u[a:a + 8192], self.pairs_v[a:a + 8192]
+			P = np.matmul(on[pu[:, None], self.cols[pv]].transpose(0, 2, 1), self.weights[pv].transpose(0, 2, 1)) # [pairs,
+			# K, K]: u's weights on v's sites times v's
+			cross[a:a + len(pu)] = P.reshape(len(pu), K * K) @ self.shape_cross
+		self.cross_flat = cross
+		self.cross_at = np.r_[0, np.cumsum([len(V) for V in self.over])][:-1].astype(np.int64)
+		self.cross = [self.cross_flat[a:a + len(V)] for a, V in zip(self.cross_at, self.over)] # (views of cross_flat)
 		self.groups = [(g, chans, self.GroupWeights(g, chans)) for g, chans in self.group_sets]
 
 	def Reset(self):

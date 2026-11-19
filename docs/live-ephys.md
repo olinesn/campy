@@ -1,6 +1,6 @@
 # Live electrophysiology from SpikeGLX
 
-*Being built. What exists so far: the engine (`campy/ephyslive.py`), `campy-ephys bench`, which measures what it costs, the campy-session panel's **Live ephys** card, which shows it ([below](#in-the-panel-the-live-ephys-card)), and a live sorter trained on a Kilosort 4 sort, which can also find spikes with the templates themselves, below the threshold ([below](#a-live-sorter-from-a-kilosort-4-sort)).*
+*Being built. What exists so far: the engine (`campy/ephyslive.py`), `campy-ephys bench`, which measures what it costs, the campy-session panel's **Live ephys** card, which shows it ([below](#in-the-panel-the-live-ephys-card)), and a live sorter trained on a Kilosort 4 sort, which can also find spikes with the templates themselves, below the threshold, and move them with the probe's drift ([below](#a-live-sorter-from-a-kilosort-4-sort)).*
 
 A Neuropixels probe recorded by SpikeGLX can be watched live: a few channels scrolling like an oscilloscope, and its spikes, found by a threshold on every channel, as snippets, firing rates and a map of the probe. campy reads the probe's samples from SpikeGLX while SpikeGLX records them, and changes nothing in SpikeGLX.
 
@@ -189,7 +189,7 @@ campy-ephys evaluate --replay <run>_g0_t0.imec0.ap.bin --phy <Kilosort's output 
 1. **Labels:** each live spike near a spike of a kept unit (within 10 samples, on a site within 60 µm of the unit's peak site) takes that unit. The kept units are those labelled `good` or `mua`: phy's labels if the sort was curated (`cluster_group.tsv`), else Kilosort's (`cluster_KSLabel.tsv`); `--labels` changes them. Units labelled `noise` in a curated sort get templates too, but only to compete for spikes: what they match stays unsorted, and the card doesn't list them (`--compete`).
 2. **Templates:** each unit's template is the median of its spikes' waveforms at Kilosort's spike times, on its 32 nearest sites (a spike's whole footprint), as the live filter shapes them. Kilosort's own templates are whitened and filtered forwards and backwards, so they are not what the live view sees. A threshold's spike is compared on the 12 nearest of them, the sites a spike keeps.
 3. **Acceptance:** each unit gets how far its own spikes fall from its template: the 99th percentile of their distances (`--accept-q`).
-4. **For matching** ([below](#spikes-found-by-the-templates-below-the-threshold)): the whitening, the templates again in the whitened samples, and each unit's threshold, learned by replaying the training span once more with the templates matched. This replay takes longer than the first: with numba, 1.4 to 1.7 s per second of recording on one core of a cluster node (7 minutes for a 240 s span of a 384-channel probe with 437 templates). `--no-whiten` and `--no-learn` leave these out. The units are saved in their order on the probe, which the matcher's work goes by.
+4. **For matching** ([below](#spikes-found-by-the-templates-below-the-threshold)): the whitening, the templates again in the whitened samples, and each unit's threshold, learned by replaying the training span once more with the templates matched. This replay takes longer than the first: with numba, 1.4 to 1.7 s per second of recording on one core of a cluster node (7 minutes for a 240 s span of a 384-channel probe with 437 templates). `--no-whiten` and `--no-learn` leave these out. The units are saved in their order on the probe, which the matcher's work goes by, and so is where each site is, which following the probe's drift needs ([below](#following-the-probes-drift)): a templates file trained before that can't follow it, so train it again.
 
 **Sorting live.** Each spike is compared with the units whose sites include its channel, on the sites they share. The template is scaled to the spike (0.5 to 2 times), and the distance is the residual per sample, divided by each site's noise. The spike takes the closest unit if it is within that unit's acceptance, and stays unsorted (−1) otherwise.
 
@@ -251,7 +251,7 @@ So the mua units' templates are what keeps their spikes, and noise crossings, fr
 
 **What limits it:**
 - **What the spike finder misses.** It finds 85% of good units' spikes (above), and few of the units near its threshold, where Kilosort's template matching still finds them: the lower quartile of units is under 30%. Matching the templates finds them ([below](#spikes-found-by-the-templates-below-the-threshold)).
-- **No drift correction.** Train again on a recent recording when the probe has moved.
+- **Drift:** the threshold's spikes are sorted with the templates where training left them; the matcher's templates follow the drift ([below](#following-the-probes-drift)). Train again after a move of more than about 40 µm (between sessions, say).
 - **Only the sort's units.** Units the sort didn't keep stay unsorted.
 - **Collisions.** Two spikes within 1.5 ms of each other nearby are one live spike, sorted as the bigger.
 - **Speed.** At about 280 µs a spike, 2,000 spikes a second would take about half a core. Speed work comes after accuracy (below).
@@ -264,6 +264,8 @@ With `--match learned` (`campy-ephys evaluate` and `campy-ephys serve`), the tem
 - **Matching.** Each unit's template is slid along the whitened samples (a matched filter, in the frequency domain). Its score at each sample, in noise units (z), says how much of the data the template explains there.
 - **Taking spikes away.** The highest score above its unit's threshold is a spike. Its template, at its fitted size, is taken away, and the rest is looked at again, up to 3 times. Nearby units that spike within 0.67 ms of each other are fitted together, up to three, so that one unit's template doesn't take in the others' spikes. Taking a spike away updates the scores through the templates' cross-correlations, as Kilosort does, so nothing is matched twice.
 - **Each unit's threshold is learned in training.** The training span is replayed with the templates matched from z 6. Each unit's template spikes are paired one to one with its Kilosort spikes (within 10 samples), and its threshold is the one where F1 is highest: F1 counts both the share of its Kilosort spikes found and the share of its template spikes that are its. One threshold for every unit doesn't work: on a real recording, z 7 gave out three times Kilosort's spike count, mostly to small units.
+- **Which unit, when two fit about as well.** Units near each other that peak within 0.67 ms compete for the spike: each counts how well its template explains it (z²/2, the log-likelihood of its fit) plus the log of how often it fired in training. So where two templates fit a spike about equally, it goes to the unit that fires more (Bayes' rule, with each unit's rate as its prior). Without it, a unit that rarely fires took a busy neighbour's spikes at such near-ties.
+- **The templates follow the probe's drift** ([below](#following-the-probes-drift)).
 - **The threshold's spikes** that no template spike explains (within 10 samples, on its sites) stay as unsorted crossings.
 - **The same spikes however they come.** A sample is judged once all it needs has come, so a recording replayed in 50 ms pieces or 1 s pieces gives the same spikes.
 - **How it's fast enough** (the same spikes as the first, slower version, on both recordings below):
@@ -286,14 +288,15 @@ For good units, each unit's Kilosort spikes and the spikes given to it are paire
 | **Threshold's spikes, sorted:** found / right | 58% (26–86%) / 87% (65–98%) | 17% (5–41%) / 32% (7–75%) |
 | **Matched, z 7 for every unit:** found / right | 94% / 77% | 82% / 12% |
 | **Matched, each unit's threshold, not whitened:** found / right | 87% / 89% | 55% / 45% |
-| **Matched, each unit's threshold, whitened (the default):** found / right | **95% (86–99%) / 96% (89–100%)** | **75% (45–92%) / 80% (56–95%)** |
+| **Matched, each unit's threshold, whitened:** found / right | 95% (86–99%) / 96% (89–100%) | 75% (45–92%) / 80% (56–95%) |
+| **… near ties to the unit that fires more, and the templates following the drift (the default):** found / right | **95% (86–99%) / 96% (88–100%)** | **76% (50–93%) / 81% (55–95%)**, replayed from 5 minutes before, as live; 40 minutes after training (2,400–2,460 s), 71% (46–94%) / 81% (56–95%), where the templates left in place got 63% / 77% ([below](#following-the-probes-drift)) |
 | Spikes given to good units a second, whitened (Kilosort's) | 1,362 (1,389) | 2,008 (1,931) |
-| One core of a cluster node, per second of recording, whitened, with numba (without) | 0.59 s (0.87 s) | 0.71 s |
+| One core of a cluster node, per second of recording, whitened, with numba (without) | 0.59 s (0.87 s) | 0.71 s; following the drift, 0.74 s against 0.72 s without (another node) |
 | One core of the ChronicRecord PC (Intel Core Ultra 9 285), with numba (without) | 0.49 s (0.70 s) | not timed |
 
 "Found" is the share of a unit's Kilosort spikes found and given to it; "right" is the share of the spikes given to it that are its.
 
-The curated recording is the harder one: 38% of its good units are at 80% or more on both, against 80% of those in Kilosort's sample. Small units do worst there: of the units whose trough is under 40 µV, 11% are; of those over 100 µV, 53%. Before whitening, most of the matcher's wrong spikes there fell where Kilosort had no spike nearby, and a fifth fell on another good unit's spike nearby. That hasn't been measured again since whitening.
+The curated recording is the harder one: 40% of its good units are at 80% or more on both (the default, at 700–760 s), against 80% of those in Kilosort's sample. Small units do worst there: of the units whose trough is under 40 µV, 11% are; of those over 100 µV, 54%. Where its spikes differ from Kilosort's, and why: [below](#where-its-spikes-differ-from-kilosort-4s).
 
 **What limits it:**
 - **Speed.** Matching takes 0.6 to 0.7 s of one core of a cluster node per second of a 384-channel probe with numba, and about 0.9 s without. On the ChronicRecord PC it took 0.49 s with numba and 0.69 s in the panel's own environment, which had no numba (18 November, Kilosort's sample replayed as fast as it could be, under the rig lock, the same spikes every way). numba went into the panel's environment that night (numba 0.68.1 and llvmlite 0.50.0; pip changed nothing else, numpy stayed 2.5.4), and the card's matcher there then took 0.48 s, with the same 54,413 sorted spikes and the same accuracy.
@@ -308,12 +311,67 @@ The curated recording is the harder one: 38% of its good units are at 80% or mor
 
   In its own thread the matcher keeps up even without numba; with numba, which the panel's environment now has, it is busy about half the time. On a cluster node's slower cores, in the reader's thread it couldn't keep up (20 s of samples took 29 s), and without numba it fell 2 s behind and skipped a fifth of the pieces.
 - **Not tried on the card yet:** the panel passes `--match` with `spikeglx.match`, but the ChronicRecord probe has no templates from a sort of its own recordings yet.
-- **Harder recordings.** On the curated recording, a quarter of good units have under 45% of their Kilosort spikes found, and a quarter have under 56% of what they're given right.
-- **No drift correction**, as above.
+- **Harder recordings.** On the curated recording, a quarter of good units have under 45% of their Kilosort spikes found, and a quarter have under 56% of what they're given right. Where its spikes differ from Kilosort's, and why: [below](#where-its-spikes-differ-from-kilosort-4s).
+- **Drift:** followed as one shift for the whole probe ([below](#following-the-probes-drift)).
+
+### Following the probe's drift
+
+A probe moves a few micrometres in the brain over an hour, and its units' footprints move with it across the sites. Templates trained at the start then fit less well. On the curated recording (trained at 60–300 s), the share of good units' spikes found fell from 77% at 700 s to 64% at 1,500 s and at 2,400 s, while Kilosort's own estimate of the drift went from about 0 to 4 µm. Templates trained just before 2,400 s found 77% there again. So the matcher follows the drift, as Kilosort 4 corrects it, but live:
+
+- **Measured from the units' own spikes, every 30 s.** Each unit's strong spikes of the last 60 s are averaged: those found alone, in the first pass, at 1.5 times its threshold or more, so nearly all of a unit's spikes, not only those that happen to fit its template. The drift is the one shift up or down the probe, for all the templates, that best fits those averages, each unit weighted by its spikes. Each measure is a step from where the templates are (Gauss-Newton), so a large drift is caught up with over a few measures. It needs 10 units with 20 such spikes each; with fewer, the templates stay where they are.
+- **The templates are moved, not the samples.** Each template, as filtered, is interpolated across its sites to where the shift puts it, with Kilosort 4's kriging (a 20 µm kernel). The change, whitened as the samples are, is added to the template as trained, so at 0 µm it is the trained template, to the last bit. Kilosort moves its data instead. Done to the live samples, that interpolation smooths them: with no drift to correct, it alone lowered the share found at 700 s from 77% to 67%.
+- **One shift for the whole probe,** as Kilosort 4 does by default.
+- **The same samples give the same spikes,** however they come. The templates move at fixed samples (every 30 s, counted from the stream's first sample). Before each move, the template spikes up to 0.1 s before it are judged, and the move is measured from them.
+- **On the card,** the status line says how far the templates have moved. `--no-drift` (`campy-ephys evaluate`, `serve`) keeps them where training left them.
+
+**On the curated recording** (templates trained at 60–300 s). Each test span was replayed from 5 minutes before it, as the matcher would have run live, so the measure had caught up. Good units, the median per unit, and pooled over all their spikes:
+
+| Tested at | Kilosort's drift since training | Measured live | Found: left / following | Right: left / following | Pooled found and right: left → following |
+|---|---|---|---|---|---|
+| 300–360 s | 0.5 µm | 0.9 µm | 78% / 78% | 76% / 76% | 86%, 82% → 86%, 82% |
+| 700–760 s | 1.7 µm | 2.1 µm | 78% / 76% | 81% / 81% | 85%, 81% → 86%, 81% |
+| 1,500–1,560 s | 3.8 µm | 3.3 to 4.4 µm | 64% / **71%** | 78% / 79% | 76%, 78% → **83%, 80%** |
+| 2,400–2,460 s | 4.4 µm | 4.8 to 5.1 µm | 63% / **71%** | 77% / **81%** | 78%, 81% → **84%, 80%** |
+| 3,600–3,660 s | 4.1 µm | 4.6 to 5.4 µm | 71% / 71% | 78% / 77% | 80%, 80% → **84%, 80%** |
+
+- **It recovers most of what the drift costs.** Templates trained again just before 2,400 s (on Kilosort's sort there) found 77% (median; 87% pooled). Following the drift, with no new sort, got 71% (84% pooled), from 63% (78%).
+- **Moving the templates by Kilosort's own estimate** gave about the same (71% and 81% at 2,400 s), so the live measure is as good as Kilosort's for this.
+- **Where there is little drift** (300 and 700 s) it changes little either way.
+- **Through `campy-ephys evaluate` on 2,160–2,460 s** (the measure catching up from 0 in its first three moves: 3.2, 4.4, then 5.4 µm): 69% found and 79% right, against 63% and 76% with the templates left where they were; 83% and 80% pooled, against 76% and 79%.
+- **What it costs:** on one core of a cluster node (the curated recording, 700–760 s, the same node for each), the matcher took 0.74 s per second of recording following the drift, against 0.72 s with `--no-drift` and 0.72 s before any of this. Each measure and move takes about 0.3 s of the matcher's thread every 30 s: 0.1 s to measure, 0.2 s to move the templates and work their cross-correlations out again (from the templates' 8 shapes in time: 0.05 s on an Apple M-series Mac, ten times faster than before). That is well within the 2 s the matcher may fall behind. Setting it up when the matcher starts takes 0.9 s.
+- **What it doesn't do:** follow drift that differs along the probe (one shift for all; on this recording that leaves part of the gap to retraining), nor a unit whose shape changes as it moves.
+
+**Measuring the drift from the threshold's spikes instead,** as Kilosort measures it (each spike's depth, counted by depth and size, aligned with the training span's count), followed Kilosort's estimate closely through the hour (correlation 0.99), but at half its size. A threshold spike keeps only its 12 nearest sites, centred on its own, so its measured depth moves about half as far as its unit while the unit stays within a row of sites. Moving the templates by half of Kilosort's estimate recovered less than by all of it, and 1.5 times it less again: Kilosort's size is the right one, and the units' own spikes measure it.
+
+### Where its spikes differ from Kilosort 4's
+
+Measured unit by unit on the curated recording (templates trained at 60–300 s, tested at 700–760 s) and on Kilosort's sample. Each good unit's Kilosort spikes and the live spikes given to it are paired one to one, within 10 samples. Each spike that isn't paired is put down to a cause.
+
+| | Curated recording | Kilosort's sample |
+|---|---|---|
+| Good units' Kilosort spikes not found for their unit: **given to another good unit near it** | 7.7% | 1.2% |
+| … scored under their unit's threshold | 5.1% | 2.5% |
+| … given to a noise cluster's template, or to a mua unit | 1.6% | 3.1% |
+| … scored over it but not taken | 1.2% | 1.2% |
+| Spikes given to a good unit that aren't its: **another good unit's** | 8.6% | 1.1% |
+| … where Kilosort has no spike near | 8.4% | 1.1% |
+| … a noise cluster's or a mua unit's | 1.8% | 4.0% |
+| Paired spikes within 1 sample of the unit's usual offset from Kilosort's time | 99.4% | 99.2% |
+
+What this says:
+- **The spike times agree.** Each unit's live spikes come at a steady offset from Kilosort's times (−3 to +3 samples, as the forwards-only filter shifts its trough), and 83% of them exactly at it.
+- **Kilosort 4's own labels or phy's make little difference.** phy changed only the curated recording's labels: its 537 units are Kilosort's 537, none merged or split. Trained and tested on Kilosort's own labels instead, its good units came out at 77% found and 80% right (median), as phy's did, and 87% and 84% pooled over all their spikes.
+- **What differs most is which unit gets a spike, not whether it is found.** Kilosort 4 doesn't give a spike to the template that found it. It finds spikes with its templates (about 1,500 on this recording), then clusters them again by their shape into its final units (537): a fifth of its spikes end up in a unit that isn't the one their template mostly feeds (a tenth in its sample). The live sorter has one template per final unit and gives each spike to the one that fits it best. Where a spike went to the wrong good unit, the true unit's template scored 0.97 times the taker's (median): near ties, which Kilosort's clustering decided differently.
+  - About half of these are swaps (the true unit's spike wasn't found live). The other half are extra spikes beside a true unit's spike that was found too, mostly from fitting two or three units at once.
+  - A few pairs of units have nearly the same template (similarity 0.9 to 0.95, on the same sites), likely one neuron that Kilosort split. Only Kilosort's clustering tells them apart.
+  - Near ties now go to the unit that fires more (above): 0.4 to 0.8 points more spikes found and right, pooled, on the curated recording; no change on Kilosort's sample.
+- **The wrong spikes are near the threshold:** they score 1.05 to 1.2 times their unit's threshold (median), the right ones 1.4 times. Raising the threshold for spikes fitted in groups, or found in later passes, traded spikes found for spikes right, but no better overall (F1 0.82 to 0.83 either way): each unit's learned threshold is already where that balance is best.
+- **Time since training costs spikes found:** the drift ([above](#following-the-probes-drift)).
+- **Refreshing the templates from their own recent spikes,** rather than moving them, didn't work. The means of 2 minutes of a unit's spikes are too noisy (the change they measured was 36% of the template even where nothing had moved), and replacing the templates with them cost spikes right.
 
 ## Next
 
-- **A better sorter:** following the probe's drift.
+- **A better sorter:** telling apart units whose templates fit a spike about equally, as Kilosort's clustering does (the largest difference from Kilosort that is left), and drift that differs along the probe (one shift for the whole probe now).
 - **Matching on the card, on the ChronicRecord PC:** once its probe is implanted, `campy-ephys templates` on its first session, then `match: learned` tried during the next; then how many probes one PC can match live at once. Until then its probe is on a bench, and its recordings have no units to make templates from.
 - **Accuracy first, then speed.** Speed work waits until the live output matches an automated sort made after the recording (Kilosort 4) in precision and accuracy. After that come tests of how many probes one PC can follow live at once, and only then speedups.
 - **Later, on top of live-sorted units:** each neuron's activity plotted live against the population's low-dimensional space and against the behaviour campy-live tracks: keypoint-MoSeq syllables, a PCA or UMAP space of the poses, or another map that describes the behaviour better.
