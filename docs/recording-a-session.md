@@ -165,7 +165,7 @@ You can also give a time for the Pico to start (`7:20 PM`); otherwise you start 
 
 While it records, the **Pico** card shows the bout (for example `bout 212 of 1728`, or `between bouts`), the camera pulses so far, and when the session ends. The **SpikeGLX** card shows its run, whether a file is open (the gate is high), and how many files this session has.
 
-**Live ephys.** Below the Pico and SpikeGLX cards, the **Live ephys** card shows the probe while SpikeGLX runs (before, during and after a recording; not while SpikeGLX runs no run). Press **Show the probe live**:
+**Live ephys.** Below the Pico and SpikeGLX cards, the **Live ephys** card shows the probe while SpikeGLX runs (before, during and after a recording; not while SpikeGLX runs no run). An experiment that records no probe (its `spikeglx.devices` naming only the OneBox, as the ChronicRecord rig's photometry-only one) has no card. Press **Show the probe live**:
 
 - **Oscilloscope:** the last 2 seconds of the picked site and its 3 nearest, filtered as for spikes. **−** and **+** change the scale.
 - **Spikes, last 10 s:** every spike found, by its depth on the probe; darker is bigger.

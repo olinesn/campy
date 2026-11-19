@@ -134,7 +134,7 @@ Over Remote Desktop the view and the card show at most Remote Desktop's own fram
 
 ## In the panel: the Live ephys card
 
-With a `spikeglx:` section in its config (the ChronicRecord rig's), the campy-session panel's page has a **Live ephys** card. **Show the probe live** opens it:
+With a `spikeglx:` section in its config (the ChronicRecord rig's), the campy-session panel's page has a **Live ephys** card. An experiment whose `spikeglx.devices` names only OneBoxes, such as the ChronicRecord rig's photometry-only one, has none: there is no probe for it to read. **Show the probe live** opens it:
 
 - an oscilloscope of the picked site and its 3 nearest, the last 2 s (each millisecond's lowest and highest);
 - the last 10 s of spikes, by depth on the probe;
