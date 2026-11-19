@@ -128,6 +128,13 @@ def distorted(xy, f):
     return (x * rd / r, y * rd / r) + tuple(xy[2:])
 
 
+def undistorted(xy, f):
+    """Where the undistorted lens would put a point the real lens puts at xy (mm)."""
+    k = DISTORTION[f]
+    scale = 1 / (1 + k * (xy[0] ** 2 + xy[1] ** 2))
+    return xy[0] * scale, xy[1] * scale
+
+
 def project(point, position, axes, f):
     """Where a world point lands on the sensor (mm) through the real lens, and its depth (cm)."""
     return distorted(to_sensor(point, position, axes, f), f)
@@ -388,7 +395,8 @@ color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,H
 .body{fill:var(--body)}
 .lensc{fill:var(--lens)}
 .mount{stroke:var(--muted);stroke-width:2.2;stroke-linecap:round}
-.beam{stroke-width:1;stroke-opacity:.85;fill-opacity:.13}
+.beam-all{stroke-width:.8;stroke-opacity:.55;fill-opacity:.08}
+.beam-mid{stroke-width:1.1;stroke-opacity:.9;fill-opacity:.18}
 .c1{fill:var(--c1);stroke:var(--c1)}.c2{fill:var(--c2);stroke:var(--c2)}.c3{fill:var(--c3);stroke:var(--c3)}
 .c4{fill:var(--c4);stroke:var(--c4)}.c5{fill:var(--c5);stroke:var(--c5)}
 .mouseA{fill:var(--mA);stroke:var(--mAs);stroke-width:.8;stroke-linejoin:round}
@@ -517,6 +525,35 @@ def draw_camera(out, view, cam, scale):
             out.append(f'<polygon class="{fc}" points="{p2}" stroke="none"/>')
 
 
+def clip_inside(poly, sc):
+    """The part of a flat 3D polygon inside the cabinet or cubicle."""
+    hx, hy, h = sc["outer"][0] / 2, sc["outer"][1] / 2, sc["outer"][2]
+    for axis, lim, sign in ((0, hx, 1), (0, -hx, -1), (1, hy, 1), (1, -hy, -1), (2, h, 1), (2, 0.0, -1)):
+        inside = lambda p: sign * (p[axis] - lim) <= 1e-9
+        src, poly = poly, []
+        for i, p in enumerate(src):
+            q = src[i - 1]
+            if inside(p) != inside(q):
+                poly.append(add(q, mul(sub(p, q), (lim - q[axis]) / (p[axis] - q[axis]))))
+            if inside(p):
+                poly.append(p)
+    return poly
+
+
+def fan(sc, cam, frac, view):
+    """A camera's view across: a flat triangle from the lens to the floor at the middle of
+    the box, as wide as the frame (frac 1) or its middle (FILL) is there, through the lens,
+    cut where it meets the walls of the cabinet or cubicle (if the camera is inside)."""
+    pos, f = cam["pos"], cam["lens"]
+    r, _, w = camera_axes(pos)
+    depth = dot(sub(TARGET, pos), w)
+    xu = undistorted((frac * SENSOR_W / 2, 0.0), f)[0]
+    tri = [pos] + [add(pos, mul(add(mul(w, f), mul(r, side * xu)), depth / f)) for side in (-1, 1)]
+    if not cam["too_long"]:
+        tri = clip_inside(tri, sc)
+    return [view(p) for p in tri]
+
+
 def draw_mice(sc, out, project, nearness, extra=""):
     """Tails first (they lie on the floor), then every body part, farthest first."""
     parts = []
@@ -537,15 +574,16 @@ def main_view(sc, out, view):
     out.append(f'<polygon class="wall2" points="{pts([P(-hx, -hy, 0), P(-hx, hy, 0), P(-hx, hy, H), P(-hx, -hy, H)])}"/>')
     out.append(f'<polygon class="floor" points="{pts([P(-hx, -hy, 0), P(hx, -hy, 0), P(hx, hy, 0), P(-hx, hy, 0)])}"/>')
 
-    # lines of sight from each camera to the box's floor corners, then the box
+    # the box's floor, then each camera's view across: light, all of its frame; dark, the
+    # middle 80% the whole box must sit in; then the mice and the box's clear walls
     floor, walls = box_walls(sc)
-    for cam in sc["cameras"]:
-        shape = hull([view(cam["pos"])] + [view(p) for p in floor])
-        extra = ' stroke-dasharray="5 4"' if cam["too_long"] else ""
-        out.append(f'<polygon class="beam {cam["cls"]}" points="{pts(shape)}"{extra}/>')
     out.append(f'<polygon class="boxfloor" points="{pts([view(p) for p in floor])}"/>')
     for a, b in floor_grid(sc):
         out.append(line(view(a), view(b), "grid"))
+    for cam in sorted(sc["cameras"], key=lambda c: view.depth(c["pos"])):
+        extra = ' stroke-dasharray="5 4"' if cam["too_long"] else ""
+        for frac, klass in ((1.0, "beam-all"), (FILL, "beam-mid")):
+            out.append(f'<polygon class="{klass} {cam["cls"]}" points="{pts(fan(sc, cam, frac, view))}"{extra}/>')
     draw_mice(sc, out, view, view.depth)
     for quad in sorted(walls, key=lambda q: view.depth(mul(add(q[0], q[2]), 0.5))):
         out.append(f'<polygon class="glass" points="{pts([view(p) for p in quad])}"/>')
@@ -677,7 +715,7 @@ CLOSE_W, CLOSE_H = 417, 260
 def svg(sc):
     rows = -(-len(sc["cameras"]) // THUMB_COLS)
     closeups = [c for c in sc["cameras"] if c.get("closeup")]
-    header_y = sc["notes_y"] + 68
+    header_y = sc["notes_y"] + 84
     thumbs_y = header_y + 62
     close_y = thumbs_y + rows * THUMB_ROW - 66 + 52
     Wd = sc["width"]
@@ -710,7 +748,8 @@ def svg(sc):
              + " Camera: FLIR Blackfly S, 1/2\" sensor, 1280 × 1024. Mice: one rearing to 10 cm, one lying behind it.",
              "Each lens is the longest that keeps the whole box in the middle 80% of its frame. "
              "Distances: from the lens to the middle of the box&#8217;s floor.",
-             "Each lens bends lines as the guide&#8217;s example lens for that focal length does, from its maker&#8217;s figures."]
+             "Each lens bends lines as the guide&#8217;s example lens for that focal length does, from its maker&#8217;s figures.",
+             "Each camera&#8217;s triangles: how wide its frame is at the middle of the box. Light: all of it. Dark: the middle 80%."]
     for i, text in enumerate(notes):
         out.append(f'<text x="24" y="{sc["notes_y"] + 16 * i}" class="t-small t-muted">{text}</text>')
 
