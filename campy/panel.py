@@ -972,8 +972,13 @@ class EphysView:
 		except sglxmod.SpikeGLXError as e:
 			match = None
 			self.log.append("{}: the threshold's spikes sorted only".format(e))
+		try: # a multi-shank probe's shanks matched side by side (spikeglx.split)
+			split = sglxmod.Split(self.section)
+		except sglxmod.SpikeGLXError as e:
+			split = "threads"
+			self.log.append("{}: its shanks matched side by side".format(e))
 		if templates and os.path.isfile(templates):
-			cmd += ["--templates", templates] + (["--match", match] if match else [])
+			cmd += ["--templates", templates] + (["--match", match, "--split", split] if match else [])
 		elif templates:
 			self.log.append("spikeglx.templates: {} isn't there: threshold crossings only".format(templates))
 		elif match:

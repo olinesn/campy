@@ -1652,11 +1652,12 @@ def test_spikeglx_match_starts_the_reader_matching_with_the_templates(tmp_path):
 			view.Shutdown()
 
 	assert Command() == ([str(templates)], [])
-	assert Command(match="learned") == ([str(templates), "--match", "learned"], [])
-	assert Command(match=" Learned ") == ([str(templates), "--match", "learned"], [])
-	assert Command(match=8) == ([str(templates), "--match", "8"], [])
-	assert Command(match=8.5) == ([str(templates), "--match", "8.5"], [])
-	assert Command(match="9") == ([str(templates), "--match", "9"], [])
+	split = ["--split", "threads"] # a multi-shank probe's shanks side by side, by default
+	assert Command(match="learned") == ([str(templates), "--match", "learned"] + split, [])
+	assert Command(match=" Learned ") == ([str(templates), "--match", "learned"] + split, [])
+	assert Command(match=8) == ([str(templates), "--match", "8"] + split, [])
+	assert Command(match=8.5) == ([str(templates), "--match", "8.5"] + split, [])
+	assert Command(match="9") == ([str(templates), "--match", "9"] + split, [])
 	for off in ("", 0, "0", "off"):
 		assert Command(match=off) == ([str(templates)], [])
 	# No templates: nothing to match, and the panel says so
@@ -1668,6 +1669,34 @@ def test_spikeglx_match_starts_the_reader_matching_with_the_templates(tmp_path):
 			sglx.SpikeGLX(session.Section("spikeglx", dict(base, match=bad), sglx.KEYS))
 	with pytest.raises(session.SessionError, match="spikeglx.match: False is not text or a whole number or a number"):
 		session.Section("spikeglx", dict(base, match=False), sglx.KEYS)
+
+
+def test_spikeglx_split_says_how_the_reader_matches_a_multi_shank_probe(tmp_path):
+	# spikeglx.split: campy-ephys serve gets --split with --match ("threads" by default: a multi-shank probe's shanks
+	# side by side); a value it can't use stops the config at the start, with what it takes
+	from campy import spikeglx as sglx
+	templates = tmp_path / "templates.npz"
+	templates.write_bytes(b"")
+	base = {"sdk": FAKE_SDK, "host": "127.0.0.1", "port": 4142, "stream": [1, 0], "templates": str(templates)}
+
+	def Command(**given):
+		view = panel.EphysView(session.Section("spikeglx", dict(base, **given), sglx.KEYS))
+		try:
+			cmd = view.Command()
+			return cmd[cmd.index("--templates") + 1:cmd.index("--obx-ip")], list(view.log)
+		finally:
+			view.Shutdown()
+
+	for given, want in ((None, "threads"), ("", "threads"), ("threads", "threads"), ("serial", "serial"),
+			(" Whole ", "whole")):
+		extra = {} if given is None else {"split": given}
+		assert Command(match="learned", **extra) == ([str(templates), "--match", "learned", "--split", want], [])
+	assert Command(split="serial") == ([str(templates)], []) # nothing to split without matching
+	for bad in ("shanks", "parallel"):
+		with pytest.raises(sglx.SpikeGLXError, match="spikeglx.split: \"threads\""):
+			sglx.SpikeGLX(session.Section("spikeglx", dict(base, match="learned", split=bad), sglx.KEYS))
+	with pytest.raises(session.SessionError, match="spikeglx.split: 2 is not text"):
+		session.Section("spikeglx", dict(base, split=2), sglx.KEYS)
 
 
 @pytest.mark.parametrize("devices, card", [(None, True), ("(20,1,1)(20,obx)", True), ("(20,1,1)", True),

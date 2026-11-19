@@ -1146,7 +1146,7 @@ def Serve(args, out=print):
 	sorter = None
 	if args.templates: # a live sorter: templates from a Kilosort 4 sort (campy-ephys train)
 		from campy import ephyssort
-		sorter = ephyssort.Sorter(args.templates, args.match, args.threads)
+		sorter = ephyssort.Sorter(args.templates, args.match, args.threads, args.split)
 	engine = Engine(source, args.threshold, sorter=sorter, frames=frames)
 	key = os.environ.get("CAMPY_EPHYS_KEY", "")
 	state = {"asked": time.monotonic(), "health": {}, "stop": False}
@@ -1341,6 +1341,9 @@ def Main(argv=None):
 		"(noise units); 0: off")
 	v.add_argument("--threads", type=int, default=1, help="with --match: work the templates' scores out in this many "
 		"threads (the same spikes)")
+	v.add_argument("--split", default="threads", choices=("threads", "serial", "whole"), help="with --match: a "
+		"probe of independent parts (a multi-shank probe's shanks) matched side by side in threads (threads, the "
+		"default), one after another (serial), or the whole probe at once (whole); the same spikes")
 	t = sub.add_parser("train", help="a live sorter's templates from a Kilosort 4 sort (its phy folder), the recording "
 		"replayed as live (campy/ephyssort.py)")
 	t.add_argument("--replay", required=True, help="the sorted recording's .ap.bin (its .meta beside it)")
@@ -1369,6 +1372,9 @@ def Main(argv=None):
 		"units); 0: off, the threshold's spikes sorted")
 	e.add_argument("--threads", type=int, default=1, help="with --match: work the templates' scores out in this many "
 		"threads (the same spikes)")
+	e.add_argument("--split", default="threads", choices=("threads", "serial", "whole"), help="with --match: a "
+		"probe of independent parts (a multi-shank probe's shanks) matched side by side in threads (threads, the "
+		"default), one after another (serial), or the whole probe at once (whole); the same spikes")
 	e.add_argument("--report", default="good", help="report the units with these labels only (default good; \"\" "
 		"for all): the others' templates still compete for the spikes")
 	m = sub.add_parser("templates", help="a live sorter's templates from a recording session: its probe's bouts "
@@ -1408,7 +1414,7 @@ def Main(argv=None):
 			else:
 				summary = ephyssort.Evaluate(source.data, source.stream, args.phy, args.templates, args.span,
 					report=tuple(l.strip() for l in args.report.split(",") if l.strip()) or None, match=args.match,
-					threads=args.threads)
+					threads=args.threads, split=args.split)
 				if args.json:
 					with open(args.json, "w") as f:
 						strictjson.dump(summary, f, indent=1)
