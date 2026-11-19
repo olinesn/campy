@@ -6,10 +6,11 @@ Two examples, each written to docs/images/:
   choosing-lenses-cubicle.svg  a mouse operant box in a sound-attenuating cubicle
 
 Every number in the drawings is worked out here, for the FLIR Blackfly S
-BFS-U3-13Y3M (1280 x 1024 pixels of 4.8 um, a 1/2" sensor) and a pinhole lens
-(no distortion). A lens "fits" from a spot when the whole box, from its floor to
-the top of its walls (and at least 10 cm up, where a mouse rears), lies inside
-the middle 80% of the frame, both across and up and down, with the camera aimed
+BFS-U3-13Y3M (1280 x 1024 pixels of 4.8 um, a 1/2" sensor) and, for each focal
+length, the example lens docs/hardware.md's table names, with that lens's barrel
+distortion (LENS_DATA). A lens "fits" from a spot when the whole box, from its
+floor to the top of its walls (and at least 10 cm up, where a mouse rears), lies
+inside the middle 80% of the frame as that lens forms it, both across and up and down, with the camera aimed
 at the middle of the floor and its picture level. The margin is for tracking: an
 animal climbing or rearing at a wall stays wholly in view, the calibration board
 can be seen near the box's edges, and the frame's corners, where a lens distorts
@@ -38,7 +39,22 @@ SENSOR_W, SENSOR_H = 1280 * 0.0048, 1024 * 0.0048  # mm
 FILL = 0.8  # the whole box sits in the middle 80% of the frame
 REAR = 10.0  # and the camera sees at least this far above the floor (a rearing mouse)
 MOUNT = 10.0  # the lens's front sits this far in from a wall: camera, lens, mount
-LENSES = [3.5, 4, 5, 6, 8, 12, 16]
+LENSES = [3.5, 4, 5, 6, 8, 12]
+
+# Each focal length's distortion is that of the example lens docs/hardware.md's
+# table names for it, from its maker's numbers: the angles of view on a 1/2"
+# sensor (6.4 x 4.8 mm, across x up and down x diagonal, degrees), or the
+# distortion (%) at an image height (mm). It is modelled with one division term,
+# r_ideal = r_image / (1 + k r_image^2) on the sensor (mm), k fitted to those numbers.
+LENS_DATA = {
+    3.5: dict(name="Kowa LM4NCL", angles=(103.6, 76.6, 132.1)),     # Kowa datasheet; TV distortion -28%
+    4: dict(name="Edmund #33-300", angles=(84.8, 65.3, 101.6)),     # Edmund Optics, 1/2" sensor
+    5: dict(name="Thorlabs MVL5M23", angles=(None, None, 77.3)),    # Thorlabs, diagonal on 1/2"
+    6: dict(name="Kowa LM6NCL", angles=(57.3, 44.0, 68.5)),         # Kowa specs; TV distortion -1.0%
+    8: dict(name="Computar M0814-MP2", point=(-0.1, 5.5)),          # Computar datasheet, 2/3" sensor
+    12: dict(name="Computar M1214-MP2", point=(-0.35, 4.0)),        # Computar datasheet, 1/2" sensor
+}
+HALF_1_2 = (3.2, 2.4, 4.0)  # half the width, height and diagonal of a 1/2" sensor (mm)
 
 
 # --- vectors ---------------------------------------------------------------
@@ -77,11 +93,44 @@ def camera_axes(position, target=TARGET, right_hint=(1.0, 0.0, 0.0)):
 
 
 def to_sensor(point, position, axes, f):
-    """Sensor coordinates (mm) of a world point, and its depth (cm)."""
+    """Where a world point lands on the sensor (mm) through a lens without distortion, and its depth (cm)."""
     r, v, w = axes
     d = sub(point, position)
     z = dot(d, w)
     return f * dot(d, r) / z, f * dot(d, v) / z, z
+
+
+def view_angle(f, k, r):
+    """Angle of view (degrees) across 2r mm of sensor, with distortion k."""
+    return 2 * math.degrees(math.atan(r / (1 + k * r * r) / f))
+
+
+def fit_distortion(f, spec):
+    if "point" in spec:
+        pct, y = spec["point"]
+        return pct / 100 / (y * y)
+    pairs = [(r, a) for r, a in zip(HALF_1_2, spec["angles"]) if a]
+    best = min((sum((view_angle(f, k, r) - a) ** 2 for r, a in pairs), k)
+               for k in (-i * 1e-5 for i in range(6000)))
+    return best[1]
+
+
+DISTORTION = {f: fit_distortion(f, spec) for f, spec in LENS_DATA.items()}
+
+
+def distorted(xy, f):
+    """Where a point the undistorted lens puts at xy (mm) lands through the real lens."""
+    x, y = xy[0], xy[1]
+    k, r = DISTORTION[f], math.hypot(xy[0], xy[1])
+    if k == 0 or r == 0:
+        return (x, y) + tuple(xy[2:])
+    rd = (1 - math.sqrt(1 - 4 * k * r * r)) / (2 * k * r)
+    return (x * rd / r, y * rd / r) + tuple(xy[2:])
+
+
+def project(point, position, axes, f):
+    """Where a world point lands on the sensor (mm) through the real lens, and its depth (cm)."""
+    return distorted(to_sensor(point, position, axes, f), f)
 
 
 # --- mice -------------------------------------------------------------------
@@ -172,7 +221,7 @@ def intersect(p, q, a, b):
 # outer: the cabinet or cubicle around it, inside: width,
 # depth, height (cm). Cameras: one looking down and two looking in from opposite
 # corners at 40 degrees, as docs/calibration.md recommends, two side cameras on
-# the end walls (in the cubicle only 50 degrees up or more leaves room for a lens),
+# the end walls (in the cubicle only 45 degrees up or more leaves room for a lens),
 # and a corner where an 8 mm lens is tried ("lens" given). Callouts are label
 # offsets in the drawing. Mice: where the rear end is (cm from the floor's
 # middle), which way the mouse faces (heading, degrees), how far its body tilts
@@ -218,9 +267,9 @@ CUBICLE = dict(
              callout=(-34, -72, "end")),
         dict(key="front", where="in a front corner", title="Front corner", az=("corner", 1, -1), el=40, cls="c3",
              callout=(40, 40, "start")),
-        dict(key="right", where="on the right wall", title="Right wall", az=0, el=52, cls="c4",
-             callout=(185, 34, "end"), closeup=True),
-        dict(key="left", where="on the left wall", title="Left wall", az=180, el=52, cls="c5",
+        dict(key="right", where="on the right wall", title="Right wall", az=0, el=45, cls="c4",
+             callout=(170, -52, "end"), closeup=True),
+        dict(key="left", where="on the left wall", title="Left wall", az=180, el=45, cls="c5",
              callout=(-20, 112, "end"), closeup=True),
         dict(key="ghost", where="in the other front corner", title="Front left", az=("corner", -1, -1), el=40,
              cls="warn", lens=8, callout=(-6, 118, "start")),
@@ -244,7 +293,7 @@ def must_see(sc):
 def fits(sc, position, f):
     axes = camera_axes(position)
     for p in must_see(sc)[1]:
-        x, y, z = to_sensor(p, position, axes, f)
+        x, y, z = project(p, position, axes, f)
         if z <= 0 or abs(x) > FILL * SENSOR_W / 2 or abs(y) > FILL * SENSOR_H / 2:
             return False
     return True
@@ -301,6 +350,12 @@ def fmt_mm(f):
 
 
 def table():
+    print("Lens distortion (k, per mm^2 of sensor) and angle of view across this camera's 6.14 mm:")
+    for f in LENSES:
+        k = DISTORTION[f]
+        print(f"  {fmt_mm(f):>7} {LENS_DATA[f]['name']:<20} k {k:+.5f}   {view_angle(f, k, SENSOR_W / 2):5.1f} deg"
+              f" (without distortion {view_angle(f, 0, SENSOR_W / 2):5.1f})")
+    print()
     for sc in SCENARIOS:
         b, e = sc["box"], sc["outer"]
         print(f"{sc['box_name']} {b[0]:g} x {b[1]:g} cm, {sc['name']} {e[0]:g} x {e[1]:g} x {e[2]:g} cm inside")
@@ -516,7 +571,7 @@ def hidden_share(sc, pos, axes, f):
     seen = []
     for m in sc["mice"]:
         points, centre = mouse_outline(m)
-        sil = hull([to_sensor(p, pos, axes, f)[:2] for p in points])
+        sil = hull([project(p, pos, axes, f)[:2] for p in points])
         seen.append((to_sensor(centre, pos, axes, f)[2], sil))
     (_, near), (_, far) = sorted(seen)
     covered = clip_convex(far, near)
@@ -529,7 +584,7 @@ def mice_extent(sc, cam):
     axes = camera_axes(pos)
     xy = []
     for m in sc["mice"]:
-        xy += [to_sensor(p, pos, axes, cam["lens"])[:2] for p in mouse_outline(m)[0]]
+        xy += [project(p, pos, axes, cam["lens"])[:2] for p in mouse_outline(m)[0]]
     x0, x1 = min(q[0] for q in xy), max(q[0] for q in xy)
     y0, y1 = min(q[1] for q in xy), max(q[1] for q in xy)
     return ((x0 + x1) / 2, (y0 + y1) / 2), (x1 - x0, y1 - y0)
@@ -558,7 +613,18 @@ def thumbnail(sc, out, x0, y0, width, cam, f, dist, title, note, height=None, wi
         return (x0 + (q[0] - wx0) / (wx1 - wx0) * width, y0 + (wy1 - q[1]) / (wy1 - wy0) * height)
 
     def to_px(p):
-        return sensor_px(to_sensor(p, pos, axes, f))
+        return sensor_px(project(p, pos, axes, f))
+
+    def bent(points3d, closed=True, pieces=24):
+        """Points along each edge, so a straight edge can bend through the lens."""
+        out_pts = []
+        n = len(points3d) if closed else len(points3d) - 1
+        for i in range(n):
+            a, b = points3d[i], points3d[(i + 1) % len(points3d)]
+            out_pts += [add(a, mul(sub(b, a), j / pieces)) for j in range(pieces)]
+        if not closed:
+            out_pts.append(points3d[-1])
+        return [to_px(p) for p in out_pts]
 
     def poly(points3d, klass):
         # keep only what is in front of the camera
@@ -571,7 +637,7 @@ def thumbnail(sc, out, x0, y0, width, cam, f, dist, title, note, height=None, wi
             if (za > near) != (zb > near):
                 kept.append(add(a, mul(sub(b, a), (near - za) / (zb - za))))
         if len(kept) >= 3:
-            out.append(f'<polygon class="{klass}" points="{pts([to_px(p) for p in kept])}" clip-path="url(#{clip})"/>')
+            out.append(f'<polygon class="{klass}" points="{pts(bent(kept))}" clip-path="url(#{clip})"/>')
 
     W, D, H = sc["outer"]
     hx, hy = W / 2, D / 2
@@ -582,7 +648,7 @@ def thumbnail(sc, out, x0, y0, width, cam, f, dist, title, note, height=None, wi
     floor, walls = box_walls(sc)
     poly(floor, "boxfloor")
     for a, b in floor_grid(sc):
-        out.append(line(to_px(a), to_px(b), "grid", f' clip-path="url(#{clip})"'))
+        out.append(f'<polyline class="grid" points="{pts(bent([a, b], closed=False))}" clip-path="url(#{clip})"/>')
     draw_mice(sc, out, to_px, lambda c: -to_sensor(c, pos, axes, f)[2], f' clip-path="url(#{clip})"')
     for quad in sorted(walls, key=lambda q: -dot(sub(mul(add(q[0], q[2]), 0.5), pos), axes[2])):
         poly(quad, "glass")
@@ -611,7 +677,7 @@ CLOSE_W, CLOSE_H = 417, 260
 def svg(sc):
     rows = -(-len(sc["cameras"]) // THUMB_COLS)
     closeups = [c for c in sc["cameras"] if c.get("closeup")]
-    header_y = sc["notes_y"] + 52
+    header_y = sc["notes_y"] + 68
     thumbs_y = header_y + 62
     close_y = thumbs_y + rows * THUMB_ROW - 66 + 52
     Wd = sc["width"]
@@ -643,7 +709,8 @@ def svg(sc):
     notes = [("To scale." if sc["camera_scale"] == 1 else "To scale, but for the cameras (drawn larger).")
              + " Camera: FLIR Blackfly S, 1/2\" sensor, 1280 × 1024. Mice: one rearing to 10 cm, one lying behind it.",
              "Each lens is the longest that keeps the whole box in the middle 80% of its frame. "
-             "Distances: from the lens to the middle of the box&#8217;s floor."]
+             "Distances: from the lens to the middle of the box&#8217;s floor.",
+             "Each lens bends lines as the guide&#8217;s example lens for that focal length does, from its maker&#8217;s figures."]
     for i, text in enumerate(notes):
         out.append(f'<text x="24" y="{sc["notes_y"] + 16 * i}" class="t-small t-muted">{text}</text>')
 
@@ -658,12 +725,12 @@ def svg(sc):
                f'{sc["box_name"]}: {sc["box"][0]:g} × {sc["box"][1]:g} cm floor, {sc["box"][2]:g} cm high</text>')
 
     # what each camera sees
-    out.append(f'<text x="24" y="{header_y}" class="t-b">What each camera sees (without lens distortion)</text>')
+    out.append(f'<text x="24" y="{header_y}" class="t-b">What each camera sees, through the lens it is drawn with</text>')
     out.append(f'<text x="24" y="{header_y + 16}" class="t-small t-muted">Grey dashes: the middle 80% of the frame, where the '
                'whole box must sit. Orange dashes: the part of a mouse another one hides.</text>')
     for i, cam in enumerate(sc["cameras"]):
         x, y = 24 + (i % THUMB_COLS) * (THUMB_W + THUMB_GAP), thumbs_y + (i // THUMB_COLS) * THUMB_ROW
-        title = f"{cam['title']}, {fmt_mm(cam['lens'])}"
+        title = f"{cam['title']}, {fmt_mm(cam['lens'])} ({LENS_DATA[cam['lens']]['name']})"
         if cam["too_long"]:
             note = f"from {cam['spot']:.0f} cm, inside: the box is cut off"
             thumbnail(sc, out, x, y, THUMB_W, cam, cam["lens"], cam["spot"], title, note)
