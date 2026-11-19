@@ -1362,7 +1362,7 @@ def Evaluate(data, stream, phy, templates, span=None, warm_s=1.0, say=print, rep
 	time a spike took to sort. Every unit with a template competes for the spikes (mua units' templates take their
 	own spikes from the good units'), and a live spike is a unit's when it matches one of that unit's Kilosort
 	spikes. match: as Sorter's."""
-	sorter = Sorter(templates, match, threads)
+	sorter = Sorter(templates, match, threads, split)
 	match = isinstance(sorter, MatchingSorter) and match
 	sort = ReadPhy(phy, tuple(set(str(l) for l in sorter.labels)))
 	start, end = Span(span, stream.rate, len(data))
@@ -1428,7 +1428,8 @@ def Evaluate(data, stream, phy, templates, span=None, warm_s=1.0, say=print, rep
 		"sort_us_per_spike": round(per_spike_us, 1), "sort_s_per_s": round(per_second, 3),
 		"match_z": (match if match == "learned" else float(match)) if match else None,
 		"numba": FastStatus()["numba"] if match and sorter.matcher.fast else None, "threads": threads,
-		"split": split if match else None, "parts": sorter.parts if match else None,
+		"split": (("threads" if sorter.matcher.pool is not None else "serial") if sorter.parts > 1 else "whole")
+			if match else None, "parts": sorter.parts if match else None, # as the sorter matched, not as asked
 		"given_per_s": round(float(np.isin(spikes.unit, [u for u, c in zip(units, sorter.compete) if not c]).sum()) /
 			((end - start) / stream.rate), 1),
 		"template_spikes": int((spikes.unit >= 0).sum()) if match else None,

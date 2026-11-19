@@ -616,13 +616,14 @@ def test_a_multi_shank_probe_s_shanks_matched_apart_give_the_whole_probe_s_spike
 	assert sum(u >= 0 for _, u, _, _ in got["whole"]) > 300 # template spikes on all four shanks
 	assert len({c % 4 for _, u, c, _ in got["whole"] if u >= 0}) == 4
 	assert got["serial"] == got["whole"] and got["threads"] == got["whole"]
-	# Evaluated so: the summary says how
+	# Evaluated so: the summary says how the sorter matched (not only what was asked)
 	report = os.path.join(tmp, "evaluate.json")
-	assert el.Main(["evaluate", "--replay", bin_path, "--phy", phy, "--templates", out, "--span", "4:", "--match",
-		"learned", "--split", "serial", "--json", report]) == 0
-	with open(report) as f:
-		summary = json.load(f)
-	assert summary["split"] == "serial" and summary["parts"] == 4
+	for split, parts in (("serial", 4), ("whole", 1), ("threads", 4)):
+		assert el.Main(["evaluate", "--replay", bin_path, "--phy", phy, "--templates", out, "--span", "4:", "--match",
+			"learned", "--split", split, "--json", report]) == 0
+		with open(report) as f:
+			summary = json.load(f)
+		assert (summary["split"], summary["parts"]) == (split, parts)
 
 
 def test_a_single_shank_probe_is_matched_whole(sorted_recording):
