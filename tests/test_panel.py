@@ -1670,6 +1670,37 @@ def test_spikeglx_match_starts_the_reader_matching_with_the_templates(tmp_path):
 		session.Section("spikeglx", dict(base, match=False), sglx.KEYS)
 
 
+@pytest.mark.parametrize("devices, card", [(None, True), ("(20,1,1)(20,obx)", True), ("(20,1,1)", True),
+	("(20,obx)", False), ("(20,obx)(21,obx)", False), ("(0,nidq)", True)])
+def test_the_live_ephys_card_only_for_an_experiment_that_records_a_probe(tmp_path, home, monkeypatch, devices, card):
+	# A config whose spikeglx.devices names only OneBoxes (fiber photometry without a probe, chronic_photometry.yaml)
+	# has no Live ephys card: there is no probe for it to read. With a probe named, no devices given (SpikeGLX's own
+	# saved settings) or devices campy leaves to SpikeGLX (an NI-DAQ), it has the card as before
+	from campy import spikeglx
+	from test_session import write_config
+	section = dict({"sdk": FAKE_SDK}, **({"devices": devices} if devices else {}))
+	config = write_config(tmp_path / "c.yaml", {"numCams": 1, "frameRate": 30, "videoFolder": str(tmp_path / "data"),
+		"recTimeInSec": 60}, spikeglx=section)
+	monkeypatch.setattr(spikeglx.SpikeGLX, "Check", lambda self: "SpikeGLX: idle, TTL trigger")
+	p = panel.Panel(str(config), browser=False)
+	try:
+		assert (p.ephys is not None) is card
+		assert spikeglx.RecordsProbe(section) is card
+	finally:
+		if p.ephys is not None:
+			p.ephys.Shutdown()
+
+
+def test_the_photometry_only_experiment_has_no_live_ephys_card():
+	# The ChronicRecord rig's own photometry-only config, as campy ships it
+	import yaml
+	from campy import spikeglx
+	with open(os.path.join(REPO, "chronicrecord", "chronic_photometry.yaml")) as f:
+		assert spikeglx.RecordsProbe(yaml.safe_load(f)["spikeglx"]) is False
+	with open(os.path.join(REPO, "chronicrecord", "chronic_session.yaml")) as f:
+		assert spikeglx.RecordsProbe(yaml.safe_load(f)["spikeglx"]) is True
+
+
 def test_no_ephys_section_without_spikeglx():
 	p, calls = stub_panel(SERVE_PORT + 61)
 	p.ephys = None

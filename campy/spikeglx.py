@@ -82,6 +82,18 @@ def Wanted(devices):
 	return probes, boxes
 
 
+def RecordsProbe(section):
+	"""
+	Whether the spikeglx: section's experiment records a probe: False only when
+	spikeglx.devices names its devices and none is a probe (the OneBox alone,
+	"(20,obx)": fiber photometry without one). With no devices given, or ones
+	campy leaves to SpikeGLX (an NI-DAQ, a passive probe), it may: True.
+	"""
+	devices = section.get("devices") or ""
+	wanted = Wanted(devices) if Entries(devices) else None
+	return wanted is None or bool(wanted[0])
+
+
 def Shown(probes, boxes):
 	"""Probes and OneBoxes as a devices string: "(20,1,1)(20,obx)", "()" for none."""
 	text = "".join("({},{},{})".format(*p) for p in sorted(probes)) + "".join("({},obx)".format(b) for b in sorted(boxes))

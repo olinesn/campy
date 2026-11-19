@@ -1119,9 +1119,12 @@ class Panel:
 		old = self.health
 		if getattr(self, "ephys", None) is not None:
 			self.ephys.Shutdown()
-		# The page's Ephys section: with SpikeGLX in the config
-		self.ephys = EphysView(config.spikeglx, os.path.join(devs.pico.state_dir, "status.json") if devs is not None and
-			devs.pico is not None else None) if getattr(config, "spikeglx", None) is not None else None
+		# The page's Live ephys card: with SpikeGLX in the config, recording a probe (not for the OneBox alone, as for
+		# fiber photometry without a probe: the card would have nothing to read)
+		from campy import spikeglx as sglxmod
+		sglx = getattr(config, "spikeglx", None)
+		self.ephys = EphysView(sglx, os.path.join(devs.pico.state_dir, "status.json") if devs is not None and
+			devs.pico is not None else None) if sglx is not None and sglxmod.RecordsProbe(sglx) else None
 		self.config_path, self.config, self.devices, self.lengths, self.picker = config.path, config, devs, lengths, picker
 		self.length = lengths[0]["seconds"] if lengths else None # the page's choice
 		self.health = health
