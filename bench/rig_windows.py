@@ -19,10 +19,13 @@ What a process counts as using:
 and the disk each loads: the bytes it reads and writes, except the kernel's (see classify). rig.py
 counts no more of them than the physical disks moved (disk_bytes): a program's I/O can be a pipe,
 a device or the network, and a file it reads can come from memory.
-Another rig.py (waiting, watching or showing status) is a Python process that uses nothing.
+Another rig.py (waiting, watching or showing status) is a Python process that uses nothing: known by
+its command line, or, where that can't be read, by the marker every rig.py writes for itself on
+Windows (rig.py's mark_self; marks here).
 
 Every process is seen, other users' too; only the ones this user can open show their DLLs, their
-open COM ports and their command lines.
+open COM ports and their command lines. A python.exe started over ssh (elevated) or by another user
+hides its command line from a rig.py run at the desktop.
 
 Importing this module on another OS is fine: only its pure functions (classify, the parsers) work
 there, which is what the tests use.
@@ -37,7 +40,7 @@ GPU_NAMES = patterns("RIG_GPU_NAMES", "python*.exe")
 ENCODER_NAMES = patterns("RIG_ENCODER_NAMES", "ffmpeg*.exe")
 CAMERA_MODULES = patterns("RIG_CAMERA_MODULES", "spinnaker*.dll")
 EPHYS_NAMES = patterns("RIG_EPHYS_NAMES", "spikeglx*.exe,open-ephys*.exe")
-RIG_PY = re.compile(r"rig\.py\W+(run|hold|status|break)\b", re.I)
+RIG_PY = re.compile(r"rig\.py\W+(run|hold|status|break|install|version)\b", re.I)
 KERNEL = 4
 NOT_PROCESSES = (0, KERNEL)  # the idle "process" (its CPU time is idle time) and the kernel
 
@@ -46,12 +49,17 @@ def matches(name, pats):
 	return any(fnmatch.fnmatchcase(name, p) for p in pats)
 
 def classify(table, gpu_pids=(), camera_pids=(), ports=None, jobs=None, cmdline=lambda pid, start: None,
-		desktop_pids=()):
-	"""Records for rig.py, one per process: (pid, ppid, start, cpu s, io bytes, kinds, name, job).
+		desktop_pids=(), marks=()):
+	"""Records for rig.py, one per process: (pid, ppid, start, cpu s, io bytes, kinds, name, job, unsure).
 
 	table: (pid, ppid, image name, start, cpu s, io bytes) per process; gpu_pids: CUDA programs;
 	camera_pids: with Spinnaker loaded; ports: {pid: {kind}} from open devices; jobs: {job: pids};
-	desktop_pids: programs that draw on the GPU.
+	desktop_pids: programs that draw on the GPU; marks: (pid, start) of the rig.py processes that
+	marked themselves (rig.py's rig_marks).
+
+	A python.exe that uses nothing but its name ("gpu") is another rig.py, using nothing, if it has a
+	marker or its command line runs rig.py. unsure: it has neither, and its command line can't be
+	read, so it may be a rig.py that hasn't marked itself yet (rig.py's Watch gives it a few seconds).
 	"""
 	ports, jobs = ports or {}, jobs or {}
 	in_job = {pid: job for job, pids in jobs.items() for pid in pids}
@@ -67,15 +75,20 @@ def classify(table, gpu_pids=(), camera_pids=(), ports=None, jobs=None, cmdline=
 			kinds.add("camera")
 		if matches(name, EPHYS_NAMES):
 			kinds.add("ephys")
-		if python and pid not in gpu_pids and kinds == {"gpu"} and RIG_PY.search(cmdline(pid, start) or ""):
-			kinds = set()  # another rig.py
+		unsure = False
+		if python and pid not in gpu_pids and kinds == {"gpu"}:
+			cmd = None if (pid, start) in marks else cmdline(pid, start)
+			if (pid, start) in marks or RIG_PY.search(cmd or ""):
+				kinds = set()  # another rig.py
+			elif cmd is None:
+				unsure = True
 		if not kinds and pid in desktop_pids:
 			kinds.add("desktop")
 		# The kernel ("System") is charged with what the display driver copies between memory and
 		# the GPU (WDDM; every frame a job uploads): 400-800 MB/s on the Precision 7875 while
 		# its disks moved nothing. Its own disk work (paging, the cache writing out a file) is
 		# other processes' reads and writes, so it counts no I/O of its own.
-		out.append((pid, ppid, start, cpu, None if pid == KERNEL else io, kinds, name, in_job.get(pid)))
+		out.append((pid, ppid, start, cpu, None if pid == KERNEL else io, kinds, name, in_job.get(pid), unsure))
 	return out
 
 if os.name == "nt":
@@ -468,13 +481,13 @@ def resume(pid):
 		NtResumeProcess(h)
 		CloseHandle(h)
 
-def scan(jobs=None, gpu_pids=(), extra=None, own=(), desktop_pids=()):
+def scan(jobs=None, gpu_pids=(), extra=None, own=(), desktop_pids=(), marks=()):
 	"""Records (see classify) for every process. jobs: {job name: Job}; own: pids whose COM ports
-	needn't be looked at (rig.py's job and rig.py itself)."""
+	needn't be looked at (rig.py's job and rig.py itself); marks: see classify."""
 	table = process_table()
 	members = {name: job.pids() for name, job in (jobs or {}).items()}
 	skip = set(own) | {os.getpid()}
 	for pids in members.values():
 		skip |= pids
 	return classify(table, set(gpu_pids), camera_pids(table), port_users(table, skip, extra), members, command_line,
-		set(desktop_pids))
+		set(desktop_pids), set(marks))
