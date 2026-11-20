@@ -48,6 +48,9 @@ KEYS = {
 	"match": ((str, int, float), "", "with templates: the card finds spikes with them too, below the threshold, in a "
 		"thread of its own: \"learned\", each unit at the threshold learned in training; a number, every unit at that "
 		"score; default: off, the threshold's spikes sorted"),
+	"split": ((str,), "threads", "with match: a probe of independent parts (a Neuropixels 2.0 multi-shank probe's "
+		"shanks) matched side by side in threads of their own (\"threads\", the default), one after another "
+		"(\"serial\": the least CPU), or the whole probe at once (\"whole\"); the same spikes (docs/live-ephys.md)"),
 	"open_timeout_s":((int, float), 120, "how long SpikeGLX may take to open and answer"),
 	}
 
@@ -117,6 +120,19 @@ def Match(section):
 		return "{:g}".format(value) if value else None
 	raise SpikeGLXError("spikeglx.match: \"learned\" (each unit at the threshold learned in training), a score above "
 		"0 (every unit at it), or 0 (off); not {!r}.".format(section.get("match")))
+
+
+SPLITS = ("threads", "serial", "whole")
+
+
+def Split(section):
+	"""spikeglx.split as campy-ephys serve's --split: "threads" (the default), "serial" or "whole"."""
+	value = section.get("split", "threads")
+	value = "threads" if value in (None, "") else value
+	if isinstance(value, str) and value.strip().lower() in SPLITS:
+		return value.strip().lower()
+	raise SpikeGLXError("spikeglx.split: \"threads\" (a multi-shank probe's shanks matched side by side), "
+		"\"serial\" (one after another) or \"whole\" (the whole probe at once); not {!r}.".format(value))
 
 
 _sdk = {}
@@ -276,6 +292,7 @@ class SpikeGLX:
 			raise SpikeGLXError("spikeglx.stream: [js, ip], two whole numbers ([1, 0]: the first OneBox); not {!r}."
 				.format(stream))
 		Match(section) # the card's, checked with the rest
+		Split(section)
 		self.lock = threading.Lock() # one connection at a time: the panel's status, and the session's steps
 
 	def Connect(self):

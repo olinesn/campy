@@ -205,6 +205,8 @@ spikeglx:
 
 The status line then says how the matcher keeps up: how busy its thread was in the last second, how far behind it is, and how many seconds of samples it left unmatched (its threshold spikes went out unsorted then).
 
+On a multi-shank probe the card matches each shank in a thread of its own, at the same time, with the same spikes as matching the whole probe at once ([below](#a-multi-shank-probes-shanks-side-by-side)). `split: serial` matches them one after another instead, and `split: whole` the whole probe at once.
+
 ### Templates from a recording session: `campy-ephys templates`
 
 `campy/ephystemplates.py` does the whole of it from a session's folder, on the PC that recorded it:
@@ -310,6 +312,68 @@ The curated recording is the harder one: 38% of its good units are at 80% or mor
 - **Not tried on the card yet:** the panel passes `--match` with `spikeglx.match`, but the ChronicRecord probe has no templates from a sort of its own recordings yet.
 - **Harder recordings.** On the curated recording, a quarter of good units have under 45% of their Kilosort spikes found, and a quarter have under 56% of what they're given right.
 - **No drift correction**, as above.
+
+### A multi-shank probe's shanks, side by side
+
+On a multi-shank probe (Neuropixels 2.0, NP2013), no unit's sites and no channel's whitening reach from one shank to another, so each shank's matching doesn't depend on the others'. The card's matcher now matches each shank in a thread of its own, all at the same time. That's the default (`split: threads`). The spikes are the same as matching the whole probe at once:
+
+- each shank is given the whole probe's shared shapes in time (its own would be another approximation of its templates, and moved a few spikes by a sample or two);
+- the shanks' spikes are put back in the whole probe's order (by sample, then by the unit's row in the templates file).
+
+campy's tests check this on a synthetic four-shank probe, to the last sample, unit, channel and neighbouring site, in the same order. On 30 s of the curated recording, all three ways found the same 21,801 spikes, 17,182 of them sorted. (That run was before the order fix: the same spikes, but two spikes at the same sample could come out in another order. Only the synthetic test has checked the order since.)
+
+The shanks are found from the templates file, not from the probe's type. A shank is matched on its own when none of its units' sites and none of its channels' whitening reach another shank. Shanks whose recorded sites are close enough to reach each other are matched together, and a single-shank probe is matched whole, as before. At most four parts are matched apart: more (units far apart, in a templates file made without whitening) are put together with their neighbours.
+
+```yaml
+spikeglx:
+  templates: D:/sorts/<probe>/templates.npz
+  match: learned
+  split: threads   # the default; serial: one shank after another; whole: the whole probe at once
+```
+
+`campy-ephys serve` and `campy-ephys evaluate` take `--split` too. A value the panel can't use stops the config when it opens, with what it takes.
+
+**Precision.** Each shank's whitening sums fewer terms than the whole probe's, in 32-bit floats, so a shank's scores can differ from the whole probe's in their last digits: by up to 0.00003 noise units in the synthetic test, where the scores reach 130 to 150. No spike changed in any test, but a score that close to a unit's threshold could in principle fall the other way.
+
+**What it saves**, on the ChronicRecord PC (Intel Core Ultra 9 285, 24 cores), with the curated recording's templates (437 units on four shanks: 123, 93, 167 and 54), numba, under the rig lock, 18 and 19 November. First, 30 s replayed as fast as it could be, the time taken per second of recording:
+
+| | Matcher, wall clock | Matcher, CPU | Reader and matcher, wall clock |
+|---|---|---|---|
+| Whole probe at once | 0.59 s | 0.58 s | 0.95 s |
+| Shanks one after another | 0.46 s | 0.47 s | 0.81 s |
+| Shanks side by side (4 threads) | 0.27 s | 0.62 s | 0.62 s |
+
+One shank after another is quicker than the whole probe because the whitening is a quarter of the work: the whole probe's is one 384 × 384 product, mostly zeros between shanks. Side by side, the four shanks take about as long as the biggest one, for a little more CPU in all.
+
+Then at the recording's pace, as the card runs it: 1 to 8 probes at once, each a reader process of its own given 20 s from another point in the recording, all starting together:
+
+| Probes at once | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| **Whole probe:** matcher busy (mean) | 58% | 61% | 66% | 86% |
+| … CPU cores a probe (reader and matcher) | 0.94 | 0.99 | 1.05 | 1.36 |
+| … whole PC | 8% | 15% | 20% | 49% |
+| **Shanks one after another:** matcher busy | 47% | 50% | 55% | 69% |
+| … CPU cores a probe | 0.83 | 0.88 | 0.94 | 1.16 |
+| … whole PC | 5% | 9% | 18% | 42% |
+| **Shanks side by side:** matcher busy | 30% | 30% | 34% | 45% |
+| … CPU cores a probe | 1.12 | 1.17 | 1.21 | 1.41 |
+| … whole PC | 6% | 12% | 22% | 51% |
+
+Alone, every way kept up: no piece was left unmatched, and no matcher fell more than 0.19 s behind. Side by side halves the time the matcher is busy, which leaves it room when the PC is busy with something else.
+
+Last, 8 probes at once beside live tracking: campy-live's 3-camera rig check (60 s of three cameras at 60 frames a second, replayed, tracked with the rig's SLEAP models and put in 3D on the PC's GPU), three runs each way, taken in turns:
+
+| 8 probes beside campy-live | Whole probe | One after another | Side by side |
+|---|---|---|---|
+| Pieces left unmatched, each run (of 7,650 to 9,580) | 538, 762, 805 | 0, 48, 98 | 0, 0, 0 |
+| Matcher behind at most | 2.0 s | 1.6 to 2.0 s | 0.34 to 0.58 s |
+| Matcher busy (mean) | 98 to 99% | 92 to 96% | 67 to 70% |
+| Whole PC | 68% | 64 to 66% | 81 to 83% |
+| campy-live: frames skipped | 0 | 0 | 0 |
+| campy-live: frame to 3D, median (alone: 7.5 ms) | 9.0 to 9.2 ms | 9.0 to 9.2 ms | 9.6 to 9.7 ms |
+| campy-live: frame to 3D, slowest (alone: 10.5 ms) | 12.0 to 12.3 ms | 11.8 to 12.0 ms | 11.8 to 12.7 ms |
+
+Beside live tracking, only side by side kept 8 probes up: matching the whole probe, the matchers fell 2 s behind and left 6 to 9% of the pieces unmatched (their threshold spikes went out unsorted). Side by side used more of the PC, since it did the matching the others skipped, and added about half a millisecond to campy-live's median frame to 3D. campy-live skipped no frame in any run. One shank after another uses the least CPU, for a PC short of cores; the whole probe at once is there to compare.
 
 ## Next
 
