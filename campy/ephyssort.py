@@ -212,6 +212,10 @@ class TemplateSorter:
 		# and each channel's noise in the samples whitened
 		self.templates_w = f["templates_w"] if "templates_w" in f else None
 		self.noise_w = f["noise_w"] if "noise_w" in f else None
+		# What following the probe's drift needs (TemplateMatcher.Follow): each channel's site (x, z um), and the rate
+		self.site_x = f["site_x"] if "site_x" in f else None
+		self.site_z = f["site_z"] if "site_z" in f else None
+		self.rate = float(f["rate"]) if "rate" in f else 30000.0
 		self.trained = int(f["trained_spikes"].sum()) if "trained_spikes" in f else None
 		self.n_train = f["trained_spikes"] if "trained_spikes" in f else np.zeros(len(self.units), int)
 		n = int(self.sites.max()) + 1 if self.sites.size else 0
@@ -267,6 +271,11 @@ LEARN_Z = 6.0 # training: the template spikes each unit's threshold is learned f
 KEY = 1 << 40 # a spike's unit * KEY + its sample: one sorted key for (unit, sample)
 JUDGE = 3000 # samples (0.1 s): the template spikes are judged once at least this many more can be (each judgment
 # works its margins out again: fewer, longer judgments cost less; the card plays 0.3 s behind)
+PRIOR = 1.0 # which of two units near each other a spike is: the one whose template explains it best (z^2 / 2, the
+# log-likelihood of its fit in noise units) plus PRIOR x the log of how often that unit fired in training (Bayes, with
+# each unit's rate as its prior). Where two units' templates fit a spike about as well, it goes to the one that fires
+# more: on a curated recording, most of the spikes given to the wrong good unit were such near ties, a unit firing
+# rarely taking a busy neighbour's. 0: the best fit alone
 
 
 def Whitening(filtered, geometry, count=WHITEN_SITES, step=8):
@@ -285,6 +294,27 @@ def Whitening(filtered, geometry, count=WHITEN_SITES, step=8):
 		E = np.maximum(E, 0) + 1e-6 * max(float(E.mean()), 1e-12)
 		W[c, ix] = (D / np.sqrt(E)) @ D[0] # its row of D diag(1 / sqrt(E)) D^T (ix's first is c)
 	return W.astype(np.float32)
+
+
+# ---------------------------------------------------------------- the probe's drift
+
+DRIFT_EVERY_S = 30.0 # the probe's drift is measured this often, and the matcher's templates moved with it
+DRIFT_WINDOW_S = 60.0 # from the template spikes of the last this many seconds
+DRIFT_Z = 1.5 # those it is measured from: units' strong spikes, alone (fitted alone, in the first pass), at least
+# this many times their unit's threshold (so nearly all of a unit's spikes, not those that happen to fit best)
+DRIFT_UNIT_SPIKES = 20 # a unit with fewer of them in the window doesn't count
+DRIFT_UNITS = 10 # fewer units that count: no new measure (the templates stay where they are)
+DRIFT_LAG = 3000 # samples: the templates move at fixed samples (every DRIFT_EVERY_S, counted from the stream's 0),
+# measured from the spikes up to this many samples before; the template spikes before then are judged first, and those
+# after with the templates moved, so the same samples give the same spikes however they come
+DRIFT_MAX_UM = 40.0 # the templates are moved at most this far either way
+DRIFT_MOVE_UM = 0.25 # and moved again once the measure has changed by at least this
+DRIFT_SIGMA_UM = 20.0 # the templates are moved by kriging over their sites with this kernel and 0.01 (Kilosort 4's)
+
+
+def Kernel(a, b, sigma=DRIFT_SIGMA_UM):
+	"""Kilosort 4's interpolation kernel between places a [n, 2] and b [m, 2] (um): exp(-d^2 / 2 sigma^2)."""
+	return np.exp(-((a[:, None, :] - b[None, :, :]) ** 2).sum(-1) / (2 * sigma ** 2))
 
 
 # ---------------------------------------------------------------- numba (optional)
@@ -420,10 +450,12 @@ class TemplateMatcher:
 	give the same spikes however they come in pieces.
 	"""
 
-	def __init__(self, sorter, z=None, components=COMPONENTS, threads=1, fast=True):
+	def __init__(self, sorter, z=None, components=COMPONENTS, threads=1, fast=True, prior=None):
 		"""z: every unit's threshold; None: each unit's learned in training (sorter.match_z), else Z_THRESHOLD.
 		threads: the scores are worked out in this many threads, each for its share of the units (the same scores).
-		fast: judge with numba's compiled loop once it is loaded (campy/ephyssort_numba.py; the same spikes)."""
+		fast: judge with numba's compiled loop once it is loaded (campy/ephyssort_numba.py; the same spikes).
+		prior: the weight of each unit's rate in training when units near each other compete for a spike (PRIOR if
+		None; 0: the best fit alone)."""
 		import scipy.fft
 		self.fft = scipy.fft
 		self.units, self.peaks, self.sites = sorter.units, sorter.peaks, sorter.sites
@@ -439,6 +471,13 @@ class TemplateMatcher:
 		self.z = float(self.zu.min()) if len(self.zu) else Z_THRESHOLD
 		self.loose = None # set with root, below
 		self.give = ~sorter.compete # units whose spikes are given out (the others' only compete for them)
+		# Each unit's prior (PRIOR): its weight x the log of its spikes in training (the same span for every unit, so
+		# the log of its rate, less a constant that cancels), added to z^2 / 2 where units compete for a spike
+		n = np.asarray(getattr(sorter, "n_train", np.zeros(len(self.units))), np.float64)
+		weight = PRIOR if prior is None else float(prior)
+		self.prior = (weight * np.log(np.maximum(n, 1)) if weight and len(n) == len(self.units) and n.any() else
+			np.zeros(len(self.units)))
+		self.prior_weight = weight if self.prior.any() else 0.0
 		self.record = None # a list: each template spike found, (sample, unit's index, z, size, pass, in a group, the
 		# score of the data as it came (before any spike was taken away), the cosine of the data with the template)
 		self.noise = np.where(noise > 0, noise, 1).astype(np.float32) # each channel's, in the samples scored
@@ -449,61 +488,197 @@ class TemplateMatcher:
 		shapes = Tn.transpose(0, 2, 1).reshape(-1, L)
 		_, _, vt = np.linalg.svd(shapes, full_matrices=False)
 		W = vt[:components].T # [61, K]
-		self.Tn = np.einsum("tk,sk,usj->utj", W, W, Tn).astype(np.float32) # each template as its shapes give it
-		self.W = W # [61, K]: the shapes in time
-		self.weights = np.einsum("tk,utj->ukj", W, Tn) # [units, K, sites]: each template's shapes' weights on its sites
-		self.norm2 = np.maximum((self.Tn.astype(np.float64) ** 2).sum(axis=(1, 2)), 1e-12) # its energy
-		self.root = np.sqrt(self.norm2)
-		self.loose = self.zu * self.root * (1 - 1e-9) # a score above this may be above its unit's threshold
+		self.W = W # [61, K]: the shapes in time (the trained templates', kept when the templates move with the drift)
 		self.near = [np.flatnonzero(np.isin(self.peaks, s)) for s in sorter.near_sites] # units near each: their peak
 		# among its NEIGHBORS nearest sites
 		self.nearmat = np.zeros((U, U), bool) # [u, v]: v near u
 		for u, v in enumerate(self.near):
 			self.nearmat[u, v] = True
-		# The units whose sites each unit's share, and their templates' cross-correlations: K[u][i, d + 60] is unit
-		# over[u][i]'s score at t + d lowered by a spike of u at t, of size 1, taken away
-		channels = max(len(self.noise), int(self.cols.max()) + 1 if self.cols.size else 0)
-		member = np.zeros((U, channels), bool)
+		# The units whose sites each unit's share (over[u]; pos[u, v]: v's row in u's cross-correlations, -1: none)
+		self.channels = max(len(self.noise), int(self.cols.max()) + 1 if self.cols.size else 0)
+		member = np.zeros((U, self.channels), bool)
 		member[np.repeat(np.arange(U), ok.sum(axis=1)), self.sites[ok]] = True
 		self.over = [np.flatnonzero(member[:, self.sites[u][ok[u]]].any(axis=1)) for u in range(U)]
-		n = 1 << int(np.ceil(np.log2(2 * L - 1)))
-		F = np.fft.rfft(self.Tn.astype(np.float64), n=n, axis=1).transpose(0, 2, 1) # [units, sites, freq]
-		self.cross, self.pos = [], -np.ones((U, U), np.int32) # pos[u, v]: v's row in cross[u] (-1: none)
+		self.pos = -np.ones((U, U), np.int32)
 		for u in range(U):
-			mine = np.zeros((channels, F.shape[2]), complex)
-			np.add.at(mine, self.cols[u], F[u])
-			V = self.over[u]
-			c = np.fft.irfft((mine[self.cols[V]] * np.conj(F[V])).sum(axis=1), n=n, axis=1) # sum_n Tn_u[n+d] Tn_v[n]
-			self.cross.append(np.concatenate([c[:, n - (L - 1):], c[:, :L]], axis=1).astype(np.float32))
-			self.pos[u, V] = np.arange(len(V))
+			self.pos[u, self.over[u]] = np.arange(len(self.over[u]))
 		self.runs = [] # each unit's: the runs of units next to each other in over[u], (first, last + 1, their rows in
 		# cross[u]): taking a spike away is a few slices (units saved in their order on the probe: one or two runs)
 		for V in self.over:
 			cut = np.flatnonzero(np.diff(V) > 1) + 1
 			a, b = np.r_[0, cut], np.r_[cut, len(V)]
 			self.runs.append([(int(V[i]), int(V[j - 1]) + 1, int(i), int(j)) for i, j in zip(a, b)])
-		self.groups = self.ScoreGroups(member)
+		self.group_sets = self.ScoreGroups(member)
+		self.Build(templates)
 		self.shapes_f = np.conj(np.fft.rfft(W.T, n=BLOCK, axis=1)).astype(np.complex64) # [K, BLOCK // 2 + 1]
 		self.threads = max(1, int(threads))
 		self.pool = None
 		if self.threads > 1:
 			from concurrent.futures import ThreadPoolExecutor
 			self.pool = ThreadPoolExecutor(self.threads, thread_name_prefix="campy ephys scores")
-		# numba's loop: the cross-correlations one after another (unit u's from row cross_at[u]), and the runs
+		# numba's loop: the runs one after another (Build: the cross-correlations)
 		self.fast = fast
 		if fast:
 			StartFast()
-		self.cross_flat = np.ascontiguousarray(np.concatenate(self.cross) if self.cross else np.zeros((0, 2 * L - 1)),
-			np.float32)
-		self.cross_at = np.r_[0, np.cumsum([len(c) for c in self.cross])][:-1].astype(np.int64)
 		self.runs_flat = np.array([r for runs in self.runs for r in runs], np.int64).reshape(-1, 4)
 		self.runs_at = np.r_[0, np.cumsum([len(r) for r in self.runs])].astype(np.int64)
 		self.passes = PASSES
 		self.judge = JUDGE
+		self.drift = None # Follow: True once the templates follow the probe's drift
+		self.moved = 0.0 # um: how far the templates have been moved up
+		self.drift_log = [] # each measure: (sample, measured um or None, the templates moved to, spikes it took)
+		self.move_at = None # the next sample at which the drift is measured
 		self.Reset()
+
+	def Follow(self, sorter):
+		"""Follow the probe's drift: every DRIFT_EVERY_S, the one shift up or down the probe of all the templates that
+		best fits the units' recent strong spikes (Measure), and the templates moved there (Move). Needs a file that
+		says where each site is (trained since); returns whether it follows."""
+		if sorter.site_z is None or sorter.site_x is None:
+			return False
+		x, z = np.asarray(sorter.site_x, np.float64), np.asarray(sorter.site_z, np.float64)
+		self.every = int(round(DRIFT_EVERY_S * sorter.rate))
+		self.window = max(1, int(round(DRIFT_WINDOW_S / DRIFT_EVERY_S))) # periods
+		self.base = (sorter.templates_w if self.white is not None else sorter.templates).astype(np.float64) # as trained
+		self.current = self.base # where they are now
+		raw = sorter.templates.astype(np.float64) # as filtered: smooth across sites, what is moved
+		Wt = sorter.whiten.astype(np.float64) if self.white is not None else None
+		self.movers = [] # each unit's: its sites (ok), their places [n, 2], K(p, p), its template's kriging weights
+		# [n, 61], the whitening among its sites (None: not whitened)
+		for k in range(len(self.units)):
+			ok = self.sites[k] >= 0
+			s = self.sites[k][ok]
+			p = np.stack([x[s], z[s]], axis=1)
+			Kpp = Kernel(p, p)
+			A = np.linalg.solve(Kpp + 0.01 * np.eye(len(s)), raw[k][:, ok].T)
+			self.movers.append((ok, p, Kpp, A, None if Wt is None else Wt[np.ix_(s, s)]))
+		self.periods = {} # the strong spikes gathered (Gather), by period: {period: (sums [units, 61, sites], counts)}
+		self.drift = True
+		return True
+
+	def Moved(self, up, units=None):
+		"""The templates (as scored) moved up the probe by up um (the trained ones at 0): each unit's template as
+		filtered, kriged at its sites' places less up (Kilosort 4's kernel), and the change, whitened as the samples
+		are, added to the template as trained. [units, 61, sites] float64, for units (default all)."""
+		units = np.arange(len(self.units)) if units is None else units
+		new = self.base[units].copy()
+		for i, k in enumerate(units):
+			ok, p, Kpp, A, Wk = self.movers[k]
+			q = p.copy()
+			q[:, 1] -= up
+			dT = ((Kernel(q, p) - Kpp) @ A).T # [61, its sites]: the change, as filtered
+			new[i][:, ok] += dT if Wk is None else dT @ Wk.T
+		return new
+
+	def Move(self, up):
+		"""The templates moved up the probe by up um (Moved), and all worked out from them again (Build)."""
+		self.current = self.Moved(up)
+		self.Build(self.current.astype(np.float32))
+		self.moved = float(up)
+
+	def Gather(self, found, bfirst):
+		"""The strong spikes found (sample from bfirst, unit, size, pass, in a group) alone (in the first pass, not in a
+		group, z at least DRIFT_Z x its unit's threshold): each one's samples as scored on its unit's sites, summed by
+		unit and by period, in the order of their samples, for Measure."""
+		f = sorted((t, u) for t, u, a, p, g in found if p == 0 and not g and a * self.root[u] >= DRIFT_Z * self.zu[u])
+		if not f:
+			return
+		t = np.array([x[0] for x in f], np.int64)
+		u = np.array([x[1] for x in f], np.int64)
+		period = (bfirst + t + DRIFT_LAG) // self.every # (those in a period are all judged before it is measured)
+		rows = t[:, None] + np.arange(-el.BEFORE, el.AFTER)[None, :]
+		waves = self.scored[rows[:, :, None], self.cols[u][:, None, :]] # [spikes, 61, sites]
+		for i, (k, unit) in enumerate(zip(period.tolist(), u.tolist())): # (one at a time: np.add.at is slow here)
+			if k not in self.periods:
+				self.periods[k] = (np.zeros(self.base.shape, np.float64), np.zeros(len(self.units), np.int64))
+			sums, counts = self.periods[k]
+			sums[unit] += waves[i]
+			counts[unit] += 1
+
+	def Measure(self, at):
+		"""The drift at sample at: from the strong spikes of the window before it (Gather), each unit's mean (on its
+		sites, in noise units) fitted by its template moved by one shift for all, from where they are now (a Gauss-
+		Newton step: each unit's residual against its template, at its size, onto how its template changes as it moves,
+		weighted by its spikes). (how far the templates should be up the probe, um, or None with fewer than DRIFT_UNITS
+		units of DRIFT_UNIT_SPIKES; the units it took)."""
+		last = at // self.every # the periods before it are complete
+		for k in [k for k in self.periods if k < last - self.window]:
+			del self.periods[k]
+		mine = [self.periods[k] for k in self.periods if last - self.window <= k < last]
+		if not mine:
+			return None, 0
+		sums = sum(m[0] for m in mine)
+		counts = sum(m[1] for m in mine)
+		use = np.flatnonzero(counts >= DRIFT_UNIT_SPIKES)
+		if len(use) < DRIFT_UNITS:
+			return None, len(use)
+		scale = (1 / self.noise[self.cols[use]] * (self.sites[use] >= 0))[:, None, :] # [units, 1, sites]
+		M = sums[use] / counts[use][:, None, None] * scale
+		T = self.current[use] * scale
+		G = (self.Moved(self.moved + 1.0, use) - self.Moved(self.moved - 1.0, use)) / 2.0 * scale
+		a = (M * T).sum(axis=(1, 2)) / np.maximum((T * T).sum(axis=(1, 2)), 1e-12)
+		r = M - a[:, None, None] * T
+		n = counts[use]
+		den = (n * a * a * (G * G).sum(axis=(1, 2))).sum()
+		if not den > 0:
+			return None, len(use)
+		return self.moved + float((n * a * (r * G).sum(axis=(1, 2))).sum() / den), len(use)
+
+	def MoveNow(self, at):
+		"""At sample at: the drift measured, and the templates moved if it changed enough. The measure is rounded to
+		0.01 um: the samples as scored may differ in their last bits with how they came in pieces (a matrix product's
+		rounding, on some machines), and so the sums measured from; rounded, the templates move the same way."""
+		up, n = self.Measure(at)
+		if up is not None:
+			up = round(float(np.clip(up, -DRIFT_MAX_UM, DRIFT_MAX_UM)), 2)
+			if abs(up - self.moved) >= DRIFT_MOVE_UM:
+				self.Move(up)
+		self.drift_log.append((int(at), up, self.moved, n))
+
+	def Build(self, templates):
+		"""Everything worked out from the templates' values (each unit's, on its sites, in the samples as scored): each
+		in noise units, kept to the shapes in time (W), and its shapes' weights; its energy and the score its threshold
+		needs; the cross-correlations of the templates that share sites (K[u][i, d + 60] is unit over[u][i]'s score at
+		t + d lowered by a spike of u at t, of size 1, taken away), one after another for numba's loop (unit u's from
+		row cross_at[u]); and each score group's weights. At the start, and when the templates move with the drift.
+		Each pair's cross-correlation is its weights' products (K x K, on the sites they share) times the shapes' own
+		cross-correlations: a few matrix products for all pairs at once."""
+		U, L = len(self.units), el.BEFORE + el.AFTER
+		ok = self.sites >= 0
+		W = self.W
+		K = W.shape[1]
+		Tn = templates / self.noise[self.cols][:, None, :] * ok[:, None, :] # [units, 61, sites], noise units
+		self.weights = np.matmul(W.T, Tn.astype(np.float64)) # [units, K, sites]: each template's shapes' weights on its sites
+		self.Tn = np.matmul(W, self.weights).astype(np.float32) # each template as its shapes give it
+		self.norm2 = np.maximum((self.Tn.astype(np.float64) ** 2).sum(axis=(1, 2)), 1e-12) # its energy
+		self.root = np.sqrt(self.norm2)
+		self.loose = self.zu * self.root * (1 - 1e-9) # a score above this may be above its unit's threshold
+		if not hasattr(self, "shape_cross"): # the shapes' cross-correlations: [K, K, 2L - 1], R[k, l, d + 60] =
+			# sum_n W[n + d, k] W[n, l]
+			R = np.zeros((K, K, 2 * L - 1))
+			for d in range(-(L - 1), L):
+				a, b = max(0, d), L + min(0, d)
+				R[:, :, d + L - 1] = W[a:b].T @ W[a - d:b - d]
+			self.shape_cross = R.reshape(K * K, 2 * L - 1)
+			self.pairs_u = np.repeat(np.arange(U), [len(V) for V in self.over]) # every (u, v) sharing sites, in
+			self.pairs_v = np.concatenate(self.over) if U else np.zeros(0, int) # cross_flat's order
+		on = np.zeros((U, self.channels, K)) # each unit's weights on the channels of its sites
+		np.add.at(on, (np.repeat(np.arange(U), self.sites.shape[1]), self.cols.ravel()),
+			self.weights.transpose(0, 2, 1).reshape(-1, K))
+		cross = np.empty((len(self.pairs_u), 2 * L - 1), np.float32)
+		for a in range(0, len(self.pairs_u), 8192):
+			pu, pv = self.pairs_u[a:a + 8192], self.pairs_v[a:a + 8192]
+			P = np.matmul(on[pu[:, None], self.cols[pv]].transpose(0, 2, 1), self.weights[pv].transpose(0, 2, 1)) # [pairs,
+			# K, K]: u's weights on v's sites times v's
+			cross[a:a + len(pu)] = P.reshape(len(pu), K * K) @ self.shape_cross
+		self.cross_flat = cross
+		self.cross_at = np.r_[0, np.cumsum([len(V) for V in self.over])][:-1].astype(np.int64)
+		self.cross = [self.cross_flat[a:a + len(V)] for a, V in zip(self.cross_at, self.over)] # (views of cross_flat)
+		self.groups = [(g, chans, self.GroupWeights(g, chans)) for g, chans in self.group_sets]
 
 	def Reset(self):
 		self.tail, self.tail_first, self.next = None, None, None
+		self.move_at = None
 		self.tail_s = None # the tail as scored (whitened)
 		self.s_first = None # the scores so far: S (Sbuf's columns [S_lo, S_hi)), from sample s_first
 		if not hasattr(self, "Sbuf"):
@@ -532,7 +707,27 @@ class TemplateMatcher:
 
 	def Feed(self, first, x, last=False):
 		"""Template spikes judged with the samples given (filtered uV); as Detector.Feed. last: judge all that can be,
-		however few (the end of a replay)."""
+		however few (the end of a replay). Following the drift (Follow): at each sample where it is measured, the
+		template spikes are judged up to DRIFT_LAG before it, the templates moved, and the rest judged with them."""
+		if self.drift is None:
+			return self.Step(first, x, last)
+		if self.tail is not None and first != self.tail_first + len(self.tail):
+			self.Reset()
+		if self.move_at is None:
+			self.move_at = (first // self.every + 1) * self.every
+		found = []
+		while first + len(x) > self.move_at:
+			cut = self.move_at - first
+			found.append(self.Step(first, x[:cut], upto=self.move_at - DRIFT_LAG, force=True))
+			self.MoveNow(self.move_at)
+			first, x = self.move_at, x[cut:]
+			self.move_at += self.every
+		found.append(self.Step(first, x, last, upto=None if last else self.move_at - DRIFT_LAG))
+		return Cat(found)
+
+	def Step(self, first, x, last=False, upto=None, force=False):
+		"""Feed's work for the samples given: template spikes judged up to sample upto at most (None: all that can be),
+		and, with force, up to it however few."""
 		if self.tail is not None and first != self.tail_first + len(self.tail):
 			self.Reset()
 		xs = x if self.white is None else x @ self.white
@@ -558,7 +753,9 @@ class TemplateMatcher:
 		hi = len(buf) - margin_hi
 		if self.s_first is not None: # what the scores reach
 			hi = min(hi, self.s_first + (self.S_hi - self.S_lo) - bfirst - self.passes * REACH - 2 * w)
-		if hi - lo >= (1 if last else self.judge):
+		if upto is not None:
+			hi = min(hi, upto - bfirst)
+		if hi - lo >= (1 if last or force else self.judge):
 			self.scored = bufs
 			found = self.Judge(buf, bfirst, lo, hi)
 			self.next = bfirst + hi
@@ -580,8 +777,8 @@ class TemplateMatcher:
 	def ScoreGroups(self, member, size=SCORE_GROUP):
 		"""Units in groups of about size whose sites overlap (each next unit the one with the most sites in the group's
 		so far; a group starts from the remaining unit with the lowest peak channel): [(units, the channels their sites
-		cover, their shapes' weights on those channels [units * K, channels] float32)]."""
-		U, K = len(self.units), self.weights.shape[1]
+		cover)]. Their shapes' weights on those channels: GroupWeights."""
+		U = len(self.units)
 		left = np.ones(U, bool)
 		start = np.argsort(self.peaks, kind="stable")
 		groups = []
@@ -599,14 +796,17 @@ class TemplateMatcher:
 				mine.append(best)
 				left[best] = False
 				cover |= member[best]
-			g = np.array(mine)
-			chans = np.flatnonzero(cover)
-			A = np.zeros((len(g), K, len(chans)), np.float64)
-			for r, u in enumerate(g):
-				ok = self.sites[u] >= 0
-				A[r][:, np.searchsorted(chans, self.cols[u][ok])] += self.weights[u][:, ok]
-			groups.append((g, chans, A.reshape(len(g) * K, len(chans)).astype(np.float32)))
+			groups.append((np.array(mine), np.flatnonzero(cover)))
 		return groups
+
+	def GroupWeights(self, g, chans):
+		"""A score group's shapes' weights on the channels its units' sites cover: [units * K, channels] float32."""
+		K = self.weights.shape[1]
+		A = np.zeros((len(g), K, len(chans)), np.float64)
+		for r, u in enumerate(g):
+			ok = self.sites[u] >= 0
+			A[r][:, np.searchsorted(chans, self.cols[u][ok])] += self.weights[u][:, ok]
+		return A.reshape(len(g) * K, len(chans)).astype(np.float32)
 
 	def Scores(self, x, a0, b0, out=None):
 		"""Each unit's score, not yet divided by its template's energy, at samples [a0, b0) of x (filtered uV, whitened
@@ -677,9 +877,11 @@ class TemplateMatcher:
 			keep = ~((np.abs(taken[i] - key) <= w) | (np.abs(taken[np.maximum(i - 1, 0)] - key) <= w))
 			us, ts, zs = us[keep], ts[keep], zs[keep]
 		# Not the best near it: a unit near it (its peak among its sites) peaks higher within MATCH_W (the lower unit
-		# number, if as high)
+		# number, if as high); higher in evidence, z^2 / 2 plus its prior (PRIOR)
 		order = np.argsort(ts, kind="stable")
 		t_o, u_o, z_o = ts[order], us[order], zs[order]
+		if self.prior_weight:
+			z_o = 0.5 * z_o * z_o + self.prior[u_o]
 		lose = np.zeros(len(ts), bool)
 		for k in range(1, len(ts)):
 			i = np.flatnonzero(t_o[k:] - t_o[:-k] <= w)
@@ -706,8 +908,8 @@ class TemplateMatcher:
 	def Group(self, R, a0, t, u, cand, paired, taken):
 		"""Other units' spikes at once with unit u's at t: units near the group (their peak among a member's sites)
 		peaking within MATCH_W of t (this pass's peaks, of units with no spike found within MATCH_W of it) are added
-		one at a time, the
-		one that adds most first, at the lag near its peak that fits best, with all the group's templates' sizes
+		one at a time, the one that adds most first (with its prior, PRIOR), at the lag near its peak that fits best,
+		with all the group's templates' sizes
 		fitted together on the sites they cover; one is added when every size stays within SCALE and it adds at least
 		its unit's threshold squared to what the group explained, up to GROUP units. [(sample, unit, size), ...] for
 		a group of two or more; None for u alone."""
@@ -742,7 +944,9 @@ class TemplateMatcher:
 			ok = (gain > zv * zv) & np.all((sizes >= SCALE[0]) & (sizes <= SCALE[1]), axis=1)
 			if not ok.any():
 				break
-			k = int(np.argmax(np.where(ok, gain, -np.inf))) # the first of the best, as tried in turn
+			vs = np.array([v for _, v in trials])
+			best = gain + 2 * self.prior[vs] if self.prior_weight else gain # what it adds, plus its prior (PRIOR)
+			k = int(np.argmax(np.where(ok, best, -np.inf))) # the first of the best, as tried in turn
 			group.append(trials[k])
 			explained = together[k]
 			fit = (sizes[k], together[k])
@@ -871,7 +1075,7 @@ class TemplateMatcher:
 				n = fast.Pass(R, a0, new_t[first], new_u[first], new_near[first], cand[0], cand[1], taken_t, taken_n,
 					self.norm2, self.root, self.zu, self.nearmat, self.pos, self.cross_flat, self.cross_at,
 					self.runs_flat, self.runs_at, w, PAIR_SEARCH, GROUP, SCALE[0], SCALE[1], el.BEFORE + el.AFTER,
-					out_t, out_u, out_a, out_g)
+					2 * self.prior if self.prior_weight else None, out_t, out_u, out_a, out_g)
 				found += [(t, u, a, p, g) for t, u, a, g in zip(out_t[:n].tolist(), out_u[:n].tolist(),
 					out_a[:n].tolist(), out_g[:n].tolist())]
 				continue
@@ -894,6 +1098,8 @@ class TemplateMatcher:
 					keys.append(uu * KEY + tt)
 					found.append((tt, uu, aa, p, group is not None))
 		found = [f for f in found if lo <= f[0] < hi]
+		if self.drift is not None:
+			self.Gather(found, bfirst)
 		if self.record is not None:
 			for t, u, a, p, g in found:
 				ok = self.sites[u] >= 0
@@ -924,20 +1130,31 @@ class MatchingSorter(TemplateSorter):
 	both finders have judged them.
 	"""
 
-	def __init__(self, path, z=None, threads=1):
+	def __init__(self, path, z=None, threads=1, follow=True):
 		"""z: every unit's template-spike threshold; None: each unit's learned in training (Z_THRESHOLD for a file
-		without them). threads: the matcher's scores worked out in this many threads."""
+		without them). threads: the matcher's scores worked out in this many threads. follow: the templates follow the
+		probe's drift (TemplateMatcher.Follow; a file trained before it can't)."""
 		super().__init__(path)
 		self.matcher = TemplateMatcher(self, z, threads=threads)
-		self.name = "Kilosort 4 templates, matched ({} units, {})".format(self.given, "z {:g}".format(z) if z is not
-			None else "each unit's threshold" if self.match_z is not None else "z {:g}".format(Z_THRESHOLD))
+		self.follows = bool(follow) and self.matcher.Follow(self)
+		self.name = "Kilosort 4 templates, matched ({} units, {}{})".format(self.given, "z {:g}".format(z) if z is not
+			None else "each unit's threshold" if self.match_z is not None else "z {:g}".format(Z_THRESHOLD),
+			", following the drift" if self.follows else "")
 		self.pending = el.Spikes()
 		self.recent = el.Spikes() # template spikes given out, the last few samples: for the next threshold spikes
 
 	def Reset(self):
-		"""Forget the samples so far (a new run: its samples counted from 0 again)."""
+		"""Forget the samples so far (a new run: its samples counted from 0 again). The templates stay where the drift
+		moved them."""
 		self.matcher.Reset()
+		if self.follows: # (its samples counted from 0 again)
+			self.matcher.periods = {}
 		self.pending, self.recent = el.Spikes(), el.Spikes()
+
+	@property
+	def drift_um(self):
+		"""How far the templates have moved up the probe with its drift (um; None: not following it)."""
+		return self.matcher.moved if self.follows else None
 
 	def Feed(self, first, filtered, spikes, detector_next):
 		"""The spikes for the samples given: the template spikes, and the threshold's spikes (spikes) they don't
@@ -975,17 +1192,17 @@ class MatchingSorter(TemplateSorter):
 		return self.Release(np.iinfo(np.int64).max)
 
 
-def Sorter(path, match=None, threads=1):
+def Sorter(path, match=None, threads=1, follow=True):
 	"""The live sorter from a templates file: match None, "" or 0: the threshold's spikes sorted (TemplateSorter);
 	"learned": spikes found by the templates too, each unit at its threshold learned in training (MatchingSorter); a
-	number: every unit at that z. threads: the matcher's, for its scores."""
+	number: every unit at that z. threads: the matcher's, for its scores. follow: its templates follow the drift."""
 	if match in (None, "", 0, "0", "off"):
 		return TemplateSorter(path)
 	try:
 		z = None if match == "learned" else float(match)
 	except ValueError:
 		raise el.EphysError("--match: \"learned\", a number or 0, not {!r}".format(match))
-	return MatchingSorter(path, z, threads)
+	return MatchingSorter(path, z, threads, follow)
 
 
 # ---------------------------------------------------------------- training and evaluation
@@ -1114,7 +1331,8 @@ def Train(data, stream, phy, out, span=None, labels=LABELS, say=print, accept_q=
 		peaks=np.array([r[2] for r in rows]), sites=np.stack([r[3] for r in rows]),
 		templates=np.stack([r[4] for r in rows]), accept=np.array([r[5] for r in rows], np.float32),
 		trained_spikes=np.array([r[6] for r in rows]), compete=np.array([r[7] for r in rows], bool),
-		noise=noise.astype(np.float32), rate=stream.rate,
+		noise=noise.astype(np.float32), rate=stream.rate, site_x=stream.geometry.x.astype(np.float32),
+		site_z=stream.geometry.z.astype(np.float32),
 		span_samples=np.array([start, end]), phy=os.path.abspath(phy), label_file=sort["label_file"] or "",
 		kept_labels=",".join(labels))
 	if whiten: # the matcher's: the samples whitened (in place: minutes of a probe are GB), the templates again
@@ -1157,7 +1375,7 @@ def Learn(data, stream, path, times, clusters, start, end, say=print):
 	replayed through the matching sorter with the templates in path, every unit's spikes looked at from LEARN_Z, and
 	paired with Kilosort's (times, clusters) from a second in (as live, the filter settles first)."""
 	t0 = time.monotonic()
-	sorter = MatchingSorter(path, LEARN_Z)
+	sorter = MatchingSorter(path, LEARN_Z, follow=False) # (the training span is where the templates are)
 	Fast(wait=True)
 	sorter.matcher.record = []
 	ReplayMatched(data, stream, start, end, sorter)
@@ -1195,14 +1413,15 @@ def ReplayMatched(data, stream, start, end, sorter, piece_s=0.1):
 	return Cat(out), took
 
 
-def Evaluate(data, stream, phy, templates, span=None, warm_s=1.0, say=print, report=None, match=None, threads=1):
+def Evaluate(data, stream, phy, templates, span=None, warm_s=1.0, say=print, report=None, match=None, threads=1,
+		follow=True):
 	"""The templates' sort of the samples in span against Kilosort's there: per unit (the templates' units with a
 	label in report; default all) the share of its Kilosort spikes found live and given to it (sensitivity), and the
 	share of the live spikes given to it that are its (precision); the live spikes the templates left unsorted; the
 	time a spike took to sort. Every unit with a template competes for the spikes (mua units' templates take their
 	own spikes from the good units'), and a live spike is a unit's when it matches one of that unit's Kilosort
-	spikes. match: as Sorter's."""
-	sorter = Sorter(templates, match, threads)
+	spikes. match, follow: as Sorter's."""
+	sorter = Sorter(templates, match, threads, follow)
 	match = isinstance(sorter, MatchingSorter) and match
 	sort = ReadPhy(phy, tuple(set(str(l) for l in sorter.labels)))
 	start, end = Span(span, stream.rate, len(data))
@@ -1278,7 +1497,10 @@ def Evaluate(data, stream, phy, templates, span=None, warm_s=1.0, say=print, rep
 		"own_precision_p25_p75": [float(np.percentile(own_prec, 25)), float(np.percentile(own_prec, 75))] if own_prec
 			else None,
 		"own_pooled_sensitivity": n_own / n_ks if n_ks else None, "own_pooled_precision": n_own / n_given if n_given
-			else None, "per_unit": rows}
+			else None, "follows_drift": bool(match and sorter.follows),
+		"drift": [{"s": round(t / stream.rate, 2), "measured_um": None if m is None else round(m, 2), "moved_um": round(
+			v, 2), "spikes": n} for t, m, v, n in sorter.matcher.drift_log] if match and sorter.follows else None,
+		"per_unit": rows}
 	say("Sorted {:,} of {:,} live spikes in {:.1f} to {:.1f} s ({:.0f} us a spike). Per unit, median: {:.0%} of its "
 		"Kilosort spikes found live and given to it, {:.0%} of the spikes given to it are its. Unit by unit (its "
 		"Kilosort spikes and those given to it, paired): {:.0%} and {:.0%}.".format(summary["sorted"], len(spikes),

@@ -927,6 +927,7 @@ function ephysMatchText(H){ // the templates matched in a thread of their own (s
   const M = H.matcher; if(!M) return "";
   return " · templates matched: busy "+Math.round(100*(H.matcher_busy||0))+"% of the time, "+Number(M.behind_s||0).toFixed(2)+" s behind"+
     (M.skipped_pieces ? " · "+(M.skipped_samples/(EPH.rate||30000)).toFixed(1)+" s left unmatched (the matcher fell too far behind: their spikes went out unsorted)" : "")+
+    (M.drift_um != null ? " · templates moved "+(M.drift_um > 0 ? "+" : "")+Number(M.drift_um).toFixed(1)+" µm with the probe's drift" : "")+
     (M.error ? " · matcher: "+esc(M.error) : "");
 }
 function ephysCamText(C){ // the camera's frame, from the OneBox's camera pulses and the Pico's count
