@@ -66,7 +66,8 @@ user's processes' open files, disk and environment):
   every app with a window draws on the GPU): status says so. The lock is the Linux one, a flock.
 
 On Windows (rig_windows.py beside this file says how each is seen):
-  gpu      a CUDA program (type C in nvidia-smi -q -d PIDS), or any python*.exe
+  gpu      a CUDA program (type C in nvidia-smi -q -d PIDS), or any python*.exe but another rig.py
+           (see "Other rig.py processes" below)
   encoder  ffmpeg*.exe
   camera   a Spinnaker DLL loaded (PySpin, SpinView)
   trigger  a COM port open
@@ -84,6 +85,15 @@ On Windows (rig_windows.py beside this file says how each is seen):
            Manager, ...). Noted, not waited for; the log says when one starts or
            ends, but that doesn't contaminate the run, since Windows starts and
            ends some (WebView, search) by itself.
+
+Other rig.py processes on Windows (status, a run waiting in line, hold, break, install, version) use
+nothing, and never count. rig.py knows one by its command line, which it can't read for a python.exe
+started over ssh (elevated) or by another user; so every rig.py, as it starts, also writes a marker,
+RIG_ROOT/rig-processes/<pid>-<start> (and one for a venv's python.exe that started it), and a watching
+rig.py exempts a python.exe with a marker. One with neither, started under RIG_MARK_WAIT s (5) ago, is
+held back for those seconds before it counts (it may be a rig.py yet to write its marker); if it ends
+in them without a marker, it counts then. A marker stays when its rig.py ends; each rig.py removes
+those of rig.py processes that ended over 10 min ago.
 
 --allow ephys (RIG_ALLOW=ephys) on run or hold: ephys acquisition programs outside the job are
 neither waited for nor counted, only logged (ALLOWED). For a real recording that pairs cameras with
@@ -276,7 +286,8 @@ def flir_cameras():
 	return out
 
 class Proc:
-	__slots__ = ("pid", "ppid", "sid", "start", "cpu", "io", "kinds", "cmd", "job", "user", "exe")
+	# unsure (Windows): a python.exe whose command line can't be read and that has no rig.py marker (classify)
+	__slots__ = ("pid", "ppid", "sid", "start", "cpu", "io", "kinds", "cmd", "job", "user", "exe", "unsure")
 
 def read_proc(pid, cameras):
 	"""A Proc for pid, or None if it is gone or a kernel thread (Linux)."""
@@ -394,10 +405,11 @@ def scan(own=()):
 		procs = {}
 		on_gpu = gpu_processes()  # first, so nvidia-smi has ended before the processes are listed
 		compute = {pid for pid, t in on_gpu.items() if "G" not in t}
-		for pid, ppid, start, cpu, io, kinds, name, job in rig_windows.scan(JOBS, compute, EXTRA, own, set(on_gpu) - compute):
+		for pid, ppid, start, cpu, io, kinds, name, job, unsure in rig_windows.scan(JOBS, compute, EXTRA, own,
+				set(on_gpu) - compute, rig_marks()):
 			p = Proc()
 			p.pid, p.ppid, p.sid, p.start, p.cpu, p.io = pid, ppid, None, start, cpu, io
-			p.kinds, p.cmd, p.job, p.user = kinds, name, job, None
+			p.kinds, p.cmd, p.job, p.user, p.unsure = kinds, name, job, None, unsure
 			procs[pid] = p
 		return procs
 	cameras = flir_cameras()
@@ -456,6 +468,77 @@ def cmdline(p):
 	if WINDOWS:
 		return rig_windows.command_line(p.pid, p.start) or p.cmd
 	return p.cmd
+
+# Other rig.py processes, by their markers (Windows). A python.exe counts as on the GPU unless it is another
+# rig.py, which rig_windows.classify knows by its command line; but a rig.py at the desktop can't read the
+# command line of a python.exe started over ssh (elevated) or by another user. On the ChronicRecord PC on
+# 2026-11-20, a `rig.py status` run over ssh every 10 min was logged FOREIGN 11 times against one 2 h run.
+# So every rig.py marks itself as it starts: a file ROOT/rig-processes/<pid>-<start> (start as the process
+# table gives it, so a reused pid has no marker), which a watching rig.py lists at every look. A marker
+# stays after its rig.py ends (a watcher may judge a python.exe it held back only at its next look: Watch.holds)
+# and each rig.py removes those whose process ended over MARK_KEEP s ago.
+MARKS = "rig-processes"
+MARK_KEEP = 600.0
+# s a python.exe whose command line can't be read and that has no marker is held back, before it counts, to
+# show it is a rig.py by marking itself: one marks itself as it starts, a fraction of a second in
+MARK_WAIT = float(os.environ.get("RIG_MARK_WAIT", 5.0))
+FILETIME_EPOCH = 11644473600  # s from 1601-01-01, where Windows counts a process's start from, to 1970
+
+def filetime_now():
+	"""Now as Windows gives a process's start time: 100 ns units since 1601."""
+	return int((time.time() + FILETIME_EPOCH) * 1e7)
+
+def marks_folder():
+	return os.path.join(ROOT, MARKS)
+
+def rig_marks():
+	"""{(pid, start)} of the rig.py processes that marked themselves (running, or ended lately)."""
+	try:
+		names = os.listdir(marks_folder())
+	except OSError:
+		return set()
+	return {(int(m.group(1)), int(m.group(2))) for m in (re.match(r"(\d+)-(\d+)$", n) for n in names) if m}
+
+def self_and_launchers(table=None):
+	"""[(pid, start)] of this process and of each python.exe above it whose command line runs rig.py
+	(a venv's python.exe starts the real one and waits for it), from the process table."""
+	rows = {row[0]: row for row in (rig_windows.process_table() if table is None else table)}
+	out, row = [], rows.get(os.getpid())
+	while row and len(out) < 8:
+		out.append((row[0], row[3]))
+		parent = rows.get(row[1])
+		if not parent or parent[3] > row[3] or not rig_windows.matches(parent[2], rig_windows.GPU_NAMES) or \
+				not rig_windows.RIG_PY.search(rig_windows.command_line(parent[0], parent[3]) or ""):
+			break
+		row = parent
+	return out
+
+def mark_self(action):
+	"""On Windows, mark this rig.py (and a launcher of it: self_and_launchers) in ROOT/rig-processes, then
+	remove old markers (prune_marks). Only where ROOT exists; on any error rig.py goes unmarked, known by its
+	command line only, as before markers: marking must never keep a rig.py (a panel's, a run's) from starting."""
+	if not WINDOWS or not os.path.isdir(ROOT):
+		return
+	try:
+		with contextlib.suppress(FileExistsError):
+			os.mkdir(marks_folder())
+		for pid, start in self_and_launchers():
+			with open(os.path.join(marks_folder(), "%d-%d" % (pid, start)), "w", encoding="utf-8") as f:
+				f.write("rig.py %s (pid %d) since %s\n" % (action, pid, time.strftime("%Y-%m-%d %H:%M:%S")))
+		prune_marks()
+	except Exception:  # noqa: BLE001 (see above)
+		pass
+
+def prune_marks(now=None):
+	"""Remove the markers of rig.py processes that have ended, once a marker is MARK_KEEP s old."""
+	now = time.time() if now is None else now
+	for pid, start in rig_marks():
+		path = os.path.join(marks_folder(), "%d-%d" % (pid, start))
+		try:
+			if now - os.stat(path).st_mtime >= MARK_KEEP and not alive(pid, start):
+				os.remove(path)
+		except OSError:
+			pass
 
 # The GPU, from nvidia-smi where there is one
 
@@ -699,6 +782,7 @@ class Watch:
 		self.desktops = {}  # (pid, start): Proc, every desktop up at the last sample
 		self.ancestors = set()
 		self.own_pids = set()
+		self.pending = {}  # (pid, start): (Proc, first seen): held back at the last sample (holds), not judged yet
 
 	def own(self, p, procs):
 		if p.pid in self.me or (self.job and p.job == self.job) or (self.sid and p.sid == self.sid):
@@ -724,6 +808,17 @@ class Watch:
 		"""The kinds p uses that count against a run: all but desktop and the allowed ones."""
 		return p.kinds - {"desktop"} - self.allow
 
+	def holds(self, p, t):
+		"""Whether p, a python.exe whose command line can't be read and that has no rig.py marker (unsure), is
+		held back from counting at this look (t: perf_counter): it may be a rig.py that started a moment ago,
+		yet to mark itself. Held while it is under MARK_WAIT s old, and first seen under MARK_WAIT s ago (should
+		the clock jump back); then it counts as any other. One that ends while held counts at the next look,
+		unless it marked itself (sample). Never exempts it."""
+		if not getattr(p, "unsure", False):
+			return False
+		first = self.pending.get((p.pid, p.start), (p, t))[1]
+		return t - first < MARK_WAIT and filetime_now() - p.start < MARK_WAIT * 1e7
+
 	def sample(self):
 		"""(foreign device users, foreign load) now: [(Proc, kinds)], (cores, MB/s, [(cores, MB/s, Proc)],
 		MB/s all disks moved or None)."""
@@ -737,6 +832,7 @@ class Watch:
 			self.ancestors.add(q.ppid)
 			q = procs[q.ppid]
 		own, measured = set(), self.prev_t is not None and t > self.prev_t
+		held = {}
 		for p in procs.values():
 			key, c, b = (p.pid, p.start), 0.0, 0.0
 			if measured and key in self.prev:
@@ -749,12 +845,22 @@ class Watch:
 				own_io += b
 				continue
 			if self.foreign(p):
-				users.append(p)
+				if self.holds(p, t):  # its load still counts
+					held[key] = (p, self.pending.get(key, (p, t))[1])
+				else:
+					users.append(p)
 			elif p.kinds & self.allow:
 				self.allowed.append(p)
 			cpu, io = cpu + c, io + b
 			if c > 0.05 or b > 1:
 				load.append((c, b, p))
+		# One held back at the last look that has ended since: another rig.py if it marked itself, else it counts
+		ended = [p for key, (p, first) in self.pending.items()
+			if key not in held and (key[0] not in procs or procs[key[0]].start != key[1])]
+		if ended:
+			marked = rig_marks()
+			users += [p for p in ended if (p.pid, p.start) not in marked]
+		self.pending = held
 		self.own_pids = own
 		self.prev = {(p.pid, p.start): (p.cpu, p.io) for p in procs.values()}
 		# Known background (background.json), each entry's processes together: within its ceilings it is
@@ -792,7 +898,8 @@ class Watch:
 		return users, Load(cpu, io, load, disks, max(0.0, rest_cpu), max(0.0, rest_io), background) if measured else None
 
 def describe(p, width=150):
-	return "%d %s %s" % (p.pid, ",".join(sorted(p.kinds)) or "-", cmdline(p)[:width])
+	return "%d %s %s%s" % (p.pid, ",".join(sorted(p.kinds)) or "-", cmdline(p)[:width],
+		" (command line unreadable, no rig.py marker)" if getattr(p, "unsure", False) else "")
 
 def desktop_text(desktops, short=False):
 	if WINDOWS:
@@ -1195,7 +1302,9 @@ def wait_quiet(w, args):
 		time.sleep(PERIOD)
 		users, load = w.sample()
 		if not users and not foreign_load(load, args):
-			return
+			if not w.pending:
+				return
+			continue  # a python.exe that may be a rig.py yet to mark itself: judged within MARK_WAIT s, --no-wait too
 		if args.no_wait:
 			say("rig in use outside rig.py:")
 			for p in users:
@@ -1262,6 +1371,18 @@ def watch(w, alive, log, args, on_signal, lock, stopper=None):
 			time.sleep(0.2)
 		if stopper.why:
 			break
+	# A python.exe held back at the last look (Watch.holds) ran during the run: it is judged before the
+	# verdict, within MARK_WAIT s, so that the run's end exempts nothing. What starts after the end doesn't count
+	held = set(w.pending)
+	while held and not on_signal[0] and not (stopper and stopper.why):
+		time.sleep(min(PERIOD, 0.5))
+		users, _ = w.sample()
+		for p in users:
+			if (p.pid, p.start) in held:
+				for k in w.foreign(p):
+					counts[k] += 1
+				note(("dev", p.pid, p.start), "FOREIGN %s" % describe(p))
+		held &= set(w.pending)
 	counts["desktops"] = desktop_text(w.desktops, short=True)
 	counts["clocks"] = clocks.summary()
 	counts["load"], counts["background"], counts["loadnotes"] = track.verdict()
@@ -2131,6 +2252,8 @@ def cmd_break(args):
 	print("removed %s gpu.lock: %s" % ("a hand-written" if state == "hand" else "a stale", info))
 
 def main(argv=None):
+	# First, so that a rig.py watching a run can tell this one is a rig.py however it was started (over ssh)
+	mark_self(((sys.argv[1:] if argv is None else argv) or ["?"])[0])
 	for stream in (sys.stdout, sys.stderr):
 		try:
 			stream.reconfigure(errors="replace")
