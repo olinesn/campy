@@ -345,6 +345,75 @@ That gave 3,100 pseudo-labelled frames. Two ways of using them were tried:
 
 **Precision.** The scores ran TensorRT fp16 on a cluster GPU, and live runs TensorRT fp16 on the A2000. Two GPUs in fp16 don't give bit-identical keypoints. Live against offline was checked on the earlier pair (7 November, 8 cameras, 57,600 camera frames): body parts within 0.03 px at the median and 94.5% within 0.5 px. In 2.4% of mice the two GPUs picked a different centroid peak, and those skeletons differed more. That check wasn't repeated for the new pairs. Each model was trained once, so a difference of one or two mice, or under about 0.2 px, may be run-to-run noise.
 
+### Round 5: the larger model as a teacher (11 November)
+
+**In short:** the larger model from round 4 (DINOv2 backbone, too slow to run live) taught the light centered-instance model in two ways. First, it labelled 9 times more frames than in round 4: 26,889 frames from 14 recordings of the box (2-mouse ones, and also 1-, 3- and 5-mouse ones, which a centered-instance model can learn from too). Second, the light model also learned to copy its confidence maps. With both, the 16-filter spare now beats the 24-filter model the Tower Plus runs: fewer skeletons on the wrong mouse, body parts closer in 2D and in 3D, at 10.7 ms instead of 12.3 ms at p99. The 24-filter model trained the same way is better again: it closes half of the gap to the teacher in 2D and four fifths of it in 3D. Only the centered-instance model changes. The centroid model stays as it is: none of the larger models finds the mice better.
+
+**What "teacher" means here.** A large model is accurate but too slow for 8 cameras at 60 fps. A light model is fast but has seen few labelled frames. The large model can teach the light one in two ways:
+- **Pseudo-labels** (round 4's method, now at a larger scale). The teacher runs on recordings nobody labelled. Frames where the 8 cameras' poses agree in 3D become training labels. The 3D also corrects one camera's mistake from the others.
+- **Confidence maps** ("soft targets"). On every training step the teacher looks at the same crop as the light model. The light model is trained to match the teacher's map for each body part, as well as the label's. A map says more than a label: where the teacher is unsure, and which other places it considered.
+
+**The gap to close.** On the held-out session (the same 400 mice as above), each model was scored in 2D as above. It was also scored in 3D, which the earlier rounds didn't do. That session has 25 moments labelled in all 8 cameras. For each, both the predictions and the hand labels were triangulated with `campy-live`'s own 3D code (`bench/model_eval_3d.py`) and compared. The 3D error is in millimetres.
+
+| Centered-instance model (centroid: the one on the Tower Plus) | Wrong mouse of 400 | Error p50 | Within 5 px | 3D error p50 | 3D within 5 mm | Frame to 2D, p99 on the A2000 |
+|---|---|---|---|---|---|---|
+| Teacher: DINOv2, 450 px crops at full size | 14 | 3.97 px | 54.0% | 4.19 mm | 58.6% | too slow |
+| 320 → 128 px, 24 filters, round 4 (on the Tower Plus now) | 23 | 5.97 px | 42.4% | 5.35 mm | 47.2% | 12.3 ms |
+| 320 → 128 px, 16 filters, round 4 (the spare) | 21 | 6.43 px | 40.3% | 5.97 mm | 42.3% | 10.7 ms |
+| 24 filters, the larger pseudo-label set | 20 | 5.33 px | 46.6% | 4.83 mm | 50.8% | 12.3 ms |
+| 16 filters, the larger pseudo-label set | 15 | 5.72 px | 44.0% | 5.27 mm | 48.2% | 10.7 ms |
+| **24 filters, pseudo-labels + the teacher's maps** | **14** | **4.90 px** | **49.6%** | **4.43 mm** | **54.2%** | 12.3 ms |
+| **16 filters, pseudo-labels + the teacher's maps** | **17** | **5.34 px** | **46.4%** | **5.21 mm** | **48.8%** | **10.7 ms** |
+
+- **How to read it.** All rows use the same centroid model, so they miss the same 6 mice of 400 and add the same 2 extra skeletons. "Within 5 px" counts a body part the model leaves out (its peak is under `campy-live`'s 0.2 threshold) as a miss. The teacher leaves out 8% of body parts, more than any light model, which flatters its median.
+- **Four runs of each of the last two rows.** Each size was trained three times for up to 40 epochs with different random seeds, and once for up to 80 epochs. The rows show the run with the lowest validation loss on the box's 80 validation frames, not the best scores here; for both sizes that was the 80-epoch run. The other runs:
+  - 24 filters, 40 epochs: 14, 26 and 14 wrong; 4.90, 5.44 and 4.99 px; 3D 4.60, 4.88 and 4.56 mm. The second run stopped after 11 epochs: its validation loss stopped improving for 8 epochs early on. It is the worst of the four.
+  - 16 filters, 40 epochs: 17, 17 and 20 wrong; 5.42, 5.29 and 5.38 px; 3D 4.91, 4.99 and 5.11 mm.
+
+  Every run of either size beats the 24-filter model now on the Tower Plus on every measure but one: one 24-filter run put 26 skeletons on the wrong mouse, against 23. The 3D numbers come from 25 moments (600 body parts), so differences of 0.2–0.3 mm between runs are within this spread.
+- **The speeds are those of the round-4 models.** Training changes the weights, not the shape, and a model's speed depends only on its shape. So the last column is the live replays of round 4 on the A2000 ([Live tracking](live-tracking.md#lighter-models-for-2-mice-november-2026)). These models weren't timed again.
+
+**What each step bought** (24 filters; the median of the three 40-epoch runs where there are three):
+1. **More pseudo-labels** gave most of it. Round 4 had 3,100 pseudo-labelled frames from 4 recordings, 100 frames per camera. This round has 26,889 from 14 recordings, up to 300 per camera. Half are frames where the old light pair disagreed with the teacher; half are spread over the recording.
+   - Error: 5.97 → 5.33 px.
+   - 3D: 5.35 → 4.83 mm.
+   - Wrong mouse: 23 → 20.
+2. **The teacher's maps** added a little more on the same frames: 5.33 → 4.99 px, 4.83 → 4.60 mm. On round 4's 3,100 frames they gave about the same: 5.98 → 5.65 px and 5.27 → 5.13 mm, each the mean of three runs.
+3. **A higher learning rate.** These models were fine-tuned at 5e-5 (round 4: 2e-5, 40 epochs of 500 steps). With the pseudo-labels of the first 7 recordings, 5e-5 did slightly better: 5.35 → 5.23 px, 4.81 → 4.76 mm, wrong mouse 17 → 15.
+4. **Longer training.** With 80 epochs instead of 40 (and stopping only after 15 epochs without progress, instead of 8), the validation loss went lower for both sizes. On the test session, same seed: 24 filters 3D 4.60 → 4.43 mm, 2D unchanged at 4.90 px; 16 filters 2D 5.42 → 5.34 px, 3D 4.91 → 5.21 mm, within the spread of its runs. Each took about 25 minutes.
+
+**What didn't help:**
+- **Copying the teacher's maps as they are.** The teacher's peaks are lower than a label's (about 0.6–0.7 against 1). A model trained to copy them left 2.5 to 8 times more body parts under the 0.2 threshold. So a body part whose teacher peak is at least 0.3 is scaled up to a peak of 1, and only unsure ones keep the teacher's low peak (`--peak-floor`, below).
+- **The teacher's maps alone**, without the labels: worse than half and half.
+- **A smaller input.** 320 → 96 px with 16 filters, trained the same way on the first 7 recordings, did no better in 2D than the 16-filter 128 px spare before this round (6.39 against 6.43 px) and worse in 3D (6.23 against 5.97 mm).
+- **The centroid model on the new pseudo-labels.** Fine-tuned on 4 of the new 2-mouse recordings, it missed 9 mice instead of 6. The teacher pair's own centroid model misses 13, so there was no better centroid to learn from.
+- **Training from scratch** with the teacher, on the first 7 recordings: after 15 epochs (about 45 minutes) its validation loss was still 50% above the fine-tuned models'. It would have needed about 10 GPU-hours, and round 4 found fine-tuning better on this box, so it was stopped.
+
+**The number of mice per recording came from the teacher**, as the count it found in the most camera frames (91–99% of them in each recording), not from the recordings' names. Two recordings hold a different number than their names say.
+
+**Recommendation:** replace the Tower Plus's centered-instance model with one of these two, and keep its centroid model:
+- **16 filters**, to keep 2.6 ms of headroom. It is more accurate than the model running now on every measure, though by little in 3D (5.21 against 5.35 mm).
+- **24 filters**, for the most accuracy, at the same speed as now: 9 fewer skeletons on the wrong mouse, and 3D within 4.43 mm at the median against 5.35.
+
+Both are on the Tower Plus since 11 November, in its panel's Live models box beside the round-4 pairs. Its daily live config still starts on the round-4 24-filter pair until someone picks another.
+
+**Precision.** These scores ran in PyTorch fp16, without compiled engines, on a cluster GPU: the teacher has no TensorRT engine, so every model ran the same way. The model on the Tower Plus scores 5.97 px here, against 6.00 px with TensorRT fp16 in round 4. The teacher also ran in fp16 under autocast during training. Its maps differ from fp32 maps by fp16 rounding, which is far smaller than their spot widths.
+
+#### Training with a teacher (`campy-distill-train`)
+
+`campy-distill-train` runs sleap-nn's own trainer with the teacher's maps added to the loss. It needs sleap-nn 0.3.5 or later, and for a DINOv2 teacher, transformers.
+
+```
+campy-distill-train student.yaml --teacher runs/big_instance --alpha 0.5 trainer_config.optimizer.lr=5e-5
+```
+
+- `student.yaml` is an ordinary sleap-nn centered-instance config for the light model. Anything after the options goes to `sleap-nn train` as a config override.
+- `--teacher` is a trained centered-instance model folder, with any backbone sleap-nn can load. It must crop at full size; it may have more body parts than the student, which are matched by name.
+- `--alpha` is how much of the loss comes from the teacher's maps: 0.5 is half the teacher and half the labels, and 0 is plain sleap-nn training.
+- `--peak-floor` (default 0.3) scales body parts the teacher is sure of to a peak of 1, as above.
+- How it works: on every training step the teacher sees the same augmented crop as the student, cut to its own size around the same centre. Its maps are blurred to the student's spot size and sampled at the student's output pixels. Validation, and so `best.ckpt`, uses the labels only. The teacher isn't saved in the student's checkpoint.
+- Speed: fine-tuning the 128 px model for 40 epochs of 500 steps took about 10 minutes on one data-centre GPU (A100 or L40S), with the DINOv2 teacher on the same GPU.
+
 ## Where a set's time goes
 
 `bench/live_stage_timing.py run` runs `campy-live` itself with a timer around each stage of each set. Before and after each stage it waits for the GPU to finish, so each stage counts only its own work. Its docstring lists the stages. `bench/live_stage_timing.py kernels` profiles the two models layer by layer: GPU time per layer, against the bytes each layer moves and the arithmetic it does.
