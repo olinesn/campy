@@ -705,9 +705,14 @@ class Watch:
 			return True
 		if WINDOWS and p.pid in self.ancestors:  # what started rig.py waits for it, and may be a python.exe
 			return True
+		return self.below(p, procs, self.me | {self.root_pid})
+
+	@staticmethod
+	def below(p, procs, roots):
+		"""Whether p is one of the pids in roots or descends from one."""
 		q, seen = p, 0
 		while q and seen < 64:
-			if q.pid == self.root_pid or q.pid in self.me:
+			if q.pid in roots:
 				return True
 			parent = procs.get(q.ppid)
 			if parent and parent.start > q.start:  # a newer process that reused the parent's pid
@@ -2046,9 +2051,10 @@ def cmd_status(args):
 			"; ".join(session_text(s) for s in found) or "nobody logged on"))
 	m = re.search(r"\bjob=(\S+)", info) if state == "held" else None
 	job = m and m.group(1)
-	m = re.search(r"\bpid=(\d+)", info) if state == "held" else None
+	named = named_job(info) if state == "held" else None
+	root = named[0] if named and alive(*named) else None  # the job's first process: still that one, not its pid reused
 	bg = background_for(args)
-	w = Watch(job=job, root_pid=m and int(m.group(1)), background=bg)  # the job's processes (on Windows, those it started)
+	w = Watch(job=job, root_pid=root, background=bg)  # the job's processes (on Windows, those it started)
 	w.sample()
 	time.sleep(1.0)
 	_, load = w.sample()
@@ -2079,7 +2085,10 @@ def cmd_status(args):
 			continue
 		print("%-48s %s" % (names[k] + ":", "free" if not users else ""))
 		for p in users:
-			print("    %s%s" % ("[job] " if job and p.job == job else "", describe(p, 120)))
+			# the job's: in it (RIG_JOB, its Windows job object), or below the line's pid=. vm-oline's GPU queue writes its
+			# own line, with pid= but no job=, and runs each job in a job object of its own
+			mine = (job and p.job == job) or (root and Watch.below(p, procs, {root}))
+			print("    %s%s" % ("[job] " if mine else "", describe(p, 120)))
 	print("%-48s %s" % ("desktop on the GPU (not waited for):", desktop_text(
 		{(p.pid, p.start): p for p in procs.values() if "desktop" in p.kinds})))
 	for row in gpu_clocks():
