@@ -121,6 +121,16 @@ def test_no_marker_where_there_is_no_lock_folder(tmp_path, monkeypatch):
 	assert not (tmp_path / "none").exists()
 
 
+def test_a_failure_to_mark_never_stops_a_rig_py(root, monkeypatch):
+	monkeypatch.setattr(rig, "WINDOWS", True)
+	monkeypatch.setattr(rig, "rig_windows", rig_windows, raising=False)
+	def broken():
+		raise RuntimeError("a bug in the process table")
+	monkeypatch.setattr(rig_windows, "process_table", broken)
+	rig.mark_self("run")  # no exception: the rig.py goes on unmarked
+	assert rig.rig_marks() == set()
+
+
 def test_old_markers_of_ended_rig_py_processes_are_removed(root, monkeypatch):
 	now = time.time()
 	running = {(501, T0 + 1)}

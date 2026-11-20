@@ -516,7 +516,7 @@ def self_and_launchers(table=None):
 def mark_self(action):
 	"""On Windows, mark this rig.py (and a launcher of it: self_and_launchers) in ROOT/rig-processes, then
 	remove old markers (prune_marks). Only where ROOT exists; on any error rig.py goes unmarked, known by its
-	command line only, as before markers."""
+	command line only, as before markers: marking must never keep a rig.py (a panel's, a run's) from starting."""
 	if not WINDOWS or not os.path.isdir(ROOT):
 		return
 	try:
@@ -526,7 +526,7 @@ def mark_self(action):
 			with open(os.path.join(marks_folder(), "%d-%d" % (pid, start)), "w", encoding="utf-8") as f:
 				f.write("rig.py %s (pid %d) since %s\n" % (action, pid, time.strftime("%Y-%m-%d %H:%M:%S")))
 		prune_marks()
-	except OSError:
+	except Exception:  # noqa: BLE001 (see above)
 		pass
 
 def prune_marks(now=None):
