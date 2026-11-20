@@ -28,7 +28,7 @@ How it divides the work: `campy-rules` decides *whether* an output should be on,
 | GND | Shared with the trigger controller and every device |
 
 - **3.3 V logic.** The ESP32's pins are not 5 V tolerant. A 5 V trigger needs a divider (for example 10 kΩ over 20 kΩ) before D10. The outputs are 3.3 V, which most TTL inputs take, Doric's LED drivers included. Check each device's datasheet.
-- **Pull-downs.** Put a 10 kΩ resistor from each output to ground. The outputs are low from power-up, but during a reset or an upload a pin floats for a moment. A pull-down keeps a laser driver from reading that as on.
+- **Pull-downs.** Put a 10 kΩ resistor from each output to ground. The outputs are low from power-up, but during a reset or an upload a pin floats for a moment. A pull-down keeps a laser driver from reading that as on. The [BNC breakout](bnc-breakout.md) builds them into a box, with a BNC jack per output.
 - `campy-rules` sets the pins again from the rules file (`pin:` per output, `trigger_pin:` for the trigger), so other pins work too.
 
 ### Uploading the sketch

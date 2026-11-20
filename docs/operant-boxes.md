@@ -141,7 +141,7 @@ box:
 | Board pin | What | Notes |
 |---|---|---|
 | A0 to A7 | Inputs 0 to 7: beam breaks, nose pokes, lick or touch sensors | Suggested; any free pin works |
-| D11, D12 (D13, D0, D1 if needed) | Servos 0 to 3: the servo's signal wire | Suggested; D13 also lights the board's LED |
+| D11, D12 (D13, or a free A pin, if needed) | Servos 0 to 3: the servo's signal wire | Suggested; D13 also lights the board's LED. Not D1: it is the chip's serial output, which may carry its boot messages at a reset ([pins left empty](bnc-breakout.md#pins-left-empty)) |
 | D2 to D9 | Outputs (channels 0 to 7): valves, pumps, cue lights, tone generators, event marks | The sketch's defaults |
 | D10 | Camera trigger in: a wire from the trigger board's camera output | The sketch's default |
 | GND | Shared with the trigger, every sensor, every servo supply and every driver | |
@@ -153,14 +153,14 @@ The host sets every pin when it starts (`in`, `servo`, `pin`, `trig`), so other 
 **3.3 V logic.** The ESP32's pins take at most 3.3 V.
 
 - *Beam breaks and nose pokes* with an open-collector output (most IR break-beam receivers): set the input to pull-up and active low. The board's own pull-up (about 45 kΩ) holds the line at 3.3 V and the sensor pulls it down when the beam is broken. For long cables, add a 10 kΩ pull-up to 3.3 V at the board.
-- *Sensors with a 5 V push-pull output* need a divider (for example 10 kΩ over 20 kΩ) or a level shifter before the pin.
+- *Sensors with a 5 V push-pull output* need a divider (for example 10 kΩ over 20 kΩ) or a level shifter before the pin. The [BNC breakout](bnc-breakout.md#the-inputs-bnc-or-screw-terminal)'s BNC inputs take 5 V logic as they are.
 - *Touch or lick sensors (capacitance)*: use a module that does the sensing and gives a digital line (a lickometer, or a TTP223-type touch board), wired like any other input. The board doesn't read capacitance itself.
 
 **Servos.** Power hobby servos from their own 5–6 V supply, never from the board's 5 V pin, and join that supply's ground to the board's. Most hobby servos take the 3.3 V signal directly.
 
 **Valves and pumps.** Never drive a solenoid from a pin. Use a driver (a logic-level MOSFET module or a valve driver board) with a flyback diode across the coil, and its own supply.
 
-**Pull-downs on outputs.** As for `campy-rules`, a 10 kΩ resistor from each output to ground keeps a valve or laser driver off while the board resets.
+**Pull-downs on outputs.** As for `campy-rules`, a 10 kΩ resistor from each output to ground keeps a valve or laser driver off while the board resets. The [BNC breakout](bnc-breakout.md) builds them into a box, with a BNC jack per output.
 
 ## Inputs
 
