@@ -463,6 +463,40 @@ def until(check, timeout=60):
 
 
 @runs
+def test_status_marks_what_runs_below_a_lock_lines_pid_as_the_jobs(run):
+	# vm-oline's GPU queue writes rig.py's line itself, with pid= but no job=: what runs below that pid is the
+	# job's, as it is for the load outside the job, and anything else on the GPU is not
+	gpu, stop = run.tmp / "fake-gpu", run.tmp / "stop"
+	gpu.write_text("")
+	user = ("import os, sys, time; f = open(sys.argv[1]); open(sys.argv[2], 'w').write(str(os.getpid())); t = time.time() + 60\n"
+		"while time.time() < t and not os.path.exists(sys.argv[3]): time.sleep(0.05)")  # on the GPU until told
+	job = subprocess.Popen([sys.executable, "-c", "import subprocess, sys; subprocess.run([sys.executable, '-c'] + sys.argv[1:])",
+		user, str(gpu), str(run.tmp / "child.pid"), str(stop)])
+	other = subprocess.Popen([sys.executable, "-c", user, str(gpu), str(run.tmp / "other.pid"), str(stop)])
+	env = {} if WINDOWS else {"RIG_EXTRA": "gpu=%s" % gpu}  # Windows: every python*.exe is on the GPU
+	try:
+		until(lambda: all((run.tmp / n).exists() and (run.tmp / n).read_text() for n in ("child.pid", "other.pid")))
+		child = int((run.tmp / "child.pid").read_text())
+
+		def marks(pidstart):
+			run.lock.write_text("gpu-queue 261119-231303-4726e9 since 2026-11-19 23:13:10 rigpid=%d rigstart=%d pid=%d "
+				"pidstart=%d (a GPU queue job)\n" % (os.getpid(), rig.proc_start(os.getpid()), job.pid, pidstart))
+			s = run("status", env=env)
+			assert s.stdout.startswith("rig held: gpu-queue 261119-231303-4726e9"), s.stdout
+			found = {int(m.group(2)): bool(m.group(1)) for m in re.finditer(r"(?m)^\s+(\[job\] )?(\d+) ", s.stdout)}
+			assert child in found and other.pid in found, s.stdout
+			return found[child], found[other.pid]
+
+		assert marks(rig.proc_start(job.pid)) == (True, False)
+		if rig.proc_start(job.pid) not in (0, -1):  # a start time to check (Linux, Windows): a reused pid is not the job
+			assert marks(rig.proc_start(job.pid) + 1) == (False, False)
+	finally:
+		stop.write_text("")
+		for p in (job, other):
+			p.wait(30)
+
+
+@runs
 def test_a_killed_rig_py_keeps_gpu_lock_until_its_job_ends(run):
 	go = run.tmp / "go"
 	p = run.popen("run", "s1", "killed", "--", sys.executable, "-c", WAIT_FOR, str(go))
