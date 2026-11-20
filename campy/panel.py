@@ -105,6 +105,12 @@ WARN_FRACTION = 0.8 # the disk check warns when a length needs more than this sh
 DRIVE_FRESH_S = 10 # a copy destination's drive is measured at most this often (a network share can be slow to answer)
 EPHYS_IDLE_S = 30 # campy-ephys serve ends when the page hasn't asked for this long (its tab closed)
 EPHYS_START_S = 60 # and has this long to say its port
+# campy-ephys serve's math library (OpenBLAS, MKL, Accelerate) at one thread. Its matrix products are small: left at
+# its default, it spread one probe over 3.5 cores and its matcher ran slower (busy 77% of the time, against 50% and
+# 0.9 cores with one thread), and with 3 probes at once their matchers fell 2 s behind and left pieces unmatched; with
+# one thread each, 8 probes kept up (ChronicRecord PC, 18 November 2026, docs/live-ephys.md)
+EPHYS_MATH_THREADS = {"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
+	"VECLIB_MAXIMUM_THREADS": "1", "NUMEXPR_NUM_THREADS": "1"}
 DiskUsage = shutil.disk_usage # (tests replace it: drives of made-up sizes)
 
 
@@ -985,15 +991,20 @@ class EphysView:
 			cmd += ["--obx-ip", str(ip)] + (["--pico-status", self.pico_status] if self.pico_status else [])
 		return cmd
 
+	def ChildEnv(self):
+		"""campy-ephys serve's environment: the panel's, with the page's key, the same campy as the panel's (wherever it
+		was installed from), and one math-library thread (EPHYS_MATH_THREADS: this process only, not the panel's other
+		children)."""
+		here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+		return dict(os.environ, CAMPY_EPHYS_KEY=self.key, PYTHONPATH=os.pathsep.join(
+			[here] + [v for v in [os.environ.get("PYTHONPATH")] if v]), **EPHYS_MATH_THREADS)
+
 	def StartChild(self):
 		import subprocess
 		cmd = self.Command()
 		kwargs = {"creationflags": 0x00004000} if sys.platform == "win32" else {} # BELOW_NORMAL_PRIORITY_CLASS
 		self.error, self.port = None, None
-		# The same campy as the panel's, wherever it was installed from
-		here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-		env = dict(os.environ, CAMPY_EPHYS_KEY=self.key, PYTHONPATH=os.pathsep.join(
-			[here] + [v for v in [os.environ.get("PYTHONPATH")] if v]))
+		env = self.ChildEnv()
 		try:
 			child = children.Child(cmd, env=env, stdout=subprocess.PIPE,
 				stderr=subprocess.STDOUT, text=True, **kwargs)
