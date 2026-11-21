@@ -237,6 +237,38 @@ def test_rig_processes_finds_runs_holds_and_rig_hold_but_not_its_own_parents(mon
 	assert sorted(pid for pid, _ in riglib.rig_processes(procs)) == [20, 21, 22]
 
 
+def test_rig_processes_on_windows_know_a_rig_py_over_ssh_by_its_marker(tmp_path, monkeypatch):
+	# Started over ssh (elevated), a rig.py's command line can't be read by a rig.py install at the desktop: its
+	# marker (mark_self, RIG_ROOT/rig-processes/<pid>-<start>) says what it was started to do
+	monkeypatch.setattr(riglib, "WINDOWS", True)
+	monkeypatch.setattr(riglib, "MACOS", False)
+	monkeypatch.setattr(riglib, "ROOT", str(tmp_path))
+	monkeypatch.setattr(riglib, "cmdline", lambda p: p.cmd)  # no command line can be read: only the image name
+	me = os.getpid()
+	def proc(pid, name, start):
+		p = P(pid, 1, name)
+		p.start = start
+		return p
+	procs = {p.pid: p for p in [
+		proc(me, "python.exe", 100),     # this install (its own marker)
+		proc(20, "python.exe", 120),     # a rig.py run waiting in line
+		proc(21, "python.exe", 121),     # a rig.py hold
+		proc(22, "pythonw.exe", 122),    # another rig.py install
+		proc(23, "python.exe", 123),     # a rig.py status: neither runs nor waits for the rig
+		proc(24, "python.exe", 124),     # the marker is an earlier process's that had pid 24
+		proc(25, "python.exe", 125),     # no marker
+		proc(26, "notepad.exe", 126),    # a marker, but not a Python or PowerShell
+	]}
+	(tmp_path / riglib.MARKS).mkdir()
+	for pid, start, what in ((me, 100, "install"), (20, 120, "run"), (21, 121, "hold"), (22, 122, "install"),
+			(23, 123, "status"), (24, 50, "run"), (26, 126, "run")):
+		(tmp_path / riglib.MARKS / ("%d-%d" % (pid, start))).write_text(
+			"rig.py %s (pid %d) since 2026-11-20 19:31:59\n" % (what, pid), encoding="utf-8")
+	found = dict(riglib.rig_processes(procs))
+	assert sorted(found) == [20, 21, 22]
+	assert found[20] == "python.exe (command line unreadable; its marker: rig.py run (pid 20) since 2026-11-20 19:31:59)"
+
+
 def test_rig_processes_on_macos_are_pythons(monkeypatch):
 	# macOS: a shell or an ssh whose command text names rig.py run (a Claude session's command) is no rig.py
 	monkeypatch.setattr(riglib, "WINDOWS", False)

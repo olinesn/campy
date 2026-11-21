@@ -323,3 +323,29 @@ def test_a_rig_py_whose_command_line_cant_be_read_is_never_counted_and_another_p
 	assert any(pid == status.pid for pid, _ in rig.rig_marks())
 	assert status.pid not in counted
 	assert other.pid in counted  # ended unmarked within MARK_WAIT, or counted once older
+
+
+@windows
+def test_install_sees_a_waiting_rig_py_run_whose_command_line_cant_be_read(tmp_path, monkeypatch):
+	# A rig.py run started over ssh waits in line behind a gpu.lock written by hand; an install at the desktop can't
+	# read its command line, and finds it by the marker it wrote as it started (rig_processes, mark_texts)
+	root = tmp_path / "root"
+	root.mkdir()
+	(root / "gpu.lock").write_text("someone 06:00\n")
+	monkeypatch.setattr(rig, "ROOT", str(root))
+	hidden, read = set(), rig_windows.command_line
+	monkeypatch.setattr(rig_windows, "command_line", lambda pid, start: None if pid in hidden else read(pid, start))
+	waiting = subprocess.Popen([sys.executable, RIG, "run", "tester", "waiting", "--", sys.executable, "-c", "pass"],
+		env=dict(os.environ, RIG_ROOT=str(root), RIG_LOCK="file"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+	hidden.add(waiting.pid)
+	try:
+		found, deadline = {}, time.monotonic() + 30
+		while waiting.pid not in found and time.monotonic() < deadline:
+			time.sleep(0.3)
+			found = dict(rig.rig_processes())
+		assert waiting.poll() is None, "the run should still be waiting for the hand-written lock"
+		assert waiting.pid in found and "its marker: rig.py run (pid %d)" % waiting.pid in found[waiting.pid], found
+	finally:
+		waiting.kill()
+		waiting.wait()
+
