@@ -128,6 +128,10 @@ Before recording, campy checks the config and the computer, and most problems sh
 
 **Latencies in steps of 15–16 ms on Windows.** That recording was made before campy took its host times from Windows' precise clock (pull request 118). The steps are the old clock's. A program that writes frames into the live feed itself must stamp them with `campy.clock.HostNs` ([On Windows](live-tracking.md#on-windows-nvidia-cuda)).
 
+**`campy-cage`: `Not saved: the grid lands on most cameras' lines by less than x2`.** The pictures weren't of the empty arena: something stayed in most frames (a calibration board held in the middle, a mouse asleep in a corner), or the box has no 1-inch grid where the cameras look. Look at `calibration.cage_check/sheet.jpg`. Use another recording (one with animals that move about), or `--percentile 25` when what stays is brighter than the floor.
+
+**`campy-cage`: the grid misses the lines near the pictures' edges** (red dots there in its check pictures, green in the middle). That is the calibration's lens model, not the cage: a calibration with one distortion term and the image centre fixed can't follow a strongly curving lens to its edges. The cage doesn't need better (a few millimetres, against its 30 mm margin), but the 3D near the edges has the same error. calibrat3's calibrations fit more of the lens.
+
 **3D poses are wrong, or mice swap between cameras.** Check the calibration first (the lines in `campy-live-view`: [Calibration](calibration.md#calibrating)). If it is good, look at the 2D. False detections outside the cage, or a camera that often misses a mouse, pull wrong pairings into the 3D. A wrong pairing whose 3D lands outside the cage (often metres past it, along the cameras' line of sight) is set aside once the cage is drawn (`k` in `campy-live-view`; [The cage](live-tracking.md#the-cage-3d-outside-it-is-not-found---cage)). A model trained on another rig does this more often, and retraining on the rig's own frames helps most.
 
 ## campy-live-view's warnings
@@ -139,6 +143,7 @@ The view puts a red label on a camera's tile when something is wrong with it ([W
 - **`GAP 1`**: frame numbers are missing from its live feed.
 - **`LATE 1`**: frames reached the computer a frame late.
 - **`1 FRAME AHEAD`**: the camera's frames of a given number were taken a trigger pulse before or after the others'. A camera kept grabbing after a run that didn't close it. `campy-live` pairs that camera's frames by host time instead. To get the frame numbers right again, stop the recording and start it again.
+- **`Camera names swapped? sideL -> sideR, ...`** at the top of the panel: those cameras' pictures match each other's calibration, not their own (checked against the cage's grid at the start of the recording). Their 3D is wrong. Pin each camera's name to its serial number (`cameraSerials` in the rig profile, [Calibration](calibration.md#on-every-rig-once-in-the-rig-profile)), or give `campy-live --calibration-names` in the feed's order. `campy-cage <calibration.toml> <recording> --check` prints every picture against every calibration.
 - **`#2  bad 3D: 34 px`** on a mouse: its 3D is far from the cameras' 2D (above `--bad-px`). Usually a false detection or a mouse one camera misses.
 
 **No window over SSH.** Without a desktop, use `campy-live-view --no-window --png <folder>`, which saves every 30th view.
