@@ -149,7 +149,7 @@ Every key a campy config file can have, and its command-line option (`--key valu
 |---|---|---|---|---|
 | `live` | none | key: value lines of its own | - | campy-session: live tracking while recording (models, calibration, animals, the live environment's python). campy-acquire passes it by; campy-session checks it. |
 | `view` | none | key: value lines of its own | - | campy-session: the live view (campy-live-view); view: true or false is short for view: {show: true}. campy-acquire passes it by. |
-| `post` | none | key: value lines of its own | - | campy-session: what to do after the recording (remux, join, align, export, copy). campy-acquire passes it by. |
+| `post` | none | key: value lines of its own | - | campy-session: what to do after the recording (remux, join, align, calibrate, cage, export, copy, run). campy-acquire passes it by. |
 | `panel` | none | key: value lines of its own | - | campy-session: its control panel. campy-acquire passes it by. |
 | `pico` | none | key: value lines of its own | - | campy-session: a Raspberry Pi Pico that makes the trigger and the experiment's TTLs (chronicrecord/chronic_control.py): its session's lengths, port, settings. The panel starts it once every camera is ready. campy-acquire passes it by. |
 | `box` | none | key: value lines of its own | - | campy-session: an operant box's task (campy-box, campy/box.py) on the outputs board, started before the cameras so that it begins with the first frame, and ended with the recording: its task file, port, whether the recording needs it. campy-acquire passes it by. |

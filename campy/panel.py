@@ -555,11 +555,12 @@ def Alerts(folder, keep=200):
 CALIBRATION_MAX_AGE_H = 24 # a 3D calibration older than this is a warning: one is recorded each day
 
 
-def CalibrationCheck(where, now=None):
+def CalibrationCheck(where, now=None, cage=None):
 	"""
 	The check line for live: calibration: which calibration.toml the next recording uses (a folder of calibration
-	recordings: the newest whole one), how old, and its cameras' reprojection error. Older than a day: a warning
-	(record a calibration today); none: it stops the start.
+	recordings: the newest whole one), how old, its cameras' reprojection error, and its cage (cage: post: cage:,
+	whether the cage step makes one after the recording: CageNote). Older than a day: a warning (record a calibration
+	today); none: it stops the start.
 	"""
 	from campy import calibrate
 	path, summary = calibrate.Newest(where)
@@ -574,11 +575,35 @@ def CalibrationCheck(where, now=None):
 		except OSError:
 			age = None
 	text = "3D calibration: {} ({})".format(path, calibrate.Describe(summary) if summary else "no summary beside it")
+	note = CageNote(path, cage)
 	if age is not None and age > CALIBRATION_MAX_AGE_H:
 		return ("warn", "{}: {:.0f} days old. Record a calibration today (the Calibration experiment), so the 3D "
-			"follows any camera that moved".format(text, age / 24) if age >= 48 else
-			"{}: {:.0f} hours old. Record a calibration today (the Calibration experiment)".format(text, age))
-	return ("ok", text)
+			"follows any camera that moved. {}".format(text, age / 24, note) if age >= 48 else
+			"{}: {:.0f} hours old. Record a calibration today (the Calibration experiment). {}".format(text, age, note))
+	return ("ok", "{}. {}".format(text, note))
+
+
+def CageNote(calibration, option=None):
+	"""
+	What the check line says of the calibration's cage (the one beside it, which campy-live uses): made from the box's
+	grid, drawn by hand, or none yet, and then whether the cage step (post: cage:, option) makes it after this
+	recording.
+	"""
+	from campy import pose3d, post
+	try:
+		with open(pose3d.CagePath(calibration), encoding="utf-8") as f:
+			made = json.load(f).get("made")
+		return "Its cage: made from the box's grid" if made == "grid" else "Its cage: drawn by hand"
+	except FileNotFoundError:
+		pass
+	except (OSError, ValueError, AttributeError) as e:
+		return "Its cage can't be read: {}".format(e)
+	try:
+		on = post.CageOptions(option) is not None
+	except ValueError:
+		on = False
+	return "No cage yet: made from the box's grid after this recording (post: cage)" if on else \
+		"No cage yet (k in the view draws one)"
 
 
 def SerialPorts():
@@ -1202,7 +1227,7 @@ class Panel:
 		if getattr(self, "picker", None) is not None:
 			checks += self.picker.Checks()
 		if live is not None and live.get("calibration"):
-			checks.append(CalibrationCheck(live["calibration"]))
+			checks.append(CalibrationCheck(live["calibration"], cage=(self.config.post or {}).get("cage")))
 		trigger = TriggerCheck(self.config.acquire, self.devices.pico if self.devices is not None else None,
 			box=self.config.box)
 		if trigger is not None:

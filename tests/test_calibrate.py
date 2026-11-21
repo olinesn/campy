@@ -77,6 +77,25 @@ def test_the_panels_check_says_which_calibration_and_wants_one_a_day(tmp_path):
 		tmp_path / "gone.toml"))
 
 
+def test_the_panels_check_says_whether_the_calibration_has_a_cage(tmp_path):
+	# None yet: made after this recording when post: cage: is on, else drawn in the view; then which kind it has
+	root = tmp_path / "calibrations"
+	calibration_recording(str(root / "2026-11-09_09-00-00"), made="2026-11-09T09:01:00-05:00")
+	now = datetime.datetime.fromisoformat("2026-11-09T16:00:00-05:00")
+	level, text = panel.CalibrationCheck(str(root), now=now)
+	assert level == "ok" and text.endswith("). No cage yet (k in the view draws one)")
+	level, text = panel.CalibrationCheck(str(root), now=now, cage={"size": [18, 10]})
+	assert text.endswith("No cage yet: made from the box's grid after this recording (post: cage)")
+	cage = root / "2026-11-09_09-00-00" / "calibration.cage.json"
+	cage.write_text(json.dumps({"kind": "campy cage", "made": "grid"}))
+	assert panel.CalibrationCheck(str(root), now=now, cage=True)[1].endswith("Its cage: made from the box's grid")
+	cage.write_text(json.dumps({"kind": "campy cage"}))
+	assert panel.CalibrationCheck(str(root), now=now)[1].endswith("Its cage: drawn by hand")
+	level, text = panel.CalibrationCheck(str(root), now=datetime.datetime.fromisoformat("2026-11-10T12:00:00-05:00"))
+	assert level == "warn" and text.endswith("Record a calibration today (the Calibration experiment). Its cage: drawn "
+		"by hand")
+
+
 def test_the_post_step_only_for_a_calibration_recording_and_when_asked(tmp_path, monkeypatch):
 	class Log:
 		def Say(self, text):

@@ -826,7 +826,7 @@ def FindPictures(where, cameras):
 	folder (<camera>/<video>, or <camera>/calibration_images/<video> for a calibration recording). Returns
 	[(kind 'picture' or 'video', path)] in the cameras' order; SystemExit naming what is missing.
 	"""
-	from campy import videoread
+	from campy import segments, videoread
 	entries = sorted(os.listdir(where))
 	found, missing = [], []
 	for cam in cameras:
@@ -842,7 +842,9 @@ def FindPictures(where, cameras):
 				if os.path.isdir(sub):
 					videos += [os.path.join(sub, v) for v in sorted(os.listdir(sub))
 						if v.lower().endswith(videoread.VIDEO_EXTENSIONS) and not v.startswith(".")]
-		videos = [v for v in videos if ".part" not in os.path.basename(v)]
+		# One video per camera: a restarted ffmpeg's first file or its joined one (the biggest), never a part, nor
+		# campy-session post's own copies (remux: keep's .fragmented.mp4, a remux or join stopped part way)
+		videos = [v for v in videos if ".part" not in os.path.basename(v) and not segments.NotTheVideo(os.path.basename(v))]
 		if len(pics) > 1 or len(dirs) > 1 or not videos:
 			missing.append("{} ({})".format(cam.name, "more than one: " + ", ".join(pics + dirs)
 				if len(pics) > 1 or len(dirs) > 1 else "no picture or video"))

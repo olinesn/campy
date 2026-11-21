@@ -283,6 +283,20 @@ def test_pictures_and_videos_found_by_camera_name(tmp_path):
 		cagegrid.FindPictures(str(rec), cams)
 
 
+def test_one_video_per_camera_never_campy_session_posts_own_copies(tmp_path):
+	# remux: keep leaves the fragmented original beside the plain one (a little bigger); a remux or join stopped part
+	# way leaves its temporary file; a restarted ffmpeg's parts are joined into the biggest
+	cams = [pose3d.Camera("mid", K, DIST, np.eye(3), [0, 0, 500])]
+	cam = tmp_path / "rec" / "Camera0_mid"
+	cam.mkdir(parents=True)
+	for name, size in (("0.mp4", 10), ("0.fragmented.mp4", 11), ("0.remux-tmp.mp4", 12), (".0.mp4", 13)):
+		(cam / name).write_bytes(b"0" * size)
+	assert cagegrid.FindPictures(str(tmp_path / "rec"), cams) == [("video", str(cam / "0.mp4"))]
+	for name, size in (("0.part2.mp4", 30), ("0.join-tmp.mp4", 50), ("0.joined.mp4", 40)):
+		(cam / name).write_bytes(b"0" * size)
+	assert cagegrid.FindPictures(str(tmp_path / "rec"), cams) == [("video", str(cam / "0.joined.mp4"))]
+
+
 def test_the_empty_arena_from_a_video_where_something_moves(tmp_path):
 	# A still background with a bright square going across it: the median of frames spread through the video is
 	# the background, the square gone
