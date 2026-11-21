@@ -17,8 +17,12 @@ color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,H
 .body{fill:var(--body)}
 .lensc{fill:var(--lens)}
 .mount{stroke:var(--muted);stroke-width:2.2;stroke-linecap:round}
-.beam-all{stroke-width:1;stroke-opacity:.85;fill-opacity:.07}
-.beam-mid{stroke-width:1.2;stroke-opacity:.95;fill-opacity:.18;stroke-dasharray:4 3}
+polygon.fan-fill{stroke:none}
+.fan-all{fill-opacity:.08}.fan-mid{fill-opacity:.18}
+.fan-pale{fill-opacity:.03}
+.fan-edge{fill:none;stroke-width:1.1;stroke-opacity:.95}
+.fan-faint{fill:none;stroke-width:.8;stroke-opacity:.35}
+.fan-mid-line{stroke-dasharray:4 3}
 .c1{fill:var(--c1);stroke:var(--c1)}.c2{fill:var(--c2);stroke:var(--c2)}.c3{fill:var(--c3);stroke:var(--c3)}
 .c4{fill:var(--c4);stroke:var(--c4)}.c5{fill:var(--c5);stroke:var(--c5)}
 .mouseA{fill:var(--mA);stroke:var(--mAs);stroke-width:.8;stroke-linejoin:round}
@@ -58,18 +62,80 @@ text{fill:var(--fg);font-size:13px}
 <line class="grid" x1="492.6" y1="377.0" x2="649.1" y2="416.8"/>
 <line class="grid" x1="503.5" y1="370.0" x2="660.0" y2="409.7"/>
 <line class="grid" x1="460.0" y1="398.3" x2="616.5" y2="438.0"/>
-<polygon class="beam-all c2" points="333.5,405.1 483.5,138.1 590.8,215.0 758.2,375.7 361.8,432.3"/>
-<polygon class="beam-mid c2" points="483.5,138.1 748.1,377.1 371.9,430.9"/>
-<polygon class="beam-all c5" points="449.4,433.1 412.8,233.5 623.2,320.0 646.9,347.4 473.1,460.6"/>
-<polygon class="beam-mid c5" points="412.8,233.5 639.4,352.3 480.6,455.7"/>
-<polygon class="beam-all c1" points="560.0,104.4 415.4,367.3 704.6,440.7"/>
-<polygon class="beam-mid c1" points="560.0,104.4 445.0,374.8 675.0,433.2"/>
-<polygon class="beam-all c4" points="670.6,332.0 707.2,308.3 496.8,445.2 473.1,460.6 646.9,347.4"/>
-<polygon class="beam-mid c4" points="707.2,308.3 480.6,455.7 639.4,352.3"/>
-<polygon class="beam-all warn" points="170.0,121.6 537.2,324.5 582.8,483.5"/>
-<polygon class="beam-mid warn" points="170.0,121.6 541.7,340.4 578.3,467.6"/>
-<polygon class="beam-all c3" points="786.5,362.9 636.5,315.5 529.2,356.7 361.8,432.3 758.2,375.7"/>
-<polygon class="beam-mid c3" points="636.5,315.5 371.9,430.9 748.1,377.1"/>
+<polygon class="fan-fill fan-pale c2" points="483.5,138.1 805.6,368.9 314.4,439.1"/>
+<polygon class="fan-fill fan-all c2" points="333.5,405.1 483.5,138.1 590.8,215.0 758.2,375.7 361.8,432.3"/>
+<line class="fan-edge fan-all-line c2" x1="483.5" y1="138.1" x2="590.8" y2="215.0"/>
+<line class="fan-faint fan-all-line c2" x1="590.8" y1="215.0" x2="805.6" y2="368.9"/>
+<line class="fan-faint fan-all-line c2" x1="805.6" y1="368.9" x2="758.2" y2="375.7"/>
+<line class="fan-edge fan-all-line c2" x1="758.2" y1="375.7" x2="361.8" y2="432.3"/>
+<line class="fan-faint fan-all-line c2" x1="361.8" y1="432.3" x2="314.4" y2="439.1"/>
+<line class="fan-faint fan-all-line c2" x1="314.4" y1="439.1" x2="333.5" y2="405.1"/>
+<line class="fan-edge fan-all-line c2" x1="333.5" y1="405.1" x2="483.5" y2="138.1"/>
+<polygon class="fan-fill fan-pale c2" points="483.5,138.1 748.1,377.1 371.9,430.9"/>
+<polygon class="fan-fill fan-mid c2" points="483.5,138.1 748.1,377.1 371.9,430.9"/>
+<line class="fan-edge fan-mid-line c2" x1="483.5" y1="138.1" x2="748.1" y2="377.1"/>
+<line class="fan-edge fan-mid-line c2" x1="748.1" y1="377.1" x2="371.9" y2="430.9"/>
+<line class="fan-edge fan-mid-line c2" x1="371.9" y1="430.9" x2="483.5" y2="138.1"/>
+<polygon class="fan-fill fan-pale c5" points="412.8,233.5 663.6,336.6 456.4,471.4"/>
+<polygon class="fan-fill fan-all c5" points="449.4,433.1 412.8,233.5 623.2,320.0 646.9,347.4 473.1,460.6"/>
+<line class="fan-edge fan-all-line c5" x1="412.8" y1="233.5" x2="623.2" y2="320.0"/>
+<line class="fan-faint fan-all-line c5" x1="623.2" y1="320.0" x2="663.6" y2="336.6"/>
+<line class="fan-faint fan-all-line c5" x1="663.6" y1="336.6" x2="646.9" y2="347.4"/>
+<line class="fan-edge fan-all-line c5" x1="646.9" y1="347.4" x2="473.1" y2="460.6"/>
+<line class="fan-faint fan-all-line c5" x1="473.1" y1="460.6" x2="456.4" y2="471.4"/>
+<line class="fan-faint fan-all-line c5" x1="456.4" y1="471.4" x2="449.4" y2="433.1"/>
+<line class="fan-edge fan-all-line c5" x1="449.4" y1="433.1" x2="412.8" y2="233.5"/>
+<polygon class="fan-fill fan-pale c5" points="412.8,233.5 639.4,352.3 480.6,455.7"/>
+<polygon class="fan-fill fan-mid c5" points="412.8,233.5 639.4,352.3 480.6,455.7"/>
+<line class="fan-edge fan-mid-line c5" x1="412.8" y1="233.5" x2="639.4" y2="352.3"/>
+<line class="fan-edge fan-mid-line c5" x1="639.4" y1="352.3" x2="480.6" y2="455.7"/>
+<line class="fan-edge fan-mid-line c5" x1="480.6" y1="455.7" x2="412.8" y2="233.5"/>
+<polygon class="fan-fill fan-pale c1" points="560.0,104.4 415.4,367.3 704.6,440.7"/>
+<polygon class="fan-fill fan-all c1" points="560.0,104.4 415.4,367.3 704.6,440.7"/>
+<line class="fan-edge fan-all-line c1" x1="560.0" y1="104.4" x2="415.4" y2="367.3"/>
+<line class="fan-edge fan-all-line c1" x1="415.4" y1="367.3" x2="704.6" y2="440.7"/>
+<line class="fan-edge fan-all-line c1" x1="704.6" y1="440.7" x2="560.0" y2="104.4"/>
+<polygon class="fan-fill fan-pale c1" points="560.0,104.4 445.0,374.8 675.0,433.2"/>
+<polygon class="fan-fill fan-mid c1" points="560.0,104.4 445.0,374.8 675.0,433.2"/>
+<line class="fan-edge fan-mid-line c1" x1="560.0" y1="104.4" x2="445.0" y2="374.8"/>
+<line class="fan-edge fan-mid-line c1" x1="445.0" y1="374.8" x2="675.0" y2="433.2"/>
+<line class="fan-edge fan-mid-line c1" x1="675.0" y1="433.2" x2="560.0" y2="104.4"/>
+<polygon class="fan-fill fan-pale c4" points="707.2,308.3 456.4,471.4 663.6,336.6"/>
+<polygon class="fan-fill fan-all c4" points="670.6,332.0 707.2,308.3 496.8,445.2 473.1,460.6 646.9,347.4"/>
+<line class="fan-edge fan-all-line c4" x1="707.2" y1="308.3" x2="496.8" y2="445.2"/>
+<line class="fan-faint fan-all-line c4" x1="496.8" y1="445.2" x2="456.4" y2="471.4"/>
+<line class="fan-faint fan-all-line c4" x1="456.4" y1="471.4" x2="473.1" y2="460.6"/>
+<line class="fan-edge fan-all-line c4" x1="473.1" y1="460.6" x2="646.9" y2="347.4"/>
+<line class="fan-faint fan-all-line c4" x1="646.9" y1="347.4" x2="663.6" y2="336.6"/>
+<line class="fan-faint fan-all-line c4" x1="663.6" y1="336.6" x2="670.6" y2="332.0"/>
+<line class="fan-edge fan-all-line c4" x1="670.6" y1="332.0" x2="707.2" y2="308.3"/>
+<polygon class="fan-fill fan-pale c4" points="707.2,308.3 480.6,455.7 639.4,352.3"/>
+<polygon class="fan-fill fan-mid c4" points="707.2,308.3 480.6,455.7 639.4,352.3"/>
+<line class="fan-edge fan-mid-line c4" x1="707.2" y1="308.3" x2="480.6" y2="455.7"/>
+<line class="fan-edge fan-mid-line c4" x1="480.6" y1="455.7" x2="639.4" y2="352.3"/>
+<line class="fan-edge fan-mid-line c4" x1="639.4" y1="352.3" x2="707.2" y2="308.3"/>
+<polygon class="fan-fill fan-all warn" points="170.0,121.6 537.2,324.5 582.8,483.5"/>
+<line class="fan-edge fan-all-line warn" x1="170.0" y1="121.6" x2="537.2" y2="324.5"/>
+<line class="fan-edge fan-all-line warn" x1="537.2" y1="324.5" x2="582.8" y2="483.5"/>
+<line class="fan-edge fan-all-line warn" x1="582.8" y1="483.5" x2="170.0" y2="121.6"/>
+<polygon class="fan-fill fan-mid warn" points="170.0,121.6 541.7,340.4 578.3,467.6"/>
+<line class="fan-edge fan-mid-line warn" x1="170.0" y1="121.6" x2="541.7" y2="340.4"/>
+<line class="fan-edge fan-mid-line warn" x1="541.7" y1="340.4" x2="578.3" y2="467.6"/>
+<line class="fan-edge fan-mid-line warn" x1="578.3" y1="467.6" x2="170.0" y2="121.6"/>
+<polygon class="fan-fill fan-pale c3" points="636.5,315.5 314.4,439.1 805.6,368.9"/>
+<polygon class="fan-fill fan-all c3" points="786.5,362.9 636.5,315.5 529.2,356.7 361.8,432.3 758.2,375.7"/>
+<line class="fan-edge fan-all-line c3" x1="636.5" y1="315.5" x2="529.2" y2="356.7"/>
+<line class="fan-faint fan-all-line c3" x1="529.2" y1="356.7" x2="314.4" y2="439.1"/>
+<line class="fan-faint fan-all-line c3" x1="314.4" y1="439.1" x2="361.8" y2="432.3"/>
+<line class="fan-edge fan-all-line c3" x1="361.8" y1="432.3" x2="758.2" y2="375.7"/>
+<line class="fan-faint fan-all-line c3" x1="758.2" y1="375.7" x2="805.6" y2="368.9"/>
+<line class="fan-faint fan-all-line c3" x1="805.6" y1="368.9" x2="786.5" y2="362.9"/>
+<line class="fan-edge fan-all-line c3" x1="786.5" y1="362.9" x2="636.5" y2="315.5"/>
+<polygon class="fan-fill fan-pale c3" points="636.5,315.5 371.9,430.9 748.1,377.1"/>
+<polygon class="fan-fill fan-mid c3" points="636.5,315.5 371.9,430.9 748.1,377.1"/>
+<line class="fan-edge fan-mid-line c3" x1="636.5" y1="315.5" x2="371.9" y2="430.9"/>
+<line class="fan-edge fan-mid-line c3" x1="371.9" y1="430.9" x2="748.1" y2="377.1"/>
+<line class="fan-edge fan-mid-line c3" x1="748.1" y1="377.1" x2="636.5" y2="315.5"/>
 <polyline class="tail-mouseA" points="570.4,405.5 568.8,406.0 567.3,406.6 565.8,407.2 564.4,407.8 563.1,408.4 561.8,409.1 560.7,409.8 559.6,410.5 558.7,411.2 557.8,412.0 557.0,412.8 556.4,413.5 555.8,414.3 555.4,415.2 555.0,416.0 554.7,416.8"/>
 <polyline class="tail-mouseB" points="518.3,392.3 516.3,392.0 514.3,391.8 512.3,391.6 510.3,391.5 508.3,391.3 506.3,391.2 504.2,391.2 502.2,391.1 500.1,391.1 498.1,391.1 496.0,391.2 494.0,391.2 492.0,391.3 489.9,391.5 487.9,391.6 485.9,391.8"/>
 <polygon class="mouseB" points="517.9,388.9 518.0,388.2 518.2,387.4 518.6,386.8 519.1,386.4 521.4,385.4 522.2,385.1 526.0,384.7 530.5,385.1 535.1,386.3 536.2,386.7 540.2,388.4 543.2,390.5 544.8,392.7 545.0,393.1 545.1,393.7 545.0,394.4 544.8,395.2 544.4,395.8 543.9,396.3 541.6,397.3 540.8,397.6 536.9,397.9 532.5,397.5 527.9,396.4 526.8,396.0 522.8,394.2 519.8,392.2 518.2,390.0 518.0,389.6"/>
@@ -157,7 +223,7 @@ text{fill:var(--fg);font-size:13px}
 <text x="24" y="532" class="t-small t-muted">To scale, but for the cameras (drawn larger). Camera: FLIR Blackfly S, 1/2" sensor, 1280 × 1024. Mice: one rearing to 10 cm, one lying behind it.</text>
 <text x="24" y="548" class="t-small t-muted">Each lens is the longest that keeps the whole box in the middle 80% of its frame. Distances: from the lens to the middle of the box&#8217;s floor.</text>
 <text x="24" y="564" class="t-small t-muted">Each lens bends lines as the guide&#8217;s example lens for that focal length does, from its maker&#8217;s figures.</text>
-<text x="24" y="580" class="t-small t-muted">Each camera&#8217;s triangles: how wide its frame is at the middle of the box. Solid: all of it. Dashed: its middle 80%.</text>
+<text x="24" y="580" class="t-small t-muted">Each camera&#8217;s triangles: how wide its frame is at the middle of the box. Solid: all of it. Dashed: its middle 80%. Paler past a wall: there it sees the wall.</text>
 <text x="453.1" y="494.6" class="t-small t-muted" text-anchor="middle">Cabinet, inside: 100 × 80 cm, 90 cm high</text>
 <text x="613.6" y="461.1" class="t-small t-muted">Box: 45 × 30 cm floor, 20 cm high</text>
 <text x="24" y="616" class="t-b">What each camera sees, through the lens it is drawn with</text>

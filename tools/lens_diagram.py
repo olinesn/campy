@@ -395,8 +395,12 @@ color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,H
 .body{fill:var(--body)}
 .lensc{fill:var(--lens)}
 .mount{stroke:var(--muted);stroke-width:2.2;stroke-linecap:round}
-.beam-all{stroke-width:1;stroke-opacity:.85;fill-opacity:.07}
-.beam-mid{stroke-width:1.2;stroke-opacity:.95;fill-opacity:.18;stroke-dasharray:4 3}
+polygon.fan-fill{stroke:none}
+.fan-all{fill-opacity:.08}.fan-mid{fill-opacity:.18}
+.fan-pale{fill-opacity:.03}
+.fan-edge{fill:none;stroke-width:1.1;stroke-opacity:.95}
+.fan-faint{fill:none;stroke-width:.8;stroke-opacity:.35}
+.fan-mid-line{stroke-dasharray:4 3}
 .c1{fill:var(--c1);stroke:var(--c1)}.c2{fill:var(--c2);stroke:var(--c2)}.c3{fill:var(--c3);stroke:var(--c3)}
 .c4{fill:var(--c4);stroke:var(--c4)}.c5{fill:var(--c5);stroke:var(--c5)}
 .mouseA{fill:var(--mA);stroke:var(--mAs);stroke-width:.8;stroke-linejoin:round}
@@ -541,18 +545,55 @@ def clip_inside(poly, sc):
     return poly
 
 
-def fan(sc, cam, frac, view):
-    """A camera's view across: a flat triangle from the lens to the floor at the middle of
-    the box, as wide as the frame (frac 1) or its middle (FILL) is there, through the lens,
-    cut where it meets the walls of the cabinet or cubicle (if the camera is inside)."""
+def clip_segment(a, b, sc):
+    """Where segment a-b is inside the cabinet or cubicle, as (t0, t1) along it, or None."""
+    hx, hy, h = sc["outer"][0] / 2, sc["outer"][1] / 2, sc["outer"][2]
+    d, t0, t1 = sub(b, a), 0.0, 1.0
+    for axis, lo, hi in ((0, -hx, hx), (1, -hy, hy), (2, 0.0, h)):
+        if abs(d[axis]) < 1e-12:
+            if not lo - 1e-9 <= a[axis] <= hi + 1e-9:
+                return None
+            continue
+        ta, tb = (lo - a[axis]) / d[axis], (hi - a[axis]) / d[axis]
+        t0, t1 = max(t0, min(ta, tb)), min(t1, max(ta, tb))
+        if t0 > t1:
+            return None
+    return t0, t1
+
+
+def fan(cam, frac):
+    """A camera's view across, as a flat triangle: from the lens to the floor at the middle
+    of the box, as wide as the frame (frac 1) or its middle (FILL) is there, through the lens.
+    Its two long edges leave the lens at the lens's real angle."""
     pos, f = cam["pos"], cam["lens"]
     r, _, w = camera_axes(pos)
     depth = dot(sub(TARGET, pos), w)
     xu = undistorted((frac * SENSOR_W / 2, 0.0), f)[0]
-    tri = [pos] + [add(pos, mul(add(mul(w, f), mul(r, side * xu)), depth / f)) for side in (-1, 1)]
-    if not cam["too_long"]:
-        tri = clip_inside(tri, sc)
-    return [view(p) for p in tri]
+    return [pos] + [add(pos, mul(add(mul(w, f), mul(r, side * xu)), depth / f)) for side in (-1, 1)]
+
+
+def draw_fan(sc, out, view, cam, frac):
+    """The triangle, its edges straight; past a wall of the cabinet or cubicle (where the
+    camera sees that wall) it is paler."""
+    kind = "all" if frac == 1.0 else "mid"
+    col = cam["cls"]
+    tri = fan(cam, frac)
+    at = lambda a, b, t: add(a, mul(sub(b, a), t))
+    if cam["too_long"]:  # outside, drawn whole
+        out.append(f'<polygon class="fan-fill fan-{kind} {col}" points="{pts([view(p) for p in tri])}"/>')
+    else:
+        out.append(f'<polygon class="fan-fill fan-pale {col}" points="{pts([view(p) for p in tri])}"/>')
+        part = clip_inside(tri, sc)
+        if len(part) >= 3:
+            out.append(f'<polygon class="fan-fill fan-{kind} {col}" points="{pts([view(p) for p in part])}"/>')
+    for i in range(3):  # each edge once: strong inside, pale past a wall
+        a, b = tri[i], tri[(i + 1) % 3]
+        span = (0.0, 1.0) if cam["too_long"] else clip_segment(a, b, sc)
+        pieces = [(0.0, 1.0, "faint")] if span is None else (
+            [(0.0, span[0], "faint")] * (span[0] > 1e-6) + [(span[0], span[1], "edge")]
+            + [(span[1], 1.0, "faint")] * (span[1] < 1 - 1e-6))
+        for t0, t1, kind_line in pieces:
+            out.append(line(view(at(a, b, t0)), view(at(a, b, t1)), f"fan-{kind_line} fan-{kind}-line {col}"))
 
 
 def draw_mice(sc, out, project, nearness, extra=""):
@@ -582,8 +623,8 @@ def main_view(sc, out, view):
     for a, b in floor_grid(sc):
         out.append(line(view(a), view(b), "grid"))
     for cam in sorted(sc["cameras"], key=lambda c: view.depth(c["pos"])):
-        for frac, klass in ((1.0, "beam-all"), (FILL, "beam-mid")):
-            out.append(f'<polygon class="{klass} {cam["cls"]}" points="{pts(fan(sc, cam, frac, view))}"/>')
+        for frac in (1.0, FILL):
+            draw_fan(sc, out, view, cam, frac)
     draw_mice(sc, out, view, view.depth)
     for quad in sorted(walls, key=lambda q: view.depth(mul(add(q[0], q[2]), 0.5))):
         out.append(f'<polygon class="glass" points="{pts([view(p) for p in quad])}"/>')
@@ -748,7 +789,8 @@ def svg(sc):
              "Each lens is the longest that keeps the whole box in the middle 80% of its frame. "
              "Distances: from the lens to the middle of the box&#8217;s floor.",
              "Each lens bends lines as the guide&#8217;s example lens for that focal length does, from its maker&#8217;s figures.",
-             "Each camera&#8217;s triangles: how wide its frame is at the middle of the box. Solid: all of it. Dashed: its middle 80%."]
+             "Each camera&#8217;s triangles: how wide its frame is at the middle of the box. Solid: all of it. Dashed: its middle 80%. "
+             "Paler past a wall: there it sees the wall."]
     for i, text in enumerate(notes):
         out.append(f'<text x="24" y="{sc["notes_y"] + 16 * i}" class="t-small t-muted">{text}</text>')
 
