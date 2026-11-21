@@ -89,11 +89,13 @@ On Windows (rig_windows.py beside this file says how each is seen):
 Other rig.py processes on Windows (status, a run waiting in line, hold, break, install, version) use
 nothing, and never count. rig.py knows one by its command line, which it can't read for a python.exe
 started over ssh (elevated) or by another user; so every rig.py, as it starts, also writes a marker,
-RIG_ROOT/rig-processes/<pid>-<start> (and one for a venv's python.exe that started it), and a watching
-rig.py exempts a python.exe with a marker. One with neither, started under RIG_MARK_WAIT s (5) ago, is
-held back for those seconds before it counts (it may be a rig.py yet to write its marker); if it ends
-in them without a marker, it counts then. A marker stays when its rig.py ends; each rig.py removes
-those of rig.py processes that ended over 10 min ago.
+RIG_ROOT/rig-processes/<pid>-<start> (and one for a venv's python.exe that started it), saying what it
+was started to do (rig.py run, status, ...). A watching rig.py exempts a python.exe with a marker. One
+with neither, started under RIG_MARK_WAIT s (5) ago, is held back for those seconds before it counts
+(it may be a rig.py yet to write its marker); if it ends in them without a marker, it counts then.
+install, which refuses while another run, hold or install runs or waits, reads the markers too. A
+marker stays when its rig.py ends; each rig.py removes those of rig.py processes that ended over 10
+min ago.
 
 --allow ephys (RIG_ALLOW=ephys) on run or hold: ephys acquisition programs outside the job are
 neither waited for nor counted, only logged (ALLOWED). For a real recording that pairs cameras with
@@ -143,7 +145,8 @@ same commit shows the same version on every machine; status (its second line) an
 rig.log say it. To
 update, run the checkout's own copy: python <checkout>/bench/rig.py install. It takes the rig
 with --no-wait (exit 75 if busy, nothing changed), refuses while any other rig.py run, hold
-or install, or rig_hold.ps1, is running or waiting (exit 75), backs the old files up to
+or install, or rig_hold.ps1, is running or waiting (exit 75; on Windows a rig.py started over ssh is
+known by its marker, see "Other rig.py processes"), backs the old files up to
 RIG_ROOT/rig-backup/<old version>-<time>/, writes each new file beside the old one, checks
 it, renames it into place, and records what it installed in RIG_ROOT/RIG_INSTALLED and
 rig-install.log. Inside the rig's own job (an update script run under rig.py) it doesn't
@@ -1633,10 +1636,25 @@ def source_folder(path):
 
 RIG_PROC = re.compile(r"""rig\.py["']?\s+(run|hold|install)\b|rig_hold\.ps1""", re.I)
 
+def mark_texts():
+	"""{(pid, start): its first line} of every marker (rig_marks): what each marked rig.py was started to do,
+	e.g. 'rig.py run (pid 4242) since 2026-11-20 19:31:59'."""
+	out = {}
+	for pid, start in rig_marks():
+		try:
+			with open(os.path.join(marks_folder(), "%d-%d" % (pid, start)), encoding="utf-8-sig", errors="replace") as f:
+				out[(pid, start)] = f.readline().strip()
+		except OSError:
+			pass
+	return out
+
 def rig_processes(procs=None):
 	"""[(pid, command line)] of every other rig.py run, hold or install, and rig_hold.ps1, running or
-	waiting; this rig.py and the processes it runs under (an update script's rig.py run) left out."""
+	waiting; this rig.py and the processes it runs under (an update script's rig.py run) left out. On Windows
+	a rig.py whose command line can't be read (started over ssh, elevated, or by another user) is known by its
+	marker instead (mark_self)."""
 	procs = scan() if procs is None else procs
+	marks = mark_texts() if WINDOWS else {}
 	mine, pid = set(), os.getpid()
 	while pid in procs and pid not in mine:
 		mine.add(pid)
@@ -1653,6 +1671,10 @@ def rig_processes(procs=None):
 		text = cmdline(p)
 		if text and RIG_PROC.search(text):
 			found.append((p.pid, text))
+			continue
+		mark = marks.get((p.pid, p.start))  # the same pid and start time: not a marker of an earlier process
+		if mark and RIG_PROC.search(mark):
+			found.append((p.pid, "%s (command line unreadable; its marker: %s)" % (p.cmd, mark)))
 	return found
 
 def compare(src):
