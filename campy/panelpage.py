@@ -486,12 +486,12 @@ const PROGRAMS = {acquire: "Cameras and video files (campy-acquire)", view: "Vie
   box: "Operant box (campy-box)",
   "campy-live": "Live tracking (campy-live)"};
 const STEPS = {remux: "Video files", join: "Joined video files", align: "Cameras on the trigger's timeline", calibrate: "Calibration (calibrat3)",
-  export: "Tracking files for LUC3D", copy: "Copy", run: "Extra commands"};
-const STEP_ORDER = ["remux","join","align","calibrate","export","copy","run"];
+  cage: "Cage from the box's grid", export: "Tracking files for LUC3D", copy: "Copy", run: "Extra commands"};
+const STEP_ORDER = ["remux","join","align","calibrate","cage","export","copy","run"];
 const FINISHED = ["done","skipped","failed"];
 function since(iso){ const t = Date.parse(iso); return isNaN(t) ? null : Math.max(0, (Date.now() - t) / 1000); }
 // Steps with nothing to do: shown greyed, with why
-const NOTHING = /not a calibration recording|no camera's video is in more than one file|campy-live did not run|no commands|no copy\.to|calibrate is off/;
+const NOTHING = /not a calibration recording|no camera's video is in more than one file|campy-live did not run|no commands|no copy\.to|calibrate is off|cage is off|has a cage already|^a calibration recording|tracked in 2D only|with --cage off/;
 function postProgress(P, plan){
   // How far the steps after the recording have got: finished steps, plus the running one's own progress (half way
   // when it doesn't say). {n, i (1-based, the running one), running, fraction}

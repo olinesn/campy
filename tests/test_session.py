@@ -569,7 +569,7 @@ def test_after_a_clean_stop_the_post_steps_run(tmp_path, home):
 	status = json.loads((folder / "launcher.json").read_text())
 	assert status["state"] == "done"
 	assert {k: v["state"] for k, v in status["post"].items()} == {"remux": "done", "join": "done", "align": "skipped",
-		"calibrate": "skipped", "export": "skipped", "copy": "done", "run": "done"}
+		"calibrate": "skipped", "cage": "skipped", "export": "skipped", "copy": "done", "run": "done"}
 
 
 def test_the_post_section_is_checked(tmp_path):
@@ -579,9 +579,18 @@ def test_the_post_section_is_checked(tmp_path):
 	config = write_config(tmp_path / "c.yaml", {"numCams": 1}, post={"copy": {"to": "x", "delete": True}})
 	with pytest.raises(session.SessionError, match="post.copy: it takes to: .* and delete_after_verify: .* only"):
 		session.Config(str(config))
+	config = write_config(tmp_path / "c.yaml", {"numCams": 1}, post={"cage": {"size": [18, 10], "hight": 300}})
+	with pytest.raises(session.SessionError, match="post.cage: it takes size: .*, height: .* and percentile: only, "
+			"not hight"):
+		session.Config(str(config))
+	config = write_config(tmp_path / "c.yaml", {"numCams": 1}, post={"cage": {"size": 18}})
+	with pytest.raises(session.SessionError, match="post.cage: size: 18 is not the floor's width and depth"):
+		session.Config(str(config))
+	assert session.Config(str(write_config(tmp_path / "c.yaml", {"numCams": 1}, post={"cage": {"size": [18, 10]}}))
+		).post["cage"] == {"size": [18, 10]}
 	c = session.Config(str(write_config(tmp_path / "c.yaml", {"numCams": 1})))
-	assert c.post == {"remux": True, "join": True, "align": True, "calibrate": {}, "export": True, "copy": {}, "run": [],
-		"ffmpeg": ""}
+	assert c.post == {"remux": True, "join": True, "align": True, "calibrate": {}, "cage": {}, "export": True,
+		"copy": {}, "run": [], "ffmpeg": ""}
 
 
 def test_a_campy_live_that_hangs_is_stopped_to_be_started_again(tmp_path, monkeypatch):
