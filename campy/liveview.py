@@ -113,6 +113,14 @@ ready is said, and dropped). The cage is then drawn on every tile
 and in 3D, in teal; campy-live uses it within a second, and the panel says
 which identities it set aside ("outside the cage: not found").
 
+A cage made from the enclosure's 1-inch grid (campy-cage, campy/cagegrid.py)
+needs no clicking, and keeps the grid it was fitted to. With one, at the
+start of each recording the view checks the cameras' names: each camera's
+first frame against every camera's calibration, in a thread of its own. A
+picture that matches another camera's calibration better than its own
+(cameras listed in another order after a restart) is said in red at the top
+of the panel ("Camera names swapped? ..."), since their 3D is wrong.
+
 Is the rig all right, and the tracking?
 ---------------------------------------
 So that a problem shows at a glance (campy/livehealth.py says how each is
@@ -203,7 +211,7 @@ resized, it is laid out again (the frames in their ratio, at most their own
 size, in the middle of the window), never stretched.
 """
 
-import argparse, csv, functools, json, os, sys, time
+import argparse, csv, functools, json, os, sys, threading, time
 from collections import deque
 from datetime import datetime
 
@@ -1676,6 +1684,12 @@ class Viewer:
 		self.draft = None # while drawing: (corners (K, 3), NaN where fewer than 2 cameras; worst px each; Cage or None;
 		# {corner: (the camera that is off, where the others put the corner, px)})
 		self.cageSaid = None # why Enter did not save the cage, shown in red until the next change
+		# The cameras' names checked against the calibration, once a recording, when the cage was made from the
+		# enclosure's grid (campy-cage): each camera's first frame against every camera's calibration
+		self.cageGrid = None # that cage's grid (cagegrid.LoadGrid), or None
+		self.names = None # the check's result (cagegrid.Identity), once done
+		self.namesFor = None # the readers it was started for: once per recording
+		self.namesTried = 0.0 # when it last looked for every camera's first frame
 
 	# -- the shared memory
 
@@ -1855,6 +1869,12 @@ class Viewer:
 			if self.cageRefused:
 				Say("The cage {} is not used: {}.".format(self.cagePath, self.cageRefused))
 				self.cage = None
+		grid = None
+		if self.cage is not None:
+			from campy import cagegrid
+			grid = cagegrid.LoadGrid(self.cagePath)
+		if grid != self.cageGrid:
+			self.cageGrid, self.names, self.namesFor = grid, None, None # checked again with this grid
 		if self.scene is not None:
 			self.scene.cage = self.cage.Edges() if self.cage is not None else None
 			self.moved = True
@@ -2230,6 +2250,7 @@ class Viewer:
 				return None
 			self.lastRaw = now
 			return self.Waiting(), None, None
+		self.CheckNames(now)
 		if now - self.rigAt >= self.rig.Every():
 			# Each camera's newest frames' numbers and times (not the frames): how it keeps up
 			self.rigAt = now
@@ -2780,9 +2801,60 @@ class Viewer:
 				y += LINE
 		return y
 
+	def CheckNames(self, now=None):
+		"""
+		Once a recording, with a cage made from the enclosure's grid: each camera's first frame against every
+		camera's calibration (cagegrid.Identity), in a thread of its own (about a second a camera), so that cameras
+		whose names were swapped (listed in another order after a restart) are said before their 3D is trusted.
+		"""
+		if self.cageGrid is None or not self.calibration or self.readers is None or self.namesFor is self.readers:
+			return
+		now = time.monotonic() if now is None else now
+		if now - self.namesTried < 1.0:
+			return
+		self.namesTried = now
+		images = []
+		for c, reader in enumerate(self.readers):
+			if isinstance(reader, GoneReader) or c >= len(self.calibration):
+				return
+			n = reader.Latest()
+			frame = reader.Read(n, self.buffers[c]) if n > 0 else None
+			if frame is None:
+				return # not every camera has a frame yet: looked at again in a second
+			image, bgr = Colours(frame.image, self.pixelFormats[c] if c < len(self.pixelFormats) else "")
+			if image.ndim == 3 and image.shape[2] == 3:
+				image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY if bgr else cv2.COLOR_RGB2GRAY)
+			images.append(np.array(image.reshape(image.shape[:2])))
+		self.namesFor = self.readers
+		cameras, grid = list(self.calibration), self.cageGrid
+
+		def Run():
+			from campy import cagegrid
+			try:
+				names = cagegrid.Identity(cameras, images, grid)
+			except Exception as e:
+				Say("Could not check the cameras' names against the calibration: {}.".format(e))
+				return
+			self.names = names
+			if names["swaps"]:
+				Say("WARNING: {}".format(self.NamesText()))
+			else:
+				Say("The cameras' names: each camera's picture matches its own calibration (the cage's grid{}).".format(
+					"; weakly: " + ", ".join(names["weak"]) if names["weak"] else ""))
+		threading.Thread(target=Run, name="names", daemon=True).start()
+
+	def NamesText(self):
+		# The cameras whose picture matches another camera's calibration, or None
+		if not self.names or not self.names["swaps"]:
+			return None
+		return "Camera names swapped? {} (picture -> the calibration it matches): their 3D is wrong. Check the " \
+			"cameras' order (cameraSerials).".format(", ".join("{} -> {}".format(a, b)
+			for a, b in sorted(self.names["swaps"].items())))
+
 	def Alerts(self):
-		"""What is wrong now, (text, red), for the top of the panel: each camera's feed, then the tracking."""
-		lines = []
+		"""What is wrong now, (text, red), for the top of the panel: the cameras' names, each camera's feed, then the
+		tracking."""
+		lines = [(self.NamesText(), WARN)] if self.NamesText() else []
 		if self.rig is not None and self.readers is not None:
 			for s in self.rig.Status().cameras:
 				lines += [(text, WARN) for _, text in s.problems]

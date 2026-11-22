@@ -37,6 +37,7 @@ Each run records into a new folder inside the config's `videoFolder`, named by t
 | `campy-session` | A tracked recording in one command (`run`), from a page in the browser (`panel`), and what to do after a clean stop (`post`: remux, export, copy) | [Live tracking](docs/live-tracking.md#in-one-command-campy-session) |
 | `campy-live` | Track animals live, in 2D and 3D, while campy records | [Live tracking](docs/live-tracking.md) |
 | `campy-live-view` | Watch the cameras and the tracking live | [Watching it live](docs/live-view.md) |
+| `campy-cage` | Make the cage that the 3D is kept inside from a box's own 1-inch grid, with no clicking, and check that each camera's picture matches its calibration | [3D poses](docs/pose3d.md#the-cage-from-the-enclosures-grid-campy-cage) |
 | `campy-live-export` | Open a tracked recording in LUC3D | [Live tracking](docs/live-tracking.md#opening-a-tracked-recording-in-luc3d) |
 | `campy-live-flag`, `campy-label-pack`, `campy-label-merge`, `campy-model-eval`, `campy-model-fit` | Find the frames a model gets wrong, label them for the next model, and compare models on a rig | [Models](docs/models.md) |
 | `campy-infer` | SLEAP predictions on recorded videos, about 10 times faster than `sleap-nn track`, as ordinary `.slp` files | [Offline inference](docs/offline-inference.md#poses-from-recorded-videos-campy-infer) |

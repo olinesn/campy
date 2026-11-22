@@ -51,6 +51,19 @@ align    campy-align (campy/align.py): every camera on the trigger's
          to). Done is done even when the trigger paused: it is said, here
          and in alignment.json, and the recording watch said it as it
          happened.
+calibrate  a calibration recording's calibration.toml, by calibrat3 (StepCalibrate).
+cage     the cage from the box's own 1-inch grid (campy-cage, campy/cagegrid.py),
+         when campy-live tracked the recording in 3D and that calibration has
+         no cage yet (post: cage: {size: [W, D]}, inches): so the first
+         recording after a new (daily) calibration makes the cage every later
+         one uses, with no clicking. Skipped for a calibration recording (its
+         board stays in the pictures), and when the calibration has a cage
+         already, clicked or made from the grid: a cage is never replaced.
+         campy-cage writes it to a file of its own, put in place only if no
+         cage was drawn meanwhile. Its refusals (camera names that look
+         swapped: exit 3; a fit whose grid misses the cameras' lines: exit 4)
+         are the step's result, skipped with why and its check pictures, and
+         the next recording with that calibration tries again.
 export   campy-live-export, in campy-live's environment, when campy-live ran
          (campy-live.npy in the folder). A campy-live started again during
          the recording (campy-session's live.restart) left one log per run
@@ -92,7 +105,7 @@ from campy import align, copycheck, segments, strictjson
 
 POST_LOG, POST_JSON = "post.log", "post.json"
 POST_OWN = ("logs/" + POST_LOG, "logs/" + POST_JSON, "logs/" + POST_JSON + ".tmp") # written to as the copy runs
-STEPS = ("remux", "join", "align", "calibrate", "export", "copy", "run")
+STEPS = ("remux", "join", "align", "calibrate", "cage", "export", "copy", "run")
 VIDEO_EXTENSIONS = (".mp4", ".m4v", ".mov")
 SPARE_BYTES = 200 * 1024 ** 2 # left free on the disk besides the remuxed copy
 
@@ -613,6 +626,254 @@ def StepCalibrate(folder, settings, log, stop=None):
 		"({:.0f} s)".format(len(cams), summary["median_px"], worst, cams[worst]["median_px"], summary["seconds"])
 
 
+# ------------------------------------------------------------------ cage
+
+CAGE_KEYS = ("size", "height", "percentile")
+
+
+def CageOptions(value):
+	"""
+	post: cage: as the step takes it: None when off (not given, false or {}); else {size: the floor's [W, D] in
+	inches or None, height: mm or None, percentile: of the frames, per pixel}. true is on with campy-cage's defaults.
+	ValueError says what is wrong.
+	"""
+	if value is None or value is False or value == {}:
+		return None
+	if value is True:
+		value = {}
+	if not isinstance(value, dict):
+		raise ValueError("{!r} is not a section of keys ({{size: [W, D]}}) or true".format(value))
+	extra = sorted(str(k) for k in value if k not in CAGE_KEYS)
+	if extra:
+		raise ValueError("it takes size: (the floor's [W, D], inches), height: (mm) and percentile: only, not "
+			"{}".format(", ".join(extra)))
+	number = lambda x: isinstance(x, (int, float)) and not isinstance(x, bool)
+	size = value.get("size")
+	if isinstance(size, str):
+		try:
+			size = [float(x) for x in re.split(r"[,x]", size)]
+		except ValueError:
+			pass
+	if size is not None and not (isinstance(size, (list, tuple)) and len(size) == 2 and all(number(x) and x > 0
+			for x in size)):
+		raise ValueError("size: {!r} is not the floor's width and depth in inches, [W, D] (18, 10: [18, 10])".format(
+			value.get("size")))
+	height = value.get("height")
+	if height is not None and not (number(height) and height > 0):
+		raise ValueError("height: {!r} is not a number of mm above 0".format(height))
+	percentile = value.get("percentile", 50)
+	if not (number(percentile) and 0 < percentile <= 100):
+		raise ValueError("percentile: {!r} is not a number from 1 to 100".format(percentile))
+	return {"size": [float(x) for x in size] if size is not None else None,
+		"height": float(height) if height is not None else None, "percentile": float(percentile)}
+
+
+def UsedCalibration(folder):
+	"""
+	The calibration campy-live tracked the recording in 3D with, as it wrote it into the folder
+	(campy-live-session.json, else its summary campy-live.json): {calibration: calibration.toml's path or None (2D
+	only), sha256: its SHA-256 then (None when not known), cage: the cage file it looked at (None: not known, so the
+	one beside the calibration; False: --cage off), known: False when neither file says}. None when campy-live did
+	not run.
+	"""
+	from campy import manifest
+	path = os.path.join(folder, manifest.LIVE_FILE)
+	if os.path.isfile(path):
+		try:
+			with open(path, encoding="utf-8") as f:
+				data = strictjson.load(f)
+			record = data.get("calibration") or {}
+			pose3d = data.get("pose3d") or {}
+			return {"calibration": record.get("path"), "sha256": record.get("sha256"),
+				"cage": (pose3d.get("cage") or False) if "cage" in pose3d else None, "known": True}
+		except (OSError, ValueError, AttributeError):
+			pass
+	logs = LivePartLogs(folder)
+	for log in logs:
+		try:
+			with open(log[:-4] + ".json", encoding="utf-8") as f:
+				summary = strictjson.load(f)
+		except (OSError, ValueError):
+			continue
+		cages = summary.get("cage") or []
+		return {"calibration": summary.get("calibration"), "sha256": None,
+			"cage": cages[0].get("path") if cages and isinstance(cages[0], dict) else None, "known": True}
+	return {"calibration": None, "sha256": None, "cage": None, "known": False} if logs else None
+
+
+def HasCage(cage, calibration):
+	"""What the cage file there is, in words, and why it isn't replaced: (muted, text). muted False when campy-live
+	refuses it on this calibration (drawn for another one), which the panel then shows."""
+	from campy import pose3d
+	try:
+		with open(cage, encoding="utf-8") as f:
+			made = json.load(f).get("made")
+		refused = pose3d.Cage.Load(cage).Check(pose3d.LoadCalibration(calibration))
+	except Exception as e: # a cage campy-live can't read either
+		made, refused = None, "it can't be read ({})".format(e)
+	how = "made from the grid" if made == "grid" else "drawn by hand"
+	if refused:
+		return False, "the calibration's cage {} ({}) isn't used: {}. Not replaced: make a new one by hand " \
+			"(campy-cage, or k in campy-live-view)".format(cage, how, refused)
+	return True, "the calibration has a cage already ({}: {})".format(how, cage)
+
+
+def PlaceNew(src, dst):
+	"""
+	src renamed to dst only if nothing is at dst, in one step, so a cage drawn meanwhile is never replaced: Windows'
+	rename refuses an existing file; elsewhere a hard link does (then src is removed). True when it was put there.
+	"""
+	if sys.platform == "win32":
+		try:
+			os.rename(src, dst)
+			return True
+		except FileExistsError:
+			return False
+	try:
+		os.link(src, dst)
+	except FileExistsError:
+		return False
+	except OSError: # a file system without hard links: as close as it gets
+		if os.path.exists(dst):
+			return False
+		os.replace(src, dst)
+		return True
+	os.remove(src)
+	return True
+
+
+# How far campy-cage has got, from its lines: the pictures (reading each camera's video is about a third of it), the
+# ridge maps, the floor, the walls, the check
+CAGE_STAGES = (("cameras' pictures from", 0.35), ("ridge maps (", 0.4), ("floor (wide)", 0.5), ("floor (coarse)", 0.55),
+	("floor (fine)", 0.6), ("grid axes", 0.62), ("floor's grid ends", 0.68), ("walls along axis 0", 0.75),
+	("walls along axis 1", 0.82), ("walls' grid goes up", 0.86), ("floor between the walls", 0.9),
+	("grid projected into each camera", 0.93), ("picture \\ calibration", 0.97))
+
+
+def RunCage(command, log, stop=None):
+	"""
+	campy-cage, its lines into post.log as it goes (and how far it has got, for the panel). Returns (its exit code,
+	or None when stopped; its lines).
+	"""
+	env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+	lines = []
+	with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+			errors="replace", env=env) as proc:
+		try:
+			for line in proc.stdout:
+				line = line.rstrip()
+				lines.append(line)
+				log.Progress("  " + line, next((f for word, f in CAGE_STAGES if word in line), None))
+				if stop and stop():
+					proc.kill()
+					proc.wait()
+					return None, lines
+			proc.wait()
+		except BaseException:
+			proc.kill()
+			raise
+	return proc.returncode, lines
+
+
+def StepCage(folder, settings, log, stop=None, run=None):
+	"""
+	The cage from the box's grid for the calibration campy-live tracked this recording with, when it has none yet
+	(post: cage: {size: [W, D]}): campy-cage on the recording's videos (the median of 31 frames from each: the animals,
+	which move, are gone). run: RunCage's stand-in, for tests.
+	"""
+	try:
+		options = CageOptions(settings.get("cage"))
+	except ValueError as e:
+		return "failed", "post.cage: {}".format(e)
+	if options is None:
+		return "skipped", "cage is off (post: cage: {size: [W, D]} turns it on, for a box with a 1-inch grid)"
+	from campy import calibrate, cagegrid, manifest, pose3d
+	if calibrate.CalibrationVideos(folder):
+		return "skipped", "a calibration recording: its board would stay in the pictures"
+	used = UsedCalibration(folder)
+	if used is None:
+		return "skipped", "campy-live did not run (no campy-live.npy)"
+	calibration = used["calibration"]
+	if not calibration:
+		return ("skipped", "campy-live tracked in 2D only (no calibration)") if used["known"] else \
+			("skipped", "campy-live's files don't say which calibration it used (no {} or campy-live.json)".format(
+			manifest.LIVE_FILE))
+	if used["cage"] is False:
+		return "skipped", "campy-live ran with --cage off"
+	if not os.path.isfile(calibration):
+		return "failed", "this recording's calibration {} isn't there any more".format(calibration)
+	if used["sha256"] and manifest.Sha256(calibration) != used["sha256"]:
+		return "skipped", "{} changed since this recording was tracked with it: its pictures may not match it; no " \
+			"cage made".format(calibration)
+	cage = used["cage"] or pose3d.CagePath(calibration)
+	if os.path.exists(cage):
+		return "skipped", HasCage(cage, calibration)[1]
+	if stop and stop():
+		return "failed", "stopped (Ctrl-C)"
+	# campy-cage writes into a file of its own; the cage goes in place only if none was drawn meanwhile (campy-live-view
+	# saves one at the recording's end, and may still be open)
+	out = os.path.splitext(cage)[0] + ".post-tmp.json"
+	for path in (out, out + ".old"):
+		if os.path.exists(path):
+			os.remove(path) # left by a step that was stopped
+	command = [sys.executable, "-m", "campy.cagegrid", calibration, folder, "--out", out]
+	if options["size"]:
+		command += ["--size", "{:g},{:g}".format(*options["size"])]
+	if options["height"]:
+		command += ["--height", "{:g}".format(options["height"])]
+	if options["percentile"] != 50:
+		command += ["--percentile", "{:g}".format(options["percentile"])]
+	log.Say("campy-cage: {}".format(" ".join(command)))
+	t0 = time.monotonic()
+	try:
+		code, lines = (run or RunCage)(command, log, stop)
+		sheet = os.path.join(cagegrid.CheckFolder(calibration), "sheet.jpg")
+		again = "The next recording with this calibration tries again."
+		if code is None:
+			return "failed", "stopped (Ctrl-C)"
+		if code == 3:
+			swapped = next((line.strip() for line in lines if line.startswith("CAMERA NAMES SWAPPED?")),
+				"the pictures don't match their cameras' calibrations.")
+			return "skipped", "not saved: {} This recording's 3D is wrong for those cameras. The check's pictures: {}. " \
+				"{}".format(swapped, sheet, again)
+		if code == 4:
+			return "skipped", "not saved: the grid lands on most cameras' lines by less than x{:g}, so the fit found " \
+				"something else (something stayed in most frames, as a mouse asleep in a corner?). The check's " \
+				"pictures: {}. {}".format(cagegrid.GRID_RATIO_OK, sheet, again)
+		if code != 0:
+			last = next((line.strip() for line in reversed(lines) if line.strip()), "")
+			return "failed", "campy-cage ended with exit code {}{}".format(code, ": " + last if last else "")
+		if not os.path.isfile(out):
+			return "failed", "campy-cage ended without writing {}".format(out)
+		if not PlaceNew(out, cage):
+			return "skipped", "a cage was drawn while campy-cage ran ({}): that one is kept, and campy-cage's not " \
+				"saved".format(cage)
+	finally:
+		for path in (out, out + ".old"):
+			if os.path.exists(path):
+				try:
+					os.remove(path)
+				except OSError:
+					pass
+	return "done", CageText(cage, calibration, sheet, time.monotonic() - t0)
+
+
+def CageText(cage, calibration, sheet, seconds):
+	# The step's result: the cage made, from its file (what campy-cage kept of the fit)
+	try:
+		with open(cage, encoding="utf-8") as f:
+			d = json.load(f)
+		fit, identity = d.get("fit") or {}, d.get("identity") or {}
+		box = "floor {:.0f} x {:.0f} mm ({:.2f} x {:.2f} squares), {:.0f} mm high".format(*(fit["floor_mm"] +
+			fit["squares"] + [d["height"]]))
+		names = "every camera's picture matches its own calibration" + ("; weakly: {}".format(", ".join(
+			identity["weak"])) if identity.get("weak") else "")
+	except (OSError, ValueError, KeyError, TypeError, IndexError):
+		box, names = "made", None
+	return "the cage from the box's grid, {}, beside {}: every recording with this calibration uses it{}. The " \
+		"check's pictures: {} ({:.0f} s)".format(box, calibration, "; " + names if names else "", sheet, seconds)
+
+
 def StepExport(folder, settings, log, live_python=None, force=False, stop=None):
 	if not settings.get("export", True):
 		return "skipped", "export is off"
@@ -963,6 +1224,8 @@ def Run(folder, settings, live_python=None, only=None, force=False, ffmpeg=None,
 				result = StepAlign(folder, settings, log, stop=stop)
 			elif step == "calibrate":
 				result = StepCalibrate(folder, settings, log, stop=stop)
+			elif step == "cage":
+				result = StepCage(folder, settings, log, stop=stop)
 			elif step == "export":
 				result = StepExport(folder, settings, log, live_python=live_python, force=force or bool(before), stop=stop)
 			elif step == "copy":
@@ -994,7 +1257,8 @@ def Main(argv=None):
 	"""campy-session post <folder>: the post-steps again, by hand."""
 	from campy import session
 	p = argparse.ArgumentParser(prog="campy-session post", description="Run the steps after a recording (remux, "
-		"join, align, export, copy, run) on its folder, those not done yet; python -m pydoc campy.post says what each does.")
+		"join, align, calibrate, cage, export, copy, run) on its folder, those not done yet; python -m pydoc campy.post "
+		"says what each does.")
 	p.add_argument("folder", help="the recording's folder")
 	p.add_argument("--config", default="", help="the config whose post: section to use (default: the one "
 		"campy-session ran, logs/session-config.yaml; else remux and export)")

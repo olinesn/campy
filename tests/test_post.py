@@ -320,7 +320,259 @@ def test_export_runs_campy_live_export_in_its_environment(tmp_path, monkeypatch)
 	assert post.StepExport(str(folder), {"export": True}, log, live_python=None)[0] == "failed"
 
 
-# ------------------------------------------------------------------ copy and run
+# ------------------------------------------------------------------ cage
+
+def calibrated(tmp_path):
+	# A calibration of test_cagegrid's made-up box, in a calibration recording's folder as campy-calibrate leaves it
+	import test_cagegrid
+	path = tmp_path / "calibrations" / "2026-11-20_09-00-00" / "calibration.toml"
+	path.parent.mkdir(parents=True)
+	cams = test_cagegrid.rig()
+	test_cagegrid.write_calibration(str(path), cams)
+	return path, cams
+
+
+def tracked(tmp_path, calibration, cage=True, name="rec"):
+	# A recording campy-live tracked in 3D with calibration (campy-live-session.json, as it writes it)
+	from campy import manifest, pose3d
+	folder = recording(tmp_path / name)
+	pose = {"animals": 2, "cage": pose3d.CagePath(str(calibration)) if cage else None}
+	(folder / manifest.LIVE_FILE).write_text(json.dumps({"calibration": manifest.FileRecord(str(calibration)),
+		"pose3d": pose}))
+	return folder
+
+
+def clicked_cage(path, cams, off_px=0.0):
+	# A cage drawn by hand: its corners clicked where each camera sees them (off_px: as if on another calibration)
+	from campy import pose3d
+	import test_cagegrid
+	corners = test_cagegrid.TRUE_CORNERS
+	clicks = {c.name: [(c.Project(X) + off_px).tolist() for X in corners] for c in cams}
+	pose3d.Cage(corners, [0, 0, 1], 200.0, 30.0, clicks, 0.0).Save(str(path))
+	return open(str(path)).read()
+
+
+def fake_campy_cage(code=0, lines=(), meanwhile=None):
+	# campy-cage as RunCage runs it: its --out written (a cage made from the grid) when it ends with 0
+	from campy import pose3d
+	import test_cagegrid
+	ran = []
+
+	def run(command, log, stop=None):
+		ran.append(command)
+		out = command[command.index("--out") + 1]
+		if code == 0:
+			pose3d.Cage(test_cagegrid.TRUE_CORNERS, [0, 0, 1], 305.0, 30.0, {}, 0.0).Save(out, made="grid", grid={},
+				fit={"floor_mm": [458.4, 254.2], "squares": [18.05, 10.01]}, identity={"swaps": {}, "weak": []})
+		if meanwhile:
+			meanwhile()
+		for line in lines:
+			log.Say(line)
+		return code, list(lines)
+	return run, ran
+
+
+def test_the_cage_steps_options():
+	assert post.CageOptions(None) is None and post.CageOptions({}) is None and post.CageOptions(False) is None
+	assert post.CageOptions(True) == {"size": None, "height": None, "percentile": 50.0}
+	assert post.CageOptions({"size": [18, 10], "height": 305, "percentile": 25}) == {"size": [18.0, 10.0],
+		"height": 305.0, "percentile": 25.0}
+	assert post.CageOptions({"size": "18x10"})["size"] == [18.0, 10.0]
+	for bad, said in (({"size": [18]}, "size: \\[18\\] is not the floor's width and depth"),
+			({"size": [18, True]}, "is not the floor's"), ({"height": -1}, "height: -1"),
+			({"percentile": 0}, "percentile: 0"), ({"sise": [18, 10]}, "only, not sise"), ("yes", "or true")):
+		with pytest.raises(ValueError, match=said):
+			post.CageOptions(bad)
+
+
+def test_the_cage_step_finds_the_calibration_campy_live_used(tmp_path):
+	from campy import manifest
+	calibration, _ = calibrated(tmp_path)
+	folder = tracked(tmp_path, calibration)
+	used = post.UsedCalibration(str(folder))
+	assert used["calibration"] == str(calibration) and used["sha256"] == manifest.Sha256(str(calibration))
+	assert used["cage"] == str(calibration)[:-5] + ".cage.json"
+	assert post.UsedCalibration(str(tracked(tmp_path, calibration, cage=False, name="off")))["cage"] is False
+	# Only campy-live's summary (no campy-live-session.json): its calibration, and the cage it looked at
+	summary = recording(tmp_path / "summary")
+	live_log(summary / "campy-live.npy", [1, 2])
+	(summary / "campy-live.json").write_text(json.dumps({"calibration": str(calibration), "cage": [
+		{"from_frame": None, "path": "/x/c.cage.json", "cage": None, "refused": None}]}))
+	assert post.UsedCalibration(str(summary)) == {"calibration": str(calibration), "sha256": None,
+		"cage": "/x/c.cage.json", "known": True}
+	os.remove(str(summary / "campy-live.json"))
+	assert post.UsedCalibration(str(summary))["known"] is False # campy-live killed before its summary
+	assert post.UsedCalibration(str(recording(tmp_path / "none"))) is None
+
+
+def test_the_cage_step_skips_what_it_must_not_touch(tmp_path):
+	from campy import pose3d
+	calibration, cams = calibrated(tmp_path)
+	folder = tracked(tmp_path, calibration)
+	log = post.Log(str(folder))
+	on = {"cage": {"size": [12, 8]}}
+	run, ran = fake_campy_cage()
+	step = lambda where, settings=on: post.StepCage(str(where), settings, log, run=run)
+	assert step(folder, {}) == ("skipped", "cage is off (post: cage: {size: [W, D]} turns it on, for a box with a "
+		"1-inch grid)")
+	assert step(recording(tmp_path / "plain")) == ("skipped", "campy-live did not run (no campy-live.npy)")
+	assert step(tracked(tmp_path, calibration, cage=False, name="off")) == ("skipped", "campy-live ran with --cage off")
+	two_d = recording(tmp_path / "2d")
+	live_log(two_d / "campy-live.npy", [1])
+	(two_d / "campy-live.json").write_text(json.dumps({"calibration": None, "cage": None}))
+	assert step(two_d) == ("skipped", "campy-live tracked in 2D only (no calibration)")
+	calib_rec = tracked(tmp_path, calibration, name="calib")
+	(calib_rec / "Camera0" / "calibration_images").mkdir()
+	write_clip(str(calib_rec / "Camera0" / "calibration_images" / "0-calibration.mp4"))
+	assert step(calib_rec) == ("skipped", "a calibration recording: its board would stay in the pictures")
+	# A cage drawn by hand, or made from the grid: never replaced
+	cage = pose3d.CagePath(str(calibration))
+	drawn = clicked_cage(cage, cams)
+	assert step(folder) == ("skipped", "the calibration has a cage already (drawn by hand: {})".format(cage))
+	assert open(cage).read() == drawn
+	# One drawn on another calibration: not replaced either, but said, as campy-live doesn't use it
+	clicked_cage(cage, cams, off_px=40.0)
+	state, said = step(folder)
+	assert state == "skipped" and "isn't used: its corners land 57 px from where they were clicked" in said
+	assert "Not replaced" in said
+	os.remove(cage)
+	# The calibration changed since the recording was tracked with it
+	with open(str(calibration), "a") as f:
+		f.write("\n")
+	state, said = step(folder)
+	assert state == "skipped" and "changed since this recording was tracked with it" in said
+	assert not ran and not os.path.exists(cage)
+
+
+def test_the_cage_step_makes_the_cage_beside_the_calibration(tmp_path):
+	from campy import cagegrid, pose3d
+	calibration, cams = calibrated(tmp_path)
+	folder = tracked(tmp_path, calibration)
+	run, ran = fake_campy_cage()
+	state, said = post.StepCage(str(folder), {"cage": {"size": [18, 10], "height": 300}}, post.Log(str(folder)),
+		run=run)
+	assert state == "done", said
+	cage = pose3d.CagePath(str(calibration))
+	assert said.startswith("the cage from the box's grid, floor 458 x 254 mm (18.05 x 10.01 squares), 305 mm high, "
+		"beside {}: every recording with this calibration uses it; every camera's picture matches its own "
+		"calibration. The check's pictures: {} (".format(calibration, os.path.join(cagegrid.CheckFolder(
+		str(calibration)), "sheet.jpg")))
+	command, = ran
+	out = command[command.index("--out") + 1]
+	assert command[:5] == [sys.executable, "-m", "campy.cagegrid", str(calibration), str(folder)]
+	assert command[7:] == ["--size", "18,10", "--height", "300"] # the median: no --percentile
+	assert out != cage and not os.path.exists(out) and os.path.dirname(out) == os.path.dirname(cage)
+	assert json.load(open(cage))["made"] == "grid" and cagegrid.LoadGrid(cage) == {}
+	# The next recording with this calibration has its cage
+	assert post.StepCage(str(tracked(tmp_path, calibration, name="next")), {"cage": True}, post.Log(str(folder)),
+		run=run) == ("skipped", "the calibration has a cage already (made from the grid: {})".format(cage))
+	assert len(ran) == 1
+
+
+def test_a_cage_drawn_while_campy_cage_ran_is_kept(tmp_path):
+	# campy-live-view, kept open after the recording, saved a cage drawn by hand while campy-cage ran
+	from campy import pose3d
+	calibration, cams = calibrated(tmp_path)
+	folder = tracked(tmp_path, calibration)
+	cage = pose3d.CagePath(str(calibration))
+	drawn = []
+	run, _ = fake_campy_cage(meanwhile=lambda: drawn.append(clicked_cage(cage, cams)))
+	state, said = post.StepCage(str(folder), {"cage": True}, post.Log(str(folder)), run=run)
+	assert (state, said) == ("skipped", "a cage was drawn while campy-cage ran ({}): that one is kept, and "
+		"campy-cage's not saved".format(cage))
+	assert open(cage).read() == drawn[0]
+	assert sorted(os.listdir(os.path.dirname(cage))) == ["calibration.cage.json", "calibration.toml"]
+
+
+def test_campy_cages_refusals_are_the_steps_result_and_the_steps_after_run(tmp_path):
+	from campy import cagegrid, pose3d
+	calibration, _ = calibrated(tmp_path)
+	folder = tracked(tmp_path, calibration)
+	sheet = os.path.join(cagegrid.CheckFolder(str(calibration)), "sheet.jpg")
+	swapped = "CAMERA NAMES SWAPPED? Each of these pictures matches another camera's calibration better than its own " \
+		"(picture -> calibration): left -> top, top -> left. Check the cameras' order (cameraSerials) before tracking."
+	run, _ = fake_campy_cage(3, ["ridge maps (1.0 s)", swapped, "Not saved: the pictures don't match their cameras' "
+		"calibrations (--force saves it anyway)."])
+	state, said = post.StepCage(str(folder), {"cage": True}, post.Log(str(folder)), run=run)
+	assert state == "skipped" and said == "not saved: {} This recording's 3D is wrong for those cameras. The check's " \
+		"pictures: {}. The next recording with this calibration tries again.".format(swapped, sheet)
+	run, _ = fake_campy_cage(4, ["Not saved: the grid lands on most cameras' lines by less than x2"])
+	state, said = post.StepCage(str(folder), {"cage": True}, post.Log(str(folder)), run=run)
+	assert state == "skipped" and said.startswith("not saved: the grid lands on most cameras' lines by less than x2, "
+		"so the fit found something else") and sheet in said
+	run, _ = fake_campy_cage(1, ["3 cameras' pictures", "No cage: no wall with a grid found", ""])
+	assert post.StepCage(str(folder), {"cage": True}, post.Log(str(folder)), run=run) == ("failed",
+		"campy-cage ended with exit code 1: No cage: no wall with a grid found")
+	assert sorted(os.listdir(os.path.dirname(str(calibration)))) == ["calibration.toml"] # nothing left behind
+	# In post.Run: the step's result, and the steps after it run
+	run, _ = fake_campy_cage(4)
+	real = post.StepCage
+	post_step = lambda *a, **k: real(*a, run=run, **k)
+	import unittest.mock
+	with unittest.mock.patch.object(post, "StepCage", post_step):
+		results = post.Run(str(folder), {"cage": True, "run": ["exit 0"]}, only=["cage", "run"],
+			out=open(os.devnull, "w"))
+	assert results["cage"][0] == "skipped" and results["run"] == ("done", "1 commands")
+	state = json.loads((folder / "logs" / "post.json").read_text())
+	assert state["steps"]["cage"]["state"] == "skipped" and "not saved" in state["steps"]["cage"]["message"]
+
+
+def test_campy_cages_lines_go_into_post_log_with_how_far_it_has_got(tmp_path):
+	folder = recording(tmp_path)
+	log = post.Log(str(folder), out=open(os.devnull, "w"))
+	seen = []
+	log.on_line = lambda text, fraction: seen.append((text, fraction))
+	py = "import sys; print('5 cameras\\' pictures from x (1.0 s)'); print('ridge maps (0.5 s)'); print('Saved'); " \
+		"sys.exit(0)"
+	code, lines = post.RunCage([sys.executable, "-c", py], log)
+	assert code == 0 and lines == ["5 cameras' pictures from x (1.0 s)", "ridge maps (0.5 s)", "Saved"]
+	assert [f for _, f in seen if f is not None] == [0.35, 0.4]
+	assert "  ridge maps (0.5 s)" in (folder / "logs" / "post.log").read_text()
+	code, _ = post.RunCage([sys.executable, "-c", "print('a'); print('b')"], log, stop=lambda: True)
+	assert code is None # stopped (Ctrl-C) at its first line
+
+
+def test_the_cage_step_end_to_end_with_campy_cage(tmp_path, monkeypatch):
+	# campy-cage itself, on a recording of the made-up box: each camera's video, a bright mouse going round the floor
+	# (gone in the median of its frames); the cage made once, then used by the next recording
+	import cv2
+	from campy import pose3d, videoread
+	import test_cagegrid
+	monkeypatch.setenv("PYTHONPATH", REPO)
+	calibration, cams = calibrated(tmp_path)
+	folder = tmp_path / "2026-11-20_10-00-00"
+	n = 40
+	for i, cam in enumerate(cams):
+		camera = folder / "Camera{}_{}".format(i, cam.name)
+		camera.mkdir(parents=True)
+		write_metadata(camera / "metadata.csv", framesWritten=n)
+		still = test_cagegrid.render(cam, seed=i)
+		frames = []
+		for k in range(n):
+			X = np.array([100 * np.cos(2 * np.pi * k / n), 60 * np.sin(2 * np.pi * k / n), 20.0])
+			frame = still.copy()
+			u, v = cam.Project(X)
+			cv2.circle(frame, (int(u), int(v)), 18, 250, -1)
+			frames.append(frame)
+		h, w = still.shape
+		subprocess.run([videoread.FfmpegExe(), "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "gray", "-s",
+			"{}x{}".format(w, h), "-r", "20", "-i", "-", "-c:v", "libx264", "-g", "10", "-crf", "8", "-pix_fmt",
+			"yuv420p", str(camera / "0.mp4")], input=np.stack(frames).tobytes(), check=True)
+	from campy import manifest
+	(folder / manifest.LIVE_FILE).write_text(json.dumps({"calibration": manifest.FileRecord(str(calibration)),
+		"pose3d": {"animals": 1, "cage": pose3d.CagePath(str(calibration))}}))
+	results = post.Run(str(folder), {"cage": {"size": [12, 8]}}, only=["cage"], out=open(os.devnull, "w"))
+	state, said = results["cage"]
+	assert state == "done", (folder / "logs" / "post.log").read_text()
+	assert said.startswith("the cage from the box's grid, floor ") and "mm high, beside {}".format(calibration) in said
+	cage = pose3d.Cage.Load(pose3d.CagePath(str(calibration)))
+	for X in test_cagegrid.TRUE_CORNERS:
+		assert test_cagegrid.nearest(cage.corners, X) < 3.0
+	assert cage.Check(cams) is None # campy-live uses it on this calibration
+	log = (folder / "logs" / "post.log").read_text()
+	assert "campy-cage: " in log and "  ridge maps (" in log and "Every camera's picture matches its own calibration" \
+		in log
+	assert os.path.isfile(os.path.join(str(calibration)[:-5] + ".cage_check", "sheet.jpg"))
 
 def test_copy_puts_the_whole_folder_under_copy_to(tmp_path):
 	folder = recording(tmp_path / "rec")
@@ -394,7 +646,7 @@ def test_campy_session_post_by_hand(tmp_path):
 	out = campy_session("--only", "remux")
 	assert "remux: done already" in out.stdout
 	out = campy_session("--only", "rmux")
-	assert out.returncode == 1 and "--only takes remux, join, align, calibrate, export, copy, run" in out.stderr
+	assert out.returncode == 1 and "--only takes remux, join, align, calibrate, cage, export, copy, run" in out.stderr
 
 	crashed = recording(tmp_path / "crashed", clean=False, launcher_code=None)
 	out = subprocess.run([sys.executable, "-m", "campy.session", "post", str(crashed)], capture_output=True, text=True,

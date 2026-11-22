@@ -35,6 +35,7 @@ setup(
 			"campy-encode-quality = campy.quality:Main",
 			"campy-align = campy.align:Main",
 			"campy-calibrate = campy.calibrate:Main",
+			"campy-cage = campy.cagegrid:Main",
 			"campy-synctest = campy.synctest:Main",
 			"campy-syncmatch = campy.syncmatch:Main",
 			"campy-flir-reset = campy.flirreset:Main",

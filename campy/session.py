@@ -130,6 +130,11 @@ POST = {
 		"calibration.toml: {calibrat3: <its checkout>, board: {board_x: 14, board_y: 9, square_length: 20, "
 		"marker_length: 15, marker_bits: 5, dict_size: 1000}, target: 300 (frames sampled), browser: chrome} "
 		"(campy/calibrate.py); {} (the default): off"),
+	"cage": ((dict, bool), {}, "for a box with a 1-inch grid: when campy-live tracked the recording in 3D with a "
+		"calibration that has no cage yet, campy-cage makes it from the recording's videos (campy/cagegrid.py), so the "
+		"first recording after each new calibration makes the cage for every later one: {size: [W, D] (the floor, "
+		"inches), height: (mm; default: as high as the walls' grid goes), percentile: 50}, or true; a cage there "
+		"already, clicked or made from the grid, is never replaced; {} (the default): off"),
 	"copy": ((dict, str), {}, "copy the recording to copy.to/<its folder's name> (robocopy or rsync), then every file "
 		"checked byte for byte; copy.delete_after_verify: true ticks the panel's 'Delete each recording from this "
 		"computer once its copy is checked' box by default, and makes campy-session post delete it (default: false; "
@@ -335,6 +340,11 @@ class Config:
 		if not isinstance(self.post["copy"].get("delete_after_verify", False), bool):
 			raise SessionError("post.copy.delete_after_verify: {!r} is not true or false.".format(
 				self.post["copy"]["delete_after_verify"]))
+		from campy import post
+		try:
+			post.CageOptions(self.post["cage"])
+		except ValueError as e:
+			raise SessionError("post.cage: {}.".format(e))
 		for name, keys in DeviceSections().items():
 			setattr(self, name, Section(name, sections[name], keys) if name in sections else None)
 		self.CheckPicker()
