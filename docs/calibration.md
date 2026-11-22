@@ -102,6 +102,6 @@ post:
   - `not saved: the grid lands on most cameras' lines by less than x2`: something stayed in most frames (a mouse asleep in a corner), so the median isn't the empty arena.
   - A box with no grid where the cameras look makes the step fail, in red (`No cage: no grid on the floor`): take `cage:` out of that rig's profile.
 
-So far this step has run on made-up recordings only (a box drawn through campy's lens model, with its true corners known, in campy's tests), not yet after a real recording on a rig.
+So far this step has run on made-up recordings only (a box drawn through campy's lens model, with its true corners known, in campy's tests), not yet after a real recording on a rig. It has been on in the Dell Pro Tower Plus's rig profile since 22 November 2026. That computer's newest calibration (9 November) already has a cage drawn by hand, so the step first makes one after the next calibration recorded there.
 
 Problems and their fixes are in [Troubleshooting](troubleshooting.md).
