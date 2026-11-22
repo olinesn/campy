@@ -8,6 +8,7 @@
 # listed background load, background.json) or RIG_CONTAMINATED.
 #   RIG_OWNER  who runs it (the session's name); "unnamed" otherwise
 #   RIG_STRICT=1  every look with load outside the run contaminates it, background.json or not
+#   RIG_GPU=<N>  hold only GPU N (rig.py's --gpu: the file lock, two or more GPUs); RIG_WHOLE=1 the whole machine anyway
 #   RIG_TAG    the run's name; otherwise the script's first argument, or the script's name
 #   RIG_NOWAIT=1  exit 75 at once if the rig is busy, instead of waiting
 # rig_guard.ps1 does the same for PowerShell scripts on Windows.

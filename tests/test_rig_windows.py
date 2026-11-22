@@ -329,7 +329,7 @@ def test_the_jobs_own_processes_and_reused_parent_pids(monkeypatch):
 def run(tmp_path):
 	env = dict(os.environ, RIG_ROOT=str(tmp_path / "root"), RIG_LOCK="file", RIG_PERIOD="0.3",
 		RIG_CPU="1000", RIG_IO="100000")
-	for k in ("RIG_JOB", "RIG_EXTRA"):
+	for k in ("RIG_JOB", "RIG_EXTRA", "RIG_GPU", "RIG_WHOLE"):
 		env.pop(k, None)
 	os.makedirs(env["RIG_ROOT"])
 

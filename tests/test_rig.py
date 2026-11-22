@@ -40,7 +40,7 @@ def rig(tmp_path):
 		RIG_PERIOD="0.3", RIG_CPU="1000", RIG_IO="100000")
 	# when the tests themselves run inside a rig.py job (as on a rig), its RIG_JOB and RIG_TAG are in
 	# the environment: a guarded script here would join that job, or log under that job's tag
-	for name in ("RIG_JOB", "RIG_TAG", "RIG_LOGDIR"):
+	for name in ("RIG_JOB", "RIG_TAG", "RIG_LOGDIR", "RIG_GPU", "RIG_WHOLE"):
 		env.pop(name, None)
 	os.makedirs(env["RIG_ROOT"])
 

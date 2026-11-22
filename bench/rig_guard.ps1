@@ -15,6 +15,9 @@
 #   RIG_TAG     the run's name; otherwise the script's first argument, or the script's name
 #   RIG_NOWAIT=1  exit 75 at once if the rig is busy, instead of waiting
 #   RIG_STRICT=1  every look with load outside the run contaminates it, background.json or not
+#   RIG_GPU=<N>   hold only nvidia-smi's GPU N (and show the script only it, CUDA_VISIBLE_DEVICES), so that a run
+#                 holding the other GPU can run beside it; its log then ends RIG_SHARED (rig.py's --gpu)
+#   RIG_WHOLE=1   with RIG_GPU: hold the whole machine all the same, for timings
 #   RIG_PYTHON  the python.exe that runs rig.py; otherwise python on the PATH
 #   RIG_ROOT    the folder of gpu.lock; otherwise C:\campy_data\live
 # rig_guard.sh does the same for bash scripts on Linux.

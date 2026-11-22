@@ -11,7 +11,9 @@
 #   rig held: <owner> <tag> since <date time> rigpid=... (held at the screen with rig_hold.ps1: <why>; ...)
 # and every rig.py run, rig_guard.ps1 script and rig.py hold waits until it ends. It writes rig.py's lock
 # file, C:\campy_data\live\gpu.lock, the way rig.py does, naming this window's PowerShell as the holder.
-# If someone else's run holds the machine when you start it, it waits for that run to end and says so.
+# If someone else's run holds the machine when you start it, it waits for that run to end and says so. While it
+# waits it stands in rig.py's line (a ticket in C:\campy_data\live\rig-queue), so runs holding single GPUs
+# (rig.py run --gpu) let it go first instead of keeping the machine busy one after another.
 #
 # How to tell where it is: the window's TITLE says WAITING, HELD (with the time held) or RELEASED. While held,
 # a big banner says so and the last line shows the time held, updated every second; a line goes to the log
@@ -44,6 +46,8 @@ $Me = [Diagnostics.Process]::GetCurrentProcess()
 $MyStart = $Me.StartTime.ToFileTimeUtc()  # the creation time rig.py compares (GetProcessTimes)
 $Interactive = $Seconds -le 0
 $Line = $null
+$QueueDir = Join-Path $Root 'rig-queue'
+$Ticket = $null
 
 # Clicking in a classic console window ("QuickEdit") freezes the script until Esc: turn that off for this window
 try {
@@ -137,6 +141,25 @@ function TryTake {
 		$script:took = $true
 	}
 }
+# Stand in rig.py's line while waiting: rig-queue\<time in ns since 1970, 20 digits>-<pid>, the line rig.py writes
+# for itself. A rig.py waiting for one GPU lets every earlier ticket that wants the whole machine go first; rig.py
+# removes the ticket of a window that has closed (by rigpid and rigstart). Without a ticket it waits as before.
+function Ticket {
+	if ($script:Ticket) { return }
+	try {
+		New-Item -ItemType Directory -Force -Path $QueueDir | Out-Null
+		$name = '{0:D20}-{1}' -f ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() * 1000000), $PID
+		$path = Join-Path $QueueDir $name
+		$text = 'want=whole; owner={0}; tag={1}; since={2}; rigpid={3}; rigstart={4}; by=rig_hold.ps1' -f ($Owner -replace '[;=]', '-'),
+			($Tag -replace '[;=]', '-'), (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'), $PID, $MyStart
+		[IO.File]::WriteAllText("$path.tmp", "$text`n", [Text.UTF8Encoding]::new($false))
+		Move-Item -LiteralPath "$path.tmp" -Destination $path -Force
+		$script:Ticket = $path
+	} catch { }
+}
+function DropTicket {
+	if ($script:Ticket) { Remove-Item -LiteralPath $script:Ticket -Force -ErrorAction SilentlyContinue; $script:Ticket = $null }
+}
 function Release {
 	if (-not $script:Line) { return }
 	Guarded {
@@ -172,7 +195,8 @@ try {
 	$said = $null
 	while ($true) {
 		TryTake
-		if ($took) { break }
+		if ($took) { DropTicket; break }
+		Ticket
 		$text = if ($busy) { $busy } else { '(being written)' }
 		if ($text -ne $said) {
 			Write-Host ''
@@ -245,6 +269,7 @@ try {
 } catch {
 	$ended = "failed: $($_.Exception.Message)"
 } finally {
+	DropTicket
 	try { Release } catch { $ended = "failed to delete gpu.lock: $($_.Exception.Message)" }
 }
 

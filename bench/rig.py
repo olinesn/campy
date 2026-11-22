@@ -125,6 +125,31 @@ written by hand ("<who> <time>", as sessions did before rig.py ran on Windows)
 is respected until whoever wrote it deletes it, or `rig.py break`. RIG_LOCK=file
 uses the Windows lock on Linux too.
 
+One GPU at a time (--gpu N, or RIG_GPU=N; the file lock only, so Windows, or RIG_LOCK=file). On a machine
+with two or more NVIDIA GPUs, a run can hold one GPU alone, nvidia-smi's GPU N (rig.py status lists them),
+instead of the whole machine. Its job sees only that GPU (CUDA_VISIBLE_DEVICES, set to the GPU's UUID), and a
+run holding another GPU may run beside it. Its lock is RIG_ROOT/gpu<N>.lock (the same line as gpu.lock's),
+and while any GPU is held alone, gpu.lock says so with a line of its own ('per-gpu 0+1 since ...', which
+names every such job's job= and the rig.py or job processes that keep it held), so that whatever only knows
+gpu.lock (rig_hold.ps1, the GPU queue of a Windows VM, an older rig.py, a guarded script's check for its
+own job) sees the machine held, as before. A run without --gpu holds the whole machine, as always, and so
+does one with --gpu and --whole (RIG_WHOLE=1) or --strict, which are for timings that must have the
+machine to themselves; and so does --gpu where there is only one GPU, no nvidia-smi, the flock, or an
+experiment machine (the job still sees only that GPU). What counts against a run holding GPU N: anything on
+GPU N outside its job, the job of another GPU's run among them; anything outside both jobs, as always
+(device users, and CPU and disk load as LoadTrack says); the other GPU's job using a camera, the trigger or
+an ephys program (those are the machine's, not a GPU's); and its own job running CUDA on a GPU it doesn't
+hold (WRONG GPU in the log, wrong-gpu on the last line). The other GPU's job, everything it starts
+(by its RIG_JOB, by the processes its rig.py lists in gpu<N>.pids every look, or by descending from them or
+from its rig.py) and its CPU and disk load don't count; which GPU a process runs CUDA on is nvidia-smi's
+(-q -d PIDS, by GPU). A run that had such a job beside it at any look ends RIG_SHARED, not RIG_CLEAN: its
+results stand, but the two shared the CPU, memory, disks and PCIe, so its timings are not a benchmark's.
+Who waits, waits in line (RIG_ROOT/rig-queue, a ticket per waiting rig.py or rig_hold.ps1, oldest first):
+a run takes what it waits for only once nobody earlier in line waits for the same GPU or for the whole
+machine, so runs for single GPUs, one after another, can't keep a run for the whole machine waiting for
+ever, and one for GPU 1 passes one waiting for GPU 0 (a free GPU stays idle while the whole machine is
+waited for).
+
 On an experiment machine (RIG_ROOT/experiment.json; docs/design/rig-fleet.md, section 5), where people
 record experiments, run starts a test only when every Windows session (quser) has been idle 15+ min,
 nothing outside it uses a device, the hour is allowed ("hours", default 22:00-06:00) and RIG_ROOT/PAUSE
@@ -290,7 +315,9 @@ def flir_cameras():
 
 class Proc:
 	# unsure (Windows): a python.exe whose command line can't be read and that has no rig.py marker (classify)
-	__slots__ = ("pid", "ppid", "sid", "start", "cpu", "io", "kinds", "cmd", "job", "user", "exe", "unsure")
+	# gpus: the GPUs (nvidia-smi's indexes) it runs CUDA on, when known; partner: the GPU whose run's job it is
+	# in, for a run holding another GPU (Watch). Read both with getattr: they are set only where known
+	__slots__ = ("pid", "ppid", "sid", "start", "cpu", "io", "kinds", "cmd", "job", "user", "exe", "unsure", "gpus", "partner")
 
 def read_proc(pid, cameras):
 	"""A Proc for pid, or None if it is gone or a kernel thread (Linux)."""
@@ -400,28 +427,40 @@ def scan_macos():
 	MAC_ARGS.update(args)
 	return procs
 
-def scan(own=()):
-	"""{pid: Proc} for every process. own: pids known to be the job's (Windows looks less at them)."""
+def scan(own=(), gpus=False):
+	"""{pid: Proc} for every process. own: pids known to be the job's (Windows looks less at them). gpus: also
+	which GPU each process runs CUDA on (Proc.gpus), from nvidia-smi; on Windows always (it asks anyway), on
+	Linux and macOS only when asked (a run holding one GPU), and there a process nvidia-smi lists uses the GPU."""
 	if MACOS:
-		return scan_macos()
-	if WINDOWS:
+		procs = scan_macos()
+	elif WINDOWS:
 		procs = {}
-		on_gpu = gpu_processes()  # first, so nvidia-smi has ended before the processes are listed
+		on_gpu, placed = gpu_snapshot()  # first, so nvidia-smi has ended before the processes are listed
 		compute = {pid for pid, t in on_gpu.items() if "G" not in t}
 		for pid, ppid, start, cpu, io, kinds, name, job, unsure in rig_windows.scan(JOBS, compute, EXTRA, own,
 				set(on_gpu) - compute, rig_marks()):
 			p = Proc()
 			p.pid, p.ppid, p.sid, p.start, p.cpu, p.io = pid, ppid, None, start, cpu, io
 			p.kinds, p.cmd, p.job, p.user, p.unsure = kinds, name, job, None, unsure
+			p.gpus = placed.get(pid, set())
 			procs[pid] = p
 		return procs
-	cameras = flir_cameras()
-	procs = {}
-	for name in os.listdir("/proc"):
-		if name.isdigit():
-			p = read_proc(int(name), cameras)
-			if p:
-				procs[p.pid] = p
+	else:
+		cameras = flir_cameras()
+		procs = {}
+		for name in os.listdir("/proc"):
+			if name.isdigit():
+				p = read_proc(int(name), cameras)
+				if p:
+					procs[p.pid] = p
+	if gpus and NVSMI:
+		_, placed = gpu_snapshot()
+		for pid, where in placed.items():
+			p = procs.get(pid)
+			if p is not None:
+				p.gpus = where
+				if "desktop" not in p.kinds:
+					p.kinds.add("gpu")
 	return procs
 
 def disk_bytes():
@@ -578,6 +617,60 @@ def gpu_processes():
 	"""{pid: type} of every process on an NVIDIA GPU. Under Windows' display driver this lists every
 	program that draws (dwm.exe, explorer.exe, Task Manager: C+G) besides CUDA programs (C)."""
 	return parse_gpu_processes(nvsmi("-q", "-d", "PIDS"))
+
+# The GPUs one by one (one GPU at a time: --gpu). nvidia-smi numbers them in PCI bus order, which is also
+# CUDA's with CUDA_DEVICE_ORDER=PCI_BUS_ID (CUDA's own default puts the fastest first); a job is shown its
+# GPU by UUID, which means the same GPU whatever the order.
+GPU = collections.namedtuple("GPU", "index uuid bus name")
+_GPUS = []  # [the list], once nvidia-smi has been asked
+
+def bus_key(text):
+	"""A PCI bus id as numbers, the same however nvidia-smi writes it ('00000000:C1:00.0', '0000:c1:00.0')."""
+	try:
+		return tuple(int(x, 16) for x in re.split(r"[:.]", text.strip()))
+	except ValueError:
+		return text.strip().lower()
+
+def parse_gpu_list(text):
+	"""[GPU] from nvidia-smi --query-gpu=index,uuid,pci.bus_id,name --format=csv,noheader, by index."""
+	out = []
+	for line in (text or "").splitlines():
+		f = [x.strip() for x in line.split(",", 3)]
+		if len(f) == 4 and number(f[0]) is not None:
+			out.append(GPU(number(f[0]), f[1], f[2], f[3]))
+	return sorted(out)
+
+def gpu_list():
+	"""[GPU] of this machine's NVIDIA GPUs; [] without nvidia-smi. Asked once: they don't change while rig.py runs."""
+	if not _GPUS:
+		_GPUS.append(parse_gpu_list(nvsmi("--query-gpu=index,uuid,pci.bus_id,name", "--format=csv,noheader")))
+	return _GPUS[0]
+
+def parse_gpu_placement(text, gpus=()):
+	"""{pid: {GPU index}} from nvidia-smi -q -d PIDS, which lists the processes GPU by GPU: each GPU a process runs
+	CUDA on (type C or C+G; a program that only draws, G, is not on it for this). A GPU's section starts 'GPU
+	<bus id>'; its index is gpus' (gpu_list()) for that bus id, or else its place in the output (by index)."""
+	index = {bus_key(g.bus): g.index for g in gpus}
+	out, gpu, pid, n = {}, None, None, -1
+	for line in (text or "").splitlines():
+		if line.startswith("GPU "):
+			n += 1
+			gpu, pid = index.get(bus_key(line[4:]), n), None
+			continue
+		k, _, v = line.partition(":")
+		k, v = k.strip(), v.strip()
+		if k == "Process ID" and v.isdigit():
+			pid = int(v)
+		elif k == "Type" and pid is not None:
+			if "C" in v and gpu is not None:
+				out.setdefault(pid, set()).add(gpu)
+			pid = None
+	return out
+
+def gpu_snapshot():
+	"""({pid: type}, {pid: {GPU index}}) from one nvidia-smi -q -d PIDS ({} and {} without nvidia-smi)."""
+	text = nvsmi("-q", "-d", "PIDS")
+	return parse_gpu_processes(text), parse_gpu_placement(text, gpu_list() if text else ())
 
 def number(s, base=10):
 	try:
@@ -769,13 +862,40 @@ class Background:
 
 # One look's load outside the job: all of it (cpu cores, io MB/s), the processes with most ([(cores, MB/s,
 # Proc)]), what all disks moved (MB/s, or None), what is left once listed background within its ceiling is
-# taken out (rest_cpu, rest_io), and that background ([(label, cores, MB/s, within its ceiling)])
-Load = collections.namedtuple("Load", "cpu io top disks rest_cpu rest_io background")
+# taken out (rest_cpu, rest_io), and that background ([(label, cores, MB/s, within its ceiling)]). For a run
+# holding one GPU, the jobs of runs holding other GPUs are not outside: their load is partner (cores, MB/s)
+Load = collections.namedtuple("Load", "cpu io top disks rest_cpu rest_io background partner", defaults=(None,))
+
+# The kinds that are the machine's, not a GPU's: a job holding one GPU uses none of them beside another
+MACHINE_KINDS = {"camera", "trigger", "ephys"}
+
+class Sides:
+	"""Which run's job a process is in, among the runs holding single GPUs (holders, gpu_holders()): the GPU it
+	holds, or None. A job's process carries its RIG_JOB (seen on Linux and macOS), or is one of those its rig.py
+	lists in gpu<N>.pids (its Windows job object's, every look), or descends from one of them, from that
+	rig.py or from the job's first process (a process started since the last list)."""
+
+	def __init__(self, procs, holders):
+		self.procs, self.holders, self.roots = procs, holders, {}
+		for h in holders:
+			keys = set(h["pids"]) | {k for k in (h["rig"], h["jobpid"]) if k}
+			self.roots[h["gpu"]] = {pid for pid, start in keys if pid in procs and (start in (0, -1) or procs[pid].start == start)}
+		self.rigs = {h["rig"][0]: h["gpu"] for h in holders if h["rig"]}
+
+	def side(self, p):
+		for h in self.holders:
+			if h["job"] and p.job == h["job"]:
+				return h["gpu"]
+		for h in self.holders:
+			if self.roots[h["gpu"]] and Watch.below(p, self.procs, self.roots[h["gpu"]]):
+				return h["gpu"]
+		return None
 
 class Watch:
-	"""Which processes are outside the job, and the CPU and disk they use."""
+	"""Which processes are outside the job, and the CPU and disk they use. gpu: the GPU a run holding one GPU
+	holds; partners: a function giving the runs holding other GPUs (gpu_holders()), whose jobs are not outside."""
 
-	def __init__(self, job=None, sid=None, root_pid=None, background=None, allow=()):
+	def __init__(self, job=None, sid=None, root_pid=None, background=None, allow=(), gpu=None, partners=None):
 		self.job, self.sid, self.root_pid = job, sid, root_pid
 		self.background = background
 		self.allow = set(allow)  # kinds neither waited for nor counted (--allow): only noted, in self.allowed
@@ -785,7 +905,11 @@ class Watch:
 		self.desktops = {}  # (pid, start): Proc, every desktop up at the last sample
 		self.ancestors = set()
 		self.own_pids = set()
+		self.own_keys = set()  # (pid, start) of the job's processes at the last sample (gpu<N>.pids), not rig.py's ancestors
 		self.pending = {}  # (pid, start): (Proc, first seen): held back at the last sample (holds), not judged yet
+		self.gpu, self.partners = gpu, partners
+		self.off = []  # the job's processes on a GPU this run doesn't hold, at the last sample
+		self.shared = {}  # {GPU: holder} of the runs on other GPUs whose job ran at the last sample
 
 	def own(self, p, procs):
 		if p.pid in self.me or (self.job and p.job == self.job) or (self.sid and p.sid == self.sid):
@@ -808,7 +932,11 @@ class Watch:
 		return False
 
 	def foreign(self, p):
-		"""The kinds p uses that count against a run: all but desktop and the allowed ones."""
+		"""The kinds p uses that count against a run: all but desktop and the allowed ones. For a process of another
+		GPU's run's job (Proc.partner), only this run's GPU and the machine's own devices (MACHINE_KINDS)."""
+		if getattr(p, "partner", None) is not None:
+			on_mine = self.gpu is not None and self.gpu in (getattr(p, "gpus", None) or ())
+			return ((p.kinds & MACHINE_KINDS) | ({"gpu"} if on_mine else set())) - self.allow
 		return p.kinds - {"desktop"} - self.allow
 
 	def holds(self, p, t):
@@ -825,9 +953,14 @@ class Watch:
 	def sample(self):
 		"""(foreign device users, foreign load) now: [(Proc, kinds)], (cores, MB/s, [(cores, MB/s, Proc)],
 		MB/s all disks moved or None)."""
-		t, procs = time.perf_counter(), scan(self.own_pids)  # Windows' monotonic() ticks every 15.6 ms
+		holders = self.partners() if self.partners else []
+		# Windows' monotonic() ticks every 15.6 ms
+		t = time.perf_counter()
+		procs = scan(self.own_pids, gpus=True) if self.gpu is not None or holders else scan(self.own_pids)
 		disk = disk_bytes()
 		users, load, cpu, io, own_io = [], [], 0.0, 0.0, 0.0
+		sides = Sides(procs, holders) if holders else None
+		off, own_keys, shared, part_cpu, part_io = [], set(), {}, 0.0, 0.0
 		self.allowed = []
 		self.desktops = {(p.pid, p.start): p for p in procs.values() if "desktop" in p.kinds}
 		self.ancestors, q = set(), procs.get(os.getpid())
@@ -845,7 +978,20 @@ class Watch:
 				b = (p.io - pio) / 1e6 / dt if p.io is not None and pio is not None else 0.0
 			if self.own(p, procs):
 				own.add(p.pid)
+				if p.pid not in self.ancestors:  # what started rig.py (a shell, explorer.exe) is no job's to list
+					own_keys.add(key)
 				own_io += b
+				if self.gpu is not None and set(getattr(p, "gpus", None) or ()) - {self.gpu}:
+					off.append(p)
+				continue
+			side = sides.side(p) if sides else None
+			if side is not None:  # another GPU's run's job: its load is its own, and only some uses count
+				p.partner = side
+				part_cpu, part_io = part_cpu + c, part_io + b
+				if p.pid not in sides.rigs:
+					shared[side] = next(h for h in holders if h["gpu"] == side)
+				if self.foreign(p):
+					users.append(p)
 				continue
 			if self.foreign(p):
 				if self.holds(p, t):  # its load still counts
@@ -864,7 +1010,7 @@ class Watch:
 			marked = rig_marks()
 			users += [p for p in ended if (p.pid, p.start) not in marked]
 		self.pending = held
-		self.own_pids = own
+		self.own_pids, self.own_keys, self.off, self.shared = own, own_keys, off, shared
 		self.prev = {(p.pid, p.start): (p.cpu, p.io) for p in procs.values()}
 		# Known background (background.json), each entry's processes together: within its ceilings it is
 		# taken out of what is left (rest); above them it stays in, as anything else's load would. Only
@@ -892,17 +1038,23 @@ class Watch:
 			# What outside programs read and wrote, as far as it reached a disk; and at least what the
 			# disks moved beyond the job's own reads and writes, which catches writes that Windows'
 			# file cache took and the kernel wrote out later, after their program had gone. What is left
-			# once the background is out: the same, with its reads and writes taken off the disks' too
-			io = max(min(io, disks), disks - own_io)
-			rest_io = max(min(rest_io, disks), disks - own_io - bg_io)
+			# once the background is out: the same, with its reads and writes taken off the disks' too. Another
+			# GPU's run's job's reads and writes are its own, as the job's are
+			io = max(min(io, disks), disks - own_io - part_io)
+			rest_io = max(min(rest_io, disks), disks - own_io - part_io - bg_io)
+			part_io = min(part_io, disks)
 		self.prev_disk = disk
 		self.prev_t = t
 		load.sort(key=lambda x: -(x[0] + x[1] / 50))
-		return users, Load(cpu, io, load, disks, max(0.0, rest_cpu), max(0.0, rest_io), background) if measured else None
+		return users, Load(cpu, io, load, disks, max(0.0, rest_cpu), max(0.0, rest_io), background,
+			(part_cpu, part_io) if holders else None) if measured else None
 
 def describe(p, width=150):
-	return "%d %s %s%s" % (p.pid, ",".join(sorted(p.kinds)) or "-", cmdline(p)[:width],
-		" (command line unreadable, no rig.py marker)" if getattr(p, "unsure", False) else "")
+	gpus, side = getattr(p, "gpus", None), getattr(p, "partner", None)
+	return "%d %s %s%s%s%s" % (p.pid, ",".join(sorted(p.kinds)) or "-", cmdline(p)[:width],
+		" (command line unreadable, no rig.py marker)" if getattr(p, "unsure", False) else "",
+		" [on GPU %s]" % ",".join(str(i) for i in sorted(gpus)) if gpus else "",
+		" [the job of the run holding GPU %d]" % side if side is not None else "")
 
 def desktop_text(desktops, short=False):
 	if WINDOWS:
@@ -1018,10 +1170,16 @@ class Flock:
 	RIG_BUSY saying who, from the moment its rig.py has the flock, and the pid and start of its job
 	('<owner> <tag> since <date time> rigpid=<pid> [job=<job> pid=<pid> pidstart=<t>]'). A rig.py that
 	was killed (SIGKILL, the OOM killer) loses its flock but leaves its job running, so the rig stays
-	held, by RIG_BUSY, until that job ends (as FileLock does)."""
+	held, by RIG_BUSY, until that job ends (as FileLock does). It holds the whole machine only: one GPU at a
+	time needs the file lock."""
+
+	gpu = None
 
 	def __init__(self):
 		self.fd, self.orphan = None, False
+
+	def tick(self, own):
+		pass
 
 	def text(self):
 		try:
@@ -1166,42 +1324,196 @@ def retry(f, *args):
 				raise
 			time.sleep(0.05)
 
+# The file lock's other files, in ROOT beside gpu.lock (one GPU at a time, and who waits; see the docstring)
+SHARED = "per-gpu"  # the first word of gpu.lock's line while runs hold single GPUs
+QUEUE = "rig-queue"  # one ticket per waiting rig.py (or rig_hold.ps1): '<time ns since 1970, 20 digits>-<pid>'
+
+def read_text(path):
+	"""A lock file's line; None if there is no file, '' if it can't be read this moment (being written or deleted)."""
+	try:
+		with open(path, encoding="utf-8", errors="replace") as f:
+			return f.read().strip()
+	except FileNotFoundError:
+		return None
+	except OSError:
+		return ""
+
+def file_age(path):
+	try:
+		return time.time() - os.path.getmtime(path)
+	except OSError:
+		return 0.0
+
+def write_line(path, line):
+	def write():
+		with open(path, "w", encoding="utf-8") as f:
+			f.write(line + "\n")
+	retry(write)
+
+def line_state(text, age):
+	"""A lock line's state, as rig.py has always read gpu.lock: 'free' (no file), 'held' (its rig.py or its job
+	runs), 'stale' (both have ended), 'hand' (no rigpid: written by hand; an empty one over 60 s old is stale)."""
+	if text is None:
+		return "free"
+	m = re.search(r"\brigpid=(\d+) rigstart=(-?\d+)", text)
+	if not m:
+		return "stale" if text == "" and age > 60 else "hand"
+	pids = [(int(m.group(1)), int(m.group(2)))] + ([named_job(text)] if named_job(text) else [])
+	return "held" if any(alive(pid, start) for pid, start in pids) else "stale"
+
+def is_shared(text):
+	return bool(text) and text.split(" ", 1)[0] == SHARED
+
+def lock_holder(text):
+	"""What a lock line says: owner, tag, since, job, rig (rig.py's (pid, start)) and jobpid (the job's, or None)."""
+	text = text or ""
+	words = text.split()
+	m = re.search(r"\brigpid=(\d+) rigstart=(-?\d+)", text)
+	job, since = re.search(r"\bjob=(\S+)", text), re.search(r"\bsince (\S+ \S+)", text)
+	return {"owner": words[0] if words else "?", "tag": words[1] if len(words) > 1 else "?",
+		"since": since.group(1) if since else "?", "job": job.group(1) if job else None,
+		"rig": (int(m.group(1)), int(m.group(2))) if m else None, "jobpid": named_job(text)}
+
+def gpu_lock_path(i):
+	return os.path.join(ROOT, "gpu%d.lock" % i)
+
+def gpu_pids_path(i):
+	return os.path.join(ROOT, "gpu%d.pids" % i)
+
+def gpu_locks():
+	"""[(GPU, path, state, line)] of every gpu<N>.lock (line_state), by GPU."""
+	try:
+		names = os.listdir(ROOT)
+	except OSError:
+		return []
+	out = []
+	for name in names:
+		m = re.match(r"gpu(\d+)\.lock$", name)
+		if m:
+			path = os.path.join(ROOT, name)
+			text = read_text(path)
+			if text is not None:
+				out.append((int(m.group(1)), path, line_state(text, file_age(path)), text))
+	return sorted(out)
+
+def published(i):
+	"""{(pid, start)} of the job's processes that the run holding GPU i lists in gpu<i>.pids."""
+	out = set()
+	for line in (read_text(gpu_pids_path(i)) or "").splitlines():
+		f = line.split()
+		if len(f) == 2 and f[0].isdigit() and re.match(r"-?\d+$", f[1]):
+			out.add((int(f[0]), int(f[1])))
+	return out
+
+def gpu_holders():
+	"""The runs holding single GPUs: [lock_holder(line) plus gpu, line, state ('held', or 'hand' for a line being
+	written) and pids (published)], by GPU."""
+	out = []
+	for i, path, state, text in gpu_locks():
+		if state in ("held", "hand"):
+			h = lock_holder(text)
+			h.update(gpu=i, line=text, state=state, pids=published(i))
+			out.append(h)
+	return out
+
+def holders_but(gpu):
+	"""A function giving the runs holding GPUs other than gpu (Watch's partners)."""
+	return lambda: [h for h in gpu_holders() if h["gpu"] != gpu and h["state"] == "held"]
+
+def shared_line(holders):
+	"""gpu.lock's line while runs hold single GPUs (holders, all 'held'), or None without one. Read as rig.py has
+	always read gpu.lock (by rig_hold.ps1, a GPU queue, an older rig.py, rig_guard's check for its job=), it holds
+	the machine while a holder runs: its rigpid and pid are the one holder's rig.py and job, or a live process of
+	each of the first two (no more fit; each gpu<N>.lock still holds its own GPU), and it names every holder's job=."""
+	if not holders:
+		return None
+	if len(holders) == 1:
+		pair = [holders[0]["rig"], holders[0]["jobpid"]]
+	else:
+		pair = [h["rig"] if h["rig"] and alive(*h["rig"]) else (h["jobpid"] or h["rig"]) for h in holders[:2]]
+	pair = [x for x in pair if x]
+	if not pair:
+		return None
+	def clean(text):
+		return str(text).replace("=", "-")  # nothing in the list that a reader would take for a pid=
+	line = "%s %s since %s rigpid=%d rigstart=%d" % (SHARED, "+".join(str(h["gpu"]) for h in holders),
+		min(h["since"] for h in holders), pair[0][0], pair[0][1])
+	if len(pair) > 1:
+		line += " pid=%d pidstart=%d" % pair[1]
+	return line + " (GPUs held one at a time, each in its gpu<N>.lock: %s)" % "; ".join("GPU %d %s %s%s" % (
+		h["gpu"], clean(h["owner"]), clean(h["tag"]), " job=%s " % h["job"] if h["job"] else "") for h in holders)
+
+def queue_folder():
+	return os.path.join(ROOT, QUEUE)
+
+def tickets(prune=False):
+	"""[(name, fields)] of who waits in line, oldest first: the tickets whose rig.py (or rig_hold.ps1) still runs.
+	prune (under the guard): remove the others."""
+	try:
+		names = sorted(n for n in os.listdir(queue_folder()) if re.match(r"\d+-\d+$", n))
+	except OSError:
+		return []
+	out = []
+	for name in names:
+		path = os.path.join(queue_folder(), name)
+		f = fields(read_text(path) or "")
+		try:
+			who = (int(f["rigpid"]), int(f["rigstart"]))
+		except (KeyError, ValueError):
+			who = None
+		if (who and alive(*who)) or (who is None and file_age(path) < 60):
+			out.append((name, f))
+		elif prune:
+			with contextlib.suppress(OSError):
+				os.remove(path)
+	return out
+
+def want_text(want):
+	return "the whole machine" if want in ("whole", None) else "GPU %s" % want[3:]
+
+def conflicts(a, b):
+	"""Whether two waiters want the same: the whole machine wants every GPU."""
+	return a == "whole" or b == "whole" or a == b
+
+def ticket_text(f):
+	return "%s %s for %s, waiting since %s" % (f.get("owner", "?"), f.get("tag", "?"), want_text(f.get("want", "whole")),
+		f.get("since", "?"))
+
 class FileLock:
 	"""Windows (or RIG_LOCK=file): ROOT/gpu.lock, created only if it is absent (O_EXCL, CreateNew),
 	one line long: '<owner> <tag> since <date time> rigpid=<pid> rigstart=<t> [job=<job> pid=<pid> pidstart=<t>]'.
 	It counts as free once both pids have ended, so a crash leaves nothing to clean up. A line
-	without rigpid was written by hand, and holds the rig until its writer deletes it (or break)."""
+	without rigpid was written by hand, and holds the rig until its writer deletes it (or break).
 
-	def __init__(self):
+	gpu: hold that GPU alone, in ROOT/gpu<N>.lock (the same line), while gpu.lock carries the per-gpu line
+	(shared_line), kept current under the guard by every rig.py that looks (sync). Every lock file changes under
+	one guard, gpu.lock.guard's (as rig_hold.ps1 and the GPU queue take it). A waiting rig.py has a ticket in
+	ROOT/rig-queue, and takes what it waits for only when no earlier ticket wants the same (conflicts)."""
+
+	def __init__(self, gpu=None):
 		self.path = os.path.join(ROOT, "gpu.lock")
-		self.line = None
+		self.gpu = gpu
+		self.mine = self.path if gpu is None else gpu_lock_path(gpu)  # the file this lock holds
+		self.want = "whole" if gpu is None else "gpu%d" % gpu
+		self.line = self.ticket = self.published = None
 
 	def text(self):
-		"""The lock's line; None if there is no lock."""
-		try:
-			with open(self.path, encoding="utf-8", errors="replace") as f:
-				return f.read().strip()
-		except FileNotFoundError:
-			return None
-		except OSError:
-			return ""  # being written or deleted this moment
+		"""gpu.lock's line; None if there is no lock."""
+		return read_text(self.path)
 
 	def age(self):
-		try:
-			return time.time() - os.path.getmtime(self.path)
-		except OSError:
-			return 0.0
+		return file_age(self.path)
 
 	def state(self):
-		"""(state, line): 'free', 'held' (a live rig.py or job), 'stale' (both ended) or 'hand' (written by hand)."""
+		"""(state, line) of the machine: 'free', 'held' (a live rig.py or job), 'stale' (both ended), 'hand' (written
+		by hand), or 'shared': runs hold single GPUs, and line is what gpu.lock says of them (shared_line)."""
 		text = self.text()
-		if text is None:
-			return "free", ""
-		m = re.search(r"\brigpid=(\d+) rigstart=(-?\d+)", text)
-		if not m:
-			return ("stale" if text == "" and self.age() > 60 else "hand"), text
-		pids = [(int(m.group(1)), int(m.group(2)))] + ([named_job(text)] if named_job(text) else [])
-		return ("held" if any(alive(pid, start) for pid, start in pids) else "stale"), text
+		if text is not None and not is_shared(text):
+			return line_state(text, self.age()), text
+		holders = gpu_holders()
+		if holders:
+			return "shared", shared_line([h for h in holders if h["state"] == "held"]) or text or holders[0]["line"]
+		return ("free", "") if text is None else ("stale", text)
 
 	def describe(self, state, text):
 		if state == "hand":
@@ -1210,60 +1522,182 @@ class FileLock:
 				self.age() / 3600)
 		return text
 
+	def sync(self):
+		"""Under the guard: remove the GPUs' locks whose rig.py and job have ended (and their gpu<N>.pids), and the
+		tickets of rig.py processes that have ended; then make gpu.lock say what the GPUs' locks hold (shared_line),
+		or remove its per-gpu line once none is held. A whole-machine line in gpu.lock is left alone. Returns what
+		it removed, to say."""
+		notes = []
+		for i, path, state, text in gpu_locks():
+			if state == "stale":
+				notes.append("%s stale gpu%d.lock removed (its rig.py and job have ended): %s" % (time.strftime("%T"), i, text))
+				retry(os.remove, path)
+				with contextlib.suppress(OSError):
+					os.remove(gpu_pids_path(i))
+		tickets(prune=True)
+		want = shared_line([h for h in gpu_holders() if h["state"] == "held"])
+		text = self.text()
+		if want and text is None:
+			try:
+				os.close(os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o664))
+			except FileExistsError:  # written this moment by something that doesn't use the guard
+				return notes
+			write_line(self.path, want)
+		elif want and is_shared(text) and text != want:
+			write_line(self.path, want)
+		elif not want and is_shared(text) and not gpu_holders():
+			retry(os.remove, self.path)
+		return notes
+
+	def ahead(self):
+		"""The tickets before this rig.py's (all of them, if it has none) that want what it wants, or the whole machine."""
+		me = str(os.getpid())
+		return [f for name, f in tickets() if (self.ticket is None or name < self.ticket) and f.get("rigpid") != me
+			and conflicts(self.want, f.get("want", "whole"))]
+
+	def try_take(self):
+		"""Under the guard: take what this lock is for, if it is free and nobody earlier in line wants it too. None
+		once taken; else what keeps it, for 'rig busy: ...'."""
+		text = self.text()
+		if text is not None and not is_shared(text) and line_state(text, self.age()) == "stale":
+			say("%s stale gpu.lock removed (its rig.py and job have ended): %s" % (time.strftime("%T"), text))
+			retry(os.remove, self.path)
+		for note in self.sync():
+			say(note)
+		text = self.text()
+		if text is not None and not is_shared(text):  # the whole machine is held, or gpu.lock was written by hand
+			return self.describe(line_state(text, self.age()), text)
+		holders = gpu_holders()
+		if self.gpu is None and holders:
+			return self.state()[1]
+		mine = [h for h in holders if h["gpu"] == self.gpu]
+		if mine:
+			return "GPU %d: %s" % (self.gpu, mine[0]["line"])
+		ahead = self.ahead()
+		if ahead:
+			return "%s is free, but in line before this run: %s" % (want_text(self.want), "; ".join(ticket_text(f) for f in ahead))
+		try:
+			fd = os.open(self.mine, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o664)
+		except FileExistsError:  # written this moment by something that doesn't use the guard
+			return self.describe("hand", read_text(self.mine) or "")
+		os.close(fd)
+		self.since = time.strftime("%F %T")
+		self._record()
+		if self.gpu is not None:
+			self.sync()
+			if not is_shared(self.text()):  # gpu.lock written this moment by something without the guard
+				retry(os.remove, self.mine)
+				self.line = None
+				return self.describe("hand", self.text() or "")
+		return None
+
+	def write_ticket(self):
+		"""Stand in line: ROOT/rig-queue/<now in ns>-<pid>, saying what this rig.py waits for."""
+		os.makedirs(queue_folder(), exist_ok=True)
+		name = "%020d-%d" % (time.time_ns(), os.getpid())
+		path = os.path.join(queue_folder(), name)
+		def clean(text):
+			return re.sub(r"[;=\s]", "-", str(text))
+		with open(path + ".tmp", "w", encoding="utf-8") as f:
+			f.write("want=%s; owner=%s; tag=%s; since=%s; rigpid=%d; rigstart=%d\n" % (self.want, clean(self.owner),
+				clean(self.tag), time.strftime("%F %T"), os.getpid(), proc_start(os.getpid()) or 0))
+		retry(os.replace, path + ".tmp", path)
+		self.ticket = name
+
+	def drop_ticket(self):
+		if self.ticket:
+			with contextlib.suppress(OSError):
+				os.remove(os.path.join(queue_folder(), self.ticket))
+			self.ticket = None
+
 	def acquire(self, owner, tag, no_wait):
 		os.makedirs(ROOT, exist_ok=True)
 		self.owner, self.tag, said, last = owner, tag, None, None
-		while True:
-			with guarded(self.path):
-				state, text = self.state()
-				if state == "stale":
-					say("%s stale gpu.lock removed (its rig.py and job have ended): %s" % (time.strftime("%T"), text))
-					retry(os.remove, self.path)
-					state = "free"
-				if state == "free":
-					try:
-						fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o664)
-					except FileExistsError:  # written this moment by something that doesn't use the guard
-						state, text = "hand", self.text() or ""
-					else:
-						os.close(fd)
-						self.since = time.strftime("%F %T")
-						self.record()
+		try:
+			while True:
+				with guarded(self.path):
+					busy = self.try_take()
+					if busy is None:
+						self.drop_ticket()
 						return
-			if no_wait:
-				say("rig busy: %s" % self.describe(state, text))
-				sys.exit(75)
-			if text != last or time.monotonic() - said > 300:
-				say("rig busy: %s; waiting..." % self.describe(state, text))
-				said, last = time.monotonic(), text
-			time.sleep(PERIOD)
+					if not no_wait and self.ticket is None:
+						self.write_ticket()
+				if no_wait:
+					say("rig busy: %s" % busy)
+					sys.exit(75)
+				if busy != last or time.monotonic() - said > 300:
+					say("rig busy: %s; waiting..." % busy)
+					said, last = time.monotonic(), busy
+				time.sleep(PERIOD)
+		except BaseException:
+			self.drop_ticket()
+			raise
 
-	def record(self, job=None, pid=None, note=""):
+	def _record(self, job=None, pid=None, note=""):
 		line = "%s %s since %s rigpid=%d rigstart=%d" % (self.owner, self.tag, self.since, os.getpid(), proc_start(os.getpid()) or 0)
 		if job:  # pid None: the job is about to start
 			line += " job=%s %s" % (job, "starting" if pid is None else "pid=%d pidstart=%d" % (pid, proc_start(pid) or 0))
-		def write():
-			with open(self.path, "w", encoding="utf-8") as f:
-				f.write(line + note + "\n")
-		retry(write)
+		write_line(self.mine, line + note)
 		self.line = line + note
 
+	def record(self, job=None, pid=None, note=""):
+		if self.gpu is None:
+			self._record(job, pid, note)
+			return
+		with guarded(self.path):  # gpu.lock's per-gpu line names the job too
+			self._record(job, pid, note)
+			self.sync()
+
+	def tick(self, own):
+		"""Every look of a run holding one GPU: list its job's processes (own: {(pid, start)}) in gpu<N>.pids, for the
+		runs on other GPUs to know them by, and keep gpu.lock's line current (a holder whose rig.py was killed)."""
+		if self.gpu is None or self.line is None:
+			return
+		with contextlib.suppress(OSError):
+			text = "".join("%d %d\n" % k for k in sorted(own))
+			if text != self.published:
+				path = gpu_pids_path(self.gpu)
+				tmp = "%s.%d.tmp" % (path, os.getpid())
+				with open(tmp, "w", encoding="utf-8") as f:
+					f.write(text)
+				retry(os.replace, tmp, path)
+				self.published = text
+			with guarded(self.path):
+				self.sync()
+
 	def ours(self):
-		return self.line is None or self.text() in (self.line, "")
+		"""Whether the lock is still this run's; for one GPU, also whether gpu.lock still says GPUs are held one at
+		a time (a whole-machine line written over it means someone took the machine meanwhile)."""
+		if self.line is None:
+			return True
+		if read_text(self.mine) not in (self.line, ""):
+			return False
+		text = self.text() if self.gpu is not None else None
+		return text is None or text == "" or is_shared(text)
 
 	def release(self):
+		self.drop_ticket()
 		if self.line is None:
 			return
 		with guarded(self.path):
-			text = self.text()
+			text = read_text(self.mine)
 			if text == self.line:
-				retry(os.remove, self.path)
+				retry(os.remove, self.mine)
 			elif text is not None:
-				say("gpu.lock is no longer this run's, so it was left as it is: %s" % text)
+				say("%s is no longer this run's, so it was left as it is: %s" % (os.path.basename(self.mine), text))
+			if self.gpu is not None:
+				with contextlib.suppress(OSError):
+					os.remove(gpu_pids_path(self.gpu))
+				self.sync()
 		self.line = None
 
-def make_lock():
-	return FileLock() if WINDOWS or os.environ.get("RIG_LOCK") == "file" else Flock()
+def file_lock():
+	"""Whether this machine's lock is the file lock (gpu.lock), not the flock."""
+	return WINDOWS or os.environ.get("RIG_LOCK") == "file"
+
+def make_lock(gpu=None):
+	"""The machine's lock; gpu: the file lock for that GPU alone."""
+	return FileLock(gpu) if file_lock() else Flock()
 
 WAITING = " (waiting for the rig to be quiet)"
 
@@ -1326,8 +1760,10 @@ def watch(w, alive, log, args, on_signal, lock, stopper=None):
 	"""Log what is outside the job every PERIOD s until alive() is False; returns the sighting counts.
 	With a stopper (an experiment machine), it ends as soon as the stopper says why, its STOP file
 	looked for every 0.2 s. Load outside the job counts as LoadTrack says."""
-	counts = dict.fromkeys(KINDS + ("desktop", "load", "lock"), 0)
+	counts = dict.fromkeys(KINDS + ("desktop", "load", "lock") + (("wrong-gpu",) if w.gpu is not None else ()), 0)
 	track = LoadTrack(args, w.background)
+	# A run holding one GPU: the looks at which another GPU's run's job ran beside it, who, and its load at most
+	shared, looks, beside = {"looks": 0, "who": {}, "peak": [0.0, 0.0]}, 0, {}
 	last = {}  # what was logged when, so a process that stays is logged every 30 s, not every 2 s
 	def note(key, text):
 		now = time.monotonic()
@@ -1340,7 +1776,26 @@ def watch(w, alive, log, args, on_signal, lock, stopper=None):
 	log("desktop on the GPU: %s" % desktop_text(before))
 	while alive():
 		users, load = w.sample()
+		looks += 1
 		clocks.sample()
+		if w.gpu is not None:
+			lock.tick(w.own_keys)
+			for p in w.off:
+				counts["wrong-gpu"] += 1
+				note(("off", p.pid, p.start), "WRONG GPU the job runs CUDA on GPU %s, which this run doesn't hold (it holds GPU %d): %s" % (
+					",".join(str(i) for i in sorted(p.gpus)), w.gpu, describe(p)))
+			for side in sorted(set(beside) ^ set(w.shared)):
+				h = w.shared.get(side) or beside[side]
+				log("SHARED %s: the job of the run holding GPU %d (%s %s, job %s)" % (
+					"from now" if side in w.shared else "no more", side, h["owner"], h["tag"], h["job"]))
+			beside = dict(w.shared)
+			if beside:
+				shared["looks"] += 1
+				for side, h in beside.items():
+					shared["who"][side] = "%s %s on GPU %d" % (h["owner"], h["tag"], side)
+				part = getattr(load, "partner", None) if load is not None else None
+				if part:
+					shared["peak"] = [max(shared["peak"][0], part[0]), max(shared["peak"][1], part[1])]
 		for key in set(before) ^ set(w.desktops):
 			if not WINDOWS:  # Windows starts and ends programs that draw (WebView, search) by itself
 				counts["desktop"] += 1
@@ -1387,24 +1842,34 @@ def watch(w, alive, log, args, on_signal, lock, stopper=None):
 				note(("dev", p.pid, p.start), "FOREIGN %s" % describe(p))
 		held &= set(w.pending)
 	counts["desktops"] = desktop_text(w.desktops, short=True)
+	if w.gpu is not None:
+		counts["shared"] = (shared["looks"], looks, w.gpu, [shared["who"][k] for k in sorted(shared["who"])], shared["peak"])
 	counts["clocks"] = clocks.summary()
 	counts["load"], counts["background"], counts["loadnotes"] = track.verdict()
 	return counts
 
 def finish(counts, log, aborted=None, stopped=None):
 	"""The run's last line: RIG_CLEAN, RIG_CLEAN_BACKGROUND (clean but for a machine's listed background
-	load, within what background.json allows) or RIG_CONTAMINATED; or, for a run stopped before its job
+	load, within what background.json allows), RIG_SHARED (a run holding one GPU, clean but for another GPU's
+	run's job beside it: not RIG_CLEAN, as its timings aren't a benchmark's) or RIG_CONTAMINATED; or, for a run stopped before its job
 	ended, RIG_ABORTED with what was seen until then, never RIG_CLEAN; or RIG_STOPPED for one stopped at an
 	experiment machine (stopped says how). Load notes (LoadTrack) give how long and how much."""
 	desktops = counts.pop("desktops", "none")
 	lines, gpu = counts.pop("clocks", ([], ""))
 	too_much = counts.pop("background", False)
 	load_notes = counts.pop("loadnotes", [])
+	shared = counts.pop("shared", None)  # a run holding one GPU: (looks shared, looks, its GPU, who, their peak load)
 	for line in lines:
 		log(line)
 	n = sum(counts.values())
 	background = any(t.startswith("background") for t in load_notes)
 	notes = load_notes + ([] if desktops == "none" else ["desktop on the GPU: " + desktops]) + ([gpu] if gpu else [])
+	if shared and shared[0]:
+		notes.insert(0, "shared the machine with %s in %d of %d looks (their load: up to %.1f cores, %.0f MB/s); "
+			"this run held GPU %d only, so its results stand but its timings are not a benchmark's" % (
+			" and ".join(shared[3]), shared[0], shared[1], shared[4][0], shared[4][1], shared[2]))
+	elif shared:
+		notes.insert(0, "held GPU %d only; no job on another GPU ran beside it" % shared[2])
 	if n:
 		notes.insert(0, "%d sightings: %s" % (n, ", ".join("%s %d" % kv for kv in counts.items())))
 	clean = "clean but for background" if background else "clean"
@@ -1414,6 +1879,8 @@ def finish(counts, log, aborted=None, stopped=None):
 		log("RIG_ABORTED by %s (until then: %s)" % (aborted, "; ".join(notes if n or too_much else [clean] + notes)))
 	elif n or too_much:
 		log("RIG_CONTAMINATED (%s)" % "; ".join(notes))
+	elif shared and shared[0]:
+		log("RIG_SHARED (%s)" % "; ".join(notes))
 	elif background:
 		log("RIG_CLEAN_BACKGROUND (%s)" % "; ".join(notes))
 	else:
@@ -2029,7 +2496,44 @@ def in_current_job(lock):
 	if not job:
 		return False
 	state, text = lock.state()
-	return state == "held" and ("job=%s " % job) in (text + " ")
+	return state in ("held", "shared") and ("job=%s " % job) in (text + " ")
+
+def parse_gpu(text):
+	"""--gpu: nvidia-smi's index of a GPU; '' (RIG_GPU unset or empty) is none."""
+	text = (text or "").strip()
+	if not text:
+		return None
+	if not text.isdigit():
+		raise argparse.ArgumentTypeError("not a GPU's index (nvidia-smi's: 0, 1, ...): %s" % text)
+	return int(text)
+
+def gpu_plan(args, experiment, job=True):
+	"""For --gpu: (the GPU this run holds alone, or None for the whole machine; what the job's environment gets;
+	lines for the log). Without --gpu: (None, {}, []). job: a run's job, which is shown only that GPU (not hold's)."""
+	want = getattr(args, "gpu", None)
+	if want is None:
+		return None, {}, []
+	gpus = gpu_list()
+	g = next((x for x in gpus if x.index == want), None)
+	if gpus and g is None:
+		sys.exit("rig.py: there is no GPU %d here; nvidia-smi lists %s" % (want, "; ".join("GPU %d %s" % (x.index, x.name) for x in gpus)))
+	env = {"RIG_GPU": str(want)}
+	if g and g.uuid.startswith("GPU-"):
+		env["CUDA_VISIBLE_DEVICES"] = g.uuid
+	else:  # no UUID to go by: the index, in nvidia-smi's order
+		env.update(CUDA_VISIBLE_DEVICES=str(want), CUDA_DEVICE_ORDER="PCI_BUS_ID")
+	name = "GPU %d%s" % (want, " (%s)" % g.name if g else "")
+	pin = "; the job sees only %s (CUDA_VISIBLE_DEVICES=%s)" % (name, env["CUDA_VISIBLE_DEVICES"]) if job else ""
+	why = ("--whole" if getattr(args, "whole", False) else "--strict" if getattr(args, "strict", False) else
+		"the lock here is a flock; one GPU at a time needs the file lock" if not file_lock() else
+		"an experiment machine" if experiment else
+		"nvidia-smi lists %s" % ("no GPU" if not gpus else "only one GPU") if len(gpus) < 2 else None)
+	if why:
+		return None, env if job else {}, ["--gpu %d%s; this run holds the whole machine all the same (%s)" % (want, pin, why)]
+	return want, env if job else {}, ["one GPU at a time: this run holds %s alone%s. A run holding another GPU may run "
+		"beside it: that run's job, and its CPU and disk load, don't count against this one, which then ends "
+		"RIG_SHARED (its results stand, but not its timings: the two share the CPU, memory, disks and PCIe); "
+		"anything on %s outside this job does count" % (name, pin, name)]
 
 def cmd_run(args):
 	if not args.cmd:
@@ -2041,6 +2545,8 @@ def cmd_run(args):
 		code = subprocess.call(args.cmd)
 		sys.exit(code if code >= 0 else 128 - code)
 	cfg = experiment_config()
+	gpu, gpu_env, gpu_notes = gpu_plan(args, cfg is not None)
+	lock = make_lock(gpu)
 	if cfg:  # an experiment machine: a test starts only now or not at all, never waits in line
 		args.no_wait = True
 		why, _ = experiment_blockers(cfg, allow=allowed_kinds(args))
@@ -2054,7 +2560,8 @@ def cmd_run(args):
 	try:
 		lock.record(note=WAITING)
 		bg = background_for(args)
-		wait_quiet(Watch(background=bg, allow=allowed_kinds(args)), args)
+		wait_quiet(Watch(background=bg, allow=allowed_kinds(args), gpu=gpu,
+			partners=holders_but(gpu) if gpu is not None else None), args)
 		if cfg:  # again, now that the rig is ours; a STOP left from before is not for this run
 			why, found = experiment_blockers(cfg, allow=allowed_kinds(args))
 			if why:
@@ -2067,8 +2574,10 @@ def cmd_run(args):
 		# is killed (SIGKILL) the moment RIG_BUSY names the job, and the log says nothing more then
 		log("rig.py " + version_text())
 		log_rules(log, args, bg)
+		for line in gpu_notes:
+			log(line)
 		catch_signals(got)
-		env = dict(os.environ, RIG_JOB=job, RIG_OWNER=args.owner, RIG_TAG=args.tag)
+		env = dict(os.environ, RIG_JOB=job, RIG_OWNER=args.owner, RIG_TAG=args.tag, **gpu_env)
 		# The lock names the job before the job starts: a guarded script (rig_guard.sh, .ps1) checks
 		# at once whether it runs in the rig's job, and if it looked before the lock named its job, it
 		# would re-run itself under rig.py and wait forever on the rig its own rig.py holds
@@ -2084,7 +2593,8 @@ def cmd_run(args):
 		proc = start_job(args.cmd, env, log)
 		lock.record(job, proc.pid)
 		log("rig held by %s for %s (job %s, pid %d): %s" % (args.owner, args.tag, job, proc.pid, " ".join(shlex.join(args.cmd).split())))
-		w = Watch(job=job, sid=None if WINDOWS else proc.pid, root_pid=proc.pid, background=bg, allow=allowed_kinds(args))
+		w = Watch(job=job, sid=None if WINDOWS else proc.pid, root_pid=proc.pid, background=bg, allow=allowed_kinds(args),
+			gpu=gpu, partners=holders_but(gpu) if gpu is not None else None)
 		stopper = Stopper(cfg, found, allowed_kinds(args)) if cfg else None
 		counts = watch(w, lambda: proc.poll() is None, log, args, got, lock, stopper)
 		stopped = stopper and stopper.why
@@ -2132,7 +2642,8 @@ def cmd_hold(args):
 	start = proc_start(args.pid)
 	if start is None:
 		sys.exit("rig.py hold: pid %d is not running" % args.pid)
-	lock = make_lock()
+	gpu, _, gpu_notes = gpu_plan(args, experiment_config() is not None, job=False)
+	lock = make_lock(gpu)
 	lock.acquire(args.owner, args.tag, args.no_wait)
 	got = [None]
 	closing, done = catch_console_close(got, lock.release)  # the held pid is left running, as on a signal
@@ -2142,7 +2653,8 @@ def cmd_hold(args):
 	try:
 		lock.record(note=WAITING)
 		bg = background_for(args)
-		wait_quiet(Watch(root_pid=args.pid, background=bg, allow=allowed_kinds(args)), args)
+		partners = holders_but(gpu) if gpu is not None else None
+		wait_quiet(Watch(root_pid=args.pid, background=bg, allow=allowed_kinds(args), gpu=gpu, partners=partners), args)
 		if not running():
 			sys.exit("rig.py hold: pid %d ended while waiting for the rig" % args.pid)
 		p = scan().get(args.pid)
@@ -2150,11 +2662,14 @@ def cmd_hold(args):
 		log = logger(log_path(args, args.tag))
 		log("rig.py " + version_text())  # before RIG_BUSY names the pid, as in run
 		log_rules(log, args, bg)
+		for line in gpu_notes:
+			log(line)
 		catch_signals(got)
 		lock.record(job, args.pid, " (held for a running pid)")
 		held = True
 		log("rig held by %s for %s (running pid %d): %s" % (args.owner, args.tag, args.pid, cmdline(p) if p else "?"))
-		w = Watch(job=p and p.job, sid=p and p.sid, root_pid=args.pid, background=bg, allow=allowed_kinds(args))
+		w = Watch(job=p and p.job, sid=p and p.sid, root_pid=args.pid, background=bg, allow=allowed_kinds(args),
+			gpu=gpu, partners=partners)
 		counts = watch(w, running, log, args, got, lock)
 		finish(counts, log, got[0] and "%s; the held pid was left running" % got[0])
 	except BaseException as e:
@@ -2167,11 +2682,33 @@ def cmd_hold(args):
 		lock.release()
 		done.set()
 
+def gpu_status(state):
+	"""status' lines on the GPUs one by one (a machine with two or more, or GPU locks), and on who waits in line."""
+	gpus, holders = gpu_list(), {h["gpu"]: h for h in gpu_holders()}
+	if len(gpus) >= 2 or holders:
+		names = {g.index: g.name for g in gpus}
+		print("one GPU at a time (rig.py run --gpu <N>, or RIG_GPU=<N>):")
+		for i in sorted(set(names) | set(holders)):
+			h = holders.get(i)
+			print("    GPU %d%s: %s" % (i, " (%s)" % names[i] if i in names else "", "held alone: " + h["line"] if h else
+				"held with the whole machine" if state in ("held", "hand") else "free"))
+	queue = tickets()
+	if queue:
+		print("in line, oldest first:")
+		for n, (name, f) in enumerate(queue, 1):
+			print("    %d. %s (%s pid %s)" % (n, ticket_text(f), f.get("by", "rig.py"), f.get("rigpid", "?")))
+
 def cmd_status(args):
 	lock = make_lock()
+	notes = []
+	if isinstance(lock, FileLock) and os.path.isdir(ROOT):
+		with guarded(lock.path):
+			notes = lock.sync()  # what has ended, on the GPUs one by one and in line
 	state, info = lock.state()
 	if state in ("held", "hand"):
 		print("rig held: %s" % lock.describe(state, info))
+	elif state == "shared":
+		print("rig held: %s" % info)
 	else:
 		print("rig free" + (" (stale %s cleared: %s)" % ("gpu.lock" if isinstance(lock, FileLock) else "RIG_BUSY", info) if info else ""))
 		if info:
@@ -2182,6 +2719,10 @@ def cmd_status(args):
 			else:
 				lock.clear_stale()
 	print("rig.py " + version_text())  # second: scripts look for "rig held" or "rig free" first
+	for note in notes:
+		print(note)
+	if isinstance(lock, FileLock):
+		gpu_status(state)
 	cfg = experiment_config()
 	if cfg:
 		now = datetime.datetime.now()
@@ -2197,11 +2738,14 @@ def cmd_status(args):
 	named = named_job(info) if state == "held" else None
 	root = named[0] if named and alive(*named) else None  # the job's first process: still that one, not its pid reused
 	bg = background_for(args)
-	w = Watch(job=job, root_pid=root, background=bg)  # the job's processes (on Windows, those it started)
+	# The job's processes (on Windows, those it started); with GPUs held one at a time, those of every such run
+	holders = [h for h in gpu_holders() if h["state"] == "held"] if isinstance(lock, FileLock) else []
+	w = Watch(job=job, root_pid=root, background=bg, partners=(lambda: holders) if holders else None)
 	w.sample()
 	time.sleep(1.0)
 	_, load = w.sample()
-	procs = scan()
+	procs = scan(gpus=bool(holders)) if holders else scan()
+	sides = Sides(procs, holders) if holders else None
 	if WINDOWS:
 		ports = sorted(rig_windows.serial_devices().values())
 		names = {"gpu": "GPU (nvidia-smi%s, python*.exe)" % ("" if NVSMI else ": none"), "encoder": "video encoder (ffmpeg*.exe)",
@@ -2223,7 +2767,7 @@ def cmd_status(args):
 			"ephys": "ephys acquisition (%s)" % ", ".join(EPHYS_NAMES)}
 	for k in KINDS:
 		users = [p for p in procs.values() if k in p.kinds and p.pid != os.getpid()]
-		if k in UNWATCHED:
+		if k in UNWATCHED and not (k == "gpu" and holders):  # with GPUs held one at a time, nvidia-smi's
 			print("%-48s %s" % (names[k] + ":", "not watched on macOS"))
 			continue
 		print("%-48s %s" % (names[k] + ":", "free" if not users else ""))
@@ -2231,15 +2775,18 @@ def cmd_status(args):
 			# the job's: in it (RIG_JOB, its Windows job object), or below the line's pid=. vm-oline's GPU queue writes its
 			# own line, with pid= but no job=, and runs each job in a job object of its own
 			mine = (job and p.job == job) or (root and Watch.below(p, procs, {root}))
-			print("    %s%s" % ("[job] " if mine else "", describe(p, 120)))
+			side = sides.side(p) if sides else None
+			print("    %s%s" % ("[job] " if mine else "[GPU %d's job] " % side if side is not None else "", describe(p, 120)))
 	print("%-48s %s" % ("desktop on the GPU (not waited for):", desktop_text(
 		{(p.pid, p.start): p for p in procs.values() if "desktop" in p.kinds})))
 	for row in gpu_clocks():
 		print(clock_text(row))
 	if load:
 		cpu, io, top, disks = load[:4]
-		print("load outside the job (1 s): cpu %.1f cores, disk %.0f MB/s%s   (run waits above %.1f cores or %.0f MB/s)" % (
-			cpu, io, "" if disks is None else " (all disks %.0f)" % disks, args.cpu, args.io))
+		print("load outside the job%s (1 s): cpu %.1f cores, disk %.0f MB/s%s   (run waits above %.1f cores or %.0f MB/s)" % (
+			"s on single GPUs" if holders else "", cpu, io, "" if disks is None else " (all disks %.0f)" % disks, args.cpu, args.io))
+		if holders and load.partner:
+			print("    the jobs on single GPUs themselves: cpu %.1f cores, disk %.0f MB/s" % load.partner)
 		for c, b, p in top[:5]:
 			i = bg.match(p) if bg.entries else None
 			print("    %d %.1f cores %.0f MB/s %s%s" % (p.pid, c, b, cmdline(p)[:110],
@@ -2264,9 +2811,13 @@ def cmd_break(args):
 		print("rig free" + (" (RIG_BUSY cleared: %s)" % info if info else ""))
 		return
 	with guarded(lock.path):
+		for note in lock.sync():  # the GPUs' locks, and tickets, whose rig.py has ended
+			print(note)
 		state, info = lock.state()
 		if state == "held":
 			sys.exit("rig.py break: a running rig.py or its job holds the rig (%s); stop it instead" % info)
+		if state == "shared":
+			sys.exit("rig.py break: runs hold single GPUs (%s); stop them instead" % info)
 		if state == "free":
 			print("rig free: there is no gpu.lock")
 			return
@@ -2315,6 +2866,12 @@ def main(argv=None):
 		p.add_argument("--allow", type=parse_allow, default=os.environ.get("RIG_ALLOW", ""),
 			help="kinds outside the job not waited for and not counted, only logged, comma-separated: ephys for a "
 			"recording run beside SpikeGLX (or RIG_ALLOW)")
+		p.add_argument("--gpu", type=parse_gpu, default=os.environ.get("RIG_GPU"),
+			help="hold only this GPU (nvidia-smi's index; rig.py status lists them), so that a run holding another GPU "
+			"can run beside it; run's job sees only it (CUDA_VISIBLE_DEVICES). Needs two or more GPUs and the file lock "
+			"(Windows); elsewhere it holds the whole machine (or RIG_GPU)")
+		p.add_argument("--whole", action="store_true", default=os.environ.get("RIG_WHOLE") == "1",
+			help="with --gpu: hold the whole machine all the same, for timings (--strict does too) (or RIG_WHOLE=1)")
 		p.add_argument("--log-dir", default=os.environ.get("RIG_LOGDIR"),
 			help="where <tag>.rig.log goes (default: the current folder, or RIG_LOGDIR)")
 		p.add_argument("owner", help="who runs it: the session's name")
