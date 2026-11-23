@@ -16,7 +16,7 @@
 # With -Probe N it then spins one thread on each of two CPUs (-Cpus, default the last two) for N seconds and logs
 # every gap in their loops longer than -ThrUs (default 150 us). A gap on both CPUs that ends at the same instant
 # means the whole computer stopped (firmware), not a program or an interrupt on one core. It keeps 2 CPUs busy: on a
-# shared rig run it through bench/rig.py, never during a recording or someone else's timing run.
+# shared rig run it under the rig lock (such as a lab's rig.py), never during a recording or someone else's timing run.
 # Its window's TITLE shows the step and the time so far; at the end it prints DONE (or FAILED) and beeps. Everything
 # it prints is also saved next to this file as check_firmware_pauses.log (the gaps in check_firmware_pauses.gaps.csv,
 # in QueryPerformanceCounter ns, the same clock as campy's host times on Windows).

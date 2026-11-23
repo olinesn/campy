@@ -143,8 +143,9 @@ POST = {
 	"ffmpeg": ((str,), "", "the ffmpeg to remux with (default: imageio-ffmpeg's)"),
 	}
 PANEL = {
-	"rig_lock": ((str,), "", "rig.py (bench/rig.py, installed on the rig): the panel holds the rig's lock while it is "
-		"open, and Ctrl-C in its window does nothing (the page's Close ends it); \"auto\": the rig's installed one"),
+	"rig_lock": ((str,), "", "an external lock program installed on the rig, such as a lab's rig.py: the panel runs "
+		"under it and holds the rig's lock while it is open, and Ctrl-C in its window does nothing (the page's Close "
+		"ends it); \"auto\": rig.py in the lock's folder (RIG_ROOT, else C:\\campy_data\\live or ~/sleap-bench)"),
 	"owner": ((str,), "panel", "who holds the rig lock, as rig.py status shows it"),
 	"title": ((str,), "", "the experiment's name on a panel opened with a folder of configs (its Experiment list; "
 		"default: the file's name); before any star on that page, the configs with a title are its favourites. Only "

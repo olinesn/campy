@@ -29,9 +29,9 @@ Guides for recording with campy and tracking animals live while it records. The 
 | [Offline inference](offline-inference.md) | Running SLEAP on recorded videos 6–15× faster than `sleap-nn track`, with `campy-infer`: where sleap-nn's time goes, what helps on cluster GPUs, benchtop PCs and Macs, the accuracy, and how to run `campy-infer` (also as a Slurm job) |
 | [Calibration](calibration.md) | Camera placement, exposure and calibration |
 | [Troubleshooting](troubleshooting.md) | Problems seen so far, by what you see: the message campy prints, or what is wrong with the recording, with what to do and where to read more |
-| [Development](development.md) | Running the tests, timing tests on a shared machine (`bench/rig.py`), branches and releases |
+| [Development](development.md) | Running the tests, timing tests on a shared machine (under a lock such as rig-lock's `rig.py`), branches and releases |
 | [One board for the cameras and the box](design/single-board-box.md) | A design, being built: one Arduino Nano ESP32 that makes the camera pulses in hardware and runs an operant box, owned by `campy-box`, beside today's two-board setup |
-| [Rig fleet design](design/rig-fleet.md) | A proposal, on hold and not built: rig checks for pull requests run from a Mac instead of self-hosted GitHub runners (the repository is public), one-command release updates on every rig, a rig dashboard and nightly checks against each rig's baseline, with diagrams |
+| [Rig fleet design](https://github.com/olinesn/rig-lock/blob/main/docs/rig-fleet.md) | A proposal, on hold and not built: rig checks for pull requests run from a Mac instead of self-hosted GitHub runners (the repository is public), one-command release updates on every rig, a rig dashboard and nightly checks against each rig's baseline, with diagrams. It moved to rig-lock with the lock |
 
 ## Keeping these pages current
 

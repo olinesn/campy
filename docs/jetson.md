@@ -11,7 +11,7 @@ An **NVIDIA Jetson AGX Orin 64GB Developer Kit** joined the test machines on 11 
 
 ## What it measured (11 November 2026)
 
-Every number here: JetPack 7.2.1 (Jetson Linux 39.2.1), power mode MAXN, clocks held by `jetson_clocks` (CPU 2.2 GHz, GPU 1.3 GHz), fan at full speed, under the rig lock ([`bench/rig.py`](development.md#timing-tests-on-a-shared-machine-benchrigpy)), each run `RIG_CLEAN` unless said otherwise. PyTorch 2.15.0+cu132, sleap-nn 0.3.5, TensorRT 10.16.2, campy dev `6cdc979` unless said otherwise. No monitor was attached.
+Every number here: JetPack 7.2.1 (Jetson Linux 39.2.1), power mode MAXN, clocks held by `jetson_clocks` (CPU 2.2 GHz, GPU 1.3 GHz), fan at full speed, under the rig lock ([`rig.py`](https://github.com/olinesn/rig-lock)), each run `RIG_CLEAN` unless said otherwise. PyTorch 2.15.0+cu132, sleap-nn 0.3.5, TensorRT 10.16.2, campy dev `6cdc979` unless said otherwise. No monitor was attached.
 
 ### Live tracking
 
@@ -411,7 +411,7 @@ python3 bench/jetson_encode_bench.py --dry-run          # print the commands onl
 
 For each stream it reports the frames written, the frame rate achieved, how long each pipe write took (p50, p99, max), how far the writes fell behind the 60 fps clock (the most, and over the last second: a lag that keeps growing means the encoder can't keep up, and a real recording's write queue would grow), the CPU used by the `gst-launch-1.0` and `ffmpeg` processes (100% = one core), the file size and bitrate, the frames counted back in the file, and, for the first stream, the PSNR of its first 300 frames against what was sent and the lowest and highest gray level its ramp came back as in the first frame. Both are measured two ways: as stored, and by the video's range. The ramp reads 0 and 255 when the levels survive, about 16 and 235 when something on the way clipped them; read by the range, it also shows whether the video is marked full range. For the whole machine: CPU busy (mean, and the highest 1-second sample), the script's own CPU, and every `tegrastats` line during the run (encoder clock, power, temperatures). Everything goes to a JSON file (`--json`, otherwise a timestamped file in the current folder).
 
-The videos go to a new folder under `/data` if there is one, else in the current folder (`--out-dir` to choose; it should be the disk recordings will use), and are deleted at the end unless `--keep`. Other options: `--streams`, `--fps`, `--seconds`, `--qp` (0–51, campy's `quality`), `--keyframe-interval` (seconds, like campy's `keyframeInterval`), `--preset-level` (1, campy's `"ultrafast"`, by default), `--maxperf` (adds `maxperf-enable=1`, a property older JetPacks list), `--cpu-preset`, `--psnr-frames` (0 skips the PSNR). Needs numpy (the campy venv has it). Run it through [`bench/rig.py`](development.md#timing-tests-on-a-shared-machine-benchrigpy), like every timing test.
+The videos go to a new folder under `/data` if there is one, else in the current folder (`--out-dir` to choose; it should be the disk recordings will use), and are deleted at the end unless `--keep`. Other options: `--streams`, `--fps`, `--seconds`, `--qp` (0–51, campy's `quality`), `--keyframe-interval` (seconds, like campy's `keyframeInterval`), `--preset-level` (1, campy's `"ultrafast"`, by default), `--maxperf` (adds `maxperf-enable=1`, a property older JetPacks list), `--cpu-preset`, `--psnr-frames` (0 skips the PSNR). Needs numpy (the campy venv has it). Run it under the rig lock ([`rig.py`](https://github.com/olinesn/rig-lock)), like every timing test.
 
 **Checked on the Orin** after the change (JetPack 7.2.1, `RIG_CLEAN`, one stream at 60 fps for 5 s, a keyframe every 0.5 s):
 
@@ -425,7 +425,7 @@ Each file held all 300 frames, said 5.000 s and was marked full range, so the PS
 
 ## Updating it with the other machines
 
-At each release, as on the EVO-X2: in `~/campy`, `git fetch` and `git merge --ff-only` to the tag or to `origin/dev` (the Orin reaches GitHub itself); `pip install -e ~/campy` again in both venvs (new entry points, the version); `python3 ~/campy/bench/rig.py install` when `rig.py` changed; then the rig checks under the lock.
+At each release, as on the EVO-X2: in `~/campy`, `git fetch` and `git merge --ff-only` to the tag or to `origin/dev` (the Orin reaches GitHub itself); `pip install -e ~/campy` again in both venvs (new entry points, the version); when the lock changed, `git pull` in a checkout of [rig-lock](https://github.com/olinesn/rig-lock) and run its `rig.py install` with `/usr/bin/python3`; then the rig checks under the lock.
 
 ## Still to do
 

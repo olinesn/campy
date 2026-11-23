@@ -76,7 +76,7 @@ It asks for administrator rights itself, does what Settings > Windows Update > P
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\check_firmware_pauses.ps1
 ```
-In a PowerShell window opened with "Run as administrator" (it reads Windows' WMI log). It changes nothing: it lists when Dell's BIOS interface was last used and whether the DellTechHub service runs. With `-Probe 1200` (through `bench/rig.py` on a shared rig) it also spins two CPUs for 20 minutes and logs every pause of the whole computer. Each pause slows the sets running at that moment ([Hardware guide](hardware-guide.html), "On a Dell PC, Dell's TechHub agent slows live tracking every 15 minutes").
+In a PowerShell window opened with "Run as administrator" (it reads Windows' WMI log). It changes nothing: it lists when Dell's BIOS interface was last used and whether the DellTechHub service runs. With `-Probe 1200` (under the rig lock, `rig.py`, on a shared rig) it also spins two CPUs for 20 minutes and logs every pause of the whole computer. Each pause slows the sets running at that moment ([Hardware guide](hardware-guide.html), "On a Dell PC, Dell's TechHub agent slows live tracking every 15 minutes").
 If it does, and nothing else on the PC needs Dell Optimizer, turn the agent off, in PowerShell run as administrator, while nothing records:
 ```
 Set-Service DellTechHub -StartupType Disabled

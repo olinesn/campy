@@ -91,7 +91,7 @@ On the synthetic recordings of the tests (4 units on 96 sites, 8 µV noise, 180 
 
 A unit's trough here is the median of the live-filtered signal at its peak site around Kilosort's spike times. As expected of a threshold, recall falls for units near the threshold (−4.5 × the 13 µV noise, about −58 µV), where Kilosort's template matching still finds them. These are the numbers a live sorter has to improve on: matching templates finds spikes below the threshold, and tells apart the 30% of live spikes that Kilosort doesn't place on a unit near them (noise crossings, or units Kilosort didn't keep). The same comparison is the yardstick for accuracy before any speed work.
 
-**From a running SpikeGLX (on a test VM):** SpikeGLX v20260826 (API 4.1.3), the release on the ChronicRecord rig, with no probe attached. It ran a simulated probe (below) playing the same sample recording, labelled as a Neuropixels 2.0 four-shank probe (NP2013, the rig's). The computer was a Windows 11 virtual machine with 8 cores of an Intel Core i9-14900. Numbers on the VM vary with the other VMs on its server, so take them as a first look, not the rig's numbers. 40 s of reading, in a `bench/rig.py` job that came out clean (`RIG_CLEAN`).
+**From a running SpikeGLX (on a test VM):** SpikeGLX v20260826 (API 4.1.3), the release on the ChronicRecord rig, with no probe attached. It ran a simulated probe (below) playing the same sample recording, labelled as a Neuropixels 2.0 four-shank probe (NP2013, the rig's). The computer was a Windows 11 virtual machine with 8 cores of an Intel Core i9-14900. Numbers on the VM vary with the other VMs on its server, so take them as a first look, not the rig's numbers. 40 s of reading, in a `rig.py` job that came out clean (`RIG_CLEAN`).
 
 | | |
 |---|---|
@@ -111,7 +111,7 @@ Reading as soon as samples come (about 400 small reads a second) took SpikeGLX a
 
 SpikeGLX takes the probe's part number from the file's `.meta`, so the `.meta` of a real recording with its size, length and checksum changed is enough.
 
-**On the ChronicRecord rig** (Dell Pro Max Slim, Intel Core Ultra 9 285), 17 November 2026: SpikeGLX v20260826 running a run by hand with its real Neuropixels 2.0 probe (NP2013) and OneBox. Its trigger was on TTL with the gate low, so nothing was written. campy read it for 2 minutes, read-only, in a `bench/rig.py` job that came out clean (`RIG_CLEAN`).
+**On the ChronicRecord rig** (Dell Pro Max Slim, Intel Core Ultra 9 285), 17 November 2026: SpikeGLX v20260826 running a run by hand with its real Neuropixels 2.0 probe (NP2013) and OneBox. Its trigger was on TTL with the gate low, so nothing was written. campy read it for 2 minutes, read-only, in a `rig.py` job that came out clean (`RIG_CLEAN`).
 
 | | |
 |---|---|
