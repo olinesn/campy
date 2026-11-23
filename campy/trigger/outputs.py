@@ -40,6 +40,11 @@ from campy import clock
 BAUD = 115200
 HEARTBEAT_S = 0.05
 SYNC_S = 1.0
+# The first open: on Windows, every other open of a Nano ESP32's port hears nothing at all, whatever is sent, until it is
+# closed and opened again (Arduino ESP32 core 2.0.18's USB serial, seen on a real board on 23 November: 10 opens in a
+# row alternated). So an open whose id isn't answered within OPEN_ANSWER_S is closed and opened again, OPEN_TRIES in all
+OPEN_TRIES = 3
+OPEN_ANSWER_S = 1.0
 ANSWER_TIMEOUT_S = 2.0
 SKETCH = "campy_outputs"
 VERSION = 5 # the sketch's VERSION: 2 counts on through trigger pauses (pull request 304); 3 inputs, servos and links;
@@ -222,12 +227,7 @@ class Board:
 				return serial.Serial(port=port, baudrate=BAUD, timeout=0.005, write_timeout=0.5)
 		self.opener = opener
 		if connection is None:
-			try:
-				connection = opener()
-			except Exception as e:
-				raise BoardError("Could not open the outputs board's serial port {}: {}. Check that it is plugged "
-					"in and that no other program (the Arduino IDE's Serial Monitor, another campy-rules) has it "
-					"open.".format(port, e))
+			connection = self.OpenAnswering(opener, port)
 		self.connection = connection
 		# The USB port reset, if the link stays down (relink): from the port's USB device, found now while it's there
 		self.resetter, self.reset_after = resetter, RESET_AFTER_S
@@ -443,6 +443,32 @@ class Board:
 			self.log.write("{} relink: USB port reset {}\n".format(clock.HostNs(), what))
 		if self.listener is not None:
 			self.listener("relink", ["reset", what], clock.HostNs(), "")
+
+	@staticmethod
+	def OpenAnswering(opener, port):
+		"""
+		The port, opened until an open hears the board answer id (see OPEN_TRIES): that connection. If none does, one
+		more open, whose id then fails as usual and says why.
+		"""
+		tries = OPEN_TRIES
+		for attempt in range(tries + 1):
+			try:
+				conn = opener()
+			except Exception as e:
+				raise BoardError("Could not open the outputs board's serial port {}: {}. Check that it is plugged "
+					"in and that no other program (the Arduino IDE's Serial Monitor, another campy-rules) has it "
+					"open.".format(port, e))
+			if attempt == tries:
+				return conn
+			try:
+				Board.Ask(conn, "id", timeout=OPEN_ANSWER_S)
+				return conn
+			except Exception:
+				try:
+					conn.close()
+				except Exception:
+					pass
+				time.sleep(0.2)
 
 	@staticmethod
 	def Ask(conn, command, timeout=2.0):
