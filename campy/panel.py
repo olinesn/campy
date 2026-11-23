@@ -2072,7 +2072,8 @@ def Duration(seconds):
 
 
 def RigPy(setting):
-	"""The rig.py that panel.rig_lock names: "auto" is the rig's installed one (RIG_ROOT, else its usual folder)."""
+	"""The lock program that panel.rig_lock names, an external one such as a lab's rig.py: "auto" is rig.py in the
+	rig's lock folder (RIG_ROOT, else its usual folder)."""
 	if setting != "auto":
 		return os.path.abspath(os.path.expanduser(setting))
 	root = os.environ.get("RIG_ROOT") or ("C:\\campy_data\\live" if sys.platform == "win32" else
@@ -2107,8 +2108,10 @@ def IgnoreCtrlC():
 
 def UnderRig(rig_lock, owner, name, argv):
 	"""
-	With panel.rig_lock: this panel run again under rig.py (the rig's lock,
-	held while the panel is open), unless it already runs in the rig's job.
+	With panel.rig_lock: this panel run again under the rig's lock program (an
+	external one, such as a lab's rig.py, run as rig.py run --log-dir <logs>
+	<owner> <tag> -- <command>; held while the panel is open), unless it
+	already runs in the rig's job (RIG_JOB).
 	Its exit code, or None to go on here. name: the config's (or the
 	folder's), for the job's tag.
 	"""

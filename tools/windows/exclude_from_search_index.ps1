@@ -2,7 +2,7 @@
 #
 # Windows indexes the user folder (C:\Users\<you>) for Start-menu search, and conda keeps its environments there.
 # Creating or updating an environment (tens of thousands of files) keeps the indexer busy for hours: on one PC a
-# single new file in it made the indexer read about 10 GB of its own index, and bench/rig.py marked timing runs
+# single new file in it made the indexer read about 10 GB of its own index, and the rig lock (rig.py) marked timing runs
 # RIG_CONTAMINATED. See docs/troubleshooting.md, "Timing tests".
 #
 # Run at the machine (or over Remote Desktop), as administrator, while nothing is recording or being measured:

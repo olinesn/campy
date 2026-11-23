@@ -62,8 +62,8 @@ tegrastats is installed; it shows the encoder clock NVENC, power and heat).
 
 Results go to a JSON file (--json), like bench/sleap_infer_bench.py.
 
-Examples, on the Orin (as campy's rig tests do, through bench/rig.py when
-other people use the machine):
+Examples, on the Orin (under the rig lock, such as a lab's rig.py, when other
+people use the machine):
 
     python3 bench/jetson_encode_bench.py                       # 3 x 60 fps, 30 s, QP 21
     python3 bench/jetson_encode_bench.py --qp 28               # the file size follows the QP
