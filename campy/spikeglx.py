@@ -253,7 +253,13 @@ class Connection:
 			say("SpikeGLX: setDataDir before verifying: {} (going on)".format(self.Error()))
 		if not self.sglx.c_sglx_setRunName(self.h, "verify_{}".format(int(time.time())).encode()):
 			say("SpikeGLX: setRunName before verifying: {} (going on)".format(self.Error()))
-		self.Ok(self.sglx.c_sglx_selectDevices(self.h, devices.encode(), 1), "selectDevices {}".format(devices))
+		if not self.sglx.c_sglx_selectDevices(self.h, devices.encode(), 1):
+			error = self.Error()
+			if "SELECTDEVS" in error and "Unknown command" in error:
+				raise SpikeGLXError("SpikeGLX{} is a version that can't detect and verify its devices from here (no "
+					"SELECTDEVS command; SpikeGLX 20230905 has none): open it there and click Configure > Detect > Verify | "
+					"Save once, then start again.".format("" if self.host in LOCAL_HOSTS else " on " + self.host))
+			self.Ok(False, "selectDevices {}".format(devices))
 
 	def Samples(self, js, ip):
 		return self.sglx.c_sglx_getStreamSampleRate(self.h, js, ip), self.sglx.c_sglx_getStreamSampleCount(self.h, js, ip)

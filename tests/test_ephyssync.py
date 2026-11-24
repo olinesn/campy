@@ -221,3 +221,12 @@ def test_campy_session_run_drives_spikeglx_too(sglx_state):
 	none = types_config()
 	none.spikeglx = None
 	assert sessionmod.RunDevices(none) is None
+
+
+def test_a_spikeglx_too_old_to_verify_from_here_says_what_to_do(sglx_state):
+	# SpikeGLX 20230905 (the DoublePoke rig's) has no SELECTDEVS: freshly opened, it must be verified by hand once
+	set_state(sglx_state, validated=False, old=True, trigMode="0")
+	s = a_sglx(host="192.0.2.10", data_dir="D:/SGL_DATA", trigger="immediate", devices="(nidq)")
+	with pytest.raises(spikeglx.SpikeGLXError, match="SpikeGLX on 192.0.2.10 is a version that can't detect and verify"):
+		s.Check()
+	assert state(sglx_state)["dir"] == "D:/SGL_DATA" # verifying would have used its own data folder

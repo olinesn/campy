@@ -127,6 +127,9 @@ def c_sglx_getstr(ref, h, i):
 
 
 def c_sglx_selectDevices(h, devices, verify):
+	if Load().get("old"): # a SpikeGLX from before SELECTDEVS (20230905)
+		h.error = b"sglx_selectDevices: ERROR CmdWorker: Unknown command [SELECTDEVS]."
+		return False
 	stuck = Load()["stuck"]
 	Call("selectDevices " + devices.decode(), validated=True, **({} if stuck else {"devices": devices.decode()}))
 	return True

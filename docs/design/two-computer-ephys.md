@@ -1,6 +1,6 @@
 # One experiment on two computers: cameras on one, SpikeGLX on the other
 
-A design, being built (branch `claude/dp-two-pc-experiment`). It is not yet tested on a rig.
+A design, being built (branch `claude/dp-two-pc-experiment`). Its command sequence has had a first test on a rig (below); recording with real cameras and the NI-DAQ hasn't been tested.
 
 Some rigs record the cameras on one computer and Neuropixels with SpikeGLX on another: here, a PXIe chassis with an imec base station and an NI PXIe-6341. Today each computer is started by hand, and the recordings are lined up afterwards, if at all. This design makes one run of the two:
 - one run name;
@@ -62,6 +62,24 @@ Tested on made-up recordings (`tests/test_ephyssync.py`), with these results:
 - missed frames counted;
 - a SpikeGLX that started after the first pulses reported as a problem;
 - a probe clock 12 ppm off and 0.2 s offset: recovered.
+
+## First rig test: the command sequence (24 November 2026)
+
+The camera computer drove a test copy of SpikeGLX 20230905, its simulated NI-DAQ build (no chassis, no probe), on the SpikeGLX computer over the network. Two emulated cameras recorded for 30 s.
+
+What worked:
+- The command server, listening on the SpikeGLX computer's own address, answered the camera computer: it connected, said no run was going, and gave its data folder.
+- With SpikeGLX not ready, `campy-session run` refused to start, and no camera opened.
+
+What stopped the test there: **SpikeGLX 20230905 accepts no settings from the command server until they have been verified once since it opened.**
+- Its getParams and setParams both answer "Run parameters never validated".
+- It has no `SELECTDEVS` command (newer versions do), so nothing can verify them from another computer.
+
+So with that version, someone opens SpikeGLX on its computer and clicks Configure > Detect > Verify | Save once. That is a step an experiment with a probe has anyway. campy says so when it meets such a SpikeGLX.
+
+Found and fixed during the test:
+- `campy-session run` ignored the `spikeglx:` section; only the panel drove SpikeGLX. Now `run` checks SpikeGLX as the panel does, refuses to start on a blocking problem, and starts and stops SpikeGLX's run.
+- Verifying devices on a SpikeGLX on another computer had pointed it at a folder path from the camera computer. It now uses `data_dir`.
 
 ## Not done yet
 
