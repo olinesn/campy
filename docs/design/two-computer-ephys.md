@@ -97,7 +97,7 @@ Setup:
 
 | | |
 |---|---|
-| Camera pulses SpikeGLX recorded (XD2) | 10,892, every one 667 samples (16.675 ms at 40 kHz) after the last |
+| Camera pulses SpikeGLX recorded (XD2) | 10,892, each 666 or 667 samples (16.65 or 16.675 ms at 40 kHz) after the last |
 | Frames per camera | 10,800 on each of the 8, triggers 1 to 10,800; no frame without its pulse |
 | Pulses without a frame | 92 on each camera: the trigger kept running 1.5 s after the cameras stopped |
 | The trigger board on SpikeGLX's clock | period 16.665823 ms; residuals 7.2 µs rms, 18.2 µs at most (under one 25 µs sample) |
