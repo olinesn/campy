@@ -1,6 +1,6 @@
 # One experiment on two computers: cameras on one, SpikeGLX on the other
 
-A design, being built (branch `claude/dp-two-pc-experiment`). Its command sequence has had a first test on a rig (below); recording with real cameras and the NI-DAQ hasn't been tested.
+A design, being built (branch `claude/dp-two-pc-experiment`). Tested on a rig with 8 real cameras and the NI-DAQ, without a probe (below); with a probe it hasn't been tested yet.
 
 Some rigs record the cameras on one computer and Neuropixels with SpikeGLX on another: here, a PXIe chassis with an imec base station and an NI PXIe-6341. Today each computer is started by hand, and the recordings are lined up afterwards, if at all. This design makes one run of the two:
 - one run name;
@@ -87,6 +87,25 @@ So with that version, someone opens SpikeGLX on its computer and clicks Configur
 Found and fixed during the test:
 - `campy-session run` ignored the `spikeglx:` section; only the panel drove SpikeGLX. Now `run` checks SpikeGLX as the panel does, refuses to start on a blocking problem, and starts and stops SpikeGLX's run.
 - Verifying devices on a SpikeGLX on another computer had pointed it at a folder path from the camera computer. It now uses `data_dir`.
+
+## Second rig test: 8 cameras and the NI-DAQ (24 November 2026)
+
+Setup:
+- The camera computer: a Dell Pro Tower Plus with 8 FLIR Blackfly S cameras and an Arduino trigger at 60 fps, recording for 3 minutes.
+- The SpikeGLX computer: SpikeGLX 20230905 recording an NI PXIe-6341 at 40 kHz (probe off), driven over the network. The trigger's camera line was also wired to the NI's XD2.
+- The first try found nothing on any NI line. The cable had come unplugged, and `campy-ephyssync` reported 0 pulses where the cameras had 10,800 frames. Once it was plugged back in:
+
+| | |
+|---|---|
+| Camera pulses SpikeGLX recorded (XD2) | 10,892, every one 667 samples (16.675 ms at 40 kHz) after the last |
+| Frames per camera | 10,800 on each of the 8, triggers 1 to 10,800; no frame without its pulse |
+| Pulses without a frame | 92 on each camera: the trigger kept running 1.5 s after the cameras stopped |
+| The trigger board on SpikeGLX's clock | period 16.665823 ms; residuals 7.2 µs rms, 18.2 µs at most (under one 25 µs sample) |
+| Each camera's clock on SpikeGLX's | −3.0 to −8.2 ppm; residuals 7.2 to 7.4 µs rms, 13.8 to 18.2 µs at most |
+| SpikeGLX before the first pulse / after the last | 16.94 s / 3.48 s |
+| SpikeGLX's first sample vs campy-session's record of "recording enabled" | 79 samples (2.0 ms) apart; the call's round trip was about 2 ms |
+
+The first pulse came 5.0 s after campy sent the trigger its start command, as `trigger.ino` waits to settle (see [Triggering and synchronization](../sync.md)). SpikeGLX's sync with the probe was off, so these times are on the NI's clock. Putting frames on the probe's clock needs that sync (above).
 
 ## Not done yet
 
