@@ -1609,6 +1609,25 @@ class Session:
 
 # ------------------------------------------------------------------ the command
 
+def RunDevices(config):
+	"""
+	The devices campy-session run drives itself (campy/devices.py): SpikeGLX
+	(spikeglx:) and Windows' settings, as the panel does; None without them.
+	Their checks first, as the panel's list: one that would stop the panel's
+	Start stops this run (SessionError), before anything starts.
+	"""
+	from campy import devices
+	devs = devices.Devices(config, say=Say)
+	if not devs.Enabled():
+		return None
+	for level, text, _ in devs.Checks():
+		Say("{}: {}".format({"block": "Can't start", "warn": "Warning"}.get(level, "Check"), text))
+		if level == "block":
+			raise SessionError("not started: {}".format(text))
+	devs.Plan(None)
+	return devs
+
+
 def RunMain(argv):
 	p = argparse.ArgumentParser(prog="campy-session run", description="Record with live tracking from one config: "
 		"campy-live, campy-live-view and campy-acquire, started and ended together (python -m pydoc campy.session).",
@@ -1620,7 +1639,8 @@ def RunMain(argv):
 		if config.pico is not None:
 			raise SessionError("This config drives a Pico (pico:): record it from the panel, campy-session panel {}, "
 				"which asks before starting and stopping the Pico.".format(args.config))
-		session = Session(config)
+		devs = RunDevices(config)
+		session = Session(config, devices=devs)
 		return session.Run()
 	except SessionError as e:
 		print("campy-session: {}".format(e), file=sys.stderr)

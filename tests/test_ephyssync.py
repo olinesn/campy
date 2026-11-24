@@ -206,3 +206,18 @@ def test_the_probe_clock_from_spikeglxs_sync(tmp_path):
 	with open(rec / "Camera0_topB" / "ephys_times.csv") as f:
 		row = list(csv.DictReader(f))[30]
 	assert abs(float(row["probe_s"]) - (rises[30] + 0.2) * (1 + ppm * 1e-6)) < 1e-4
+
+
+def test_campy_session_run_drives_spikeglx_too(sglx_state):
+	# campy-session run (not only the panel) checks SpikeGLX first, and refuses to start when it would block
+	from campy import session as sessionmod
+	set_state(sglx_state, open=False)
+	cfg = types_config(host="192.0.2.10", data_dir="D:/SGL_TEST", trigger="immediate")
+	with pytest.raises(sessionmod.SessionError, match="not started: .*doesn't answer"):
+		sessionmod.RunDevices(cfg)
+	set_state(sglx_state, open=True, trigMode="0")
+	devs = sessionmod.RunDevices(cfg)
+	assert devs is not None and devs.sglx is not None
+	none = types_config()
+	none.spikeglx = None
+	assert sessionmod.RunDevices(none) is None
