@@ -457,7 +457,13 @@ class Devices:
 			self.sglx.Write(self.folder, copyError=str(e))
 			return
 		self.Step("SpikeGLX copy", "done", "{} files, {:.2f} GB, checked by size".format(files, nbytes / 1e9))
-		self.sglx.Write(self.folder, copiedTo=os.path.relpath(target, self.folder), copiedFiles=files, copiedBytes=nbytes)
+		run_path = os.path.relpath(target, self.folder).replace(os.sep, "/")
+		streams, reference = sglxmod.RunStreams(target, self.sglx.section["camera_bit"])
+		for stream in streams:
+			for f in stream["files"]:
+				f["path"] = run_path + "/" + f["path"]
+		self.sglx.Write(self.folder, copiedTo=run_path, runPath=run_path, copiedFiles=files, copiedBytes=nbytes,
+			streams=streams, referenceClock=reference)
 
 	# ---------------------------------------------------------- the page
 

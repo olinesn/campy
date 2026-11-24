@@ -61,10 +61,11 @@ def test_the_run_folder_is_copied_and_checked(tmp_path, sglx_state):
 	run = share / "dp_x_g0"
 	(run / "dp_x_g0_imec0").mkdir(parents=True)
 	(run / "dp_x_g0_t0.nidq.bin").write_bytes(b"\x00" * 1000)
-	(run / "dp_x_g0_t0.nidq.meta").write_text("nSavedChans=1\n")
+	(run / "dp_x_g0_t0.nidq.meta").write_text("nSavedChans=1\nniXDChans1=0:7\nfileSHA1=ABC123\nfileSizeBytes=1000\n"
+		"syncSourceIdx=0\n")
 	(run / "dp_x_g0_imec0" / "dp_x_g0_t0.imec0.ap.bin").write_bytes(b"\x01" * 5000)
 	set_state(sglx_state, trigMode="0")
-	cfg = types_config(host="192.0.2.10", data_dir="D:/SGL_DATA", trigger="immediate", copy_from=str(share))
+	cfg = types_config(host="192.0.2.10", data_dir="D:/SGL_DATA", trigger="immediate", copy_from=str(share), camera_bit=2)
 	d = devices.Devices(cfg, say=lambda text: None)
 	rec = tmp_path / "rec"
 	rec.mkdir()
@@ -73,7 +74,13 @@ def test_the_run_folder_is_copied_and_checked(tmp_path, sglx_state):
 	d.CopySpikeGLX()
 	assert (rec / "spikeglx" / "dp_x_g0" / "dp_x_g0_imec0" / "dp_x_g0_t0.imec0.ap.bin").stat().st_size == 5000
 	written = json.loads((rec / "spikeglx.json").read_text())
-	assert written["copiedFiles"] == 3 and written["copiedBytes"] == 1000 + len("nSavedChans=1\n") + 5000
+	meta_bytes = (run / "dp_x_g0_t0.nidq.meta").stat().st_size
+	assert written["copiedFiles"] == 3 and written["copiedBytes"] == 1000 + meta_bytes + 5000
+	# What the lab's database needs from it: the run's path, its streams, the files' SHA-1s, the reference clock
+	assert written["runPath"] == "spikeglx/dp_x_g0" and written["referenceClock"] == "nidq"
+	nidq = {st["name"]: st for st in written["streams"]}["nidq"]
+	assert nidq["lines"]["XD0"] == "recorded" and nidq["files"] == [{"path": "spikeglx/dp_x_g0/dp_x_g0_t0.nidq.bin",
+		"fileSHA1": "ABC123", "fileSizeBytes": 1000}]
 	d.sglx.record = {"run": "missing"}
 	d.CopySpikeGLX()
 	assert "isn't there to copy" in json.loads((rec / "spikeglx.json").read_text())["copyError"]
@@ -170,6 +177,13 @@ def test_every_frame_has_its_pulse(tmp_path):
 	with open(rec / "Camera0_topB" / "ephys_times.csv") as f:
 		rows = list(csv.DictReader(f))
 	assert len(rows) == n and abs(float(rows[10]["ni_s"]) - rises[10]) < 1 / NI_RATE + 1e-9
+	# Every clock mapped onto the reference clock (the NI's, with SpikeGLX's sync off): the camera's first frame (its
+	# own t = 0) lands on its first pulse
+	assert out["referenceClock"] == "nidq" and out["clocks"]["nidq"]["slope"] == 1.0
+	cam = out["clocks"]["Camera0_topB"]
+	assert abs(cam["slope"] - 1 / (1 + 8e-6)) < 1e-6 and abs(cam["offset"] - rises[0]) < 1 / NI_RATE
+	assert cam["n_edges"] == n and cam["residual_max"] < 1e-4
+	assert out["sync"] == {"status": "ok", "probeTied": False}
 
 
 def test_missed_frames_are_counted_and_lost_pulses_are_problems(tmp_path):
@@ -203,6 +217,8 @@ def test_the_probe_clock_from_spikeglxs_sync(tmp_path):
 	out = ephyssync.Check(str(rec), log=lambda text: None)
 	p = out["probe_clock"]
 	assert abs(p["ppm"] - ppm) < 2 and abs(p["offset_s"] - 0.2) < 1e-3
+	assert out["referenceClock"] == "imec0" and abs(out["clocks"]["nidq"]["slope"] - (1 + ppm * 1e-6)) < 2e-6
+	assert out["sync"]["probeTied"] is True
 	with open(rec / "Camera0_topB" / "ephys_times.csv") as f:
 		row = list(csv.DictReader(f))[30]
 	assert abs(float(row["probe_s"]) - (rises[30] + 0.2) * (1 + ppm * 1e-6)) < 1e-4
@@ -230,3 +246,16 @@ def test_a_spikeglx_too_old_to_verify_from_here_says_what_to_do(sglx_state):
 	with pytest.raises(spikeglx.SpikeGLXError, match="SpikeGLX on 192.0.2.10 is a version that can't detect and verify"):
 		s.Check()
 	assert state(sglx_state)["dir"] == "D:/SGL_DATA" # verifying would have used its own data folder
+
+
+def test_the_outcome_goes_into_the_lab_block(tmp_path):
+	rec, n, _ = make_recording(tmp_path)
+	(rec / "session.json").write_text(json.dumps({"schema": "campy-session/1", "lab": {"schema": "lab-session/1",
+		"sessionId": "doublepoke_x", "sync": {"status": "pending"}}}))
+	assert ephyssync.Main([str(rec), "--no-probe"]) == 0
+	lab = json.loads((rec / "session.json").read_text())["lab"]
+	assert lab["sync"]["status"] == "ok" and lab["referenceClock"] == "nidq" and lab["sessionId"] == "doublepoke_x"
+	# A session.json without a lab block is left as it is
+	(rec / "session.json").write_text(json.dumps({"schema": "campy-session/1"}))
+	ephyssync.Main([str(rec), "--no-probe"])
+	assert json.loads((rec / "session.json").read_text()) == {"schema": "campy-session/1"}

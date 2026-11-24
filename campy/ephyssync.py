@@ -121,6 +121,13 @@ def Residuals(r, unit=1e6):
 
 # ------------------------------------------------------------------ the check
 
+def ClockMap(slope, offset, residuals_s):
+	"""One clock's map onto the reference clock, ref_s = offset + slope x clock_s (residuals in s): the lab's ClockMap."""
+	r = np.asarray(residuals_s, float)
+	return {"slope": float(slope), "offset": float(offset), "n_edges": int(len(r)),
+		"residual_sd": float(np.std(r)) if len(r) else None, "residual_max": float(np.max(np.abs(r))) if len(r) else None}
+
+
 def LoadJson(path):
 	try:
 		with open(path, encoding="utf-8") as f:
@@ -232,6 +239,11 @@ def Check(folder, bit=None, nidq=None, ap=None, log=print):
 	probe = ProbeClock(folder, meta, nidq, ap, log) if ap is not False else None
 	if probe:
 		out["probe_clock"] = probe["summary"]
+	# Every clock on one reference clock (the probe's when SpikeGLX's sync ties it in, else the NI's): ref_s = offset +
+	# slope x clock_s, each clock's own seconds from its file's first sample (the camera's from its first frame)
+	pa, pb = (probe["a"], probe["b"]) if probe else (0.0, 1.0)
+	out["referenceClock"] = probe["name"] if probe else "nidq"
+	out["clocks"] = {"nidq": ClockMap(pb, pa, probe["res"] if probe else [])}
 	for name, c in cams.items():
 		trig = c["trigger"]
 		whole = np.rint(trig).astype(np.int64)
@@ -250,6 +262,8 @@ def Check(folder, bit=None, nidq=None, ap=None, log=print):
 			if good.sum() > 2:
 				ca, cb, cres = Fit(ni[good], c["t"][good])
 				summary["clock"] = {"ppm_vs_spikeglx": round((cb - 1) * 1e6, 2), "residuals": Residuals(cres)}
+				# camera s -> NI s: ni = (t - ca) / cb; NI s -> reference s: pa + pb ni
+				out["clocks"][name] = ClockMap(pb / cb, pa - pb * ca / cb, pb * cres / cb)
 		rows = {"frame": c["frame"], "trigger": whole, "ni_s": ni}
 		if probe:
 			rows["probe_s"] = probe["map"](ni)
@@ -285,6 +299,7 @@ def Check(folder, bit=None, nidq=None, ap=None, log=print):
 	log("SpikeGLX recorded {:.3f} s before the first pulse and {:.3f} s after the last.".format(start_margin, stop_margin))
 	out["problems"] = problems
 	out["ok"] = not problems
+	out["sync"] = {"status": "ok" if out["ok"] else "problem", "probeTied": bool(probe)}
 	for p in problems:
 		log("PROBLEM: " + p)
 	log("OK: every frame has its pulse on SpikeGLX's clock." if out["ok"] else "{} problem(s).".format(len(problems)))
@@ -335,7 +350,32 @@ def ProbeClock(folder, ni_meta, nidq, ap, log):
 		"offset_s": round(a, 6), "residuals": Residuals(res)}
 	log("NI clock on the probe's: {:+.2f} ppm, residuals rms {:.1f} us over {} sync edges.".format(summary["ppm"],
 		summary["residuals"]["rms_us"], m))
-	return {"summary": summary, "map": lambda t: a + b * np.asarray(t, float)}
+	import re
+	m = re.search(r"\.(imec\d+)\.ap\.bin$", ap)
+	return {"summary": summary, "map": lambda t: a + b * np.asarray(t, float), "a": a, "b": b, "res": res,
+		"name": m.group(1) if m else "imec0"}
+
+
+def LabStatus(folder, out):
+	"""
+	The check's outcome into session.json's lab block (lab-session/1, for the
+	lab's database), when the recording has one: lab.sync.status ok or
+	problem, and lab.referenceClock. A line saying so, or None.
+	"""
+	path = os.path.join(folder, "session.json")
+	record = LoadJson(path)
+	if not isinstance(record, dict) or not isinstance(record.get("lab"), dict):
+		return None
+	lab = record["lab"]
+	sync = lab.setdefault("sync", {})
+	sync["status"] = out["sync"]["status"]
+	sync.setdefault("files", ["ephyssync.json", "Camera*/ephys_times.csv"])
+	lab["referenceClock"] = out.get("referenceClock", lab.get("referenceClock"))
+	tmp = path + ".tmp"
+	with open(tmp, "w", encoding="utf-8") as f:
+		json.dump(record, f, indent=2)
+	os.replace(tmp, path)
+	return "session.json: lab.sync.status {}, reference clock {}.".format(sync["status"], lab["referenceClock"])
 
 
 def WriteCsv(path, columns):
@@ -360,6 +400,9 @@ def Main(argv=None):
 	out = Check(args.folder, args.bit, args.nidq, False if args.no_probe else args.ap)
 	with open(os.path.join(args.folder, "ephyssync.json"), "w", encoding="utf-8") as f:
 		json.dump(out, f, indent=2)
+	said = LabStatus(args.folder, out)
+	if said:
+		print(said)
 	print("Wrote ephyssync.json and ephys_times.csv in each camera's folder.")
 	return 0 if out.get("ok") else 1
 

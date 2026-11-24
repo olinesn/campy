@@ -500,6 +500,50 @@ def Stamp(conn, js, ip):
 	return {"sample": int(count), "hostNs": (t0 + t1) // 2, "roundTripNs": t1 - t0, "epochNs": epoch}
 
 
+def RunStreams(folder, camera_bit=-1):
+	"""
+	What SpikeGLX's run folder holds, from its .meta files: ({streams},
+	reference clock). Each stream: name (imec0, nidq, obx0), its probe's
+	part and serial number and physical address (imec), the recorded digital
+	lines and what campy knows is on them (nidq: camera_bit is "camera
+	trigger"), and each .bin's path (relative to folder), size and SHA-1 as
+	SpikeGLX wrote them. The reference clock is the probe's (imec0) when
+	SpikeGLX's sync ties the NI stream to it (syncSourceIdx above 0), else
+	"nidq".
+	"""
+	import re
+	streams, sync_on = {}, False
+	for meta_path in sorted(glob.glob(os.path.join(folder, "**", "*.meta"), recursive=True)):
+		meta = {}
+		with open(meta_path, encoding="utf-8", errors="replace") as f:
+			for line in f:
+				k, sep, v = line.strip().partition("=")
+				if sep:
+					meta[k.lstrip("~")] = v
+		m = re.search(r"\.(imec\d+|nidq|obx\d+)\.(?:ap\.|lf\.)?meta$", meta_path)
+		if not m:
+			continue
+		name = m.group(1)
+		s = streams.setdefault(name, {"name": name, "files": []})
+		s["files"].append({"path": os.path.relpath(meta_path[:-5] + ".bin", folder).replace(os.sep, "/"),
+			"fileSHA1": meta.get("fileSHA1"), "fileSizeBytes": int(meta["fileSizeBytes"]) if meta.get("fileSizeBytes",
+			"").isdigit() else None})
+		if name.startswith("imec"):
+			s["probe"] = {k: meta.get("imDatPrb_" + k) for k in ("pn", "sn", "slot", "port", "dock")}
+		if name == "nidq":
+			sync_on = sync_on or (meta.get("syncSourceIdx", "0") not in ("", "0"))
+			lines = {}
+			for part in (meta.get("niXDChans1") or "").split(","):
+				a, _, b = part.partition(":")
+				if a.strip().isdigit():
+					for i in range(int(a), int(b or a) + 1):
+						lines["XD{}".format(i)] = "camera trigger" if i == camera_bit else "recorded"
+			s["lines"] = lines
+	imecs = sorted(n for n in streams if n.startswith("imec"))
+	return list(streams.values()), (imecs[0] if imecs and sync_on else "nidq" if "nidq" in streams else
+		(imecs[0] if imecs else None))
+
+
 def CopyRun(source, target, say=print):
 	"""
 	SpikeGLX's run folder (source, on another computer's share) copied into

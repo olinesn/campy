@@ -54,6 +54,13 @@ It reads SpikeGLX's NI file (the digital word's `camera_bit`), campy-align's tri
 - **margins**: how long SpikeGLX recorded before the first pulse and after the last (a margin of one period or less is a problem: pulses may be lost); from `spikeglx.json`, the time from enabling SpikeGLX's recording to the trigger's start, and to its stop, on the camera computer's clock;
 - **the probe's clock**, when SpikeGLX's sync is on (sync source: the imec base station, its 1 Hz wave wired to an NI digital line): the NI clock fitted to the probe's through the wave's edges in both files (the probe's SY word, bit 6), so every frame gets a time on the probe's clock.
 
+**SpikeGLX's sync is required, not optional, for any experiment with a probe.** Wire the imec base station's sync output to an NI digital line and set SpikeGLX's sync source to that base station. Without it, the NI and probe clocks can't be tied together, so no frame gets a time on the probe's clock: the check then reports frames on the NI clock only.
+
+For the lab's database, every clock is also mapped onto one reference clock in `ephyssync.json`'s `clocks`: `{slope, offset, n_edges, residual_sd, residual_max}`, so that reference seconds = offset + slope × that clock's seconds. The reference clock (`referenceClock`) is the probe's (`imec0`) when the sync ties it in, else the NI's (`nidq`). `sync.status` is `ok` or `problem`; when the recording's `session.json` has a `lab` block (`lab-session/1`), that status and the reference clock are written into it too. After the copy, `spikeglx.json` also lists:
+- the run's path in the recording (`runPath`);
+- its streams, from SpikeGLX's `.meta` files: each probe's part and serial number and slot, port and dock; the NI's recorded lines, with the camera line named;
+- each `.bin` file's path, size and SHA-1, as SpikeGLX wrote them.
+
 It writes `ephyssync.json` in the recording's folder, and `ephys_times.csv` in each camera's (frame, trigger, `ni_s`, and `probe_s` when the probe's clock is known). Exit code 0 when every frame has its pulse.
 
 Tested on made-up recordings (`tests/test_ephyssync.py`), with these results:
