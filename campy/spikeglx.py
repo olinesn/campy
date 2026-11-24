@@ -237,11 +237,18 @@ class Connection:
 			return None
 		return Shown(*now)
 
-	def Select(self, devices, say=print):
-		"""Detect and verify devices, as Configure > Detect > Verify | Save does."""
+	def Select(self, devices, say=print, data_dir=None):
+		"""
+		Detect and verify devices, as Configure > Detect > Verify | Save does.
+		data_dir: SpikeGLX's data folder on its own computer (SpikeGLX on
+		another computer); else a fresh folder here.
+		"""
 		# Verify refuses a run name already used in the data folder (the last session's): a fresh pair first
-		fresh = os.path.join(tempfile.gettempdir(), "sglx_verify")
-		os.makedirs(fresh, exist_ok=True)
+		if data_dir:
+			fresh = data_dir
+		else:
+			fresh = os.path.join(tempfile.gettempdir(), "sglx_verify")
+			os.makedirs(fresh, exist_ok=True)
 		if not self.sglx.c_sglx_setDataDir(self.h, 0, fresh.encode()):
 			say("SpikeGLX: setDataDir before verifying: {} (going on)".format(self.Error()))
 		if not self.sglx.c_sglx_setRunName(self.h, "verify_{}".format(int(time.time())).encode()):
@@ -251,7 +258,7 @@ class Connection:
 	def Samples(self, js, ip):
 		return self.sglx.c_sglx_getStreamSampleRate(self.h, js, ip), self.sglx.c_sglx_getStreamSampleCount(self.h, js, ip)
 
-	def Params(self, devices="", say=print, select=False):
+	def Params(self, devices="", say=print, select=False, data_dir=None):
 		"""
 		SpikeGLX's run parameters {key: value}. Freshly opened (never verified),
 		devices are detected and verified first; with select, also when SpikeGLX's
@@ -266,14 +273,14 @@ class Connection:
 				raise SpikeGLXError("SpikeGLX's settings haven't been validated since it opened: in SpikeGLX, Configure > "
 					"Detect > Verify | Save (or give spikeglx.devices in the config, to do it from here).")
 			say("SpikeGLX: its settings haven't been validated since it opened: detecting {} and verifying.".format(devices))
-			self.Select(devices, say)
+			self.Select(devices, say, data_dir)
 			self.Ok(self.sglx.c_sglx_getParams(byref(n), self.h), "getParams")
 		elif select and devices:
 			now = self.Differs(devices)
 			if now is not None:
 				say("SpikeGLX: its devices are {}, the config's {} (spikeglx.devices): detecting those and verifying."
 					.format(now, devices))
-				self.Select(devices, say)
+				self.Select(devices, say, data_dir)
 				self.Ok(self.sglx.c_sglx_getParams(byref(n), self.h), "getParams")
 				after = self.Differs(devices)
 				if after is not None:
@@ -337,7 +344,7 @@ class SpikeGLX:
 			raise SpikeGLXError("SpikeGLX is running a run already: stop it in SpikeGLX (campy-session starts its own, "
 				"into the recording's folder).")
 		devices = self.section["devices"]
-		p = conn.Params(devices, self.say, select)
+		p = conn.Params(devices, self.say, select, None if self.Local() else self.section["data_dir"])
 		where = "" if self.Local() else " on {}".format(self.section["host"])
 		if self.section["trigger"] == "immediate":
 			if p.get("trigMode") != IMMEDIATE_TRIGGER:
