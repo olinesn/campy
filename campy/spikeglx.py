@@ -26,9 +26,19 @@ rig) holds more samples than the trigger's margin plus 2 s, recording is
 enabled. (SpikeGLX says it is running about 6 s before the OneBox's samples
 flow, and a gate edge then would open no file.) At the end: the run stops,
 which closes its files.
+
+SpikeGLX on another computer (host its address; its command server listening
+there, not on 127.0.0.1): the run goes into data_dir on that computer, and
+with trigger immediate (no gate line) it records from "recording enabled",
+before the cameras' trigger starts, to the run's stop, after the trigger's
+last pulse. spikeglx.json in the recording's folder says when, on campy's
+host clock, with the stream's sample count; copy_from then copies the run's
+folder into <recording>/spikeglx. campy-ephyssync (campy/ephyssync.py)
+checks the frames against the camera pulses SpikeGLX recorded
+(docs/design/two-computer-ephys.md).
 """
 
-import glob, math, os, subprocess, sys, tempfile, threading, time
+import glob, json, math, os, subprocess, sys, tempfile, threading, time
 
 KEYS = {
 	"sdk": ((str,), "", "the folder holding SpikeGLX's SDK (sglx_pkg, from SpikeGLX-CPP-SDK)"),
@@ -49,9 +59,22 @@ KEYS = {
 		"thread of its own: \"learned\", each unit at the threshold learned in training; a number, every unit at that "
 		"score; default: off, the threshold's spikes sorted"),
 	"open_timeout_s":((int, float), 120, "how long SpikeGLX may take to open and answer"),
+	"trigger": ((str,), "ttl", "ttl: SpikeGLX writes only while the gate's TTL is high (its trigger TTL, trigMode 2; the "
+		"ChronicRecord rig); immediate: it writes from the moment recording is enabled until its run stops (trigMode 0), "
+		"for a rig with no gate line, such as SpikeGLX on another computer recording the cameras' trigger pulses"),
+	"data_dir": ((str,), "", "SpikeGLX's data folder on its own computer, when host is another computer: its run goes "
+		"into <data_dir>/<run>_g0 there (SpikeGLX on this computer: <recording>/spikeglx, as before)"),
+	"copy_from": ((str,), "", "with data_dir: that folder as this computer reaches it (a share); once the run has "
+		"stopped, its folder is copied into <recording>/spikeglx, so the recording's copy holds both computers' files"),
+	"camera_bit": ((int,), -1, "the bit of the stream's digital word that carries the cameras' trigger pulses, for "
+		"campy-ephyssync (-1: not recorded)"),
 	}
 
 TTL_TRIGGER = "2" # [DAQSettings] trigMode: 0 immediate, 1 timed, 2 TTL, ...
+IMMEDIATE_TRIGGER = "0"
+TRIGGERS = {"ttl": TTL_TRIGGER, "immediate": IMMEDIATE_TRIGGER}
+LOCAL_HOSTS = ("", "127.0.0.1", "localhost", "::1")
+RECORD = "spikeglx.json" # in the recording's folder: what campy-session asked of SpikeGLX, and when
 FOLDER = "spikeglx" # in the recording's folder
 
 
@@ -276,7 +299,20 @@ class SpikeGLX:
 			raise SpikeGLXError("spikeglx.stream: [js, ip], two whole numbers ([1, 0]: the first OneBox); not {!r}."
 				.format(stream))
 		Match(section) # the card's, checked with the rest
+		if section["trigger"] not in TRIGGERS:
+			raise SpikeGLXError("spikeglx.trigger: ttl or immediate; not {!r}.".format(section["trigger"]))
+		if not self.Local() and not section["data_dir"]:
+			raise SpikeGLXError("spikeglx.data_dir: SpikeGLX runs on another computer ({}): give its data folder there "
+				"(\"D:/SGL_DATA\").".format(section["host"]))
+		if section["copy_from"] and self.Local():
+			raise SpikeGLXError("spikeglx.copy_from is for SpikeGLX on another computer (host); here its run is in the "
+				"recording's folder already.")
+		self.record = {} # what campy-session asked of SpikeGLX, and when (RECORD)
 		self.lock = threading.Lock() # one connection at a time: the panel's status, and the session's steps
+
+	def Local(self):
+		"""SpikeGLX on this computer (host 127.0.0.1)."""
+		return self.section["host"].strip().lower() in LOCAL_HOSTS
 
 	def Connect(self):
 		return Connection(Sdk(self.section["sdk"]), self.section["host"], self.section["port"])
@@ -302,12 +338,22 @@ class SpikeGLX:
 				"into the recording's folder).")
 		devices = self.section["devices"]
 		p = conn.Params(devices, self.say, select)
-		if p.get("trigMode") != TTL_TRIGGER:
-			raise SpikeGLXError("SpikeGLX's trigger isn't TTL (trigMode={}): it would record all the time, not only while "
-				"the gate is high. Set its trigger to TTL in SpikeGLX and check again.".format(p.get("trigMode")))
-		self.margin = float(p.get("trgTTLMarginS") or 1)
-		line = "SpikeGLX: idle, TTL trigger (stream {}, bit {}, margin {} s, {})".format(p.get("trgTTLStream"),
-			p.get("trgTTLBit"), p.get("trgTTLMarginS"), p.get("trgTTLMode"))
+		where = "" if self.Local() else " on {}".format(self.section["host"])
+		if self.section["trigger"] == "immediate":
+			if p.get("trigMode") != IMMEDIATE_TRIGGER:
+				raise SpikeGLXError("SpikeGLX's trigger{} isn't Immediate (trigMode={}), and spikeglx.trigger is "
+					"immediate: campy-session enables its recording before the cameras' trigger starts and stops its run "
+					"after the last pulse. Set its trigger to Immediate in SpikeGLX (Configure > Triggers), or "
+					"spikeglx.trigger: ttl for a gate line.".format(where, p.get("trigMode")))
+			self.margin = 0.0
+			line = "SpikeGLX{}: idle, Immediate trigger (records from recording enabled to its run's stop)".format(where)
+		else:
+			if p.get("trigMode") != TTL_TRIGGER:
+				raise SpikeGLXError("SpikeGLX's trigger isn't TTL (trigMode={}): it would record all the time, not only "
+					"while the gate is high. Set its trigger to TTL in SpikeGLX and check again.".format(p.get("trigMode")))
+			self.margin = float(p.get("trgTTLMarginS") or 1)
+			line = "SpikeGLX{}: idle, TTL trigger (stream {}, bit {}, margin {} s, {})".format(where, p.get("trgTTLStream"),
+				p.get("trgTTLBit"), p.get("trgTTLMarginS"), p.get("trgTTLMode"))
 		now = conn.Differs(devices) if devices else None
 		if now is not None:
 			line += "; its devices are {}: Start selects the config's, {}".format(now, devices)
@@ -319,6 +365,10 @@ class SpikeGLX:
 		"""Open SpikeGLX (spikeglx.exe) if it doesn't answer, and wait until it does: True when it answers."""
 		if self.Answers():
 			return True
+		if not self.Local():
+			raise SpikeGLXError("SpikeGLX on {0} doesn't answer on port {1}: open it there, with its command server on "
+				"and listening on that computer's own address, not 127.0.0.1 (Options > Command Server Settings), and its "
+				"firewall letting this computer reach port {1}.".format(self.section["host"], self.section["port"]))
 		exe = self.section["exe"]
 		if ProgramRunning(exe):
 			raise SpikeGLXError("SpikeGLX is open, but its command server doesn't answer: in SpikeGLX, Options > Command "
@@ -340,13 +390,26 @@ class SpikeGLX:
 			self.section["open_timeout_s"]))
 
 	def Start(self, folder, run):
-		"""Its run, into folder (made if missing), named run; once it acquires, recording enabled."""
+		"""
+		Its run, named run, into folder (made if missing; SpikeGLX on another
+		computer: into spikeglx.data_dir there); once it acquires, recording
+		enabled. self.record says when, on this computer's clock, with the
+		stream's sample count then.
+		"""
 		js, ip = self.section["stream"]
 		with self.lock, self.Connect() as conn:
 			self.Check(conn, select=True)
-			os.makedirs(folder, exist_ok=True)
-			conn.Ok(conn.sglx.c_sglx_setDataDir(conn.h, 0, os.path.abspath(folder).encode()), "setDataDir")
+			if self.Local():
+				os.makedirs(folder, exist_ok=True)
+				data_dir = os.path.abspath(folder)
+			else:
+				data_dir = self.section["data_dir"]
+			self.record = {"schema": "campy-spikeglx/1", "host": self.section["host"], "local": self.Local(),
+				"trigger": self.section["trigger"], "stream": [js, ip], "run": run, "dataDir": data_dir,
+				"cameraBit": self.section["camera_bit"]}
+			conn.Ok(conn.sglx.c_sglx_setDataDir(conn.h, 0, data_dir.encode()), "setDataDir")
 			conn.Ok(conn.sglx.c_sglx_setRunName(conn.h, run.encode()), "setRunName")
+			self.record["startRunEpochNs"] = time.time_ns()
 			conn.Ok(conn.sglx.c_sglx_startRun(conn.h, run.encode()), "startRun")
 			deadline = time.monotonic() + self.section["start_timeout_s"]
 			while True:
@@ -358,18 +421,39 @@ class SpikeGLX:
 					if rate > 0 and count > rate * (self.margin + 2.0):
 						break
 				time.sleep(0.5)
+			self.record["sampleRate"] = rate
 			conn.Ok(conn.sglx.c_sglx_setRecordingEnable(conn.h, True), "setRecordingEnable")
+			self.record["recordingEnabled"] = Stamp(conn, js, ip)
 			time.sleep(1.0)
-			return "SpikeGLX: run {} acquiring ({:.0f} samples on stream {},{}), recording enabled, into {}.".format(run,
-				conn.Samples(js, ip)[1], js, ip, conn.DataDir())
+			return "SpikeGLX: run {} acquiring ({:.0f} samples on stream {},{}), recording enabled, into {}{}.".format(run,
+				conn.Samples(js, ip)[1], js, ip, conn.DataDir(), "" if self.Local() else " on " + self.section["host"])
 
 	def Stop(self):
 		"""Stop its run (its files close): a line saying what happened."""
 		with self.lock, self.Connect() as conn:
 			if not conn.Running():
 				return "SpikeGLX: no run to stop."
+			js, ip = self.section["stream"]
+			if self.record:
+				self.record["beforeStop"] = Stamp(conn, js, ip)
 			conn.Ok(conn.sglx.c_sglx_stopRun(conn.h), "stopRun")
+			if self.record:
+				self.record["stoppedEpochNs"] = time.time_ns()
 			return "SpikeGLX: run stopped, its files closed."
+
+	def Write(self, folder, **more):
+		"""self.record, with more, as folder/spikeglx.json (never raises: a line saying what happened)."""
+		if not self.record:
+			return None
+		self.record.update(more)
+		path = os.path.join(folder, RECORD)
+		try:
+			with open(path + ".tmp", "w", encoding="utf-8") as f:
+				json.dump(self.record, f, indent=2)
+			os.replace(path + ".tmp", path)
+			return None
+		except OSError as e:
+			return "SpikeGLX: {} not written ({})".format(path, e)
 
 	def Status(self):
 		"""{answers, running, saving, folder, samples}, for the page, or None while a step uses SpikeGLX; never raises."""
@@ -385,6 +469,53 @@ class SpikeGLX:
 			return {"answers": False, "error": str(e)}
 		finally:
 			self.lock.release()
+
+
+def Stamp(conn, js, ip):
+	"""
+	The stream's sample count and when, on campy's host clock (campy/clock.py,
+	as trigger.json's startedHostNs and hosttimes.npy): {sample, hostNs,
+	roundTripNs, epochNs}. hostNs is the middle of the call, so it is within
+	half the round trip of when SpikeGLX read its count, whatever its own
+	computer's clock says.
+	"""
+	from campy.clock import HostNs
+	epoch = time.time_ns()
+	t0 = HostNs()
+	count = conn.sglx.c_sglx_getStreamSampleCount(conn.h, js, ip)
+	t1 = HostNs()
+	return {"sample": int(count), "hostNs": (t0 + t1) // 2, "roundTripNs": t1 - t0, "epochNs": epoch}
+
+
+def CopyRun(source, target, say=print):
+	"""
+	SpikeGLX's run folder (source, on another computer's share) copied into
+	target, each file checked by size: (files, bytes). SpikeGLXError when a
+	file is missing or short. Robocopy on Windows (restartable, unbuffered for
+	big files), else a plain copy.
+	"""
+	if not os.path.isdir(source):
+		raise SpikeGLXError("SpikeGLX's run folder {} isn't there to copy (spikeglx.copy_from).".format(source))
+	os.makedirs(target, exist_ok=True)
+	if sys.platform == "win32":
+		out = subprocess.run(["robocopy", source, target, "/E", "/J", "/R:3", "/W:5", "/NP", "/NFL", "/NDL"],
+			capture_output=True, text=True)
+		if out.returncode >= 8:
+			raise SpikeGLXError("robocopy {} -> {} failed (exit {}): {}".format(source, target, out.returncode,
+				out.stdout.strip().splitlines()[-1:] or out.stderr))
+	else:
+		import shutil
+		shutil.copytree(source, target, dirs_exist_ok=True)
+	files = nbytes = 0
+	for root, _, names in os.walk(source):
+		for name in names:
+			src = os.path.join(root, name)
+			dst = os.path.join(target, os.path.relpath(src, source))
+			size = os.path.getsize(src)
+			if not os.path.isfile(dst) or os.path.getsize(dst) != size:
+				raise SpikeGLXError("{} wasn't copied whole into {}.".format(src, target))
+			files, nbytes = files + 1, nbytes + size
+	return files, nbytes
 
 
 def ProgramRunning(exe):

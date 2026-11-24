@@ -258,6 +258,9 @@ class Devices:
 				raise sessionmod.SessionError("SpikeGLX's run did not start: {}".format(e))
 			self.sglx_started = True
 			self.Step("SpikeGLX", "done", said.replace("SpikeGLX: ", "", 1))
+			problem = self.sglx.Write(s.folder)
+			if problem:
+				self.say(problem)
 		if self.pico is not None and self.pico.section["gate_check"]:
 			self.Step("Gate check", "running", "the gate blinks once; SpikeGLX must open a file for it")
 			folder = os.path.join(s.folder, sglxmod.FOLDER)
@@ -426,10 +429,35 @@ class Devices:
 			said = self.sglx.Stop()
 			self.sglx_started = False
 			self.Step("SpikeGLX", "done", said.replace("SpikeGLX: ", "", 1))
-			return None
 		except sglxmod.SpikeGLXError as e:
 			self.Step("SpikeGLX", "failed", "its run didn't stop: {}".format(e))
+			if self.folder:
+				self.sglx.Write(self.folder, stopError=str(e))
 			return str(e)
+		if self.folder:
+			problem = self.sglx.Write(self.folder)
+			if problem:
+				self.say(problem)
+			self.CopySpikeGLX()
+		return None
+
+	def CopySpikeGLX(self):
+		"""SpikeGLX on another computer, with spikeglx.copy_from: its run's folder copied into <recording>/spikeglx."""
+		source = self.sglx.section["copy_from"]
+		run = self.sglx.record.get("run")
+		if not source or not run:
+			return
+		source = os.path.join(source, run + "_g0")
+		target = os.path.join(self.folder, sglxmod.FOLDER, run + "_g0")
+		self.Step("SpikeGLX copy", "running", "{} into the recording's folder".format(source))
+		try:
+			files, nbytes = sglxmod.CopyRun(source, target, self.say)
+		except (sglxmod.SpikeGLXError, OSError) as e:
+			self.Step("SpikeGLX copy", "failed", "{} (its files are still on SpikeGLX's computer)".format(e))
+			self.sglx.Write(self.folder, copyError=str(e))
+			return
+		self.Step("SpikeGLX copy", "done", "{} files, {:.2f} GB, checked by size".format(files, nbytes / 1e9))
+		self.sglx.Write(self.folder, copiedTo=os.path.relpath(target, self.folder), copiedFiles=files, copiedBytes=nbytes)
 
 	# ---------------------------------------------------------- the page
 

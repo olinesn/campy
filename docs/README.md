@@ -31,6 +31,7 @@ Guides for recording with campy and tracking animals live while it records. The 
 | [Troubleshooting](troubleshooting.md) | Problems seen so far, by what you see: the message campy prints, or what is wrong with the recording, with what to do and where to read more |
 | [Development](development.md) | Running the tests, timing tests on a shared machine (under a lock such as rig-lock's `rig.py`), branches and releases |
 | [One board for the cameras and the box](design/single-board-box.md) | A design, being built: one Arduino Nano ESP32 that makes the camera pulses in hardware and runs an operant box, owned by `campy-box`, beside today's two-board setup |
+| [One experiment on two computers](design/two-computer-ephys.md) | A design, being built: cameras on one computer, SpikeGLX on another, run as one by `campy-session` over SpikeGLX's command server (`spikeglx.host`, `trigger: immediate`, `copy_from`), and `campy-ephyssync`, which checks every frame against the camera pulses SpikeGLX recorded and fits the cameras' clocks to SpikeGLX's (and the probe's) |
 | [Rig fleet design](https://github.com/olinesn/rig-lock/blob/main/docs/rig-fleet.md) | A proposal, on hold and not built: rig checks for pull requests run from a Mac instead of self-hosted GitHub runners (the repository is public), one-command release updates on every rig, a rig dashboard and nightly checks against each rig's baseline, with diagrams. It moved to rig-lock with the lock |
 
 ## Keeping these pages current

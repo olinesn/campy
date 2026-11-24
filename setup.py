@@ -55,6 +55,7 @@ setup(
 			"campy-infer = campy.infer:Main",
 			"campy-train-check = campy.traincheck:Main",
 			"campy-ephys = campy.ephyslive:Main",
+			"campy-ephyssync = campy.ephyssync:Main",
 		]
 	}
 )

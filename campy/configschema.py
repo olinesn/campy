@@ -425,7 +425,8 @@ SETTINGS = [
 			whether the recording needs it. campy-acquire passes it by."),
 	Setting("spikeglx", None, SECTION, section=PROGRAMS, per_camera=ONE,
 		help="campy-session: SpikeGLX's run, started into the recording's folder before the cameras and stopped \
-			after them, through its command server and SDK. campy-acquire passes it by."),
+			after them, through its command server and SDK; SpikeGLX may run on another computer (host, data_dir, \
+			trigger: immediate, copy_from; docs/design/two-computer-ephys.md). campy-acquire passes it by."),
 	Setting("windows", None, SECTION, section=PROGRAMS, per_camera=ONE,
 		help="campy-session: warn before a recording that Windows Update could restart the PC during it, or that \
 			USB selective suspend is on. campy-acquire passes it by."),
