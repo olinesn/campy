@@ -45,13 +45,61 @@ def test_nvidia_amd_intel_args_unchanged():
 	amd = writer.EncoderArgs(cam(gpuID=0, gpuMake="amd"))
 	assert amd["codec"] == "h264_amf"
 	assert amd["output_params"] == FRAGMENTED + ["-usage", "lowlatency", "-rc", "cqp", "-qp_i", "21",
-		"-qp_p", "21", "-qp_b", "21", "-bf:v", "0", "-hwaccel_device", "0"]
+		"-qp_p", "21", "-qp_b", "21", "-bf:v", "0"]
 	assert amd["key"] == "h264_amf"
 
 	qsv = writer.EncoderArgs(cam(gpuID=0, gpuMake="intel", pixelFormatOutput="rgb0"))
 	assert qsv["codec"] == "h264_qsv"
 	assert qsv["pix_fmt_out"] == "nv12"
 	assert qsv["output_params"] == FRAGMENTED + ["-bf:v", "0", "-preset", "faster", "-q", "22"]
+
+
+# ffmpeg options that apply to an input only (OPT_INPUT in fftools/ffmpeg_opt.c).
+# Among the output options, ffmpeg refuses the whole command: campy gave AMF
+# "-hwaccel_device <gpuID>" there, and no AMF camera could start.
+INPUT_ONLY = {"-hwaccel", "-hwaccel_device", "-hwaccel_output_format", "-itsoffset", "-re", "-stream_loop"}
+
+# AMF's own encoder options, which an ffmpeg without AMF doesn't know
+AMF_OWN = ("-usage", "-rc", "-qp_i", "-qp_p", "-qp_b")
+
+
+@pytest.mark.parametrize("make", [None, "nvidia", "amd", "intel", "vaapi"])
+@pytest.mark.parametrize("codec", ["h264", "h265", "av1"])
+def test_no_input_option_among_the_output_options(make, codec):
+	gpu = {"gpuID": 0, "gpuMake": make} if make else {}
+	enc = writer.EncoderArgs(cam(codec=codec, **gpu))
+	assert INPUT_ONLY.isdisjoint(enc["output_params"]), enc["output_params"]
+
+
+@pytest.mark.parametrize("codec, stand_in", [("h264", "libx264"), ("h265", "libx265")])
+def test_ffmpeg_accepts_the_amf_command(tmp_path, codec, stand_in):
+	# No AMD GPU here, so a CPU encoder stands in for AMF: ffmpeg is given
+	# campy's AMF input and output options, less AMF's own encoder options
+	# (unknown to an ffmpeg built without AMF), and must encode two frames.
+	# With "-hwaccel_device 0" it refused them: "Error parsing options for
+	# output file".
+	exe = imageio_ffmpeg.get_ffmpeg_exe()
+	enc = writer.EncoderArgs(cam(gpuID=0, gpuMake="amd", codec=codec))
+	out = enc["output_params"]
+	for option in AMF_OWN:
+		assert option in out
+	generic = [x for i, x in enumerate(out) if out[i - (i % 2)] not in AMF_OWN] # options come in pairs
+	assert len(generic) == len(out) - 2 * len(AMF_OWN)
+	def run(codec_name, output):
+		return subprocess.run([exe, "-hide_banner", "-nostdin", "-v", "error"] + enc["input_params"]
+			+ ["-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30", "-frames:v", "2"]
+			+ ["-vcodec", codec_name, "-pix_fmt", enc["pix_fmt_out"]] + output
+			+ ["-y", str(tmp_path / "amf.mp4")], capture_output=True, text=True)
+	done = run(stand_in, generic)
+	assert done.returncode == 0, done.stderr
+	assert os.path.getsize(tmp_path / "amf.mp4") > 0
+	# An ffmpeg with AMF parses the whole list; without an AMD GPU its encoder
+	# then fails to open, after the options were accepted
+	encoders = subprocess.run([exe, "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
+	if enc["codec"] in encoders.split():
+		err = run(enc["codec"], out).stderr
+		for refusal in ("Error parsing options", "Error splitting the argument list", "Unrecognized option"):
+			assert refusal not in err, err
 
 
 @pytest.mark.parametrize("codec", ["h264", "h265", "av1"])

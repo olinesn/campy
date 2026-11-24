@@ -536,13 +536,13 @@ def FindEntry(table, cam):
 def EncoderDevice(cam):
 	"""
 	The device a camera's encoder runs on, where a computer can have more than
-	one: NVENC's and AMF's gpuID, VA-API's vaapiDevice. None for the CPU, and
-	for Quick Sync, which takes the default device whatever gpuID says
-	(writer.EncoderArgs passes it none).
+	one: NVENC's gpuID, VA-API's vaapiDevice. None for the CPU, and for Quick
+	Sync and AMF, which take the default device whatever gpuID says
+	(writer.EncoderArgs passes them none).
 	"""
 	if cam["gpuID"] == -1:
 		return None
-	if cam["gpuMake"] in ("nvidia", "amd"):
+	if cam["gpuMake"] == "nvidia":
 		return "GPU {}".format(cam["gpuID"])
 	if cam["gpuMake"] == "vaapi":
 		return str(cam["vaapiDevice"])

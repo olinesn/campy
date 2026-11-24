@@ -99,6 +99,11 @@ def EncoderArgs(cam_params):
 
 		# AMD GPU (AMF/VCE) encoder optimized parameters. On Linux, AMF needs
 		# AMD's proprietary runtime; "vaapi" below uses the open Mesa driver.
+		# AMF has no option that picks a GPU, so gpuID only says "a GPU, not the
+		# CPU": ffmpeg's AMF encoder opens the system's default adapter. (campy
+		# passed -hwaccel_device here, which ffmpeg takes only before an input,
+		# for decoding: it refused the whole command, "Option hwaccel_device ...
+		# cannot be applied to output url", and no AMF camera could start.)
 		elif cam_params["gpuMake"] == "amd":
 			# Preset not supported by AMF
 			gpu_params = [
@@ -107,8 +112,7 @@ def EncoderArgs(cam_params):
 				"-qp_i", quality,
 				"-qp_p", quality,
 				"-qp_b", quality,
-				"-bf:v", "0",
-				"-hwaccel_device", gpuID,]
+				"-bf:v", "0",]
 			if pix_fmt_out == "rgb0" or pix_fmt_out == "bgr0":
 				pix_fmt_out = "yuv420p"
 			if cam_params["codec"] == "h264":
