@@ -93,13 +93,55 @@ def write_calibration(path, cams):
 TRUE_CORNERS = np.array([(-HALF[0], -HALF[1], 0), (HALF[0], -HALF[1], 0), (HALF[0], HALF[1], 0), (-HALF[0], HALF[1], 0)])
 
 
-@pytest.fixture(scope="module")
-def scene():
+def make_scene():
 	cams = rig()
 	images = [render(c, seed=i) for i, c in enumerate(cams)]
 	maps = [cagegrid.RidgeMap(im) for im in images]
 	fit = cagegrid.Fit(cams, None, size=(12, 8), maps=maps)
 	return cams, images, maps, fit
+
+
+def once_per_run(tmp_path_factory, name, make, wait_s=600):
+	"""
+	make()'s result, made once per test run however many pytest-xdist workers run this module's tests: --dist
+	worksteal spreads a module's tests over the workers, and a module-scoped fixture is then made again on each
+	(the scene: 15-35 s each, twice at 8 workers). The first worker makes it and saves it (pickle) in the run's own
+	temporary folder, which the workers share; the others wait for that file. Without workers: made here.
+	"""
+	import pickle, time
+	run = os.environ.get("PYTEST_XDIST_TESTRUNUID")
+	if not run:
+		return make()
+	root = tmp_path_factory.getbasetemp().parent # the run's folder, above each worker's own
+	path, lock = root / "{}-{}.pickle".format(name, run), root / "{}-{}.lock".format(name, run)
+	failed = root / "{}-{}.failed".format(name, run)
+	try:
+		os.close(os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+	except FileExistsError:
+		deadline = time.monotonic() + wait_s
+		while time.monotonic() < deadline:
+			if path.exists():
+				with open(str(path), "rb") as f:
+					return pickle.load(f)
+			if failed.exists():
+				break
+			time.sleep(0.2)
+		return make() # the worker making it failed, or never finished: make it here (and fail here too)
+	try:
+		value = make()
+	except BaseException:
+		failed.touch()
+		raise
+	part = root / "{}-{}.{}.part".format(name, run, os.getpid())
+	with open(str(part), "wb") as f:
+		pickle.dump(value, f)
+	os.replace(str(part), str(path))
+	return value
+
+
+@pytest.fixture(scope="module")
+def scene(tmp_path_factory):
+	return once_per_run(tmp_path_factory, "cagegrid-scene", make_scene)
 
 
 def nearest(corners, X):

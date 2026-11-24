@@ -297,7 +297,12 @@ def test_a_wiring_check_runs_until_stopped(tmp_path, board):
 	start = control(tmp_path, port, "wiring", "--channels", "AB")
 	assert start.returncode == 0 and "Wiring check started" in start.stdout, start.stdout + start.stderr
 	assert "A (Record Gate) 1x, B (Camera) 2x" in start.stdout
-	time.sleep(18) # two rounds and more (8 s each)
+	# Two rounds (8 s each): the gate's second blink and the camera's in that round, as they come (the board's log
+	# has each pin change at once), rather than a fixed 18 s
+	ups = lambda p, pin: sum(1 for _, level in p.get(pin, []) if level == 1)
+	deadline = time.monotonic() + 30
+	while time.monotonic() < deadline and not (ups(pins(log_path), 2) >= 2 and ups(pins(log_path), 3) >= 4):
+		time.sleep(0.2)
 	assert "Wiring check: running" in control(tmp_path, port, "status").stdout
 	stop = control(tmp_path, port, "stop")
 	assert stop.returncode == 0 and "stopped" in stop.stdout, stop.stdout

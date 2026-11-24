@@ -37,6 +37,36 @@ def NoColoramaWrapping():
 NoColoramaWrapping()
 
 
+def CtrlCAtDefault():
+	# Ctrl-C (SIGINT) at Python's default in this process, whatever started pytest. A job started in the background
+	# by a non-interactive shell (nohup pytest ... &, as a run under the rig lock on a lab machine often is) begins
+	# with SIGINT ignored, and every program a test starts inherits that: the panel tests' Ctrl-C then never reached
+	# the panel, which stayed open and failed its test 30 s later (24 November 2026, 5 tests on one worker of 6)
+	import signal
+	try:
+		signal.signal(signal.SIGINT, signal.default_int_handler)
+	except ValueError: # not the main thread: leave it
+		pass
+
+
+CtrlCAtDefault()
+
+
+@pytest.fixture(autouse=True)
+def ctrl_c_kept():
+	# Each test leaves Ctrl-C's handler as it found it: campy-acquire run in a test's own process installs its own
+	# (campy.utils.utils.QueueKeyboardInterrupt) and leaves it, and an ignored one would be inherited by every program
+	# a later test starts on this worker
+	import signal
+	handler = signal.getsignal(signal.SIGINT)
+	yield
+	if signal.getsignal(signal.SIGINT) is not handler:
+		try:
+			signal.signal(signal.SIGINT, handler)
+		except (ValueError, TypeError):
+			pass
+
+
 @pytest.fixture(autouse=True)
 def std_streams_kept(request):
 	# Each test leaves sys.stdout and sys.stderr as it found them: one that replaced them (or a library it imported)
