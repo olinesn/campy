@@ -34,8 +34,8 @@ environment of its own, uses it too.
 
 import re
 
-# The version the next release is planned as, for changes made since 2.8.0
-NEXT = "2.8.1"
+# The version the next release is planned as, for changes made since 2.9.0
+NEXT = "2.9.1"
 
 
 class Change:
@@ -99,7 +99,7 @@ CHANGES = [
 		"MP4.", AnyCamera(Video), pr=51),
 	Change("sessionFolder", "2.1.0", False, True,
 		"Each run records into a new <videoFolder>/<date_time>/ folder, not into videoFolder itself.", pr=63),
-	Change("cameraReconnect", NEXT, False, True,
+	Change("cameraReconnect", "2.9.0", False, True,
 		"A camera unplugged mid-recording is waited for, and taken back into the recording when it is plugged in "
 		"again: its video and frametimes.npy go on from the trigger pulse it comes back on (the frames while it "
 		"was gone are a gap in its frame numbers). Before, its recording ended there.",
