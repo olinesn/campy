@@ -313,6 +313,10 @@ def test_capacity_per_gpu():
 	_, cams = cameras(list("12"), gpuID=[0, 1], gpuMake="intel")
 	assert capacity(cams, dict(entry, key="h264_qsv/veryfast")) == [(OK, "h264_qsv/veryfast: 2 cameras at "
 		"1280x1024 60 fps; measured to keep up with 12 (x1.25 headroom)")]
+	# So does AMF: campy gives it no option that picks a GPU
+	_, cams = cameras(list("12"), gpuID=[0, 1], gpuMake="amd")
+	assert capacity(cams, dict(entry, key="h264_amf")) == [(OK, "h264_amf: 2 cameras at "
+		"1280x1024 60 fps; measured to keep up with 12 (x1.25 headroom)")]
 
 
 def test_capacity_estimate_says_what_differs():
