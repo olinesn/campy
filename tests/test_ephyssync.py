@@ -275,3 +275,25 @@ def test_a_run_copied_by_hand_gets_its_streams(tmp_path):
 	assert nidq["files"][0]["path"] == "spikeglx/run_g0/run_g0_t0.nidq.bin"
 	out = json.loads((rec / "ephyssync.json").read_text())
 	assert set(out["clocks"]) == {"nidq", "Camera0_topB", "Camera1_topC"} and out["sync"]["status"] == "ok"
+
+
+def test_the_probes_sync_channel_pulled_out_without_numpy(tmp_path):
+	# tools/sglx_sy_extract.py (standard library only, for a SpikeGLX computer without numpy): its .sy.bin is the
+	# probe's SY channel, value for value, and campy-ephyssync reads its sync edges
+	import subprocess, sys
+	n, rate = 385, 30000.0
+	x = np.random.default_rng(0).integers(-50, 50, (int(4.2 * rate), n)).astype(np.int16)
+	t = np.arange(x.shape[0]) / rate
+	x[:, -1] = ((np.floor(t - 0.3) % 2 == 0) & (t >= 0.3)).astype(np.int16) << 6
+	ap = tmp_path / "r_g0_t0.imec0.ap.bin"
+	x.tofile(ap)
+	(tmp_path / "r_g0_t0.imec0.ap.meta").write_text("nSavedChans=385\nimSampRate=30000\ntypeThis=imec\nfileSHA1=ABCD\n")
+	tool = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "sglx_sy_extract.py")
+	subprocess.run([sys.executable, "-I", tool, str(ap)], check=True, capture_output=True)
+	sy = tmp_path / "r_g0_t0.imec0.sy.bin"
+	assert np.array_equal(np.fromfile(sy, np.int16), x[:, -1])
+	meta = ephyssync.ReadMeta(str(sy)[:-4] + ".meta")
+	assert meta["syFromFileSHA1"] == "ABCD" and meta["nSavedChans"] == "1"
+	channel, k = ephyssync.DigitalWord(meta)
+	rises = ephyssync.Edges(str(sy), channel, k, 6)[0] / ephyssync.Rate(meta)
+	assert np.allclose(rises, [0.3, 2.3], atol=1 / rate)
