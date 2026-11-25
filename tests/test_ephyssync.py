@@ -259,3 +259,19 @@ def test_the_outcome_goes_into_the_lab_block(tmp_path):
 	(rec / "session.json").write_text(json.dumps({"schema": "campy-session/1"}))
 	ephyssync.Main([str(rec), "--no-probe"])
 	assert json.loads((rec / "session.json").read_text()) == {"schema": "campy-session/1"}
+
+
+def test_a_run_copied_by_hand_gets_its_streams(tmp_path):
+	# The NI file copied into <recording>/spikeglx by hand (no copy_from): campy-ephyssync fills in spikeglx.json
+	rec, n, _ = make_recording(tmp_path)
+	meta = rec / "spikeglx" / "run_g0" / "run_g0_t0.nidq.meta"
+	meta.write_text(meta.read_text() + "niXDChans1=0:7\nfileSHA1=FEED\nfileSizeBytes=12\n")
+	assert ephyssync.Main([str(rec), "--no-probe"]) == 0
+	written = json.loads((rec / "spikeglx.json").read_text())
+	assert written["runPath"] == "spikeglx/run_g0" and written["referenceClock"] == "nidq"
+	assert written["cameraBit"] == 2 # what was there is kept
+	nidq = {st["name"]: st for st in written["streams"]}["nidq"]
+	assert nidq["lines"]["XD2"] == "camera trigger" and nidq["files"][0]["fileSHA1"] == "FEED"
+	assert nidq["files"][0]["path"] == "spikeglx/run_g0/run_g0_t0.nidq.bin"
+	out = json.loads((rec / "ephyssync.json").read_text())
+	assert set(out["clocks"]) == {"nidq", "Camera0_topB", "Camera1_topC"} and out["sync"]["status"] == "ok"

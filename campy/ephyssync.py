@@ -356,6 +356,33 @@ def ProbeClock(folder, ni_meta, nidq, ap, log):
 		"name": m.group(1) if m else "imec0"}
 
 
+def FillRecord(folder, out):
+	"""
+	spikeglx.json gets what campy-session writes after its own copy (runPath,
+	streams, referenceClock) when it lacks them: a run copied into the
+	recording by hand. A line saying so, or None.
+	"""
+	from campy import spikeglx
+	path = os.path.join(folder, spikeglx.RECORD)
+	record = LoadJson(path)
+	if record is None:
+		record = {"schema": "campy-spikeglx/1"}
+	if record.get("runPath") and record.get("streams"):
+		return None
+	run = os.path.dirname(os.path.join(folder, out["nidq"]))
+	run_path = os.path.relpath(run, folder).replace(os.sep, "/")
+	streams, reference = spikeglx.RunStreams(run, out.get("bit", -1))
+	for stream in streams:
+		for f in stream["files"]:
+			f["path"] = run_path + "/" + f["path"]
+	record.update(runPath=run_path, streams=streams, referenceClock=out.get("referenceClock") or reference)
+	tmp = path + ".tmp"
+	with open(tmp, "w", encoding="utf-8") as f:
+		json.dump(record, f, indent=2)
+	os.replace(tmp, path)
+	return "spikeglx.json: runPath {}, {} stream(s) from SpikeGLX's .meta files.".format(run_path, len(streams))
+
+
 def LabStatus(folder, out):
 	"""
 	The check's outcome into session.json's lab block (lab-session/1, for the
@@ -400,6 +427,9 @@ def Main(argv=None):
 	out = Check(args.folder, args.bit, args.nidq, False if args.no_probe else args.ap)
 	with open(os.path.join(args.folder, "ephyssync.json"), "w", encoding="utf-8") as f:
 		json.dump(out, f, indent=2)
+	said = FillRecord(args.folder, out)
+	if said:
+		print(said)
 	said = LabStatus(args.folder, out)
 	if said:
 		print(said)
