@@ -532,3 +532,136 @@ def test_numba_off_or_missing_leaves_numpy(monkeypatch, sorted_recording):
 	got, _ = Matched(out, source, 0, int(3 * RATE), True, 7)
 	assert es.Fast(wait=True) is None and es.FastStatus()["state"] == "missing"
 	assert np.array_equal(got.sample, want.sample) and np.array_equal(got.unit, want.unit)
+
+
+# Following the probe's drift: measured live from the units' own spikes, the templates moved with it
+
+DRIFTING = [(12, 190, 0.12, 0.35), (19, 45, 0.30, 0.15), (40, 180, 0.10, 0.50), (47, 51, 0.20, 0.30),
+	(70, 160, 0.15, 0.30), (75, 60, 0.12, 0.45), (88, 175, 0.10, 0.40)] # (channel, uV, width ms, bump): big units,
+# and small ones beside them, under the threshold
+
+
+def DriftingRecording(seconds, up_um, after_s, n=96, rate_hz=14.0, noise_uv=8.0, seed=9):
+	"""Units whose footprints (from a point beside their channel's site) move up the probe by up_um, gradually over
+	the second after after_s: (int16 data, geometry, Kilosort's times, units)."""
+	rng = np.random.default_rng(seed)
+	geometry = el.Geometry.Linear(n)
+	T = int(seconds * RATE)
+	x = rng.normal(0, noise_uv, (T, n)).astype(np.float32)
+	times, clusters = [], []
+	for u, (ch, amp, width, bump) in enumerate(DRIFTING):
+		shape = Shape(width, bump)
+		at = 0
+		while True:
+			at += int(RATE * (0.004 + rng.exponential(1 / rate_hz)))
+			if at + 41 >= T:
+				break
+			moved = up_um * np.clip((at / RATE - after_s), 0, 1)
+			d = np.hypot(geometry.x - geometry.x[ch] - 6, geometry.z - geometry.z[ch] - 5 - moved)
+			x[at - 20:at + 41] += amp * shape[:, None] * np.exp(-d / 30.0).astype(np.float32)[None, :]
+			times.append(at)
+			clusters.append(u)
+	order = np.argsort(times)
+	return (np.clip(np.round(x / UV), -32768, 32767).astype(np.int16), geometry, np.array(times)[order],
+		np.array(clusters)[order])
+
+
+@pytest.fixture(scope="module")
+def drifting(tmp_path_factory):
+	tmp = tmp_path_factory.mktemp("drift")
+	data, geometry, times, clusters = DriftingRecording(22.0, 30.0, 8.0)
+	bin_path = WriteBin(str(tmp), data, geometry, first_sample=0)
+	phy = WritePhy(str(tmp / "kilosort4"), geometry, times, clusters)
+	with open(os.path.join(phy, "cluster_group.tsv"), "w") as f:
+		f.write("cluster_id\tgroup\n" + "".join("{}\tgood\n".format(u) for u in range(len(DRIFTING))))
+	out = str(tmp / "templates.npz")
+	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":7"]) == 0
+	return tmp, bin_path, phy, out
+
+
+@pytest.fixture
+def drift_often(monkeypatch):
+	# Measured every second from the last 2 s, from 3 units of 10 strong spikes (live: every 30 s from the last 60 s,
+	# 10 units of 20; the recordings here are short, with few units)
+	monkeypatch.setattr(es, "DRIFT_EVERY_S", 1.0)
+	monkeypatch.setattr(es, "DRIFT_WINDOW_S", 2.0)
+	monkeypatch.setattr(es, "DRIFT_UNITS", 3)
+	monkeypatch.setattr(es, "DRIFT_UNIT_SPIKES", 10)
+
+
+def test_training_keeps_where_each_site_is(drifting):
+	tmp, bin_path, phy, out = drifting
+	sorter = es.TemplateSorter(out)
+	g = el.Geometry.Linear(96)
+	assert np.array_equal(sorter.site_z, g.z.astype(np.float32)) and np.array_equal(sorter.site_x, g.x.astype(np.float32))
+	assert sorter.rate == RATE
+
+
+def test_moved_templates_are_the_trained_ones_at_0_and_follow_the_units(drifting):
+	# Moved 0 um: the templates as trained, to the last bit. Moved 30 um up, as the units moved: each unit's template
+	# (whitened, as scored) much like its template trained after the move, more than the one left where it was
+	tmp, bin_path, phy, out = drifting
+	m = es.MatchingSorter(out).matcher
+	assert np.array_equal(m.Moved(0.0), m.base)
+	after = str(tmp / "templates_after.npz")
+	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", after, "--span", "10:", "--no-learn"]) == 0
+	later = es.TemplateSorter(after)
+	assert np.array_equal(later.units, m.units) # (their peak sites have moved, so their sites too)
+
+	def Probe(t, sites): # a template on its sites, on the probe's channels (where both have sites)
+		out = np.zeros((t.shape[0], 96))
+		out[:, sites[sites >= 0]] = t[:, sites >= 0]
+		return out
+	cos = lambda a, b: (a * b).sum() / np.sqrt((a * a).sum() * (b * b).sum())
+	moved = m.Moved(30.0)
+	for k in range(len(m.units)):
+		if DRIFTING[int(m.units[k])][1] > 100: # (a big unit: its template from many spikes)
+			both = np.intersect1d(m.sites[k][m.sites[k] >= 0], later.sites[k][later.sites[k] >= 0])
+			new = Probe(later.templates_w[k], later.sites[k])[:, both]
+			assert cos(Probe(moved[k], m.sites[k])[:, both], new) >= 0.85, k
+			assert cos(Probe(moved[k], m.sites[k])[:, both], new) >= cos(Probe(m.base[k], m.sites[k])[:, both], new) + 0.1
+
+
+def test_the_templates_follow_the_probe_s_drift(drifting, drift_often, tmp_path):
+	# The units move 30 um up the probe from 8 s (over a second). Trained on the first 7 s; matched from 9 s to the end:
+	# following the drift, the templates move up with the units (measured from their own strong spikes), and the small
+	# units are found and given their spikes, which they mostly aren't with the templates left where they were trained
+	tmp, bin_path, phy, out = drifting
+	got = {}
+	for name, extra in (("follow", []), ("stay", ["--no-drift"])):
+		report = tmp_path / "{}.json".format(name)
+		assert el.Main(["evaluate", "--replay", bin_path, "--phy", phy, "--templates", out, "--span", "9:", "--match",
+			"learned", "--json", str(report)] + extra) == 0
+		got[name] = json.loads(report.read_text())
+	follow, stay = got["follow"], got["stay"]
+	assert follow["follows_drift"] and not stay["follows_drift"] and stay["drift"] is None
+	# The measure catches up with the units within a few seconds (each a step towards it), then stays with them
+	late = [d for d in follow["drift"] if d["s"] >= 14]
+	assert late and all(26.0 <= d["moved_um"] <= 34.0 for d in late), follow["drift"]
+	assert all(d["moved_um"] == 0 for d in follow["drift"] if d["s"] <= 8)
+	f = {r["unit"]: r for r in follow["per_unit"]}
+	s = {r["unit"]: r for r in stay["per_unit"]}
+	for u, (ch, amp, _, _) in enumerate(DRIFTING): # (from 9 s: while the templates catch up too)
+		assert f[u]["own_sensitivity"] >= 0.9, f[u] # every unit's spikes found
+		assert f[u]["own_precision"] >= (0.95 if amp > 100 else 0.7), f[u] # and given right; the small ones less so
+		if amp < 100: # left where they were, the small units' templates take the big ones' spikes
+			assert s[u]["own_precision"] <= f[u]["own_precision"] - 0.2, (s[u], f[u])
+	assert min(s[u]["own_sensitivity"] for u in s) <= 0.5 # and big units moved off their templates are lost
+
+
+def test_following_the_drift_gives_the_same_spikes_however_the_samples_come(drifting, drift_often):
+	tmp, bin_path, phy, out = drifting
+	source = el.ReplaySource(bin_path, speed=0)
+	runs, logs = [], []
+	for piece in (0.1, 0.037, 0.5, 1.3):
+		sorter = es.MatchingSorter(out)
+		spikes, _ = es.ReplayMatched(source.data, source.stream, 0, len(source.data), sorter, piece)
+		runs.append(sorted(zip(spikes.sample.tolist(), spikes.unit.tolist(), spikes.channel.tolist())))
+		logs.append(sorter.matcher.drift_log)
+	assert sum(1 for _, m, v, _ in logs[0] if v != 0) >= 5 # the templates moved, several times
+	assert all(r == runs[0] for r in runs[1:]) and all(g == logs[0] for g in logs[1:])
+	# numba's loop, following the drift: the same spikes, sizes and scores as numpy's
+	if es.Fast(wait=True) is not None:
+		a, ra = Matched(out, source, 0, len(source.data), True)
+		b, rb = Matched(out, source, 0, len(source.data), False)
+		assert ra == rb and np.array_equal(a.sample, b.sample) and np.array_equal(a.unit, b.unit)

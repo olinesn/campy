@@ -73,8 +73,9 @@ def _Subtract(R, a0, t, u, a, cross, cross_at, runs, runs_at, L):
 
 @numba.njit(**_JIT)
 def _Group(R, a0, t, u, peaks_t, peaks_u, paired, n_paired, taken_t, taken_n, norm2, zu, nearmat, pos, cross,
-		cross_at, w, pair_search, group_most, size_lo, size_hi, L, g_t, g_u, g_a):
-	# ephyssort.TemplateMatcher.Group: the group's members into g_t, g_u, g_a; how many (0: u alone)
+		cross_at, w, pair_search, group_most, size_lo, size_hi, L, prior2, g_t, g_u, g_a):
+	# ephyssort.TemplateMatcher.Group: the group's members into g_t, g_u, g_a; how many (0: u alone). prior2: each
+	# unit's prior, twice (ephyssort.PRIOR), added to what a trial adds to choose among them; None: none
 	alone = np.float64(R[u, t - a0]) / norm2[u]
 	explained = alone * np.float64(R[u, t - a0])
 	i = np.searchsorted(peaks_t, t - w)
@@ -88,6 +89,7 @@ def _Group(R, a0, t, u, peaks_t, peaks_u, paired, n_paired, taken_t, taken_n, no
 	trial_v = np.empty(most, np.int64)
 	size = np.empty((most, 3))
 	gain = np.empty(most)
+	best_of = np.empty(most) # what each trial adds, with its prior
 	total = np.empty(most)
 	while n < group_most:
 		k = 0
@@ -163,12 +165,13 @@ def _Group(R, a0, t, u, peaks_t, peaks_u, paired, n_paired, taken_t, taken_n, no
 				together = -np.inf
 			g = together - explained
 			gain[q] = g
+			best_of[q] = g if prior2 is None else g + prior2[v]
 			total[q] = together
 			ok = g > zu[v] * zu[v]
 			for m in range(n + 1):
 				if not (size[q, m] >= size_lo and size[q, m] <= size_hi):
 					ok = False
-			if ok and (best < 0 or g > gain[best]):
+			if ok and (best < 0 or best_of[q] > best_of[best]):
 				best = q
 		if best < 0:
 			break
@@ -185,10 +188,11 @@ def _Group(R, a0, t, u, peaks_t, peaks_u, paired, n_paired, taken_t, taken_n, no
 
 @numba.njit(**_JIT)
 def Pass(R, a0, new_t, new_u, new_near, peaks_t, peaks_u, taken_t, taken_n, norm2, root, zu, nearmat, pos, cross,
-		cross_at, runs, runs_at, w, pair_search, group_most, size_lo, size_hi, L, out_t, out_u, out_a, out_g):
+		cross_at, runs, runs_at, w, pair_search, group_most, size_lo, size_hi, L, prior2, out_t, out_u, out_a, out_g):
 	"""One pass of ephyssort.TemplateMatcher.Judge: its spikes (new_*, the highest first), each looked at again with
 	those before it taken away (R, the scores, whose first sample is a0), fitted alone or with other units' at once,
-	and taken away. Each spike found into out_* (sample, unit, size, in a group); how many."""
+	and taken away. prior2: each unit's prior, twice (None: none). Each spike found into out_* (sample, unit, size, in
+	a group); how many."""
 	n_out = 0
 	paired = np.empty((len(new_t) * group_most + 1, 2), np.int64)
 	n_paired = 0
@@ -205,7 +209,7 @@ def Pass(R, a0, new_t, new_u, new_near, peaks_t, peaks_u, taken_t, taken_n, norm
 		n = 0
 		if new_near[i]:
 			n = _Group(R, a0, t, u, peaks_t, peaks_u, paired, n_paired, taken_t, taken_n, norm2, zu, nearmat, pos,
-				cross, cross_at, w, pair_search, group_most, size_lo, size_hi, L, g_t, g_u, g_a)
+				cross, cross_at, w, pair_search, group_most, size_lo, size_hi, L, prior2, g_t, g_u, g_a)
 		if n == 0 and a > size_hi:
 			continue # too big for one spike of it, and no other unit's spike at once explains the rest
 		if n == 0:
@@ -237,8 +241,9 @@ def WarmUp():
 	pos[1, 0] = 1
 	pos[1, 1] = 0
 	cross = np.ones((4, 2 * L - 1), np.float32)
-	Pass(R, 0, np.array([150, 152]), np.array([0, 1]), np.array([True, True]), np.array([150, 152]),
-		np.array([0, 1]), np.zeros((U, 20), np.int64), np.zeros(U, np.int64), np.full(U, 10.0), np.full(U, 3.0),
-		np.full(U, 1.0), nearmat, pos, cross, np.array([0, 2]), np.array([[0, 2, 0, 2], [0, 2, 0, 2]]),
-		np.array([0, 1, 2]), 20, 6, 3, 0.5, 2.0, L, np.empty(6, np.int64), np.empty(6, np.int64), np.empty(6),
-		np.empty(6, np.bool_))
+	for prior2 in (None, np.zeros(U)): # both kinds: without and with each unit's prior
+		Pass(R.copy(), 0, np.array([150, 152]), np.array([0, 1]), np.array([True, True]), np.array([150, 152]),
+			np.array([0, 1]), np.zeros((U, 20), np.int64), np.zeros(U, np.int64), np.full(U, 10.0), np.full(U, 3.0),
+			np.full(U, 1.0), nearmat, pos, cross, np.array([0, 2]), np.array([[0, 2, 0, 2], [0, 2, 0, 2]]),
+			np.array([0, 1, 2]), 20, 6, 3, 0.5, 2.0, L, prior2, np.empty(6, np.int64), np.empty(6, np.int64),
+			np.empty(6), np.empty(6, np.bool_))
