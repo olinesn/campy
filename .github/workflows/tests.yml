@@ -64,7 +64,7 @@ jobs:
       - name: Install campy
         # OpenCV (opencv-python-headless) comes with campy (setup.py): campy-acquire shows its
         # cameras in campy-live-view, which draws with it in Qt's window
-        # pytest-xdist: the tests run on 4 workers at once (-n 4, below)
+        # pytest-xdist: the tests run on 6 workers at once (-n 6, below)
         run: python -m pip install -e . pytest pytest-xdist
       - name: Install sleap-io (campy-live-export's tests)
         # Also campy-live's environment's, with sleap-nn; it needs Python 3.10 or later,
@@ -80,15 +80,17 @@ jobs:
         if: env.NIREYECAM_TOKEN != ''
         run: python -m pip install "nireyecam @ git+https://x-access-token:${NIREYECAM_TOKEN}@github.com/olinesn/nir-eye-cam.git#subdirectory=host"
       - name: Test
-        # On 4 workers at once (pytest-xdist): most tests wait on real-time recordings, timers and child
-        # processes rather than the CPU, so they overlap well. 4, not -n auto: with psutil installed (campy needs
-        # it) auto counts physical cores, which is 2 on GitHub's x64 runners (2 cores of 2 threads) and 4 on ARM.
+        # On 6 workers at once (pytest-xdist): most tests wait on real-time recordings, timers and child
+        # processes rather than the CPU, so they overlap well, more workers than the runner's 4 threads. Pinned to
+        # 4 cores, 6 workers ran the suite in 300 s, 4 in 423 s and 8 in 303 s (one load-timed test then failed).
+        # A number, not -n auto: with psutil installed (campy needs it) auto counts physical cores, which is 2 on
+        # GitHub's x64 runners (2 cores of 2 threads) and 4 on ARM.
         # --dist worksteal: a worker that has run out of tests takes some queued on another, so none waits behind
         # a long test while others idle. --durations lists the 25 slowest, to see where the time goes when the job
         # grows. The 'alone' test (campy-live-view's 100 fps frame-writer test, which the other workers' load holds
         # up) is skipped there, and runs on its own in the next step
         run: |
-          python -m pytest -q -rs -n 4 --dist worksteal --durations=25 -m "not alone" tests
+          python -m pytest -q -rs -n 6 --dist worksteal --durations=25 -m "not alone" tests
       - name: Test (the viewer's 100 fps test, alone)
         if: success() || failure()
         run: python -m pytest -q -rs --durations=10 -m alone tests
