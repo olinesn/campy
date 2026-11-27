@@ -383,6 +383,13 @@ def Take(s, which):
 		s.neighbors[which], s.frame[which])
 
 
+def SharedShapes(Tn, components=COMPONENTS):
+	"""The templates' shared shapes in time: the first components of the SVD of every template's every site
+	(Tn: [units, 61, sites], in noise units), [61, components]."""
+	_, _, vt = np.linalg.svd(Tn.transpose(0, 2, 1).reshape(-1, Tn.shape[1]), full_matrices=False)
+	return vt[:components].T
+
+
 class TemplateMatcher:
 	"""
 	Spikes found by the templates themselves, as Kilosort finds them: a small
@@ -420,10 +427,12 @@ class TemplateMatcher:
 	give the same spikes however they come in pieces.
 	"""
 
-	def __init__(self, sorter, z=None, components=COMPONENTS, threads=1, fast=True):
+	def __init__(self, sorter, z=None, components=COMPONENTS, threads=1, fast=True, shapes=None):
 		"""z: every unit's threshold; None: each unit's learned in training (sorter.match_z), else Z_THRESHOLD.
 		threads: the scores are worked out in this many threads, each for its share of the units (the same scores).
-		fast: judge with numba's compiled loop once it is loaded (campy/ephyssort_numba.py; the same spikes)."""
+		fast: judge with numba's compiled loop once it is loaded (campy/ephyssort_numba.py; the same spikes).
+		shapes: the shared shapes in time to use ([61, K]; ShankMatcher gives each part the whole probe's), else
+		worked out from these units' templates."""
 		import scipy.fft
 		self.fft = scipy.fft
 		self.units, self.peaks, self.sites = sorter.units, sorter.peaks, sorter.sites
@@ -446,9 +455,7 @@ class TemplateMatcher:
 		ok = self.sites >= 0
 		self.cols = np.where(ok, self.sites, 0) # a site missing (-1: a probe with fewer channels) as channel 0, weight 0
 		Tn = templates / self.noise[self.cols][:, None, :] * ok[:, None, :] # [units, 61, sites], noise units
-		shapes = Tn.transpose(0, 2, 1).reshape(-1, L)
-		_, _, vt = np.linalg.svd(shapes, full_matrices=False)
-		W = vt[:components].T # [61, K]
+		W = SharedShapes(Tn, components) if shapes is None else np.asarray(shapes, np.float64) # [61, K]
 		self.Tn = np.einsum("tk,sk,usj->utj", W, W, Tn).astype(np.float32) # each template as its shapes give it
 		self.W = W # [61, K]: the shapes in time
 		self.weights = np.einsum("tk,utj->ukj", W, Tn) # [units, K, sites]: each template's shapes' weights on its sites
@@ -915,6 +922,153 @@ class TemplateMatcher:
 		return el.Spikes(bfirst + t, self.peaks[u], buf[t, self.peaks[u]], self.units[u], waves, sites.astype(np.int32))
 
 
+SPLITS = ("threads", "serial", "whole") # how the matcher takes a probe of independent parts (a multi-shank probe's
+# shanks): side by side in threads (the default), one after another, or the whole probe at once (the same spikes)
+PARTS_MOST = 4 # parts matched apart, at most (a Neuropixels 2.0 probe's four shanks): more (units far apart, in a
+# templates file without whitening) are put together with their neighbors
+
+
+def Parts(sorter, most=PARTS_MOST):
+	"""
+	The probe's independent parts, for its matcher: each channel's part (-1:
+	none, a channel no unit reaches), and each unit's. A part is a set of
+	channels that no unit's sites and no channel's whitening reach out of: on
+	a multi-shank probe (Neuropixels 2.0, NP2013), each shank, since a unit's
+	sites and a channel's whitening are its nearest on its own shank. One part
+	when they reach across (a single-shank probe, or shanks whose nearest
+	sites take in a neighbor's). More than most: those next to each other
+	(by their first channel) put together, about as many units in each.
+	"""
+	from scipy.sparse import coo_matrix
+	from scipy.sparse.csgraph import connected_components
+	n = len(sorter.noise)
+	rows, cols = [], []
+	for s in sorter.sites:
+		s = s[s >= 0]
+		if len(s):
+			rows += [int(s[0])] * len(s)
+			cols += s.tolist()
+	if getattr(sorter, "whiten", None) is not None:
+		r, c = np.nonzero(sorter.whiten)
+		rows += r.tolist()
+		cols += c.tolist()
+	graph = coo_matrix((np.ones(len(rows)), (rows, cols)), shape=(n, n))
+	_, label = connected_components(graph, directed=False) # numbered in the order of their first channels
+	parts, units = np.unique(label[sorter.peaks], return_counts=True)
+	group = -np.ones(label.max() + 1, np.int64) # each part's, with none for the channels no unit reaches
+	group[parts] = np.arange(len(parts)) if len(parts) <= most else (np.cumsum(units) - units) * most // units.sum()
+	label = group[label]
+	return label, label[sorter.peaks]
+
+
+def Matcher(sorter, z=None, threads=1, split="threads"):
+	"""The sorter's template matcher: with split "threads" or "serial" and a probe of independent parts (Parts), a
+	ShankMatcher, its parts side by side in threads or one after another; else (one part, or "whole") the whole
+	probe's TemplateMatcher. The same spikes, in the same order, either way."""
+	if split not in SPLITS:
+		raise el.EphysError("the matcher's split: {}, not {!r}".format(", ".join(SPLITS), split))
+	if split != "whole":
+		label, part_of_unit = Parts(sorter)
+		if len(np.unique(part_of_unit)) > 1:
+			return ShankMatcher(sorter, z, threads=threads, side_by_side=split == "threads", parts=(label,
+				part_of_unit))
+	return TemplateMatcher(sorter, z, threads=threads)
+
+
+class ShankMatcher:
+	"""
+	The TemplateMatcher's work split into the probe's independent parts
+	(Parts: a multi-shank probe's shanks), one TemplateMatcher each, side by
+	side in threads (or one after another). Nothing a part does changes
+	another's scores, so each part finds the spikes the whole probe's matcher
+	finds there; each part's matcher is given the whole probe's shared shapes
+	in time (its own would be another approximation of its templates, and
+	move a few spikes a sample or two), and the parts' spikes are put in the
+	whole probe's order (by sample, then by the unit's row in the templates
+	file). The whitening, a dense product mostly zeros across shanks, is a
+	quarter of the whole probe's work on a 4-shank probe; in threads, the
+	parts are matched in about the time of the biggest. Same interface as
+	TemplateMatcher for MatchingSorter: Feed, Flush, Reset, next, fast.
+	"""
+
+	def __init__(self, sorter, z=None, components=COMPONENTS, threads=1, fast=True, side_by_side=True, parts=None):
+		"""threads: each part's matcher's, for its scores. side_by_side: the parts in threads of their own (one
+		each), else one after another. parts: Parts(sorter), if worked out already."""
+		from types import SimpleNamespace
+		label, part_of_unit = parts if parts is not None else Parts(sorter)
+		n = len(sorter.noise)
+		# The shared shapes in time, from all the probe's units, as the whole probe's matcher has them
+		templates, noise = (sorter.templates_w, sorter.noise_w) if sorter.whiten is not None else (sorter.templates,
+			sorter.noise)
+		noise = np.where(noise > 0, noise, 1).astype(np.float32)
+		ok = sorter.sites >= 0
+		shapes = SharedShapes(templates / noise[np.where(ok, sorter.sites, 0)][:, None, :] * ok[:, None, :], components)
+		self.by_unit = np.argsort(sorter.units, kind="stable") # a spike's unit -> its row in the templates file
+		self.units_sorted = np.asarray(sorter.units)[self.by_unit]
+		self.parts = [] # (its channels, its units' rows in the sorter, its TemplateMatcher)
+		for p in np.unique(part_of_unit):
+			ch = np.flatnonzero(label == p)
+			local = -np.ones(n, np.int64)
+			local[ch] = np.arange(len(ch))
+			r = np.flatnonzero(part_of_unit == p)
+			sites = np.where(sorter.sites[r] >= 0, local[np.maximum(sorter.sites[r], 0)], -1)
+			assert (sites[sorter.sites[r] >= 0] >= 0).all(), "a unit's sites reach out of its part"
+			view = SimpleNamespace(units=sorter.units[r], peaks=local[sorter.peaks[r]], sites=sites,
+				templates=sorter.templates[r], noise=sorter.noise[ch],
+				whiten=None if sorter.whiten is None else sorter.whiten[np.ix_(ch, ch)],
+				templates_w=None if sorter.templates_w is None else sorter.templates_w[r],
+				noise_w=None if sorter.noise_w is None else sorter.noise_w[ch],
+				match_z=None if sorter.match_z is None else sorter.match_z[r], compete=sorter.compete[r],
+				near_sites=sites[:, :el.NEIGHBORS])
+			self.parts.append((ch, r, TemplateMatcher(view, z, components, threads=threads, fast=fast, shapes=shapes)))
+		self.pool = None
+		if side_by_side and len(self.parts) > 1:
+			from concurrent.futures import ThreadPoolExecutor
+			self.pool = ThreadPoolExecutor(len(self.parts), thread_name_prefix="campy ephys shank")
+
+	@property
+	def next(self):
+		return min(m.next for _, _, m in self.parts) if self.parts else None
+
+	@property
+	def fast(self):
+		return all(m.fast for _, _, m in self.parts)
+
+	@fast.setter
+	def fast(self, value):
+		for _, _, m in self.parts:
+			m.fast = value
+
+	def Reset(self):
+		for _, _, m in self.parts:
+			m.Reset()
+
+	def Each(self, call):
+		if self.pool is None:
+			return [call(ch, m) for ch, _, m in self.parts]
+		return [f.result() for f in [self.pool.submit(call, ch, m) for ch, _, m in self.parts]]
+
+	def Global(self, ch, s):
+		"""A part's spikes with the probe's channel numbers."""
+		return el.Spikes(s.sample, ch[s.channel], s.amplitude, s.unit, s.waveforms,
+			np.where(s.neighbors >= 0, ch[np.maximum(s.neighbors, 0)], -1).astype(np.int32), s.frame)
+
+	def Merged(self, found):
+		"""The parts' spikes in the whole probe's order: by sample, then by the unit's row in the templates file."""
+		s = Cat(found)
+		if not len(s):
+			return s
+		row = self.by_unit[np.searchsorted(self.units_sorted, s.unit)]
+		return Take(s, np.lexsort((row, s.sample)))
+
+	def Feed(self, first, x, last=False):
+		return self.Merged(self.Each(lambda ch, m: self.Global(ch, m.Feed(first, np.ascontiguousarray(x[:, ch]),
+			last))))
+
+	def Flush(self):
+		return self.Merged(self.Each(lambda ch, m: self.Global(ch, m.Flush())))
+
+
 class MatchingSorter(TemplateSorter):
 	"""
 	The sorter that finds spikes with the templates too (TemplateMatcher):
@@ -924,13 +1078,18 @@ class MatchingSorter(TemplateSorter):
 	both finders have judged them.
 	"""
 
-	def __init__(self, path, z=None, threads=1):
+	def __init__(self, path, z=None, threads=1, split="threads"):
 		"""z: every unit's template-spike threshold; None: each unit's learned in training (Z_THRESHOLD for a file
-		without them). threads: the matcher's scores worked out in this many threads."""
+		without them). threads: the matcher's scores worked out in this many threads. split: a probe of independent
+		parts (a multi-shank probe's shanks) matched "threads", side by side in threads; "serial", one after another;
+		"whole", the whole probe at once (Matcher: the same spikes)."""
 		super().__init__(path)
-		self.matcher = TemplateMatcher(self, z, threads=threads)
-		self.name = "Kilosort 4 templates, matched ({} units, {})".format(self.given, "z {:g}".format(z) if z is not
-			None else "each unit's threshold" if self.match_z is not None else "z {:g}".format(Z_THRESHOLD))
+		self.matcher = Matcher(self, z, threads, split)
+		self.parts = len(self.matcher.parts) if isinstance(self.matcher, ShankMatcher) else 1 # the probe's, matched
+		self.name = "Kilosort 4 templates, matched ({} units, {}{})".format(self.given, "z {:g}".format(z) if z is not
+			None else "each unit's threshold" if self.match_z is not None else "z {:g}".format(Z_THRESHOLD),
+			", {} parts {}".format(self.parts, "side by side" if self.matcher.pool is not None else "one after another")
+			if self.parts > 1 else "")
 		self.pending = el.Spikes()
 		self.recent = el.Spikes() # template spikes given out, the last few samples: for the next threshold spikes
 
@@ -975,17 +1134,17 @@ class MatchingSorter(TemplateSorter):
 		return self.Release(np.iinfo(np.int64).max)
 
 
-def Sorter(path, match=None, threads=1):
+def Sorter(path, match=None, threads=1, split="threads"):
 	"""The live sorter from a templates file: match None, "" or 0: the threshold's spikes sorted (TemplateSorter);
 	"learned": spikes found by the templates too, each unit at its threshold learned in training (MatchingSorter); a
-	number: every unit at that z. threads: the matcher's, for its scores."""
+	number: every unit at that z. threads: the matcher's, for its scores. split: MatchingSorter's."""
 	if match in (None, "", 0, "0", "off"):
 		return TemplateSorter(path)
 	try:
 		z = None if match == "learned" else float(match)
 	except ValueError:
 		raise el.EphysError("--match: \"learned\", a number or 0, not {!r}".format(match))
-	return MatchingSorter(path, z, threads)
+	return MatchingSorter(path, z, threads, split)
 
 
 # ---------------------------------------------------------------- training and evaluation
@@ -1157,7 +1316,7 @@ def Learn(data, stream, path, times, clusters, start, end, say=print):
 	replayed through the matching sorter with the templates in path, every unit's spikes looked at from LEARN_Z, and
 	paired with Kilosort's (times, clusters) from a second in (as live, the filter settles first)."""
 	t0 = time.monotonic()
-	sorter = MatchingSorter(path, LEARN_Z)
+	sorter = MatchingSorter(path, LEARN_Z, split="whole") # each spike's record is the whole probe's matcher's
 	Fast(wait=True)
 	sorter.matcher.record = []
 	ReplayMatched(data, stream, start, end, sorter)
@@ -1195,14 +1354,15 @@ def ReplayMatched(data, stream, start, end, sorter, piece_s=0.1):
 	return Cat(out), took
 
 
-def Evaluate(data, stream, phy, templates, span=None, warm_s=1.0, say=print, report=None, match=None, threads=1):
+def Evaluate(data, stream, phy, templates, span=None, warm_s=1.0, say=print, report=None, match=None, threads=1,
+		split="threads"):
 	"""The templates' sort of the samples in span against Kilosort's there: per unit (the templates' units with a
 	label in report; default all) the share of its Kilosort spikes found live and given to it (sensitivity), and the
 	share of the live spikes given to it that are its (precision); the live spikes the templates left unsorted; the
 	time a spike took to sort. Every unit with a template competes for the spikes (mua units' templates take their
 	own spikes from the good units'), and a live spike is a unit's when it matches one of that unit's Kilosort
 	spikes. match: as Sorter's."""
-	sorter = Sorter(templates, match, threads)
+	sorter = Sorter(templates, match, threads, split)
 	match = isinstance(sorter, MatchingSorter) and match
 	sort = ReadPhy(phy, tuple(set(str(l) for l in sorter.labels)))
 	start, end = Span(span, stream.rate, len(data))
@@ -1268,6 +1428,8 @@ def Evaluate(data, stream, phy, templates, span=None, warm_s=1.0, say=print, rep
 		"sort_us_per_spike": round(per_spike_us, 1), "sort_s_per_s": round(per_second, 3),
 		"match_z": (match if match == "learned" else float(match)) if match else None,
 		"numba": FastStatus()["numba"] if match and sorter.matcher.fast else None, "threads": threads,
+		"split": (("threads" if sorter.matcher.pool is not None else "serial") if sorter.parts > 1 else "whole")
+			if match else None, "parts": sorter.parts if match else None, # as the sorter matched, not as asked
 		"given_per_s": round(float(np.isin(spikes.unit, [u for u, c in zip(units, sorter.compete) if not c]).sum()) /
 			((end - start) / stream.rate), 1),
 		"template_spikes": int((spikes.unit >= 0).sum()) if match else None,

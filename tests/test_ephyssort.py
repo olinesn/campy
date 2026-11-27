@@ -532,3 +532,126 @@ def test_numba_off_or_missing_leaves_numpy(monkeypatch, sorted_recording):
 	got, _ = Matched(out, source, 0, int(3 * RATE), True, 7)
 	assert es.Fast(wait=True) is None and es.FastStatus()["state"] == "missing"
 	assert np.array_equal(got.sample, want.sample) and np.array_equal(got.unit, want.unit)
+
+
+@pytest.fixture(scope="module")
+def four_shanks(tmp_path_factory):
+	# A Neuropixels 2.0 four-shank probe (NP2013): 96 channels, channel i on shank i % 4 (as its .meta interleaves
+	# them), shanks 250 um apart; units on all four, some side by side on one shank, trained on its first 4 s
+	from test_ephystemplates import WriteBout
+	tmp = str(tmp_path_factory.mktemp("shanks"))
+	n, shanks = 96, 4
+	row = np.arange(n) // shanks
+	x_in = np.where(row % 2 == 0, 27.0, 59.0)
+	z = 15.0 * row
+	written = el.Geometry(x_in, z, np.arange(n) % shanks, np.ones(n, int)) # x within its shank, as the .meta has it
+	geometry = el.Geometry(x_in + 250.0 * (np.arange(n) % shanks), z, np.arange(n) % shanks, np.ones(n, int))
+	units = [(4 * 5 + s, 180, 0.12, 0.35, "good") for s in range(4)] + [(4 * 6 + s, 140, 0.30, 0.15, "good")
+		for s in range(4)] + [(4 * 15 + 1, 200, 0.10, 0.50, "good"), (4 * 16 + 2, 120, 0.20, 0.30, "good")]
+	rng = np.random.default_rng(3)
+	T = int(6 * RATE)
+	x = rng.normal(0, 8.0, (T, n)).astype(np.float32)
+	times, clusters = [], []
+	for u, (ch, amp, width, bump, _) in enumerate(units):
+		d = np.hypot(geometry.x - geometry.x[ch], geometry.z - geometry.z[ch])
+		spread = np.exp(-d / 35.0).astype(np.float32)
+		shape = Shape(width, bump)
+		at = 0
+		while True:
+			at += int(RATE * (0.004 + rng.exponential(1 / 12.0)))
+			if at + 41 >= T:
+				break
+			x[at - 20:at + 41] += amp * shape[:, None] * spread[None, :]
+			times.append(at)
+			clusters.append(u)
+	order = np.argsort(times)
+	times, clusters = np.array(times)[order], np.array(clusters)[order]
+	bin_path = WriteBout(tmp, 0, np.clip(np.round(x / UV), -32768, 32767).astype(np.int16), written, 0,
+		probe="imec0", shanks=shanks)
+	phy = os.path.join(tmp, "kilosort4")
+	global UNITS
+	saved, UNITS = UNITS, units # WritePhy's labels
+	try:
+		WritePhy(phy, geometry, times, clusters)
+	finally:
+		UNITS = saved
+	out = os.path.join(tmp, "templates.npz")
+	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":4"]) == 0
+	return tmp, bin_path, phy, out
+
+
+def test_a_multi_shank_probe_s_shanks_matched_apart_give_the_whole_probe_s_spikes(four_shanks):
+	# Each shank its own part (no unit's sites and no channel's whitening reach across), matched side by side in
+	# threads (the default) or one after another: the spikes the whole probe's matcher finds, in its order, to the
+	# last sample, unit, channel and neighbor
+	tmp, bin_path, phy, out = four_shanks
+	got = {}
+	for split in ("whole", "serial", "threads"):
+		sorter = es.MatchingSorter(out, split=split)
+		if split == "whole":
+			assert isinstance(sorter.matcher, es.TemplateMatcher) and sorter.parts == 1
+		else:
+			assert isinstance(sorter.matcher, es.ShankMatcher) and sorter.parts == 4
+			assert sorted(len(r) for _, r, _ in sorter.matcher.parts) == [2, 2, 3, 3] # each shank's units
+			assert [len(ch) for ch, _, _ in sorter.matcher.parts] == [24] * 4
+			assert (sorter.matcher.pool is not None) == (split == "threads")
+			assert "4 parts " + ("side by side" if split == "threads" else "one after another") in sorter.name
+		engine = el.Engine(el.ReplaySource(bin_path, speed=0, chunk_s=0.05), sorter=sorter, sort_thread=False)
+		engine.Start()
+		while engine.source.state != "ended":
+			engine.Step()
+		engine.Finish(timeout=60)
+		s = engine.live.spikes
+		got[split] = list(zip(s.sample.tolist(), s.unit.tolist(), s.channel.tolist(),
+			map(tuple, s.neighbors.tolist())))
+	# Spikes of two shanks at the same sample: in the whole probe's order (by the unit's row in the templates file),
+	# whatever the order of the shanks' matchers
+	shanks = es.MatchingSorter(out, split="serial").matcher
+	units = es.MatchingSorter(out, split="whole").units
+	(_, first, _), (_, second, _) = shanks.parts[:2]
+	earlier, later = units[first.max()], units[second.min()] # one shank's unit, and a unit in a row after it
+	merged = shanks.Merged([el.Spikes([100, 100], [0, 0], [-50, -50], [later, later]), el.Spikes([90, 100], [1, 1],
+		[-60, -60], [earlier, earlier])])
+	assert merged.sample.tolist() == [90, 100, 100, 100] and merged.unit.tolist() == [earlier, earlier, later, later]
+	assert sum(u >= 0 for _, u, _, _ in got["whole"]) > 300 # template spikes on all four shanks
+	assert len({c % 4 for _, u, c, _ in got["whole"] if u >= 0}) == 4
+	assert got["serial"] == got["whole"] and got["threads"] == got["whole"]
+	# Evaluated so: the summary says how the sorter matched (not only what was asked)
+	report = os.path.join(tmp, "evaluate.json")
+	for split, parts in (("serial", 4), ("whole", 1), ("threads", 4)):
+		assert el.Main(["evaluate", "--replay", bin_path, "--phy", phy, "--templates", out, "--span", "4:", "--match",
+			"learned", "--split", split, "--json", report]) == 0
+		with open(report) as f:
+			summary = json.load(f)
+		assert (summary["split"], summary["parts"]) == (split, parts)
+
+
+def test_a_single_shank_probe_is_matched_whole(sorted_recording):
+	tmp, bin_path, phy, times, clusters = sorted_recording
+	out = str(tmp / "templates_one_shank.npz")
+	assert el.Main(["train", "--replay", bin_path, "--phy", phy, "--out", out, "--span", ":5", "--no-learn"]) == 0
+	for split in es.SPLITS:
+		sorter = es.MatchingSorter(out, split=split)
+		assert isinstance(sorter.matcher, es.TemplateMatcher) and sorter.parts == 1 and "parts" not in sorter.name
+	with pytest.raises(el.EphysError, match="threads, serial, whole"):
+		es.MatchingSorter(out, split="shanks")
+
+
+def test_a_probe_s_parts_at_most_four_neighbors_put_together():
+	# Units far apart (a templates file without whitening): each its own set of channels, but at most PARTS_MOST
+	# parts, those next to each other put together (about as many units in each); channels no unit reaches, none
+	from types import SimpleNamespace
+	sites = np.array([[2, 3, -1], [3, 4, 2], [10, 11, 12], [20, 21, -1], [30, 31, 32], [40, 41, 42], [50, 51, 52],
+		[60, 61, 62]])
+	sorter = SimpleNamespace(noise=np.ones(70), sites=sites, peaks=sites[:, 0], whiten=None)
+	label, unit_part = es.Parts(sorter)
+	assert unit_part.tolist() == [0, 0, 1, 1, 2, 2, 3, 3] and label[[0, 5, 69]].tolist() == [-1, -1, -1]
+	assert label[[2, 3, 4, 10, 12, 21, 62]].tolist() == [0, 0, 0, 1, 1, 1, 3]
+	label, unit_part = es.Parts(sorter, most=8)
+	assert unit_part.tolist() == [0, 0, 1, 2, 3, 4, 5, 6]
+	# The whitening reaches across: one part
+	whiten = np.eye(70)
+	for a, b in ((4, 10), (12, 20), (21, 30), (32, 40), (42, 50), (52, 60)):
+		whiten[a, b] = whiten[b, a] = 0.1
+	label, unit_part = es.Parts(SimpleNamespace(noise=np.ones(70), sites=sites, peaks=sites[:, 0], whiten=whiten))
+	assert unit_part.tolist() == [0] * 8
