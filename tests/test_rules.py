@@ -609,6 +609,45 @@ class FakePort:
 		pass
 
 
+class DeadPort(FakePort):
+	"""An open port that hears nothing, whatever is sent: every other open of a Nano ESP32's port on Windows."""
+
+	def __init__(self):
+		super().__init__()
+		self.closed = False
+
+	def write(self, data):
+		with self.lock:
+			self.written.append(data.decode().strip())
+
+	def close(self):
+		self.closed = True
+
+
+def test_an_open_that_hears_nothing_is_opened_again(monkeypatch):
+	# On Windows every other open of the board's port heard nothing (a real Nano ESP32, 23 November): campy-box's
+	# first open of the day landed on one and stopped ("did not answer id"). Now such an open is closed and the port
+	# opened again
+	monkeypatch.setattr(outputs, "OPEN_ANSWER_S", 0.1)
+	opened = []
+
+	def alternating():
+		opened.append(DeadPort() if len(opened) % 2 == 0 else FakePort())
+		return opened[-1]
+
+	board = outputs.Board(port="fake", opener=alternating, heartbeat=0, sync=0)
+	try:
+		assert len(opened) == 2 and board.connection is opened[1] and opened[0].closed
+		assert opened[0].written == ["id"] and opened[1].written[:2] == ["id", "id"] # its own check, then Board's
+	finally:
+		board.Close(off=False)
+	# None answers: OPEN_TRIES opens, then one more whose id fails as before, saying why
+	dead = []
+	with pytest.raises(outputs.BoardError, match=r"did not answer as campy_outputs"):
+		outputs.Board(port="fake", opener=lambda: dead.append(DeadPort()) or dead[-1], heartbeat=0, sync=0)
+	assert len(dead) == outputs.OPEN_TRIES + 1 and all(p.closed for p in dead[:-1])
+
+
 def test_board_refuses_an_older_or_newer_sketch():
 	# A board still running the sketch from before pull request 304 answers id with version 1, one from before the
 	# operant box's inputs and servos 2, one from before the camera pulses 3, one from before linkwatch 4: campy-rules
