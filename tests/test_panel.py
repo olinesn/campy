@@ -1701,6 +1701,23 @@ def test_the_photometry_only_experiment_has_no_live_ephys_card():
 		assert spikeglx.RecordsProbe(yaml.safe_load(f)["spikeglx"]) is True
 
 
+def test_the_ephys_reader_runs_with_one_math_thread(monkeypatch):
+	# campy-ephys serve's math library at one thread (several cores each slowed the matcher, and several probes fell
+	# behind); the panel's own environment, and so campy-live's, is left as it is
+	monkeypatch.setenv("OPENBLAS_NUM_THREADS", "8")
+	monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+	view = panel.EphysView({"sdk": FAKE_SDK, "host": "127.0.0.1", "port": 4142, "stream": [1, 0]})
+	try:
+		env = view.ChildEnv()
+		for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+				"NUMEXPR_NUM_THREADS"):
+			assert env[name] == "1", name
+		assert env["CAMPY_EPHYS_KEY"] == view.key and env["PYTHONPATH"].split(os.pathsep)[0] == REPO
+		assert os.environ["OPENBLAS_NUM_THREADS"] == "8" and "OMP_NUM_THREADS" not in os.environ
+	finally:
+		view.Shutdown()
+
+
 def test_no_ephys_section_without_spikeglx():
 	p, calls = stub_panel(SERVE_PORT + 61)
 	p.ephys = None
